@@ -302,6 +302,14 @@ The first Python modules are `pycodex.cli`, `pycodex.config`,
   replacements with the upstream exact/rstrip/trim/Unicode-normalized seek
   sequence, and produces one-line-context unified diffs plus resulting
   `new_content` for update changes.
+- turn diff tracking now mirrors `core/src/turn_diff_tracker.rs`, accumulating
+  exact committed apply-patch deltas into a single net git-style unified diff,
+  including add/update/delete, rename-with-edit, overwrite, invalidation, and
+  Git blob OID calculation using only `hashlib` and `difflib`.
+- shell selection helpers now mirror `core/src/shell.rs` and
+  `core/src/shell_detect.rs`, covering shell-type detection, default/user
+  fallback selection, model-provided shell paths, and exec argv derivation for
+  bash, zsh, sh, PowerShell, and cmd without third-party dependencies.
 - tool context helpers now convert function, custom, apply-patch, aborted,
   tool-search, and exec-command outputs into upstream-shaped response items,
   including telemetry previews, model-output truncation markers, and

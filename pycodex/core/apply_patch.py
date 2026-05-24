@@ -458,10 +458,24 @@ class ApplyPatchFileChange:
     unified_diff: str | None = None
     move_path: Path | None = None
     new_content: str | None = None
+    overwritten_content: str | None = None
+    old_content: str | None = None
+    overwritten_move_content: str | None = None
 
     @classmethod
-    def add(cls, content: str, *, new_content: str | None = None) -> "ApplyPatchFileChange":
-        return cls(type="add", content=content, new_content=new_content)
+    def add(
+        cls,
+        content: str,
+        *,
+        new_content: str | None = None,
+        overwritten_content: str | None = None,
+    ) -> "ApplyPatchFileChange":
+        return cls(
+            type="add",
+            content=content,
+            new_content=new_content,
+            overwritten_content=overwritten_content,
+        )
 
     @classmethod
     def delete(cls, content: str) -> "ApplyPatchFileChange":
@@ -474,12 +488,16 @@ class ApplyPatchFileChange:
         *,
         move_path: str | Path | None = None,
         new_content: str | None = None,
+        old_content: str | None = None,
+        overwritten_move_content: str | None = None,
     ) -> "ApplyPatchFileChange":
         return cls(
             type="update",
             unified_diff=unified_diff,
             move_path=Path(move_path) if move_path is not None else None,
             new_content=new_content,
+            old_content=old_content,
+            overwritten_move_content=overwritten_move_content,
         )
 
     @classmethod
@@ -489,6 +507,7 @@ class ApplyPatchFileChange:
             return cls.add(
                 _required_str(value, "content"),
                 new_content=_optional_str(value, "new_content"),
+                overwritten_content=_optional_str(value, "overwritten_content"),
             )
         if change_type == "delete":
             return cls.delete(_required_str(value, "content"))
@@ -498,6 +517,8 @@ class ApplyPatchFileChange:
                 _required_str(value, "unified_diff"),
                 move_path=move_path,
                 new_content=_optional_str(value, "new_content"),
+                old_content=_optional_str(value, "old_content"),
+                overwritten_move_content=_optional_str(value, "overwritten_move_content"),
             )
         raise ValueError(f"unknown apply_patch file change type: {change_type}")
 
@@ -663,7 +684,11 @@ def verify_apply_patch_args(
     for hunk in args.hunks:
         path = hunk.resolve_path(effective_cwd)
         if hunk.type == "add":
-            changes[path] = ApplyPatchFileChange.add(hunk.contents or "")
+            overwritten_content = _read_optional_text(path)
+            changes[path] = ApplyPatchFileChange.add(
+                hunk.contents or "",
+                overwritten_content=overwritten_content,
+            )
             continue
 
         if hunk.type == "delete":
@@ -699,6 +724,8 @@ def verify_apply_patch_args(
                 update.unified_diff,
                 move_path=move_path,
                 new_content=update.content,
+                old_content=original_content,
+                overwritten_move_content=_read_optional_text(move_path) if move_path is not None else None,
             )
             continue
 
@@ -1280,6 +1307,15 @@ def _split_for_unified_diff(value: str) -> list[str]:
         line if line.endswith("\n") else line + "\n"
         for line in value.splitlines(keepends=True)
     ]
+
+
+def _read_optional_text(path: Path | None) -> str | None:
+    if path is None:
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return None
 
 
 def _coerce_apply_patch_file_change(value: ApplyPatchFileChange | Mapping[str, JsonValue]) -> ApplyPatchFileChange:
