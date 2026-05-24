@@ -1,0 +1,185 @@
+import unittest
+
+from pycodex.core import (
+    BlockedRequest,
+    Decision,
+    ExecPolicyNetworkRuleAmendment,
+    ExecPolicyNetworkRuleProtocol,
+    denied_network_policy_message,
+    execpolicy_network_rule_amendment,
+    network_approval_context_from_payload,
+    parse_network_policy_decision,
+)
+from pycodex.protocol import (
+    NetworkApprovalContext,
+    NetworkApprovalProtocol,
+    NetworkDecisionSource,
+    NetworkPolicyAmendment,
+    NetworkPolicyDecision,
+    NetworkPolicyDecisionPayload,
+    NetworkPolicyRuleAction,
+)
+
+
+class CoreNetworkPolicyDecisionTests(unittest.TestCase):
+    def test_network_approval_context_requires_ask_from_decider(self) -> None:
+        payload = NetworkPolicyDecisionPayload(
+            decision=NetworkPolicyDecision.DENY,
+            source=NetworkDecisionSource.DECIDER,
+            protocol=NetworkApprovalProtocol.HTTPS,
+            host="example.com",
+            reason="not_allowed",
+            port=443,
+        )
+
+        self.assertIsNone(network_approval_context_from_payload(payload))
+
+    def test_network_approval_context_maps_http_https_and_socks_protocols(self) -> None:
+        for protocol in (
+            NetworkApprovalProtocol.HTTP,
+            NetworkApprovalProtocol.HTTPS,
+            NetworkApprovalProtocol.SOCKS5_TCP,
+            NetworkApprovalProtocol.SOCKS5_UDP,
+        ):
+            with self.subTest(protocol=protocol):
+                payload = NetworkPolicyDecisionPayload(
+                    decision=NetworkPolicyDecision.ASK,
+                    source=NetworkDecisionSource.DECIDER,
+                    protocol=protocol,
+                    host=" example.com ",
+                    reason="not_allowed",
+                    port=443,
+                )
+
+                self.assertEqual(
+                    network_approval_context_from_payload(payload),
+                    NetworkApprovalContext(host="example.com", protocol=protocol),
+                )
+
+    def test_network_approval_context_rejects_missing_protocol_or_host(self) -> None:
+        base = {
+            "decision": "ask",
+            "source": "decider",
+            "reason": "not_allowed",
+            "port": 443,
+        }
+
+        self.assertIsNone(network_approval_context_from_payload({**base, "host": "example.com"}))
+        self.assertIsNone(
+            network_approval_context_from_payload(
+                {**base, "protocol": "https", "host": "   "}
+            )
+        )
+
+    def test_network_policy_decision_parse_accepts_known_values_only(self) -> None:
+        self.assertEqual(parse_network_policy_decision("deny"), NetworkPolicyDecision.DENY)
+        self.assertEqual(parse_network_policy_decision("ask"), NetworkPolicyDecision.ASK)
+        self.assertIsNone(parse_network_policy_decision("allow"))
+        self.assertIsNone(parse_network_policy_decision(None))
+
+    def test_execpolicy_network_rule_amendment_maps_protocol_action_and_justification(self) -> None:
+        amendment = NetworkPolicyAmendment("example.com", NetworkPolicyRuleAction.DENY)
+        context = NetworkApprovalContext(
+            host="example.com",
+            protocol=NetworkApprovalProtocol.SOCKS5_UDP,
+        )
+
+        self.assertEqual(
+            execpolicy_network_rule_amendment(amendment, context, "example.com"),
+            ExecPolicyNetworkRuleAmendment(
+                protocol=ExecPolicyNetworkRuleProtocol.SOCKS5_UDP,
+                decision=Decision.FORBIDDEN,
+                justification="Deny socks5_udp access to example.com",
+            ),
+        )
+
+    def test_execpolicy_network_rule_amendment_uses_https_connect_label(self) -> None:
+        amendment = NetworkPolicyAmendment("example.com", NetworkPolicyRuleAction.ALLOW)
+        context = NetworkApprovalContext(
+            host="example.com",
+            protocol=NetworkApprovalProtocol.HTTPS,
+        )
+
+        self.assertEqual(
+            execpolicy_network_rule_amendment(amendment, context, "api.example.com"),
+            ExecPolicyNetworkRuleAmendment(
+                protocol=ExecPolicyNetworkRuleProtocol.HTTPS,
+                decision=Decision.ALLOW,
+                justification="Allow https_connect access to api.example.com",
+            ),
+        )
+
+    def test_denied_network_policy_message_requires_deny_decision(self) -> None:
+        blocked = BlockedRequest(
+            host="example.com",
+            reason="not_allowed",
+            method="GET",
+            protocol="http",
+            decision="ask",
+            source="decider",
+            port=80,
+        )
+
+        self.assertIsNone(denied_network_policy_message(blocked))
+
+    def test_denied_network_policy_message_for_known_reasons(self) -> None:
+        cases = {
+            "denied": "domain is explicitly denied by policy and cannot be approved from this prompt",
+            "not_allowed": "domain is not on the allowlist for the current sandbox mode",
+            "not_allowed_local": "local/private network addresses are blocked by the sandbox policy",
+            "method_not_allowed": "request method is blocked by the current network mode",
+            "proxy_disabled": "network proxy is disabled",
+            "other": "request is blocked by network policy",
+        }
+
+        for reason, detail in cases.items():
+            with self.subTest(reason=reason):
+                self.assertEqual(
+                    denied_network_policy_message(
+                        BlockedRequest(
+                            host="example.com",
+                            reason=reason,
+                            protocol="http",
+                            decision="deny",
+                        )
+                    ),
+                    f'Network access to "example.com" was blocked: {detail}.',
+                )
+
+    def test_denied_network_policy_message_handles_empty_host_and_mapping_input(self) -> None:
+        self.assertEqual(
+            denied_network_policy_message(
+                {
+                    "host": "   ",
+                    "reason": "not_allowed",
+                    "protocol": "http",
+                    "decision": "deny",
+                    "timestamp": 0,
+                }
+            ),
+            "Network access was blocked by policy.",
+        )
+
+    def test_blocked_request_mapping_round_trip_preserves_optional_fields(self) -> None:
+        blocked = BlockedRequest.from_mapping(
+            {
+                "host": "example.com",
+                "reason": "denied",
+                "client": "curl",
+                "method": "GET",
+                "mode": "restricted",
+                "protocol": "https",
+                "decision": "deny",
+                "source": "baseline_policy",
+                "port": 443,
+                "timestamp": 123,
+            }
+        )
+
+        self.assertEqual(blocked.host, "example.com")
+        self.assertEqual(blocked.to_mapping()["client"], "curl")
+        self.assertEqual(blocked.to_mapping()["timestamp"], 123)
+
+
+if __name__ == "__main__":
+    unittest.main()
