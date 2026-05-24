@@ -1,0 +1,804 @@
+import shutil
+import unittest
+import uuid
+from pathlib import Path
+
+from pycodex.core import (
+    APPLY_PATCH_FREEFORM_DESCRIPTION,
+    APPLY_PATCH_LARK_GRAMMAR,
+    APPLY_PATCH_TOOL_NAME,
+    ApplyPatchAction,
+    ApplyPatchArgs,
+    ApplyPatchError,
+    ApplyPatchFileChange,
+    ApplyPatchFileUpdate,
+    ApplyPatchHandler,
+    ApplyPatchParseError,
+    Hunk,
+    MaybeApplyPatch,
+    StreamingPatchParser,
+    ToolPayload,
+    UpdateFileChunk,
+    convert_apply_patch_to_protocol,
+    create_apply_patch_freeform_tool,
+    derive_new_contents_from_chunks,
+    maybe_parse_apply_patch,
+    maybe_parse_apply_patch_verified,
+    parse_patch,
+    unified_diff_from_chunks,
+    verify_apply_patch_args,
+)
+from pycodex.protocol import ToolName
+from pycodex.protocol import FileChange
+
+
+class CoreApplyPatchTests(unittest.TestCase):
+    def assert_apply_patch_body(
+        self,
+        result: MaybeApplyPatch,
+        expected_workdir: str | None = None,
+    ) -> ApplyPatchArgs:
+        self.assertEqual(result.type, "body")
+        self.assertIsNotNone(result.body)
+        body = result.body
+        self.assertEqual(body.workdir, expected_workdir)
+        return body
+
+    def update_chunks_from_patch(self, patch: str) -> tuple[UpdateFileChunk, ...]:
+        parsed = parse_patch(patch)
+        self.assertEqual(len(parsed.hunks), 1)
+        hunk = parsed.hunks[0]
+        self.assertEqual(hunk.type, "update")
+        return hunk.chunks
+
+    def make_workspace_dir(self) -> Path:
+        path = Path.cwd() / f".pycodex-test-{uuid.uuid4().hex}"
+        path.mkdir()
+        self.addCleanup(shutil.rmtree, path, ignore_errors=True)
+        return path
+
+    def test_convert_apply_patch_maps_add_variant(self) -> None:
+        path = Path("a.txt")
+        action = ApplyPatchAction.new_add_for_test(path, "hello")
+
+        self.assertEqual(
+            convert_apply_patch_to_protocol(action),
+            {path: FileChange.add("hello")},
+        )
+
+    def test_convert_apply_patch_maps_delete_and_update_variants(self) -> None:
+        action = ApplyPatchAction(
+            {
+                Path("old.txt"): ApplyPatchFileChange.delete("old contents"),
+                Path("edit.txt"): ApplyPatchFileChange.update(
+                    "@@ -1 +1 @@\n-old\n+new\n",
+                    new_content="new\n",
+                ),
+                Path("move.txt"): ApplyPatchFileChange.update(
+                    "@@ -1 +1 @@\n-before\n+after\n",
+                    move_path=Path("moved.txt"),
+                    new_content="after\n",
+                ),
+            }
+        )
+
+        self.assertEqual(
+            convert_apply_patch_to_protocol(action),
+            {
+                Path("old.txt"): FileChange.delete("old contents"),
+                Path("edit.txt"): FileChange.update("@@ -1 +1 @@\n-old\n+new\n"),
+                Path("move.txt"): FileChange.update(
+                    "@@ -1 +1 @@\n-before\n+after\n",
+                    move_path=Path("moved.txt"),
+                ),
+            },
+        )
+
+    def test_convert_apply_patch_accepts_mapping_shape(self) -> None:
+        self.assertEqual(
+            convert_apply_patch_to_protocol(
+                {
+                    "cwd": "/repo",
+                    "changes": {
+                        "new.txt": {"type": "add", "content": "new"},
+                        "gone.txt": {"type": "delete", "content": "gone"},
+                        "renamed.txt": {
+                            "type": "update",
+                            "unified_diff": "@@ -1 +1 @@\n-x\n+y\n",
+                            "move_path": "renamed-to.txt",
+                            "new_content": "y\n",
+                        },
+                    },
+                }
+            ),
+            {
+                Path("new.txt"): FileChange.add("new"),
+                Path("gone.txt"): FileChange.delete("gone"),
+                Path("renamed.txt"): FileChange.update(
+                    "@@ -1 +1 @@\n-x\n+y\n",
+                    move_path=Path("renamed-to.txt"),
+                ),
+            },
+        )
+
+    def test_convert_apply_patch_rejects_unknown_change_type(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unknown apply_patch file change type"):
+            convert_apply_patch_to_protocol(
+                ApplyPatchAction(
+                    {Path("bad.txt"): ApplyPatchFileChange(type="chmod")}
+                )
+            )
+
+    def test_create_apply_patch_freeform_tool_matches_default_grammar(self) -> None:
+        tool = create_apply_patch_freeform_tool(False)
+
+        self.assertEqual(
+            tool.to_mapping(),
+            {
+                "type": "custom",
+                "name": APPLY_PATCH_TOOL_NAME,
+                "description": APPLY_PATCH_FREEFORM_DESCRIPTION,
+                "format": {
+                    "type": "grammar",
+                    "syntax": "lark",
+                    "definition": APPLY_PATCH_LARK_GRAMMAR,
+                },
+            },
+        )
+
+    def test_create_apply_patch_freeform_tool_can_accept_environment_id(self) -> None:
+        definition = create_apply_patch_freeform_tool(True).to_mapping()["format"]["definition"]
+
+        self.assertIn(
+            "start: begin_patch environment_id? hunk+ end_patch",
+            definition,
+        )
+        self.assertIn(
+            'environment_id: "*** Environment ID: " filename LF',
+            definition,
+        )
+        self.assertIn("*** Add File: ", definition)
+
+    def test_apply_patch_handler_exposes_custom_tool(self) -> None:
+        handler = ApplyPatchHandler.new(True)
+
+        self.assertEqual(handler.tool_name(), ToolName.plain(APPLY_PATCH_TOOL_NAME))
+        self.assertEqual(handler.spec(), create_apply_patch_freeform_tool(True))
+        self.assertTrue(handler.matches_kind(ToolPayload.custom("*** Begin Patch\n")))
+        self.assertFalse(handler.matches_kind(ToolPayload.function("{}")))
+
+    def test_parse_patch_parses_multiple_hunk_variants(self) -> None:
+        self.assertEqual(
+            parse_patch(
+                "*** Begin Patch\n"
+                "*** Add File: path/add.py\n"
+                "+abc\n"
+                "+def\n"
+                "*** Delete File: path/delete.py\n"
+                "*** Update File: path/update.py\n"
+                "*** Move to: path/update2.py\n"
+                "@@ def f():\n"
+                "-    pass\n"
+                "+    return 123\n"
+                "*** End Patch"
+            ).hunks,
+            (
+                Hunk.add_file("path/add.py", "abc\ndef\n"),
+                Hunk.delete_file("path/delete.py"),
+                Hunk.update_file(
+                    "path/update.py",
+                    move_path="path/update2.py",
+                    chunks=(
+                        UpdateFileChunk(
+                            change_context="def f():",
+                            old_lines=("    pass",),
+                            new_lines=("    return 123",),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+    def test_parse_patch_reports_boundary_and_hunk_errors(self) -> None:
+        with self.assertRaises(ApplyPatchParseError) as first_line:
+            parse_patch("bad")
+        self.assertEqual(first_line.exception.kind, "invalid_patch")
+        self.assertEqual(
+            first_line.exception.message,
+            "The first line of the patch must be '*** Begin Patch'",
+        )
+
+        with self.assertRaises(ApplyPatchParseError) as empty_update:
+            parse_patch("*** Begin Patch\n*** Update File: test.py\n*** End Patch")
+        self.assertEqual(empty_update.exception.kind, "invalid_hunk")
+        self.assertEqual(empty_update.exception.line_number, 2)
+        self.assertEqual(
+            empty_update.exception.message,
+            "Update file hunk for path 'test.py' is empty",
+        )
+
+    def test_parse_patch_accepts_lenient_heredoc_wrappers(self) -> None:
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Update File: file2.py\n"
+            " import foo\n"
+            "+bar\n"
+            "*** End Patch"
+        )
+
+        self.assertEqual(
+            parse_patch(f"<<'EOF'\n{patch_text}\nEOF\n"),
+            ApplyPatchArgs(
+                patch=patch_text,
+                hunks=(
+                    Hunk.update_file(
+                        "file2.py",
+                        chunks=(
+                            UpdateFileChunk(
+                                change_context=None,
+                                old_lines=("import foo",),
+                                new_lines=("import foo", "bar"),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+    def test_parse_patch_reads_environment_id_preamble(self) -> None:
+        parsed = parse_patch(
+            "*** Begin Patch\n"
+            "*** Environment ID: remote\n"
+            "*** Add File: hello.txt\n"
+            "+hello\n"
+            "*** End Patch"
+        )
+
+        self.assertEqual(parsed.environment_id, "remote")
+        self.assertEqual(parsed.hunks, (Hunk.add_file("hello.txt", "hello\n"),))
+
+        with self.assertRaises(ApplyPatchParseError) as empty_environment:
+            parse_patch(
+                "*** Begin Patch\n"
+                "*** Environment ID:   \n"
+                "*** Add File: hello.txt\n"
+                "+hello\n"
+                "*** End Patch"
+            )
+        self.assertEqual(
+            empty_environment.exception.message,
+            "apply_patch environment_id cannot be empty",
+        )
+
+    def test_parse_patch_update_chunks_match_upstream_leniency(self) -> None:
+        parsed = parse_patch(
+            "*** Begin Patch\n"
+            "*** Update File: file.py\n"
+            "@@\n"
+            "+line\n"
+            "*** Add File: other.py\n"
+            "+content\n"
+            "*** End Patch"
+        )
+        self.assertEqual(
+            parsed.hunks,
+            (
+                Hunk.update_file(
+                    "file.py",
+                    chunks=(UpdateFileChunk(None, (), ("line",)),),
+                ),
+                Hunk.add_file("other.py", "content\n"),
+            ),
+        )
+
+        parsed = parse_patch(
+            "*** Begin Patch\n"
+            "*** Update File: file2.py\n"
+            " import foo\n"
+            "+bar\n"
+            "*** End Patch"
+        )
+        self.assertEqual(
+            parsed.hunks,
+            (
+                Hunk.update_file(
+                    "file2.py",
+                    chunks=(
+                        UpdateFileChunk(
+                            None,
+                            ("import foo",),
+                            ("import foo", "bar"),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+    def test_derive_new_contents_from_chunks_matches_upstream_search_leniency(self) -> None:
+        chunks = (
+            UpdateFileChunk(
+                "header",
+                old_lines=("foo", "bar"),
+                new_lines=("foo", "BAR"),
+            ),
+            UpdateFileChunk(
+                None,
+                old_lines=("plain - dash", "quote 'x'"),
+                new_lines=("plain - dash", 'quote "x"'),
+            ),
+        )
+
+        self.assertEqual(
+            derive_new_contents_from_chunks(
+                "file.txt",
+                chunks,
+                "header\nfoo   \nbar\nplain \u2014 dash\nquote \u2018x\u2019\n",
+            ),
+            'header\nfoo\nBAR\nplain - dash\nquote "x"\n',
+        )
+
+    def test_unified_diff_from_chunks_matches_upstream_multi_change(self) -> None:
+        patch = (
+            "*** Begin Patch\n"
+            "*** Update File: multi.txt\n"
+            "@@\n"
+            " foo\n"
+            "-bar\n"
+            "+BAR\n"
+            "@@\n"
+            " baz\n"
+            "-qux\n"
+            "+QUX\n"
+            "*** End Patch"
+        )
+
+        self.assertEqual(
+            unified_diff_from_chunks(
+                "multi.txt",
+                self.update_chunks_from_patch(patch),
+                "foo\nbar\nbaz\nqux\n",
+            ),
+            ApplyPatchFileUpdate(
+                unified_diff=(
+                    "@@ -1,4 +1,4 @@\n"
+                    " foo\n"
+                    "-bar\n"
+                    "+BAR\n"
+                    " baz\n"
+                    "-qux\n"
+                    "+QUX\n"
+                ),
+                original_content="foo\nbar\nbaz\nqux\n",
+                content="foo\nBAR\nbaz\nQUX\n",
+            ),
+        )
+
+    def test_unified_diff_from_chunks_handles_edges_and_eof_insert(self) -> None:
+        cases = (
+            (
+                "first.txt",
+                "foo\nbar\nbaz\n",
+                "*** Update File: first.txt\n@@\n-foo\n+FOO\n bar",
+                "@@ -1,2 +1,2 @@\n-foo\n+FOO\n bar\n",
+                "FOO\nbar\nbaz\n",
+            ),
+            (
+                "last.txt",
+                "foo\nbar\nbaz\n",
+                "*** Update File: last.txt\n@@\n foo\n bar\n-baz\n+BAZ",
+                "@@ -2,2 +2,2 @@\n bar\n-baz\n+BAZ\n",
+                "foo\nbar\nBAZ\n",
+            ),
+            (
+                "insert.txt",
+                "foo\nbar\nbaz\n",
+                "*** Update File: insert.txt\n@@\n+quux\n*** End of File",
+                "@@ -3 +3,2 @@\n baz\n+quux\n",
+                "foo\nbar\nbaz\nquux\n",
+            ),
+        )
+
+        for path, original, body, expected_diff, expected_content in cases:
+            with self.subTest(path=path):
+                patch = f"*** Begin Patch\n{body}\n*** End Patch"
+                self.assertEqual(
+                    unified_diff_from_chunks(
+                        path,
+                        self.update_chunks_from_patch(patch),
+                        original,
+                    ),
+                    ApplyPatchFileUpdate(
+                        unified_diff=expected_diff,
+                        original_content=original,
+                        content=expected_content,
+                    ),
+                )
+
+    def test_unified_diff_from_chunks_handles_interleaved_chunks(self) -> None:
+        patch = (
+            "*** Begin Patch\n"
+            "*** Update File: interleaved.txt\n"
+            "@@\n"
+            " a\n"
+            "-b\n"
+            "+B\n"
+            "@@\n"
+            " d\n"
+            "-e\n"
+            "+E\n"
+            "@@\n"
+            " f\n"
+            "+g\n"
+            "*** End of File\n"
+            "*** End Patch"
+        )
+
+        self.assertEqual(
+            unified_diff_from_chunks(
+                "interleaved.txt",
+                self.update_chunks_from_patch(patch),
+                "a\nb\nc\nd\ne\nf\n",
+            ),
+            ApplyPatchFileUpdate(
+                unified_diff=(
+                    "@@ -1,6 +1,7 @@\n"
+                    " a\n"
+                    "-b\n"
+                    "+B\n"
+                    " c\n"
+                    " d\n"
+                    "-e\n"
+                    "+E\n"
+                    " f\n"
+                    "+g\n"
+                ),
+                original_content="a\nb\nc\nd\ne\nf\n",
+                content="a\nB\nc\nd\nE\nf\ng\n",
+            ),
+        )
+
+    def test_unified_diff_from_chunks_reports_missing_context(self) -> None:
+        chunks = (UpdateFileChunk(None, old_lines=("missing",), new_lines=("new",)),)
+
+        with self.assertRaises(ApplyPatchError) as error:
+            unified_diff_from_chunks("file.txt", chunks, "present\n")
+
+        self.assertEqual(error.exception.kind, "compute_replacements")
+        self.assertEqual(
+            error.exception.message,
+            "Failed to find expected lines in file.txt:\nmissing",
+        )
+
+    def test_verify_apply_patch_args_reads_files_and_resolves_paths(self) -> None:
+        root = self.make_workspace_dir()
+        workdir = root / "repo"
+        workdir.mkdir()
+        (workdir / "edit.txt").write_text("old\n", encoding="utf-8")
+        (workdir / "gone.txt").write_text("delete me\n", encoding="utf-8")
+        patch = (
+            "*** Begin Patch\n"
+            "*** Add File: added.txt\n"
+            "+hello\n"
+            "*** Delete File: gone.txt\n"
+            "*** Update File: edit.txt\n"
+            "*** Move to: moved.txt\n"
+            "@@\n"
+            "-old\n"
+            "+new\n"
+            "*** End Patch"
+        )
+        args = parse_patch(patch)
+
+        result = verify_apply_patch_args(
+            ApplyPatchArgs(
+                patch=args.patch,
+                hunks=args.hunks,
+                workdir="repo",
+            ),
+            root,
+        )
+
+        self.assertEqual(result.type, "body")
+        self.assertIsNotNone(result.body)
+        action = result.body
+        self.assertEqual(action.cwd, workdir)
+        self.assertEqual(action.patch, patch)
+        self.assertEqual(
+            action.changes[workdir / "added.txt"],
+            ApplyPatchFileChange.add("hello\n"),
+        )
+        self.assertEqual(
+            action.changes[workdir / "gone.txt"],
+            ApplyPatchFileChange.delete("delete me\n"),
+        )
+        self.assertEqual(
+            action.changes[workdir / "edit.txt"],
+            ApplyPatchFileChange.update(
+                "@@ -1 +1 @@\n-old\n+new\n",
+                move_path=workdir / "moved.txt",
+                new_content="new\n",
+            ),
+        )
+
+    def test_maybe_parse_apply_patch_verified_detects_implicit_patch(self) -> None:
+        patch = "*** Begin Patch\n*** Add File: added.txt\n+hello\n*** End Patch"
+        result = maybe_parse_apply_patch_verified((patch,), self.make_workspace_dir())
+
+        self.assertEqual(result.type, "correctness_error")
+        self.assertIsInstance(result.error, ApplyPatchError)
+        self.assertEqual(result.error.kind, "implicit_invocation")
+
+    def test_maybe_parse_apply_patch_verified_surfaces_missing_file(self) -> None:
+        patch = "*** Begin Patch\n*** Delete File: missing.txt\n*** End Patch"
+        result = maybe_parse_apply_patch_verified(
+            ("apply_patch", patch),
+            self.make_workspace_dir(),
+        )
+
+        self.assertEqual(result.type, "correctness_error")
+        self.assertIsInstance(result.error, ApplyPatchError)
+        self.assertEqual(result.error.kind, "io_error")
+
+    def test_streaming_patch_parser_streams_complete_lines_before_end_patch(self) -> None:
+        parser = StreamingPatchParser()
+        self.assertEqual(
+            parser.push_delta("*** Begin Patch\n*** Add File: src/hello.txt\n+hello\n+wor"),
+            (Hunk.add_file("src/hello.txt", "hello\n"),),
+        )
+        self.assertEqual(
+            parser.push_delta("ld\n"),
+            (Hunk.add_file("src/hello.txt", "hello\nworld\n"),),
+        )
+
+        parser = StreamingPatchParser()
+        self.assertEqual(
+            parser.push_delta("*** Begin Patch\n*** Delete File: gone.txt"),
+            (),
+        )
+        self.assertEqual(
+            parser.push_delta("\n"),
+            (Hunk.delete_file("gone.txt"),),
+        )
+
+    def test_streaming_patch_parser_update_move_and_environment_id(self) -> None:
+        parser = StreamingPatchParser()
+        self.assertEqual(
+            parser.push_delta(
+                "*** Begin Patch\n"
+                "*** Environment ID: remote\n"
+                "*** Update File: src/old.rs\n"
+                "*** Move to: src/new.rs\n"
+                "@@\n"
+                "-old\n"
+                "+new\n"
+            ),
+            (
+                Hunk.update_file(
+                    "src/old.rs",
+                    move_path="src/new.rs",
+                    chunks=(UpdateFileChunk(None, ("old",), ("new",)),),
+                ),
+            ),
+        )
+
+        parser = StreamingPatchParser()
+        self.assertEqual(
+            parser.push_delta("*** Begin Patch\n*** Environment ID:   \n"),
+            (),
+        )
+
+    def test_streaming_patch_parser_large_patch_split_by_character(self) -> None:
+        patch = (
+            "*** Begin Patch\n"
+            "*** Add File: docs/release-notes.md\n"
+            "+# Release notes\n"
+            "+\n"
+            "+## CLI\n"
+            "+- Surface apply_patch progress while arguments stream.\n"
+            "*** Update File: src/config.rs\n"
+            "@@ impl Config\n"
+            "-    pub apply_patch_progress: bool,\n"
+            "+    pub stream_apply_patch_progress: bool,\n"
+            "*** Delete File: src/legacy_patch_progress.rs\n"
+            "*** Update File: crates/cli/src/main.rs\n"
+            "*** Move to: crates/cli/src/bin/codex.rs\n"
+            "@@ fn run()\n"
+            "-    let args = Args::parse();\n"
+            "-    dispatch(args)\n"
+            "+    let cli = Cli::parse();\n"
+            "+    dispatch(cli)\n"
+            "*** End Patch"
+        )
+
+        parser = StreamingPatchParser()
+        max_hunk_count = 0
+        saw_hunk_counts: list[int] = []
+        hunks: tuple[Hunk, ...] = ()
+        for ch in patch:
+            updated_hunks = parser.push_delta(ch)
+            if updated_hunks:
+                hunk_count = len(updated_hunks)
+                self.assertGreaterEqual(hunk_count, max_hunk_count)
+                if hunk_count > max_hunk_count:
+                    saw_hunk_counts.append(hunk_count)
+                    max_hunk_count = hunk_count
+                hunks = updated_hunks
+
+        self.assertEqual(saw_hunk_counts, [1, 2, 3, 4])
+        self.assertEqual([hunk.type for hunk in hunks], ["add", "update", "delete", "update"])
+        self.assertEqual(hunks[-1].move_path, Path("crates/cli/src/bin/codex.rs"))
+
+    def test_streaming_patch_parser_preserves_update_line_edge_cases(self) -> None:
+        parser = StreamingPatchParser()
+        self.assertEqual(
+            parser.push_delta(
+                "*** Begin Patch\r\n"
+                "*** Update File: file.txt\r\n"
+                "@@\r\n"
+                "-old\r\r\n"
+                "+new\r\n"
+                "*** End Patch\r\n"
+            ),
+            (
+                Hunk.update_file(
+                    "file.txt",
+                    chunks=(UpdateFileChunk(None, ("old\r",), ("new",)),),
+                ),
+            ),
+        )
+
+        parser = StreamingPatchParser()
+        self.assertEqual(
+            parser.push_delta(
+                "*** Begin Patch\n"
+                "*** Update File: a.txt\n"
+                "@@\n"
+                "-old a\n"
+                "+new a\n"
+                " *** Update File: b.txt\n"
+                "@@\n"
+                "-old b\n"
+                "+new b\n"
+                "*** End Patch\n"
+            ),
+            (
+                Hunk.update_file(
+                    "a.txt",
+                    chunks=(
+                        UpdateFileChunk(
+                            None,
+                            ("old a", "*** Update File: b.txt"),
+                            ("new a", "*** Update File: b.txt"),
+                        ),
+                        UpdateFileChunk(None, ("old b",), ("new b",)),
+                    ),
+                ),
+            ),
+        )
+
+    def test_streaming_patch_parser_finish_and_errors(self) -> None:
+        parser = StreamingPatchParser()
+        self.assertEqual(
+            parser.push_delta("*** Begin Patch\n*** Add File: file.txt\n+hello\n*** End Patch"),
+            (Hunk.add_file("file.txt", "hello\n"),),
+        )
+        self.assertEqual(parser.finish(), (Hunk.add_file("file.txt", "hello\n"),))
+
+        parser = StreamingPatchParser()
+        parser.push_delta("*** Begin Patch\n*** Add File: file.txt\n+hello\n")
+        with self.assertRaises(ApplyPatchParseError) as missing_end:
+            parser.finish()
+        self.assertEqual(missing_end.exception.kind, "invalid_patch")
+        self.assertEqual(
+            missing_end.exception.message,
+            "The last line of the patch must be '*** End Patch'",
+        )
+
+        parser = StreamingPatchParser()
+        with self.assertRaises(ApplyPatchParseError) as empty_update:
+            parser.push_delta("*** Begin Patch\n*** Update File: file.txt\n*** End Patch\n")
+        self.assertEqual(empty_update.exception.kind, "invalid_hunk")
+        self.assertEqual(empty_update.exception.line_number, 2)
+        self.assertEqual(
+            empty_update.exception.message,
+            "Update file hunk for path 'file.txt' is empty",
+        )
+
+        parser = StreamingPatchParser()
+        with self.assertRaises(ApplyPatchParseError) as bad_line:
+            parser.push_delta("*** Begin Patch\n*** Update File: file.txt\n@@\n-old\nbad\n")
+        self.assertEqual(bad_line.exception.line_number, 5)
+        self.assertEqual(
+            bad_line.exception.message,
+            "Expected update hunk to start with a @@ context marker, got: 'bad'",
+        )
+
+    def test_maybe_parse_apply_patch_accepts_literal_invocations(self) -> None:
+        patch = "*** Begin Patch\n*** Add File: foo\n+hi\n*** End Patch\n"
+
+        for command in ("apply_patch", "applypatch"):
+            body = self.assert_apply_patch_body(
+                maybe_parse_apply_patch((command, patch))
+            )
+            self.assertEqual(body.hunks, (Hunk.add_file("foo", "hi\n"),))
+
+    def test_maybe_parse_apply_patch_accepts_shell_heredoc_invocations(self) -> None:
+        script = (
+            "apply_patch <<'PATCH'\n"
+            "*** Begin Patch\n"
+            "*** Add File: foo\n"
+            "+hi\n"
+            "*** End Patch\n"
+            "PATCH"
+        )
+        for argv in (
+            ("bash", "-lc", script),
+            ("bash", "-c", script),
+            ("powershell.exe", "-Command", script),
+            ("powershell.exe", "-NoProfile", "-Command", script),
+            ("pwsh", "-NoProfile", "-Command", script),
+        ):
+            body = self.assert_apply_patch_body(maybe_parse_apply_patch(argv))
+            self.assertEqual(body.hunks, (Hunk.add_file("foo", "hi\n"),))
+
+    def test_maybe_parse_apply_patch_accepts_cd_prefixed_heredoc(self) -> None:
+        for prefix, expected_workdir in (
+            ("cd foo && ", "foo"),
+            ("cd 'foo bar' && ", "foo bar"),
+            ('cd "foo bar" && ', "foo bar"),
+        ):
+            script = (
+                f"{prefix}applypatch <<'PATCH'\n"
+                "*** Begin Patch\n"
+                "*** Add File: foo\n"
+                "+hi\n"
+                "*** End Patch\n"
+                "PATCH"
+            )
+
+            body = self.assert_apply_patch_body(
+                maybe_parse_apply_patch(("bash", "-lc", script)),
+                expected_workdir=expected_workdir,
+            )
+            self.assertEqual(body.hunks, (Hunk.add_file("foo", "hi\n"),))
+
+    def test_maybe_parse_apply_patch_rejects_non_top_level_or_ambiguous_forms(self) -> None:
+        def heredoc_script(prefix: str, suffix: str = "") -> str:
+            return (
+                f"{prefix}apply_patch <<'PATCH'\n"
+                "*** Begin Patch\n"
+                "*** Add File: foo\n"
+                "+hi\n"
+                "*** End Patch\n"
+                f"PATCH{suffix}"
+            )
+
+        for script in (
+            heredoc_script("cd foo; "),
+            heredoc_script("cd bar || "),
+            heredoc_script("cd bar | "),
+            heredoc_script("echo foo && "),
+            "apply_patch foo <<'PATCH'\n*** Begin Patch\n*** Add File: foo\n+hi\n*** End Patch\nPATCH",
+            heredoc_script("cd foo && cd bar && "),
+            heredoc_script("cd foo bar && "),
+            heredoc_script("cd bar && ", " && echo done"),
+            heredoc_script("echo foo; cd bar && "),
+        ):
+            self.assertEqual(
+                maybe_parse_apply_patch(("bash", "-lc", script)).type,
+                "not_apply_patch",
+            )
+
+    def test_maybe_parse_apply_patch_surfaces_patch_parse_errors(self) -> None:
+        result = maybe_parse_apply_patch(("apply_patch", "bad"))
+
+        self.assertEqual(result.type, "patch_parse_error")
+        self.assertIsInstance(result.error, ApplyPatchParseError)
+        self.assertEqual(
+            result.error.message,
+            "The first line of the patch must be '*** Begin Patch'",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
