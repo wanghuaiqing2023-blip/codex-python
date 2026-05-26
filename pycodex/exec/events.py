@@ -1,0 +1,445 @@
+"""JSONL event types emitted by ``codex exec --json``.
+
+Ported from ``codex/codex-rs/exec/src/exec_events.rs``.  The Rust source uses
+serde-tagged enums; the Python port keeps the same external JSON shape with
+small standard-library dataclasses.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass
+from enum import Enum
+import json
+from pathlib import Path
+from typing import Any
+
+from pycodex.protocol import (
+    AgentMessageItem,
+    CallToolResult,
+    FileChangeItem,
+    McpToolCallItem,
+    ReasoningItem,
+    TurnItem,
+    WebSearchItem,
+)
+
+JsonValue = Any
+
+
+class CommandExecutionStatus(str, Enum):
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    DECLINED = "declined"
+
+
+class McpToolCallStatus(str, Enum):
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class CollabToolCallStatus(str, Enum):
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class CollabTool(str, Enum):
+    SPAWN_AGENT = "spawn_agent"
+    SEND_INPUT = "send_input"
+    WAIT = "wait"
+    CLOSE_AGENT = "close_agent"
+
+
+class CollabAgentStatus(str, Enum):
+    PENDING_INIT = "pending_init"
+    RUNNING = "running"
+    INTERRUPTED = "interrupted"
+    COMPLETED = "completed"
+    ERRORED = "errored"
+    SHUTDOWN = "shutdown"
+    NOT_FOUND = "not_found"
+
+
+class PatchApplyStatus(str, Enum):
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class PatchChangeKind(str, Enum):
+    ADD = "add"
+    DELETE = "delete"
+    UPDATE = "update"
+
+
+@dataclass(frozen=True)
+class Usage:
+    input_tokens: int = 0
+    cached_input_tokens: int = 0
+    output_tokens: int = 0
+    reasoning_output_tokens: int = 0
+
+    def to_mapping(self) -> dict[str, int]:
+        return {
+            "input_tokens": self.input_tokens,
+            "cached_input_tokens": self.cached_input_tokens,
+            "output_tokens": self.output_tokens,
+            "reasoning_output_tokens": self.reasoning_output_tokens,
+        }
+
+
+@dataclass(frozen=True)
+class ThreadErrorEvent:
+    message: str
+
+    def to_mapping(self) -> dict[str, str]:
+        return {"message": self.message}
+
+
+@dataclass(frozen=True)
+class ExecThreadItem:
+    id: str
+    type: str
+    payload: Mapping[str, JsonValue]
+
+    def to_mapping(self) -> dict[str, JsonValue]:
+        return {"id": self.id, "type": self.type, **_to_json(dict(self.payload))}
+
+
+@dataclass(frozen=True)
+class ThreadEvent:
+    type: str
+    payload: Mapping[str, JsonValue]
+
+    @classmethod
+    def thread_started(cls, thread_id: str) -> "ThreadEvent":
+        return cls("thread.started", {"thread_id": thread_id})
+
+    @classmethod
+    def turn_started(cls) -> "ThreadEvent":
+        return cls("turn.started", {})
+
+    @classmethod
+    def turn_completed(cls, usage: Usage | None = None) -> "ThreadEvent":
+        return cls("turn.completed", {"usage": usage or Usage()})
+
+    @classmethod
+    def turn_failed(cls, error: ThreadErrorEvent | str) -> "ThreadEvent":
+        parsed_error = error if isinstance(error, ThreadErrorEvent) else ThreadErrorEvent(str(error))
+        return cls("turn.failed", {"error": parsed_error})
+
+    @classmethod
+    def item_started(cls, item: ExecThreadItem) -> "ThreadEvent":
+        return cls("item.started", {"item": item})
+
+    @classmethod
+    def item_updated(cls, item: ExecThreadItem) -> "ThreadEvent":
+        return cls("item.updated", {"item": item})
+
+    @classmethod
+    def item_completed(cls, item: ExecThreadItem) -> "ThreadEvent":
+        return cls("item.completed", {"item": item})
+
+    @classmethod
+    def error(cls, error: ThreadErrorEvent | str) -> "ThreadEvent":
+        parsed_error = error if isinstance(error, ThreadErrorEvent) else ThreadErrorEvent(str(error))
+        return cls("error", parsed_error.to_mapping())
+
+    def to_mapping(self) -> dict[str, JsonValue]:
+        return {"type": self.type, **_to_json(dict(self.payload))}
+
+    def to_json_line(self) -> str:
+        return json.dumps(self.to_mapping(), ensure_ascii=False, separators=(",", ":"))
+
+
+def error_item(id: str, message: str) -> ExecThreadItem:
+    return ExecThreadItem(id, "error", {"message": message})
+
+
+def agent_message_item(id: str, text: str) -> ExecThreadItem:
+    return ExecThreadItem(id, "agent_message", {"text": text})
+
+
+def reasoning_item(id: str, text: str) -> ExecThreadItem:
+    return ExecThreadItem(id, "reasoning", {"text": text})
+
+
+def command_execution_item(
+    id: str,
+    *,
+    command: str,
+    aggregated_output: str = "",
+    exit_code: int | None = None,
+    status: JsonValue = CommandExecutionStatus.IN_PROGRESS,
+) -> ExecThreadItem:
+    return ExecThreadItem(
+        id,
+        "command_execution",
+        {
+            "command": command,
+            "aggregated_output": aggregated_output,
+            "exit_code": exit_code,
+            "status": _command_status(status),
+        },
+    )
+
+
+def mcp_tool_call_item(id: str, item: McpToolCallItem) -> ExecThreadItem:
+    result = _call_tool_result_to_mapping(item.result) if item.result is not None else None
+    error = {"message": item.error.message} if item.error is not None else None
+    return ExecThreadItem(
+        id,
+        "mcp_tool_call",
+        {
+            "server": item.server,
+            "tool": item.tool,
+            "arguments": item.arguments,
+            "result": result,
+            "error": error,
+            "status": _mcp_status(item.status),
+        },
+    )
+
+
+def collab_tool_call_item(
+    id: str,
+    *,
+    tool: JsonValue,
+    sender_thread_id: str,
+    receiver_thread_ids: tuple[str, ...] | list[str],
+    prompt: str | None = None,
+    agents_states: Mapping[str, JsonValue] | None = None,
+    status: JsonValue = CollabToolCallStatus.IN_PROGRESS,
+) -> ExecThreadItem:
+    return ExecThreadItem(
+        id,
+        "collab_tool_call",
+        {
+            "tool": _collab_tool(tool),
+            "sender_thread_id": sender_thread_id,
+            "receiver_thread_ids": list(receiver_thread_ids),
+            "prompt": prompt,
+            "agents_states": _collab_agents_states(agents_states or {}),
+            "status": _collab_tool_call_status(status),
+        },
+    )
+
+
+def file_change_item(id: str, item: FileChangeItem) -> ExecThreadItem:
+    changes = [
+        {
+            "path": str(path),
+            "kind": _patch_kind(change),
+        }
+        for path, change in item.changes.items()
+    ]
+    return ExecThreadItem(id, "file_change", {"changes": changes, "status": _patch_status(item.status)})
+
+
+def web_search_item(id: str, item: WebSearchItem) -> ExecThreadItem:
+    return ExecThreadItem(
+        id,
+        "web_search",
+        {
+            "id": item.id,
+            "query": item.query,
+            "action": _to_json(item.action),
+        },
+    )
+
+
+def todo_list_item(id: str, items: tuple[tuple[str, bool], ...] | list[tuple[str, bool]]) -> ExecThreadItem:
+    return ExecThreadItem(
+        id,
+        "todo_list",
+        {"items": [{"text": text, "completed": completed} for text, completed in items]},
+    )
+
+
+def exec_item_from_turn_item(item: TurnItem, id: str) -> ExecThreadItem | None:
+    if item.type == "AgentMessage" and isinstance(item.item, AgentMessageItem):
+        return agent_message_item(id, _agent_message_text(item.item))
+    if item.type == "Reasoning" and isinstance(item.item, ReasoningItem):
+        text = "\n".join(item.item.summary_text)
+        if text.strip() == "":
+            return None
+        return reasoning_item(id, text)
+    if item.type == "McpToolCall" and isinstance(item.item, McpToolCallItem):
+        return mcp_tool_call_item(id, item.item)
+    if item.type == "FileChange" and isinstance(item.item, FileChangeItem):
+        return file_change_item(id, item.item)
+    if item.type == "WebSearch" and isinstance(item.item, WebSearchItem):
+        return web_search_item(id, item.item)
+    return None
+
+
+def final_message_from_turn_items(items: tuple[TurnItem, ...] | list[TurnItem]) -> str | None:
+    for item in reversed(items):
+        if item.type == "AgentMessage" and isinstance(item.item, AgentMessageItem):
+            return _agent_message_text(item.item)
+    for item in reversed(items):
+        if item.type == "Plan":
+            return getattr(item.item, "text", None)
+    return None
+
+
+def _agent_message_text(item: AgentMessageItem) -> str:
+    return "".join(content.text for content in item.content)
+
+
+def _call_tool_result_to_mapping(result: CallToolResult) -> dict[str, JsonValue]:
+    data: dict[str, JsonValue] = {
+        "content": list(result.content),
+        "structured_content": result.structured_content,
+    }
+    if result.meta is not None:
+        data["_meta"] = result.meta
+    return data
+
+
+def _mcp_status(status: str) -> str:
+    if status == "completed":
+        return McpToolCallStatus.COMPLETED.value
+    if status == "failed":
+        return McpToolCallStatus.FAILED.value
+    return McpToolCallStatus.IN_PROGRESS.value
+
+
+def _collab_tool_call_status(status: JsonValue) -> str:
+    raw = getattr(status, "value", status)
+    if raw in {"completed", "Completed"}:
+        return CollabToolCallStatus.COMPLETED.value
+    if raw in {"failed", "Failed"}:
+        return CollabToolCallStatus.FAILED.value
+    return CollabToolCallStatus.IN_PROGRESS.value
+
+
+def _collab_tool(tool: JsonValue) -> str:
+    raw = getattr(tool, "value", tool)
+    if raw in {"spawnAgent", "SpawnAgent", "spawn_agent"}:
+        return CollabTool.SPAWN_AGENT.value
+    if raw in {"sendInput", "SendInput", "send_input"}:
+        return CollabTool.SEND_INPUT.value
+    if raw in {"closeAgent", "CloseAgent", "close_agent"}:
+        return CollabTool.CLOSE_AGENT.value
+    return CollabTool.WAIT.value
+
+
+def _collab_agent_status(status: JsonValue) -> str:
+    raw = getattr(status, "value", status)
+    aliases = {
+        "pendingInit": CollabAgentStatus.PENDING_INIT.value,
+        "PendingInit": CollabAgentStatus.PENDING_INIT.value,
+        "pending_init": CollabAgentStatus.PENDING_INIT.value,
+        "running": CollabAgentStatus.RUNNING.value,
+        "Running": CollabAgentStatus.RUNNING.value,
+        "interrupted": CollabAgentStatus.INTERRUPTED.value,
+        "Interrupted": CollabAgentStatus.INTERRUPTED.value,
+        "completed": CollabAgentStatus.COMPLETED.value,
+        "Completed": CollabAgentStatus.COMPLETED.value,
+        "errored": CollabAgentStatus.ERRORED.value,
+        "Errored": CollabAgentStatus.ERRORED.value,
+        "shutdown": CollabAgentStatus.SHUTDOWN.value,
+        "Shutdown": CollabAgentStatus.SHUTDOWN.value,
+        "notFound": CollabAgentStatus.NOT_FOUND.value,
+        "NotFound": CollabAgentStatus.NOT_FOUND.value,
+        "not_found": CollabAgentStatus.NOT_FOUND.value,
+    }
+    return aliases.get(str(raw), str(raw))
+
+
+def _collab_agents_states(states: Mapping[str, JsonValue]) -> dict[str, dict[str, JsonValue]]:
+    return {
+        str(thread_id): {
+            "status": _collab_agent_status(_field(state, "status")),
+            "message": _field(state, "message"),
+        }
+        for thread_id, state in states.items()
+    }
+
+
+def _command_status(status: JsonValue) -> str:
+    raw = getattr(status, "value", status)
+    if raw in {"completed", "Completed"}:
+        return CommandExecutionStatus.COMPLETED.value
+    if raw in {"failed", "Failed"}:
+        return CommandExecutionStatus.FAILED.value
+    if raw in {"declined", "Declined"}:
+        return CommandExecutionStatus.DECLINED.value
+    return CommandExecutionStatus.IN_PROGRESS.value
+
+
+def _patch_status(status: JsonValue) -> str:
+    raw = getattr(status, "value", status)
+    if raw == "completed":
+        return PatchApplyStatus.COMPLETED.value
+    if raw in {"failed", "declined"}:
+        return PatchApplyStatus.FAILED.value
+    return PatchApplyStatus.IN_PROGRESS.value
+
+
+def _patch_kind(change: JsonValue) -> str:
+    kind = getattr(change, "type", None) or getattr(change, "kind", None)
+    raw = getattr(kind, "value", kind)
+    if raw == "add":
+        return PatchChangeKind.ADD.value
+    if raw == "delete":
+        return PatchChangeKind.DELETE.value
+    return PatchChangeKind.UPDATE.value
+
+
+def _field(value: JsonValue, *names: str) -> JsonValue:
+    if value is None:
+        return None
+    if isinstance(value, Mapping):
+        for name in names:
+            if name in value:
+                return value[name]
+        return None
+    for name in names:
+        if hasattr(value, name):
+            return getattr(value, name)
+    return None
+
+
+def _to_json(value: JsonValue) -> JsonValue:
+    if hasattr(value, "to_mapping") and callable(value.to_mapping):
+        return value.to_mapping()
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, Mapping):
+        return {str(key): _to_json(item) for key, item in value.items() if item is not None}
+    if isinstance(value, tuple | list):
+        return [_to_json(item) for item in value]
+    return value
+
+
+__all__ = [
+    "CommandExecutionStatus",
+    "CollabAgentStatus",
+    "CollabTool",
+    "CollabToolCallStatus",
+    "ExecThreadItem",
+    "McpToolCallStatus",
+    "PatchApplyStatus",
+    "PatchChangeKind",
+    "ThreadErrorEvent",
+    "ThreadEvent",
+    "Usage",
+    "agent_message_item",
+    "collab_tool_call_item",
+    "command_execution_item",
+    "error_item",
+    "exec_item_from_turn_item",
+    "file_change_item",
+    "final_message_from_turn_items",
+    "mcp_tool_call_item",
+    "reasoning_item",
+    "todo_list_item",
+    "web_search_item",
+]

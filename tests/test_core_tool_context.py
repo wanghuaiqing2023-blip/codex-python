@@ -5,6 +5,7 @@ from pycodex.core import (
     ApplyPatchToolOutput,
     ExecCommandToolOutput,
     FunctionToolOutput,
+    JsonToolOutput,
     McpToolOutput,
     TELEMETRY_PREVIEW_MAX_BYTES,
     TELEMETRY_PREVIEW_MAX_LINES,
@@ -40,6 +41,14 @@ class ToolContextTests(unittest.TestCase):
         self.assertEqual(response.output.to_text(), "patched")
         self.assertTrue(response.output.success)
 
+    def test_tool_payload_log_payload_matches_upstream_variants(self) -> None:
+        self.assertEqual(ToolPayload.function('{"ok":true}').log_payload(), '{"ok":true}')
+        self.assertEqual(ToolPayload.custom("*** Begin Patch").log_payload(), "*** Begin Patch")
+        self.assertEqual(
+            ToolPayload.tool_search(SearchToolCallParams("calendar", limit=2)).log_payload(),
+            "calendar",
+        )
+
     def test_function_payloads_remain_function_outputs(self) -> None:
         response = FunctionToolOutput.from_text("ok", True).to_response_item(
             "fn-1",
@@ -50,6 +59,34 @@ class ToolContextTests(unittest.TestCase):
         self.assertEqual(response.call_id, "fn-1")
         self.assertEqual(response.output.to_text(), "ok")
         self.assertTrue(response.output.success)
+
+    def test_json_tool_output_preserves_json_value_for_hooks_and_code_mode(self) -> None:
+        output = JsonToolOutput.with_success({"ok": True, "items": [1, 2]}, None)
+        response = output.to_response_item("json-call", ToolPayload.function("{}"))
+
+        self.assertEqual(response.type, "function_call_output")
+        self.assertEqual(response.call_id, "json-call")
+        self.assertEqual(response.output.to_text(), '{"ok":true,"items":[1,2]}')
+        self.assertIsNone(response.output.success)
+        self.assertTrue(output.success_for_logging())
+        self.assertEqual(
+            output.post_tool_use_response("json-call", ToolPayload.function("{}")),
+            {"ok": True, "items": [1, 2]},
+        )
+        self.assertEqual(
+            output.code_mode_result(ToolPayload.function("{}")),
+            {"ok": True, "items": [1, 2]},
+        )
+
+    def test_json_tool_output_can_return_custom_tool_output_and_log_failure(self) -> None:
+        output = JsonToolOutput.with_success(["failed"], False)
+        response = output.to_response_item("custom-json", ToolPayload.custom("raw"))
+
+        self.assertEqual(response.type, "custom_tool_call_output")
+        self.assertEqual(response.output.to_text(), '["failed"]')
+        self.assertFalse(response.output.success)
+        self.assertFalse(output.success_for_logging())
+        self.assertEqual(output.log_preview(), '["failed"]')
 
     def test_custom_tool_calls_can_derive_text_from_content_items(self) -> None:
         content = (

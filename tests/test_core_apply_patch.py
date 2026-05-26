@@ -517,6 +517,7 @@ class CoreApplyPatchTests(unittest.TestCase):
                 "@@ -1 +1 @@\n-old\n+new\n",
                 move_path=workdir / "moved.txt",
                 new_content="new\n",
+                old_content="old\n",
             ),
         )
 

@@ -18,6 +18,7 @@ from pycodex.exec import ExecCli, ExecCliParseError, parse_exec_args
 from pycodex.protocol import AskForApproval, ProfileV2Name, ProfileV2NameParseError, SandboxMode
 from pycodex.protocol.config_types import ConfigTypeParseError
 
+from .features import FeatureCliError, FeatureToggles, FeaturesCli, parse_features_args, run_features_command
 from .spec import COMMANDS_BY_NAME, UPSTREAM_CLI_MAIN, CommandSpec, visible_commands
 
 
@@ -50,22 +51,43 @@ class ParsedCli:
         return self.command is None
 
     def cli_config_overrides(self) -> CliConfigOverrides:
-        """Return raw overrides in the shared config override parser type."""
+        """Return root config overrides after folding feature toggles."""
 
-        return CliConfigOverrides(list(self.config_overrides))
+        return CliConfigOverrides(list(self.config_overrides_with_feature_toggles()))
 
     def parsed_config_overrides(self) -> list[ConfigOverride]:
-        """Parse root ``-c/--config`` flags using the ported upstream logic."""
+        """Parse effective root config overrides using the ported upstream logic."""
 
         return self.cli_config_overrides().parse_overrides()
+
+    def feature_toggles(self) -> FeatureToggles:
+        return FeatureToggles(enable=self.enable, disable=self.disable)
+
+    def feature_toggle_overrides(self) -> tuple[str, ...]:
+        return tuple(self.feature_toggles().to_overrides())
+
+    def config_overrides_with_feature_toggles(self) -> tuple[str, ...]:
+        return (*self.config_overrides, *self.feature_toggle_overrides())
+
+    def features_cli(self) -> FeaturesCli:
+        if self.command != "features":
+            raise CliParseError("Parsed CLI invocation is not a features command")
+        try:
+            return parse_features_args(self.command_args)
+        except FeatureCliError as exc:
+            raise CliParseError(str(exc)) from exc
 
     def exec_cli(self) -> ExecCli:
         """Parse this invocation as ``codex exec`` and inherit root options."""
 
         if self.command != "exec":
             raise CliParseError("Parsed CLI invocation is not an exec command")
+        reject_remote_mode_for_subcommand(self.remote, self.remote_auth_token_env, "exec")
 
-        exec_cli = parse_exec_args(self.command_args, root_config_overrides=self.config_overrides)
+        exec_cli = parse_exec_args(
+            self.command_args,
+            root_config_overrides=self.config_overrides_with_feature_toggles(),
+        )
         return _inherit_exec_root_options(exec_cli, self)
 
 
@@ -289,7 +311,12 @@ def main(argv: Iterable[str] | None = None, stdout: TextIO | None = None, stderr
 
     try:
         parsed = parse_args(argv)
-    except CliParseError as exc:
+        parsed.config_overrides_with_feature_toggles()
+        if parsed.command is not None and parsed.command not in _REMOTE_INTERACTIVE_SUBCOMMANDS:
+            reject_remote_mode_for_subcommand(parsed.remote, parsed.remote_auth_token_env, parsed.command)
+        if parsed.command == "features":
+            parsed.features_cli()
+    except (CliParseError, FeatureCliError) as exc:
         message = str(exc)
         stream = out if message.startswith("Codex CLI") else err
         print(message, file=stream)
@@ -304,12 +331,38 @@ def main(argv: Iterable[str] | None = None, stdout: TextIO | None = None, stderr
             print(str(exc), file=err)
             return 2
         print("pycodex: command 'exec' is recognized but not implemented yet.", file=err)
+    elif parsed.command == "features":
+        return run_features_command(
+            parsed.features_cli(),
+            raw_config_overrides=parsed.config_overrides_with_feature_toggles(),
+            stdout=out,
+            stderr=err,
+        )
     else:
         print(
             f"pycodex: command '{parsed.command}' is recognized but not implemented yet.",
             file=err,
         )
     return 64
+
+
+_REMOTE_INTERACTIVE_SUBCOMMANDS = {"resume", "fork"}
+
+
+def reject_remote_mode_for_subcommand(
+    remote: str | None,
+    remote_auth_token_env: str | None,
+    subcommand: str,
+) -> None:
+    if remote is not None:
+        raise CliParseError(
+            f"`--remote {remote}` is only supported for interactive TUI commands, not `codex {subcommand}`"
+        )
+    if remote_auth_token_env is not None:
+        raise CliParseError(
+            "`--remote-auth-token-env` is only supported for interactive TUI commands, "
+            f"not `codex {subcommand}`"
+        )
 
 
 def _inherit_exec_root_options(exec_cli: ExecCli, parsed: ParsedCli) -> ExecCli:

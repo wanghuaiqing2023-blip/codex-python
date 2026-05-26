@@ -30,6 +30,7 @@ from pycodex.core.string_utils import (
     truncate_middle_chars,
     truncate_middle_with_token_budget,
 )
+from pycodex.core.original_image_detail import sanitize_original_image_detail
 
 JsonValue = Any
 
@@ -63,7 +64,7 @@ class ToolPayload:
         if self.type == "custom":
             return self.input
         if self.type == "tool_search" and self.search_arguments is not None:
-            return json.dumps(self.search_arguments.to_mapping(), separators=(",", ":"))
+            return self.search_arguments.query
         return None
 
 
@@ -109,6 +110,40 @@ class FunctionToolOutput:
 
 
 @dataclass(frozen=True)
+class JsonToolOutput:
+    value: JsonValue
+    success: bool | None = True
+
+    @classmethod
+    def new(cls, value: JsonValue) -> "JsonToolOutput":
+        return cls(value, True)
+
+    @classmethod
+    def with_success(cls, value: JsonValue, success: bool | None) -> "JsonToolOutput":
+        return cls(value, success)
+
+    def log_preview(self) -> str:
+        return telemetry_preview(_json_dumps(self.value))
+
+    def success_for_logging(self) -> bool:
+        return True if self.success is None else self.success
+
+    def to_response_item(self, call_id: str, payload: ToolPayload) -> ResponseInputItem:
+        return function_tool_response(
+            call_id,
+            payload,
+            (FunctionCallOutputContentItem.input_text(_json_dumps(self.value)),),
+            self.success,
+        )
+
+    def post_tool_use_response(self, _call_id: str, _payload: ToolPayload) -> JsonValue:
+        return self.value
+
+    def code_mode_result(self, _payload: ToolPayload) -> JsonValue:
+        return self.value
+
+
+@dataclass(frozen=True)
 class McpToolOutput:
     result: CallToolResult
     tool_input: JsonValue
@@ -148,8 +183,10 @@ class McpToolOutput:
 
         if payload.content_items is not None:
             items = [_sanitize_image_detail(item) for item in payload.content_items]
-            if not self.original_image_detail_supported:
-                items = [_downgrade_original_image_detail(item) for item in items]
+            items = sanitize_original_image_detail(
+                self.original_image_detail_supported,
+                items,
+            )
             return FunctionCallOutputPayload.from_content_items(
                 (FunctionCallOutputContentItem.input_text(header), *items),
                 payload.success,
@@ -530,12 +567,6 @@ def _sanitize_image_detail(item: FunctionCallOutputContentItem) -> FunctionCallO
     return item
 
 
-def _downgrade_original_image_detail(item: FunctionCallOutputContentItem) -> FunctionCallOutputContentItem:
-    if item.type == "input_image" and item.detail is ImageDetail.ORIGINAL:
-        return FunctionCallOutputContentItem.input_image(item.image_url or "", DEFAULT_IMAGE_DETAIL)
-    return item
-
-
 def _scaled_truncation_policy(policy: TruncationPolicyConfig, scale: float) -> TruncationPolicyConfig:
     limit = max(1, int(policy.limit * scale))
     if policy.mode is TruncationMode.BYTES:
@@ -568,6 +599,7 @@ __all__ = [
     "ApplyPatchToolOutput",
     "ExecCommandToolOutput",
     "FunctionToolOutput",
+    "JsonToolOutput",
     "McpToolOutput",
     "TELEMETRY_PREVIEW_MAX_BYTES",
     "TELEMETRY_PREVIEW_MAX_LINES",
