@@ -11,6 +11,7 @@ import base64
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum
+import json
 from pathlib import Path
 from typing import Any
 
@@ -47,8 +48,11 @@ from .memory_citation import MemoryCitation
 from .models import (
     ActivePermissionProfile,
     AdditionalPermissionProfile,
+    ContentItem,
     FileSystemSandboxPolicy,
+    MessagePhase,
     PermissionProfile,
+    ResponseInputItem,
     SandboxEnforcement,
     SandboxPolicy,
 )
@@ -316,6 +320,41 @@ class InterAgentCommunication:
             "content": self.content,
             "trigger_turn": self.trigger_turn,
         }
+
+    def to_response_input_item(self) -> ResponseInputItem:
+        return ResponseInputItem.message(
+            "assistant",
+            (
+                ContentItem.output_text(
+                    json.dumps(
+                        self.to_mapping(),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                ),
+            ),
+            phase=MessagePhase.COMMENTARY,
+        )
+
+    @classmethod
+    def is_message_content(cls, content: Iterable[ContentItem | JsonValue]) -> bool:
+        return cls.from_message_content(content) is not None
+
+    @classmethod
+    def from_message_content(cls, content: Iterable[ContentItem | JsonValue]) -> "InterAgentCommunication | None":
+        try:
+            items = tuple(
+                item if isinstance(item, ContentItem) else ContentItem.from_mapping(item)
+                for item in content
+            )
+        except (TypeError, ValueError):
+            return None
+        if len(items) != 1 or items[0].type not in {"input_text", "output_text"}:
+            return None
+        try:
+            return cls.from_mapping(json.loads(items[0].text or ""))
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return None
 
 
 @dataclass(frozen=True)

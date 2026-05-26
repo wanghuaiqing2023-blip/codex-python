@@ -7,14 +7,51 @@ This module starts with the pure ``ToolRouter::build_tool_call`` logic from
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from pycodex.core.tool_context import ToolPayload
 from pycodex.core.tool_registry import ToolRegistry
-from pycodex.protocol import ResponseItem, SearchToolCallParams, ToolName
+from pycodex.protocol import ResponseItem, SearchToolCallParams, ToolName, TruncationPolicyConfig
 
 JsonValue = Any
+
+
+@dataclass
+class FunctionCallError(Exception):
+    kind: str
+    message: str
+
+    @classmethod
+    def respond_to_model(cls, message: str) -> "FunctionCallError":
+        return cls("respond_to_model", str(message))
+
+    @classmethod
+    def fatal(cls, message: str) -> "FunctionCallError":
+        return cls("fatal", str(message))
+
+    def __post_init__(self) -> None:
+        self.args = (str(self),)
+
+    def __str__(self) -> str:
+        if self.kind == "fatal":
+            return f"Fatal error: {self.message}"
+        return self.message
+
+
+@dataclass(frozen=True)
+class ConversationHistory:
+    items: tuple[ResponseItem, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "items",
+            tuple(
+                item if isinstance(item, ResponseItem) else ResponseItem.from_mapping(item)
+                for item in self.items
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -22,6 +59,16 @@ class ToolCall:
     tool_name: ToolName
     call_id: str
     payload: ToolPayload
+    turn_id: str = ""
+    truncation_policy: TruncationPolicyConfig | None = None
+    conversation_history: ConversationHistory = field(default_factory=ConversationHistory)
+
+    def function_arguments(self) -> str:
+        if self.payload.type == "function":
+            return self.payload.arguments or ""
+        raise FunctionCallError.fatal(
+            f"tool {self.tool_name} invoked with incompatible payload"
+        )
 
 
 class ToolRouter:
@@ -113,6 +160,8 @@ def _search_arguments(arguments: str | JsonValue | None) -> SearchToolCallParams
 
 
 __all__ = [
+    "ConversationHistory",
+    "FunctionCallError",
     "ToolCall",
     "ToolRouter",
     "build_tool_call",

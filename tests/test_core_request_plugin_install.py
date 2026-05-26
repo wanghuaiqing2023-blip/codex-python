@@ -1,5 +1,8 @@
 import json
+import tempfile
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 
 from pycodex.core import (
     CODEX_APPS_MCP_SERVER_NAME,
@@ -30,9 +33,16 @@ from pycodex.core import (
     collect_request_plugin_install_entries,
     create_list_available_plugins_to_install_tool,
     create_request_plugin_install_tool,
+    disabled_install_request,
+    maybe_persist_disabled_install_request,
+    persist_disabled_install_request,
     plugin_install_elicitation_telemetry_metadata,
+    read_toml_mapping,
+    refresh_missing_requested_connectors,
     request_plugin_install_response_requests_persistent_disable,
     verified_connector_install_completed,
+    verified_plugin_install_completed,
+    verify_request_plugin_install_completed,
 )
 from pycodex.protocol import ElicitationRequest, ElicitationRequestEvent, EventMsg, ToolName
 
@@ -260,6 +270,130 @@ class RequestPluginInstallDataTests(unittest.TestCase):
             all_requested_connectors_picked_up(["calendar", "gmail"], accessible)
         )
 
+    def test_plugin_completion_helper_requires_installed_plugin(self) -> None:
+        marketplaces = [
+            {
+                "name": "openai-curated",
+                "plugins": [
+                    {"id": "sample@openai-curated", "installed": False},
+                    {"id": "slack@openai-curated", "installed": True},
+                ],
+            },
+            SimpleNamespace(
+                plugins=(
+                    SimpleNamespace(id="calendar@openai-curated", installed=True),
+                )
+            ),
+        ]
+
+        self.assertTrue(
+            verified_plugin_install_completed(
+                "slack@openai-curated", marketplaces
+            )
+        )
+        self.assertTrue(
+            verified_plugin_install_completed(
+                "calendar@openai-curated", marketplaces
+            )
+        )
+        self.assertFalse(
+            verified_plugin_install_completed(
+                "sample@openai-curated", marketplaces
+            )
+        )
+        self.assertFalse(
+            verified_plugin_install_completed(
+                "missing@openai-curated",
+                [{"id": "missing@openai-curated", "installed": False}],
+            )
+        )
+
+    def test_refresh_missing_requested_connectors_uses_current_or_refreshed_tools(self) -> None:
+        accessible = [AppInfo(id="calendar", name="Calendar", is_accessible=True)]
+
+        self.assertEqual(
+            refresh_missing_requested_connectors([], accessible),
+            (),
+        )
+        self.assertEqual(
+            refresh_missing_requested_connectors(["calendar"], accessible),
+            tuple(accessible),
+        )
+        self.assertIsNone(
+            refresh_missing_requested_connectors(["gmail"], accessible)
+        )
+        self.assertEqual(
+            refresh_missing_requested_connectors(
+                ["gmail"],
+                accessible,
+                lambda: [AppInfo(id="gmail", name="Gmail", is_accessible=True)],
+            ),
+            (AppInfo(id="gmail", name="Gmail", is_accessible=True),),
+        )
+
+        def refresh_fails():
+            raise RuntimeError("refresh failed")
+
+        self.assertIsNone(
+            refresh_missing_requested_connectors(
+                ["gmail"],
+                accessible,
+                refresh_fails,
+            )
+        )
+
+    def test_verify_request_plugin_install_completed_checks_connector_or_plugin(self) -> None:
+        self.assertFalse(
+            verify_request_plugin_install_completed(
+                calendar_connector(),
+                accessible_connectors=(),
+            )
+        )
+        self.assertTrue(
+            verify_request_plugin_install_completed(
+                calendar_connector(),
+                connector_refresh_callback=lambda: [
+                    AppInfo(
+                        id="connector_2128aebfecb84f64a069897515042a44",
+                        name="Google Calendar",
+                        is_accessible=True,
+                    )
+                ],
+            )
+        )
+
+        refreshed = []
+
+        def refresh_plugin_connectors():
+            refreshed.append("called")
+            return [AppInfo(id="connector_calendar", name="Calendar", is_accessible=True)]
+
+        self.assertTrue(
+            verify_request_plugin_install_completed(
+                sample_plugin(),
+                plugin_marketplaces_or_plugins=[
+                    {
+                        "plugins": [
+                            {
+                                "id": "sample@openai-curated",
+                                "installed": True,
+                            }
+                        ]
+                    }
+                ],
+                connector_refresh_callback=refresh_plugin_connectors,
+            )
+        )
+        self.assertEqual(refreshed, ["called"])
+        self.assertFalse(
+            verify_request_plugin_install_completed(
+                sample_plugin(),
+                plugin_marketplaces_or_plugins=[
+                    {"id": "sample@openai-curated", "installed": False}
+                ],
+            )
+        )
+
     def test_persistent_disable_helper_requires_decline_always(self) -> None:
         self.assertTrue(
             request_plugin_install_response_requests_persistent_disable(
@@ -285,6 +419,133 @@ class RequestPluginInstallDataTests(unittest.TestCase):
                 }
             )
         )
+
+    def test_disabled_install_request_maps_connector_and_plugin_tools(self) -> None:
+        self.assertEqual(
+            disabled_install_request(calendar_connector()).to_mapping(),
+            {
+                "type": "connector",
+                "id": "connector_2128aebfecb84f64a069897515042a44",
+            },
+        )
+        self.assertEqual(
+            disabled_install_request(sample_plugin().to_mapping()).to_mapping(),
+            {"type": "plugin", "id": "sample@openai-curated"},
+        )
+
+    def test_persist_disabled_install_request_writes_connector_config(self) -> None:
+        with tempfile.TemporaryDirectory() as home:
+            self.assertTrue(
+                persist_disabled_install_request(home, calendar_connector())
+            )
+
+            self.assertEqual(
+                read_toml_mapping(Path(home) / "config.toml"),
+                {
+                    "tool_suggest": {
+                        "disabled_tools": [
+                            {
+                                "type": "connector",
+                                "id": "connector_2128aebfecb84f64a069897515042a44",
+                            }
+                        ]
+                    }
+                },
+            )
+
+    def test_persist_disabled_install_request_writes_plugin_config(self) -> None:
+        with tempfile.TemporaryDirectory() as home:
+            self.assertTrue(persist_disabled_install_request(home, sample_plugin()))
+
+            self.assertEqual(
+                read_toml_mapping(Path(home) / "config.toml"),
+                {
+                    "tool_suggest": {
+                        "disabled_tools": [
+                            {"type": "plugin", "id": "sample@openai-curated"}
+                        ]
+                    }
+                },
+            )
+
+    def test_persist_disabled_install_request_dedupes_existing_disabled_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as home:
+            Path(home, "config.toml").write_text(
+                """
+[tool_suggest]
+discoverables = [
+  { type = "plugin", id = "sample@openai-curated" },
+]
+
+[[tool_suggest.disabled_tools]]
+type = "connector"
+id = " connector_2128aebfecb84f64a069897515042a44 "
+
+[[tool_suggest.disabled_tools]]
+type = "connector"
+id = "connector_2128aebfecb84f64a069897515042a44"
+
+[[tool_suggest.disabled_tools]]
+type = "connector"
+id = "   "
+
+[[tool_suggest.disabled_tools]]
+type = "plugin"
+id = "slack@openai-curated"
+""",
+                encoding="utf-8",
+            )
+
+            self.assertTrue(
+                persist_disabled_install_request(home, calendar_connector())
+            )
+            parsed = read_toml_mapping(Path(home) / "config.toml")
+
+            self.assertEqual(
+                parsed["tool_suggest"],
+                {
+                    "discoverables": [
+                        {"type": "plugin", "id": "sample@openai-curated"}
+                    ],
+                    "disabled_tools": [
+                        {
+                            "type": "connector",
+                            "id": "connector_2128aebfecb84f64a069897515042a44",
+                        },
+                        {"type": "plugin", "id": "slack@openai-curated"},
+                    ],
+                },
+            )
+
+    def test_maybe_persist_disabled_install_request_respects_response_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as home:
+            self.assertFalse(
+                maybe_persist_disabled_install_request(
+                    home,
+                    calendar_connector(),
+                    {
+                        "action": "accept",
+                        "meta": {REQUEST_PLUGIN_INSTALL_PERSIST_KEY: "always"},
+                    },
+                )
+            )
+            self.assertFalse((Path(home) / "config.toml").exists())
+
+            self.assertTrue(
+                maybe_persist_disabled_install_request(
+                    home,
+                    calendar_connector(),
+                    {
+                        "action": "decline",
+                        "meta": {
+                            REQUEST_PLUGIN_INSTALL_PERSIST_KEY: (
+                                REQUEST_PLUGIN_INSTALL_PERSIST_ALWAYS_VALUE
+                            )
+                        },
+                    },
+                )
+            )
+            self.assertTrue((Path(home) / "config.toml").exists())
 
 
 class RequestPluginInstallSpecAndHandlerTests(unittest.TestCase):

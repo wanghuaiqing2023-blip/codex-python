@@ -13,8 +13,11 @@ import copy
 import json
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
+from os import PathLike
+from pathlib import Path
 from typing import Any
 
+from pycodex.core.config_edit import ConfigEditsBuilder, ToolSuggestDisabledTool
 from pycodex.core.tool_context import FunctionToolOutput, ToolPayload
 from pycodex.core.tool_discovery import (
     LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME,
@@ -367,6 +370,80 @@ def verified_connector_install_completed(
     return False
 
 
+def verified_plugin_install_completed(
+    tool_id: str,
+    marketplaces_or_plugins: Iterable[Mapping[str, JsonValue] | Any],
+) -> bool:
+    target_id = str(tool_id)
+    for plugin in _iter_plugin_records(marketplaces_or_plugins):
+        plugin_id = _get_field(plugin, "id")
+        if (
+            plugin_id is not None
+            and str(plugin_id) == target_id
+            and bool(_get_field(plugin, "installed"))
+        ):
+            return True
+    return False
+
+
+def refresh_missing_requested_connectors(
+    expected_connector_ids: Iterable[str],
+    accessible_connectors: Iterable[AppInfo | Mapping[str, JsonValue]],
+    refresh_callback: ConnectorRefreshCallback | None = None,
+) -> tuple[AppInfo, ...] | None:
+    expected_ids = tuple(str(connector_id) for connector_id in expected_connector_ids)
+    if not expected_ids:
+        return ()
+
+    connectors = tuple(_coerce_app_info(connector) for connector in accessible_connectors)
+    if all_requested_connectors_picked_up(expected_ids, connectors):
+        return connectors
+    if refresh_callback is None:
+        return None
+    try:
+        refreshed = refresh_callback()
+    except Exception:
+        return None
+    return tuple(_coerce_app_info(connector) for connector in refreshed)
+
+
+def verify_request_plugin_install_completed(
+    tool: DiscoverableTool | Mapping[str, JsonValue],
+    accessible_connectors: Iterable[AppInfo | Mapping[str, JsonValue]] = (),
+    plugin_marketplaces_or_plugins: Iterable[Mapping[str, JsonValue] | Any] = (),
+    connector_refresh_callback: ConnectorRefreshCallback | None = None,
+) -> bool:
+    discoverable_tool = (
+        tool
+        if isinstance(tool, DiscoverableTool)
+        else DiscoverableTool.from_mapping(tool)
+    )
+    if discoverable_tool.tool_type() == DiscoverableToolType.CONNECTOR:
+        connector_id = discoverable_tool.id()
+        refreshed_connectors = refresh_missing_requested_connectors(
+            (connector_id,),
+            accessible_connectors,
+            connector_refresh_callback,
+        )
+        return refreshed_connectors is not None and verified_connector_install_completed(
+            connector_id,
+            refreshed_connectors,
+        )
+
+    completed = verified_plugin_install_completed(
+        discoverable_tool.id(),
+        plugin_marketplaces_or_plugins,
+    )
+    plugin = discoverable_tool.plugin_info
+    if plugin is not None:
+        refresh_missing_requested_connectors(
+            plugin.app_connector_ids,
+            accessible_connectors,
+            connector_refresh_callback,
+        )
+    return completed
+
+
 def create_list_available_plugins_to_install_tool() -> dict[str, JsonValue]:
     description = (
         "# List plugin/connector install candidates\n\n"
@@ -502,6 +579,10 @@ RequestPluginInstallCallback = Callable[
     [RequestPluginInstallArgs, DiscoverableTool, McpServerElicitationRequestParams],
     RequestPluginInstallResult | Mapping[str, JsonValue],
 ]
+ConnectorRefreshCallback = Callable[
+    [],
+    Iterable[AppInfo | Mapping[str, JsonValue] | Any],
+]
 
 
 @dataclass(frozen=True)
@@ -608,6 +689,40 @@ def request_plugin_install_response_requests_persistent_disable(
     )
 
 
+def disabled_install_request(
+    tool: DiscoverableTool | Mapping[str, JsonValue],
+) -> ToolSuggestDisabledTool:
+    discoverable_tool = (
+        tool
+        if isinstance(tool, DiscoverableTool)
+        else DiscoverableTool.from_mapping(tool)
+    )
+    if discoverable_tool.tool_type() == DiscoverableToolType.CONNECTOR:
+        return ToolSuggestDisabledTool.connector(discoverable_tool.id())
+    return ToolSuggestDisabledTool.plugin(discoverable_tool.id())
+
+
+def persist_disabled_install_request(
+    codex_home: str | PathLike[str],
+    tool: DiscoverableTool | Mapping[str, JsonValue],
+) -> bool:
+    return (
+        ConfigEditsBuilder.new(Path(codex_home))
+        .add_tool_suggest_disabled_tool(disabled_install_request(tool))
+        .apply_blocking()
+    )
+
+
+def maybe_persist_disabled_install_request(
+    codex_home: str | PathLike[str],
+    tool: DiscoverableTool | Mapping[str, JsonValue],
+    response: Mapping[str, JsonValue] | Any,
+) -> bool:
+    if not request_plugin_install_response_requests_persistent_disable(response):
+        return False
+    return persist_disabled_install_request(codex_home, tool)
+
+
 def truncate_to_char_boundary(value: str, max_chars: int) -> str:
     return value[:max_chars]
 
@@ -632,6 +747,18 @@ def _coerce_action_type(value: DiscoverableToolAction | str) -> DiscoverableTool
 
 def _coerce_app_info(value: AppInfo | Mapping[str, JsonValue]) -> AppInfo:
     return value if isinstance(value, AppInfo) else AppInfo.from_mapping(value)
+
+
+def _iter_plugin_records(
+    values: Iterable[Mapping[str, JsonValue] | Any],
+) -> Iterable[Mapping[str, JsonValue] | Any]:
+    for value in values:
+        plugins = _get_field(value, "plugins")
+        if plugins is None:
+            yield value
+            continue
+        if isinstance(plugins, Iterable) and not isinstance(plugins, (str, bytes, Mapping)):
+            yield from plugins
 
 
 def _coerce_elicitation_request_event(
@@ -676,6 +803,7 @@ __all__ = [
     "REQUEST_PLUGIN_INSTALL_SUGGEST_TYPE_KEY",
     "REQUEST_PLUGIN_INSTALL_TOOL_ID_KEY",
     "REQUEST_PLUGIN_INSTALL_TOOL_TYPE_KEY",
+    "ConnectorRefreshCallback",
     "ListAvailablePluginsToInstallHandler",
     "McpElicitationSchema",
     "McpServerElicitationRequest",
@@ -692,8 +820,14 @@ __all__ = [
     "collect_request_plugin_install_entries",
     "create_list_available_plugins_to_install_tool",
     "create_request_plugin_install_tool",
+    "disabled_install_request",
+    "maybe_persist_disabled_install_request",
+    "persist_disabled_install_request",
     "plugin_install_elicitation_telemetry_metadata",
+    "refresh_missing_requested_connectors",
     "request_plugin_install_response_requests_persistent_disable",
     "truncate_to_char_boundary",
     "verified_connector_install_completed",
+    "verified_plugin_install_completed",
+    "verify_request_plugin_install_completed",
 ]
