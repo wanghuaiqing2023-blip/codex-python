@@ -153,7 +153,8 @@ class UnexpectedResponseError(Exception):
     def friendly_message(self) -> str | None:
         if self.status != 403:
             return None
-        if "Cloudflare" not in self.body or "blocked" not in self.body:
+        body = self.body.lower()
+        if "cloudflare" not in body or "blocked" not in body:
             return None
         return self._append_details(f"{CLOUDFLARE_BLOCKED_MESSAGE} (status {_format_status(self.status)})")
 

@@ -1,7 +1,15 @@
 import unittest
 import io
 import os
+import json
 import tempfile
+import socket
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest.mock import patch
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 from pathlib import Path
 
 from pycodex.cli.features import (
@@ -13,7 +21,17 @@ from pycodex.cli.features import (
     run_features_command,
     under_development_feature_warning,
 )
-from pycodex.cli.parser import CliParseError, main, parse_args, reject_remote_mode_for_subcommand
+from pycodex.cli.parser import (
+    CliParseError,
+    _collect_cloud_attempt_diffs,
+    _read_responses_api_auth_header,
+    _run_cloud_command,
+    _run_stdio_to_uds,
+    _select_cloud_attempt_diff,
+    main,
+    parse_args,
+    reject_remote_mode_for_subcommand,
+)
 from pycodex.core import Feature, Features
 from pycodex.protocol import AskForApproval, ProfileV2Name, SandboxMode
 
@@ -43,15 +61,2039 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertEqual(parsed.exec_cli().prompt, "hello")
 
     def test_apply_alias_maps_to_canonical_name(self):
-        parsed = parse_args(["a", "--check"])
+        parsed = parse_args(["a", "task-1"])
 
         self.assertEqual(parsed.command, "apply")
-        self.assertEqual(parsed.command_args, ("--check",))
+        self.assertEqual(parsed.command_args, ("task-1",))
 
     def test_hyphenated_commands_match_upstream_clap_names(self):
         for name in ("mcp-server", "app-server", "remote-control", "exec-server"):
             with self.subTest(name=name):
                 self.assertEqual(parse_args([name]).command, name)
+
+    def test_mcp_requires_subcommand(self):
+        with self.assertRaisesRegex(CliParseError, "mcp requires a subcommand"):
+            parse_args(["mcp"])
+
+    def test_plugin_requires_subcommand(self):
+        with self.assertRaisesRegex(CliParseError, "plugin requires a subcommand"):
+            parse_args(["plugin"])
+
+    def test_parse_mcp_list_json(self):
+        parsed = parse_args(["mcp", "list", "--json"])
+
+        self.assertEqual(parsed.command_args, ("list", "--json"))
+
+    def test_parse_mcp_get_allows_json(self):
+        self.assertEqual(
+            parse_args(["mcp", "get", "acme", "--json"]).command_args,
+            ("get", "acme", "--json"),
+        )
+        self.assertEqual(
+            parse_args(["mcp", "get", "--json", "acme"]).command_args,
+            ("get", "--json", "acme"),
+        )
+
+    def test_parse_mcp_add_supports_env_in_command_mode(self):
+        parsed = parse_args(
+            ["mcp", "add", "acme", "--env", "TOKEN=abc", "--", "npm", "start"]
+        )
+
+        self.assertEqual(parsed.command_args, ("add", "acme", "--env", "TOKEN=abc", "--", "npm", "start"))
+
+    def test_mcp_add_rejects_scopes(self):
+        with self.assertRaisesRegex(CliParseError, "Unknown argument for mcp add: --scopes"):
+            parse_args(["mcp", "add", "acme", "--scopes", "foo", "--", "npm", "start"])
+
+    def test_parse_mcp_add_url_and_command_modes(self):
+        parsed_url = parse_args(["mcp", "add", "acme", "--url", "https://example.com/mcp"])
+        parsed_command = parse_args(["mcp", "add", "acme", "--", "npm", "start"])
+
+        self.assertEqual(parsed_url.command_args, ("add", "acme", "--url", "https://example.com/mcp"))
+        self.assertEqual(parsed_command.command_args, ("add", "acme", "--", "npm", "start"))
+
+    def test_mcp_add_requires_url_or_command(self):
+        with self.assertRaisesRegex(CliParseError, "mcp add requires --url or command."):
+            parse_args(["mcp", "add", "acme"])
+
+    def test_parse_plugin_marketplace_add_supports_sparse_and_ref(self):
+        parsed = parse_args(
+            ["plugin", "marketplace", "add", "acme", "--sparse", "pkg1", "pkg2", "--ref", "main"]
+        )
+        self.assertEqual(
+            parsed.command_args,
+            (
+                "marketplace",
+                "add",
+                "acme",
+                "--sparse",
+                "pkg1",
+                "pkg2",
+                "--ref",
+                "main",
+            ),
+        )
+
+    def test_parse_plugin_marketplace_upgrade_rejects_extra_arguments(self):
+        with self.assertRaisesRegex(
+            CliParseError,
+            "plugin marketplace upgrade accepts at most one marketplace name.",
+        ):
+            parse_args(["plugin", "marketplace", "upgrade", "primary", "secondary"])
+
+    def test_parse_plugin_add_accepts_marketplace_short_flag_and_explicit_marketplace_match(self):
+        self.assertEqual(
+            parse_args(["plugin", "add", "acme@debug", "-m", "debug"]).command_args,
+            ("add", "acme@debug", "-m", "debug"),
+        )
+        self.assertEqual(
+            parse_args(["plugin", "remove", "acme@debug", "--marketplace", "debug"]).command_args,
+            ("remove", "acme@debug", "--marketplace", "debug"),
+        )
+        self.assertEqual(
+            parse_args(["plugin", "list", "-m", "debug"]).command_args,
+            ("list", "-m", "debug"),
+        )
+
+    def test_parse_remote_control_allows_json_with_start(self):
+        self.assertEqual(
+            parse_args(["remote-control", "--json", "start"]).command_args,
+            ("--json", "start"),
+        )
+
+    def test_parse_remote_control_allows_json(self):
+        self.assertEqual(
+            parse_args(["remote-control", "--json"]).command_args,
+            ("--json",),
+        )
+
+    def test_parse_mcp_server_rejects_positional_arguments(self):
+        with self.assertRaisesRegex(
+            CliParseError,
+            "Unexpected argument for mcp-server: plugin",
+        ):
+            parse_args(["mcp-server", "plugin"])
+
+    def test_parse_mcp_server_allows_strict_config(self):
+        self.assertEqual(
+            parse_args(["mcp-server", "--strict-config"]).command_args,
+            ("--strict-config",),
+        )
+
+    def test_parse_mcp_server_rejects_unknown_flag(self):
+        with self.assertRaisesRegex(
+            CliParseError,
+            "Unknown argument for mcp-server: --unknown",
+        ):
+            parse_args(["mcp-server", "--unknown"])
+
+    def test_parse_remote_control_rejects_unknown_and_rejects_too_many_subcommands(self):
+        with self.assertRaisesRegex(CliParseError, "Unknown argument for remote-control"):
+            parse_args(["remote-control", "oops"])
+        with self.assertRaisesRegex(CliParseError, "Too many arguments for `remote-control`."):
+            parse_args(["remote-control", "start", "stop"])
+
+    def test_parse_remote_control_accepts_json_with_stop(self):
+        self.assertEqual(
+            parse_args(["remote-control", "stop", "--json"]).command_args,
+            ("stop", "--json"),
+        )
+
+    def test_parse_debug_models_allows_bundled_flag(self):
+        self.assertEqual(
+            parse_args(["debug", "models", "--bundled"]).command_args,
+            ("models", "--bundled"),
+        )
+
+    def test_parse_debug_models_rejects_unknown_flag(self):
+        with self.assertRaisesRegex(CliParseError, "Unknown argument for debug models"):
+            parse_args(["debug", "models", "--helpful"])
+
+    def test_parse_debug_app_server_send_message_requires_message(self):
+        with self.assertRaisesRegex(CliParseError, "send-message-v2 requires USER_MESSAGE"):
+            parse_args(["debug", "app-server"])
+        with self.assertRaisesRegex(CliParseError, "send-message-v2 requires USER_MESSAGE"):
+            parse_args(["debug", "app-server", "send-message-v2"])
+
+    def test_parse_debug_app_server_send_message_accepts_payload(self):
+        self.assertEqual(
+            parse_args(["debug", "app-server", "send-message-v2", "hello"]).command_args,
+            ("app-server", "send-message-v2", "hello"),
+        )
+
+    def test_parse_debug_prompt_input_supports_images(self):
+        self.assertEqual(
+            parse_args(
+                ["debug", "prompt-input", "Summarize", "--image", "a.png", "-i", "b.png"]
+            ).command_args,
+            ("prompt-input", "Summarize", "--image", "a.png", "-i", "b.png"),
+        )
+
+    def test_parse_review_command_accepts_review_options(self):
+        self.assertEqual(
+            parse_args(["review", "--commit", "123456789", "--title", "Fix"]).command_args,
+            ("--commit", "123456789", "--title", "Fix"),
+        )
+
+    def test_parse_review_command_accepts_help(self):
+        self.assertEqual(parse_args(["review", "--help"]).command_args, ("--help",))
+
+    def test_parse_completion_command_accepts_shell_option(self):
+        self.assertEqual(
+            parse_args(["completion", "--shell", "zsh"]).command_args,
+            ("--shell", "zsh"),
+        )
+
+    def test_parse_completion_command_accepts_short_shell_option(self):
+        self.assertEqual(
+            parse_args(["completion", "-s", "fish"]).command_args,
+            ("-s", "fish"),
+        )
+
+    def test_parse_completion_command_accepts_shell_option_with_equals(self):
+        self.assertEqual(
+            parse_args(["completion", "--shell=zsh"]).command_args,
+            ("--shell=zsh",),
+        )
+
+    def test_parse_completion_command_requires_shell_value(self):
+        with self.assertRaisesRegex(CliParseError, "Missing value for option --shell"):
+            parse_args(["completion", "--shell"])
+        with self.assertRaisesRegex(CliParseError, "Missing value for option --shell"):
+            parse_args(["completion", "--shell="])
+
+    def test_parse_completion_command_rejects_unknown_flag(self):
+        with self.assertRaisesRegex(CliParseError, "Unknown argument for completion: --unknown"):
+            parse_args(["completion", "--unknown"])
+
+    def test_parse_stdio_to_uds_requires_socket_path(self):
+        with self.assertRaisesRegex(CliParseError, "Expected exactly one argument: <socket-path>"):
+            parse_args(["stdio-to-uds"])
+        with self.assertRaisesRegex(CliParseError, "Expected exactly one argument: <socket-path>"):
+            parse_args(["stdio-to-uds", "sock1", "sock2"])
+        self.assertEqual(
+            parse_args(["stdio-to-uds", "/tmp/codex.sock"]).command_args,
+            ("/tmp/codex.sock",),
+        )
+
+    def test_parse_app_server_root_options(self):
+        self.assertEqual(
+            parse_args(
+                [
+                    "app-server",
+                    "--listen",
+                    "stdio://",
+                    "--remote-control",
+                    "--analytics-default-enabled",
+                ]
+            ).command_args,
+            ("--listen", "stdio://", "--remote-control", "--analytics-default-enabled"),
+        )
+
+    def test_parse_app_server_root_rejects_unsupported_listen_url(self):
+        with self.assertRaisesRegex(
+            CliParseError, r"unsupported --listen URL `http://foo`; expected `stdio://`, `unix://`, `unix://PATH`, `ws://IP:PORT`, or `off`"
+        ):
+            parse_args(["app-server", "--listen", "http://foo"])
+
+    def test_parse_app_server_root_rejects_ws_non_ip_listen_url(self):
+        with self.assertRaisesRegex(
+            CliParseError, r"invalid websocket --listen URL `ws://localhost:4500`; expected `ws://IP:PORT`"
+        ):
+            parse_args(["app-server", "--listen", "ws://localhost:4500"])
+
+    def test_parse_app_server_root_requires_values_for_value_options(self):
+        with self.assertRaisesRegex(CliParseError, "Missing value for --listen."):
+            parse_args(["app-server", "--listen"])
+
+    def test_parse_app_server_daemon(self):
+        self.assertEqual(
+            parse_args(["app-server", "daemon", "start"]).command_args,
+            ("daemon", "start"),
+        )
+        self.assertEqual(
+            parse_args(["app-server", "daemon", "bootstrap", "--remote-control"]).command_args,
+            ("daemon", "bootstrap", "--remote-control"),
+        )
+
+    def test_parse_app_server_daemon_allows_all_subcommands(self):
+        daemon_commands = (
+            "start",
+            "stop",
+            "restart",
+            "enable-remote-control",
+            "disable-remote-control",
+            "version",
+            "pid-update-loop",
+        )
+        for daemon_command in daemon_commands:
+            with self.subTest(daemon_command=daemon_command):
+                self.assertEqual(
+                    parse_args(["app-server", "daemon", daemon_command]).command_args,
+                    ("daemon", daemon_command),
+                )
+
+    def test_parse_app_server_daemon_requires_subcommand(self):
+        with self.assertRaisesRegex(CliParseError, "app-server daemon requires a subcommand."):
+            parse_args(["app-server", "daemon"])
+
+    def test_parse_app_server_daemon_rejects_too_many_positional_args(self):
+        for daemon_command in (
+            "start",
+            "stop",
+            "restart",
+            "enable-remote-control",
+            "disable-remote-control",
+            "version",
+            "pid-update-loop",
+        ):
+            with self.subTest(daemon_command=daemon_command):
+                with self.assertRaisesRegex(
+                    CliParseError, f"Too many arguments for `app-server daemon {daemon_command}`."
+                ):
+                    parse_args(["app-server", "daemon", daemon_command, "extra"])
+
+    def test_parse_app_server_daemon_rejects_unknown_subcommand(self):
+        with self.assertRaisesRegex(CliParseError, "Unknown app-server daemon subcommand"):
+            parse_args(["app-server", "daemon", "unknown"])
+
+    def test_parse_app_server_proxy_accepts_optional_socket(self):
+        self.assertEqual(
+            parse_args(["app-server", "proxy"]).command_args,
+            ("proxy",),
+        )
+        self.assertEqual(
+            parse_args(["app-server", "proxy", "--sock", "/tmp/codex.sock"]).command_args,
+            ("proxy", "--sock", "/tmp/codex.sock"),
+        )
+
+    def test_parse_app_server_proxy_requires_socket_value_if_present(self):
+        with self.assertRaisesRegex(CliParseError, "Missing value for --sock."):
+            parse_args(["app-server", "proxy", "--sock"])
+
+    def test_parse_app_server_generate_ts_requires_out(self):
+        with self.assertRaisesRegex(CliParseError, "requires --out"):
+            parse_args(["app-server", "generate-ts"])
+
+    def test_parse_app_server_generate_ts_parse_known_flags(self):
+        self.assertEqual(
+            parse_args(
+                [
+                    "app-server",
+                    "generate-ts",
+                    "-o",
+                    "build",
+                    "--prettier",
+                    "node_modules/.bin/prettier",
+                    "--experimental",
+                ]
+            ).command_args,
+            (
+                "generate-ts",
+                "-o",
+                "build",
+                "--prettier",
+                "node_modules/.bin/prettier",
+                "--experimental",
+            ),
+        )
+
+    def test_parse_app_server_rejects_websocket_auth_flags_without_mode(self):
+        with self.assertRaisesRegex(
+            CliParseError, "websocket auth flags require `--ws-auth`"
+        ):
+            parse_args(["app-server", "--ws-token-file", "/tmp/token"])
+
+    def test_parse_app_server_rejects_capability_token_missing_secret_source(self):
+        with self.assertRaisesRegex(
+            CliParseError, "is required when `--ws-auth capability-token` is set"
+        ):
+            parse_args(["app-server", "--ws-auth", "capability-token"])
+
+    def test_parse_app_server_rejects_signed_bearer_token_without_shared_secret(self):
+        with self.assertRaisesRegex(
+            CliParseError, "is required when `--ws-auth signed-bearer-token` is set"
+        ):
+            parse_args(["app-server", "--ws-auth", "signed-bearer-token"])
+
+    def test_parse_app_server_rejects_capability_mode_with_bearer_only_flags(self):
+        with self.assertRaisesRegex(
+            CliParseError,
+            "`--ws-shared-secret-file`, `--ws-issuer`, `--ws-audience`, and "
+            "`--ws-max-clock-skew-seconds` require `--ws-auth signed-bearer-token`",
+        ):
+            parse_args(["app-server", "--ws-auth", "capability-token", "--ws-issuer", "x"])
+
+    def test_parse_app_server_rejects_signed_bearer_mode_with_capability_flags(self):
+        with self.assertRaisesRegex(
+            CliParseError,
+            "`--ws-token-file` and `--ws-token-sha256` require "
+            "`--ws-auth capability-token`, not `signed-bearer-token`",
+        ):
+            parse_args(["app-server", "--ws-auth", "signed-bearer-token", "--ws-token-file", "/tmp/token"])
+
+    def test_parse_app_server_rejects_both_capability_token_sources(self):
+        with self.assertRaisesRegex(
+            CliParseError, "`--ws-token-file` and `--ws-token-sha256` are mutually exclusive"
+        ):
+            parse_args(
+                ["app-server", "--ws-auth", "capability-token", "--ws-token-file", "/tmp/token", "--ws-token-sha256", "abc"],
+            )
+    def test_parse_app_server_rejects_unsupported_ws_auth_value(self):
+        with self.assertRaisesRegex(CliParseError, "Invalid value for --ws-auth"):
+            parse_args(["app-server", "--ws-auth", "invalid"])
+
+    def test_parse_responses_api_proxy_allows_options(self):
+        self.assertEqual(
+            parse_args(
+                [
+                    "responses-api-proxy",
+                    "--port",
+                    "9001",
+                    "--upstream-url",
+                    "https://api.openai.com/v1/responses",
+                    "--http-shutdown",
+                    "--server-info",
+                    "/tmp/server-info.json",
+                    "--dump-dir",
+                    "/tmp/dumps",
+                ]
+            ).command_args,
+            (
+                "--port",
+                "9001",
+                "--upstream-url",
+                "https://api.openai.com/v1/responses",
+                "--http-shutdown",
+                "--server-info",
+                "/tmp/server-info.json",
+                "--dump-dir",
+                "/tmp/dumps",
+            ),
+        )
+
+    def test_parse_responses_api_proxy_rejects_unknown_arg(self):
+        with self.assertRaisesRegex(
+            CliParseError, "Unknown argument for responses-api-proxy: --unsupported"
+        ):
+            parse_args(["responses-api-proxy", "--unsupported"])
+
+    def test_parse_responses_api_proxy_rejects_bad_port(self):
+        with self.assertRaisesRegex(CliParseError, "Invalid value for --port"):
+            parse_args(["responses-api-proxy", "--port", "not-an-int"])
+
+    def test_main_responses_api_proxy_help(self):
+        stdout = io.StringIO()
+        code = main(["responses-api-proxy", "--help"], stdout=stdout)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            stdout.getvalue().strip(),
+            "Usage: codex responses-api-proxy [OPTIONS]",
+        )
+
+    def test_main_stdio_to_uds_help(self):
+        stdout = io.StringIO()
+        code = main(["stdio-to-uds", "--help"], stdout=stdout)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            stdout.getvalue().strip(),
+            "Usage: codex stdio-to-uds [OPTIONS]",
+        )
+
+    def test_read_responses_api_auth_header_requires_ascii_token(self):
+        stderr = io.StringIO()
+        with self.assertRaisesRegex(RuntimeError, "API key may only contain ASCII"):
+            _read_responses_api_auth_header("bad key", stderr=stderr)
+
+        self.assertEqual(
+            _read_responses_api_auth_header("valid_key-123", stderr=stderr),
+            "Bearer valid_key-123",
+        )
+
+    def test_read_responses_api_auth_header_rejects_too_long_key(self):
+        stderr = io.StringIO()
+        too_long = "a" * 1018
+
+        with self.assertRaisesRegex(
+            RuntimeError, "API key is too large to fit in the 1024-byte buffer"
+        ):
+            _read_responses_api_auth_header(too_long, stderr=stderr)
+
+    def test_main_responses_api_proxy_forwards_success_and_dumps_pair(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            upstream_requests: list[tuple[dict[str, str], bytes]] = []
+            downstream = []
+
+            class _UpstreamHandler(BaseHTTPRequestHandler):
+                def do_POST(self) -> None:
+                    headers = {
+                        key.lower(): value for key, value in self.headers.items()
+                    }
+                    length = int(self.headers.get("Content-Length", "0") or 0)
+                    body = self.rfile.read(length) if length else b""
+                    upstream_requests.append((headers, body))
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("X-Upstream", "yes")
+                    self.end_headers()
+                    self.wfile.write(b'{"status":"ok","model":"tests"}')
+
+                def log_message(self, fmt: str, *args: object) -> None:
+                    del fmt
+                    del args
+
+            upstream_server = ThreadingHTTPServer(
+                ("127.0.0.1", 0),
+                _UpstreamHandler,
+            )
+
+            upstream_thread = threading.Thread(
+                target=upstream_server.serve_forever,
+                kwargs={"poll_interval": 0.05},
+                daemon=True,
+            )
+            upstream_thread.start()
+
+            try:
+                server_info_path = Path(tmpdir) / "server-info.json"
+                dump_dir = Path(tmpdir) / "dumps"
+                proxy_args = [
+                    "responses-api-proxy",
+                    "--upstream-url",
+                    f"http://127.0.0.1:{upstream_server.server_port}/v1/responses",
+                    "--http-shutdown",
+                    "--server-info",
+                    str(server_info_path),
+                    "--dump-dir",
+                    str(dump_dir),
+                ]
+                results: list[int] = []
+                stderr = io.StringIO()
+                proxy_thread = threading.Thread(
+                    target=lambda: results.append(
+                        main(proxy_args, stdin="sk-test-key-1", stderr=stderr)
+                    ),
+                    daemon=True,
+                )
+                proxy_thread.start()
+
+                proxy_info = None
+                for _ in range(200):
+                    if server_info_path.exists():
+                        text = server_info_path.read_text(encoding="utf-8").strip()
+                        if text:
+                            proxy_info = json.loads(text)
+                            break
+                    time.sleep(0.05)
+                self.assertIsNotNone(proxy_info)
+
+                proxy_port = proxy_info["port"]
+                request = Request(
+                    f"http://127.0.0.1:{proxy_port}/v1/responses",
+                    method="POST",
+                    data=b'{"model":"gpt-5"}',
+                    headers={"Content-Type": "application/json"},
+                )
+                with urlopen(request) as response:
+                    self.assertEqual(response.status, 200)
+                    body = response.read()
+                    self.assertEqual(body, b'{"status":"ok","model":"tests"}')
+                    downstream.append(response.getheader("X-Upstream"))
+
+                self.assertEqual(downstream, ["yes"])
+                self.assertEqual(len(upstream_requests), 1)
+                request_headers, request_body = upstream_requests[0]
+                self.assertIn("content-type", request_headers)
+                self.assertEqual(request_headers["content-type"], "application/json")
+                self.assertEqual(request_body, b'{"model":"gpt-5"}')
+                with urlopen(f"http://127.0.0.1:{proxy_port}/shutdown") as shutdown:
+                    self.assertEqual(shutdown.status, 200)
+
+                for _ in range(100):
+                    proxy_thread.join(timeout=0.1)
+                    if not proxy_thread.is_alive():
+                        break
+                self.assertFalse(proxy_thread.is_alive())
+                self.assertEqual(len(results), 1)
+                self.assertIn(results[0], (0,))
+                self.assertEqual(len(list(dump_dir.glob("*-request.json"))), 1)
+                self.assertEqual(len(list(dump_dir.glob("*-response.json"))), 1)
+                dump_request = list(dump_dir.glob("*-request.json"))[0].read_text(encoding="utf-8")
+                dump_response = list(dump_dir.glob("*-response.json"))[0].read_text(encoding="utf-8")
+                parsed_request = json.loads(dump_request)
+                parsed_response = json.loads(dump_response)
+                self.assertEqual(parsed_request["method"], "POST")
+                self.assertEqual(parsed_request["url"], "/v1/responses")
+                self.assertEqual(parsed_request["body"], {"model": "gpt-5"})
+                self.assertEqual(parsed_response["status"], 200)
+                self.assertEqual(parsed_response["headers"][0]["name"].lower(), "content-type")
+                self.assertEqual(parsed_response["body"], {"status": "ok", "model": "tests"})
+            finally:
+                upstream_server.shutdown()
+                upstream_thread.join()
+                if "proxy_thread" in locals() and proxy_thread.is_alive():
+                    proxy_thread.join(timeout=1)
+
+    def test_main_responses_api_proxy_forwards_http_error(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            class _UpstreamHandler(BaseHTTPRequestHandler):
+                def do_POST(self) -> None:
+                    self.send_response(418)
+                    self.send_header("Content-Type", "text/plain; charset=utf-8")
+                    self.send_header("X-Upstream-Error", "true")
+                    self.end_headers()
+                    self.wfile.write(b"upstream is unavailable")
+
+                def log_message(self, fmt: str, *args: object) -> None:
+                    del fmt
+                    del args
+
+            upstream_server = ThreadingHTTPServer(
+                ("127.0.0.1", 0),
+                _UpstreamHandler,
+            )
+            upstream_thread = threading.Thread(
+                target=upstream_server.serve_forever,
+                kwargs={"poll_interval": 0.05},
+                daemon=True,
+            )
+            upstream_thread.start()
+            try:
+                server_info_path = Path(tmpdir) / "server-info.json"
+                proxy_args = [
+                    "responses-api-proxy",
+                    "--upstream-url",
+                    f"http://127.0.0.1:{upstream_server.server_port}/v1/responses",
+                    "--http-shutdown",
+                    "--server-info",
+                    str(server_info_path),
+                ]
+                results: list[int] = []
+                proxy_thread = threading.Thread(
+                    target=lambda: results.append(main(proxy_args, stdin="sk-test-key-2")),
+                    daemon=True,
+                )
+                proxy_thread.start()
+
+                proxy_info = None
+                for _ in range(200):
+                    if server_info_path.exists():
+                        text = server_info_path.read_text(encoding="utf-8").strip()
+                        if text:
+                            proxy_info = json.loads(text)
+                            break
+                    time.sleep(0.05)
+                self.assertIsNotNone(proxy_info)
+                proxy_port = proxy_info["port"]
+
+                with self.assertRaisesRegex(HTTPError, "HTTP Error 418") as ctx:
+                    req = Request(
+                        f"http://127.0.0.1:{proxy_port}/v1/responses",
+                        method="POST",
+                        data=b"",
+                        headers={"Content-Type": "application/json"},
+                    )
+                    with urlopen(req):
+                        pass
+                self.assertEqual(ctx.exception.code, 418)
+                self.assertEqual(ctx.exception.read(), b"upstream is unavailable")
+                self.assertEqual(ctx.exception.headers.get("X-Upstream-Error"), "true")
+
+                with urlopen(f"http://127.0.0.1:{proxy_port}/shutdown") as shutdown:
+                    self.assertEqual(shutdown.status, 200)
+                proxy_thread.join(timeout=2)
+            finally:
+                upstream_server.shutdown()
+                upstream_thread.join()
+                if "proxy_thread" in locals() and proxy_thread.is_alive():
+                    proxy_thread.join(timeout=1)
+
+    def test_main_responses_api_proxy_rejects_disallowed_path_with_403(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            server_info_path = Path(tmpdir) / "server-info.json"
+            proxy_args = [
+                "responses-api-proxy",
+                "--http-shutdown",
+                "--upstream-url",
+                "https://example.com/v1/responses",
+                "--server-info",
+                str(server_info_path),
+            ]
+            results: list[int] = []
+            proxy_thread = threading.Thread(
+                target=lambda: results.append(main(proxy_args, stdin="sk-test-key-3")),
+                daemon=True,
+            )
+            proxy_thread.start()
+            try:
+                proxy_info = None
+                for _ in range(200):
+                    if server_info_path.exists():
+                        text = server_info_path.read_text(encoding="utf-8").strip()
+                        if text:
+                            proxy_info = json.loads(text)
+                            break
+                    time.sleep(0.05)
+                self.assertIsNotNone(proxy_info)
+                proxy_port = proxy_info["port"]
+
+                with self.assertRaisesRegex(HTTPError, "HTTP Error 403") as ctx:
+                    with urlopen(f"http://127.0.0.1:{proxy_port}/not-allowed"):
+                        pass
+                self.assertEqual(ctx.exception.code, 403)
+                self.assertEqual(ctx.exception.read(), b"")
+                with urlopen(f"http://127.0.0.1:{proxy_port}/shutdown") as shutdown:
+                    self.assertEqual(shutdown.status, 200)
+                proxy_thread.join(timeout=2)
+            finally:
+                if proxy_thread.is_alive():
+                    proxy_thread.join(timeout=1)
+
+    def test_main_responses_api_proxy_rejects_shutdown_with_query_with_403(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            server_info_path = Path(tmpdir) / "server-info.json"
+            proxy_args = [
+                "responses-api-proxy",
+                "--http-shutdown",
+                "--upstream-url",
+                "https://example.com/v1/responses",
+                "--server-info",
+                str(server_info_path),
+            ]
+            results: list[int] = []
+            proxy_thread = threading.Thread(
+                target=lambda: results.append(main(proxy_args, stdin="sk-test-key-4")),
+                daemon=True,
+            )
+            proxy_thread.start()
+            try:
+                proxy_info = None
+                for _ in range(200):
+                    if server_info_path.exists():
+                        text = server_info_path.read_text(encoding="utf-8").strip()
+                        if text:
+                            proxy_info = json.loads(text)
+                            break
+                    time.sleep(0.05)
+                self.assertIsNotNone(proxy_info)
+                proxy_port = proxy_info["port"]
+
+                with self.assertRaisesRegex(HTTPError, "HTTP Error 403") as ctx:
+                    with urlopen(f"http://127.0.0.1:{proxy_port}/shutdown?x=1"):
+                        pass
+                self.assertEqual(ctx.exception.code, 403)
+                self.assertEqual(ctx.exception.read(), b"")
+                with urlopen(f"http://127.0.0.1:{proxy_port}/shutdown") as shutdown:
+                    self.assertEqual(shutdown.status, 200)
+                proxy_thread.join(timeout=2)
+            finally:
+                if proxy_thread.is_alive():
+                    proxy_thread.join(timeout=1)
+
+    def test_main_stdio_to_uds_relay_roundtrip(self):
+        if not hasattr(socket, "AF_UNIX"):
+            self.skipTest("AF_UNIX is unavailable on this platform")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            socket_path = Path(tmpdir) / "codex.sock"
+            response_payload = b"response-from-upstream"
+            received_payloads: list[bytes] = []
+
+            def _socket_server() -> None:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+                    server.bind(str(socket_path))
+                    server.listen(1)
+                    conn, _ = server.accept()
+                    with conn:
+                        data = conn.recv(4096)
+                        received_payloads.append(data)
+                        conn.sendall(response_payload)
+
+            server_thread = threading.Thread(target=_socket_server, daemon=True)
+            server_thread.start()
+
+            output = io.BytesIO()
+            stderr = io.StringIO()
+            with patch("pycodex.cli.parser.sys.stdout", output):
+                code = _run_stdio_to_uds(
+                    (str(socket_path),),
+                    stdout=io.StringIO(),
+                    stderr=stderr,
+                    stdin=b"client-data",
+                )
+            server_thread.join(timeout=2)
+
+            self.assertEqual(code, 0)
+            self.assertEqual(received_payloads, [b"client-data"])
+            self.assertEqual(output.getvalue(), response_payload)
+
+    def test_parse_app_server_root_websocket_auth_combinations_are_valid(self):
+        self.assertEqual(
+            parse_args(
+                [
+                    "app-server",
+                    "--ws-auth",
+                    "capability-token",
+                    "--ws-token-file",
+                    "/tmp/token",
+                    "proxy",
+                ]
+            ).command_args,
+            ("--ws-auth", "capability-token", "--ws-token-file", "/tmp/token", "proxy"),
+        )
+        self.assertEqual(
+            parse_args(
+                [
+                    "app-server",
+                    "--ws-auth",
+                    "signed-bearer-token",
+                    "--ws-shared-secret-file",
+                    "/tmp/secret",
+                    "daemon",
+                    "start",
+                ]
+            ).command_args,
+            (
+                "--ws-auth",
+                "signed-bearer-token",
+                "--ws-shared-secret-file",
+                "/tmp/secret",
+                "daemon",
+                "start",
+            ),
+        )
+
+    def test_main_remote_control_help_prints_usage(self):
+        stdout = io.StringIO()
+
+        code = main(["remote-control", "--help"], stdout=stdout)
+
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: codex remote-control [OPTIONS]", stdout.getvalue())
+
+    def test_main_remote_control_start_help_prints_usage(self):
+        stdout = io.StringIO()
+
+        code = main(["remote-control", "start", "--help"], stdout=stdout)
+
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: codex remote-control start", stdout.getvalue())
+
+    def test_main_remote_control_json_then_start_help_prints_usage(self):
+        stdout = io.StringIO()
+
+        code = main(["remote-control", "--json", "start", "--help"], stdout=stdout)
+
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: codex remote-control start", stdout.getvalue())
+
+    def test_main_remote_control_stop_help_prints_usage(self):
+        stdout = io.StringIO()
+
+        code = main(["remote-control", "stop", "--help"], stdout=stdout)
+
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: codex remote-control stop", stdout.getvalue())
+
+    def test_main_app_server_help_prints_usage(self):
+        stdout = io.StringIO()
+
+        code = main(["app-server", "--help"], stdout=stdout)
+
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: codex app-server [OPTIONS] [COMMAND]", stdout.getvalue())
+
+    def test_main_app_server_listen_then_daemon_help_prints_usage(self):
+        stdout = io.StringIO()
+
+        code = main(
+            [
+                "app-server",
+                "--listen",
+                "stdio://",
+                "daemon",
+                "start",
+                "--help",
+            ],
+            stdout=stdout,
+        )
+
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: codex app-server daemon start", stdout.getvalue())
+
+    def test_main_app_server_help_with_listen_then_help_then_daemon_subcommand(self):
+        stdout = io.StringIO()
+
+        code = main(
+            [
+                "app-server",
+                "--listen",
+                "stdio://",
+                "--help",
+                "daemon",
+                "start",
+            ],
+            stdout=stdout,
+        )
+
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: codex app-server daemon start", stdout.getvalue())
+
+    def test_main_remote_auth_rejects_app_server_listen_then_daemon_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "app-server",
+                "--listen",
+                "stdio://",
+                "--help",
+                "daemon",
+                "start",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex app-server daemon start`", stderr.getvalue())
+
+    def test_main_remote_rejects_app_server_websocket_flags_then_proxy_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "app-server",
+                "--ws-auth",
+                "capability-token",
+                "--help",
+                "proxy",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex app-server proxy`", stderr.getvalue())
+
+    def test_main_app_server_daemon_help_prints_usage(self):
+        stdout = io.StringIO()
+
+        code = main(["app-server", "daemon", "--help"], stdout=stdout)
+
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: codex app-server daemon <COMMAND>", stdout.getvalue())
+
+    def test_main_app_server_daemon_subcommand_help_prints_usage(self):
+        for daemon_subcommand in (
+            "start",
+            "stop",
+            "bootstrap",
+            "restart",
+            "enable-remote-control",
+            "disable-remote-control",
+            "version",
+            "pid-update-loop",
+        ):
+            stdout = io.StringIO()
+            with self.subTest(daemon_subcommand=daemon_subcommand):
+                code = main(
+                    ["app-server", "daemon", daemon_subcommand, "--help"],
+                    stdout=stdout,
+                )
+
+                self.assertEqual(code, 0)
+                self.assertIn(f"Usage: codex app-server daemon {daemon_subcommand}", stdout.getvalue())
+
+    def test_main_app_server_websocket_flags_then_proxy_help_prints_usage(self):
+        stdout = io.StringIO()
+
+        code = main(
+            [
+                "app-server",
+                "--ws-auth",
+                "capability-token",
+                "--ws-token-file",
+                "/tmp/token",
+                "proxy",
+                "--help",
+            ],
+            stdout=stdout,
+        )
+
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: codex app-server proxy [OPTIONS]", stdout.getvalue())
+
+    def test_main_app_server_websocket_flags_then_help_proxy_prints_usage(self):
+        stdout = io.StringIO()
+
+        code = main(
+            [
+                "app-server",
+                "--ws-auth",
+                "capability-token",
+                "--ws-token-file",
+                "/tmp/token",
+                "--help",
+                "proxy",
+            ],
+            stdout=stdout,
+        )
+
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: codex app-server proxy [OPTIONS]", stdout.getvalue())
+
+    def test_main_app_server_proxy_help_prints_usage(self):
+        stdout = io.StringIO()
+
+        code = main(["app-server", "proxy", "--help"], stdout=stdout)
+
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: codex app-server proxy [OPTIONS]", stdout.getvalue())
+
+    def test_main_app_server_generate_help_prints_usage(self):
+        stdout = io.StringIO()
+
+        code = main(["app-server", "generate-ts", "--help"], stdout=stdout)
+
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: codex app-server generate-ts [OPTIONS]", stdout.getvalue())
+
+        stdout = io.StringIO()
+        code = main(["app-server", "generate-json-schema", "--help"], stdout=stdout)
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: codex app-server generate-json-schema [OPTIONS]", stdout.getvalue())
+
+        stdout = io.StringIO()
+        code = main(["app-server", "generate-internal-json-schema", "--help"], stdout=stdout)
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: codex app-server generate-internal-json-schema [OPTIONS]", stdout.getvalue())
+
+    def test_parse_update_accepts_no_args_and_rejects_unknown(self):
+        self.assertEqual(parse_args(["update"]).command_args, ())
+        with self.assertRaisesRegex(CliParseError, "Unknown argument for update"):
+            parse_args(["update", "--force"])
+
+    def test_parse_app_accepts_path_and_download_url(self):
+        self.assertEqual(
+            parse_args(
+                ["app", "workspace", "--download-url", "https://example.com/codex"]
+            ).command_args,
+            ("workspace", "--download-url", "https://example.com/codex"),
+        )
+
+    def test_parse_exec_server_remote_requires_environment_id(self):
+        with self.assertRaisesRegex(
+            CliParseError, "--environment-id is required when --remote is set\\."
+        ):
+            parse_args(["exec-server", "--remote", "ws://127.0.0.1:4500"])
+
+    def test_parse_exec_server_remote_accepts_environment_id(self):
+        self.assertEqual(
+            parse_args(
+                ["exec-server", "--remote", "ws://127.0.0.1:4500", "--environment-id", "env-1"]
+            ).command_args,
+            ("--remote", "ws://127.0.0.1:4500", "--environment-id", "env-1"),
+        )
+
+    def test_parse_exec_server_listen_requires_value(self):
+        with self.assertRaisesRegex(CliParseError, "Missing value for --listen\\."):
+            parse_args(["exec-server", "--listen"])
+
+    def test_parse_exec_server_listen_conflicts_with_remote(self):
+        with self.assertRaisesRegex(
+            CliParseError, "--listen cannot be used with --remote\\."
+        ):
+            parse_args(
+                [
+                    "exec-server",
+                    "--listen",
+                    "127.0.0.1:8080",
+                    "--remote",
+                    "ws://127.0.0.1:4500",
+                    "--environment-id",
+                    "env-1",
+                ]
+            )
+
+    def test_parse_exec_server_accepts_stdio_listen(self):
+        self.assertEqual(
+            parse_args(["exec-server", "--listen", "stdio://"]).command_args,
+            ("--listen", "stdio://"),
+        )
+
+    def test_parse_exec_server_agent_identity_auth_allows_remote_after_flag(self):
+        self.assertEqual(
+            parse_args(
+                [
+                    "exec-server",
+                    "--use-agent-identity-auth",
+                    "--remote",
+                    "ws://127.0.0.1:4500",
+                    "--environment-id",
+                    "env-1",
+                ]
+            ).command_args,
+            (
+                "--use-agent-identity-auth",
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "--environment-id",
+                "env-1",
+            ),
+        )
+
+    def test_parse_app_rejects_extra_positional_or_unknown(self):
+        with self.assertRaisesRegex(CliParseError, "Too many arguments for `app`"):
+            parse_args(["app", "workspace", "another"])
+        with self.assertRaisesRegex(CliParseError, "Unknown argument for app: --bad"):
+            parse_args(["app", "--bad"])
+        with self.assertRaisesRegex(CliParseError, "Missing value for --download-url\\."):
+            parse_args(["app", "--download-url"])
+
+    def test_main_app_noop_on_linux(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with patch("pycodex.cli.parser.sys.platform", "linux"):
+            code = main(["app", "/tmp/my-workspace"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_parse_resume_allows_session_id_with_options(self):
+        self.assertEqual(
+            parse_args(
+                [
+                    "resume",
+                    "abc",
+                    "--all",
+                    "--include-non-interactive",
+                    "--remote",
+                    "ws://localhost:4500",
+                    "--remote-auth-token-env",
+                    "TOKEN_ENV",
+                ]
+            ).command_args,
+            (
+                "abc",
+                "--all",
+                "--include-non-interactive",
+                "--remote",
+                "ws://localhost:4500",
+                "--remote-auth-token-env",
+                "TOKEN_ENV",
+            ),
+        )
+
+    def test_parse_fork_rejects_last_with_session_id(self):
+        with self.assertRaisesRegex(CliParseError, "fork does not support --last with session-id"):
+            parse_args(["fork", "abc", "--last"])
+
+    def test_parse_fork_allows_id_without_last(self):
+        self.assertEqual(parse_args(["fork", "abc"]).command_args, ("abc",))
+
+    def test_parse_fork_allows_all_flag(self):
+        self.assertEqual(parse_args(["fork", "--all"]).command_args, ("--all",))
+
+    def test_parse_apply_requires_task_id(self):
+        with self.assertRaisesRegex(CliParseError, "apply requires TASK_ID"):
+            parse_args(["apply"])
+        with self.assertRaisesRegex(CliParseError, "Too many arguments for `apply`"):
+            parse_args(["apply", "task-1", "extra"])
+
+    def test_parse_apply_rejects_unknown_flag(self):
+        with self.assertRaisesRegex(CliParseError, "Unknown argument for apply"):
+            parse_args(["apply", "--bad"])
+
+    def test_parse_apply_accepts_dash_prefixed_task_id_via_end_marker(self):
+        self.assertEqual(
+            parse_args(["apply", "--", "-task-1"]).command_args,
+            ("--", "-task-1"),
+        )
+
+    def test_parse_apply_rejects_extra_after_end_marker(self):
+        with self.assertRaisesRegex(CliParseError, "Too many arguments for `apply`"):
+            parse_args(["apply", "--", "-task-1", "extra"])
+
+    def test_parse_cloud_exec_without_subcommand_runs_default_ui(self):
+        self.assertEqual(parse_args(["cloud"]).command_args, ())
+
+    def test_parse_cloud_exec_with_query_and_options(self):
+        self.assertEqual(
+            parse_args(["cloud", "exec", "fix a bug", "--env", "env-1", "--attempts", "2", "--branch", "main"]).command_args,
+            ("exec", "fix a bug", "--env", "env-1", "--attempts", "2", "--branch", "main"),
+        )
+
+    def test_parse_cloud_status_requires_task_id(self):
+        with self.assertRaisesRegex(CliParseError, "cloud status requires TASK_ID"):
+            parse_args(["cloud", "status"])
+        self.assertEqual(parse_args(["cloud", "status", "task-1"]).command_args, ("status", "task-1"))
+
+    def test_parse_cloud_status_accepts_task_id_from_url_forms(self):
+        parsed = parse_args([
+            "cloud",
+            "status",
+            "https://chatgpt.com/backend-api/wham/tasks/task-99?source=cli#fragment",
+        ])
+        self.assertEqual(parsed.command_args, ("status", "https://chatgpt.com/backend-api/wham/tasks/task-99?source=cli#fragment"))
+
+    def test_main_cloud_help_prints_usage(self):
+        stdout = io.StringIO()
+
+        code = main(["cloud", "--help"], stdout=stdout)
+
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: codex cloud", stdout.getvalue())
+
+    def test_main_cloud_subcommand_help_prints_usage(self):
+        stdout = io.StringIO()
+
+        code = main(["cloud", "status", "--help"], stdout=stdout)
+
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: codex cloud", stdout.getvalue())
+
+    def test_main_cloud_exec_help_prints_usage(self):
+        stdout = io.StringIO()
+
+        code = main(["cloud", "exec", "--help"], stdout=stdout)
+
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: codex cloud", stdout.getvalue())
+
+    def test_main_cloud_subcommand_help_shows_subcommand_usage(self):
+        for subcommand in ("exec", "status", "apply", "diff", "list"):
+            with self.subTest(subcommand=subcommand):
+                stdout = io.StringIO()
+
+                code = main(["cloud", subcommand, "--help"], stdout=stdout)
+
+                self.assertEqual(code, 0)
+                self.assertIn(f"Usage: codex cloud {subcommand}", stdout.getvalue())
+
+    def test_main_cloud_help_shows_root_subcommand_usage(self):
+        stdout = io.StringIO()
+
+        code = main(["cloud", "--help"], stdout=stdout)
+
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: codex cloud [OPTIONS] <COMMAND>", stdout.getvalue())
+
+    def test_parse_cloud_apply_accepts_task_id_from_url_forms(self):
+        parsed = parse_args([
+            "cloud",
+            "apply",
+            "https://chatgpt.com/backend-api/wham/tasks/task-99?source=cli#fragment",
+        ])
+        self.assertEqual(
+            parsed.command_args,
+            (
+                "apply",
+                "https://chatgpt.com/backend-api/wham/tasks/task-99?source=cli#fragment",
+            ),
+        )
+
+    def test_parse_cloud_unknown_subcommand(self):
+        with self.assertRaisesRegex(CliParseError, "Unknown cloud subcommand"):
+            parse_args(["cloud", "unknown"])
+
+    def test_main_cloud_unknown_subcommand_reports_helpful_error(self):
+        stderr = io.StringIO()
+
+        code = main(["cloud", "unknown"], stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("Unknown cloud subcommand: unknown", stderr.getvalue())
+
+    def test_run_cloud_command_unknown_subcommand_with_fallback_returns_nonfatal(self):
+        previous_fallback = os.environ.get("PYCODEX_CLOUD_FALLBACK")
+        os.environ["PYCODEX_CLOUD_FALLBACK"] = "1"
+        stderr = io.StringIO()
+        stdout = io.StringIO()
+
+        try:
+            with patch("pycodex.cli.parser._cloud_auth_token", return_value="access-token"):
+                code = _run_cloud_command(
+                    ("unknown",),
+                    stdout=stdout,
+                    stderr=stderr,
+                )
+        finally:
+            if previous_fallback is None:
+                os.environ.pop("PYCODEX_CLOUD_FALLBACK", None)
+            else:
+                os.environ["PYCODEX_CLOUD_FALLBACK"] = previous_fallback
+
+        self.assertEqual(code, 0)
+        self.assertIn("pycodex: command 'cloud unknown' is currently not implemented yet.", stderr.getvalue())
+
+    def test_run_cloud_command_unknown_subcommand_without_fallback_returns_unsupported(self):
+        previous_fallback = os.environ.get("PYCODEX_CLOUD_FALLBACK")
+        if previous_fallback is not None:
+            os.environ.pop("PYCODEX_CLOUD_FALLBACK", None)
+        stderr = io.StringIO()
+        stdout = io.StringIO()
+
+        try:
+            with patch("pycodex.cli.parser._cloud_auth_token", return_value="access-token"):
+                code = _run_cloud_command(
+                    ("unknown",),
+                    stdout=stdout,
+                    stderr=stderr,
+                )
+        finally:
+            if previous_fallback is None:
+                os.environ.pop("PYCODEX_CLOUD_FALLBACK", None)
+            else:
+                os.environ["PYCODEX_CLOUD_FALLBACK"] = previous_fallback
+
+        self.assertEqual(code, 64)
+        self.assertIn("pycodex: command 'cloud unknown' is currently not implemented yet.", stderr.getvalue())
+
+    def test_main_cloud_no_subcommand_with_fallback_runs_list(self):
+        previous_fallback = os.environ.get("PYCODEX_CLOUD_FALLBACK")
+        os.environ["PYCODEX_CLOUD_FALLBACK"] = "1"
+        stderr = io.StringIO()
+        stdout = io.StringIO()
+
+        try:
+            with patch("pycodex.cli.parser._cloud_auth_token", return_value="access-token"), patch(
+                "pycodex.cli.parser._list_cloud_tasks",
+                return_value=([
+                    {
+                        "id": "task-1",
+                        "status": "ready",
+                        "title": "Demo",
+                        "url": "https://chatgpt.com/tasks/task-1",
+                    },
+                ], None),
+            ):
+                code = main(["cloud"], stdout=stdout, stderr=stderr)
+        finally:
+            if previous_fallback is None:
+                os.environ.pop("PYCODEX_CLOUD_FALLBACK", None)
+            else:
+                os.environ["PYCODEX_CLOUD_FALLBACK"] = previous_fallback
+
+        self.assertEqual(code, 0)
+        self.assertIn("No cloud subcommand provided. Falling back to `cloud list`.", stderr.getvalue())
+        self.assertIn("task-1", stdout.getvalue())
+
+    def test_main_cloud_no_subcommand_without_fallback_returns_interactive_message(self):
+        previous_fallback = os.environ.get("PYCODEX_CLOUD_FALLBACK")
+        if previous_fallback is not None:
+            os.environ.pop("PYCODEX_CLOUD_FALLBACK", None)
+        stderr = io.StringIO()
+        stdout = io.StringIO()
+
+        try:
+            code = main(["cloud"], stdout=stdout, stderr=stderr)
+        finally:
+            if previous_fallback is None:
+                os.environ.pop("PYCODEX_CLOUD_FALLBACK", None)
+            else:
+                os.environ["PYCODEX_CLOUD_FALLBACK"] = previous_fallback
+
+        self.assertEqual(code, 64)
+        self.assertIn(
+            "pycodex: command 'cloud' is currently parsed but the interactive browser is not implemented yet.",
+            stderr.getvalue(),
+        )
+
+    def test_main_cloud_apply_normalizes_task_id_from_url(self):
+        captured: dict[str, object] = {}
+
+        def fake_request_json(url, method, token):
+            captured["url"] = url
+            return {"task": {"id": "task-99"}, "turn_history": []}
+
+        with patch("pycodex.cli.parser._cloud_auth_token", return_value="access-token"), patch(
+            "pycodex.cli.parser._cloud_request_json",
+            side_effect=fake_request_json,
+        ), patch("pycodex.cli.parser._collect_cloud_attempt_diffs", return_value=[{"diff": "diff-1"}]), patch(
+            "pycodex.cli.parser._apply_task_diff_with_git",
+            return_value=0,
+        ):
+            code = main([
+                "cloud",
+                "apply",
+                "https://chatgpt.com/backend-api/wham/tasks/task-99?source=cli#fragment",
+            ])
+
+        self.assertEqual(code, 0)
+        self.assertIn("/wham/tasks/task-99", str(captured.get("url", "")))
+
+    def test_main_cloud_diff_normalizes_task_id_from_url(self):
+        stdout = io.StringIO()
+
+        with patch("pycodex.cli.parser._cloud_auth_token", return_value="access-token"), patch(
+            "pycodex.cli.parser._cloud_request_json",
+            return_value={"task": {"id": "task-99"}},
+        ), patch(
+            "pycodex.cli.parser._collect_cloud_attempt_diffs",
+            return_value=[{"diff": "diff-from-url"}],
+        ):
+            code = main(
+                [
+                    "cloud",
+                    "diff",
+                    "https://chatgpt.com/backend-api/wham/tasks/task-99?source=cli#fragment",
+                ],
+                stdout=stdout,
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout.getvalue(), "diff-from-url\n")
+
+    def test_parse_cloud_apply_and_diff_require_task_id(self):
+        with self.assertRaisesRegex(CliParseError, "cloud apply requires TASK_ID"):
+            parse_args(["cloud", "apply"])
+        with self.assertRaisesRegex(CliParseError, "cloud diff requires TASK_ID"):
+            parse_args(["cloud", "diff"])
+
+    def test_parse_cloud_list_parses_options(self):
+        self.assertEqual(
+            parse_args(["cloud", "list", "--env", "env-1", "--limit", "5", "--cursor", "c", "--json"]).command_args,
+            ("list", "--env", "env-1", "--limit", "5", "--cursor", "c", "--json"),
+        )
+
+    def test_parse_cloud_attempt_range_is_enforced(self):
+        with self.assertRaisesRegex(CliParseError, "Invalid value for --attempts"):
+            parse_args(["cloud", "exec", "--attempts", "9", "hello"])
+        with self.assertRaisesRegex(CliParseError, "Invalid value for --attempt"):
+            parse_args(["cloud", "apply", "task-1", "--attempt", "0"])
+        with self.assertRaisesRegex(CliParseError, "Missing value for --attempt"):
+            parse_args(["cloud", "apply", "--attempt"])
+        self.assertEqual(
+            parse_args(["cloud", "apply", "--attempt", "2", "task-1"]).command_args,
+            ("apply", "--attempt", "2", "task-1"),
+        )
+
+    def test_parse_cloud_exec_allows_options_around_query(self):
+        self.assertEqual(
+            parse_args(["cloud", "exec", "--env", "env-1", "fix a bug", "--attempts", "2"]).command_args,
+            ("exec", "--env", "env-1", "fix a bug", "--attempts", "2"),
+        )
+        self.assertEqual(
+            parse_args(["cloud", "exec", "--", "--leading-hyphen-query"]).command_args,
+            ("exec", "--", "--leading-hyphen-query"),
+        )
+
+    def test_main_cloud_exec_fails_without_env(self):
+        stderr = io.StringIO()
+        with patch("pycodex.cli.parser._cloud_auth_token", return_value="access-token"):
+            code = main(["cloud", "exec", "write tests"], stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("cloud exec requires --env.", stderr.getvalue())
+
+    def test_main_cloud_without_subcommand_without_fallback_prints_not_implemented(self):
+        stderr = io.StringIO()
+
+        code = main(["cloud"], stderr=stderr)
+
+        self.assertEqual(code, 64)
+        self.assertIn("command 'cloud' is currently parsed but the interactive browser is not implemented yet.", stderr.getvalue())
+
+    def test_main_cloud_without_subcommand_with_fallback_prints_warning(self):
+        previous_fallback = os.environ.get("PYCODEX_CLOUD_FALLBACK")
+        os.environ["PYCODEX_CLOUD_FALLBACK"] = "1"
+        stderr = io.StringIO()
+
+        try:
+            code = main(["cloud"], stderr=stderr)
+        finally:
+            if previous_fallback is None:
+                os.environ.pop("PYCODEX_CLOUD_FALLBACK", None)
+            else:
+                os.environ["PYCODEX_CLOUD_FALLBACK"] = previous_fallback
+
+        self.assertEqual(code, 2)
+        self.assertIn("No cloud subcommand provided. Use: codex cloud exec/status/list/apply/diff.", stderr.getvalue())
+
+    def test_main_cloud_status_requires_auth(self):
+        stderr = io.StringIO()
+        with patch("pycodex.cli.parser._cloud_auth_token", side_effect=RuntimeError("Not logged in.")):
+            code = main(["cloud", "status", "task-1"], stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("pycodex: Not logged in.", stderr.getvalue())
+
+    def test_main_cloud_exec_posts_task_payload(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        observed: dict[str, object] = {}
+
+        def fake_request_json(url, method, token, payload=None):
+            observed["url"] = url
+            observed["method"] = method
+            observed["token"] = token
+            observed["payload"] = payload
+            return {"task": {"id": "task-123"}}
+
+        with patch("pycodex.cli.parser._cloud_auth_token", return_value="access-token"), patch(
+            "pycodex.cli.parser._cloud_request_json",
+            side_effect=fake_request_json,
+        ):
+            code = main(
+                [
+                    "cloud",
+                    "exec",
+                    "write tests",
+                    "--env",
+                    "env-1",
+                    "--branch",
+                    "feature-branch",
+                    "--attempts",
+                    "2",
+                ],
+                stdout=stdout,
+                stderr=stderr,
+            )
+
+        self.assertEqual(code, 0)
+        self.assertIn("/wham/tasks", str(observed.get("url")))
+        self.assertEqual(observed.get("method"), "POST")
+        self.assertEqual(observed.get("token"), "access-token")
+        payload = observed.get("payload")
+        self.assertIsInstance(payload, dict)
+        if isinstance(payload, dict):
+            new_task = payload.get("new_task")
+            self.assertIsInstance(new_task, dict)
+            if isinstance(new_task, dict):
+                self.assertEqual(new_task.get("environment_id"), "env-1")
+                self.assertEqual(new_task.get("branch"), "feature-branch")
+                self.assertFalse(new_task.get("run_environment_in_qa_mode"))
+                self.assertEqual(payload.get("metadata"), {"best_of_n": 2})
+            input_items = payload.get("input_items")
+            self.assertIsInstance(input_items, list)
+            if isinstance(input_items, list):
+                item = input_items[0]
+                self.assertEqual(item["content"][0]["text"], "write tests")
+        self.assertEqual(stdout.getvalue(), "https://chatgpt.com/codex/tasks/task-123\n")
+
+    def test_main_cloud_status_bad_payload(self):
+        stderr = io.StringIO()
+        with patch("pycodex.cli.parser._cloud_auth_token", return_value="access-token"), patch(
+            "pycodex.cli.parser._cloud_request_json",
+            return_value="not-a-dict",
+        ):
+            code = main(["cloud", "status", "task-1"], stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("unexpected response format from cloud task endpoint.", stderr.getvalue())
+
+    def test_main_cloud_status_normalizes_task_id_from_url(self):
+        observed = {}
+
+        def fake_request_json(url, method, token):
+            observed["url"] = url
+            return {
+                "id": "task-99",
+                "task_status_display": {"status": "READY"},
+            }
+
+        stderr = io.StringIO()
+        stdout = io.StringIO()
+        with patch("pycodex.cli.parser._cloud_auth_token", return_value="access-token"), patch(
+            "pycodex.cli.parser._cloud_request_json",
+            side_effect=fake_request_json,
+        ):
+            code = main(
+                ["cloud", "status", "https://chatgpt.com/backend-api/wham/tasks/task-99?src=cli#frag"],
+                stdout=stdout,
+                stderr=stderr,
+            )
+
+        self.assertEqual(code, 0)
+        self.assertIn("/wham/tasks/task-99", observed.get("url", ""))
+        self.assertIn("status: READY", stdout.getvalue())
+
+    def test_main_cloud_apply_respects_attempt(self):
+        captured: dict[str, object] = {}
+
+        def fake_collect_cloud_attempt_diffs(payload: object, *, token: str, task_id: str) -> list[dict[str, object]]:
+            captured["token"] = token
+            captured["task_id"] = task_id
+            return [
+                {"diff": "diff-1"},
+                {"diff": "diff-2"},
+            ]
+
+        def fake_apply_task_diff_with_git(diff: str, **kwargs):
+            captured["applied_diff"] = diff
+            return 0
+
+        with patch("pycodex.cli.parser._cloud_auth_token", return_value="access-token"), patch(
+            "pycodex.cli.parser._cloud_request_json",
+            return_value={"task": {"id": "task-1"}},
+        ), patch(
+            "pycodex.cli.parser._collect_cloud_attempt_diffs",
+            side_effect=fake_collect_cloud_attempt_diffs,
+        ), patch(
+            "pycodex.cli.parser._apply_task_diff_with_git",
+            side_effect=fake_apply_task_diff_with_git,
+        ):
+            code = main(["cloud", "apply", "--attempt", "2", "task-1"])
+
+        self.assertEqual(code, 0)
+        self.assertEqual(captured.get("task_id"), "task-1")
+        self.assertEqual(captured.get("token"), "access-token")
+        self.assertEqual(captured.get("applied_diff"), "diff-2")
+
+    def test_main_cloud_apply_out_of_range_attempt_prints_hint(self):
+        stderr = io.StringIO()
+        with patch("pycodex.cli.parser._cloud_auth_token", return_value="access-token"), patch(
+            "pycodex.cli.parser._cloud_request_json",
+            return_value={"task": {"id": "task-1"}},
+        ), patch(
+            "pycodex.cli.parser._collect_cloud_attempt_diffs",
+            return_value=[
+                {"diff": "diff-1"},
+                {"diff": "diff-2"},
+            ],
+        ):
+            code = main(["cloud", "apply", "task-1", "--attempt", "3"], stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("Attempt 3 not available for task task-1; only 2 attempt(s) found.", stderr.getvalue())
+
+    def test_main_cloud_apply_collect_diff_failure_returns_error(self):
+        stderr = io.StringIO()
+        with patch("pycodex.cli.parser._cloud_auth_token", return_value="access-token"), patch(
+            "pycodex.cli.parser._cloud_request_json",
+            return_value={"task": {"id": "task-1"}},
+        ), patch(
+            "pycodex.cli.parser._collect_cloud_attempt_diffs",
+            side_effect=RuntimeError("collect failed"),
+        ):
+            code = main(["cloud", "apply", "task-1"], stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("pycodex: collect failed", stderr.getvalue())
+
+    def test_main_cloud_apply_bad_payload_format(self):
+        stderr = io.StringIO()
+        with patch("pycodex.cli.parser._cloud_auth_token", return_value="access-token"), patch(
+            "pycodex.cli.parser._cloud_request_json",
+            return_value="not-a-dict",
+        ):
+            code = main(["cloud", "apply", "task-1"], stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("unexpected response format from cloud task endpoint.", stderr.getvalue())
+
+    def test_main_cloud_diff_respects_attempt(self):
+        stdout = io.StringIO()
+        with patch("pycodex.cli.parser._cloud_auth_token", return_value="access-token"), patch(
+            "pycodex.cli.parser._cloud_request_json",
+            return_value={"task": {"id": "task-1"}},
+        ), patch(
+            "pycodex.cli.parser._collect_cloud_attempt_diffs",
+            return_value=[
+                {"diff": "diff-1"},
+                {"diff": "diff-2"},
+            ],
+        ):
+            code = main(["cloud", "diff", "task-1", "--attempt", "1"], stdout=stdout)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout.getvalue(), "diff-1\n")
+
+    def test_main_cloud_diff_collect_failure_returns_error(self):
+        stderr = io.StringIO()
+        with patch("pycodex.cli.parser._cloud_auth_token", return_value="access-token"), patch(
+            "pycodex.cli.parser._cloud_request_json",
+            return_value={"task": {"id": "task-1"}},
+        ), patch(
+            "pycodex.cli.parser._collect_cloud_attempt_diffs",
+            side_effect=RuntimeError("collect failed"),
+        ):
+            code = main(["cloud", "diff", "task-1"], stdout=io.StringIO(), stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("pycodex: collect failed", stderr.getvalue())
+
+    def test_main_cloud_diff_no_diffs_returns_exit_1(self):
+        stderr = io.StringIO()
+        with patch("pycodex.cli.parser._cloud_auth_token", return_value="access-token"), patch(
+            "pycodex.cli.parser._cloud_request_json",
+            return_value={"task": {"id": "task-1"}},
+        ), patch(
+            "pycodex.cli.parser._collect_cloud_attempt_diffs",
+            return_value=[],
+        ):
+            code = main(["cloud", "diff", "task-1"], stdout=io.StringIO(), stderr=stderr)
+
+        self.assertEqual(code, 1)
+        self.assertIn("No diff available for task task-1.", stderr.getvalue())
+
+    def test_collect_cloud_attempt_diffs_orders_by_placement_then_created_at(self):
+        payload = {
+            "task": {
+                "current_assistant_turn": {
+                    "id": "current",
+                    "attempt_placement": "2",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "output_items": [{"type": "output_diff", "diff": "current"}],
+                }
+            }
+        }
+
+        siblings = [
+            {
+                "id": "earliest-no-date",
+                "created_at": "not-a-date",
+                "output_items": [{"type": "output_diff", "diff": "no-date"}],
+            },
+            {
+                "id": "placement-one",
+                "attempt_placement": 1,
+                "created_at": "2024-01-01T00:00:00Z",
+                "output_items": [{"type": "output_diff", "diff": "priority"}],
+            },
+            {
+                "id": "created-at-middle",
+                "created_at": "2025-01-01T00:00:00Z",
+                "output_items": [{"type": "output_diff", "diff": "created-middle"}],
+            },
+        ]
+
+        def fake_request_json(url, method, token, payload=None):
+            del method, token, payload
+            if "sibling_turns" in url:
+                return {"sibling_turns": siblings}
+            raise AssertionError("unexpected request to _cloud_request_json")
+
+        with patch("pycodex.cli.parser._cloud_request_json", side_effect=fake_request_json):
+            attempts = _collect_cloud_attempt_diffs(payload, token="access-token", task_id="task-1")
+
+        self.assertEqual(len(attempts), 4)
+        self.assertEqual(attempts[0]["diff"], "priority")
+        self.assertEqual(attempts[1]["diff"], "current")
+        self.assertEqual(attempts[2]["diff"], "created-middle")
+        self.assertEqual(attempts[3]["diff"], "no-date")
+        self.assertEqual(_select_cloud_attempt_diff(attempts, 1), "priority")
+        self.assertEqual(_select_cloud_attempt_diff(attempts, 2), "current")
+        self.assertEqual(_select_cloud_attempt_diff(attempts, 3), "created-middle")
+        self.assertEqual(_select_cloud_attempt_diff(attempts, 4), "no-date")
+        self.assertIsNone(_select_cloud_attempt_diff(attempts, 5))
+
+    def test_collect_cloud_attempt_diffs_deduplicates_turn_id(self):
+        payload = {
+            "task": {
+                "current_assistant_turn": {
+                    "id": "shared",
+                    "output_items": [{"type": "output_diff", "diff": "current"}],
+                }
+            }
+        }
+
+        siblings = [
+            {
+                "id": "shared",
+                "output_items": [{"type": "output_diff", "diff": "duplicate"}],
+            },
+            {
+                "id": "unique",
+                "output_items": [{"type": "output_diff", "diff": "unique"}],
+            },
+        ]
+
+        def fake_request_json(url, method, token, payload=None):
+            del method, token, payload
+            if "sibling_turns" in url:
+                return {"sibling_turns": siblings}
+            raise AssertionError("unexpected request")
+
+        with patch("pycodex.cli.parser._cloud_request_json", side_effect=fake_request_json):
+            attempts = _collect_cloud_attempt_diffs(payload, token="access-token", task_id="task-1")
+
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(attempts[0]["diff"], "current")
+        self.assertEqual(attempts[1]["diff"], "unique")
+
+    def test_parse_cloud_limit_range_is_enforced(self):
+        with self.assertRaisesRegex(CliParseError, "Invalid value for --limit"):
+            parse_args(["cloud", "list", "--limit", "99"])
+
+    def test_parse_execpolicy_requires_check(self):
+        with self.assertRaisesRegex(CliParseError, "execpolicy requires a subcommand: check"):
+            parse_args(["execpolicy"])
+
+    def test_parse_execpolicy_check_requires_rules_and_command(self):
+        with self.assertRaisesRegex(CliParseError, "execpolicy check requires --rules."):
+            parse_args(["execpolicy", "check", "echo", "ls"])
+        with self.assertRaisesRegex(CliParseError, "execpolicy check requires COMMAND."):
+            parse_args(["execpolicy", "check", "--rules", "policy.json"])
+        with self.assertRaisesRegex(CliParseError, "execpolicy check requires COMMAND."):
+            parse_args(["execpolicy", "check", "--rules", "policy.json", "--"])
+
+    def test_parse_execpolicy_check_parses_known_flags_and_command(self):
+        self.assertEqual(
+            parse_args(
+                [
+                    "execpolicy",
+                    "check",
+                    "--rules",
+                    "policy1",
+                    "--rules",
+                    "policy2",
+                    "--pretty",
+                    "--resolve-host-executables",
+                    "echo",
+                    "hello",
+                ]
+            ).command_args,
+            (
+                "check",
+                "--rules",
+                "policy1",
+                "--rules",
+                "policy2",
+                "--pretty",
+                "--resolve-host-executables",
+                "echo",
+                "hello",
+            ),
+        )
+
+    def test_parse_execpolicy_check_accepts_dashdash_command_without_special_treatment(self):
+        self.assertEqual(
+            parse_args(
+                ["execpolicy", "check", "--rules", "policy.json", "--", "-h"]
+            ).command_args,
+            ("check", "--rules", "policy.json", "--", "-h"),
+        )
+
+    def test_main_execpolicy_check_matches_rule(self):
+        fd, policy_path = tempfile.mkstemp()
+        try:
+            os.close(fd)
+            Path(policy_path).write_text(
+                "prefix_rule(pattern=[\"echo\", \"hello\"], decision=\"allow\")\n"
+            )
+
+            stdout = io.StringIO()
+            code = main(["execpolicy", "check", "--rules", policy_path, "echo", "hello"], stdout=stdout)
+            self.assertEqual(code, 0)
+
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload["decision"], "allow")
+            self.assertEqual(
+                payload["matchedRules"],
+                [
+                    {
+                        "prefixRuleMatch": {
+                            "matchedPrefix": ["echo", "hello"],
+                            "decision": "allow",
+                        }
+                    }
+                ],
+            )
+        finally:
+            os.remove(policy_path)
+
+    def test_main_execpolicy_check_no_match_reports_empty_rules(self):
+        fd, policy_path = tempfile.mkstemp()
+        try:
+            os.close(fd)
+            Path(policy_path).write_text(
+                "prefix_rule(pattern=[\"echo\", \"hello\"], decision=\"allow\")\n"
+            )
+
+            stdout = io.StringIO()
+            code = main(["execpolicy", "check", "--rules", policy_path, "echo", "world"], stdout=stdout)
+            self.assertEqual(code, 0)
+
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload, {"matchedRules": []})
+        finally:
+            os.remove(policy_path)
+
+    def test_main_execpolicy_check_help(self):
+        stdout = io.StringIO()
+        code = main(["execpolicy", "check", "--help"], stdout=stdout)
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            stdout.getvalue().strip(),
+            "Usage: codex execpolicy [OPTIONS]",
+        )
+
+    def test_main_execpolicy_check_with_pretty_output(self):
+        fd, policy_path = tempfile.mkstemp()
+        try:
+            os.close(fd)
+            Path(policy_path).write_text(
+                "prefix_rule(pattern=[\"echo\", \"hello\"], decision=\"prompt\")\n"
+            )
+
+            stdout = io.StringIO()
+            code = main(
+                ["execpolicy", "check", "--rules", policy_path, "--pretty", "echo", "hello"],
+                stdout=stdout,
+            )
+            self.assertEqual(code, 0)
+
+            text = stdout.getvalue()
+            payload = json.loads(text)
+            self.assertEqual(payload["decision"], "prompt")
+            self.assertIn("\n", text)
+        finally:
+            os.remove(policy_path)
+
+    def test_main_execpolicy_check_resolve_host_executables(self):
+        fd, policy_path = tempfile.mkstemp()
+        command_path = Path(policy_path).with_name("host_cmd")
+        try:
+            os.close(fd)
+            Path(policy_path).write_text(
+                "host_executable(name=\"host_cmd\", paths=[\"%s\"])\n"
+                "prefix_rule(pattern=[\"host_cmd\", \"--help\"], decision=\"allow\")\n"
+                % (str(command_path),)
+            )
+
+            stdout = io.StringIO()
+            code = main(
+                [
+                    "execpolicy",
+                    "check",
+                    "--rules",
+                    policy_path,
+                    "--resolve-host-executables",
+                    str(command_path),
+                    "--help",
+                ],
+                stdout=stdout,
+            )
+            self.assertEqual(code, 0)
+
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload["decision"], "allow")
+            self.assertEqual(
+                payload["matchedRules"][0]["prefixRuleMatch"]["resolvedProgram"],
+                str(command_path),
+            )
+        finally:
+            os.remove(policy_path)
+
+    def test_main_execpolicy_check_reports_missing_rules_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            missing_path = os.path.join(temp_dir, "missing_policy.json")
+            stderr = io.StringIO()
+            code = main(
+                ["execpolicy", "check", "--rules", missing_path, "echo", "hello"],
+                stderr=stderr,
+            )
+            self.assertEqual(code, 2)
+            self.assertIn("failed to read policy at", stderr.getvalue())
+
+    def test_main_execpolicy_check_reports_parse_error(self):
+        fd, policy_path = tempfile.mkstemp()
+        try:
+            os.close(fd)
+            Path(policy_path).write_text("prefix_rule(pattern=[\"echo\", \"hello\", decision=\"allow\")\n")
+
+            stderr = io.StringIO()
+            code = main(
+                ["execpolicy", "check", "--rules", policy_path, "echo", "hello"],
+                stderr=stderr,
+            )
+            self.assertEqual(code, 2)
+            self.assertIn("failed to parse policy at", stderr.getvalue())
+        finally:
+            os.remove(policy_path)
+
+    def test_main_execpolicy_check_reports_example_validation_error(self):
+        fd, policy_path = tempfile.mkstemp()
+        try:
+            os.close(fd)
+            Path(policy_path).write_text(
+                "prefix_rule("
+                'pattern=["echo", "hello"],'
+                'decision="allow",'
+                'match=[["echo", "bad"]],'
+                ")\n"
+            )
+
+            stderr = io.StringIO()
+            code = main(
+                ["execpolicy", "check", "--rules", policy_path, "echo", "hello"],
+                stderr=stderr,
+            )
+            self.assertEqual(code, 2)
+            self.assertIn("invalid match example in", stderr.getvalue())
+
+            self.assertIn("did not match any rule", stderr.getvalue())
+        finally:
+            os.remove(policy_path)
+
+    def test_main_execpolicy_check_reports_network_rule_validation(self):
+        fd, policy_path = tempfile.mkstemp()
+        try:
+            os.close(fd)
+            Path(policy_path).write_text(
+                'network_rule(host="https://example.com", protocol="tcp", decision="allow")\n'
+            )
+
+            stderr = io.StringIO()
+            code = main(
+                ["execpolicy", "check", "--rules", policy_path, "echo", "hello"],
+                stderr=stderr,
+            )
+            self.assertEqual(code, 2)
+            self.assertIn("network_rule host must be a hostname or IP literal", stderr.getvalue())
+        finally:
+            os.remove(policy_path)
+
+    def test_parse_sandbox_accepts_profile_flags_and_dependencies(self):
+        parsed = parse_args(
+            [
+                "sandbox",
+                "--permissions-profile",
+                "ci",
+                "--profile",
+                "work",
+                "-C",
+                "dir",
+                "--include-managed-config",
+                "--allow-unix-socket",
+                "/tmp/codex.sock",
+                "--log-denials",
+            ]
+        )
+
+        self.assertEqual(
+            parsed.command_args,
+            (
+                "--permissions-profile",
+                "ci",
+                "--profile",
+                "work",
+                "-C",
+                "dir",
+                "--include-managed-config",
+                "--allow-unix-socket",
+                "/tmp/codex.sock",
+                "--log-denials",
+            ),
+        )
+
+    def test_sandbox_requires_permissions_profile_with_cd_or_managed_config(self):
+        with self.assertRaisesRegex(
+            CliParseError, "the following required argument was not provided: --permissions-profile"
+        ):
+            parse_args(["sandbox", "--cd", "dir"])
+        with self.assertRaisesRegex(
+            CliParseError, "the following required argument was not provided: --permissions-profile"
+        ):
+            parse_args(["sandbox", "--include-managed-config"])
 
     def test_cloud_tasks_alias_matches_cloud_command(self):
         parsed = parse_args(["cloud-tasks", "list"])
@@ -96,6 +2138,2418 @@ class TopLevelCliParserTests(unittest.TestCase):
 
         self.assertEqual(code, 2)
         self.assertIn("not `codex exec`", stderr.getvalue())
+
+    def test_main_remote_rejects_remote_control_start(self):
+        stderr = io.StringIO()
+
+        code = main(["--remote", "ws://127.0.0.1:4500", "remote-control", "start"], stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex remote-control start`", stderr.getvalue())
+
+    def test_main_remote_rejects_remote_control_start_with_json(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "remote-control",
+                "--json",
+                "start",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex remote-control start`", stderr.getvalue())
+
+    def test_main_remote_rejects_remote_control_no_subcommand_with_subcommand_context(self):
+        stderr = io.StringIO()
+
+        code = main(["--remote", "ws://127.0.0.1:4500", "remote-control"], stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex remote-control`", stderr.getvalue())
+
+    def test_main_remote_rejects_remote_control_stop(self):
+        stderr = io.StringIO()
+
+        code = main(["--remote", "ws://127.0.0.1:4500", "remote-control", "stop"], stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex remote-control stop`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_remote_control_start(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "remote-control",
+                "start",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex remote-control start`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_remote_control_start_with_json(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "remote-control",
+                "--json",
+                "start",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex remote-control start`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_remote_control_stop(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "remote-control",
+                "stop",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex remote-control stop`", stderr.getvalue())
+
+    def test_main_remote_rejects_debug_models_with_subcommand_context(self):
+        stderr = io.StringIO()
+
+        code = main(["--remote", "ws://127.0.0.1:4500", "debug", "models"], stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex debug models`", stderr.getvalue())
+
+    def test_main_remote_rejects_debug_models_with_preceding_help_flag(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "debug",
+                "--help",
+                "models",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex debug models`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_debug_models_with_subcommand_context(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "debug",
+                "models",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex debug models`", stderr.getvalue())
+
+    def test_main_remote_rejects_debug_app_server_with_subcommand_context(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "debug",
+                "app-server",
+                "send-message-v2",
+                "hello",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex debug app-server`", stderr.getvalue())
+
+    def test_main_remote_rejects_debug_trace_reduce_with_subcommand_context(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "debug",
+                "trace-reduce",
+                "trace.bundle",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex debug trace-reduce`", stderr.getvalue())
+
+    def test_main_remote_rejects_debug_clear_memories_with_subcommand_context(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "debug",
+                "clear-memories",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex debug clear-memories`", stderr.getvalue())
+
+    def test_main_remote_rejects_debug_prompt_input_with_subcommand_context(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "debug",
+                "prompt-input",
+                "Summarize",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex debug prompt-input`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_debug_app_server_with_subcommand_context(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "debug",
+                "app-server",
+                "send-message-v2",
+                "hello",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex debug app-server`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_debug_trace_reduce_with_subcommand_context(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "debug",
+                "trace-reduce",
+                "trace.bundle",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex debug trace-reduce`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_debug_clear_memories_with_subcommand_context(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "debug",
+                "clear-memories",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex debug clear-memories`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_debug_prompt_input_with_subcommand_context(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "debug",
+                "prompt-input",
+                "Summarize",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex debug prompt-input`", stderr.getvalue())
+
+    def test_main_remote_rejects_debug_app_server_with_preceding_help_flag(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "debug",
+                "--help",
+                "app-server",
+                "send-message-v2",
+                "hello",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex debug app-server`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_debug_app_server_with_preceding_help_flag(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "debug",
+                "--help",
+                "app-server",
+                "send-message-v2",
+                "hello",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex debug app-server`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_features_list_with_subcommand_context(self):
+        stderr = io.StringIO()
+
+        code = main(["--remote-auth-token-env", "CODEX_REMOTE_AUTH_TOKEN", "features", "list"], stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex features list`", stderr.getvalue())
+
+    def test_main_remote_rejects_features_list_with_preceding_help_flag(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "features",
+                "--help",
+                "list",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex features list`", stderr.getvalue())
+
+    def test_main_remote_rejects_features_enable_with_subcommand_context(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "features",
+                "enable",
+                "shell_tool",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex features enable`", stderr.getvalue())
+
+    def test_main_remote_rejects_features_list_with_subcommand_context(self):
+        stderr = io.StringIO()
+
+        code = main(["--remote", "ws://127.0.0.1:4500", "features", "list"], stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex features list`", stderr.getvalue())
+
+    def test_main_remote_rejects_features_disable_with_subcommand_context(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "features",
+                "disable",
+                "network_proxy",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex features disable`", stderr.getvalue())
+
+    def test_main_remote_rejects_features_list_with_preceding_flag(self):
+        stderr = io.StringIO()
+
+        code = main(["--remote", "ws://127.0.0.1:4500", "features", "--json", "list"], stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex features list`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_features_list_with_preceding_flag(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "features",
+                "--json",
+                "list",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex features list`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_features_list_with_preceding_help_flag(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "features",
+                "--help",
+                "list",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex features list`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_features_enable_with_subcommand_context(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "features",
+                "enable",
+                "shell_tool",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex features enable`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_features_disable_with_subcommand_context(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "features",
+                "disable",
+                "network_proxy",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex features disable`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_app_server_generate_json_schema_with_remote(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "app-server",
+                "generate-json-schema",
+                "--out",
+                "out",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex app-server generate-json-schema`", stderr.getvalue())
+
+    def test_main_remote_rejects_app_server_generate_ts_with_context(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "app-server",
+                "generate-ts",
+                "--out",
+                "out",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex app-server generate-ts`", stderr.getvalue())
+
+    def test_main_remote_rejects_app_server_generate_json_schema_with_context(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "app-server",
+                "generate-json-schema",
+                "--out",
+                "out",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex app-server generate-json-schema`", stderr.getvalue())
+
+    def test_main_remote_rejects_app_server_generate_internal_json_schema_with_context(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "app-server",
+                "generate-internal-json-schema",
+                "--out",
+                "out",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn(
+            "not `codex app-server generate-internal-json-schema`", stderr.getvalue()
+        )
+
+    def test_main_remote_rejects_app_server_proxy_with_context(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "app-server",
+                "proxy",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex app-server proxy`", stderr.getvalue())
+
+    def test_main_remote_rejects_app_server_daemon_start_with_context(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "app-server",
+                "daemon",
+                "start",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex app-server daemon start`", stderr.getvalue())
+
+    def test_main_remote_rejects_app_server_daemon_bootstrap_with_context(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "app-server",
+                "daemon",
+                "bootstrap",
+                "--remote-control",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex app-server daemon bootstrap`", stderr.getvalue())
+
+    def test_main_remote_rejects_app_server_daemon_subcommands_with_context(self):
+        for daemon_subcommand in (
+            "restart",
+            "enable-remote-control",
+            "disable-remote-control",
+            "stop",
+            "version",
+            "pid-update-loop",
+        ):
+            stderr = io.StringIO()
+
+            code = main(
+                [
+                    "--remote",
+                    "ws://127.0.0.1:4500",
+                    "app-server",
+                    "daemon",
+                    daemon_subcommand,
+                ],
+                stderr=stderr,
+            )
+
+            self.assertEqual(code, 2)
+            self.assertIn(f"not `codex app-server daemon {daemon_subcommand}`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_app_server_generate_json_schema(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "app-server",
+                "generate-json-schema",
+                "--out",
+                "out",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex app-server generate-json-schema`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_app_server_with_root_flags_and_daemon(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "app-server",
+                "--analytics-default-enabled",
+                "daemon",
+                "start",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex app-server daemon start`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_app_server_daemon_start_with_subcommand_context(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "app-server",
+                "daemon",
+                "start",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex app-server daemon start`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_app_server_daemon_bootstrap_with_subcommand_context(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "app-server",
+                "daemon",
+                "bootstrap",
+                "--remote-control",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex app-server daemon bootstrap`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_app_server_daemon_subcommands_with_context(self):
+        for daemon_subcommand in (
+            "restart",
+            "enable-remote-control",
+            "disable-remote-control",
+            "stop",
+            "version",
+            "pid-update-loop",
+        ):
+            stderr = io.StringIO()
+
+            code = main(
+                [
+                    "--remote-auth-token-env",
+                    "CODEX_REMOTE_AUTH_TOKEN",
+                    "app-server",
+                    "daemon",
+                    daemon_subcommand,
+                ],
+                stderr=stderr,
+            )
+
+            self.assertEqual(code, 2)
+            self.assertIn(f"not `codex app-server daemon {daemon_subcommand}`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_app_server_proxy_with_context(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "app-server",
+                "proxy",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex app-server proxy`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_app_server_generate_ts_with_context(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "app-server",
+                "generate-ts",
+                "--out",
+                "out",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex app-server generate-ts`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_app_server_generate_internal_json_schema_with_context(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "app-server",
+                "generate-internal-json-schema",
+                "--out",
+                "out",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn(
+            "not `codex app-server generate-internal-json-schema`", stderr.getvalue()
+        )
+
+    def test_main_remote_auth_rejects_app_server_with_root_flags_and_generate_ts(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "app-server",
+                "--strict-config",
+                "generate-ts",
+                "--out",
+                "out",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex app-server generate-ts`", stderr.getvalue())
+
+    def test_main_remote_rejects_responses_api_proxy_with_subcommand_context(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "responses-api-proxy",
+                "--port",
+                "9000",
+                "--upstream-url",
+                "https://example.com",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex responses-api-proxy`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_responses_api_proxy_with_remote_auth_token_env_context(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "responses-api-proxy",
+                "--port",
+                "9000",
+                "--upstream-url",
+                "https://example.com",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex responses-api-proxy`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_execpolicy_check_with_subcommand_context(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "execpolicy",
+                "check",
+                "--rules",
+                "policy.json",
+                "--",
+                "echo",
+                "ok",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex execpolicy check`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_execpolicy_check_with_preceding_help_flag(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "execpolicy",
+                "--help",
+                "check",
+                "--rules",
+                "policy.json",
+                "--",
+                "echo",
+                "ok",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex execpolicy check`", stderr.getvalue())
+
+    def test_main_remote_rejects_execpolicy_check_with_subcommand_context(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "execpolicy",
+                "check",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex execpolicy check`", stderr.getvalue())
+
+    def test_main_remote_rejects_execpolicy_check_with_help_after_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "execpolicy",
+                "check",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex execpolicy check`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_execpolicy_check_with_help_after_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "execpolicy",
+                "check",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex execpolicy check`", stderr.getvalue())
+
+    def test_main_remote_rejects_execpolicy_check_with_preceding_help_flag(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "execpolicy",
+                "--help",
+                "check",
+                "--rules",
+                "policy.json",
+                "--",
+                "echo",
+                "ok",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex execpolicy check`", stderr.getvalue())
+
+    def test_main_remote_rejects_cloud_with_help_before_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "cloud",
+                "--help",
+                "status",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex cloud`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_cloud_with_help_before_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "cloud",
+                "--help",
+                "status",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex cloud`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_stdio_to_uds(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "stdio-to-uds",
+                "/tmp/codex.sock",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex stdio-to-uds`", stderr.getvalue())
+
+    def test_main_remote_rejects_stdio_to_uds_with_path(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "stdio-to-uds",
+                "/tmp/codex.sock",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex stdio-to-uds`", stderr.getvalue())
+
+    def test_main_remote_rejects_exec_server(self):
+        stderr = io.StringIO()
+
+        code = main(["--remote", "ws://127.0.0.1:4500", "exec-server"], stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex exec-server`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_exec_server(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "exec-server",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex exec-server`", stderr.getvalue())
+
+    def test_main_remote_rejects_features_root_without_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(["--remote", "ws://127.0.0.1:4500", "features"], stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex features`", stderr.getvalue())
+
+    def test_main_remote_rejects_review_with_context(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "review",
+                "prompt",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex review`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_review_with_context(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "review",
+                "prompt",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex review`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_remote_supported_root_commands(self):
+        for command, expected_command in (
+            ("doctor", "doctor"),
+            ("login", "login"),
+            ("logout", "logout"),
+            ("mcp-server", "mcp-server"),
+            ("cloud", "cloud"),
+            ("sandbox", "sandbox"),
+            ("app-server", "app-server"),
+            ("update", "update"),
+            ("completion", "completion"),
+            ("responses-api-proxy", "responses-api-proxy"),
+            ("app", "app"),
+        ):
+            with self.subTest(command=command):
+                stderr = io.StringIO()
+
+                code = main(["--remote", "ws://127.0.0.1:4500", command], stderr=stderr)
+
+                self.assertEqual(code, 2)
+                self.assertIn(f"not `codex {expected_command}`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_remote_supported_root_commands_with_auth_token_env(self):
+        for command, expected_command in (
+            ("completion", "completion"),
+            ("doctor", "doctor"),
+            ("login", "login"),
+            ("logout", "logout"),
+            ("mcp-server", "mcp-server"),
+            ("cloud", "cloud"),
+            ("sandbox", "sandbox"),
+            ("update", "update"),
+            ("app-server", "app-server"),
+            ("responses-api-proxy", "responses-api-proxy"),
+            ("app", "app"),
+        ):
+            with self.subTest(command=command):
+                stderr = io.StringIO()
+
+                code = main(
+                    [
+                        "--remote-auth-token-env",
+                        "CODEX_REMOTE_AUTH_TOKEN",
+                        command,
+                    ],
+                    stderr=stderr,
+                )
+
+                self.assertEqual(code, 2)
+                self.assertIn(f"not `codex {expected_command}`", stderr.getvalue())
+
+    def test_main_remote_rejects_completion_with_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "completion",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex completion`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_completion_with_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "completion",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex completion`", stderr.getvalue())
+
+    def test_main_remote_rejects_remote_supported_root_commands_with_help(self):
+        for command, expected_command in (
+            ("doctor", "doctor"),
+            ("login", "login"),
+            ("logout", "logout"),
+            ("cloud", "cloud"),
+            ("sandbox", "sandbox"),
+            ("app-server", "app-server"),
+            ("update", "update"),
+            ("responses-api-proxy", "responses-api-proxy"),
+            ("completion", "completion"),
+            ("mcp", "mcp"),
+            ("plugin", "plugin"),
+            ("app", "app"),
+        ):
+            with self.subTest(command=command):
+                stderr = io.StringIO()
+
+                code = main(
+                    [
+                        "--remote",
+                        "ws://127.0.0.1:4500",
+                        command,
+                        "--help",
+                    ],
+                    stderr=stderr,
+                )
+
+                self.assertEqual(code, 2)
+                self.assertIn(f"not `codex {expected_command}`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_remote_supported_root_commands_with_help(self):
+        for command, expected_command in (
+            ("completion", "completion"),
+            ("doctor", "doctor"),
+            ("login", "login"),
+            ("logout", "logout"),
+            ("cloud", "cloud"),
+            ("sandbox", "sandbox"),
+            ("app-server", "app-server"),
+            ("update", "update"),
+            ("responses-api-proxy", "responses-api-proxy"),
+            ("mcp-server", "mcp-server"),
+            ("plugin", "plugin"),
+            ("app", "app"),
+        ):
+            with self.subTest(command=command):
+                stderr = io.StringIO()
+
+                code = main(
+                    [
+                        "--remote-auth-token-env",
+                        "CODEX_REMOTE_AUTH_TOKEN",
+                        command,
+                        "--help",
+                    ],
+                    stderr=stderr,
+                )
+
+                self.assertEqual(code, 2)
+                self.assertIn(f"not `codex {expected_command}`", stderr.getvalue())
+
+    def test_main_remote_rejects_update_with_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "update",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("`--remote ws://127.0.0.1:4500`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_update_with_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "update",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("`--remote-auth-token-env`", stderr.getvalue())
+
+    def test_main_remote_rejects_mcp_server_with_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "mcp-server",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex mcp-server`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_mcp_server_with_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "mcp-server",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex mcp-server`", stderr.getvalue())
+
+    def test_main_remote_rejects_mcp_server_with_preceding_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "mcp-server",
+                "--help",
+                "register",
+                "--json",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex mcp-server`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_mcp_server_with_preceding_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "mcp-server",
+                "--help",
+                "register",
+                "--json",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex mcp-server`", stderr.getvalue())
+
+    def test_main_remote_rejects_mcp_with_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "mcp",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex mcp`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_mcp_with_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "mcp",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex mcp`", stderr.getvalue())
+
+    def test_main_remote_rejects_plugin_with_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "plugin",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex plugin`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_plugin_with_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "plugin",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex plugin`", stderr.getvalue())
+
+    def test_main_remote_rejects_app_with_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "app",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex app`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_app_with_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "app",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex app`", stderr.getvalue())
+
+    def test_main_remote_rejects_apply_with_task(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "apply",
+                "task-123",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex apply`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_apply_with_task(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "apply",
+                "task-123",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex apply`", stderr.getvalue())
+
+    def test_main_remote_rejects_apply_with_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "apply",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex apply`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_apply_with_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "apply",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex apply`", stderr.getvalue())
+
+    def test_main_remote_rejects_exec_with_prompt(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "exec",
+                "hello",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex exec`", stderr.getvalue())
+
+    def test_main_remote_rejects_responses_api_proxy_with_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "responses-api-proxy",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex responses-api-proxy`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_responses_api_proxy_with_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "responses-api-proxy",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex responses-api-proxy`", stderr.getvalue())
+
+    def test_main_remote_rejects_mcp_list_with_root_context(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "mcp",
+                "list",
+                "--json",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex mcp`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_mcp_list_with_root_context(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "mcp",
+                "list",
+                "--json",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex mcp`", stderr.getvalue())
+
+    def test_main_remote_rejects_mcp_list_with_preceding_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "mcp",
+                "--help",
+                "list",
+                "--json",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex mcp`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_mcp_list_with_preceding_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "mcp",
+                "--help",
+                "list",
+                "--json",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex mcp`", stderr.getvalue())
+
+    def test_main_remote_rejects_mcp_list_with_help_after_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "mcp",
+                "list",
+                "--help",
+                "--json",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex mcp`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_mcp_list_with_help_after_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "mcp",
+                "list",
+                "--help",
+                "--json",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex mcp`", stderr.getvalue())
+
+    def test_main_remote_rejects_mcp_get_with_help_after_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "mcp",
+                "get",
+                "demo",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex mcp`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_mcp_get_with_help_after_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "mcp",
+                "get",
+                "demo",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex mcp`", stderr.getvalue())
+
+    def test_main_remote_rejects_mcp_add_with_help_after_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "mcp",
+                "add",
+                "demo",
+                "--url",
+                "https://example.com/mcp",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex mcp`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_mcp_add_with_help_after_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "mcp",
+                "add",
+                "demo",
+                "--url",
+                "https://example.com/mcp",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex mcp`", stderr.getvalue())
+
+    def test_main_remote_rejects_mcp_remove_with_help_after_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "mcp",
+                "remove",
+                "demo",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex mcp`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_mcp_remove_with_help_after_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "mcp",
+                "remove",
+                "demo",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex mcp`", stderr.getvalue())
+
+    def test_main_remote_rejects_mcp_login_with_help_after_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "mcp",
+                "login",
+                "demo",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex mcp`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_mcp_login_with_help_after_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "mcp",
+                "login",
+                "demo",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex mcp`", stderr.getvalue())
+
+    def test_main_remote_rejects_mcp_logout_with_help_after_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "mcp",
+                "logout",
+                "demo",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex mcp`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_mcp_logout_with_help_after_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "mcp",
+                "logout",
+                "demo",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex mcp`", stderr.getvalue())
+
+    def test_main_remote_rejects_mcp_add_with_preceding_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "mcp",
+                "--help",
+                "add",
+                "demo",
+                "--url",
+                "https://example.com/mcp",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex mcp`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_mcp_add_with_preceding_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "mcp",
+                "--help",
+                "add",
+                "demo",
+                "--url",
+                "https://example.com/mcp",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex mcp`", stderr.getvalue())
+
+    def test_main_remote_rejects_mcp_remove_with_preceding_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "mcp",
+                "--help",
+                "remove",
+                "demo",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex mcp`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_mcp_remove_with_preceding_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "mcp",
+                "--help",
+                "remove",
+                "demo",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex mcp`", stderr.getvalue())
+
+    def test_main_remote_rejects_mcp_login_with_preceding_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "mcp",
+                "--help",
+                "login",
+                "demo",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex mcp`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_mcp_login_with_preceding_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "mcp",
+                "--help",
+                "login",
+                "demo",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex mcp`", stderr.getvalue())
+
+    def test_main_remote_rejects_mcp_logout_with_preceding_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "mcp",
+                "--help",
+                "logout",
+                "demo",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex mcp`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_mcp_logout_with_preceding_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "mcp",
+                "--help",
+                "logout",
+                "demo",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex mcp`", stderr.getvalue())
+
+    def test_main_remote_rejects_plugin_marketplace_add_with_preceding_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "plugin",
+                "--help",
+                "marketplace",
+                "add",
+                "owner/source",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex plugin`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_plugin_marketplace_add_with_preceding_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "plugin",
+                "--help",
+                "marketplace",
+                "add",
+                "owner/source",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex plugin`", stderr.getvalue())
+
+    def test_main_remote_rejects_plugin_marketplace_remove_with_preceding_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "plugin",
+                "--help",
+                "marketplace",
+                "remove",
+                "market-1",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex plugin`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_plugin_marketplace_remove_with_preceding_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "plugin",
+                "--help",
+                "marketplace",
+                "remove",
+                "market-1",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex plugin`", stderr.getvalue())
+
+    def test_main_remote_rejects_plugin_marketplace_upgrade_with_preceding_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "plugin",
+                "--help",
+                "marketplace",
+                "upgrade",
+                "market-1",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex plugin`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_plugin_marketplace_upgrade_with_preceding_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "plugin",
+                "--help",
+                "marketplace",
+                "upgrade",
+                "market-1",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex plugin`", stderr.getvalue())
+
+    def test_main_remote_rejects_plugin_marketplace_list_with_preceding_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "plugin",
+                "--help",
+                "marketplace",
+                "list",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex plugin`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_plugin_marketplace_list_with_preceding_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "plugin",
+                "--help",
+                "marketplace",
+                "list",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex plugin`", stderr.getvalue())
+
+    def test_main_remote_rejects_plugin_add_with_help_after_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "plugin",
+                "add",
+                "demo",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex plugin`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_plugin_add_with_help_after_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "plugin",
+                "add",
+                "demo",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex plugin`", stderr.getvalue())
+
+    def test_main_remote_rejects_plugin_marketplace_add_with_help_after_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "plugin",
+                "marketplace",
+                "add",
+                "owner/source",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex plugin`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_plugin_marketplace_add_with_help_after_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "plugin",
+                "marketplace",
+                "add",
+                "owner/source",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex plugin`", stderr.getvalue())
+
+    def test_main_remote_rejects_plugin_remove_with_help_after_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "plugin",
+                "remove",
+                "demo",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex plugin`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_plugin_remove_with_help_after_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "plugin",
+                "remove",
+                "demo",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex plugin`", stderr.getvalue())
+
+    def test_main_remote_rejects_plugin_marketplace_remove_with_help_after_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "plugin",
+                "marketplace",
+                "remove",
+                "market-1",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex plugin`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_plugin_marketplace_remove_with_help_after_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "plugin",
+                "marketplace",
+                "remove",
+                "market-1",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex plugin`", stderr.getvalue())
+
+    def test_main_remote_rejects_plugin_marketplace_upgrade_with_help_after_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "plugin",
+                "marketplace",
+                "upgrade",
+                "market-1",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex plugin`", stderr.getvalue())
+
+    def test_main_remote_rejects_plugin_marketplace_list_with_help_after_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "plugin",
+                "marketplace",
+                "list",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex plugin`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_plugin_marketplace_list_with_help_after_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "plugin",
+                "marketplace",
+                "list",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex plugin`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_plugin_marketplace_upgrade_with_help_after_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "plugin",
+                "marketplace",
+                "upgrade",
+                "market-1",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex plugin`", stderr.getvalue())
+
+    def test_main_remote_rejects_plugin_list_with_root_context(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "plugin",
+                "list",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex plugin`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_plugin_list_with_root_context(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "plugin",
+                "list",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex plugin`", stderr.getvalue())
+
+    def test_main_remote_rejects_plugin_list_with_preceding_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "plugin",
+                "--help",
+                "list",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex plugin`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_plugin_list_with_preceding_help(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "plugin",
+                "--help",
+                "list",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex plugin`", stderr.getvalue())
+
+    def test_main_remote_rejects_plugin_list_with_help_after_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "plugin",
+                "list",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex plugin`", stderr.getvalue())
+
+    def test_main_remote_auth_rejects_plugin_list_with_help_after_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "plugin",
+                "list",
+                "--help",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("not `codex plugin`", stderr.getvalue())
 
     def test_remote_mode_rejection_messages_match_upstream(self):
         with self.assertRaisesRegex(CliParseError, "`--remote ws://localhost:4500`"):
@@ -187,6 +4641,2471 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertEqual(exec_cli.model, "gpt-5.2")
         self.assertIs(exec_cli.sandbox, SandboxMode.WORKSPACE_WRITE)
         self.assertEqual(exec_cli.add_dir, ("root-extra", "exec-extra"))
+
+    def test_main_review_alias_runs_exec_plan_preparation(self):
+        stderr = io.StringIO()
+
+        code = main(["review", "--commit", "123456789", "--title", "Fix"], stderr=stderr)
+
+        self.assertEqual(code, 0)
+        self.assertIn("prepared non-interactive review plan", stderr.getvalue())
+
+    def test_main_review_help_prints_usage(self):
+        stdout = io.StringIO()
+
+        code = main(["review", "--help"], stdout=stdout)
+
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: codex review", stdout.getvalue())
+
+    def test_main_exec_help_prints_usage(self):
+        stdout = io.StringIO()
+
+        code = main(["exec", "--help"], stdout=stdout)
+
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: codex exec", stdout.getvalue())
+
+    def test_main_review_requires_review_target(self):
+        stderr = io.StringIO()
+
+        code = main(["review"], stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("Specify --uncommitted", stderr.getvalue())
+
+    def test_main_review_inherits_root_exec_shared_options(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--model",
+                "gpt-5.2",
+                "--sandbox",
+                "workspace-write",
+                "review",
+                "--commit",
+                "123456789",
+                "--title",
+                "Fix",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 0)
+        self.assertIn("prepared non-interactive review plan", stderr.getvalue())
+
+    def test_main_completion_defaults_to_bash(self):
+        stdout = io.StringIO()
+
+        code = main(["completion"], stdout=stdout)
+
+        self.assertEqual(code, 0)
+        self.assertIn("pycodex completion (bash)", stdout.getvalue())
+
+    def test_main_completion_accepts_shell_option(self):
+        stdout = io.StringIO()
+
+        code = main(["completion", "--shell", "zsh"], stdout=stdout)
+
+        self.assertEqual(code, 0)
+        self.assertIn("pycodex completion (zsh)", stdout.getvalue())
+
+    def test_main_completion_accepts_short_shell_option(self):
+        stdout = io.StringIO()
+
+        code = main(["completion", "-s", "fish"], stdout=stdout)
+
+        self.assertEqual(code, 0)
+        self.assertIn("# pycodex completion (fish)", stdout.getvalue())
+
+    def test_main_completion_accepts_shell_option_with_equals(self):
+        stdout = io.StringIO()
+
+        code = main(["completion", "--shell=zsh"], stdout=stdout)
+
+        self.assertEqual(code, 0)
+        self.assertIn("# pycodex completion (zsh)", stdout.getvalue())
+
+    def test_main_completion_rejects_unsupported_shell(self):
+        stderr = io.StringIO()
+
+        code = main(["completion", "--shell", "unsupported-shell"], stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("Unsupported shell 'unsupported-shell'", stderr.getvalue())
+
+    def test_main_completion_unknown_argument(self):
+        stderr = io.StringIO()
+
+        code = main(["completion", "--mystery"], stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("Unknown argument for completion: --mystery", stderr.getvalue())
+
+    def test_main_completion_help_prints_usage(self):
+        stdout = io.StringIO()
+
+        code = main(["completion", "--help"], stdout=stdout)
+
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: codex completion", stdout.getvalue())
+
+    def test_main_login_status_not_logged_in(self):
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous = os.environ.get("CODEX_HOME")
+            os.environ["CODEX_HOME"] = tmpdir
+            try:
+                code = main(["login", "status"], stderr=stderr)
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        self.assertEqual(code, 1)
+        self.assertIn("Not logged in", stderr.getvalue())
+
+    def test_main_login_status_api_key(self):
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous = os.environ.get("CODEX_HOME")
+            os.environ["CODEX_HOME"] = tmpdir
+            auth_json = {
+                "auth_mode": "apiKey",
+                "OPENAI_API_KEY": "sk-test-key-12345",
+            }
+            (Path(tmpdir) / "auth.json").write_text(
+                json.dumps(auth_json, indent=2),
+                encoding="utf-8",
+            )
+
+            try:
+                code = main(["login", "status"], stderr=stderr)
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        self.assertEqual(code, 0)
+        self.assertIn("Logged in using an API key - sk-test-***12345", stderr.getvalue())
+
+    def test_main_login_status_default_to_chatgpt_for_legacy_missing_auth_mode(self):
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous = os.environ.get("CODEX_HOME")
+            os.environ["CODEX_HOME"] = tmpdir
+            auth_json = {
+                "OPENAI_API_KEY": "",
+                "tokens": {
+                    "access_token": "x",
+                    "refresh_token": "y",
+                    "account_id": "acct",
+                },
+                "last_refresh": "2025-01-01T00:00:00Z",
+            }
+            (Path(tmpdir) / "auth.json").write_text(
+                json.dumps(auth_json, indent=2),
+                encoding="utf-8",
+            )
+
+            try:
+                code = main(["login", "status"], stderr=stderr)
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        self.assertEqual(code, 0)
+        self.assertIn("Logged in using ChatGPT", stderr.getvalue())
+
+    def test_main_login_status_rejects_unknown_auth_mode(self):
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous = os.environ.get("CODEX_HOME")
+            os.environ["CODEX_HOME"] = tmpdir
+            auth_json = {
+                "auth_mode": "mystery-mode",
+                "OPENAI_API_KEY": "sk-test",
+            }
+            (Path(tmpdir) / "auth.json").write_text(
+                json.dumps(auth_json, indent=2),
+                encoding="utf-8",
+            )
+
+            try:
+                code = main(["login", "status"], stderr=stderr)
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        self.assertEqual(code, 2)
+        self.assertIn("Unknown auth_mode value", stderr.getvalue())
+
+    def test_main_login_status_rejects_invalid_auth_json(self):
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous = os.environ.get("CODEX_HOME")
+            os.environ["CODEX_HOME"] = tmpdir
+            (Path(tmpdir) / "auth.json").write_text("{{", encoding="utf-8")
+            try:
+                code = main(["login", "status"], stderr=stderr)
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        self.assertEqual(code, 2)
+        self.assertIn("Invalid auth file format.", stderr.getvalue())
+
+    def test_main_login_status_agent_identity(self):
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous = os.environ.get("CODEX_HOME")
+            os.environ["CODEX_HOME"] = tmpdir
+            auth_json = {
+                "auth_mode": "agentIdentity",
+                "agent_identity": "access-token-value",
+            }
+            (Path(tmpdir) / "auth.json").write_text(
+                json.dumps(auth_json, indent=2),
+                encoding="utf-8",
+            )
+
+            try:
+                code = main(["login", "status"], stderr=stderr)
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        self.assertEqual(code, 0)
+        self.assertIn("Logged in using access token", stderr.getvalue())
+
+    def test_main_login_status_rejects_extra_positionals(self):
+        stderr = io.StringIO()
+
+        code = main(["login", "status", "unexpected"], stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("`status` does not accept extra login arguments.", stderr.getvalue())
+
+    def test_main_login_help_prints_usage(self):
+        stdout = io.StringIO()
+
+        code = main(["login", "--help"], stdout=stdout)
+
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: codex login", stdout.getvalue())
+
+    def test_main_login_status_help_prints_usage(self):
+        stdout = io.StringIO()
+
+        code = main(["login", "status", "--help"], stdout=stdout)
+
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: codex login status", stdout.getvalue())
+
+    def test_main_login_prints_guidance_for_deprecated_api_key_flag(self):
+        stderr = io.StringIO()
+
+        code = main(["login", "--api-key", "abc"], stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("The --api-key flag is no longer supported.", stderr.getvalue())
+
+    def test_main_login_defaults_to_chatgpt_login_flow(self):
+        stderr = io.StringIO()
+
+        with patch("pycodex.cli.parser.run_chatgpt_login", return_value=0) as chatgpt_login:
+            code = main(["login"], stderr=stderr)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(chatgpt_login.call_count, 1)
+        self.assertIsNone(chatgpt_login.call_args.kwargs["issuer"])
+        self.assertIsNone(chatgpt_login.call_args.kwargs["client_id"])
+
+    def test_main_login_defaults_to_chatgpt_login_flow_with_experimental_overrides(self):
+        stderr = io.StringIO()
+
+        with patch("pycodex.cli.parser.run_chatgpt_login", return_value=0) as chatgpt_login:
+            code = main(
+                [
+                    "login",
+                    "--experimental_issuer",
+                    "https://auth.example.com",
+                    "--experimental_client-id",
+                    "custom-client-id",
+                ],
+                stderr=stderr,
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(chatgpt_login.call_count, 1)
+        self.assertEqual(
+            chatgpt_login.call_args.kwargs["issuer"],
+            "https://auth.example.com",
+        )
+        self.assertEqual(
+            chatgpt_login.call_args.kwargs["client_id"],
+            "custom-client-id",
+        )
+
+    def test_main_login_defaults_to_not_implemented_chatgpt_flow(self):
+        stderr = io.StringIO()
+
+        with patch("pycodex.cli.login._CHATGPT_LOGIN_WAIT_SECONDS", 0), patch(
+            "pycodex.cli.login.webbrowser.open", return_value=False
+        ):
+            code = main(["login"], stderr=stderr)
+
+        self.assertEqual(code, 64)
+        self.assertIn("Starting local login server on http://localhost:", stderr.getvalue())
+        self.assertIn("login callback was not completed in time", stderr.getvalue())
+
+    def test_main_login_rejects_double_credentials(self):
+        stderr = io.StringIO()
+
+        code = main(["login", "--with-api-key", "--with-access-token"], stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("Choose one login credential source", stderr.getvalue())
+
+    def test_main_login_device_auth(self):
+        stderr = io.StringIO()
+
+        with patch("pycodex.cli.parser._run_device_auth_login", return_value=0) as device_auth_call:
+            code = main(["login", "--device-auth"], stderr=stderr)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(device_auth_call.call_count, 1)
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_main_login_device_auth_with_experimental_overrides(self):
+        stderr = io.StringIO()
+
+        with patch("pycodex.cli.parser._run_device_auth_login", return_value=0) as device_auth_call:
+            code = main(
+                [
+                    "login",
+                    "--device-auth",
+                    "--experimental_issuer",
+                    "https://auth.example.local",
+                    "--experimental_client-id",
+                    "device-client-id",
+                ],
+                stderr=stderr,
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(device_auth_call.call_count, 1)
+        kwargs = device_auth_call.call_args.kwargs
+        self.assertEqual(kwargs["issuer"], "https://auth.example.local")
+        self.assertEqual(kwargs["client_id"], "device-client-id")
+
+    def test_main_login_status_rejects_device_auth_flag(self):
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous = os.environ.get("CODEX_HOME")
+            os.environ["CODEX_HOME"] = tmpdir
+            try:
+                code = main(["login", "status", "--device-auth"], stderr=stderr)
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        self.assertEqual(code, 2)
+        self.assertIn("`status` does not accept extra login arguments.", stderr.getvalue())
+
+    def test_main_login_status_rejects_api_key_flags(self):
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous = os.environ.get("CODEX_HOME")
+            os.environ["CODEX_HOME"] = tmpdir
+            try:
+                code = main(["login", "status", "--with-api-key"], stderr=stderr)
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        self.assertEqual(code, 2)
+        self.assertIn("`status` does not accept extra login arguments.", stderr.getvalue())
+
+    def test_main_login_status_rejects_access_token_flags(self):
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous = os.environ.get("CODEX_HOME")
+            os.environ["CODEX_HOME"] = tmpdir
+            try:
+                code = main(["login", "status", "--with-access-token"], stderr=stderr)
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        self.assertEqual(code, 2)
+        self.assertIn("`status` does not accept extra login arguments.", stderr.getvalue())
+
+    def test_main_login_status_rejects_experimental_flags(self):
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous = os.environ.get("CODEX_HOME")
+            os.environ["CODEX_HOME"] = tmpdir
+            try:
+                code = main(
+                    [
+                        "login",
+                        "status",
+                        "--experimental_issuer",
+                        "https://auth.example.com",
+                        "--experimental_client-id",
+                        "client-id",
+                    ],
+                    stderr=stderr,
+                )
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        self.assertEqual(code, 2)
+        self.assertIn("`status` does not accept extra login arguments.", stderr.getvalue())
+
+    def test_main_login_status_rejects_double_credentials(self):
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous = os.environ.get("CODEX_HOME")
+            os.environ["CODEX_HOME"] = tmpdir
+            try:
+                code = main(
+                    ["login", "status", "--with-api-key", "--with-access-token"],
+                    stderr=stderr,
+                )
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        self.assertEqual(code, 2)
+        self.assertIn("`status` does not accept extra login arguments.", stderr.getvalue())
+
+    def test_main_login_status_accepts_double_credentials_with_status_after(self):
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous = os.environ.get("CODEX_HOME")
+            os.environ["CODEX_HOME"] = tmpdir
+            try:
+                code = main(
+                    ["login", "--with-api-key", "--with-access-token", "status"],
+                    stderr=stderr,
+                )
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        self.assertEqual(code, 1)
+        self.assertIn("Not logged in", stderr.getvalue())
+
+    def test_main_login_status_accepts_with_api_key_before_status(self):
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous = os.environ.get("CODEX_HOME")
+            os.environ["CODEX_HOME"] = tmpdir
+            try:
+                code = main(["login", "--with-api-key", "status"], stderr=stderr)
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        self.assertEqual(code, 1)
+        self.assertIn("Not logged in", stderr.getvalue())
+
+    def test_main_login_status_help_with_preceding_flag(self):
+        stdout = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous = os.environ.get("CODEX_HOME")
+            os.environ["CODEX_HOME"] = tmpdir
+            try:
+                code = main(["login", "--with-api-key", "status", "--help"], stdout=stdout)
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: codex login status", stdout.getvalue())
+
+    def test_main_login_deprecated_api_key_with_status_value_rejected(self):
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous = os.environ.get("CODEX_HOME")
+            os.environ["CODEX_HOME"] = tmpdir
+            try:
+                code = main(["login", "--api-key", "status"], stderr=stderr)
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        self.assertEqual(code, 2)
+        self.assertIn("The --api-key flag is no longer supported.", stderr.getvalue())
+
+    def test_main_login_status_rejects_deprecated_api_key_flag(self):
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous = os.environ.get("CODEX_HOME")
+            os.environ["CODEX_HOME"] = tmpdir
+            try:
+                code = main(["login", "status", "--api-key", "abc"], stderr=stderr)
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        self.assertEqual(code, 2)
+        self.assertIn("`status` does not accept extra login arguments.", stderr.getvalue())
+
+    def test_main_login_rejects_device_auth_with_access_token_mode(self):
+        stderr = io.StringIO()
+
+        code = main(["login", "--device-auth", "--with-access-token"], stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("Choose one login credential source", stderr.getvalue())
+
+    def test_main_login_rejects_device_auth_with_api_key_mode(self):
+        stderr = io.StringIO()
+
+        code = main(["login", "--device-auth", "--with-api-key"], stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("Choose one login credential source", stderr.getvalue())
+
+    def test_oauth_callback_error_message_for_missing_codex_entitlement(self):
+        from pycodex.cli.login import _oauth_callback_error_message
+
+        self.assertEqual(
+            _oauth_callback_error_message("access_denied", "workspace does not have missing_codex_entitlement feature"),
+            "Codex is not enabled for your workspace. Contact your workspace administrator to request access to Codex.",
+        )
+
+    def test_oauth_callback_error_message_preserves_error_description(self):
+        from pycodex.cli.login import _oauth_callback_error_message
+
+        self.assertEqual(
+            _oauth_callback_error_message("access_denied", "user canceled"),
+            "Sign-in failed: user canceled",
+        )
+
+    def test_extract_auth_claims_from_jwt(self):
+        import base64
+
+        from pycodex.cli.login import _extract_auth_claims_from_jwt
+
+        claims = {
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "acct-123",
+                "plan": "plus",
+            },
+        }
+        payload = json.dumps(claims).encode()
+        encoded_payload = base64.urlsafe_b64encode(payload).decode().rstrip("=")
+        token = f"header.{encoded_payload}.sig"
+        self.assertEqual(
+            _extract_auth_claims_from_jwt(token),
+            {
+                "chatgpt_account_id": "acct-123",
+                "plan": "plus",
+            },
+        )
+
+    def test_extract_auth_claims_from_jwt_returns_empty_on_bad_token(self):
+        from pycodex.cli.login import _extract_auth_claims_from_jwt
+
+        self.assertEqual(_extract_auth_claims_from_jwt("bad.token"), {})
+
+    def test_main_login_requires_stdin_for_api_key_flag(self):
+        stderr = io.StringIO()
+
+        code = main(["login", "--with-api-key"], stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("--with-api-key requires value from stdin.", stderr.getvalue())
+
+    def test_main_login_with_api_key_terminal_stdin_fails(self):
+        stderr = io.StringIO()
+
+        code = main(
+            ["login", "--with-api-key"],
+            stdin="sk-xyz\n",
+            stdin_is_terminal=True,
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn(
+            "expects the API key on stdin. Try piping it, e.g. `printenv OPENAI_API_KEY | codex login --with-api-key`.",
+            stderr.getvalue(),
+        )
+
+    def test_main_login_with_access_token_terminal_stdin_fails(self):
+        stderr = io.StringIO()
+
+        code = main(
+            ["login", "--with-access-token"],
+            stdin="access-token\n",
+            stdin_is_terminal=True,
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn(
+            "expects the access token on stdin. Try piping it, e.g. `printenv CODEX_ACCESS_TOKEN | codex login --with-access-token`.",
+            stderr.getvalue(),
+        )
+
+    def test_main_login_with_api_key_reads_stdin(self):
+        stderr = io.StringIO()
+        auth_payload: dict[str, object] = {}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous = os.environ.get("CODEX_HOME")
+            os.environ["CODEX_HOME"] = tmpdir
+
+            try:
+                code = main(["login", "--with-api-key"], stdin="sk-xyz\n", stderr=stderr)
+                auth_payload = json.loads(
+                    (Path(tmpdir) / "auth.json").read_text(encoding="utf-8")
+                )
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        self.assertEqual(code, 0)
+        self.assertIn("Successfully logged in", stderr.getvalue())
+        self.assertEqual(auth_payload.get("OPENAI_API_KEY"), "sk-xyz")
+
+    def test_main_login_with_api_key_empty_stdin_rejected(self):
+        stderr = io.StringIO()
+
+        code = main(["login", "--with-api-key"], stdin="\n", stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("No API key provided via stdin.", stderr.getvalue())
+
+    def test_main_login_with_access_token_reads_stdin(self):
+        stderr = io.StringIO()
+        auth_payload: dict[str, object] = {}
+        valid_access_token = "eyJhbGciOiAibm9uZSJ9.eyJzdWIiOiAiYWNjZXNzLXRva2VuIn0.c2lnbmF0dXJl"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous = os.environ.get("CODEX_HOME")
+            os.environ["CODEX_HOME"] = tmpdir
+
+            try:
+                code = main(
+                    ["login", "--with-access-token"],
+                    stdin=f"{valid_access_token}\n",
+                    stderr=stderr,
+                )
+                auth_payload = json.loads(
+                    (Path(tmpdir) / "auth.json").read_text(encoding="utf-8")
+                )
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        self.assertEqual(code, 0)
+        self.assertIn("Successfully logged in", stderr.getvalue())
+        self.assertEqual(auth_payload.get("agent_identity"), valid_access_token)
+
+    def test_main_login_with_access_token_empty_stdin_rejected(self):
+        stderr = io.StringIO()
+
+        code = main(["login", "--with-access-token"], stdin="\n", stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("No access token provided via stdin.", stderr.getvalue())
+
+    def test_main_login_with_invalid_access_token_rejected(self):
+        stderr = io.StringIO()
+
+        code = main(["login", "--with-access-token"], stdin="not-a-jwt-token", stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn(
+            "Error logging in with access token: invalid access token format.",
+            stderr.getvalue(),
+        )
+
+    def test_main_logout_no_args(self):
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous = os.environ.get("CODEX_HOME")
+            os.environ["CODEX_HOME"] = tmpdir
+            try:
+                code = main(["logout"], stderr=stderr)
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        self.assertEqual(code, 0)
+        self.assertIn("Not logged in", stderr.getvalue())
+
+    def test_parse_logout_disallows_args(self):
+        with self.assertRaisesRegex(CliParseError, "unexpected argument 'unexpected' for `codex logout`"):
+            parse_args(["logout", "unexpected"])
+
+    def test_main_logout_removes_auth_file(self):
+        stderr = io.StringIO()
+        removed = False
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous = os.environ.get("CODEX_HOME")
+            os.environ["CODEX_HOME"] = tmpdir
+            auth_path = Path(tmpdir) / "auth.json"
+            auth_path.write_text(json.dumps({"auth_mode": "apiKey", "OPENAI_API_KEY": "sk-test"}), encoding="utf-8")
+            try:
+                code = main(["logout"], stderr=stderr)
+                removed = not auth_path.exists()
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        self.assertEqual(code, 0)
+        self.assertIn("Successfully logged out", stderr.getvalue())
+        self.assertTrue(removed)
+
+    def test_main_logout_rejects_unknown_arg(self):
+        stderr = io.StringIO()
+
+        code = main(["logout", "unexpected"], stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("unexpected argument 'unexpected' for `codex logout`", stderr.getvalue())
+
+    def test_main_logout_help_does_not_logout(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        logout_retained = False
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous = os.environ.get("CODEX_HOME")
+            os.environ["CODEX_HOME"] = tmpdir
+            Path(tmpdir, "auth.json").write_text(json.dumps({"auth_mode": "apiKey"}), encoding="utf-8")
+            try:
+                code = main(["logout", "--help"], stdout=stdout, stderr=stderr)
+                logout_retained = Path(tmpdir, "auth.json").exists()
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: codex logout", stdout.getvalue())
+        self.assertTrue(logout_retained)
+
+    def test_main_update_no_args(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        code = main(["update"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0)
+        self.assertIn(
+            "update command is not implemented in this Python port yet.",
+            stdout.getvalue(),
+        )
+
+    def test_main_update_help(self):
+        stdout = io.StringIO()
+
+        code = main(["update", "--help"], stdout=stdout)
+
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: codex update [OPTIONS]", stdout.getvalue())
+
+    def test_main_update_rejects_unknown_arg(self):
+        stderr = io.StringIO()
+
+        code = main(["update", "now"], stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("Unknown argument for update", stderr.getvalue())
+
+    def test_main_doctor_reports_status(self):
+        stdout = io.StringIO()
+
+        code = main(["doctor"], stdout=stdout)
+
+        self.assertEqual(code, 0)
+        self.assertIn("doctor:", stdout.getvalue())
+
+    def test_main_sandbox_requires_command(self):
+        stderr = io.StringIO()
+
+        code = main(["sandbox", "--permissions-profile", "default", "--cd", "."], stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("sandbox command not provided", stderr.getvalue())
+
+    def test_main_exec_server_prints_config(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        code = main(["exec-server", "--listen", "127.0.0.1:8080"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0)
+        self.assertIn("pycodex: exec-server config:", stdout.getvalue())
+        self.assertIn("exec-server is not fully implemented", stderr.getvalue())
+
+    def test_main_exec_server_allows_stdio_listen(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        code = main(["exec-server", "--listen", "stdio://"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0)
+        self.assertIn('"listen": "stdio://"', stdout.getvalue())
+
+    def test_main_app_help_prints_usage(self):
+        stdout = io.StringIO()
+
+        code = main(["app", "--help"], stdout=stdout)
+
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: codex app [OPTIONS] [PATH]", stdout.getvalue())
+
+    def test_main_exec_server_rejects_listen_with_remote(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "exec-server",
+                "--listen",
+                "127.0.0.1:8080",
+                "--remote",
+                "ws://127.0.0.1:4500",
+                "--environment-id",
+                "env-1",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn(
+            "pycodex: --listen cannot be used with --remote.",
+            stderr.getvalue(),
+        )
+
+    def test_main_exec_server_requires_access_token_for_agent_identity_auth(self):
+        previous_token = os.environ.get("CODEX_ACCESS_TOKEN")
+        if previous_token is not None:
+            os.environ.pop("CODEX_ACCESS_TOKEN")
+
+        stderr = io.StringIO()
+        try:
+            code = main(
+                [
+                    "exec-server",
+                    "--remote",
+                    "ws://127.0.0.1:4500",
+                    "--environment-id",
+                    "env-1",
+                    "--use-agent-identity-auth",
+                ],
+                stderr=stderr,
+            )
+        finally:
+            if previous_token is None:
+                os.environ.pop("CODEX_ACCESS_TOKEN", None)
+            else:
+                os.environ["CODEX_ACCESS_TOKEN"] = previous_token
+
+        self.assertEqual(code, 2)
+        self.assertIn(
+            "CODEX_ACCESS_TOKEN is required when --use-agent-identity-auth is set.",
+            stderr.getvalue(),
+        )
+
+    def test_main_exec_allows_strict_config(self):
+        stderr = io.StringIO()
+
+        code = main(["--strict-config", "exec", "--full-auto", "prompt"], stderr=stderr)
+
+        self.assertEqual(code, 0)
+        self.assertIn("prepared non-interactive exec plan", stderr.getvalue())
+
+    def test_main_rejects_strict_config_for_unsupported_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(["--strict-config", "login", "status"], stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("`--strict-config` is not supported for `codex login`", stderr.getvalue())
+
+    def test_main_allows_strict_config_for_app_server_root(self):
+        stderr = io.StringIO()
+
+        code = main(["--strict-config", "app-server"], stderr=stderr)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_main_rejects_strict_config_for_app_server_proxy(self):
+        stderr = io.StringIO()
+
+        code = main(["--strict-config", "app-server", "proxy"], stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn(
+            "`--strict-config` is not supported for `codex app-server proxy`",
+            stderr.getvalue(),
+        )
+
+    def test_main_rejects_strict_config_for_app_server_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(["--strict-config", "app-server", "daemon", "start"], stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn(
+            "`--strict-config` is not supported for `codex app-server daemon start`",
+            stderr.getvalue(),
+        )
+
+    def test_main_rejects_strict_config_for_remote_control_subcommands(self):
+        stderr = io.StringIO()
+        for command_args, expected in (
+            (["remote-control"], "codex remote-control"),
+            (["remote-control", "--json"], "codex remote-control"),
+            (["remote-control", "--json", "start"], "codex remote-control start"),
+            (["remote-control", "start", "--json"], "codex remote-control start"),
+            (["remote-control", "start"], "codex remote-control start"),
+            (["remote-control", "stop"], "codex remote-control stop"),
+        ):
+            with self.subTest(command_args=command_args):
+                stderr = io.StringIO()
+                code = main(["--strict-config", *command_args], stderr=stderr)
+                self.assertEqual(code, 2)
+                self.assertIn(
+                    f"`--strict-config` is not supported for `{expected}`",
+                    stderr.getvalue(),
+                )
+
+    def test_main_rejects_strict_config_for_app_server_all_daemon_subcommands(self):
+        for daemon_subcommand in (
+            "start",
+            "restart",
+            "stop",
+            "enable-remote-control",
+            "disable-remote-control",
+            "version",
+            "pid-update-loop",
+            "bootstrap",
+        ):
+            with self.subTest(daemon_subcommand=daemon_subcommand):
+                stderr = io.StringIO()
+                code = main(
+                    ["--strict-config", "app-server", "daemon", daemon_subcommand],
+                    stderr=stderr,
+                )
+                self.assertEqual(code, 2)
+                self.assertIn(
+                    f"`--strict-config` is not supported for `codex app-server daemon {daemon_subcommand}`",
+                    stderr.getvalue(),
+                )
+
+    def test_main_rejects_strict_config_for_app_server_allows_root_flags_for_daemon(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--strict-config",
+                "app-server",
+                "--listen",
+                "stdio://",
+                "--remote-control",
+                "daemon",
+                "start",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("`--strict-config` is not supported for `codex app-server daemon start`", stderr.getvalue())
+
+    def test_main_rejects_strict_config_for_app_server_generate_ts_with_root_options(self):
+        stderr = io.StringIO()
+
+        code = main(
+            [
+                "--strict-config",
+                "app-server",
+                "--listen",
+                "stdio://",
+                "--ws-auth",
+                "capability-token",
+                "--ws-token-file",
+                "/tmp/token",
+                "generate-ts",
+                "--out",
+                "out",
+            ],
+            stderr=stderr,
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn(
+            "`--strict-config` is not supported for `codex app-server generate-ts`",
+            stderr.getvalue(),
+        )
+
+    def test_main_exec_reads_stdin_prompt_when_no_prompt_argument(self):
+        stderr = io.StringIO()
+
+        code = main(["exec"], stdin="Summarize this\n", stderr=stderr)
+
+        self.assertEqual(code, 0)
+        self.assertIn("prepared non-interactive exec plan", stderr.getvalue())
+
+    def test_main_exec_prepares_noninteractive_plan(self):
+        stderr = io.StringIO()
+
+        code = main(["exec", "--full-auto", "prompt"], stderr=stderr)
+
+        self.assertEqual(code, 0)
+        self.assertIn("prepared non-interactive exec plan", stderr.getvalue())
+
+    def test_main_exec_when_local_app_server_missing_prints_start_hint(self):
+        previous_home = os.environ.get("CODEX_HOME")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.environ["CODEX_HOME"] = tmpdir
+            endpoint_path = Path(tmpdir) / "app-server-control" / "app-server-control.sock"
+            fake_endpoint = type("FakeEndpoint", (), {"kind": "unix_socket", "socket_path": endpoint_path})()
+
+            class FailedResult:
+                ok = False
+                exit_code = 17
+                error_message = "connection failed (stubbed)"
+
+            try:
+                with patch(
+                    "pycodex.cli.parser._resolve_exec_remote_endpoint",
+                    return_value=("unix://%s" % endpoint_path, fake_endpoint, Path(tmpdir)),
+                ):
+                    with patch("pycodex.cli.parser.remote_exec_session_connect_and_run", return_value=FailedResult()):
+                        stderr = io.StringIO()
+                        code = main(["exec", "prompt"], stderr=stderr)
+            finally:
+                if previous_home is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous_home
+
+        self.assertEqual(code, 17)
+        self.assertIn("local app-server socket not found", stderr.getvalue())
+        self.assertIn("app-server state: state file missing", stderr.getvalue())
+        self.assertIn("start the local app-server first, for example:", stderr.getvalue())
+        self.assertIn("codex app-server daemon start", stderr.getvalue())
+        self.assertIn("connection failed (stubbed)", stderr.getvalue())
+
+    def test_main_exec_when_local_app_server_state_not_running_prints_state_hint(self):
+        previous_home = os.environ.get("CODEX_HOME")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.environ["CODEX_HOME"] = tmpdir
+            state_path = Path(tmpdir) / "app-server-state.json"
+            state_path.write_text(json.dumps({"daemon": {"running": False}}), encoding="utf-8")
+            endpoint_path = Path(tmpdir) / "app-server-control" / "app-server-control.sock"
+            fake_endpoint = type("FakeEndpoint", (), {"kind": "unix_socket", "socket_path": endpoint_path})()
+
+            endpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            endpoint_path.write_text("", encoding="utf-8")
+
+            class FailedResult:
+                ok = False
+                exit_code = 19
+                error_message = "connection failed (stubbed)"
+
+            try:
+                with patch(
+                    "pycodex.cli.parser._resolve_exec_remote_endpoint",
+                    return_value=("unix://%s" % endpoint_path, fake_endpoint, Path(tmpdir)),
+                ):
+                    with patch("pycodex.cli.parser.remote_exec_session_connect_and_run", return_value=FailedResult()):
+                        stderr = io.StringIO()
+                        code = main(["exec", "prompt"], stderr=stderr)
+            finally:
+                if previous_home is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous_home
+
+        self.assertEqual(code, 19)
+        self.assertIn("cannot connect to local app-server socket", stderr.getvalue())
+        self.assertIn("state says not running", stderr.getvalue())
+        self.assertIn("codex app-server daemon bootstrap", stderr.getvalue())
+
+    def test_main_exec_when_local_app_server_state_is_invalid_prints_state_read_error(self):
+        previous_home = os.environ.get("CODEX_HOME")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.environ["CODEX_HOME"] = tmpdir
+            state_path = Path(tmpdir) / "app-server-state.json"
+            state_path.write_text("[]", encoding="utf-8")
+            endpoint_path = Path(tmpdir) / "app-server-control" / "app-server-control.sock"
+            fake_endpoint = type("FakeEndpoint", (), {"kind": "unix_socket", "socket_path": endpoint_path})()
+
+            endpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            endpoint_path.write_text("", encoding="utf-8")
+
+            class FailedResult:
+                ok = False
+                exit_code = 23
+                error_message = "[Errno 111] Connection refused"
+
+            try:
+                with patch(
+                    "pycodex.cli.parser._resolve_exec_remote_endpoint",
+                    return_value=("unix://%s" % endpoint_path, fake_endpoint, Path(tmpdir)),
+                ):
+                    with patch("pycodex.cli.parser.remote_exec_session_connect_and_run", return_value=FailedResult()):
+                        stderr = io.StringIO()
+                        code = main(["exec", "prompt"], stderr=stderr)
+            finally:
+                if previous_home is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous_home
+
+        self.assertEqual(code, 23)
+        self.assertIn("app-server state: failed to read state: invalid state format in", stderr.getvalue())
+        self.assertIn("local app-server socket exists but the app-server is not accepting connections yet.", stderr.getvalue())
+
+    def test_main_exec_when_local_app_server_state_is_unreadable_prints_state_read_error(self):
+        previous_home = os.environ.get("CODEX_HOME")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.environ["CODEX_HOME"] = tmpdir
+            state_path = Path(tmpdir) / "app-server-state.json"
+            state_path.write_text("{\"daemon\":", encoding="utf-8")
+            endpoint_path = Path(tmpdir) / "app-server-control" / "app-server-control.sock"
+            fake_endpoint = type("FakeEndpoint", (), {"kind": "unix_socket", "socket_path": endpoint_path})()
+
+            endpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            endpoint_path.write_text("", encoding="utf-8")
+
+            class FailedResult:
+                ok = False
+                exit_code = 24
+                error_message = "[Errno 111] Connection refused"
+
+            try:
+                with patch(
+                    "pycodex.cli.parser._resolve_exec_remote_endpoint",
+                    return_value=("unix://%s" % endpoint_path, fake_endpoint, Path(tmpdir)),
+                ):
+                    with patch("pycodex.cli.parser.remote_exec_session_connect_and_run", return_value=FailedResult()):
+                        stderr = io.StringIO()
+                        code = main(["exec", "prompt"], stderr=stderr)
+            finally:
+                if previous_home is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous_home
+
+        self.assertEqual(code, 24)
+        self.assertIn("app-server state: failed to read state: failed to read", stderr.getvalue())
+        self.assertIn("state file", stderr.getvalue())
+
+    def test_main_exec_when_local_app_server_connection_is_refused_prints_refused_hint(self):
+        previous_home = os.environ.get("CODEX_HOME")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.environ["CODEX_HOME"] = tmpdir
+            endpoint_path = Path(tmpdir) / "app-server-control" / "app-server-control.sock"
+            fake_endpoint = type("FakeEndpoint", (), {"kind": "unix_socket", "socket_path": endpoint_path})()
+
+            endpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            endpoint_path.write_text("", encoding="utf-8")
+
+            class FailedResult:
+                ok = False
+                exit_code = 19
+                error_message = "[Errno 111] Connection refused"
+
+            try:
+                with patch(
+                    "pycodex.cli.parser._resolve_exec_remote_endpoint",
+                    return_value=("unix://%s" % endpoint_path, fake_endpoint, Path(tmpdir)),
+                ):
+                    with patch("pycodex.cli.parser.remote_exec_session_connect_and_run", return_value=FailedResult()):
+                        stderr = io.StringIO()
+                        code = main(["exec", "prompt"], stderr=stderr)
+            finally:
+                if previous_home is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous_home
+
+        self.assertEqual(code, 19)
+        self.assertIn("local app-server socket exists but the app-server is not accepting connections yet.", stderr.getvalue())
+        self.assertIn("[Errno 111] Connection refused", stderr.getvalue())
+
+    def test_main_exec_when_local_app_server_generic_connect_error_prints_generic_hint(self):
+        previous_home = os.environ.get("CODEX_HOME")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.environ["CODEX_HOME"] = tmpdir
+            endpoint_path = Path(tmpdir) / "app-server-control" / "app-server-control.sock"
+            fake_endpoint = type("FakeEndpoint", (), {"kind": "unix_socket", "socket_path": endpoint_path})()
+
+            endpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            endpoint_path.write_text("", encoding="utf-8")
+
+            class FailedResult:
+                ok = False
+                exit_code = 25
+                error_message = None
+
+            try:
+                with patch(
+                    "pycodex.cli.parser._resolve_exec_remote_endpoint",
+                    return_value=("unix://%s" % endpoint_path, fake_endpoint, Path(tmpdir)),
+                ):
+                    with patch("pycodex.cli.parser.remote_exec_session_connect_and_run", return_value=FailedResult()):
+                        stderr = io.StringIO()
+                        code = main(["exec", "prompt"], stderr=stderr)
+            finally:
+                if previous_home is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous_home
+
+        self.assertEqual(code, 25)
+        self.assertIn("cannot connect to local app-server socket", stderr.getvalue())
+        self.assertIn("state says", stderr.getvalue())
+
+    def test_main_exec_when_local_app_server_permission_is_denied_prints_permission_hint(self):
+        previous_home = os.environ.get("CODEX_HOME")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.environ["CODEX_HOME"] = tmpdir
+            endpoint_path = Path(tmpdir) / "app-server-control" / "app-server-control.sock"
+            fake_endpoint = type("FakeEndpoint", (), {"kind": "unix_socket", "socket_path": endpoint_path})()
+
+            endpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            endpoint_path.write_text("", encoding="utf-8")
+
+            class FailedResult:
+                ok = False
+                exit_code = 77
+                error_message = "[Errno 13] Permission denied"
+
+            try:
+                with patch(
+                    "pycodex.cli.parser._resolve_exec_remote_endpoint",
+                    return_value=("unix://%s" % endpoint_path, fake_endpoint, Path(tmpdir)),
+                ):
+                    with patch("pycodex.cli.parser.remote_exec_session_connect_and_run", return_value=FailedResult()):
+                        stderr = io.StringIO()
+                        code = main(["exec", "prompt"], stderr=stderr)
+            finally:
+                if previous_home is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous_home
+
+        self.assertEqual(code, 77)
+        self.assertIn("cannot access local app-server socket due to permissions.", stderr.getvalue())
+        self.assertIn("codex app-server daemon start", stderr.getvalue())
+        self.assertIn("[Errno 13] Permission denied", stderr.getvalue())
+
+    def test_main_exec_when_local_app_server_connection_timed_out_prints_timed_out_hint(self):
+        previous_home = os.environ.get("CODEX_HOME")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.environ["CODEX_HOME"] = tmpdir
+            endpoint_path = Path(tmpdir) / "app-server-control" / "app-server-control.sock"
+            fake_endpoint = type("FakeEndpoint", (), {"kind": "unix_socket", "socket_path": endpoint_path})()
+
+            endpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            endpoint_path.write_text("", encoding="utf-8")
+
+            class FailedResult:
+                ok = False
+                exit_code = 28
+                error_message = "[Errno 110] Connection timed out"
+
+            try:
+                with patch(
+                    "pycodex.cli.parser._resolve_exec_remote_endpoint",
+                    return_value=("unix://%s" % endpoint_path, fake_endpoint, Path(tmpdir)),
+                ):
+                    with patch("pycodex.cli.parser.remote_exec_session_connect_and_run", return_value=FailedResult()):
+                        stderr = io.StringIO()
+                        code = main(["exec", "prompt"], stderr=stderr)
+            finally:
+                if previous_home is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous_home
+
+        self.assertEqual(code, 28)
+        self.assertIn("connection timed out while waiting for startup", stderr.getvalue())
+        self.assertIn("state says", stderr.getvalue())
+        self.assertIn("[Errno 110] Connection timed out", stderr.getvalue())
+
+    def test_main_exec_when_local_app_server_state_running_but_socket_missing_warns_stale_state(self):
+        previous_home = os.environ.get("CODEX_HOME")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.environ["CODEX_HOME"] = tmpdir
+            state_path = Path(tmpdir) / "app-server-state.json"
+            state_path.write_text(json.dumps({"daemon": {"running": True}}), encoding="utf-8")
+            endpoint_path = Path(tmpdir) / "app-server-control" / "app-server-control.sock"
+            fake_endpoint = type("FakeEndpoint", (), {"kind": "unix_socket", "socket_path": endpoint_path})()
+
+            class FailedResult:
+                ok = False
+                exit_code = 21
+                error_message = "connection failed (stubbed)"
+
+            try:
+                with patch(
+                    "pycodex.cli.parser._resolve_exec_remote_endpoint",
+                    return_value=("unix://%s" % endpoint_path, fake_endpoint, Path(tmpdir)),
+                ):
+                    with patch("pycodex.cli.parser.remote_exec_session_connect_and_run", return_value=FailedResult()):
+                        stderr = io.StringIO()
+                        code = main(["exec", "prompt"], stderr=stderr)
+            finally:
+                if previous_home is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous_home
+
+        self.assertEqual(code, 21)
+        self.assertIn("state says running", stderr.getvalue())
+        self.assertIn("app-server state still reports running; socket may be stale or permission-limited.", stderr.getvalue())
+        self.assertIn("cannot connect to local app-server socket", stderr.getvalue())
+
+    def test_main_prompt_without_subcommand_is_interactive_path(self):
+        stderr = io.StringIO()
+
+        code = main(["prompt only"], stderr=stderr)
+
+        self.assertEqual(code, 64)
+        self.assertIn("interactive TUI is recognized but not implemented yet.", stderr.getvalue())
+
+    def test_main_mcp_server_not_implemented(self):
+        stderr = io.StringIO()
+
+        code = main(["mcp-server"], stderr=stderr)
+
+        self.assertEqual(code, 64)
+        self.assertIn("command 'mcp-server' is not implemented in this Python port.", stderr.getvalue())
+        self.assertIn("launch the Rust `codex-mcp-server` binary", stderr.getvalue())
+
+    def test_main_mcp_server_runtime_handles_initialize_and_tools_list(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        payload = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "initialize",
+                        "params": {
+                            "protocolVersion": "2025-06-18",
+                            "clientInfo": {
+                                "name": "test-client",
+                                "version": "0.0.1",
+                            },
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "tools/list",
+                    }
+                ),
+                "",
+            ]
+        )
+
+        previous = os.environ.get("PYCODEX_MCP_SERVER_RUNTIME")
+        os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = "1"
+        try:
+            code = main(
+                ["mcp-server"],
+                stdout=stdout,
+                stderr=stderr,
+                stdin=payload,
+            )
+        finally:
+            if previous is None:
+                os.environ.pop("PYCODEX_MCP_SERVER_RUNTIME", None)
+            else:
+                os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = previous
+
+        self.assertEqual(code, 0)
+        self.assertIn("starting mcp-server stdio runtime.", stderr.getvalue())
+        lines = [line for line in stdout.getvalue().splitlines() if line.strip()]
+        self.assertEqual(len(lines), 2)
+
+        initialize = json.loads(lines[0])
+        tools_list = json.loads(lines[1])
+        self.assertEqual(initialize["id"], 1)
+        self.assertIn("result", initialize)
+        self.assertIn("capabilities", initialize["result"])
+        self.assertEqual(tools_list["id"], 2)
+        names = {tool["name"] for tool in tools_list["result"]["tools"]}
+        self.assertIn("codex", names)
+        self.assertIn("codex-reply", names)
+
+    def test_main_mcp_server_runtime_notifications_initialized_is_acked(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        payload = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "initialize",
+                        "params": {
+                            "protocolVersion": "2025-06-18",
+                            "clientInfo": {
+                                "name": "test-client",
+                                "version": "0.0.1",
+                            },
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "notifications/initialized",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "tools/list",
+                    }
+                ),
+                "",
+            ]
+        )
+
+        previous = os.environ.get("PYCODEX_MCP_SERVER_RUNTIME")
+        os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = "1"
+        try:
+            code = main(
+                ["mcp-server"],
+                stdout=stdout,
+                stderr=stderr,
+                stdin=payload,
+            )
+        finally:
+            if previous is None:
+                os.environ.pop("PYCODEX_MCP_SERVER_RUNTIME", None)
+            else:
+                os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = previous
+
+        self.assertEqual(code, 0)
+        lines = [line for line in stdout.getvalue().splitlines() if line.strip()]
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(json.loads(lines[0])["id"], 1)
+        self.assertEqual(json.loads(lines[1])["id"], 2)
+
+    def test_main_mcp_server_runtime_initialize_twice_returns_error(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        payload = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "initialize",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "initialize",
+                    }
+                ),
+                "",
+            ]
+        )
+
+        previous = os.environ.get("PYCODEX_MCP_SERVER_RUNTIME")
+        os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = "1"
+        try:
+            code = main(
+                ["mcp-server"],
+                stdout=stdout,
+                stderr=stderr,
+                stdin=payload,
+            )
+        finally:
+            if previous is None:
+                os.environ.pop("PYCODEX_MCP_SERVER_RUNTIME", None)
+            else:
+                os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = previous
+
+        self.assertEqual(code, 0)
+        lines = [line for line in stdout.getvalue().splitlines() if line.strip()]
+        self.assertEqual(len(lines), 2)
+        second = json.loads(lines[1])
+        self.assertEqual(second["id"], 2)
+        self.assertIn("error", second)
+        self.assertEqual(second["error"]["code"], -32600)
+        self.assertEqual(second["error"]["message"], "initialize called more than once")
+
+    def test_main_mcp_server_runtime_codex_tool_rejects_missing_prompt(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        payload = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {"name": "codex", "arguments": {}},
+                    }
+                ),
+                "",
+            ]
+        )
+
+        previous = os.environ.get("PYCODEX_MCP_SERVER_RUNTIME")
+        os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = "1"
+        try:
+            code = main(
+                ["mcp-server"],
+                stdout=stdout,
+                stderr=stderr,
+                stdin=payload,
+            )
+        finally:
+            if previous is None:
+                os.environ.pop("PYCODEX_MCP_SERVER_RUNTIME", None)
+            else:
+                os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = previous
+
+        self.assertEqual(code, 0)
+        self.assertIn("starting mcp-server stdio runtime.", stderr.getvalue())
+        line = [line for line in stdout.getvalue().splitlines() if line.strip()][0]
+        call = json.loads(line)
+        self.assertEqual(call["id"], 1)
+        self.assertTrue(call["result"].get("isError"))
+        self.assertIn(
+            "Missing arguments for codex tool-call; the `prompt` field is required.",
+            call["result"]["content"][0]["text"],
+        )
+
+    def test_main_mcp_server_runtime_tools_call_requires_name(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        payload = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {"arguments": {"prompt": "hello"}},
+                    }
+                ),
+                "",
+            ]
+        )
+
+        previous = os.environ.get("PYCODEX_MCP_SERVER_RUNTIME")
+        os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = "1"
+        try:
+            code = main(
+                ["mcp-server"],
+                stdout=stdout,
+                stderr=stderr,
+                stdin=payload,
+            )
+        finally:
+            if previous is None:
+                os.environ.pop("PYCODEX_MCP_SERVER_RUNTIME", None)
+            else:
+                os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = previous
+
+        self.assertEqual(code, 0)
+        call = json.loads([line for line in stdout.getvalue().splitlines() if line.strip()][0])
+        self.assertTrue(call["result"].get("isError"))
+        self.assertIn("Unknown tool 'None'", call["result"]["content"][0]["text"])
+
+    def test_main_mcp_server_runtime_rejects_unknown_codex_argument(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        payload = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "codex",
+                            "arguments": {
+                                "prompt": "hello",
+                                "unknown": "field",
+                            },
+                        },
+                    }
+                ),
+                "",
+            ]
+        )
+
+        previous = os.environ.get("PYCODEX_MCP_SERVER_RUNTIME")
+        os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = "1"
+        try:
+            code = main(
+                ["mcp-server"],
+                stdout=stdout,
+                stderr=stderr,
+                stdin=payload,
+            )
+        finally:
+            if previous is None:
+                os.environ.pop("PYCODEX_MCP_SERVER_RUNTIME", None)
+            else:
+                os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = previous
+
+        self.assertEqual(code, 0)
+        call = json.loads([line for line in stdout.getvalue().splitlines() if line.strip()][0])
+        self.assertTrue(call["result"].get("isError"))
+        self.assertIn("Failed to parse configuration for Codex tool: unknown field", call["result"]["content"][0]["text"])
+
+    def test_main_mcp_server_runtime_notification_prefixed_methods_are_acknowledged_without_response(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        payload = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "notifications/initialized",
+                        "id": 1,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "notifications/something",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 3,
+                        "method": "initialized",
+                    }
+                ),
+                "",
+            ]
+        )
+
+        previous = os.environ.get("PYCODEX_MCP_SERVER_RUNTIME")
+        os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = "1"
+        try:
+            code = main(
+                ["mcp-server"],
+                stdout=stdout,
+                stderr=stderr,
+                stdin=payload,
+            )
+        finally:
+            if previous is None:
+                os.environ.pop("PYCODEX_MCP_SERVER_RUNTIME", None)
+            else:
+                os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = previous
+
+        self.assertEqual(code, 0)
+        lines = [line for line in stdout.getvalue().splitlines() if line.strip()]
+        self.assertEqual(lines, [])
+
+    def test_main_mcp_server_runtime_codex_tool_creates_thread(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        payload = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "codex",
+                            "arguments": {
+                                "prompt": "hello world",
+                                "model": "gpt-5",
+                            },
+                        },
+                    }
+                ),
+                "",
+            ]
+        )
+
+        previous = os.environ.get("PYCODEX_MCP_SERVER_RUNTIME")
+        os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = "1"
+        try:
+            code = main(
+                ["mcp-server"],
+                stdout=stdout,
+                stderr=stderr,
+                stdin=payload,
+            )
+        finally:
+            if previous is None:
+                os.environ.pop("PYCODEX_MCP_SERVER_RUNTIME", None)
+            else:
+                os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = previous
+
+        self.assertEqual(code, 0)
+        self.assertIn("starting mcp-server stdio runtime.", stderr.getvalue())
+        lines = [line for line in stdout.getvalue().splitlines() if line.strip()]
+        self.assertEqual(len(lines), 1)
+
+        call = json.loads(lines[0])
+        self.assertEqual(call["id"], 1)
+        self.assertIn("result", call)
+        self.assertIn("structuredContent", call["result"])
+        self.assertEqual(call["result"]["structuredContent"].get("content"), "stub started")
+
+    def test_main_mcp_server_runtime_codex_reply_missing_thread(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        payload = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "codex-reply",
+                            "arguments": {
+                                "threadId": "missing-thread",
+                                "prompt": "continue please",
+                            },
+                        },
+                    }
+                ),
+                "",
+            ]
+        )
+
+        previous = os.environ.get("PYCODEX_MCP_SERVER_RUNTIME")
+        os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = "1"
+        try:
+            code = main(
+                ["mcp-server"],
+                stdout=stdout,
+                stderr=stderr,
+                stdin=payload,
+            )
+        finally:
+            if previous is None:
+                os.environ.pop("PYCODEX_MCP_SERVER_RUNTIME", None)
+            else:
+                os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = previous
+
+        self.assertEqual(code, 0)
+        lines = [line for line in stdout.getvalue().splitlines() if line.strip()]
+        self.assertEqual(len(lines), 1)
+
+        call = json.loads(lines[0])
+        self.assertEqual(call["id"], 1)
+        self.assertTrue(call["result"].get("isError"))
+        self.assertIn("Session not found", call["result"]["content"][0]["text"])
+
+    def test_main_mcp_server_runtime_codex_reply_followed_by_success(self):
+        stdout_create = io.StringIO()
+        stdout_reply = io.StringIO()
+        stderr = io.StringIO()
+
+        create_payload = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "codex",
+                            "arguments": {
+                                "prompt": "first prompt",
+                            },
+                        },
+                    }
+                ),
+                "",
+            ]
+        )
+
+        previous = os.environ.get("PYCODEX_MCP_SERVER_RUNTIME")
+        os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = "1"
+        try:
+            create_code = main(
+                ["mcp-server"],
+                stdout=stdout_create,
+                stderr=stderr,
+                stdin=create_payload,
+            )
+            create_lines = [
+                line
+                for line in stdout_create.getvalue().splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(create_code, 0)
+            self.assertEqual(len(create_lines), 1)
+            create_call = json.loads(create_lines[0])
+            thread_id = create_call["result"]["structuredContent"]["threadId"]
+
+            reply_payload = "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": 2,
+                            "method": "tools/call",
+                            "params": {
+                                "name": "codex-reply",
+                                "arguments": {
+                                    "threadId": thread_id,
+                                    "prompt": "second prompt",
+                                },
+                            },
+                        }
+                    ),
+                    "",
+                ]
+            )
+
+            reply_code = main(
+                ["mcp-server"],
+                stdout=stdout_reply,
+                stderr=stderr,
+                stdin=reply_payload,
+            )
+        finally:
+            if previous is None:
+                os.environ.pop("PYCODEX_MCP_SERVER_RUNTIME", None)
+            else:
+                os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = previous
+
+        self.assertEqual(reply_code, 0)
+        reply_lines = [line for line in stdout_reply.getvalue().splitlines() if line.strip()]
+        self.assertEqual(len(reply_lines), 1)
+
+        reply_call = json.loads(reply_lines[0])
+        self.assertEqual(reply_call["id"], 2)
+        self.assertIn("result", reply_call)
+        self.assertEqual(reply_call["result"].get("isError"), False)
+        self.assertEqual(reply_call["result"]["structuredContent"].get("threadId"), thread_id)
+
+    def test_main_mcp_server_runtime_tools_list_has_expected_schema_fields(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        payload = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/list",
+                    }
+                ),
+                "",
+            ]
+        )
+
+        previous = os.environ.get("PYCODEX_MCP_SERVER_RUNTIME")
+        os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = "1"
+        try:
+            code = main(
+                ["mcp-server"],
+                stdout=stdout,
+                stderr=stderr,
+                stdin=payload,
+            )
+        finally:
+            if previous is None:
+                os.environ.pop("PYCODEX_MCP_SERVER_RUNTIME", None)
+            else:
+                os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = previous
+
+        self.assertEqual(code, 0)
+        line = [line for line in stdout.getvalue().splitlines() if line.strip()][0]
+        tools_list = json.loads(line)["result"]
+        codex = next(item for item in tools_list["tools"] if item["name"] == "codex")
+        codex_reply = next(
+            item for item in tools_list["tools"] if item["name"] == "codex-reply"
+        )
+        self.assertEqual(codex["outputSchema"]["required"], ["threadId", "content"])
+        self.assertIn("prompt", codex["inputSchema"]["required"])
+        self.assertIn("threadId", codex_reply["inputSchema"]["properties"])
+        self.assertIn("conversationId", codex_reply["inputSchema"]["properties"])
+        self.assertEqual(codex_reply["inputSchema"]["required"], ["prompt"])
+
+    def test_main_mcp_server_runtime_codex_reply_accepts_conversation_id_alias(self):
+        stdout_create = io.StringIO()
+        stderr = io.StringIO()
+        payload = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "codex",
+                            "arguments": {
+                                "prompt": "first prompt",
+                            },
+                        },
+                    }
+                ),
+                "",
+            ]
+        )
+
+        previous = os.environ.get("PYCODEX_MCP_SERVER_RUNTIME")
+        os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = "1"
+        try:
+            create_code = main(["mcp-server"], stdout=stdout_create, stderr=stderr, stdin=payload)
+            tools_list = [
+                line
+                for line in stdout_create.getvalue().splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(create_code, 0)
+            create_call = json.loads(tools_list[0])
+            thread_id = create_call["result"]["structuredContent"]["threadId"]
+
+            stdout_reply = io.StringIO()
+            reply_payload = "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": 2,
+                            "method": "tools/call",
+                            "params": {
+                                "name": "codex-reply",
+                                "arguments": {
+                                    "conversationId": thread_id,
+                                    "prompt": "continue",
+                                },
+                            },
+                        }
+                    ),
+                    "",
+                ]
+            )
+            reply_code = main(
+                ["mcp-server"],
+                stdout=stdout_reply,
+                stderr=stderr,
+                stdin=reply_payload,
+            )
+        finally:
+            if previous is None:
+                os.environ.pop("PYCODEX_MCP_SERVER_RUNTIME", None)
+            else:
+                os.environ["PYCODEX_MCP_SERVER_RUNTIME"] = previous
+
+        self.assertEqual(reply_code, 0)
+        reply_call = json.loads([line for line in stdout_reply.getvalue().splitlines() if line.strip()][0])
+        self.assertEqual(reply_call["result"]["structuredContent"]["threadId"], thread_id)
+
+    def test_main_resume_without_fallback_uses_tui_path(self):
+        stderr = io.StringIO()
+
+        code = main(["resume", "--last"], stderr=stderr)
+
+        self.assertEqual(code, 64)
+        self.assertIn("resume request parsed with session_id=None, last=True, all=False, include_non_interactive=False.", stderr.getvalue())
+        self.assertIn("interactive TUI is recognized but not implemented yet.", stderr.getvalue())
+
+    def test_main_resume_with_exec_fallback_uses_noninteractive_resume_exec(self):
+        stderr = io.StringIO()
+        previous = os.environ.get("PYCODEX_RESUME_EXEC_FALLBACK")
+        os.environ["PYCODEX_RESUME_EXEC_FALLBACK"] = "1"
+        try:
+            with patch("pycodex.cli.parser._run_noninteractive_exec", return_value=7) as run_noninteractive:
+                code = main(
+                    ["resume", "abc", "--include-non-interactive", "--all"],
+                    stderr=stderr,
+                )
+        finally:
+            if previous is None:
+                os.environ.pop("PYCODEX_RESUME_EXEC_FALLBACK", None)
+            else:
+                os.environ["PYCODEX_RESUME_EXEC_FALLBACK"] = previous
+
+        self.assertEqual(code, 7)
+        resumed_parsed = run_noninteractive.call_args.args[0]
+        self.assertEqual(resumed_parsed.command_args, ("abc", "--all"))
+
+    def test_main_fork_with_tui_fallback_runs_as_noop(self):
+        stderr = io.StringIO()
+        previous = os.environ.get("PYCODEX_TUI_FALLBACK")
+        os.environ["PYCODEX_TUI_FALLBACK"] = "1"
+        try:
+            code = main(["fork", "abc"], stderr=stderr)
+        finally:
+            if previous is None:
+                os.environ.pop("PYCODEX_TUI_FALLBACK", None)
+            else:
+                os.environ["PYCODEX_TUI_FALLBACK"] = previous
+
+        self.assertEqual(code, 0)
+        self.assertIn("fork accepted and running in non-interactive fallback mode.", stderr.getvalue())
+
+    def test_main_fork_with_exec_fallback_uses_noninteractive_fork_exec(self):
+        stderr = io.StringIO()
+        previous = os.environ.get("PYCODEX_FORK_EXEC_FALLBACK")
+        os.environ["PYCODEX_FORK_EXEC_FALLBACK"] = "1"
+        try:
+            with patch("pycodex.cli.parser._run_noninteractive_exec", return_value=11) as run_noninteractive:
+                code = main(["fork", "abc", "--all"], stderr=stderr)
+        finally:
+            if previous is None:
+                os.environ.pop("PYCODEX_FORK_EXEC_FALLBACK", None)
+            else:
+                os.environ["PYCODEX_FORK_EXEC_FALLBACK"] = previous
+
+        self.assertEqual(code, 11)
+        forked_parsed = run_noninteractive.call_args.args[0]
+        self.assertEqual(forked_parsed.command, "resume")
+        self.assertEqual(forked_parsed.command_args, ("abc", "--all"))
+
+    def test_main_remote_control_start_is_implemented(self):
+        stderr = io.StringIO()
+        stdout = io.StringIO()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous = os.environ.get("CODEX_HOME")
+            os.environ["CODEX_HOME"] = tmpdir
+            try:
+                code = main(["remote-control", "start"], stdout=stdout, stderr=stderr)
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertIn("Starting app-server daemon with remote control enabled", stdout.getvalue())
+
+    def test_main_remote_control_start_and_stop_json(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous = os.environ.get("CODEX_HOME")
+            os.environ["CODEX_HOME"] = tmpdir
+            try:
+                start_code = main(["remote-control", "start", "--json"], stdout=stdout, stderr=stderr)
+                self.assertEqual(start_code, 0)
+                self.assertEqual(stderr.getvalue(), "")
+                start_payload = json.loads(stdout.getvalue().strip().split("\n")[-1])
+                self.assertEqual(start_payload.get("mode"), "daemon")
+                self.assertEqual(start_payload.get("status"), "connected")
+                self.assertIsInstance(start_payload.get("daemon"), dict)
+                self.assertIn("pid", start_payload["daemon"])
+                self.assertEqual(start_payload["daemon"].get("backend"), "pid")
+                self.assertIn("managedCodexPath", start_payload["daemon"])
+                self.assertIn("socketPath", start_payload["daemon"])
+
+                stop_stdout = io.StringIO()
+                stop_stderr = io.StringIO()
+                stop_code = main(["remote-control", "stop", "--json"], stdout=stop_stdout, stderr=stop_stderr)
+                self.assertEqual(stop_code, 0)
+                stop_payload = json.loads(stop_stdout.getvalue().strip())
+                self.assertEqual(stop_payload.get("status"), "stopped")
+                self.assertIsInstance(stop_payload.get("daemon"), dict)
+                self.assertIn("status", stop_payload["daemon"])
+                self.assertEqual(stop_payload["daemon"].get("status"), "stopped")
+                self.assertIn("pid", stop_payload["daemon"])
+                self.assertIn("backend", stop_payload["daemon"])
+                self.assertIn("managedCodexVersion", stop_payload["daemon"])
+                self.assertEqual(stop_stderr.getvalue(), "")
+
+                final_state = json.loads((Path(tmpdir) / "app-server-state.json").read_text(encoding="utf-8"))
+                self.assertEqual(final_state.get("daemon", {}).get("running"), False)
+                self.assertEqual(final_state.get("remote_control", {}).get("status"), "disabled")
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+    def test_main_remote_control_stop_when_not_running(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous = os.environ.get("CODEX_HOME")
+            os.environ["CODEX_HOME"] = tmpdir
+            try:
+                code = main(["remote-control", "stop"], stdout=stdout, stderr=stderr)
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertEqual(stdout.getvalue().strip(), "Remote control is not running.")
+
+    def test_main_remote_control_stop_not_running_json(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous = os.environ.get("CODEX_HOME")
+            os.environ["CODEX_HOME"] = tmpdir
+            try:
+                code = main(["remote-control", "stop", "--json"], stdout=stdout, stderr=stderr)
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr.getvalue(), "")
+        payload = json.loads(stdout.getvalue().strip())
+        self.assertEqual(payload.get("status"), "notRunning")
+        self.assertIsInstance(payload.get("daemon"), dict)
+        self.assertEqual(payload["daemon"].get("status"), "notRunning")
+        self.assertIn("managedCodexPath", payload["daemon"])
+        self.assertIn("cliVersion", payload["daemon"])
+        self.assertNotIn("backend", payload["daemon"])
+        self.assertNotIn("pid", payload["daemon"])
+
+    def test_main_app_server_daemon_bootstrap_json(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous = os.environ.get("CODEX_HOME")
+            os.environ["CODEX_HOME"] = tmpdir
+            try:
+                code = main(
+                    ["app-server", "daemon", "bootstrap", "--remote-control"],
+                    stdout=stdout,
+                    stderr=stderr,
+                )
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr.getvalue(), "")
+        payload = json.loads(stdout.getvalue().strip())
+        self.assertEqual(payload.get("status"), "bootstrapped")
+        self.assertEqual(payload.get("backend"), "pid")
+        self.assertTrue(payload.get("autoUpdateEnabled"))
+        self.assertTrue(payload.get("remoteControlEnabled"))
+        self.assertIsInstance(payload.get("managedCodexPath"), str)
+        self.assertIsInstance(payload.get("cliVersion"), str)
+        self.assertIn("socketPath", payload)
+
+    def test_main_app_server_daemon_start_and_restart_json(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous = os.environ.get("CODEX_HOME")
+            os.environ["CODEX_HOME"] = tmpdir
+            try:
+                start_code = main(["app-server", "daemon", "start"], stdout=stdout, stderr=stderr)
+                self.assertEqual(start_code, 0)
+                self.assertEqual(stderr.getvalue(), "")
+                start_payload = json.loads(stdout.getvalue().strip())
+                self.assertEqual(start_payload.get("status"), "started")
+                self.assertIn("pid", start_payload)
+                self.assertIn("backend", start_payload)
+                self.assertIn("managedCodexPath", start_payload)
+
+                start_again_stdout = io.StringIO()
+                start_again_stderr = io.StringIO()
+                start_again_code = main(
+                    ["app-server", "daemon", "start"],
+                    stdout=start_again_stdout,
+                    stderr=start_again_stderr,
+                )
+                self.assertEqual(start_again_code, 0)
+                self.assertEqual(start_again_stderr.getvalue(), "")
+                already_running_payload = json.loads(start_again_stdout.getvalue().strip())
+                self.assertEqual(already_running_payload.get("status"), "alreadyRunning")
+                self.assertNotIn("pid", already_running_payload)
+                self.assertIn("backend", already_running_payload)
+
+                restart_stdout = io.StringIO()
+                restart_stderr = io.StringIO()
+                restart_code = main(
+                    ["app-server", "daemon", "restart"],
+                    stdout=restart_stdout,
+                    stderr=restart_stderr,
+                )
+                self.assertEqual(restart_code, 0)
+                self.assertEqual(restart_stderr.getvalue(), "")
+                restart_payload = json.loads(restart_stdout.getvalue().strip())
+                self.assertEqual(restart_payload.get("status"), "restarted")
+                self.assertIn("pid", restart_payload)
+                self.assertIn("backend", restart_payload)
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+    def test_main_app_server_daemon_stop_and_not_running_json(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous = os.environ.get("CODEX_HOME")
+            os.environ["CODEX_HOME"] = tmpdir
+            try:
+                start_code = main(["app-server", "daemon", "start"], stdout=stdout, stderr=stderr)
+                self.assertEqual(start_code, 0)
+
+                stdout.seek(0)
+                stdout.truncate(0)
+                stderr.seek(0)
+                stderr.truncate(0)
+
+                stop_code = main(["app-server", "daemon", "stop"], stdout=stdout, stderr=stderr)
+                self.assertEqual(stop_code, 0)
+                self.assertEqual(stderr.getvalue(), "")
+                stop_payload = json.loads(stdout.getvalue().strip())
+                self.assertEqual(stop_payload.get("status"), "stopped")
+                self.assertIn("backend", stop_payload)
+                self.assertNotIn("pid", stop_payload)
+
+                stdout.seek(0)
+                stdout.truncate(0)
+                stderr.seek(0)
+                stderr.truncate(0)
+
+                not_running_code = main(["app-server", "daemon", "stop"], stdout=stdout, stderr=stderr)
+                self.assertEqual(not_running_code, 0)
+                payload = json.loads(stdout.getvalue().strip())
+                self.assertEqual(payload.get("status"), "notRunning")
+                self.assertNotIn("backend", payload)
+                self.assertNotIn("pid", payload)
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+    def test_main_app_server_daemon_version_and_remote_control_toggle_json(self):
+        start_stdout = io.StringIO()
+        start_stderr = io.StringIO()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous = os.environ.get("CODEX_HOME")
+            os.environ["CODEX_HOME"] = tmpdir
+            try:
+                start_code = main(
+                    ["app-server", "daemon", "start"],
+                    stdout=start_stdout,
+                    stderr=start_stderr,
+                )
+                self.assertEqual(start_code, 0)
+                self.assertEqual(start_stderr.getvalue(), "")
+
+                version_stdout = io.StringIO()
+                version_stderr = io.StringIO()
+                version_code = main(
+                    ["app-server", "daemon", "version"],
+                    stdout=version_stdout,
+                    stderr=version_stderr,
+                )
+                self.assertEqual(version_code, 0)
+                version_payload = json.loads(version_stdout.getvalue().strip())
+                self.assertEqual(version_payload.get("status"), "running")
+                self.assertNotIn("pid", version_payload)
+
+                stop_code = main(
+                    ["app-server", "daemon", "stop"],
+                    stdout=io.StringIO(),
+                    stderr=io.StringIO(),
+                )
+                self.assertEqual(stop_code, 0)
+
+                failed_version_stderr = io.StringIO()
+                failed_version_code = main(
+                    ["app-server", "daemon", "version"],
+                    stdout=io.StringIO(),
+                    stderr=failed_version_stderr,
+                )
+                self.assertEqual(failed_version_code, 2)
+                self.assertIn("not running", failed_version_stderr.getvalue())
+
+                enable_again_stdout = io.StringIO()
+                enable_code = main(
+                    ["app-server", "daemon", "enable-remote-control"],
+                    stdout=enable_again_stdout,
+                    stderr=io.StringIO(),
+                )
+                self.assertEqual(enable_code, 0)
+                enable_payload = json.loads(enable_again_stdout.getvalue().strip())
+                self.assertEqual(enable_payload.get("status"), "enabled")
+                self.assertTrue(enable_payload.get("remoteControlEnabled"))
+
+                enable_stdout = io.StringIO()
+                already_enabled_code = main(
+                    ["app-server", "daemon", "enable-remote-control"],
+                    stdout=enable_stdout,
+                    stderr=io.StringIO(),
+                )
+                self.assertEqual(already_enabled_code, 0)
+                already_enabled_payload = json.loads(enable_stdout.getvalue().strip())
+                self.assertEqual(already_enabled_payload.get("status"), "alreadyEnabled")
+
+                disable_stdout = io.StringIO()
+                disable_code = main(
+                    ["app-server", "daemon", "disable-remote-control"],
+                    stdout=disable_stdout,
+                    stderr=io.StringIO(),
+                )
+                self.assertEqual(disable_code, 0)
+                disable_payload = json.loads(disable_stdout.getvalue().strip())
+                self.assertEqual(disable_payload.get("status"), "disabled")
+                self.assertFalse(disable_payload.get("remoteControlEnabled"))
+
+                disable_again_stdout = io.StringIO()
+                disable_again_code = main(
+                    ["app-server", "daemon", "disable-remote-control"],
+                    stdout=disable_again_stdout,
+                    stderr=io.StringIO(),
+                )
+                self.assertEqual(disable_again_code, 0)
+                already_disabled_payload = json.loads(disable_again_stdout.getvalue().strip())
+                self.assertEqual(already_disabled_payload.get("status"), "alreadyDisabled")
+                self.assertFalse(already_disabled_payload.get("remoteControlEnabled"))
+
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+    def test_main_command_help_placeholder(self):
+        stdout = io.StringIO()
+
+        code = main(["plugin", "--help"], stdout=stdout)
+
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: codex plugin [OPTIONS] <SUBCOMMAND>", stdout.getvalue())
+
+        stdout_marketplace = io.StringIO()
+        code = main(["plugin", "marketplace", "--help"], stdout=stdout_marketplace)
+
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: codex plugin marketplace [OPTIONS] <COMMAND>", stdout_marketplace.getvalue())
+
+        stdout_marketplace_add = io.StringIO()
+        code = main(["plugin", "marketplace", "add", "--help"], stdout=stdout_marketplace_add)
+
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: codex plugin marketplace <SUBCOMMAND>", stdout_marketplace_add.getvalue())
+
+        stdout_add = io.StringIO()
+        code = main(["plugin", "add", "--help"], stdout=stdout_add)
+
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: codex plugin add [OPTIONS]", stdout_add.getvalue())
+
+        stdout_list = io.StringIO()
+        code = main(["plugin", "list", "--help"], stdout=stdout_list)
+
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: codex plugin list [OPTIONS]", stdout_list.getvalue())
+
+    def test_main_features_help_prints_usage(self):
+        stdout = io.StringIO()
+
+        code = main(["features", "--help"], stdout=stdout)
+
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: codex features", stdout.getvalue())
+
+    def test_main_features_subcommand_help_prints_usage(self):
+        stdout = io.StringIO()
+
+        code = main(["features", "list", "--help"], stdout=stdout)
+
+        self.assertEqual(code, 0)
+        self.assertIn("Usage: codex features", stdout.getvalue())
+
+    def test_main_features_list_with_search_sets_web_search_override(self):
+        with patch("pycodex.cli.parser.run_features_command", return_value=0) as run_features:
+            code = main(["--search", "features", "list"])
+
+        self.assertEqual(code, 0)
+        self.assertIn("web_search=live", run_features.call_args.kwargs["raw_config_overrides"])
 
     def test_features_enable_and_disable_parse_feature_name(self):
         enabled = parse_args(["features", "enable", "unified_exec"]).features_cli()
@@ -372,6 +7291,40 @@ class TopLevelCliParserTests(unittest.TestCase):
                 with self.assertRaisesRegex(CliParseError, pattern):
                     parse_args(args)
 
+    def test_main_rejects_profile_for_config_management_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(["--profile", "work", "features", "list"], stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("--profile only applies to runtime commands and `codex mcp`", stderr.getvalue())
+
+    def test_main_allows_profile_for_mcp(self):
+        stderr = io.StringIO()
+
+        code = main(["--profile", "work", "mcp", "list"], stderr=stderr)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_main_allows_profile_for_debug_prompt_input(self):
+        stderr = io.StringIO()
+        stdout = io.StringIO()
+
+        code = main(["--profile", "work", "debug", "prompt-input"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertIn('"prompt": ""', stdout.getvalue())
+
+    def test_main_rejects_profile_for_debug_other_subcommand(self):
+        stderr = io.StringIO()
+
+        code = main(["--profile", "work", "debug", "models"], stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("--profile only applies to runtime commands and `codex mcp`", stderr.getvalue())
+
     def test_extra_interactive_positionals_error_like_optional_prompt(self):
         with self.assertRaisesRegex(CliParseError, "Unexpected extra argument"):
             parse_args(["first", "second"])
@@ -389,6 +7342,30 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertIn("app-server", help_text)
         self.assertNotIn("responses-api-proxy", help_text)
         self.assertNotIn("stdio-to-uds", help_text)
+
+    def test_parse_top_level_version_flag(self):
+        parsed = parse_args(["--version"])
+        self.assertTrue(parsed.version_requested)
+        self.assertIsNone(parsed.command)
+
+    def test_parse_top_level_version_short_flag(self):
+        parsed = parse_args(["-V"])
+        self.assertTrue(parsed.version_requested)
+        self.assertIsNone(parsed.command)
+
+    def test_main_top_level_version(self):
+        stdout = io.StringIO()
+        code = main(["--version"], stdout=stdout)
+
+        self.assertEqual(code, 0)
+        self.assertIn("codex 0.1.0", stdout.getvalue())
+
+    def test_main_top_level_version_short_flag(self):
+        stdout = io.StringIO()
+        code = main(["-V"], stdout=stdout)
+
+        self.assertEqual(code, 0)
+        self.assertIn("codex 0.1.0", stdout.getvalue())
 
 
 if __name__ == "__main__":

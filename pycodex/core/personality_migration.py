@@ -2,15 +2,11 @@
 
 from __future__ import annotations
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback surface.
-    tomllib = None  # type: ignore[assignment]
-
 from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping
 
+from pycodex import _toml
 from pycodex.protocol import Personality
 
 from .rollout import (
@@ -66,10 +62,8 @@ def read_config_toml(codex_home: str | Path) -> dict[str, Any]:
     path = Path(codex_home) / "config.toml"
     if not path.exists():
         return {}
-    if tomllib is None:
-        raise RuntimeError("tomllib is unavailable")
     with path.open("rb") as file:
-        return tomllib.load(file)
+        return dict(_toml.load(file))
 
 
 def config_profile(

@@ -94,6 +94,7 @@ from pycodex.protocol import (
     ModelRerouteReason,
     ModelVerification,
     ModelVerificationEvent,
+    AgentReasoningSectionBreakEvent,
     NetworkApprovalContext,
     NetworkApprovalProtocol,
     NetworkPermissions,
@@ -785,6 +786,12 @@ class ProtocolProtocolTests(unittest.TestCase):
             "verifications": ["trusted_access_for_cyber"],
         }
         compacted_payload = {"type": "context_compacted"}
+        reasoning_section_break_payload = {
+            "type": "agent_reasoning_section_break",
+            "item_id": "reason-1",
+            "summary_index": 2,
+        }
+        reasoning_section_break_legacy_payload = {"type": "agent_reasoning_section_break"}
 
         self.assertEqual(
             EventMsg.from_mapping(reroute_payload).payload,
@@ -795,9 +802,21 @@ class ProtocolProtocolTests(unittest.TestCase):
             ModelVerificationEvent((ModelVerification.TRUSTED_ACCESS_FOR_CYBER,)),
         )
         self.assertEqual(EventMsg.from_mapping(compacted_payload).payload, ContextCompactedEvent())
+        self.assertEqual(
+            EventMsg.from_mapping(reasoning_section_break_payload).payload,
+            AgentReasoningSectionBreakEvent(item_id="reason-1", summary_index=2),
+        )
+        self.assertEqual(
+            EventMsg.from_mapping(reasoning_section_break_legacy_payload).payload,
+            AgentReasoningSectionBreakEvent(),
+        )
         self.assertEqual(EventMsg.from_mapping(reroute_payload).to_mapping(), reroute_payload)
         self.assertEqual(EventMsg.from_mapping(verification_payload).to_mapping(), verification_payload)
         self.assertEqual(EventMsg.from_mapping(compacted_payload).to_mapping(), compacted_payload)
+        self.assertEqual(
+            EventMsg.from_mapping(reasoning_section_break_payload).to_mapping(),
+            reasoning_section_break_payload,
+        )
 
     def test_guardian_assessment_event_roundtrips(self):
         payload = {

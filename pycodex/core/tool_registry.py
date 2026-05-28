@@ -43,7 +43,7 @@ class CoreToolRuntime:
     """Minimal standard-library runtime contract for locally executed tools."""
 
     def tool_name(self) -> ToolName:
-        raise NotImplementedError
+        raise NotImplementedError("CoreToolRuntime subclasses must implement tool_name()")
 
     def spec(self) -> JsonValue:
         return None

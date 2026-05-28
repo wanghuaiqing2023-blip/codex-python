@@ -324,8 +324,8 @@ class RemoteAppServerConnectArgs:
 class ExecSessionConfig:
     """Subset of upstream ``Config`` needed by exec request construction."""
 
-    model: str
-    model_provider_id: str
+    model: str | None
+    model_provider_id: str | None
     cwd: Path
     workspace_roots: tuple[Path, ...] = ()
     approval_policy: AskForApproval = AskForApproval.NEVER

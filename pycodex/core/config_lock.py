@@ -20,11 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from pycodex import __version__ as _PYCODEX_VERSION
-
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback surface.
-    tomllib = None  # type: ignore[assignment]
+from pycodex import _toml
 
 
 CONFIG_LOCK_VERSION = 1
@@ -95,15 +91,12 @@ def read_config_lock_from_path(path: str | Path) -> ConfigLockfile:
     """Read, parse, and validate a config lock TOML file."""
 
     lock_path = Path(path)
-    if tomllib is None:
-        raise config_lock_error("tomllib is unavailable")
-
     try:
         with lock_path.open("rb") as file:
-            data = tomllib.load(file)
+            data = _toml.load(file)
     except OSError as exc:
         raise config_lock_error(f"failed to read config lock file {lock_path}: {exc}") from exc
-    except tomllib.TOMLDecodeError as exc:
+    except _toml.TOMLDecodeError as exc:
         raise config_lock_error(f"failed to parse config lock file {lock_path}: {exc}") from exc
 
     try:

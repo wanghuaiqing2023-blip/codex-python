@@ -124,6 +124,16 @@ class ProtocolErrorTests(unittest.TestCase):
             "url: http://example.com/blocked, cf-ray: ray-id",
         )
 
+        lower_blocked = UnexpectedResponseError(
+            status=403,
+            body="<html><body>cloudflare error: blocked by policy</body></html>",
+            request_id="req-lower",
+        )
+        self.assertEqual(
+            str(lower_blocked),
+            f"{CLOUDFLARE_BLOCKED_MESSAGE} (status 403 Forbidden), request id: req-lower",
+        )
+
     def test_codex_error_maps_to_protocol_error_event(self):
         source = "HTTP status client error (429 Too Many Requests) for url (http://example.com/)"
         err = CodexErr.response_stream_failed(ResponseStreamFailed(source, request_id="req-123", status_code=429))

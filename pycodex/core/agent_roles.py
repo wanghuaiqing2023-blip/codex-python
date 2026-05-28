@@ -15,10 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback surface.
-    tomllib = None  # type: ignore[assignment]
+from pycodex import _toml
 
 
 DEFAULT_ROLE_NAME = "default"
@@ -164,15 +161,12 @@ def parse_agent_role_file_contents(
     role_name_hint: str | None = None,
 ) -> ResolvedAgentRoleFile:
     """Parse a TOML role file into metadata plus config-layer contents."""
-
-    if tomllib is None:
-        raise AgentRoleError("tomllib is unavailable")
     label = Path(role_file_label)
     _ = Path(config_base_dir) if config_base_dir is not None else label.parent
 
     try:
-        role_file_toml = tomllib.loads(contents)
-    except tomllib.TOMLDecodeError as exc:
+        role_file_toml = _toml.loads(contents)
+    except _toml.TOMLDecodeError as exc:
         raise AgentRoleError(f"failed to parse agent role file at {label}: {exc}") from exc
 
     if not isinstance(role_file_toml, dict):
@@ -385,12 +379,12 @@ def locked_settings_note_for_role(declaration: AgentRoleConfig) -> str:
             contents = Path(declaration.config_file).read_text(encoding="utf-8")
         except OSError:
             return ""
-    if not contents.strip() or tomllib is None:
+    if not contents.strip():
         return ""
 
     try:
-        role_toml = tomllib.loads(contents)
-    except tomllib.TOMLDecodeError:
+        role_toml = _toml.loads(contents)
+    except _toml.TOMLDecodeError:
         return ""
 
     model = _optional_str(role_toml.get("model"))

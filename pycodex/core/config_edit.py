@@ -10,10 +10,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback surface.
-    tomllib = None  # type: ignore[assignment]
+from pycodex import _toml
 
 from .features import FEATURES
 
@@ -511,10 +508,8 @@ def read_toml_mapping(path: str | Path) -> dict[str, Any]:
     target = Path(path)
     if not target.exists():
         return {}
-    if tomllib is None:
-        raise RuntimeError("tomllib is unavailable")
     with target.open("rb") as file:
-        return dict(tomllib.load(file))
+        return dict(_toml.load(file))
 
 
 def write_toml_mapping(path: str | Path, config: MutableMapping[str, Any]) -> None:

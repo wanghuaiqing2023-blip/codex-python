@@ -13,10 +13,7 @@ from collections.abc import MutableMapping
 from dataclasses import dataclass, field
 from typing import Any
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - kept for older Python ports.
-    tomllib = None  # type: ignore[assignment]
+from pycodex import _toml
 
 
 UPSTREAM_CONFIG_OVERRIDE = "codex/codex-rs/utils/cli/src/config_override.rs"
@@ -93,12 +90,9 @@ def canonicalize_override_key(key: str) -> str:
 def parse_toml_value(raw: str) -> Any:
     """Parse a single TOML value using the upstream sentinel-key trick."""
 
-    if tomllib is None:
-        raise ValueError("tomllib is unavailable")
-
     try:
-        table = tomllib.loads(f"_x_ = {raw}")
-    except tomllib.TOMLDecodeError as exc:
+        table = _toml.loads(f"_x_ = {raw}")
+    except _toml.TOMLDecodeError as exc:
         raise ValueError(str(exc)) from exc
 
     try:

@@ -2504,7 +2504,14 @@ class AgentReasoningRawContentEvent:
 
 @dataclass(frozen=True)
 class AgentReasoningSectionBreakEvent:
-    pass
+    item_id: str = ""
+    summary_index: int = 0
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.item_id, str):
+            raise TypeError("item_id must be a string")
+        if isinstance(self.summary_index, bool) or not isinstance(self.summary_index, int):
+            raise TypeError("summary_index must be an integer")
 
 
 @dataclass(frozen=True)
@@ -4558,7 +4565,10 @@ _EVENT_PAYLOAD_PARSERS = {
     ),
     "agent_reasoning": lambda data: AgentReasoningEvent(text=_required_str(data, "text")),
     "agent_reasoning_raw_content": lambda data: AgentReasoningRawContentEvent(text=_required_str(data, "text")),
-    "agent_reasoning_section_break": lambda data: AgentReasoningSectionBreakEvent(),
+    "agent_reasoning_section_break": lambda data: AgentReasoningSectionBreakEvent(
+        item_id=_optional_str(data, "item_id") or "",
+        summary_index=_optional_int(data, "summary_index") or 0,
+    ),
     "raw_response_item": lambda data: RawResponseItemEvent(item=data["item"]),
     "item_started": lambda data: ItemStartedEvent(
         thread_id=_parse_thread_id(data["thread_id"]),
