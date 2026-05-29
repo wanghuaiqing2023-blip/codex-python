@@ -22,6 +22,10 @@ from .config_types import (
 JsonValue = Any
 PERSONALITY_PLACEHOLDER = "{{ personality }}"
 SPEED_TIER_FAST = "fast"
+I32_MIN = -(2**31)
+I32_MAX = 2**31 - 1
+I64_MIN = -(2**63)
+I64_MAX = 2**63 - 1
 
 
 class _StringEnum(str, Enum):
@@ -243,6 +247,10 @@ class TruncationPolicyConfig:
     mode: TruncationMode
     limit: int
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "mode", TruncationMode(self.mode))
+        object.__setattr__(self, "limit", _ensure_i64(self.limit, "limit"))
+
     @classmethod
     def bytes(cls, limit: int) -> "TruncationPolicyConfig":
         return cls(TruncationMode.BYTES, limit)
@@ -266,11 +274,16 @@ class ClientVersion:
     minor: int
     patch: int
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "major", _ensure_i32(self.major, "major"))
+        object.__setattr__(self, "minor", _ensure_i32(self.minor, "minor"))
+        object.__setattr__(self, "patch", _ensure_i32(self.patch, "patch"))
+
     @classmethod
     def from_value(cls, value: JsonValue) -> "ClientVersion":
         if not isinstance(value, list | tuple) or len(value) != 3:
             raise TypeError("client version must be a three-element array")
-        return cls(*(_ensure_int(item, "client version component") for item in value))
+        return cls(*(_ensure_i32(item, "client version component") for item in value))
 
     def to_json(self) -> list[int]:
         return [self.major, self.minor, self.patch]
@@ -334,9 +347,9 @@ class ModelInfo:
             shell_type=ConfigShellToolType(_required_str(data, "shell_type")),
             visibility=ModelVisibility(_required_str(data, "visibility")),
             supported_in_api=_required_bool(data, "supported_in_api"),
-            priority=_required_int(data, "priority"),
-            additional_speed_tiers=tuple(str(item) for item in data.get("additional_speed_tiers", [])),
-            service_tiers=tuple(ModelServiceTier.from_mapping(item) for item in data.get("service_tiers", [])),
+            priority=_required_i32(data, "priority"),
+            additional_speed_tiers=tuple(_optional_str_list(data, "additional_speed_tiers")),
+            service_tiers=tuple(ModelServiceTier.from_mapping(item) for item in _optional_list(data, "service_tiers")),
             default_service_tier=_optional_str(data, "default_service_tier"),
             availability_nux=(
                 ModelAvailabilityNux.from_mapping(data["availability_nux"])
@@ -356,14 +369,14 @@ class ModelInfo:
             web_search_tool_type=WebSearchToolType(data.get("web_search_tool_type", WebSearchToolType.TEXT.value)),
             truncation_policy=TruncationPolicyConfig.from_mapping(data["truncation_policy"]),
             supports_parallel_tool_calls=_required_bool(data, "supports_parallel_tool_calls"),
-            supports_image_detail_original=bool(data.get("supports_image_detail_original", False)),
+            supports_image_detail_original=_optional_bool_default(data, "supports_image_detail_original", False),
             context_window=_optional_int(data, "context_window"),
             max_context_window=_optional_int(data, "max_context_window"),
             auto_compact_token_limit_value=_optional_int(data, "auto_compact_token_limit"),
-            effective_context_window_percent=_optional_int(data, "effective_context_window_percent") or 95,
-            experimental_supported_tools=tuple(str(item) for item in data.get("experimental_supported_tools", [])),
+            effective_context_window_percent=_optional_int_default(data, "effective_context_window_percent", 95),
+            experimental_supported_tools=tuple(_required_str_list(data, "experimental_supported_tools")),
             input_modalities=_parse_input_modalities(data.get("input_modalities")),
-            supports_search_tool=bool(data.get("supports_search_tool", False)),
+            supports_search_tool=_optional_bool_default(data, "supports_search_tool", False),
         )
 
     def resolved_context_window(self) -> int | None:
@@ -543,14 +556,19 @@ def _optional_str(value: dict[str, JsonValue], key: str) -> str | None:
 def _required_int(value: dict[str, JsonValue], key: str) -> int:
     if key not in value:
         raise KeyError(key)
-    return _ensure_int(value[key], key)
+    return _ensure_i64(value[key], key)
 
 
 def _optional_int(value: dict[str, JsonValue], key: str) -> int | None:
     raw = value.get(key)
     if raw is None:
         return None
-    return _ensure_int(raw, key)
+    return _ensure_i64(raw, key)
+
+
+def _optional_int_default(value: dict[str, JsonValue], key: str, default: int) -> int:
+    raw = value.get(key, default)
+    return _ensure_i64(raw, key)
 
 
 def _ensure_int(value: JsonValue, label: str) -> int:
@@ -559,10 +577,37 @@ def _ensure_int(value: JsonValue, label: str) -> int:
     return value
 
 
+def _ensure_i32(value: JsonValue, label: str) -> int:
+    value = _ensure_int(value, label)
+    if not I32_MIN <= value <= I32_MAX:
+        raise ValueError(f"{label} must fit in i32")
+    return value
+
+
+def _ensure_i64(value: JsonValue, label: str) -> int:
+    value = _ensure_int(value, label)
+    if not I64_MIN <= value <= I64_MAX:
+        raise ValueError(f"{label} must fit in i64")
+    return value
+
+
+def _required_i32(value: dict[str, JsonValue], key: str) -> int:
+    if key not in value:
+        raise KeyError(key)
+    return _ensure_i32(value[key], key)
+
+
 def _required_bool(value: dict[str, JsonValue], key: str) -> bool:
     if key not in value:
         raise KeyError(key)
     raw = value[key]
+    if not isinstance(raw, bool):
+        raise TypeError(f"{key} must be a bool")
+    return raw
+
+
+def _optional_bool_default(value: dict[str, JsonValue], key: str, default: bool) -> bool:
+    raw = value.get(key, default)
     if not isinstance(raw, bool):
         raise TypeError(f"{key} must be a bool")
     return raw
@@ -575,6 +620,29 @@ def _required_list(value: dict[str, JsonValue], key: str) -> list[JsonValue]:
     if not isinstance(raw, list):
         raise TypeError(f"{key} must be a list")
     return raw
+
+
+def _optional_list(value: dict[str, JsonValue], key: str) -> list[JsonValue]:
+    raw = value.get(key, [])
+    if not isinstance(raw, list):
+        raise TypeError(f"{key} must be a list")
+    return raw
+
+
+def _required_str_list(value: dict[str, JsonValue], key: str) -> list[str]:
+    items = _required_list(value, key)
+    for item in items:
+        if not isinstance(item, str):
+            raise TypeError(f"{key} entries must be strings")
+    return items
+
+
+def _optional_str_list(value: dict[str, JsonValue], key: str) -> list[str]:
+    items = _optional_list(value, key)
+    for item in items:
+        if not isinstance(item, str):
+            raise TypeError(f"{key} entries must be strings")
+    return items
 
 
 def _optional_enum(value: dict[str, JsonValue], key: str, enum_cls):
@@ -591,4 +659,7 @@ def _parse_input_modalities(value: JsonValue) -> tuple[InputModality, ...]:
         return default_input_modalities()
     if not isinstance(value, list):
         raise TypeError("input_modalities must be a list")
-    return tuple(InputModality(str(item)) for item in value)
+    for item in value:
+        if not isinstance(item, str):
+            raise TypeError("input_modalities entries must be strings")
+    return tuple(InputModality(item) for item in value)

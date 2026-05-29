@@ -201,6 +201,40 @@ class ProtocolProtocolTests(unittest.TestCase):
         self.assertEqual(response.to_mapping(), {"answers": {"choice": {"answers": ["A"]}}})
         self.assertEqual(event.to_mapping()["turn_id"], "")
 
+    def test_request_user_input_rejects_non_rust_shapes(self):
+        with self.assertRaisesRegex(TypeError, "label must be a string"):
+            RequestUserInputQuestionOption(123, "description")
+
+        with self.assertRaisesRegex(TypeError, "id must be a string"):
+            RequestUserInputQuestion(123, "Header", "Question")
+
+        with self.assertRaisesRegex(TypeError, "is_other must be a bool"):
+            RequestUserInputQuestion("id", "Header", "Question", is_other=1)
+
+        with self.assertRaisesRegex(TypeError, "options entries must be RequestUserInputQuestionOption"):
+            RequestUserInputQuestion("id", "Header", "Question", options=({"label": "A", "description": "Use A"},))
+
+        with self.assertRaisesRegex(TypeError, "questions entries must be RequestUserInputQuestion"):
+            RequestUserInputArgs(({"id": "choice"},))
+
+        with self.assertRaisesRegex(TypeError, "answer keys must be strings"):
+            RequestUserInputResponse({1: RequestUserInputAnswer(("A",))})
+
+        with self.assertRaisesRegex(TypeError, "answer values must be RequestUserInputAnswer"):
+            RequestUserInputResponse({"choice": {"answers": ["A"]}})
+
+        with self.assertRaisesRegex(TypeError, "answer keys must be strings"):
+            RequestUserInputResponse.from_mapping({"answers": {1: {"answers": ["A"]}}})
+
+        with self.assertRaisesRegex(TypeError, "call_id must be a string"):
+            RequestUserInputEvent(123, ())
+
+        with self.assertRaisesRegex(TypeError, "turn_id must be a string"):
+            RequestUserInputEvent("call-1", (), turn_id=123)
+
+        with self.assertRaisesRegex(TypeError, "turn_id must be a string"):
+            RequestUserInputEvent.from_mapping({"call_id": "call-1", "turn_id": 123, "questions": []})
+
     def test_session_source_from_startup_arg_maps_known_and_custom_values(self):
         self.assertEqual(SessionSource.from_startup_arg("vscode"), SessionSource.vscode())
         self.assertEqual(SessionSource.from_startup_arg("app-server"), SessionSource.mcp())

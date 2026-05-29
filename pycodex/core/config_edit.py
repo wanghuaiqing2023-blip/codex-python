@@ -23,6 +23,63 @@ class ConfigEditError(ValueError):
     """Raised when a config edit cannot be applied."""
 
 
+def _ensure_str(value: object, field: str) -> str:
+    if not isinstance(value, str):
+        raise ConfigEditError(f"{field} must be a string")
+    return value
+
+
+def _ensure_optional_str(value: object, field: str) -> str | None:
+    if value is None:
+        return None
+    return _ensure_str(value, field)
+
+
+def _ensure_bool(value: object, field: str) -> bool:
+    if not isinstance(value, bool):
+        raise ConfigEditError(f"{field} must be a bool")
+    return value
+
+
+def _ensure_i64(value: object, field: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ConfigEditError(f"{field} must be an integer")
+    if value < -(2**63) or value > 2**63 - 1:
+        raise ConfigEditError(f"{field} is outside the i64 range")
+    return value
+
+
+def _ensure_u32(value: object, field: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ConfigEditError(f"{field} must be an integer")
+    if value < 0 or value > 2**32 - 1:
+        raise ConfigEditError(f"{field} is outside the u32 range")
+    return value
+
+
+def _ensure_pathlike(value: object, field: str) -> str | os.PathLike[str]:
+    if isinstance(value, (str, os.PathLike)):
+        return value
+    raise ConfigEditError(f"{field} must be path-like")
+
+
+def _ensure_str_sequence(value: object, field: str) -> tuple[str, ...]:
+    if isinstance(value, (str, bytes)) or not isinstance(value, Iterable):
+        raise ConfigEditError(f"{field} must be an iterable of strings")
+    result = tuple(value)
+    if not all(isinstance(item, str) for item in result):
+        raise ConfigEditError(f"{field} must contain only strings")
+    return result
+
+
+def _ensure_mapping(value: object, field: str) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        raise ConfigEditError(f"{field} must be a mapping")
+    if not all(isinstance(key, str) for key in value):
+        raise ConfigEditError(f"{field} keys must be strings")
+    return value
+
+
 class ConfigEditKind(str, Enum):
     SET_PATH = "set_path"
     CLEAR_PATH = "clear_path"
@@ -55,7 +112,7 @@ class ToolSuggestDisabledTool:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "kind", _tool_suggest_type(self.kind))
-        object.__setattr__(self, "id", str(self.id))
+        object.__setattr__(self, "id", _ensure_str(self.id, "id"))
 
     @classmethod
     def plugin(cls, id: str) -> "ToolSuggestDisabledTool":
@@ -91,19 +148,33 @@ class SkillConfigSelector:
     kind: str
     value: str
 
+    def __post_init__(self) -> None:
+        kind = _ensure_str(self.kind, "kind")
+        if kind == "name":
+            object.__setattr__(self, "value", _ensure_str(self.value, "name").strip())
+        elif kind == "path":
+            object.__setattr__(self, "value", normalize_skill_config_path(_ensure_pathlike(self.value, "path")))
+        else:
+            raise ConfigEditError(f"unknown skill config selector kind: {kind}")
+
     @classmethod
     def name(cls, name: str) -> "SkillConfigSelector":
-        return cls("name", str(name).strip())
+        return cls("name", name)
 
     @classmethod
     def path(cls, path: str | Path) -> "SkillConfigSelector":
-        return cls("path", normalize_skill_config_path(path))
+        return cls("path", path)
 
 
 @dataclass(frozen=True)
 class SkillConfigEdit:
     selector: SkillConfigSelector
     enabled: bool
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.selector, SkillConfigSelector):
+            raise ConfigEditError("selector must be a SkillConfigSelector")
+        object.__setattr__(self, "enabled", _ensure_bool(self.enabled, "enabled"))
 
 
 @dataclass(frozen=True)
@@ -136,12 +207,12 @@ class ConfigEdit:
         return cls(
             ConfigEditKind.SET_SKILL_CONFIG,
             ("skills", "config"),
-            SkillConfigEdit(_normalize_skill_config_selector(selector), bool(enabled)),
+            SkillConfigEdit(_normalize_skill_config_selector(selector), _ensure_bool(enabled, "enabled")),
         )
 
     @classmethod
     def replace_mcp_servers(cls, servers: Mapping[str, Any]) -> "ConfigEdit":
-        return cls(ConfigEditKind.REPLACE_MCP_SERVERS, ("mcp_servers",), dict(servers))
+        return cls(ConfigEditKind.REPLACE_MCP_SERVERS, ("mcp_servers",), dict(_ensure_mapping(servers, "servers")))
 
 
 @dataclass
@@ -302,91 +373,63 @@ def session_picker_view_edit(mode: SessionPickerViewMode | str) -> ConfigEdit:
     return ConfigEdit.set_path(("tui", "session_picker_view"), _string_value(mode))
 
 
-def status_line_items_edit(items: Sequence[str]) -> ConfigEdit:
-    return ConfigEdit.set_path(("tui", "status_line"), [str(item) for item in items])
-
+def status_line_items_edit(items: Iterable[str]) -> ConfigEdit:
+    return ConfigEdit.set_path(("tui", "status_line"), list(_ensure_str_sequence(items, "items")))
 
 def status_line_use_colors_edit(enabled: bool) -> ConfigEdit:
-    return ConfigEdit.set_path(("tui", "status_line_use_colors"), bool(enabled))
+    return ConfigEdit.set_path(("tui", "status_line_use_colors"), _ensure_bool(enabled, "enabled"))
 
+def terminal_title_items_edit(items: Iterable[str]) -> ConfigEdit:
+    return ConfigEdit.set_path(("tui", "terminal_title"), list(_ensure_str_sequence(items, "items")))
 
-def terminal_title_items_edit(items: Sequence[str]) -> ConfigEdit:
-    return ConfigEdit.set_path(("tui", "terminal_title"), [str(item) for item in items])
-
-
-def keymap_bindings_edit(context: str, action: str, keys: Sequence[str]) -> ConfigEdit:
-    values = [str(key) for key in keys]
+def keymap_bindings_edit(context: str, action: str, keys: Iterable[str]) -> ConfigEdit:
+    keys_tuple = _ensure_str_sequence(keys, "keys")
     value: str | list[str]
-    if len(values) == 1:
-        value = values[0]
+    if len(keys_tuple) == 1:
+        value = keys_tuple[0]
     else:
-        value = values
-    return ConfigEdit.set_path(("tui", "keymap", str(context), str(action)), value)
-
+        value = list(keys_tuple)
+    return ConfigEdit.set_path(("tui", "keymap", _ensure_str(context, "context"), _ensure_str(action, "action")), value)
 
 def keymap_binding_edit(context: str, action: str, key: str) -> ConfigEdit:
-    return keymap_bindings_edit(context, action, [key])
-
+    return keymap_bindings_edit(context, action, (_ensure_str(key, "key"),))
 
 def keymap_binding_clear_edit(context: str, action: str) -> ConfigEdit:
-    return ConfigEdit.clear_path(("tui", "keymap", str(context), str(action)))
-
+    return ConfigEdit.clear_path(("tui", "keymap", _ensure_str(context, "context"), _ensure_str(action, "action")))
 
 def model_availability_nux_count_edits(shown_count: Mapping[str, int]) -> list[ConfigEdit]:
+    shown = _ensure_mapping(shown_count, "shown_count")
     edits = [ConfigEdit.clear_path(("tui", "model_availability_nux"))]
-    for model_slug in sorted(shown_count):
-        edits.append(
-            ConfigEdit.set_path(("tui", "model_availability_nux", str(model_slug)), int(shown_count[model_slug]))
-        )
+    for model_slug, count in sorted(shown.items()):
+        edits.append(ConfigEdit.set_path(("tui", "model_availability_nux", model_slug), _ensure_u32(count, f"shown_count[{model_slug!r}]")))
     return edits
 
-
 def notice_hide_full_access_warning_edit(acknowledged: bool) -> ConfigEdit:
-    return ConfigEdit.set_path(("notice", "hide_full_access_warning"), bool(acknowledged))
-
+    return ConfigEdit.set_notice_hide_full_access_warning(_ensure_bool(acknowledged, "acknowledged"))
 
 def notice_hide_world_writable_warning_edit(acknowledged: bool) -> ConfigEdit:
-    return ConfigEdit.set_path(("notice", "hide_world_writable_warning"), bool(acknowledged))
-
+    return ConfigEdit.set_notice_hide_world_writable_warning(_ensure_bool(acknowledged, "acknowledged"))
 
 def notice_hide_rate_limit_model_nudge_edit(acknowledged: bool) -> ConfigEdit:
-    return ConfigEdit.set_path(("notice", "hide_rate_limit_model_nudge"), bool(acknowledged))
+    return ConfigEdit.set_notice_hide_rate_limit_model_nudge(_ensure_bool(acknowledged, "acknowledged"))
 
-
-def notice_hide_model_migration_prompt_edit(model: str, acknowledged: bool) -> ConfigEdit:
-    return ConfigEdit.set_path(("notice", str(model)), bool(acknowledged))
-
+def notice_hide_model_migration_prompt_edit(model_prompt_key: str, acknowledged: bool) -> ConfigEdit:
+    return ConfigEdit.set_notice_hide_model_migration_prompt(_ensure_str(model_prompt_key, "model_prompt_key"), _ensure_bool(acknowledged, "acknowledged"))
 
 def notice_hide_external_config_migration_prompt_home_edit(acknowledged: bool) -> ConfigEdit:
-    return ConfigEdit.set_path(("notice", "external_config_migration_prompts", "home"), bool(acknowledged))
-
+    return ConfigEdit.set_notice_hide_external_config_migration_prompt_home(_ensure_bool(acknowledged, "acknowledged"))
 
 def notice_external_config_migration_prompt_home_last_prompted_at_edit(timestamp: int) -> ConfigEdit:
-    return ConfigEdit.set_path(
-        ("notice", "external_config_migration_prompts", "home_last_prompted_at"),
-        int(timestamp),
-    )
-
+    return ConfigEdit.set_notice_external_config_migration_prompt_home_last_prompted_at(_ensure_i64(timestamp, "timestamp"))
 
 def notice_hide_external_config_migration_prompt_project_edit(project: str, acknowledged: bool) -> ConfigEdit:
-    return ConfigEdit.set_path(
-        ("notice", "external_config_migration_prompts", "projects", str(project)),
-        bool(acknowledged),
-    )
+    return ConfigEdit.set_notice_hide_external_config_migration_prompt_project(_ensure_str(project, "project"), _ensure_bool(acknowledged, "acknowledged"))
 
-
-def notice_external_config_migration_prompt_project_last_prompted_at_edit(
-    project: str, timestamp: int
-) -> ConfigEdit:
-    return ConfigEdit.set_path(
-        ("notice", "external_config_migration_prompts", "project_last_prompted_at", str(project)),
-        int(timestamp),
-    )
-
+def notice_external_config_migration_prompt_project_last_prompted_at_edit(project: str, timestamp: int) -> ConfigEdit:
+    return ConfigEdit.set_notice_external_config_migration_prompt_project_last_prompted_at(_ensure_str(project, "project"), _ensure_i64(timestamp, "timestamp"))
 
 def record_model_migration_seen_edit(from_model: str, to_model: str) -> ConfigEdit:
-    return ConfigEdit.set_path(("notice", "model_migrations", str(from_model)), str(to_model))
-
+    return ConfigEdit.record_model_migration_seen(_ensure_str(from_model, "from_model"), _ensure_str(to_model, "to_model"))
 
 def add_tool_suggest_disabled_tool_edit(disabled_tool: ToolSuggestDisabledTool | Mapping[str, Any]) -> ConfigEdit:
     return ConfigEdit.add_tool_suggest_disabled_tool(disabled_tool)
@@ -470,7 +513,9 @@ def apply_config_edit(config: MutableMapping[str, Any], edit: ConfigEdit) -> boo
     if edit.kind is ConfigEditKind.SET_SKILL_CONFIG:
         return _set_skill_config(config, _coerce_skill_config_edit(edit.value))
     if edit.kind is ConfigEditKind.REPLACE_MCP_SERVERS:
-        return _replace_mcp_servers(config, edit.value if isinstance(edit.value, Mapping) else {})
+        if not isinstance(edit.value, Mapping):
+            raise ConfigEditError("mcp_servers must be a mapping")
+        return _replace_mcp_servers(config, edit.value)
     raise ConfigEditError(f"unsupported config edit kind: {edit.kind}")
 
 
@@ -850,21 +895,26 @@ def _append_array_of_tables_lines(lines: list[str], path: tuple[str, ...], value
             lines.append(f"{_quote_key(str(key))} = {_toml_value(item)}")
 
 
-def _toml_value(value: Any) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, int) and not isinstance(value, bool):
-        return str(value)
-    if isinstance(value, float):
-        return repr(value)
+def _toml_value(value: Any) -> Any:
+    if isinstance(value, Enum):
+        return _toml_value(_string_value(value))
+    if isinstance(value, Mapping):
+        _ensure_mapping(value, "value")
+        items = ", ".join(f"{_quote_key(str(key))} = {_toml_value(item)}" for key, item in value.items())
+        return f"{{ {items} }}"
+    if isinstance(value, tuple):
+        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
     if isinstance(value, str):
         return f'"{_escape_basic_string(value)}"'
-    if isinstance(value, (list, tuple)):
-        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
-    if isinstance(value, Mapping):
-        return "{ " + ", ".join(f"{_quote_key(str(key))} = {_toml_value(item)}" for key, item in value.items()) + " }"
-    raise ConfigEditError(f"unsupported TOML value: {value!r}")
-
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if value is None:
+        return '""'
+    raise ConfigEditError(f"unsupported TOML value type: {type(value).__name__}")
 
 def _quote_key(key: str) -> str:
     if key.replace("_", "").replace("-", "").isalnum() and key:
@@ -873,20 +923,30 @@ def _quote_key(key: str) -> str:
 
 
 def _escape_basic_string(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"')
+    return (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\b", "\\b")
+        .replace("\t", "\\t")
+        .replace("\n", "\\n")
+        .replace("\f", "\\f")
+        .replace("\r", "\\r")
+    )
 
 
-def _string_value(value: str | Enum) -> str:
+def _string_value(value: object) -> str:
     if isinstance(value, Enum):
-        return str(value.value)
-    return str(value)
-
+        enum_value = value.value
+        if not isinstance(enum_value, str):
+            raise ConfigEditError("enum value must be a string")
+        return enum_value
+    return _ensure_str(value, "value")
 
 def _optional_string_edit(segments: tuple[str, ...], value: str | None) -> ConfigEdit:
-    if value is None:
+    string_value = _ensure_optional_str(value, "value")
+    if string_value is None:
         return ConfigEdit.clear_path(segments)
-    return ConfigEdit.set_path(segments, str(value))
-
+    return ConfigEdit.set_path(segments, string_value)
 
 def _coerce_tool_suggest_disabled_tool(value: ToolSuggestDisabledTool | Mapping[str, Any]) -> ToolSuggestDisabledTool:
     if isinstance(value, ToolSuggestDisabledTool):
@@ -900,18 +960,16 @@ def _coerce_tool_suggest_disabled_tool(value: ToolSuggestDisabledTool | Mapping[
 
 def _coerce_skill_config_edit(value: SkillConfigEdit | Mapping[str, Any]) -> SkillConfigEdit:
     if isinstance(value, SkillConfigEdit):
-        return SkillConfigEdit(_normalize_skill_config_selector(value.selector), bool(value.enabled))
+        return value
     if isinstance(value, Mapping):
-        selector_value = value.get("selector")
-        if isinstance(selector_value, SkillConfigSelector):
-            selector = selector_value
-        elif isinstance(selector_value, Mapping):
-            selector = SkillConfigSelector(str(selector_value.get("kind")), str(selector_value.get("value")))
-        else:
-            raise ConfigEditError(f"invalid skill config edit: {value!r}")
-        return SkillConfigEdit(_normalize_skill_config_selector(selector), bool(value.get("enabled", True)))
-    raise ConfigEditError(f"invalid skill config edit: {value!r}")
-
+        selector = value.get("selector")
+        enabled = value.get("enabled")
+        if isinstance(selector, Mapping):
+            selector = SkillConfigSelector(_ensure_str(selector.get("kind"), "selector.kind"), selector.get("value"))
+        if not isinstance(selector, SkillConfigSelector):
+            raise ConfigEditError("selector must be a SkillConfigSelector")
+        return SkillConfigEdit(selector, _ensure_bool(enabled, "enabled"))
+    raise ConfigEditError("invalid skill config edit")
 
 def _normalize_skill_config_selector(selector: SkillConfigSelector) -> SkillConfigSelector:
     if selector.kind == "name":
@@ -921,14 +979,15 @@ def _normalize_skill_config_selector(selector: SkillConfigSelector) -> SkillConf
     raise ConfigEditError(f"invalid skill config selector kind: {selector.kind!r}")
 
 
-def _tool_suggest_type(value: ToolSuggestDiscoverableType | str | Any) -> ToolSuggestDiscoverableType:
+def _tool_suggest_type(value: ToolSuggestDiscoverableType | str) -> ToolSuggestDiscoverableType:
     if isinstance(value, ToolSuggestDiscoverableType):
         return value
+    if not isinstance(value, str):
+        raise ConfigEditError("tool suggest type must be a string")
     try:
-        return ToolSuggestDiscoverableType(str(value))
+        return ToolSuggestDiscoverableType(value)
     except ValueError as exc:
-        raise ConfigEditError(f"invalid tool suggest discoverable type: {value!r}") from exc
-
+        raise ConfigEditError(f"unknown tool suggest type: {value}") from exc
 
 def _field(value: Any, name: str, default: Any = None) -> Any:
     if isinstance(value, Mapping):
@@ -952,64 +1011,8 @@ def _service_tier_config_value(value: str) -> str:
 
 
 def _segments_tuple(segments: Iterable[str]) -> tuple[str, ...]:
-    resolved = tuple(str(segment) for segment in segments)
-    if not resolved or any(not segment for segment in resolved):
-        raise ConfigEditError("config edit path must contain non-empty segments")
-    return resolved
+    result = _ensure_str_sequence(segments, "segments")
+    if not result:
+        raise ConfigEditError("config edit path must not be empty")
+    return result
 
-
-__all__ = [
-    "CONFIG_TOML_FILE",
-    "ConfigEdit",
-    "ConfigEditError",
-    "ConfigEditKind",
-    "ConfigEditsBuilder",
-    "SessionPickerViewMode",
-    "SkillConfigEdit",
-    "SkillConfigSelector",
-    "ToolSuggestDiscoverableType",
-    "ToolSuggestDisabledTool",
-    "add_tool_suggest_disabled_tool_edit",
-    "apply",
-    "apply_blocking",
-    "apply_blocking_to_resolved_file",
-    "apply_config_edit",
-    "apply_config_edits",
-    "clear_legacy_windows_sandbox_key_edits",
-    "dumps_toml_mapping",
-    "keymap_binding_clear_edit",
-    "keymap_binding_edit",
-    "keymap_bindings_edit",
-    "model_selection_edits",
-    "model_availability_nux_count_edits",
-    "notice_external_config_migration_prompt_home_last_prompted_at_edit",
-    "notice_external_config_migration_prompt_project_last_prompted_at_edit",
-    "notice_hide_external_config_migration_prompt_home_edit",
-    "notice_hide_external_config_migration_prompt_project_edit",
-    "notice_hide_full_access_warning_edit",
-    "notice_hide_model_migration_prompt_edit",
-    "notice_hide_rate_limit_model_nudge_edit",
-    "notice_hide_world_writable_warning_edit",
-    "personality_edit",
-    "project_trust_key",
-    "project_trust_level_edit",
-    "normalize_skill_config_path",
-    "read_toml_mapping",
-    "realtime_microphone_edit",
-    "realtime_speaker_edit",
-    "realtime_voice_edit",
-    "record_model_migration_seen_edit",
-    "replace_mcp_servers_edit",
-    "session_picker_view_edit",
-    "service_tier_edit",
-    "set_feature_enabled_edit",
-    "set_skill_config_by_name_edit",
-    "set_skill_config_edit",
-    "status_line_items_edit",
-    "status_line_use_colors_edit",
-    "syntax_theme_edit",
-    "terminal_title_items_edit",
-    "tui_pet_edit",
-    "windows_sandbox_mode_edit",
-    "write_toml_mapping",
-]

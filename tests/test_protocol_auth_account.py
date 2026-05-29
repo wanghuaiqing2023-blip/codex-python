@@ -11,6 +11,20 @@ class ProtocolAuthAccountTests(unittest.TestCase):
         self.assertEqual(AuthPlanType.from_raw_value("edu"), AuthPlanType.known_plan(KnownPlan.EDU))
         self.assertEqual(AuthPlanType.from_raw_value("mystery-tier"), AuthPlanType.unknown_plan("mystery-tier"))
 
+    def test_auth_plan_type_rejects_non_rust_shapes(self):
+        with self.assertRaisesRegex(ValueError, "exactly one variant"):
+            AuthPlanType()
+        with self.assertRaisesRegex(ValueError, "exactly one variant"):
+            AuthPlanType(KnownPlan.PLUS, "plus")
+        with self.assertRaisesRegex(TypeError, "known must be a KnownPlan"):
+            AuthPlanType("plus")  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "raw plan type must be a string"):
+            AuthPlanType.from_raw_value(123)  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "plan must be a KnownPlan"):
+            AuthPlanType.known_plan("plus")  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "raw unknown plan must be a string"):
+            AuthPlanType.unknown_plan(123)  # type: ignore[arg-type]
+
     def test_known_plan_display_raw_and_workspace_helpers(self):
         self.assertEqual(KnownPlan.PRO_LITE.display_name(), "Pro Lite")
         self.assertEqual(KnownPlan.SELF_SERVE_BUSINESS_USAGE_BASED.raw_value(), "self_serve_business_usage_based")
@@ -45,6 +59,14 @@ class ProtocolAuthAccountTests(unittest.TestCase):
             AccountPlanType.UNKNOWN,
         )
 
+    def test_account_plan_rejects_non_rust_shapes(self):
+        with self.assertRaisesRegex(TypeError, "plan type must be a string"):
+            AccountPlanType.parse(123)  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "plan_type must be an auth PlanType"):
+            AccountPlanType.from_auth_plan_type("plus")  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "plan must be a KnownPlan"):
+            AccountPlanType.from_known_plan("plus")  # type: ignore[arg-type]
+
     def test_provider_account_shapes_match_upstream_variants(self):
         self.assertEqual(ProviderAccount.api_key(), ProviderAccount(kind="api_key"))
         self.assertEqual(
@@ -53,12 +75,29 @@ class ProtocolAuthAccountTests(unittest.TestCase):
         )
         self.assertEqual(ProviderAccount.amazon_bedrock(), ProviderAccount(kind="amazon_bedrock"))
 
+    def test_provider_account_rejects_non_rust_shapes(self):
+        with self.assertRaisesRegex(ValueError, "unknown provider account kind"):
+            ProviderAccount(kind="github")
+        with self.assertRaisesRegex(ValueError, "api_key account cannot include"):
+            ProviderAccount(kind="api_key", email="user@example.com")
+        with self.assertRaisesRegex(ValueError, "amazon_bedrock account cannot include"):
+            ProviderAccount(kind="amazon_bedrock", plan_type=AccountPlanType.PLUS)
+        with self.assertRaisesRegex(TypeError, "chatgpt account email must be a string"):
+            ProviderAccount(kind="chatgpt", email=None, plan_type=AccountPlanType.PLUS)
+        with self.assertRaisesRegex(TypeError, "chatgpt account plan_type must be a PlanType"):
+            ProviderAccount(kind="chatgpt", email="user@example.com", plan_type="plus")  # type: ignore[arg-type]
+
     def test_refresh_token_failed_error_carries_reason_and_message(self):
         err = RefreshTokenFailedError(RefreshTokenFailedReason.REVOKED, "token revoked")
 
         self.assertEqual(str(err), "token revoked")
         self.assertIs(err.reason, RefreshTokenFailedReason.REVOKED)
         self.assertEqual(err.message, "token revoked")
+
+        with self.assertRaisesRegex(TypeError, "reason must be a RefreshTokenFailedReason"):
+            RefreshTokenFailedError("revoked", "token revoked")  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "message must be a string"):
+            RefreshTokenFailedError(RefreshTokenFailedReason.REVOKED, 123)  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":

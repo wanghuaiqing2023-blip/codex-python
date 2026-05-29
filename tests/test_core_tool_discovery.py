@@ -181,6 +181,68 @@ class ToolDiscoveryTests(unittest.TestCase):
         self.assertEqual(DiscoverableTool.from_mapping(connector.to_mapping()), connector)
         self.assertEqual(DiscoverableTool.from_mapping(plugin.to_mapping()), plugin)
 
+    def test_dataclasses_reject_non_rust_scalar_shapes(self) -> None:
+        with self.assertRaises(TypeError):
+            AppInfo(id=123, name="Calendar")
+        with self.assertRaises(TypeError):
+            AppInfo(id="connector_calendar", name="Calendar", is_enabled=1)
+        with self.assertRaises(TypeError):
+            DiscoverablePluginInfo(id="plugin", name="Plugin", has_skills=1)
+        with self.assertRaises(TypeError):
+            RequestPluginInstallEntry(
+                id="plugin",
+                name="Plugin",
+                description=None,
+                tool_type=DiscoverableToolType.PLUGIN,
+                has_skills=1,
+            )
+
+    def test_string_lists_reject_strings_and_non_string_items(self) -> None:
+        with self.assertRaises(TypeError):
+            DiscoverablePluginInfo(
+                id="plugin",
+                name="Plugin",
+                mcp_server_names="server",
+            )
+        with self.assertRaises(TypeError):
+            DiscoverablePluginInfo(
+                id="plugin",
+                name="Plugin",
+                app_connector_ids=("connector", 2),
+            )
+        with self.assertRaises(TypeError):
+            AppInfo(
+                id="connector",
+                name="Connector",
+                labels=("safe", object()),
+            )
+
+    def test_direct_discoverable_tool_construction_requires_typed_inner(self) -> None:
+        with self.assertRaises(TypeError):
+            DiscoverableTool(
+                DiscoverableToolType.CONNECTOR,
+                connector_info={"id": "connector", "name": "Connector"},
+            )
+        with self.assertRaises(TypeError):
+            DiscoverableTool(
+                DiscoverableToolType.PLUGIN,
+                plugin_info={"id": "plugin", "name": "Plugin"},
+            )
+
+    def test_mapping_constructors_reject_malformed_shapes(self) -> None:
+        with self.assertRaises(TypeError):
+            AppInfo.from_mapping({"id": "connector", "name": "Connector", "is_enabled": 1})
+        with self.assertRaises(TypeError):
+            DiscoverablePluginInfo.from_mapping(
+                {"id": "plugin", "name": "Plugin", "mcp_server_names": "server"}
+            )
+        with self.assertRaises(TypeError):
+            DiscoverableTool.from_mapping(1)
+        with self.assertRaises(TypeError):
+            filter_request_plugin_install_discoverable_tools_for_client([1], None)
+        with self.assertRaises(TypeError):
+            filter_request_plugin_install_discoverable_tools_for_client([], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

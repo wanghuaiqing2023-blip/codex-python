@@ -25,6 +25,37 @@ class ProtocolParseCommandPlanToolTests(unittest.TestCase):
         self.assertEqual(read.to_mapping()["type"], "read")
         self.assertNotIn("path", ParsedCommand.list_files("rg --files").to_mapping())
 
+    def test_parsed_command_rejects_non_rust_variant_shapes(self):
+        with self.assertRaisesRegex(TypeError, "cmd must be a string"):
+            ParsedCommand.unknown(123)
+
+        with self.assertRaisesRegex(TypeError, "read command name must be a string"):
+            ParsedCommand("read", cmd="cat file.txt", name=None, path="file.txt")
+
+        with self.assertRaisesRegex(TypeError, "read command path must be a string or Path"):
+            ParsedCommand("read", cmd="cat file.txt", name="file.txt", path=None)
+
+        with self.assertRaisesRegex(ValueError, "read command cannot include query"):
+            ParsedCommand("read", cmd="cat file.txt", name="file.txt", path="file.txt", query="needle")
+
+        with self.assertRaisesRegex(ValueError, "list_files command cannot include name"):
+            ParsedCommand("list_files", cmd="rg --files", name="files")
+
+        with self.assertRaisesRegex(TypeError, "list_files command path must be a string or None"):
+            ParsedCommand("list_files", cmd="rg --files", path=Path("src"))
+
+        with self.assertRaisesRegex(ValueError, "search command cannot include name"):
+            ParsedCommand("search", cmd="rg needle", name="needle", query="needle")
+
+        with self.assertRaisesRegex(TypeError, "search command query must be a string or None"):
+            ParsedCommand("search", cmd="rg needle", query=123)
+
+        with self.assertRaisesRegex(ValueError, "unknown command cannot include name, path, or query"):
+            ParsedCommand("unknown", cmd="git status", path=".")
+
+        with self.assertRaisesRegex(ValueError, "unknown parsed command type"):
+            ParsedCommand("execute", cmd="run")
+
     def test_plan_tool_args_round_trip(self):
         update = UpdatePlanArgs(
             explanation="working",
@@ -39,6 +70,24 @@ class ProtocolParseCommandPlanToolTests(unittest.TestCase):
         self.assertEqual(update.to_mapping()["plan"][1]["status"], "in_progress")
         with self.assertRaisesRegex(ValueError, "unknown field"):
             UpdatePlanArgs.from_mapping({"plan": [], "unexpected": True})
+
+    def test_plan_tool_args_reject_non_rust_shapes(self):
+        with self.assertRaisesRegex(TypeError, "step must be a string"):
+            PlanItemArg(123, StepStatus.PENDING)
+
+        self.assertEqual(PlanItemArg("inspect", "pending").status, StepStatus.PENDING)
+
+        with self.assertRaisesRegex(ValueError, "not a valid StepStatus"):
+            PlanItemArg("inspect", "unknown")
+
+        with self.assertRaisesRegex(TypeError, "plan must be a list or tuple"):
+            UpdatePlanArgs("inspect")
+
+        with self.assertRaisesRegex(TypeError, "plan entries must be PlanItemArg"):
+            UpdatePlanArgs(({"step": "inspect", "status": "pending"},))
+
+        with self.assertRaisesRegex(TypeError, "explanation must be a string or None"):
+            UpdatePlanArgs((), explanation=123)
 
     def test_event_msg_parses_plan_update(self):
         msg = EventMsg.from_mapping(

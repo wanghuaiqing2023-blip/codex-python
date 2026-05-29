@@ -16,6 +16,12 @@ from pathlib import Path
 from typing import Any
 
 from pycodex.config import ConfigOverride
+from pycodex.core.agents_md import (
+    DEFAULT_PROJECT_DOC_MAX_BYTES,
+    AgentsMdConfig,
+    AgentsMdManager,
+)
+from pycodex.core.paths import find_codex_home
 from pycodex.protocol import AskForApproval, SandboxMode
 
 from .cli import ExecCli
@@ -86,12 +92,17 @@ class ExecConfigBootstrapPlan:
     ignore_rules: bool = False
     cli_overrides: tuple[ConfigOverride, ...] = ()
     harness_overrides: ExecHarnessOverrides = ExecHarnessOverrides()
+    user_instructions: str | None = None
+    instruction_sources: tuple[Path, ...] = ()
+    startup_warnings: tuple[str, ...] = ()
     upstream_source: str = UPSTREAM_EXEC_RUN_MAIN
 
     def __post_init__(self) -> None:
         if not isinstance(self.config_cwd, Path):
             object.__setattr__(self, "config_cwd", Path(self.config_cwd))
         object.__setattr__(self, "cli_overrides", tuple(self.cli_overrides))
+        object.__setattr__(self, "instruction_sources", tuple(Path(path) for path in self.instruction_sources))
+        object.__setattr__(self, "startup_warnings", tuple(str(warning) for warning in self.startup_warnings))
 
     def to_mapping(self) -> dict[str, JsonValue]:
         return {
@@ -103,6 +114,9 @@ class ExecConfigBootstrapPlan:
                 {"path": override.path, "value": override.value} for override in self.cli_overrides
             ],
             "harnessOverrides": self.harness_overrides.to_mapping(),
+            "userInstructions": self.user_instructions,
+            "instructionSources": [str(path) for path in self.instruction_sources],
+            "startupWarnings": list(self.startup_warnings),
         }
 
 
@@ -138,19 +152,32 @@ def get_default_model_for_oss_provider(provider_id: str) -> str | None:
 
 
 def exec_model_provider_override(cli: ExecCli, config_toml: Mapping[str, JsonValue] | None = None) -> str | None:
-    if not cli.oss:
+    if cli.local_provider is not None:
+        return cli.local_provider
+    if cli.oss:
+        provider = resolve_oss_provider(cli.local_provider, config_toml)
+        if provider is None:
+            raise ExecConfigPlanError(NO_DEFAULT_OSS_PROVIDER_MESSAGE)
+        return provider
+    if config_toml is None:
         return None
-    provider = resolve_oss_provider(cli.local_provider, config_toml)
-    if provider is None:
-        raise ExecConfigPlanError(NO_DEFAULT_OSS_PROVIDER_MESSAGE)
-    return provider
+    provider = config_toml.get("model_provider")
+    return provider if isinstance(provider, str) and provider else None
 
 
-def exec_model_override(cli: ExecCli, model_provider: str | None = None) -> str | None:
+def exec_model_override(
+    cli: ExecCli,
+    model_provider: str | None = None,
+    config_toml: Mapping[str, JsonValue] | None = None,
+) -> str | None:
     if cli.model is not None:
         return cli.model
     if cli.oss and model_provider is not None:
         return get_default_model_for_oss_provider(model_provider)
+    if config_toml is not None:
+        model = config_toml.get("model")
+        if isinstance(model, str) and model:
+            return model
     return None
 
 
@@ -162,7 +189,7 @@ def exec_harness_overrides_from_cli(
 
     model_provider = exec_model_provider_override(cli, config_toml)
     return ExecHarnessOverrides(
-        model=exec_model_override(cli, model_provider),
+        model=exec_model_override(cli, model_provider, config_toml),
         approval_policy=AskForApproval.NEVER,
         sandbox_mode=exec_sandbox_mode_from_cli(cli),
         cwd=Path(cli.cwd) if cli.cwd is not None else None,
@@ -196,18 +223,84 @@ def build_exec_config_bootstrap_plan(
 ) -> ExecConfigBootstrapPlan:
     """Plan the config inputs that precede full app-server startup."""
 
+    config_cwd = resolve_exec_config_cwd(cli, current_dir)
+    warnings: list[str] = []
+    user_instructions, instruction_sources = _resolve_exec_user_instructions(
+        config_cwd,
+        config_toml,
+        warnings,
+    )
     return ExecConfigBootstrapPlan(
-        config_cwd=resolve_exec_config_cwd(cli, current_dir),
+        config_cwd=config_cwd,
         strict_config=cli.strict_config,
         ignore_user_config=cli.ignore_user_config,
         ignore_rules=cli.ignore_rules,
         cli_overrides=tuple(cli.cli_config_overrides().parse_overrides()),
         harness_overrides=exec_harness_overrides_from_cli(cli, config_toml),
+        user_instructions=user_instructions,
+        instruction_sources=instruction_sources,
+        startup_warnings=tuple(warnings),
     )
 
 
 def _enum_value(value: Enum | None) -> str | None:
     return value.value if isinstance(value, Enum) else None
+
+
+def _resolve_exec_user_instructions(
+    cwd: Path,
+    config_toml: Mapping[str, JsonValue] | None,
+    warnings: list[str],
+) -> tuple[str | None, tuple[Path, ...]]:
+    config = config_toml or {}
+    codex_home = _maybe_codex_home()
+    manager = AgentsMdManager(
+        AgentsMdConfig(
+            cwd=cwd,
+            codex_home=codex_home,
+            user_instructions=_optional_str(config.get("user_instructions")),
+            project_doc_max_bytes=_project_doc_max_bytes(config.get("project_doc_max_bytes")),
+            project_doc_fallback_filenames=_string_tuple(config.get("project_doc_fallback_filenames")),
+            project_root_markers=_optional_string_tuple(config.get("project_root_markers")),
+            child_agents_md=_bool_value(config.get("child_agents_md"), False),
+        )
+    )
+    return manager.user_instructions(warnings), tuple(manager.instruction_sources())
+
+
+def _maybe_codex_home() -> Path | None:
+    try:
+        return find_codex_home()
+    except (FileNotFoundError, NotADirectoryError, OSError):
+        return None
+
+
+def _optional_str(value: JsonValue) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _project_doc_max_bytes(value: JsonValue) -> int:
+    if isinstance(value, bool):
+        return DEFAULT_PROJECT_DOC_MAX_BYTES
+    if isinstance(value, int) and value >= 0:
+        return value
+    return DEFAULT_PROJECT_DOC_MAX_BYTES
+
+
+def _string_tuple(value: JsonValue) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    return tuple(item for item in value if isinstance(item, str) and item)
+
+
+def _optional_string_tuple(value: JsonValue) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    return _string_tuple(value)
+
+
+def _bool_value(value: JsonValue, default: bool) -> bool:
+    return value if isinstance(value, bool) else default
 
 
 __all__ = [

@@ -243,6 +243,52 @@ class McpToolCallPolicyTests(unittest.TestCase):
             {MCP_TOOL_CODEX_APPS_META_KEY: {"call_id": "call_abc123xyz789"}},
         )
 
+    def test_mcp_tool_approval_metadata_rejects_non_rust_shapes(self) -> None:
+        with self.assertRaisesRegex(TypeError, "connector_id must be a string or None"):
+            McpToolApprovalMetadata(connector_id=123)
+
+        with self.assertRaisesRegex(TypeError, "codex_apps_meta must be a mapping or None"):
+            McpToolApprovalMetadata(codex_apps_meta="meta")
+
+        with self.assertRaisesRegex(TypeError, "openai_file_input_params must be a list or tuple of strings"):
+            McpToolApprovalMetadata(openai_file_input_params="file")
+
+        with self.assertRaisesRegex(TypeError, "openai_file_input_params entries must be strings"):
+            McpToolApprovalMetadata(openai_file_input_params=("file", 123))
+
+    def test_mcp_tool_approval_key_rejects_non_rust_shapes(self) -> None:
+        with self.assertRaisesRegex(TypeError, "server must be a string"):
+            McpToolApprovalKey(123, None, "tool")
+
+        with self.assertRaisesRegex(TypeError, "connector_id must be a string or None"):
+            McpToolApprovalKey("server", 123, "tool")
+
+        with self.assertRaisesRegex(TypeError, "tool_name must be a string"):
+            McpToolApprovalKey("server", None, 123)
+
+    def test_mcp_app_metadata_rejects_non_rust_shapes(self) -> None:
+        with self.assertRaisesRegex(TypeError, "connector_id must be a string or None"):
+            McpAppUsageMetadata(connector_id=123)
+
+        with self.assertRaisesRegex(TypeError, "app_name must be a string or None"):
+            McpAppUsageMetadata(app_name=123)
+
+        with self.assertRaisesRegex(TypeError, "connector_id must be a string or None"):
+            McpAppInvocation(connector_id=123)
+
+        with self.assertRaisesRegex(TypeError, "app_name must be a string or None"):
+            McpAppInvocation(app_name=123)
+
+    def test_mcp_tool_approval_decision_and_display_param_reject_non_rust_shapes(self) -> None:
+        with self.assertRaisesRegex(TypeError, "message must be a string or None"):
+            McpToolApprovalDecision.decline(123)
+
+        with self.assertRaisesRegex(TypeError, "name must be a string"):
+            RenderedMcpToolApprovalParam(123, "value", "Name")
+
+        with self.assertRaisesRegex(TypeError, "display_name must be a string"):
+            RenderedMcpToolApprovalParam("name", "value", 123)
+
     def test_guardian_mcp_review_request_includes_invocation_metadata(self) -> None:
         invocation = McpInvocation(
             server=CODEX_APPS_MCP_SERVER_NAME,

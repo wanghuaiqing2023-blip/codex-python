@@ -17,6 +17,9 @@ from typing import Generic, TypeVar
 
 T = TypeVar("T", str, bytes)
 
+I32_MIN = -(2**31)
+I32_MAX = 2**31 - 1
+U32_MAX = 2**32 - 1
 WINDOWS_1252_PUNCT_BYTES = frozenset((0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x99))
 COMMON_CYRILLIC = frozenset("абвгдежзийклмнопрстуфхцчшщьыя")
 
@@ -26,8 +29,19 @@ class StreamOutput(Generic[T]):
     text: T
     truncated_after_lines: int | None = None
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.text, (str, bytes)):
+            raise TypeError("text must be a string or bytes")
+        if self.truncated_after_lines is not None:
+            if isinstance(self.truncated_after_lines, bool) or not isinstance(self.truncated_after_lines, int):
+                raise TypeError("truncated_after_lines must be an int or None")
+            if self.truncated_after_lines < 0 or self.truncated_after_lines > U32_MAX:
+                raise ValueError("truncated_after_lines must fit in u32")
+
     @classmethod
     def new(cls, text: str) -> "StreamOutput[str]":
+        if not isinstance(text, str):
+            raise TypeError("text must be a string")
         return cls(text=text)
 
     def from_utf8_lossy(self) -> "StreamOutput[str]":
@@ -47,8 +61,26 @@ class ExecToolCallOutput:
     duration: timedelta = timedelta(0)
     timed_out: bool = False
 
+    def __post_init__(self) -> None:
+        if isinstance(self.exit_code, bool) or not isinstance(self.exit_code, int):
+            raise TypeError("exit_code must be an int")
+        if self.exit_code < I32_MIN or self.exit_code > I32_MAX:
+            raise ValueError("exit_code must fit in i32")
+        for field_name in ("stdout", "stderr", "aggregated_output"):
+            output = getattr(self, field_name)
+            if not isinstance(output, StreamOutput):
+                raise TypeError(f"{field_name} must be a StreamOutput")
+            if not isinstance(output.text, str):
+                raise TypeError(f"{field_name}.text must be a string")
+        if not isinstance(self.duration, timedelta):
+            raise TypeError("duration must be a timedelta")
+        if not isinstance(self.timed_out, bool):
+            raise TypeError("timed_out must be a bool")
+
 
 def bytes_to_string_smart(data: bytes) -> str:
+    if not isinstance(data, bytes):
+        raise TypeError("data must be bytes")
     if not data:
         return ""
     try:

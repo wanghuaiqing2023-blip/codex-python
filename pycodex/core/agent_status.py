@@ -18,12 +18,14 @@ def agent_status_from_event(msg: EventMsg | dict[str, Any]) -> AgentStatus | Non
     """Derive the next tracked agent status from a single event."""
 
     event = EventMsg.from_mapping(msg) if isinstance(msg, dict) else msg
+    if not isinstance(event, EventMsg):
+        raise TypeError("agent status event must be an EventMsg or mapping")
     event_type = event.type
     payload = event.payload
 
-    if event_type in {"task_started", "turn_started"}:
+    if event_type == "turn_started":
         return AgentStatus.running()
-    if event_type in {"task_complete", "turn_complete"}:
+    if event_type == "turn_complete":
         return AgentStatus.completed(_last_agent_message(payload))
     if event_type == "turn_aborted":
         reason = _turn_abort_reason(payload)
@@ -55,18 +57,23 @@ def _last_agent_message(payload: Any) -> str | None:
         return payload.last_agent_message
     if isinstance(payload, dict):
         value = payload.get("last_agent_message")
-        return value if isinstance(value, str) else None
-    return getattr(payload, "last_agent_message", None)
+        if value is None or isinstance(value, str):
+            return value
+        raise TypeError("turn_complete last_agent_message must be a string or None")
+    raise TypeError("turn_complete payload must be TurnCompleteEvent")
 
 
 def _turn_abort_reason(payload: Any) -> TurnAbortReason:
     if isinstance(payload, TurnAbortedEvent):
         return payload.reason
     if isinstance(payload, dict):
-        return TurnAbortReason(str(payload.get("reason")))
-    reason = getattr(payload, "reason", payload)
+        reason = payload.get("reason")
+    else:
+        raise TypeError("turn_aborted payload must be TurnAbortedEvent")
     if isinstance(reason, TurnAbortReason):
         return reason
+    if not isinstance(reason, str):
+        raise TypeError("turn_aborted reason must be a TurnAbortReason or string")
     return TurnAbortReason(str(reason))
 
 
@@ -79,9 +86,10 @@ def _event_error_message(payload: Any) -> str:
         return payload.message
     if isinstance(payload, dict):
         value = payload.get("message")
-        return value if isinstance(value, str) else ""
-    value = getattr(payload, "message", "")
-    return value if isinstance(value, str) else ""
+        if isinstance(value, str):
+            return value
+        raise TypeError("error message must be a string")
+    raise TypeError("error payload must be ErrorEvent")
 
 
 __all__ = [

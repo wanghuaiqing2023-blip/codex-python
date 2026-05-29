@@ -18,6 +18,31 @@ from pycodex.protocol import DEFAULT_IMAGE_DETAIL
 
 JsonValue = Any
 CellIdAllocator = Callable[[], str]
+
+
+def _ensure_str(value: object, field: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{field} must be a string")
+    return value
+
+
+def _ensure_optional_str(value: object, field: str) -> str | None:
+    if value is None:
+        return None
+    return _ensure_str(value, field)
+
+
+def _ensure_bool(value: object, field: str) -> bool:
+    if not isinstance(value, bool):
+        raise TypeError(f"{field} must be a bool")
+    return value
+
+
+def _ensure_json_like(value: JsonValue, field: str) -> JsonValue:
+    try:
+        return _json_round_trip(value)
+    except (TypeError, ValueError) as exc:
+        raise TypeError(f"{field} must be JSON-serializable") from exc
 CODEX_IMAGE_DETAIL_META_KEY = "codex/imageDetail"
 IMAGE_HELPER_EXPECTS_MESSAGE = (
     "image expects a non-empty image URL string, an object with image_url and optional detail, "
@@ -105,12 +130,12 @@ class CodeModeToolDefinition:
     output_schema: JsonValue | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "name", str(self.name))
+        object.__setattr__(self, "name", _ensure_str(self.name, "name"))
         object.__setattr__(self, "tool_name", _coerce_tool_name(self.tool_name))
-        object.__setattr__(self, "description", str(self.description))
+        object.__setattr__(self, "description", _ensure_str(self.description, "description"))
         object.__setattr__(self, "kind", _coerce_kind(self.kind))
-        object.__setattr__(self, "input_schema", copy.deepcopy(self.input_schema))
-        object.__setattr__(self, "output_schema", copy.deepcopy(self.output_schema))
+        object.__setattr__(self, "input_schema", None if self.input_schema is None else _ensure_json_like(self.input_schema, "input_schema"))
+        object.__setattr__(self, "output_schema", None if self.output_schema is None else _ensure_json_like(self.output_schema, "output_schema"))
 
     def to_mapping(self) -> dict[str, JsonValue]:
         return {
@@ -131,6 +156,10 @@ class ToolNamespaceDescription:
     name: str
     description: str
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name", _ensure_str(self.name, "name"))
+        object.__setattr__(self, "description", _ensure_str(self.description, "description"))
+
 
 @dataclass(frozen=True)
 class EnabledToolMetadata:
@@ -141,8 +170,8 @@ class EnabledToolMetadata:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "tool_name", _coerce_tool_name(self.tool_name))
-        object.__setattr__(self, "global_name", str(self.global_name))
-        object.__setattr__(self, "description", str(self.description))
+        object.__setattr__(self, "global_name", _ensure_str(self.global_name, "global_name"))
+        object.__setattr__(self, "description", _ensure_str(self.description, "description"))
         object.__setattr__(self, "kind", _coerce_kind(self.kind))
 
 
@@ -151,6 +180,11 @@ class ParsedExecSource:
     code: str
     yield_time_ms: int | None = None
     max_output_tokens: int | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "code", _ensure_str(self.code, "code"))
+        object.__setattr__(self, "yield_time_ms", _optional_non_negative_int(self.yield_time_ms))
+        object.__setattr__(self, "max_output_tokens", _optional_non_negative_int(self.max_output_tokens))
 
 
 @dataclass(frozen=True)
@@ -161,10 +195,10 @@ class ExecWaitArgs:
     terminate: bool = False
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "cell_id", str(self.cell_id))
+        object.__setattr__(self, "cell_id", _ensure_str(self.cell_id, "cell_id"))
         object.__setattr__(self, "yield_time_ms", _non_negative_int(self.yield_time_ms))
         object.__setattr__(self, "max_tokens", _optional_non_negative_int(self.max_tokens))
-        object.__setattr__(self, "terminate", bool(self.terminate))
+        object.__setattr__(self, "terminate", _ensure_bool(self.terminate, "terminate"))
 
 
 @dataclass(frozen=True)
@@ -177,14 +211,14 @@ class ExecuteRequest:
     max_output_tokens: int | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "cell_id", str(self.cell_id))
-        object.__setattr__(self, "tool_call_id", str(self.tool_call_id))
+        object.__setattr__(self, "cell_id", _ensure_str(self.cell_id, "cell_id"))
+        object.__setattr__(self, "tool_call_id", _ensure_str(self.tool_call_id, "tool_call_id"))
         object.__setattr__(
             self,
             "enabled_tools",
             tuple(_coerce_code_mode_tool_definition(tool) for tool in self.enabled_tools),
         )
-        object.__setattr__(self, "source", str(self.source))
+        object.__setattr__(self, "source", _ensure_str(self.source, "source"))
         object.__setattr__(self, "yield_time_ms", _optional_non_negative_int(self.yield_time_ms))
         object.__setattr__(
             self,
@@ -200,9 +234,9 @@ class WaitRequest:
     terminate: bool = False
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "cell_id", str(self.cell_id))
+        object.__setattr__(self, "cell_id", _ensure_str(self.cell_id, "cell_id"))
         object.__setattr__(self, "yield_time_ms", _non_negative_int(self.yield_time_ms))
-        object.__setattr__(self, "terminate", bool(self.terminate))
+        object.__setattr__(self, "terminate", _ensure_bool(self.terminate, "terminate"))
 
 
 @dataclass(frozen=True)
@@ -210,7 +244,7 @@ class WaitToPendingRequest:
     cell_id: str
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "cell_id", str(self.cell_id))
+        object.__setattr__(self, "cell_id", _ensure_str(self.cell_id, "cell_id"))
 
 
 @dataclass(frozen=True)
@@ -221,18 +255,18 @@ class RuntimeResponse:
     error_text: str | None = None
 
     def __post_init__(self) -> None:
-        response_type = str(self.type)
+        response_type = _ensure_str(self.type, "type")
         if response_type not in {"yielded", "terminated", "result"}:
             raise ValueError(f"unsupported runtime response type: {self.type}")
         object.__setattr__(self, "type", response_type)
-        object.__setattr__(self, "cell_id", str(self.cell_id))
+        object.__setattr__(self, "cell_id", _ensure_str(self.cell_id, "cell_id"))
         object.__setattr__(
             self,
             "content_items",
             tuple(FunctionCallOutputContentItem.from_mapping(item) for item in self.content_items),
         )
         if self.error_text is not None:
-            object.__setattr__(self, "error_text", str(self.error_text))
+            object.__setattr__(self, "error_text", _ensure_str(self.error_text, "error_text"))
         elif response_type != "result":
             object.__setattr__(self, "error_text", None)
 
@@ -309,7 +343,7 @@ class PendingResult:
             tuple(FunctionCallOutputContentItem.from_mapping(item) for item in self.content_items),
         )
         if self.error_text is not None:
-            object.__setattr__(self, "error_text", str(self.error_text))
+            object.__setattr__(self, "error_text", _ensure_str(self.error_text, "error_text"))
 
 
 @dataclass(frozen=True)
@@ -318,7 +352,7 @@ class WaitOutcome:
     response: RuntimeResponse
 
     def __post_init__(self) -> None:
-        outcome_type = str(self.type)
+        outcome_type = _ensure_str(self.type, "type")
         if outcome_type not in {"live_cell", "missing_cell"}:
             raise ValueError(f"unsupported wait outcome type: {self.type}")
         object.__setattr__(self, "type", outcome_type)
@@ -345,12 +379,12 @@ class ExecuteToPendingOutcome:
     response: RuntimeResponse | None = None
 
     def __post_init__(self) -> None:
-        outcome_type = str(self.type)
+        outcome_type = _ensure_str(self.type, "type")
         if outcome_type not in {"pending", "completed"}:
             raise ValueError(f"unsupported execute-to-pending outcome type: {self.type}")
         object.__setattr__(self, "type", outcome_type)
         if self.cell_id is not None:
-            object.__setattr__(self, "cell_id", str(self.cell_id))
+            object.__setattr__(self, "cell_id", _ensure_str(self.cell_id, "cell_id"))
         object.__setattr__(
             self,
             "content_items",
@@ -359,7 +393,7 @@ class ExecuteToPendingOutcome:
         object.__setattr__(
             self,
             "pending_tool_call_ids",
-            tuple(str(call_id) for call_id in self.pending_tool_call_ids),
+            tuple(_ensure_str(call_id, "pending_tool_call_ids") for call_id in self.pending_tool_call_ids),
         )
         if self.response is not None:
             object.__setattr__(self, "response", _coerce_runtime_response(self.response))
@@ -394,7 +428,7 @@ class WaitToPendingOutcome:
     response: RuntimeResponse | None = None
 
     def __post_init__(self) -> None:
-        outcome_type = str(self.type)
+        outcome_type = _ensure_str(self.type, "type")
         if outcome_type not in {"live_cell", "missing_cell"}:
             raise ValueError(f"unsupported wait-to-pending outcome type: {self.type}")
         object.__setattr__(self, "type", outcome_type)
@@ -428,7 +462,7 @@ class CodeModeNestedToolCall:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "cell_id", str(self.cell_id))
-        object.__setattr__(self, "runtime_tool_call_id", str(self.runtime_tool_call_id))
+        object.__setattr__(self, "runtime_tool_call_id", _ensure_str(self.runtime_tool_call_id, "runtime_tool_call_id"))
         object.__setattr__(self, "tool_name", _coerce_tool_name(self.tool_name))
         object.__setattr__(self, "tool_kind", _coerce_kind(self.tool_kind))
         object.__setattr__(self, "input", copy.deepcopy(self.input))
@@ -441,10 +475,12 @@ class CodeModeRuntimeStore:
 
     def __post_init__(self) -> None:
         self.stored_values = {
-            str(key): _json_round_trip(value) for key, value in self.stored_values.items()
+            _ensure_str(key, "stored_values key"): _ensure_json_like(value, "stored_values value")
+            for key, value in self.stored_values.items()
         }
         self.stored_value_writes = {
-            str(key): _json_round_trip(value) for key, value in self.stored_value_writes.items()
+            _ensure_str(key, "stored_value_writes key"): _ensure_json_like(value, "stored_value_writes value")
+            for key, value in self.stored_value_writes.items()
         }
 
     def store(self, key: JsonValue, value: JsonValue) -> None:
@@ -1786,16 +1822,16 @@ def _wait_argument_int(
 
 
 def _non_negative_int(value: int) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise ValueError("value must be a non-negative integer")
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError("value must be an integer")
+    if value < 0:
+        raise ValueError("value must be non-negative")
     return value
-
 
 def _optional_non_negative_int(value: int | None) -> int | None:
     if value is None:
         return None
     return _non_negative_int(value)
-
 
 def _coerce_code_mode_tool_definition(
     value: CodeModeToolDefinition | Mapping[str, JsonValue],
@@ -2040,41 +2076,35 @@ def _coerce_runtime_command(value: RuntimeCommand | Mapping[str, JsonValue]) -> 
 def _coerce_runtime_control_command(value: RuntimeControlCommand | str) -> RuntimeControlCommand:
     if isinstance(value, RuntimeControlCommand):
         return value
-    normalized = str(value)
+    raw = _ensure_str(value, "runtime control command")
     for candidate in RuntimeControlCommand:
-        if normalized == candidate.value or normalized == candidate.name:
+        if raw == candidate.value or raw == candidate.name:
             return candidate
     raise ValueError(f"unsupported runtime control command: {value}")
-
 
 def _coerce_pending_runtime_mode(value: PendingRuntimeMode | str) -> PendingRuntimeMode:
     if isinstance(value, PendingRuntimeMode):
         return value
-    normalized = str(value)
+    raw = _ensure_str(value, "pending runtime mode")
     for candidate in PendingRuntimeMode:
-        if normalized == candidate.value or normalized == candidate.name:
+        if raw == candidate.value or raw == candidate.name:
             return candidate
     raise ValueError(f"unsupported pending runtime mode: {value}")
-
 
 def _coerce_kind(value: CodeModeToolKind | str) -> CodeModeToolKind:
     if isinstance(value, CodeModeToolKind):
         return value
-    raw = str(value).lower()
+    raw = _ensure_str(value, "code-mode tool kind")
     if raw == "function":
         return CodeModeToolKind.FUNCTION
     if raw == "freeform":
         return CodeModeToolKind.FREEFORM
     raise ValueError(f"unsupported code-mode tool kind: {value}")
 
-
 def _coerce_tool_name(value: ToolName | Mapping[str, JsonValue] | str) -> ToolName:
-    if isinstance(value, ToolName):
-        return value
     if isinstance(value, Mapping):
-        namespace = value.get("namespace")
-        return ToolName.new(None if namespace is None else str(namespace), str(value["name"]))
-    return ToolName.plain(str(value))
+        return ToolName.from_mapping(value)
+    return ToolName.from_value(value)
 
 
 def _parse_output_image(value: JsonValue) -> tuple[str, str | ImageDetail | None]:

@@ -325,6 +325,33 @@ class ExecSessionRequestBuilderTests(unittest.TestCase):
         self.assertNotIn("threadSource", params)
         self.assertEqual(permissions_selection_from_config(config), "developer-profile")
 
+    def test_thread_params_carry_resolved_user_instructions(self) -> None:
+        cwd = Path("C:/work/project")
+        source = cwd / "AGENTS.md"
+        config = ExecSessionConfig(
+            model="gpt-5.5",
+            model_provider_id="openai",
+            cwd=cwd,
+            user_instructions="project instructions",
+            instruction_sources=(source,),
+            startup_warnings=("warning",),
+        )
+
+        start = thread_start_params_from_config(config).to_mapping()
+        resume = thread_resume_params_from_config(config, "thread-1").to_mapping()
+        mapped = exec_session_config_mapping(config)
+
+        expected = {
+            "userInstructions": "project instructions",
+            "instructionSources": [str(source)],
+            "startupWarnings": ["warning"],
+        }
+        self.assertEqual(start["config"], expected)
+        self.assertEqual(resume["config"], expected)
+        self.assertEqual(mapped["userInstructions"], "project instructions")
+        self.assertEqual(mapped["instructionSources"], [str(source)])
+        self.assertEqual(mapped["startupWarnings"], ["warning"])
+
     def test_sandbox_mode_from_permission_profile_matches_upstream_legacy_mapping(self) -> None:
         cwd = Path("C:/work/project")
         full_write_restricted_network = PermissionProfile.managed(

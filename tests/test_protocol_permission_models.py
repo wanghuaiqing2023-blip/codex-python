@@ -55,7 +55,11 @@ class ProtocolPermissionModelTests(unittest.TestCase):
         self.assertIs(NetworkSandboxPolicy.default(), NetworkSandboxPolicy.RESTRICTED)
         self.assertFalse(NetworkSandboxPolicy.RESTRICTED.is_enabled())
         self.assertTrue(NetworkSandboxPolicy.ENABLED.is_enabled())
+        with self.assertRaisesRegex(TypeError, "network must be a string"):
+            NetworkSandboxPolicy.parse(123)
         self.assertIs(FileSystemAccessMode.parse("none"), FileSystemAccessMode.DENY)
+        with self.assertRaisesRegex(TypeError, "access must be a string"):
+            FileSystemAccessMode.parse(123)
         self.assertTrue(FileSystemAccessMode.READ.can_read())
         self.assertFalse(FileSystemAccessMode.READ.can_write())
         self.assertTrue(FileSystemAccessMode.WRITE.can_write())
@@ -72,6 +76,8 @@ class ProtocolPermissionModelTests(unittest.TestCase):
             ((Path("/read"), FileSystemAccessMode.READ), (Path("/write"), FileSystemAccessMode.WRITE)),
         )
         self.assertEqual(permissions.legacy_read_write_roots(), ((Path("/read"),), (Path("/write"),)))
+        self.assertEqual(permissions.to_mapping(), {"read": [str(Path("/read"))], "write": [str(Path("/write"))]})
+        self.assertEqual(FileSystemPermissions.from_mapping(permissions.to_mapping()), permissions)
 
     def test_file_system_permissions_reject_non_legacy_shapes(self):
         permissions = FileSystemPermissions(
@@ -88,8 +94,17 @@ class ProtocolPermissionModelTests(unittest.TestCase):
     def test_permission_overlay_empty_helpers(self):
         self.assertTrue(NetworkPermissions().is_empty())
         self.assertFalse(NetworkPermissions(enabled=True).is_empty())
+        self.assertEqual(NetworkPermissions.from_mapping({"enabled": True}), NetworkPermissions(enabled=True))
+        with self.assertRaisesRegex(TypeError, "enabled must be a bool"):
+            NetworkPermissions.from_mapping({"enabled": "true"})
+        with self.assertRaisesRegex(TypeError, "enabled must be a bool"):
+            NetworkPermissions(enabled="true")
         self.assertTrue(AdditionalPermissionProfile().is_empty())
         self.assertFalse(AdditionalPermissionProfile(network=NetworkPermissions(enabled=True)).is_empty())
+        with self.assertRaisesRegex(TypeError, "network must be NetworkPermissions"):
+            AdditionalPermissionProfile(network={"enabled": True})
+        with self.assertRaisesRegex(TypeError, "file_system must be FileSystemPermissions"):
+            AdditionalPermissionProfile(file_system={"read": ["/read"]})
 
     def test_file_system_sandbox_policy_workspace_write_entries(self):
         policy = FileSystemSandboxPolicy.workspace_write([Path("/extra")])
@@ -120,6 +135,18 @@ class ProtocolPermissionModelTests(unittest.TestCase):
             policy.entries,
         )
 
+        with self.assertRaisesRegex(TypeError, "writable_roots must be a list or tuple"):
+            FileSystemSandboxPolicy.workspace_write(writable_roots="/tmp")
+
+        with self.assertRaisesRegex(TypeError, "writable_roots entries must be strings or Path"):
+            FileSystemSandboxPolicy.workspace_write(writable_roots=(123,))
+
+        with self.assertRaisesRegex(TypeError, "exclude_tmpdir_env_var must be a bool"):
+            FileSystemSandboxPolicy.workspace_write(exclude_tmpdir_env_var="false")
+
+        with self.assertRaisesRegex(TypeError, "exclude_slash_tmp must be a bool"):
+            FileSystemSandboxPolicy.workspace_write(exclude_slash_tmp="false")
+
     def test_protected_metadata_helpers_match_upstream(self):
         self.assertEqual(PROTECTED_METADATA_PATH_NAMES, (".git", ".agents", ".codex"))
         self.assertTrue(is_protected_metadata_name(".git"))
@@ -133,14 +160,57 @@ class ProtocolPermissionModelTests(unittest.TestCase):
             FileSystemSpecialPath.from_mapping({"kind": "current_working_directory"}),
             FileSystemSpecialPath.project_roots(),
         )
+        with self.assertRaisesRegex(TypeError, "kind must be a string"):
+            FileSystemSpecialPath.from_mapping({"kind": 123})
+        with self.assertRaisesRegex(TypeError, "subpath must be a string"):
+            FileSystemSpecialPath.from_mapping({"kind": "project_roots", "subpath": 123})
+        with self.assertRaisesRegex(TypeError, "path must be a string"):
+            FileSystemSpecialPath.from_mapping({"kind": "unknown", "path": 123})
+        with self.assertRaisesRegex(TypeError, "subpath must be a string"):
+            FileSystemSpecialPath.from_mapping({"kind": ":future_special_path", "subpath": 123})
         self.assertEqual(
             FileSystemSpecialPath.project_roots(Path(".codex")).to_mapping(),
             {"kind": "project_roots", "subpath": ".codex"},
         )
         self.assertEqual(
+            FileSystemSpecialPath("project_roots", subpath=".codex"),
+            FileSystemSpecialPath.project_roots(Path(".codex")),
+        )
+        with self.assertRaisesRegex(ValueError, "unknown filesystem special path kind"):
+            FileSystemSpecialPath("future")
+        with self.assertRaisesRegex(ValueError, "root special path cannot include subpath"):
+            FileSystemSpecialPath("root", subpath=Path(".git"))
+        with self.assertRaisesRegex(ValueError, "tmpdir special path cannot include path"):
+            FileSystemSpecialPath("tmpdir", path=":future")
+        with self.assertRaisesRegex(ValueError, "project_roots special path cannot include path"):
+            FileSystemSpecialPath("project_roots", path=":future")
+        with self.assertRaisesRegex(TypeError, "unknown special path requires path"):
+            FileSystemSpecialPath("unknown")
+        self.assertEqual(
             FileSystemPath.from_mapping({"type": "path", "path": "/tmp/project"}).to_mapping(),
             {"type": "path", "path": str(Path("/tmp/project"))},
         )
+        with self.assertRaisesRegex(TypeError, "type must be a string"):
+            FileSystemPath.from_mapping({"type": 123, "path": "/tmp/project"})
+        with self.assertRaisesRegex(TypeError, "path must be a string"):
+            FileSystemPath.from_mapping({"type": "path", "path": 123})
+        with self.assertRaisesRegex(TypeError, "pattern must be a string"):
+            FileSystemPath.from_mapping({"type": "glob_pattern", "pattern": 123})
+        self.assertEqual(FileSystemPath(type="path", path="/tmp/project"), FileSystemPath.explicit_path("/tmp/project"))
+        with self.assertRaisesRegex(ValueError, "unknown filesystem path type"):
+            FileSystemPath(type="future")
+        with self.assertRaisesRegex(TypeError, "path filesystem path requires path"):
+            FileSystemPath(type="path")
+        with self.assertRaisesRegex(ValueError, "path filesystem path cannot include pattern"):
+            FileSystemPath(type="path", path=Path("/tmp/project"), pattern="*.env")
+        with self.assertRaisesRegex(TypeError, "glob_pattern filesystem path requires pattern"):
+            FileSystemPath(type="glob_pattern", pattern=123)
+        with self.assertRaisesRegex(ValueError, "glob_pattern filesystem path cannot include path"):
+            FileSystemPath(type="glob_pattern", path=Path("/tmp/project"), pattern="*.env")
+        with self.assertRaisesRegex(TypeError, "special filesystem path requires FileSystemSpecialPath"):
+            FileSystemPath(type="special", value="root")
+        with self.assertRaisesRegex(ValueError, "special filesystem path cannot include pattern"):
+            FileSystemPath(type="special", pattern="*.env", value=FileSystemSpecialPath.root())
         self.assertEqual(
             FileSystemSandboxEntry.from_mapping(
                 {
@@ -150,6 +220,17 @@ class ProtocolPermissionModelTests(unittest.TestCase):
             ),
             FileSystemSandboxEntry(FileSystemPath.special(FileSystemSpecialPath.root()), FileSystemAccessMode.DENY),
         )
+        with self.assertRaisesRegex(TypeError, "access must be a string"):
+            FileSystemSandboxEntry.from_mapping(
+                {
+                    "path": {"type": "special", "value": {"kind": "root"}},
+                    "access": 123,
+                }
+            )
+        with self.assertRaisesRegex(TypeError, "path must be FileSystemPath"):
+            FileSystemSandboxEntry({"type": "special"}, FileSystemAccessMode.READ)
+        with self.assertRaisesRegex(TypeError, "access must be FileSystemAccessMode"):
+            FileSystemSandboxEntry(FileSystemPath.special(FileSystemSpecialPath.root()), "read")
 
     def test_filesystem_permissions_mapping_uses_canonical_entries_shape(self):
         entry = self._entry(Path("/tmp/allowed"), FileSystemAccessMode.READ)
@@ -164,8 +245,20 @@ class ProtocolPermissionModelTests(unittest.TestCase):
             FileSystemPermissions.from_mapping({"read": ["/read"], "write": ["/write"]}),
             FileSystemPermissions.from_read_write_roots((Path("/read"),), (Path("/write"),)),
         )
+        with self.assertRaisesRegex(ValueError, "unknown field"):
+            FileSystemPermissions.from_mapping({"read": ["/read"], "unexpected": True})
+        with self.assertRaisesRegex(ValueError, "unknown field"):
+            FileSystemPermissions.from_mapping({"entries": [], "read": ["/read"]})
         with self.assertRaisesRegex(ValueError, "glob_scan_max_depth"):
             FileSystemPermissions.from_mapping({"entries": [], "glob_scan_max_depth": 0})
+        with self.assertRaisesRegex(TypeError, "glob_scan_max_depth"):
+            FileSystemPermissions.from_mapping({"entries": [], "glob_scan_max_depth": "2"})
+        with self.assertRaisesRegex(ValueError, "glob_scan_max_depth"):
+            FileSystemPermissions(glob_scan_max_depth=0)
+        with self.assertRaisesRegex(TypeError, "glob_scan_max_depth"):
+            FileSystemPermissions(glob_scan_max_depth="2")
+        with self.assertRaisesRegex(TypeError, "entries must contain FileSystemSandboxEntry"):
+            FileSystemPermissions(entries=("not-an-entry",))
 
     def test_sandbox_and_filesystem_policy_mapping_roundtrips(self):
         sandbox = SandboxPolicy.workspace_write(
@@ -179,6 +272,28 @@ class ProtocolPermissionModelTests(unittest.TestCase):
             SandboxPolicy.external_sandbox(NetworkSandboxPolicy.ENABLED).to_mapping(),
             {"type": "external-sandbox", "network_access": "enabled"},
         )
+        with self.assertRaisesRegex(TypeError, "type must be a string"):
+            SandboxPolicy.from_mapping({"type": 123})
+        with self.assertRaisesRegex(ValueError, "unknown field"):
+            SandboxPolicy.from_mapping({"type": "danger-full-access", "network_access": True})
+        with self.assertRaisesRegex(ValueError, "unknown field"):
+            SandboxPolicy.from_mapping({"type": "read-only", "writable_roots": []})
+        with self.assertRaisesRegex(TypeError, "network_access must be a bool"):
+            SandboxPolicy.from_mapping({"type": "read-only", "network_access": "true"})
+        with self.assertRaisesRegex(ValueError, "unknown field"):
+            SandboxPolicy.from_mapping({"type": "external-sandbox", "writable_roots": []})
+        with self.assertRaisesRegex(TypeError, "network must be a string"):
+            SandboxPolicy.from_mapping({"type": "external-sandbox", "network_access": 123})
+        with self.assertRaisesRegex(ValueError, "unknown field"):
+            SandboxPolicy.from_mapping({"type": "workspace-write", "unexpected": True})
+        with self.assertRaisesRegex(TypeError, "writable_roots must be a list"):
+            SandboxPolicy.from_mapping({"type": "workspace-write", "writable_roots": "/tmp"})
+        with self.assertRaisesRegex(TypeError, "writable_roots entries must be strings"):
+            SandboxPolicy.from_mapping({"type": "workspace-write", "writable_roots": [123]})
+        with self.assertRaisesRegex(TypeError, "exclude_tmpdir_env_var must be a bool"):
+            SandboxPolicy.from_mapping({"type": "workspace-write", "exclude_tmpdir_env_var": "false"})
+        with self.assertRaisesRegex(TypeError, "exclude_slash_tmp must be a bool"):
+            SandboxPolicy.from_mapping({"type": "workspace-write", "exclude_slash_tmp": "false"})
 
         policy = FileSystemSandboxPolicy.restricted(
             (
@@ -192,6 +307,22 @@ class ProtocolPermissionModelTests(unittest.TestCase):
             FileSystemSandboxPolicy.from_mapping(policy.to_mapping()),
             policy,
         )
+        self.assertEqual(
+            FileSystemSandboxPolicy.from_mapping({"kind": "restricted", "glob_scan_max_depth": 0}),
+            FileSystemSandboxPolicy(glob_scan_max_depth=0),
+        )
+        with self.assertRaisesRegex(TypeError, "kind must be a string"):
+            FileSystemSandboxPolicy.from_mapping({"kind": 123})
+        with self.assertRaisesRegex(TypeError, "glob_scan_max_depth must be an integer"):
+            FileSystemSandboxPolicy.from_mapping({"kind": "restricted", "glob_scan_max_depth": "2"})
+        with self.assertRaisesRegex(ValueError, "glob_scan_max_depth must be non-negative"):
+            FileSystemSandboxPolicy(glob_scan_max_depth=-1)
+        with self.assertRaisesRegex(TypeError, "kind must be FileSystemSandboxKind"):
+            FileSystemSandboxPolicy(kind="restricted")
+        with self.assertRaisesRegex(TypeError, "entries must contain FileSystemSandboxEntry"):
+            FileSystemSandboxPolicy(entries=("not-an-entry",))
+        with self.assertRaisesRegex(TypeError, "entries must be a list"):
+            FileSystemSandboxPolicy.from_mapping({"kind": "restricted", "entries": "not-a-list"})
 
     def test_full_disk_write_detects_real_narrowing_entries(self):
         cwd = self._workspace_path("full-disk")
@@ -536,6 +667,38 @@ class ProtocolPermissionModelTests(unittest.TestCase):
         self.assertTrue(SandboxPolicy.external_sandbox(NetworkSandboxPolicy.ENABLED).has_full_network_access())
         self.assertEqual(SandboxPolicy.new_read_only_policy(), SandboxPolicy.read_only())
         self.assertEqual(SandboxPolicy.new_workspace_write_policy(), SandboxPolicy.workspace_write())
+        with self.assertRaisesRegex(ValueError, "unknown sandbox policy type"):
+            SandboxPolicy("future")
+        with self.assertRaisesRegex(TypeError, "danger-full-access network_access must be a bool"):
+            SandboxPolicy("danger-full-access", network_access=NetworkSandboxPolicy.ENABLED)
+        with self.assertRaisesRegex(ValueError, "danger-full-access policy cannot include network_access"):
+            SandboxPolicy("danger-full-access", network_access=True)
+        with self.assertRaisesRegex(ValueError, "danger-full-access policy cannot include writable_roots"):
+            SandboxPolicy("danger-full-access", writable_roots=(Path("/tmp"),))
+        with self.assertRaisesRegex(ValueError, "read-only policy cannot include exclude_slash_tmp"):
+            SandboxPolicy("read-only", exclude_slash_tmp=True)
+        with self.assertRaisesRegex(TypeError, "external-sandbox network_access must be NetworkSandboxPolicy"):
+            SandboxPolicy("external-sandbox", network_access=True)
+        with self.assertRaisesRegex(ValueError, "external-sandbox policy cannot include writable_roots"):
+            SandboxPolicy("external-sandbox", writable_roots=(Path("/tmp"),), network_access=NetworkSandboxPolicy.RESTRICTED)
+        with self.assertRaisesRegex(TypeError, "exclude_tmpdir_env_var must be a bool"):
+            SandboxPolicy("workspace-write", exclude_tmpdir_env_var="false")
+        with self.assertRaisesRegex(TypeError, "writable_roots must be a list"):
+            SandboxPolicy("workspace-write", writable_roots="/tmp")
+        with self.assertRaisesRegex(TypeError, "writable_roots entries must be strings or Path"):
+            SandboxPolicy("workspace-write", writable_roots=(123,))
+        with self.assertRaisesRegex(TypeError, "read-only network_access must be a bool"):
+            SandboxPolicy.read_only(network_access="true")
+        with self.assertRaisesRegex(TypeError, "external-sandbox network_access must be NetworkSandboxPolicy"):
+            SandboxPolicy.external_sandbox(network_access="enabled")
+        with self.assertRaisesRegex(TypeError, "workspace-write network_access must be a bool"):
+            SandboxPolicy.workspace_write(network_access="true")
+        with self.assertRaisesRegex(TypeError, "exclude_slash_tmp must be a bool"):
+            SandboxPolicy.workspace_write(exclude_slash_tmp="false")
+        with self.assertRaisesRegex(TypeError, "writable_roots must be a list"):
+            SandboxPolicy.workspace_write(writable_roots="/tmp")
+        with self.assertRaisesRegex(TypeError, "writable_roots entries must be strings or Path"):
+            SandboxPolicy.workspace_write(writable_roots=(123,))
 
     def test_sandbox_enforcement_from_legacy_policy(self):
         self.assertIs(SandboxEnforcement.from_legacy_sandbox_policy(SandboxPolicy.danger_full_access()), SandboxEnforcement.DISABLED)
@@ -691,9 +854,66 @@ class ProtocolPermissionModelTests(unittest.TestCase):
         self.assertEqual(PermissionProfile.from_mapping(managed.to_mapping()), managed)
         self.assertEqual(PermissionProfile.from_mapping(disabled.to_mapping()), disabled)
         self.assertEqual(PermissionProfile.from_mapping(external.to_mapping()), external)
+        with self.assertRaisesRegex(TypeError, "network must be a string"):
+            PermissionProfile.from_mapping(
+                {
+                    "type": "managed",
+                    "file_system": {"type": "unrestricted"},
+                    "network": 123,
+                }
+            )
+        with self.assertRaisesRegex(TypeError, "network must be a string"):
+            PermissionProfile.from_mapping({"type": "external", "network": 123})
+        with self.assertRaisesRegex(ValueError, "unknown field"):
+            PermissionProfile.from_mapping(
+                {
+                    "type": "managed",
+                    "file_system": {"type": "unrestricted"},
+                    "network": "restricted",
+                    "unexpected": True,
+                }
+            )
+        with self.assertRaisesRegex(ValueError, "unknown field"):
+            PermissionProfile.from_mapping({"type": "disabled", "network": "restricted"})
+        with self.assertRaisesRegex(ValueError, "unknown field"):
+            PermissionProfile.from_mapping({"type": "external", "network": "restricted", "file_system": {"type": "unrestricted"}})
         self.assertEqual(ManagedFileSystemPermissions.from_mapping({"type": "unrestricted"}), ManagedFileSystemPermissions.unrestricted())
+        with self.assertRaisesRegex(TypeError, "type must be a string"):
+            ManagedFileSystemPermissions.from_mapping({"type": 123})
+        with self.assertRaisesRegex(ValueError, "unknown field"):
+            ManagedFileSystemPermissions.from_mapping({"type": "unrestricted", "entries": []})
+        with self.assertRaisesRegex(ValueError, "unknown field"):
+            ManagedFileSystemPermissions.from_mapping({"type": "restricted", "entries": [], "unexpected": True})
         with self.assertRaisesRegex(ValueError, "glob_scan_max_depth"):
             ManagedFileSystemPermissions.from_mapping({"type": "restricted", "entries": [], "glob_scan_max_depth": 0})
+        with self.assertRaisesRegex(TypeError, "glob_scan_max_depth"):
+            ManagedFileSystemPermissions.from_mapping({"type": "restricted", "entries": [], "glob_scan_max_depth": "2"})
+        with self.assertRaisesRegex(ValueError, "glob_scan_max_depth"):
+            ManagedFileSystemPermissions.restricted((), glob_scan_max_depth=0)
+        with self.assertRaisesRegex(TypeError, "glob_scan_max_depth"):
+            ManagedFileSystemPermissions.restricted((), glob_scan_max_depth="2")
+        with self.assertRaisesRegex(ValueError, "unknown managed filesystem permission type"):
+            ManagedFileSystemPermissions("future")
+        with self.assertRaisesRegex(ValueError, "unrestricted managed filesystem permissions cannot include entries"):
+            ManagedFileSystemPermissions("unrestricted", entries=(self._entry(Path("/tmp"), FileSystemAccessMode.READ),))
+        with self.assertRaisesRegex(ValueError, "unrestricted managed filesystem permissions cannot include glob_scan_max_depth"):
+            ManagedFileSystemPermissions("unrestricted", glob_scan_max_depth=1)
+        with self.assertRaisesRegex(ValueError, "unknown permission profile type"):
+            PermissionProfile("future")
+        with self.assertRaisesRegex(TypeError, "type must be a string"):
+            PermissionProfile.from_mapping({"type": 123})
+        with self.assertRaisesRegex(TypeError, "managed permission profile requires ManagedFileSystemPermissions"):
+            PermissionProfile("managed", network=NetworkSandboxPolicy.RESTRICTED)
+        with self.assertRaisesRegex(TypeError, "managed permission profile requires NetworkSandboxPolicy"):
+            PermissionProfile("managed", file_system=ManagedFileSystemPermissions.unrestricted())
+        with self.assertRaisesRegex(ValueError, "disabled permission profile cannot include file_system"):
+            PermissionProfile("disabled", file_system=ManagedFileSystemPermissions.unrestricted())
+        with self.assertRaisesRegex(ValueError, "disabled permission profile cannot include network"):
+            PermissionProfile("disabled", network=NetworkSandboxPolicy.RESTRICTED)
+        with self.assertRaisesRegex(ValueError, "external permission profile cannot include file_system"):
+            PermissionProfile("external", file_system=ManagedFileSystemPermissions.unrestricted(), network=NetworkSandboxPolicy.RESTRICTED)
+        with self.assertRaisesRegex(TypeError, "external permission profile requires NetworkSandboxPolicy"):
+            PermissionProfile("external")
 
     def test_permission_profile_deserializes_legacy_rollout_shape(self):
         legacy = {
@@ -737,6 +957,10 @@ class ProtocolPermissionModelTests(unittest.TestCase):
         )
 
         self.assertEqual(AdditionalPermissionProfile.from_mapping(additional.to_mapping()), additional)
+        with self.assertRaisesRegex(TypeError, "network permissions must be a mapping"):
+            AdditionalPermissionProfile.from_mapping({"network": "enabled"})
+        with self.assertRaisesRegex(TypeError, "filesystem permissions must be a mapping"):
+            AdditionalPermissionProfile.from_mapping({"file_system": "read"})
 
     def test_direct_runtime_enforcement_detects_unbridgeable_and_metadata_cases(self):
         cwd = self._workspace_path("direct-enforcement")
@@ -808,6 +1032,14 @@ class ProtocolPermissionModelTests(unittest.TestCase):
         self.assertEqual(ActivePermissionProfile.new("dev"), ActivePermissionProfile("dev"))
         self.assertEqual(ActivePermissionProfile.from_mapping({"id": "dev", "extends": ":workspace"}), ActivePermissionProfile("dev", ":workspace"))
         self.assertEqual(ActivePermissionProfile("dev").to_mapping(), {"id": "dev"})
+        with self.assertRaisesRegex(TypeError, "id must be a string"):
+            ActivePermissionProfile(123)
+        with self.assertRaisesRegex(TypeError, "extends must be a string"):
+            ActivePermissionProfile("dev", 123)
+        with self.assertRaisesRegex(TypeError, "id must be a string"):
+            ActivePermissionProfile.from_mapping({"id": 123})
+        with self.assertRaisesRegex(TypeError, "extends must be a string"):
+            ActivePermissionProfile.from_mapping({"id": "dev", "extends": 123})
 
 
 if __name__ == "__main__":

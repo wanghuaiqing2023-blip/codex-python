@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from pycodex.core.config_edit import ConfigEditsBuilder, ToolSuggestDisabledTool
+from pycodex.core.function_tool import FunctionCallError
 from pycodex.core.tool_context import FunctionToolOutput, ToolPayload
 from pycodex.core.tool_discovery import (
     LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME,
@@ -62,16 +63,17 @@ class RequestPluginInstallArgs:
     def __post_init__(self) -> None:
         object.__setattr__(self, "tool_type", _coerce_tool_type(self.tool_type))
         object.__setattr__(self, "action_type", _coerce_action_type(self.action_type))
-        object.__setattr__(self, "tool_id", str(self.tool_id))
-        object.__setattr__(self, "suggest_reason", str(self.suggest_reason))
+        object.__setattr__(self, "tool_id", _ensure_str(self.tool_id, "tool_id"))
+        object.__setattr__(self, "suggest_reason", _ensure_str(self.suggest_reason, "suggest_reason"))
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, JsonValue]) -> "RequestPluginInstallArgs":
+        _ensure_mapping(value, "RequestPluginInstallArgs")
         return cls(
             tool_type=_coerce_tool_type(value["tool_type"]),
             action_type=_coerce_action_type(value["action_type"]),
-            tool_id=str(value["tool_id"]),
-            suggest_reason=str(value["suggest_reason"]),
+            tool_id=_ensure_str(value["tool_id"], "tool_id"),
+            suggest_reason=_ensure_str(value["suggest_reason"], "suggest_reason"),
         )
 
     def to_mapping(self) -> dict[str, JsonValue]:
@@ -94,24 +96,25 @@ class RequestPluginInstallResult:
     suggest_reason: str
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "completed", bool(self.completed))
-        object.__setattr__(self, "user_confirmed", bool(self.user_confirmed))
+        object.__setattr__(self, "completed", _ensure_bool(self.completed, "completed"))
+        object.__setattr__(self, "user_confirmed", _ensure_bool(self.user_confirmed, "user_confirmed"))
         object.__setattr__(self, "tool_type", _coerce_tool_type(self.tool_type))
         object.__setattr__(self, "action_type", _coerce_action_type(self.action_type))
-        object.__setattr__(self, "tool_id", str(self.tool_id))
-        object.__setattr__(self, "tool_name", str(self.tool_name))
-        object.__setattr__(self, "suggest_reason", str(self.suggest_reason))
+        object.__setattr__(self, "tool_id", _ensure_str(self.tool_id, "tool_id"))
+        object.__setattr__(self, "tool_name", _ensure_str(self.tool_name, "tool_name"))
+        object.__setattr__(self, "suggest_reason", _ensure_str(self.suggest_reason, "suggest_reason"))
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, JsonValue]) -> "RequestPluginInstallResult":
+        _ensure_mapping(value, "RequestPluginInstallResult")
         return cls(
-            completed=bool(value["completed"]),
-            user_confirmed=bool(value["user_confirmed"]),
+            completed=_ensure_bool(value["completed"], "completed"),
+            user_confirmed=_ensure_bool(value["user_confirmed"], "user_confirmed"),
             tool_type=_coerce_tool_type(value["tool_type"]),
             action_type=_coerce_action_type(value["action_type"]),
-            tool_id=str(value["tool_id"]),
-            tool_name=str(value["tool_name"]),
-            suggest_reason=str(value["suggest_reason"]),
+            tool_id=_ensure_str(value["tool_id"], "tool_id"),
+            tool_name=_ensure_str(value["tool_name"], "tool_name"),
+            suggest_reason=_ensure_str(value["suggest_reason"], "suggest_reason"),
         )
 
     def to_mapping(self) -> dict[str, JsonValue]:
@@ -140,13 +143,13 @@ class RequestPluginInstallMeta:
     def __post_init__(self) -> None:
         object.__setattr__(self, "tool_type", _coerce_tool_type(self.tool_type))
         object.__setattr__(self, "suggest_type", _coerce_action_type(self.suggest_type))
-        object.__setattr__(self, "suggest_reason", str(self.suggest_reason))
-        object.__setattr__(self, "tool_id", str(self.tool_id))
-        object.__setattr__(self, "tool_name", str(self.tool_name))
+        object.__setattr__(self, "suggest_reason", _ensure_str(self.suggest_reason, "suggest_reason"))
+        object.__setattr__(self, "tool_id", _ensure_str(self.tool_id, "tool_id"))
+        object.__setattr__(self, "tool_name", _ensure_str(self.tool_name, "tool_name"))
         object.__setattr__(
             self,
             "install_url",
-            None if self.install_url is None else str(self.install_url),
+            _optional_str(self.install_url, "install_url"),
         )
 
     def to_mapping(self) -> dict[str, JsonValue]:
@@ -171,9 +174,9 @@ class PluginInstallElicitationTelemetryMetadata:
     tool_name: str
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "tool_type", str(self.tool_type))
-        object.__setattr__(self, "tool_id", str(self.tool_id))
-        object.__setattr__(self, "tool_name", str(self.tool_name))
+        object.__setattr__(self, "tool_type", _ensure_str(self.tool_type, "tool_type"))
+        object.__setattr__(self, "tool_id", _ensure_str(self.tool_id, "tool_id"))
+        object.__setattr__(self, "tool_name", _ensure_str(self.tool_name, "tool_name"))
 
 
 @dataclass(frozen=True)
@@ -187,12 +190,14 @@ class McpElicitationSchema:
         object.__setattr__(
             self,
             "schema_uri",
-            None if self.schema_uri is None else str(self.schema_uri),
+            _optional_str(self.schema_uri, "schema_uri"),
         )
-        object.__setattr__(self, "type_", str(self.type_))
+        object.__setattr__(self, "type_", _ensure_str(self.type_, "type_"))
+        if not isinstance(self.properties, Mapping):
+            raise TypeError("properties must be a mapping")
         object.__setattr__(self, "properties", copy.deepcopy(dict(self.properties)))
         if self.required is not None:
-            object.__setattr__(self, "required", tuple(str(item) for item in self.required))
+            object.__setattr__(self, "required", _string_tuple(self.required, "required"))
 
     @classmethod
     def empty_object(cls) -> "McpElicitationSchema":
@@ -233,6 +238,14 @@ class McpServerElicitationRequest:
             meta=meta,
         )
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "mode", _ensure_str(self.mode, "mode"))
+        object.__setattr__(self, "message", _ensure_str(self.message, "message"))
+        object.__setattr__(self, "url", _optional_str(self.url, "url"))
+        object.__setattr__(self, "elicitation_id", _optional_str(self.elicitation_id, "elicitation_id"))
+        if self.requested_schema is not None and not isinstance(self.requested_schema, McpElicitationSchema):
+            raise TypeError("requested_schema must be McpElicitationSchema")
+
     def to_mapping(self) -> dict[str, JsonValue]:
         data: dict[str, JsonValue] = {
             "mode": self.mode,
@@ -258,6 +271,13 @@ class McpServerElicitationRequestParams:
     server_name: str
     request: McpServerElicitationRequest
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "thread_id", _ensure_str(self.thread_id, "thread_id"))
+        object.__setattr__(self, "turn_id", _optional_str(self.turn_id, "turn_id"))
+        object.__setattr__(self, "server_name", _ensure_str(self.server_name, "server_name"))
+        if not isinstance(self.request, McpServerElicitationRequest):
+            raise TypeError("request must be McpServerElicitationRequest")
+
     def to_mapping(self) -> dict[str, JsonValue]:
         data: dict[str, JsonValue] = {
             "threadId": self.thread_id,
@@ -278,6 +298,10 @@ def build_request_plugin_install_elicitation_request(
 ) -> McpServerElicitationRequestParams:
     request_args = args if isinstance(args, RequestPluginInstallArgs) else RequestPluginInstallArgs.from_mapping(args)
     discoverable_tool = tool if isinstance(tool, DiscoverableTool) else DiscoverableTool.from_mapping(tool)
+    server_name = _ensure_str(server_name, "server_name")
+    thread_id = _ensure_str(thread_id, "thread_id")
+    turn_id = _ensure_str(turn_id, "turn_id")
+    suggest_reason = _ensure_str(suggest_reason, "suggest_reason")
     tool_name = discoverable_tool.name()
     meta = build_request_plugin_install_meta(
         request_args.tool_type,
@@ -288,11 +312,11 @@ def build_request_plugin_install_elicitation_request(
         discoverable_tool.install_url(),
     ).to_mapping()
     return McpServerElicitationRequestParams(
-        thread_id=str(thread_id),
-        turn_id=str(turn_id),
-        server_name=str(server_name),
+        thread_id=thread_id,
+        turn_id=turn_id,
+        server_name=server_name,
         request=McpServerElicitationRequest.form(
-            message=str(suggest_reason),
+            message=suggest_reason,
             requested_schema=McpElicitationSchema.empty_object(),
             meta=meta,
         ),
@@ -352,10 +376,11 @@ def all_requested_connectors_picked_up(
     expected_connector_ids: Iterable[str],
     accessible_connectors: Iterable[AppInfo | Mapping[str, JsonValue]],
 ) -> bool:
+    expected_ids = _string_tuple(expected_connector_ids, "expected_connector_ids")
     connectors = [_coerce_app_info(connector) for connector in accessible_connectors]
     return all(
         verified_connector_install_completed(connector_id, connectors)
-        for connector_id in expected_connector_ids
+        for connector_id in expected_ids
     )
 
 
@@ -363,6 +388,7 @@ def verified_connector_install_completed(
     tool_id: str,
     accessible_connectors: Iterable[AppInfo | Mapping[str, JsonValue]],
 ) -> bool:
+    tool_id = _ensure_str(tool_id, "tool_id")
     for connector in accessible_connectors:
         info = _coerce_app_info(connector)
         if info.id == tool_id and info.is_accessible:
@@ -374,13 +400,13 @@ def verified_plugin_install_completed(
     tool_id: str,
     marketplaces_or_plugins: Iterable[Mapping[str, JsonValue] | Any],
 ) -> bool:
-    target_id = str(tool_id)
+    target_id = _ensure_str(tool_id, "tool_id")
     for plugin in _iter_plugin_records(marketplaces_or_plugins):
         plugin_id = _get_field(plugin, "id")
         if (
-            plugin_id is not None
-            and str(plugin_id) == target_id
-            and bool(_get_field(plugin, "installed"))
+            isinstance(plugin_id, str)
+            and plugin_id == target_id
+            and _get_field(plugin, "installed") is True
         ):
             return True
     return False
@@ -391,7 +417,7 @@ def refresh_missing_requested_connectors(
     accessible_connectors: Iterable[AppInfo | Mapping[str, JsonValue]],
     refresh_callback: ConnectorRefreshCallback | None = None,
 ) -> tuple[AppInfo, ...] | None:
-    expected_ids = tuple(str(connector_id) for connector_id in expected_connector_ids)
+    expected_ids = _string_tuple(expected_connector_ids, "expected_connector_ids")
     if not expected_ids:
         return ()
 
@@ -516,7 +542,7 @@ class ListAvailablePluginsToInstallHandler:
     tools: tuple[RequestPluginInstallEntry, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
-        entries = tuple(_coerce_install_entry(tool) for tool in self.tools)
+        entries = _install_entries_tuple(self.tools)
         object.__setattr__(
             self,
             "tools",
@@ -528,7 +554,7 @@ class ListAvailablePluginsToInstallHandler:
         cls,
         tools: Iterable[RequestPluginInstallEntry | Mapping[str, JsonValue]],
     ) -> "ListAvailablePluginsToInstallHandler":
-        return cls(tuple(_coerce_install_entry(tool) for tool in tools))
+        return cls(_install_entries_tuple(tools))
 
     def tool_name(self) -> ToolName:
         return ToolName.plain(LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME)
@@ -540,7 +566,9 @@ class ListAvailablePluginsToInstallHandler:
         return False
 
     def matches_kind(self, payload: ToolPayload) -> bool:
-        return payload.type == "function"
+        if not isinstance(payload, ToolPayload):
+            raise TypeError("payload must be ToolPayload")
+        return payload.type in {"function", "tool_search"}
 
     def result(self) -> ListAvailablePluginsToInstallResult:
         return ListAvailablePluginsToInstallResult(
@@ -568,7 +596,7 @@ class ListAvailablePluginsToInstallHandler:
     def handle(self, invocation_or_payload: Any) -> FunctionToolOutput:
         payload = getattr(invocation_or_payload, "payload", invocation_or_payload)
         if not isinstance(payload, ToolPayload) or payload.type != "function":
-            raise ValueError(
+            raise FunctionCallError.fatal(
                 f"{LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME} handler received unsupported payload"
             )
         content = json.dumps(self.result().to_mapping(), separators=(",", ":"))
@@ -605,6 +633,10 @@ class RequestPluginInstallHandler:
                 for tool in self.discoverable_tools
             ),
         )
+        object.__setattr__(self, "app_server_client_name", _optional_str(self.app_server_client_name, "app_server_client_name"))
+        object.__setattr__(self, "server_name", _ensure_str(self.server_name, "server_name"))
+        object.__setattr__(self, "thread_id", _ensure_str(self.thread_id, "thread_id"))
+        object.__setattr__(self, "turn_id", _ensure_str(self.turn_id, "turn_id"))
 
     def tool_name(self) -> ToolName:
         return ToolName.plain(REQUEST_PLUGIN_INSTALL_TOOL_NAME)
@@ -616,30 +648,42 @@ class RequestPluginInstallHandler:
         return True
 
     def matches_kind(self, payload: ToolPayload) -> bool:
-        return payload.type == "function"
+        if not isinstance(payload, ToolPayload):
+            raise TypeError("payload must be ToolPayload")
+        return payload.type in {"function", "tool_search"}
 
     def handle(self, invocation_or_payload: Any) -> FunctionToolOutput:
         payload = getattr(invocation_or_payload, "payload", invocation_or_payload)
         if not isinstance(payload, ToolPayload) or payload.type != "function":
-            raise ValueError(f"{REQUEST_PLUGIN_INSTALL_TOOL_NAME} handler received unsupported payload")
+            raise FunctionCallError.fatal(
+                f"{REQUEST_PLUGIN_INSTALL_TOOL_NAME} handler received unsupported payload"
+            )
         if payload.arguments is None:
-            raise ValueError(f"{REQUEST_PLUGIN_INSTALL_TOOL_NAME} handler received unsupported payload")
+            raise FunctionCallError.fatal(
+                f"{REQUEST_PLUGIN_INSTALL_TOOL_NAME} handler received unsupported payload"
+            )
         try:
             raw_arguments = json.loads(payload.arguments) if payload.arguments.strip() else {}
-        except json.JSONDecodeError as err:
-            raise ValueError(f"failed to parse {REQUEST_PLUGIN_INSTALL_TOOL_NAME} arguments: {err}") from err
-        args = RequestPluginInstallArgs.from_mapping(raw_arguments)
+            args = RequestPluginInstallArgs.from_mapping(raw_arguments)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as err:
+            raise FunctionCallError.respond_to_model(
+                f"failed to parse function arguments: {err}"
+            ) from err
         suggest_reason = args.suggest_reason.strip()
         if not suggest_reason:
-            raise ValueError("suggest_reason must not be empty")
+            raise FunctionCallError.respond_to_model("suggest_reason must not be empty")
         if args.action_type != DiscoverableToolAction.INSTALL:
-            raise ValueError('plugin install requests currently support only action_type="install"')
+            raise FunctionCallError.respond_to_model(
+                'plugin install requests currently support only action_type="install"'
+            )
         if args.tool_type == DiscoverableToolType.PLUGIN and self.app_server_client_name == TUI_CLIENT_NAME:
-            raise ValueError("plugin install requests are not available in codex-tui yet")
+            raise FunctionCallError.respond_to_model(
+                "plugin install requests are not available in codex-tui yet"
+            )
 
         tool = self._find_discoverable_tool(args)
         if tool is None:
-            raise ValueError(
+            raise FunctionCallError.respond_to_model(
                 f"tool_id must match one of the discoverable tools returned by {LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME}"
             )
 
@@ -652,11 +696,22 @@ class RequestPluginInstallHandler:
             tool,
         )
         if self.request_callback is None:
-            raise ValueError("request_plugin_install handler requires a request callback in the Python port")
+            raise FunctionCallError.respond_to_model(
+                "request_plugin_install handler requires a request callback in the Python port"
+            )
         result = self.request_callback(args, tool, params)
         if not isinstance(result, RequestPluginInstallResult):
             result = RequestPluginInstallResult.from_mapping(result)
-        content = json.dumps(result.to_mapping(), separators=(",", ":"))
+        response = RequestPluginInstallResult(
+            completed=result.completed,
+            user_confirmed=result.user_confirmed,
+            tool_type=args.tool_type,
+            action_type=args.action_type,
+            tool_id=tool.id(),
+            tool_name=tool.name(),
+            suggest_reason=suggest_reason,
+        )
+        content = json.dumps(response.to_mapping(), separators=(",", ":"))
         return FunctionToolOutput.from_text(content, True)
 
     def _find_discoverable_tool(self, args: RequestPluginInstallArgs) -> DiscoverableTool | None:
@@ -724,29 +779,49 @@ def maybe_persist_disabled_install_request(
 
 
 def truncate_to_char_boundary(value: str, max_chars: int) -> str:
+    value = _ensure_str(value, "value")
+    max_chars = _ensure_usize(max_chars, "max_chars")
     return value[:max_chars]
+
+
+def _install_entries_tuple(
+    values: Iterable[RequestPluginInstallEntry | Mapping[str, JsonValue]],
+) -> tuple[RequestPluginInstallEntry, ...]:
+    if isinstance(values, (str, bytes)) or not isinstance(values, Iterable):
+        raise TypeError("install entries must be an iterable of RequestPluginInstallEntry values")
+    return tuple(_coerce_install_entry(tool) for tool in values)
 
 
 def _coerce_install_entry(value: RequestPluginInstallEntry | Mapping[str, JsonValue]) -> RequestPluginInstallEntry:
     if isinstance(value, RequestPluginInstallEntry):
         return value
+    if not isinstance(value, Mapping):
+        raise TypeError("install entry must be RequestPluginInstallEntry or mapping")
     return RequestPluginInstallEntry.from_mapping(value)
 
 
 def _coerce_tool_type(value: DiscoverableToolType | str) -> DiscoverableToolType:
     if isinstance(value, DiscoverableToolType):
         return value
-    return DiscoverableToolType(str(value))
+    if isinstance(value, str):
+        return DiscoverableToolType(value)
+    raise TypeError("tool_type must be DiscoverableToolType or string")
 
 
 def _coerce_action_type(value: DiscoverableToolAction | str) -> DiscoverableToolAction:
     if isinstance(value, DiscoverableToolAction):
         return value
-    return DiscoverableToolAction(str(value))
+    if isinstance(value, str):
+        return DiscoverableToolAction(value)
+    raise TypeError("action_type must be DiscoverableToolAction or string")
 
 
 def _coerce_app_info(value: AppInfo | Mapping[str, JsonValue]) -> AppInfo:
-    return value if isinstance(value, AppInfo) else AppInfo.from_mapping(value)
+    if isinstance(value, AppInfo):
+        return value
+    if isinstance(value, Mapping):
+        return AppInfo.from_mapping(value)
+    raise TypeError("connector must be AppInfo or mapping")
 
 
 def _iter_plugin_records(
@@ -792,6 +867,47 @@ def _get_field(value: Mapping[str, JsonValue] | Any, name: str) -> JsonValue:
     if isinstance(value, Mapping):
         return value.get(name)
     return getattr(value, name, None)
+
+
+def _ensure_mapping(value: JsonValue, field_name: str) -> Mapping[str, JsonValue]:
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{field_name} must be a mapping")
+    return value
+
+
+def _ensure_str(value: JsonValue, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{field_name} must be a string")
+    return value
+
+
+def _optional_str(value: JsonValue, field_name: str) -> str | None:
+    if value is None:
+        return None
+    return _ensure_str(value, field_name)
+
+
+def _ensure_bool(value: JsonValue, field_name: str) -> bool:
+    if not isinstance(value, bool):
+        raise TypeError(f"{field_name} must be a bool")
+    return value
+
+
+def _ensure_usize(value: JsonValue, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{field_name} must be an integer")
+    if value < 0:
+        raise ValueError(f"{field_name} must not be negative")
+    return value
+
+
+def _string_tuple(values: Iterable[JsonValue], field_name: str) -> tuple[str, ...]:
+    if isinstance(values, (str, bytes)) or not isinstance(values, Iterable):
+        raise TypeError(f"{field_name} must be an iterable of strings")
+    result: list[str] = []
+    for value in values:
+        result.append(_ensure_str(value, field_name))
+    return tuple(result)
 
 
 __all__ = [

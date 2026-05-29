@@ -22,12 +22,54 @@ PATCH_REJECTED_OUTSIDE_PROJECT_REASON = "writing outside of the project; rejecte
 PATCH_REJECTED_READ_ONLY_REASON = "writing is blocked by read-only sandbox; rejected by user approval settings"
 
 
+def _ensure_pathlike(value: object, field: str) -> str | Path:
+    if isinstance(value, (str, Path)):
+        return value
+    raise TypeError(f"{field} must be path-like")
+
+
+def _ensure_bool(value: object, field: str) -> bool:
+    if not isinstance(value, bool):
+        raise TypeError(f"{field} must be a bool")
+    return value
+
+
+def _ensure_str(value: object, field: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{field} must be a string")
+    return value
+
+
+def _ensure_policy(value: object) -> ApprovalPolicy:
+    if isinstance(value, (AskForApproval, GranularApprovalConfig)):
+        return value
+    raise TypeError("policy must be AskForApproval or GranularApprovalConfig")
+
+
 @dataclass(frozen=True)
 class SafetyCheck:
     type: str
     sandbox_type: SandboxType | None = None
     user_explicitly_approved: bool = False
     reason: str | None = None
+
+    def __post_init__(self) -> None:
+        check_type = _ensure_str(self.type, "type")
+        if check_type == "auto_approve":
+            if not isinstance(self.sandbox_type, SandboxType):
+                raise TypeError("sandbox_type must be a SandboxType")
+            object.__setattr__(self, "user_explicitly_approved", _ensure_bool(self.user_explicitly_approved, "user_explicitly_approved"))
+            object.__setattr__(self, "reason", None)
+        elif check_type == "ask_user":
+            object.__setattr__(self, "sandbox_type", None)
+            object.__setattr__(self, "user_explicitly_approved", False)
+            object.__setattr__(self, "reason", None)
+        elif check_type == "reject":
+            object.__setattr__(self, "sandbox_type", None)
+            object.__setattr__(self, "user_explicitly_approved", False)
+            object.__setattr__(self, "reason", _ensure_str(self.reason, "reason"))
+        else:
+            raise ValueError(f"unsupported safety check type: {check_type}")
 
     @classmethod
     def auto_approve(
@@ -39,7 +81,7 @@ class SafetyCheck:
         return cls(
             type="auto_approve",
             sandbox_type=sandbox_type,
-            user_explicitly_approved=user_explicitly_approved,
+            user_explicitly_approved=_ensure_bool(user_explicitly_approved, "user_explicitly_approved"),
         )
 
     @classmethod
@@ -48,7 +90,7 @@ class SafetyCheck:
 
     @classmethod
     def reject(cls, reason: str) -> "SafetyCheck":
-        return cls(type="reject", reason=reason)
+        return cls(type="reject", reason=_ensure_str(reason, "reason"))
 
 
 ApprovalPolicy = AskForApproval | GranularApprovalConfig
@@ -62,8 +104,15 @@ def assess_patch_safety(
     cwd: Path | str,
     windows_sandbox_level: WindowsSandboxLevel,
 ) -> SafetyCheck:
+    policy = _ensure_policy(policy)
+    if not isinstance(permission_profile, PermissionProfile):
+        raise TypeError("permission_profile must be a PermissionProfile")
+    if not isinstance(file_system_sandbox_policy, FileSystemSandboxPolicy):
+        raise TypeError("file_system_sandbox_policy must be a FileSystemSandboxPolicy")
+    if not isinstance(windows_sandbox_level, WindowsSandboxLevel):
+        raise TypeError("windows_sandbox_level must be a WindowsSandboxLevel")
     action = action if isinstance(action, ApplyPatchAction) else ApplyPatchAction.from_mapping(action)
-    cwd = Path(cwd)
+    cwd = Path(_ensure_pathlike(cwd, "cwd"))
 
     if not action.changes:
         return SafetyCheck.reject("empty patch")
@@ -115,6 +164,12 @@ def patch_rejection_reason(
     file_system_sandbox_policy: FileSystemSandboxPolicy,
     cwd: Path | str,
 ) -> str:
+    if not isinstance(permission_profile, PermissionProfile):
+        raise TypeError("permission_profile must be a PermissionProfile")
+    if not isinstance(file_system_sandbox_policy, FileSystemSandboxPolicy):
+        raise TypeError("file_system_sandbox_policy must be a FileSystemSandboxPolicy")
+    cwd = Path(_ensure_pathlike(cwd, "cwd"))
+
     if (
         permission_profile.type == "managed"
         and not file_system_sandbox_policy.has_full_disk_write_access()
@@ -129,7 +184,11 @@ def is_write_patch_constrained_to_writable_paths(
     file_system_sandbox_policy: FileSystemSandboxPolicy,
     cwd: Path | str,
 ) -> bool:
-    cwd = Path(cwd)
+    if not isinstance(action, ApplyPatchAction):
+        raise TypeError("action must be an ApplyPatchAction")
+    if not isinstance(file_system_sandbox_policy, FileSystemSandboxPolicy):
+        raise TypeError("file_system_sandbox_policy must be a FileSystemSandboxPolicy")
+    cwd = Path(_ensure_pathlike(cwd, "cwd"))
 
     def is_path_writable(path: Path) -> bool:
         absolute_path = _normalize_path(resolve_path(cwd, path))

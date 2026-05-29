@@ -15,7 +15,7 @@ from typing import Any
 from .approvals import FileChange
 from .memory_citation import MemoryCitation
 from .mcp import CallToolResult
-from .models import ContentItem, ImageDetail, ResponseItem, WebSearchAction
+from .models import ContentItem, ImageDetail, MessagePhase, ResponseItem, WebSearchAction
 from .protocol import (
     AgentMessageEvent,
     AgentReasoningEvent,
@@ -62,6 +62,28 @@ def _optional_str(value: Mapping[str, JsonValue], key: str) -> str | None:
     if not isinstance(raw, str):
         raise TypeError(f"{key} must be a string")
     return raw
+
+
+def _optional_str_alias(value: Mapping[str, JsonValue], primary: str, fallback: str) -> str | None:
+    if primary in value:
+        return _optional_str(value, primary)
+    return _optional_str(value, fallback)
+
+
+def _optional_message_phase(value: JsonValue) -> MessagePhase | None:
+    if value is None:
+        return None
+    if isinstance(value, MessagePhase):
+        return value
+    if isinstance(value, str):
+        return MessagePhase(value)
+    raise TypeError("phase must be a MessagePhase, string, or None")
+
+
+def _required_value(value: Mapping[str, JsonValue], key: str) -> JsonValue:
+    if key not in value:
+        raise KeyError(key)
+    return value[key]
 
 
 def _user_input_from_mapping(value: JsonValue) -> UserInput:
@@ -149,8 +171,14 @@ class UserMessageItem:
     content: tuple[UserInput, ...]
 
     def __post_init__(self) -> None:
+        if not isinstance(self.id, str):
+            raise TypeError("id must be a string")
+        if not isinstance(self.content, (list, tuple)):
+            raise TypeError("content must be a list or tuple")
         if not isinstance(self.content, tuple):
             object.__setattr__(self, "content", tuple(self.content))
+        if not all(isinstance(item, UserInput) for item in self.content):
+            raise TypeError("content entries must be UserInput")
 
     @classmethod
     def new(cls, content: tuple[UserInput, ...] | list[UserInput]) -> "UserMessageItem":
@@ -161,7 +189,7 @@ class UserMessageItem:
         data = _mapping(value, "user message item")
         return cls(
             id=_required_str(data, "id"),
-            content=tuple(_user_input_from_mapping(item) for item in data.get("content", ())),
+            content=tuple(_user_input_from_mapping(item) for item in _required_value(data, "content")),
         )
 
     def message(self) -> str:
@@ -217,6 +245,12 @@ class HookPromptFragment:
     text: str
     hook_run_id: str
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.text, str):
+            raise TypeError("text must be a string")
+        if not isinstance(self.hook_run_id, str):
+            raise TypeError("hook_run_id must be a string")
+
     @classmethod
     def from_single_hook(cls, text: str, hook_run_id: str) -> "HookPromptFragment":
         return cls(text=text, hook_run_id=hook_run_id)
@@ -231,8 +265,14 @@ class HookPromptItem:
     fragments: tuple[HookPromptFragment, ...]
 
     def __post_init__(self) -> None:
+        if not isinstance(self.id, str):
+            raise TypeError("id must be a string")
+        if not isinstance(self.fragments, (list, tuple)):
+            raise TypeError("fragments must be a list or tuple")
         if not isinstance(self.fragments, tuple):
             object.__setattr__(self, "fragments", tuple(self.fragments))
+        if not all(isinstance(fragment, HookPromptFragment) for fragment in self.fragments):
+            raise TypeError("fragments entries must be HookPromptFragment")
 
     @classmethod
     def from_fragments(
@@ -240,7 +280,7 @@ class HookPromptItem:
         id: str | None,
         fragments: tuple[HookPromptFragment, ...] | list[HookPromptFragment],
     ) -> "HookPromptItem":
-        return cls(id or str(uuid.uuid4()), tuple(fragments))
+        return cls(str(uuid.uuid4()) if id is None else id, tuple(fragments))
 
 
 def serialize_hook_prompt_fragment(text: str, hook_run_id: str) -> str | None:
@@ -301,6 +341,14 @@ class AgentMessageContent:
     type: str
     text: str
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.type, str):
+            raise TypeError("type must be a string")
+        if self.type != "Text":
+            raise ValueError(f"unknown agent message content type: {self.type}")
+        if not isinstance(self.text, str):
+            raise TypeError("text must be a string")
+
     @classmethod
     def text_content(cls, text: str) -> "AgentMessageContent":
         return cls("Text", text)
@@ -321,12 +369,21 @@ class AgentMessageContent:
 class AgentMessageItem:
     id: str
     content: tuple[AgentMessageContent, ...]
-    phase: JsonValue | None = None
+    phase: MessagePhase | None = None
     memory_citation: MemoryCitation | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.id, str):
+            raise TypeError("id must be a string")
+        if not isinstance(self.content, (list, tuple)):
+            raise TypeError("content must be a list or tuple")
         if not isinstance(self.content, tuple):
             object.__setattr__(self, "content", tuple(self.content))
+        if not all(isinstance(item, AgentMessageContent) for item in self.content):
+            raise TypeError("content entries must be AgentMessageContent")
+        object.__setattr__(self, "phase", _optional_message_phase(self.phase))
+        if self.memory_citation is not None and not isinstance(self.memory_citation, MemoryCitation):
+            raise TypeError("memory_citation must be a MemoryCitation or None")
 
     @classmethod
     def new(cls, content: tuple[AgentMessageContent, ...] | list[AgentMessageContent]) -> "AgentMessageItem":
@@ -337,8 +394,8 @@ class AgentMessageItem:
         data = _mapping(value, "agent message item")
         return cls(
             id=_required_str(data, "id"),
-            content=tuple(AgentMessageContent.from_mapping(item) for item in data.get("content", ())),
-            phase=data.get("phase"),
+            content=tuple(AgentMessageContent.from_mapping(item) for item in _required_value(data, "content")),
+            phase=_optional_message_phase(data.get("phase")),
             memory_citation=(
                 MemoryCitation.from_mapping(data["memory_citation"])
                 if data.get("memory_citation") is not None
@@ -361,6 +418,12 @@ class PlanItem:
     id: str
     text: str
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.id, str):
+            raise TypeError("id must be a string")
+        if not isinstance(self.text, str):
+            raise TypeError("text must be a string")
+
 
 @dataclass(frozen=True)
 class ReasoningItem:
@@ -369,10 +432,20 @@ class ReasoningItem:
     raw_content: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        if not isinstance(self.id, str):
+            raise TypeError("id must be a string")
+        if isinstance(self.summary_text, str) or not isinstance(self.summary_text, (list, tuple)):
+            raise TypeError("summary_text must be a list or tuple of strings")
+        if isinstance(self.raw_content, str) or not isinstance(self.raw_content, (list, tuple)):
+            raise TypeError("raw_content must be a list or tuple of strings")
         if not isinstance(self.summary_text, tuple):
             object.__setattr__(self, "summary_text", tuple(self.summary_text))
         if not isinstance(self.raw_content, tuple):
             object.__setattr__(self, "raw_content", tuple(self.raw_content))
+        if not all(isinstance(item, str) for item in self.summary_text):
+            raise TypeError("summary_text entries must be strings")
+        if not all(isinstance(item, str) for item in self.raw_content):
+            raise TypeError("raw_content entries must be strings")
 
     def as_legacy_events(self, show_raw_agent_reasoning: bool) -> list[EventMsg]:
         events = [EventMsg.with_payload("agent_reasoning", AgentReasoningEvent(summary)) for summary in self.summary_text]
@@ -388,7 +461,17 @@ class ReasoningItem:
 class WebSearchItem:
     id: str
     query: str
-    action: WebSearchAction | JsonValue
+    action: WebSearchAction
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.id, str):
+            raise TypeError("id must be a string")
+        if not isinstance(self.query, str):
+            raise TypeError("query must be a string")
+        if isinstance(self.action, Mapping):
+            object.__setattr__(self, "action", WebSearchAction.from_mapping(self.action))
+        if not isinstance(self.action, WebSearchAction):
+            raise TypeError("action must be a WebSearchAction or mapping")
 
     def as_legacy_event(self) -> EventMsg:
         return EventMsg.with_payload("web_search_end", WebSearchEndEvent(self.id, self.query, self.action))
@@ -399,6 +482,14 @@ class ImageViewItem:
     id: str
     path: Path
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.id, str):
+            raise TypeError("id must be a string")
+        if not isinstance(self.path, (str, Path)):
+            raise TypeError("path must be a string or Path")
+        if not isinstance(self.path, Path):
+            object.__setattr__(self, "path", Path(self.path))
+
 
 @dataclass(frozen=True)
 class ImageGenerationItem:
@@ -407,6 +498,20 @@ class ImageGenerationItem:
     result: str
     revised_prompt: str | None = None
     saved_path: Path | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.id, str):
+            raise TypeError("id must be a string")
+        if not isinstance(self.status, str):
+            raise TypeError("status must be a string")
+        if not isinstance(self.result, str):
+            raise TypeError("result must be a string")
+        if self.revised_prompt is not None and not isinstance(self.revised_prompt, str):
+            raise TypeError("revised_prompt must be a string or None")
+        if self.saved_path is not None and not isinstance(self.saved_path, (str, Path)):
+            raise TypeError("saved_path must be a string, Path, or None")
+        if self.saved_path is not None and not isinstance(self.saved_path, Path):
+            object.__setattr__(self, "saved_path", Path(self.saved_path))
 
     def as_legacy_event(self) -> EventMsg:
         return EventMsg.with_payload(
@@ -423,6 +528,28 @@ class FileChangeItem:
     auto_approved: bool | None = None
     stdout: str | None = None
     stderr: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.id, str):
+            raise TypeError("id must be a string")
+        if not isinstance(self.changes, Mapping):
+            raise TypeError("changes must be a mapping")
+        normalized_changes: dict[Path, FileChange] = {}
+        for path, change in self.changes.items():
+            if not isinstance(path, (str, Path)):
+                raise TypeError("changes keys must be strings or Path")
+            if not isinstance(change, FileChange):
+                raise TypeError("changes values must be FileChange")
+            normalized_changes[Path(path)] = change
+        object.__setattr__(self, "changes", normalized_changes)
+        if self.status is not None and not isinstance(self.status, PatchApplyStatus):
+            object.__setattr__(self, "status", PatchApplyStatus(self.status))
+        if self.auto_approved is not None and not isinstance(self.auto_approved, bool):
+            raise TypeError("auto_approved must be a bool or None")
+        if self.stdout is not None and not isinstance(self.stdout, str):
+            raise TypeError("stdout must be a string or None")
+        if self.stderr is not None and not isinstance(self.stderr, str):
+            raise TypeError("stderr must be a string or None")
 
     def as_legacy_begin_event(self, turn_id: str) -> EventMsg:
         return EventMsg.with_payload(
@@ -453,9 +580,20 @@ class McpToolCallStatus(str):
     FAILED = "failed"
 
 
+_MCP_TOOL_CALL_STATUS_VALUES = {
+    McpToolCallStatus.IN_PROGRESS,
+    McpToolCallStatus.COMPLETED,
+    McpToolCallStatus.FAILED,
+}
+
+
 @dataclass(frozen=True)
 class McpToolCallError:
     message: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.message, str):
+            raise TypeError("message must be a string")
 
 
 @dataclass(frozen=True)
@@ -470,6 +608,26 @@ class McpToolCallItem:
     result: CallToolResult | None = None
     error: McpToolCallError | None = None
     duration: JsonValue | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.id, str):
+            raise TypeError("id must be a string")
+        if not isinstance(self.server, str):
+            raise TypeError("server must be a string")
+        if not isinstance(self.tool, str):
+            raise TypeError("tool must be a string")
+        if not isinstance(self.status, str):
+            raise TypeError("status must be a string")
+        if self.status not in _MCP_TOOL_CALL_STATUS_VALUES:
+            raise ValueError(f"unknown mcp tool call status: {self.status}")
+        if self.mcp_app_resource_uri is not None and not isinstance(self.mcp_app_resource_uri, str):
+            raise TypeError("mcp_app_resource_uri must be a string or None")
+        if self.plugin_id is not None and not isinstance(self.plugin_id, str):
+            raise TypeError("plugin_id must be a string or None")
+        if self.result is not None and not isinstance(self.result, CallToolResult):
+            raise TypeError("result must be a CallToolResult or None")
+        if self.error is not None and not isinstance(self.error, McpToolCallError):
+            raise TypeError("error must be a McpToolCallError or None")
 
     def _legacy_invocation(self) -> McpInvocation:
         return McpInvocation(self.server, self.tool, None if self.arguments is None else self.arguments)
@@ -511,6 +669,10 @@ class McpToolCallItem:
 class ContextCompactionItem:
     id: str
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.id, str):
+            raise TypeError("id must be a string")
+
     @classmethod
     def new(cls) -> "ContextCompactionItem":
         return cls(str(uuid.uuid4()))
@@ -523,6 +685,13 @@ class ContextCompactionItem:
 class TurnItem:
     type: str
     item: JsonValue
+
+    def __post_init__(self) -> None:
+        expected_type = _TURN_ITEM_TYPES.get(self.type)
+        if expected_type is None:
+            raise ValueError(f"unknown turn item type: {self.type}")
+        if not isinstance(self.item, expected_type):
+            raise TypeError(f"{self.type} item must be {expected_type.__name__}")
 
     @classmethod
     def from_mapping(cls, value: JsonValue) -> "TurnItem":
@@ -620,17 +789,17 @@ def _plan_item(data: Mapping[str, JsonValue]) -> PlanItem:
 def _reasoning_item(data: Mapping[str, JsonValue]) -> ReasoningItem:
     return ReasoningItem(
         id=_required_str(data, "id"),
-        summary_text=tuple(data.get("summary_text", ())),
-        raw_content=tuple(data.get("raw_content", ())),
+        summary_text=_required_value(data, "summary_text"),
+        raw_content=data.get("raw_content", ()),
     )
 
 
 def _web_search_item(data: Mapping[str, JsonValue]) -> WebSearchItem:
-    action = data.get("action")
+    action = _required_value(data, "action")
     return WebSearchItem(
         id=_required_str(data, "id"),
         query=_required_str(data, "query"),
-        action=WebSearchAction.from_mapping(action) if isinstance(action, Mapping) else action,
+        action=action,
     )
 
 
@@ -639,41 +808,50 @@ def _image_view_item(data: Mapping[str, JsonValue]) -> ImageViewItem:
 
 
 def _image_generation_item(data: Mapping[str, JsonValue]) -> ImageGenerationItem:
-    saved_path = data.get("saved_path")
     return ImageGenerationItem(
         id=_required_str(data, "id"),
         status=_required_str(data, "status"),
         revised_prompt=_optional_str(data, "revised_prompt"),
         result=_required_str(data, "result"),
-        saved_path=Path(saved_path) if isinstance(saved_path, str) else None,
+        saved_path=data.get("saved_path"),
     )
 
 
 def _file_change_item(data: Mapping[str, JsonValue]) -> FileChangeItem:
-    status = data.get("status")
     return FileChangeItem(
         id=_required_str(data, "id"),
-        changes=_changes_from_mapping(data.get("changes", {})),
-        status=PatchApplyStatus(status) if isinstance(status, str) else None,
-        auto_approved=data.get("auto_approved") if isinstance(data.get("auto_approved"), bool) else None,
+        changes=_changes_from_mapping(_required_value(data, "changes")),
+        status=data.get("status"),
+        auto_approved=data.get("auto_approved"),
         stdout=_optional_str(data, "stdout"),
         stderr=_optional_str(data, "stderr"),
     )
 
 
+def _call_tool_result_from_value(value: JsonValue) -> CallToolResult | None:
+    if value is None:
+        return None
+    return CallToolResult.from_mapping(_mapping(value, "mcp tool call result"))
+
+
+def _mcp_tool_call_error_from_value(value: JsonValue) -> McpToolCallError | None:
+    if value is None:
+        return None
+    data = _mapping(value, "mcp tool call error")
+    return McpToolCallError(_required_str(data, "message"))
+
+
 def _mcp_tool_call_item(data: Mapping[str, JsonValue]) -> McpToolCallItem:
-    raw_error = data.get("error")
-    raw_result = data.get("result")
     return McpToolCallItem(
         id=_required_str(data, "id"),
         server=_required_str(data, "server"),
         tool=_required_str(data, "tool"),
-        arguments=data.get("arguments"),
-        mcp_app_resource_uri=_optional_str(data, "mcpAppResourceUri") or _optional_str(data, "mcp_app_resource_uri"),
-        plugin_id=_optional_str(data, "pluginId") or _optional_str(data, "plugin_id"),
-        status=str(data.get("status", McpToolCallStatus.IN_PROGRESS)),
-        result=CallToolResult.from_mapping(raw_result) if isinstance(raw_result, Mapping) else None,
-        error=McpToolCallError(_required_str(raw_error, "message")) if isinstance(raw_error, Mapping) else None,
+        arguments=_required_value(data, "arguments"),
+        mcp_app_resource_uri=_optional_str_alias(data, "mcpAppResourceUri", "mcp_app_resource_uri"),
+        plugin_id=_optional_str_alias(data, "pluginId", "plugin_id"),
+        status=_required_str(data, "status"),
+        result=_call_tool_result_from_value(data.get("result")),
+        error=_mcp_tool_call_error_from_value(data.get("error")),
         duration=data.get("duration"),
     )
 
@@ -691,7 +869,7 @@ _TURN_ITEM_PARSERS = {
                 text=_required_str(fragment, "text"),
                 hook_run_id=_required_str(fragment, "hookRunId") if "hookRunId" in fragment else _required_str(fragment, "hook_run_id"),
             )
-            for fragment in data.get("fragments", ())
+            for fragment in _required_value(data, "fragments")
         ),
     ),
     "AgentMessage": _agent_message_item,
@@ -703,4 +881,18 @@ _TURN_ITEM_PARSERS = {
     "FileChange": _file_change_item,
     "McpToolCall": _mcp_tool_call_item,
     "ContextCompaction": _context_compaction_item,
+}
+
+_TURN_ITEM_TYPES = {
+    "UserMessage": UserMessageItem,
+    "HookPrompt": HookPromptItem,
+    "AgentMessage": AgentMessageItem,
+    "Plan": PlanItem,
+    "Reasoning": ReasoningItem,
+    "WebSearch": WebSearchItem,
+    "ImageView": ImageViewItem,
+    "ImageGeneration": ImageGenerationItem,
+    "FileChange": FileChangeItem,
+    "McpToolCall": McpToolCallItem,
+    "ContextCompaction": ContextCompactionItem,
 }

@@ -1,11 +1,14 @@
 import unittest
 
 from pycodex.core import (
+    FunctionCallError,
     FunctionToolOutput,
+    HookToolName,
     McpToolOutput,
     McpHandler,
     PlannedTools,
     ToolExposure,
+    ToolInvocation,
     ToolPayload,
     ToolPlanOptions,
     ToolInfo,
@@ -13,9 +16,12 @@ from pycodex.core import (
     build_mcp_search_text,
     build_model_visible_specs_and_registry,
     create_mcp_tool_spec,
+    ensure_mcp_prefix,
+    join_tool_name,
+    mcp_hook_tool_input,
     mcp_tool_to_responses_api_tool,
 )
-from pycodex.protocol import CallToolResult, Tool, ToolName
+from pycodex.protocol import CallToolResult, SearchToolCallParams, Tool, ToolName, TruncationPolicyConfig
 
 
 def tool_info(
@@ -126,12 +132,105 @@ class McpToolHandlerTests(unittest.TestCase):
         handler = McpHandler.new(tool_info())
 
         self.assertEqual(handler.tool_name(), ToolName.namespaced("mcp__calendar__", "_create_event"))
+        self.assertEqual(handler.hook_tool_name(), HookToolName.new("mcp__calendar__create_event"))
         self.assertEqual(handler.exposure(), ToolExposure.DIRECT)
         self.assertTrue(handler.matches_kind(ToolPayload.function("{}")))
+        self.assertTrue(handler.matches_kind(ToolPayload.tool_search(SearchToolCallParams("calendar"))))
         self.assertFalse(handler.matches_kind(ToolPayload.custom("raw")))
         self.assertEqual(
             handler.telemetry_tags(),
             (("mcp_server", "codex-apps"), ("mcp_server_origin", "plugin")),
+        )
+
+    def test_mcp_hook_name_helpers_match_rust_prefix_rules(self) -> None:
+        self.assertEqual(join_tool_name(ToolName.namespaced("memory", "create_entities")), "memory__create_entities")
+        self.assertEqual(join_tool_name(ToolName.namespaced("mcp__foo__", "_exec_command")), "mcp__foo__exec_command")
+        self.assertEqual(ensure_mcp_prefix("memory__create_entities"), "mcp__memory__create_entities")
+        self.assertEqual(ensure_mcp_prefix("mcp__foo__exec_command"), "mcp__foo__exec_command")
+
+    def test_mcp_hook_tool_input_parses_json_or_preserves_raw_string(self) -> None:
+        self.assertEqual(mcp_hook_tool_input(""), {})
+        self.assertEqual(mcp_hook_tool_input('{"path":"/tmp"}'), {"path": "/tmp"})
+        self.assertEqual(mcp_hook_tool_input("{not json"), "{not json")
+
+    def test_pre_tool_use_payload_uses_prefixed_name_and_args(self) -> None:
+        handler = McpHandler.new(tool_info())
+        invocation = ToolInvocation(
+            call_id="call-mcp-pre",
+            tool_name=handler.tool_name(),
+            payload=ToolPayload.function('{"summary":"meet"}'),
+        )
+
+        payload = handler.pre_tool_use_payload(invocation)
+
+        self.assertEqual(payload.tool_name, HookToolName.new("mcp__calendar__create_event"))
+        self.assertEqual(payload.tool_input, {"summary": "meet"})
+
+    def test_with_updated_hook_input_rewrites_function_arguments(self) -> None:
+        handler = McpHandler.new(tool_info())
+        invocation = ToolInvocation(
+            call_id="call-mcp-rewrite",
+            tool_name=handler.tool_name(),
+            payload=ToolPayload.function('{"summary":"meet"}'),
+        )
+
+        updated = handler.with_updated_hook_input(invocation, {"summary": "rewritten"})
+
+        self.assertEqual(updated.payload, ToolPayload.function('{"summary":"rewritten"}'))
+
+    def test_with_updated_hook_input_uses_model_visible_errors(self) -> None:
+        handler = McpHandler.new(tool_info())
+        with self.assertRaisesRegex(FunctionCallError, "does not support hook input rewriting") as unsupported:
+            handler.with_updated_hook_input(
+                ToolInvocation(
+                    call_id="call-mcp-rewrite",
+                    tool_name=handler.tool_name(),
+                    payload=ToolPayload.custom("raw"),
+                ),
+                {"summary": "rewritten"},
+            )
+        self.assertTrue(unsupported.exception.is_model_response)
+
+        with self.assertRaisesRegex(FunctionCallError, "failed to serialize rewritten MCP arguments") as unserializable:
+            handler.with_updated_hook_input(
+                ToolInvocation(
+                    call_id="call-mcp-rewrite",
+                    tool_name=handler.tool_name(),
+                    payload=ToolPayload.function("{}"),
+                ),
+                {"bad": object()},
+            )
+        self.assertTrue(unserializable.exception.is_model_response)
+
+    def test_post_tool_use_payload_uses_mcp_output_input_and_result(self) -> None:
+        handler = McpHandler.new(tool_info())
+        invocation = ToolInvocation(
+            call_id="call-mcp-post",
+            tool_name=handler.tool_name(),
+            payload=ToolPayload.function('{"summary":"meet"}'),
+        )
+        output = McpToolOutput(
+            result=CallToolResult(
+                content=({"type": "text", "text": "created"},),
+                structured_content={"event_id": "evt_1"},
+            ),
+            tool_input={"summary": "meet", "calendar_id": "cal_1"},
+            wall_time_seconds=0.042,
+            original_image_detail_supported=True,
+            truncation_policy=TruncationPolicyConfig.tokens(10_000),
+        )
+
+        payload = handler.post_tool_use_payload(invocation, output)
+
+        self.assertEqual(payload.tool_name, HookToolName.new("mcp__calendar__create_event"))
+        self.assertEqual(payload.tool_use_id, "call-mcp-post")
+        self.assertEqual(payload.tool_input, {"summary": "meet", "calendar_id": "cal_1"})
+        self.assertEqual(
+            payload.tool_response,
+            {
+                "content": [{"type": "text", "text": "created"}],
+                "structuredContent": {"event_id": "evt_1"},
+            },
         )
 
     def test_handle_calls_request_callback(self) -> None:
@@ -176,6 +275,21 @@ class McpToolHandlerTests(unittest.TestCase):
             CallToolResult(content=({"type": "text", "text": "created"},), is_error=False),
         )
         self.assertEqual(output.tool_input, {"summary": "meet"})
+
+    def test_handle_uses_model_visible_errors(self) -> None:
+        handler = McpHandler.new(tool_info())
+
+        with self.assertRaisesRegex(FunctionCallError, "unsupported payload") as unsupported:
+            handler.handle(ToolPayload.custom("raw"))
+        self.assertTrue(unsupported.exception.is_model_response)
+
+        with self.assertRaisesRegex(FunctionCallError, "failed to parse function arguments") as bad_json:
+            handler.handle(ToolPayload.function("{not json"))
+        self.assertTrue(bad_json.exception.is_model_response)
+
+        with self.assertRaisesRegex(FunctionCallError, "requires a request callback") as no_callback:
+            handler.handle(ToolPayload.function("{}"))
+        self.assertTrue(no_callback.exception.is_model_response)
 
     def test_add_mcp_tools_connects_direct_and_deferred_tools_to_spec_plan(self) -> None:
         planned = PlannedTools()

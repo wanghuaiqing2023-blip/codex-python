@@ -11,9 +11,12 @@ from .rollout import SESSIONS_SUBDIR
 
 
 def map_session_init_error(error: BaseException, codex_home: Path | str) -> CodexErr:
+    if not isinstance(error, BaseException):
+        raise TypeError("error must be an exception")
+    codex_home_path = _codex_home_path(codex_home)
     for cause in _exception_chain(error):
         if isinstance(cause, OSError):
-            mapped = map_rollout_io_error(cause, codex_home)
+            mapped = map_rollout_io_error(cause, codex_home_path)
             if mapped is not None:
                 return mapped
 
@@ -21,7 +24,9 @@ def map_session_init_error(error: BaseException, codex_home: Path | str) -> Code
 
 
 def map_rollout_io_error(error: OSError, codex_home: Path | str) -> CodexErr | None:
-    codex_home_path = Path(codex_home)
+    if not isinstance(error, OSError):
+        raise TypeError("error must be an OSError")
+    codex_home_path = _codex_home_path(codex_home)
     sessions_dir = codex_home_path / SESSIONS_SUBDIR
     error_kind = _normalized_errno(error)
 
@@ -86,6 +91,12 @@ def _normalized_errno(error: OSError) -> int | None:
     if isinstance(error, NotADirectoryError):
         return errno.ENOTDIR
     return None
+
+
+def _codex_home_path(codex_home: Path | str) -> Path:
+    if not isinstance(codex_home, (str, Path)):
+        raise TypeError("codex_home must be a string or Path")
+    return Path(codex_home)
 
 
 _INVALID_DATA_ERRNOS = {

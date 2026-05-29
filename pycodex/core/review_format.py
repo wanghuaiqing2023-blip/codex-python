@@ -11,6 +11,8 @@ _LOCATION_SEPARATOR = " \u2014 "
 
 
 def format_location(item: ReviewFinding) -> str:
+    if not isinstance(item, ReviewFinding):
+        raise TypeError("item must be a ReviewFinding")
     path = item.code_location.absolute_file_path
     line_range = item.code_location.line_range
     return f"{path}:{line_range.start}-{line_range.end}"
@@ -20,6 +22,17 @@ def format_review_findings_block(
     findings: Sequence[ReviewFinding],
     selection: Sequence[bool] | None = None,
 ) -> str:
+    if isinstance(findings, str):
+        raise TypeError("findings must be a sequence of ReviewFinding values")
+    findings = tuple(findings)
+    if any(not isinstance(item, ReviewFinding) for item in findings):
+        raise TypeError("findings must contain ReviewFinding values")
+    if selection is not None:
+        if isinstance(selection, str):
+            raise TypeError("selection must be a sequence of bool values")
+        selection = tuple(selection)
+        if any(not isinstance(flag, bool) for flag in selection):
+            raise TypeError("selection must contain bool values")
     lines: list[str] = [""]
 
     if len(findings) > 1:
@@ -47,6 +60,8 @@ def format_review_findings_block(
 
 
 def render_review_output_text(output: ReviewOutputEvent) -> str:
+    if not isinstance(output, ReviewOutputEvent):
+        raise TypeError("output must be a ReviewOutputEvent")
     sections: list[str] = []
     explanation = output.overall_explanation.strip()
     if explanation:

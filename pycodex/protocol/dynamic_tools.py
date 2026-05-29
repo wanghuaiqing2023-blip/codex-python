@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from typing import Any
 
 JsonValue = Any
+I64_MIN = -(2**63)
+I64_MAX = 2**63 - 1
 
 
 def _mapping(value: JsonValue, label: str) -> Mapping[str, JsonValue]:
@@ -53,6 +55,16 @@ class DynamicToolSpec:
     namespace: str | None = None
     defer_loading: bool = False
 
+    def __post_init__(self) -> None:
+        if self.namespace is not None and not isinstance(self.namespace, str):
+            raise TypeError("namespace must be a string or None")
+        if not isinstance(self.name, str):
+            raise TypeError("name must be a string")
+        if not isinstance(self.description, str):
+            raise TypeError("description must be a string")
+        if not isinstance(self.defer_loading, bool):
+            raise TypeError("defer_loading must be a bool")
+
     @classmethod
     def from_mapping(cls, value: JsonValue) -> "DynamicToolSpec":
         data = _mapping(value, "dynamic tool spec")
@@ -89,12 +101,28 @@ class DynamicToolCallRequest:
     started_at_ms: int = 0
     namespace: str | None = None
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.call_id, str):
+            raise TypeError("call_id must be a string")
+        if not isinstance(self.turn_id, str):
+            raise TypeError("turn_id must be a string")
+        if isinstance(self.started_at_ms, bool) or not isinstance(self.started_at_ms, int):
+            raise TypeError("started_at_ms must be an integer")
+        if self.started_at_ms < I64_MIN or self.started_at_ms > I64_MAX:
+            raise ValueError("started_at_ms must fit in i64")
+        if self.namespace is not None and not isinstance(self.namespace, str):
+            raise TypeError("namespace must be a string or None")
+        if not isinstance(self.tool, str):
+            raise TypeError("tool must be a string")
+
     @classmethod
     def from_mapping(cls, value: JsonValue) -> "DynamicToolCallRequest":
         data = _mapping(value, "dynamic tool call request")
         started_at_ms = data.get("startedAtMs", 0)
         if isinstance(started_at_ms, bool) or not isinstance(started_at_ms, int):
             raise TypeError("startedAtMs must be an integer")
+        if started_at_ms < I64_MIN or started_at_ms > I64_MAX:
+            raise ValueError("startedAtMs must fit in i64")
         return cls(
             call_id=_required_str(data, "callId"),
             turn_id=_required_str(data, "turnId"),
@@ -122,10 +150,18 @@ class DynamicToolCallOutputContentItem:
     image_url: str | None = None
 
     def __post_init__(self) -> None:
-        if self.type == "inputText" and self.text is None:
-            raise ValueError("inputText item requires text")
-        if self.type == "inputImage" and self.image_url is None:
-            raise ValueError("inputImage item requires image_url")
+        if not isinstance(self.type, str):
+            raise TypeError("type must be a string")
+        if self.type == "inputText":
+            if not isinstance(self.text, str):
+                raise TypeError("inputText item requires text")
+            if self.image_url is not None:
+                raise ValueError("inputText item cannot include image_url")
+        if self.type == "inputImage":
+            if not isinstance(self.image_url, str):
+                raise TypeError("inputImage item requires image_url")
+            if self.text is not None:
+                raise ValueError("inputImage item cannot include text")
         if self.type not in {"inputText", "inputImage"}:
             raise ValueError(f"unknown dynamic tool output content type: {self.type}")
 
@@ -161,6 +197,8 @@ class DynamicToolResponse:
     def __post_init__(self) -> None:
         if not isinstance(self.content_items, tuple):
             object.__setattr__(self, "content_items", tuple(self.content_items))
+        if not all(isinstance(item, DynamicToolCallOutputContentItem) for item in self.content_items):
+            raise TypeError("content_items entries must be DynamicToolCallOutputContentItem")
         if not isinstance(self.success, bool):
             raise TypeError("success must be a bool")
 

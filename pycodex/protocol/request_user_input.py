@@ -39,6 +39,12 @@ class RequestUserInputQuestionOption:
     label: str
     description: str
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.label, str):
+            raise TypeError("label must be a string")
+        if not isinstance(self.description, str):
+            raise TypeError("description must be a string")
+
     @classmethod
     def from_mapping(cls, value: JsonValue) -> "RequestUserInputQuestionOption":
         data = _mapping(value, "request user input question option")
@@ -58,8 +64,20 @@ class RequestUserInputQuestion:
     options: tuple[RequestUserInputQuestionOption, ...] | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.id, str):
+            raise TypeError("id must be a string")
+        if not isinstance(self.header, str):
+            raise TypeError("header must be a string")
+        if not isinstance(self.question, str):
+            raise TypeError("question must be a string")
+        if not isinstance(self.is_other, bool):
+            raise TypeError("is_other must be a bool")
+        if not isinstance(self.is_secret, bool):
+            raise TypeError("is_secret must be a bool")
         if self.options is not None and not isinstance(self.options, tuple):
             object.__setattr__(self, "options", tuple(self.options))
+        if self.options is not None and not all(isinstance(option, RequestUserInputQuestionOption) for option in self.options):
+            raise TypeError("options entries must be RequestUserInputQuestionOption")
 
     @classmethod
     def from_mapping(cls, value: JsonValue) -> "RequestUserInputQuestion":
@@ -100,6 +118,8 @@ class RequestUserInputArgs:
     def __post_init__(self) -> None:
         if not isinstance(self.questions, tuple):
             object.__setattr__(self, "questions", tuple(self.questions))
+        if not all(isinstance(question, RequestUserInputQuestion) for question in self.questions):
+            raise TypeError("questions entries must be RequestUserInputQuestion")
 
     @classmethod
     def from_mapping(cls, value: JsonValue) -> "RequestUserInputArgs":
@@ -139,13 +159,23 @@ class RequestUserInputAnswer:
 class RequestUserInputResponse:
     answers: dict[str, RequestUserInputAnswer]
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.answers, dict):
+            object.__setattr__(self, "answers", dict(self.answers))
+        if not all(isinstance(key, str) for key in self.answers):
+            raise TypeError("answer keys must be strings")
+        if not all(isinstance(answer, RequestUserInputAnswer) for answer in self.answers.values()):
+            raise TypeError("answer values must be RequestUserInputAnswer")
+
     @classmethod
     def from_mapping(cls, value: JsonValue) -> "RequestUserInputResponse":
         data = _mapping(value, "request user input response")
         raw_answers = data["answers"]
         if not isinstance(raw_answers, Mapping):
             raise TypeError("answers must be a mapping")
-        return cls({str(key): RequestUserInputAnswer.from_mapping(answer) for key, answer in raw_answers.items()})
+        if not all(isinstance(key, str) for key in raw_answers):
+            raise TypeError("answer keys must be strings")
+        return cls({key: RequestUserInputAnswer.from_mapping(answer) for key, answer in raw_answers.items()})
 
     def to_mapping(self) -> dict[str, JsonValue]:
         return {"answers": {key: answer.to_mapping() for key, answer in self.answers.items()}}
@@ -158,8 +188,14 @@ class RequestUserInputEvent:
     turn_id: str = ""
 
     def __post_init__(self) -> None:
+        if not isinstance(self.call_id, str):
+            raise TypeError("call_id must be a string")
+        if not isinstance(self.turn_id, str):
+            raise TypeError("turn_id must be a string")
         if not isinstance(self.questions, tuple):
             object.__setattr__(self, "questions", tuple(self.questions))
+        if not all(isinstance(question, RequestUserInputQuestion) for question in self.questions):
+            raise TypeError("questions entries must be RequestUserInputQuestion")
 
     @classmethod
     def from_mapping(cls, value: JsonValue) -> "RequestUserInputEvent":
@@ -169,7 +205,7 @@ class RequestUserInputEvent:
             raise TypeError("questions must be a list")
         return cls(
             call_id=_required_str(data, "call_id"),
-            turn_id=str(data.get("turn_id", "")),
+            turn_id=_required_str(data, "turn_id") if "turn_id" in data else "",
             questions=tuple(RequestUserInputQuestion.from_mapping(question) for question in questions),
         )
 

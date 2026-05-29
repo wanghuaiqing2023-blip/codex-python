@@ -391,6 +391,35 @@ class CodeModeTests(unittest.TestCase):
         self.assertEqual(normalize_code_mode_identifier("hidden-dynamic-tool"), "hidden_dynamic_tool")
         self.assertEqual(normalize_code_mode_identifier("1bad"), "_bad")
 
+
+    def test_code_mode_structs_reject_implicit_coercions(self) -> None:
+        with self.assertRaises(TypeError):
+            CodeModeToolDefinition(
+                name=123,
+                tool_name=ToolName.plain("lookup_order"),
+                description="Look up",
+                kind=CodeModeToolKind.FUNCTION,
+            )
+        with self.assertRaises(TypeError):
+            ToolNamespaceDescription("sample", 123)
+        with self.assertRaises(ValueError):
+            ExecWaitArgs(cell_id="cell-1", yield_time_ms=True)
+        with self.assertRaises(TypeError):
+            ExecWaitArgs(cell_id="cell-1", terminate=1)
+        with self.assertRaises(TypeError):
+            ExecuteRequest(
+                cell_id=1,
+                tool_call_id="call-1",
+                enabled_tools=(),
+                source="text('hi')",
+            )
+        with self.assertRaises(TypeError):
+            RuntimeResponse.result(cell_id="cell-1", error_text=123)
+        with self.assertRaises(TypeError):
+            ExecuteToPendingOutcome.pending(cell_id="cell-1", pending_tool_call_ids=(1,))
+        with self.assertRaises(TypeError):
+            CodeModeRuntimeStore({1: {"count": 1}})
+
     def test_runtime_requests_and_outcomes_coerce_upstream_shapes(self) -> None:
         tool_definition = CodeModeToolDefinition(
             name="lookup_order",
@@ -508,6 +537,32 @@ class CodeModeTests(unittest.TestCase):
         self.assertEqual(call.tool_name, ToolName.namespaced("mcp__", "search"))
         self.assertEqual(call.tool_kind, CodeModeToolKind.FUNCTION)
         self.assertEqual(call.input, {"q": "codex"})
+
+        plain_call = CodeModeNestedToolCall(
+            cell_id="cell-2",
+            runtime_tool_call_id="runtime-2",
+            tool_name="lookup",
+            tool_kind="function",
+            input={},
+        )
+        self.assertEqual(plain_call.tool_name, ToolName.plain("lookup"))
+
+        with self.assertRaises(TypeError):
+            CodeModeNestedToolCall(
+                cell_id="cell-3",
+                runtime_tool_call_id="runtime-3",
+                tool_name=123,
+                tool_kind="function",
+                input={},
+            )
+        with self.assertRaises(TypeError):
+            CodeModeNestedToolCall(
+                cell_id="cell-4",
+                runtime_tool_call_id="runtime-4",
+                tool_name={"namespace": "mcp__", "name": 123},
+                tool_kind="function",
+                input={},
+            )
 
     def test_runtime_command_and_event_shapes_match_upstream_variants(self) -> None:
         self.assertEqual(PendingRuntimeMode.CONTINUE.value, "continue")

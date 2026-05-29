@@ -3,6 +3,7 @@ import unittest
 from pycodex.core import (
     DynamicToolHandler,
     FunctionToolOutput,
+    FunctionCallError,
     PlannedTools,
     ToolExposure,
     ToolPayload,
@@ -10,6 +11,8 @@ from pycodex.core import (
     add_dynamic_tools,
     build_dynamic_search_text,
     build_model_visible_specs_and_registry,
+    dynamic_tool_call_request_event,
+    dynamic_tool_call_response_event,
     dynamic_tool_to_responses_api_tool,
 )
 from pycodex.protocol import (
@@ -17,6 +20,7 @@ from pycodex.protocol import (
     DynamicToolResponse,
     DynamicToolSpec,
     FunctionCallOutputContentItem,
+    SearchToolCallParams,
     ToolName,
 )
 
@@ -67,7 +71,9 @@ class DynamicToolHandlerTests(unittest.TestCase):
         self.assertIsNotNone(handler)
         self.assertEqual(handler.tool_name(), ToolName.namespaced("codex_app", "automation_update"))
         self.assertEqual(handler.exposure(), ToolExposure.DEFERRED)
+        self.assertFalse(handler.supports_parallel_tool_calls())
         self.assertTrue(handler.matches_kind(ToolPayload.function("{}")))
+        self.assertTrue(handler.matches_kind(ToolPayload.tool_search(SearchToolCallParams("automation"))))
         self.assertFalse(handler.matches_kind(ToolPayload.custom("raw")))
         self.assertEqual(
             handler.spec(),
@@ -173,10 +179,62 @@ class DynamicToolHandlerTests(unittest.TestCase):
         )
 
         self.assertFalse(handler.handle(ToolPayload.function("{}")).success_for_logging())
-        with self.assertRaisesRegex(ValueError, "unsupported payload"):
+        with self.assertRaisesRegex(FunctionCallError, "unsupported payload"):
             handler.handle(ToolPayload.custom("raw"))
-        with self.assertRaisesRegex(ValueError, "failed to parse dynamic tool arguments"):
+        with self.assertRaisesRegex(FunctionCallError, "failed to parse function arguments"):
             handler.handle(ToolPayload.function("{not json"))
+        with self.assertRaisesRegex(FunctionCallError, "cancelled before receiving a response"):
+            DynamicToolHandler.new(dynamic_spec(namespace=None)).handle(ToolPayload.function("{}"))
+
+    def test_dynamic_tool_call_request_event_uses_tool_name_parts(self) -> None:
+        event = dynamic_tool_call_request_event(
+            "call-dynamic",
+            "turn-1",
+            ToolName.namespaced("codex_app", "automation_update"),
+            {"mode": "create"},
+            started_at_ms=123,
+        )
+
+        self.assertEqual(
+            event.to_mapping(),
+            {
+                "callId": "call-dynamic",
+                "turnId": "turn-1",
+                "startedAtMs": 123,
+                "namespace": "codex_app",
+                "tool": "automation_update",
+                "arguments": {"mode": "create"},
+            },
+        )
+
+    def test_dynamic_tool_call_response_event_success_and_cancelled_shapes(self) -> None:
+        response = DynamicToolResponse(
+            (DynamicToolCallOutputContentItem.input_text("done"),),
+            True,
+        )
+        success = dynamic_tool_call_response_event(
+            "call-dynamic",
+            "turn-1",
+            ToolName.namespaced("codex_app", "automation_update"),
+            {"mode": "create"},
+            response,
+            completed_at_ms=456,
+            duration={"secs": 0, "nanos": 5},
+        )
+        cancelled = dynamic_tool_call_response_event(
+            "call-dynamic",
+            "turn-1",
+            ToolName.plain("automation_update"),
+            {},
+            None,
+        )
+
+        self.assertEqual(success.to_mapping()["content_items"], [{"type": "inputText", "text": "done"}])
+        self.assertTrue(success.success)
+        self.assertIsNone(success.error)
+        self.assertFalse(cancelled.success)
+        self.assertEqual(cancelled.error, "dynamic tool call was cancelled before receiving a response")
+        self.assertEqual(cancelled.content_items, ())
 
     def test_add_dynamic_tools_connects_to_spec_plan_and_tool_search(self) -> None:
         planned = PlannedTools()

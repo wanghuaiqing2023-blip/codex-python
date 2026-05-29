@@ -9,11 +9,14 @@ library.
 
 from __future__ import annotations
 
+import asyncio
 import ast
 import base64
 import errno
+from functools import cmp_to_key
 import ipaddress
 import json
+import shutil
 from datetime import datetime, timezone
 import io
 import socket
@@ -28,7 +31,7 @@ import platform
 import webbrowser
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Iterable, MutableMapping, TextIO
+from typing import Any, Iterable, Mapping, MutableMapping, TextIO
 import shlex
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError, URLError
@@ -54,6 +57,18 @@ from pycodex.exec import (
     remote_exec_session_connect_and_run,
     RemoteAppServerConnectArgs,
     RemoteAppServerEndpoint,
+)
+from pycodex.exec.local_runtime import (
+    build_default_local_http_exec_runtime,
+    emit_local_http_exec_error,
+    emit_local_http_exec_result,
+    local_http_exec_enabled,
+    local_http_exec_max_tool_rounds,
+    local_http_exec_shell_tools_enabled,
+    local_http_exec_tool_output_max_chars,
+    local_http_exec_config_summary,
+    run_exec_user_turn_http_sampling,
+    run_exec_user_turn_with_shell_tools_http_sampling,
 )
 from pycodex.protocol import AskForApproval, ProfileV2Name, ProfileV2NameParseError, SandboxMode
 from pycodex.protocol.config_types import ConfigTypeParseError
@@ -1143,7 +1158,7 @@ def _parse_apply_args(args: tuple[str, ...]) -> tuple[str, ...]:
         return args
 
     if not args:
-        raise CliParseError("apply requires TASK_ID.")
+        return args
     if args[0] == "--":
         if len(args) < 2:
             raise CliParseError("apply requires TASK_ID.")
@@ -1539,6 +1554,7 @@ _DOCTOR_OPTIONS = {"--json", "--summary", "--all", "--no-color", "--ascii"}
 _MCP_SUBCOMMANDS = {"list", "get", "add", "remove", "login", "logout"}
 _PLUGIN_SUBCOMMANDS = {"add", "list", "marketplace", "remove"}
 _PLUGIN_MARKETPLACE_SUBCOMMANDS = {"add", "list", "upgrade", "remove"}
+_DEFAULT_PLUGIN_VERSION = "local"
 _DEBUG_SUBCOMMANDS = {"models", "app-server", "prompt-input", "trace-reduce", "clear-memories"}
 _APP_SERVER_DAEMON_SUBCOMMANDS = {
     "bootstrap",
@@ -2142,6 +2158,7 @@ def main(
             )
             return _run_noninteractive_exec(
                 fallback,
+                stdout=out,
                 stderr=err,
                 stdin=stdin,
                 stdin_is_terminal=stdin_is_terminal,
@@ -2149,10 +2166,11 @@ def main(
         return _run_tui(stderr=err)
     elif parsed.command in {"exec", "review"}:
         if any(arg in {"-h", "--help"} for arg in parsed.command_args):
-            print(_unimplemented_command_help_text(parsed.command), file=out)
+            print(_exec_help_text_for_args(parsed.command_args) if parsed.command == "exec" else _review_help_text(), file=out)
             return 0
         return _run_noninteractive_exec(
             parsed,
+            stdout=out,
             stderr=err,
             stdin=stdin,
             stdin_is_terminal=stdin_is_terminal,
@@ -2165,7 +2183,7 @@ def main(
         )
     elif parsed.command == "features":
         if any(arg in {"-h", "--help"} for arg in parsed.command_args):
-            print(_unimplemented_command_help_text("features"), file=out)
+            print(_features_help_text(), file=out)
             return 0
         features_cli = parsed.features_cli()
         raw_overrides = parsed.config_overrides_with_feature_toggles()
@@ -2186,6 +2204,9 @@ def main(
             stdin_is_terminal=stdin_is_terminal,
         )
     elif parsed.command == "apply":
+        if not parsed.command_args or any(arg in {"-h", "--help"} for arg in parsed.command_args):
+            print(_apply_help_text(), file=out)
+            return 0
         return _run_apply_command(
             parsed.command_args,
             stdout=out,
@@ -2232,7 +2253,7 @@ def main(
         )
     elif parsed.command == "mcp":
         if parsed.command_args and any(arg in {"-h", "--help"} for arg in parsed.command_args):
-            print(_unimplemented_command_help_text("mcp"), file=out)
+            print(_mcp_help_text(parsed.command_args), file=out)
             return 0
         return _run_mcp_command(
             parsed.command_args,
@@ -2241,7 +2262,7 @@ def main(
         )
     elif parsed.command == "plugin":
         if parsed.command_args and any(arg in {"-h", "--help"} for arg in parsed.command_args):
-            print(_unimplemented_command_help_text("plugin"), file=out)
+            print(_plugin_help_text(parsed.command_args), file=out)
             return 0
         return _run_plugin_command(
             parsed.command_args,
@@ -2250,7 +2271,12 @@ def main(
         )
     elif parsed.command in {"mcp-server", "debug", "resume", "fork"}:
         if parsed.command_args and any(arg in {"-h", "--help"} for arg in parsed.command_args):
-            print(_unimplemented_command_help_text(parsed.command), file=out)
+            if parsed.command == "resume":
+                print(_resume_help_text(), file=out)
+            elif parsed.command == "fork":
+                print(_fork_help_text(), file=out)
+            else:
+                print(_unimplemented_command_help_text(parsed.command), file=out)
             return 0
         if parsed.command == "mcp-server":
             return _run_mcp_server_command(
@@ -2423,6 +2449,49 @@ def _plugin_key(name: str, marketplace: str) -> str:
     return f"{name}@{marketplace}"
 
 
+def _validate_plugin_segment(segment: str, kind: str) -> None:
+    if not segment:
+        raise ValueError(f"invalid {kind}: must not be empty")
+    if not all(ch.isascii() and (ch.isalnum() or ch in {"-", "_"}) for ch in segment):
+        raise ValueError(f"invalid {kind}: only ASCII letters, digits, `_`, and `-` are allowed")
+
+
+def _validate_plugin_version_segment(version: str) -> None:
+    if not version:
+        raise ValueError("invalid plugin version: must not be empty")
+    if version in {".", ".."}:
+        raise ValueError("invalid plugin version: path traversal is not allowed")
+    if not all(ch.isascii() and (ch.isalnum() or ch in {".", "+", "_", "-"}) for ch in version):
+        raise ValueError("invalid plugin version: only ASCII letters, digits, `.`, `+`, `_`, and `-` are allowed")
+
+
+def _version_segment_invalid(version: str) -> bool:
+    try:
+        _validate_plugin_version_segment(version)
+    except ValueError:
+        return True
+    return False
+
+
+def _semver_core(version: str) -> tuple[int, int, int] | None:
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)(?:[-+].*)?", version)
+    if match is None:
+        return None
+    return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+
+
+def _compare_plugin_versions(left: str, right: str) -> int:
+    left_semver = _semver_core(left)
+    right_semver = _semver_core(right)
+    if left_semver is not None and right_semver is not None:
+        return (left_semver > right_semver) - (left_semver < right_semver)
+    return (left > right) - (left < right)
+
+
+def _old_plugin_version_would_stay_active(old_version: str, new_version: str) -> bool:
+    return old_version == _DEFAULT_PLUGIN_VERSION or _compare_plugin_versions(old_version, new_version) > 0
+
+
 def _parse_plugin_selector(value: str, explicit_marketplace: str | None) -> tuple[str, str]:
     plugin_name = value
     marketplace = explicit_marketplace or "default"
@@ -2435,7 +2504,375 @@ def _parse_plugin_selector(value: str, explicit_marketplace: str | None) -> tupl
         raise ValueError(f"Invalid plugin selector: {value}")
     if not plugin_name:
         raise ValueError(f"Invalid plugin selector: {value}")
+    try:
+        _validate_plugin_segment(plugin_name, "plugin name")
+        _validate_plugin_segment(marketplace, "marketplace name")
+    except ValueError as exc:
+        if "@" in value and explicit_marketplace is None:
+            raise ValueError(f"{exc} in `{value}`") from exc
+        raise
     return plugin_name, marketplace
+
+
+def _plugin_marketplace_name_from_source(source: str) -> str:
+    source_path = Path(source).expanduser()
+    if source_path.exists():
+        if source_path.is_file():
+            raise RuntimeError("local marketplace source must be a directory, not a file")
+        manifest_path = source_path / ".agents" / "plugins" / "marketplace.json"
+        if manifest_path.exists():
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise RuntimeError(f"failed to read marketplace manifest {manifest_path}: {exc}") from exc
+            if isinstance(manifest, MutableMapping):
+                manifest_name = manifest.get("name")
+                if isinstance(manifest_name, str) and manifest_name:
+                    try:
+                        _validate_plugin_segment(manifest_name, "marketplace name")
+                    except ValueError as exc:
+                        raise RuntimeError(str(exc)) from exc
+                    return manifest_name
+        if source_path.name:
+            candidate = source_path.name
+            try:
+                _validate_plugin_segment(candidate, "marketplace name")
+            except ValueError as exc:
+                raise RuntimeError(str(exc)) from exc
+            return candidate
+
+    parsed = urlparse(source)
+    if parsed.scheme and parsed.path:
+        candidate = Path(parsed.path).name
+    elif "/" in source or "\\" in source:
+        candidate = Path(source).name
+    else:
+        candidate = source
+
+    candidate = candidate.rsplit("@", 1)[0]
+    if candidate.endswith(".git"):
+        candidate = candidate[:-4]
+    try:
+        _validate_plugin_segment(candidate or source, "marketplace name")
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+    return candidate or source
+
+
+def _load_marketplace_config(codex_home: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    config = read_toml_mapping(codex_home / CONFIG_TOML_FILE)
+    marketplaces_value = config.get("marketplaces")
+    marketplaces: dict[str, Any] = {}
+    if isinstance(marketplaces_value, MutableMapping):
+        for name, entry in marketplaces_value.items():
+            if isinstance(name, str) and isinstance(entry, MutableMapping):
+                marketplaces[name] = dict(entry)
+    return marketplaces, config
+
+
+def _write_marketplace_config(codex_home: Path, marketplaces: Mapping[str, Any], config: MutableMapping[str, Any]) -> None:
+    if marketplaces:
+        config["marketplaces"] = {
+            str(name): dict(entry)
+            for name, entry in sorted(marketplaces.items(), key=lambda item: str(item[0]))
+            if isinstance(entry, MutableMapping)
+        }
+    else:
+        config.pop("marketplaces", None)
+    write_toml_mapping(codex_home / CONFIG_TOML_FILE, config)
+
+
+def _marketplace_config_update(source: str, ref: str | None, sparse: list[str]) -> dict[str, Any]:
+    source_path = Path(source).expanduser()
+    if source_path.exists():
+        if sparse:
+            raise RuntimeError("--sparse is only supported for git marketplace sources")
+        source_type = "local"
+        source_value = str(source_path.resolve())
+    else:
+        source_type = "git"
+        source_value = source
+
+    entry: dict[str, Any] = {
+        "last_updated": datetime.now(timezone.utc).isoformat(),
+        "source_type": source_type,
+        "source": source_value,
+    }
+    if ref is not None:
+        entry["ref"] = ref
+    if sparse:
+        entry["sparse_paths"] = sparse
+    return entry
+
+
+def _load_plugin_config(codex_home: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    config = read_toml_mapping(codex_home / CONFIG_TOML_FILE)
+    plugins_value = config.get("plugins")
+    plugins: dict[str, Any] = {}
+    if isinstance(plugins_value, MutableMapping):
+        for name, entry in plugins_value.items():
+            if isinstance(name, str) and isinstance(entry, MutableMapping):
+                plugins[name] = dict(entry)
+    return plugins, config
+
+
+def _write_plugin_config(codex_home: Path, plugins: Mapping[str, Any], config: MutableMapping[str, Any]) -> None:
+    if plugins:
+        config["plugins"] = {
+            str(name): dict(entry)
+            for name, entry in sorted(plugins.items(), key=lambda item: str(item[0]))
+            if isinstance(entry, MutableMapping)
+        }
+    else:
+        config.pop("plugins", None)
+    write_toml_mapping(codex_home / CONFIG_TOML_FILE, config)
+
+
+def _read_marketplace_manifest(marketplace_root: Path) -> Mapping[str, Any]:
+    manifest_path = marketplace_root / ".agents" / "plugins" / "marketplace.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError as exc:
+        raise RuntimeError("marketplace root does not contain a supported manifest") from exc
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"failed to read marketplace manifest {manifest_path}: {exc}") from exc
+    if not isinstance(manifest, MutableMapping):
+        raise RuntimeError("marketplace manifest must be an object")
+    return manifest
+
+
+def _find_marketplace_plugin(manifest: Mapping[str, Any], plugin_name: str) -> Mapping[str, Any]:
+    try:
+        _validate_plugin_segment(plugin_name, "plugin name")
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+    plugins = manifest.get("plugins")
+    if not isinstance(plugins, list):
+        raise RuntimeError("marketplace manifest must contain a plugins array")
+    matches = [
+        plugin
+        for plugin in plugins
+        if isinstance(plugin, MutableMapping) and plugin.get("name") == plugin_name
+    ]
+    if not matches:
+        raise RuntimeError("plugin not found in marketplace")
+    if len(matches) > 1:
+        raise RuntimeError("plugin matched multiple marketplace entries")
+    return matches[0]
+
+
+def _copy_local_marketplace_plugin(
+    codex_home: Path,
+    marketplace: str,
+    plugin_name: str,
+    marketplace_entry: Mapping[str, Any],
+) -> tuple[str, Path]:
+    if marketplace_entry.get("source_type") != "local":
+        raise RuntimeError("only local marketplace plugin installation is implemented")
+    source_value = marketplace_entry.get("source")
+    if not isinstance(source_value, str) or not source_value:
+        raise RuntimeError("configured local marketplace source is missing or empty")
+    marketplace_root = Path(source_value)
+    manifest = _read_marketplace_manifest(marketplace_root)
+    plugin = _find_marketplace_plugin(manifest, plugin_name)
+    source = plugin.get("source")
+    if not isinstance(source, MutableMapping) or source.get("source") != "local":
+        raise RuntimeError("only local marketplace plugin sources are implemented")
+    plugin_path_value = source.get("path")
+    if not isinstance(plugin_path_value, str) or not plugin_path_value:
+        raise RuntimeError("local marketplace plugin source path is missing")
+    plugin_source = (marketplace_root / plugin_path_value).resolve()
+    plugin_manifest_path = plugin_source / ".codex-plugin" / "plugin.json"
+    try:
+        plugin_manifest = json.loads(plugin_manifest_path.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError as exc:
+        raise RuntimeError("plugin root does not contain .codex-plugin/plugin.json") from exc
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"failed to read plugin manifest {plugin_manifest_path}: {exc}") from exc
+    if not isinstance(plugin_manifest, MutableMapping):
+        raise RuntimeError("plugin manifest must be an object")
+    manifest_name = plugin_manifest.get("name")
+    if not isinstance(manifest_name, str) or not manifest_name:
+        raise RuntimeError("invalid plugin name: must not be empty")
+    try:
+        _validate_plugin_segment(manifest_name, "plugin name")
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+    if manifest_name != plugin_name:
+        raise RuntimeError(f"plugin.json name `{manifest_name}` does not match marketplace plugin name `{plugin_name}`")
+    raw_version = plugin_manifest.get("version")
+    if raw_version is None:
+        version = _DEFAULT_PLUGIN_VERSION
+    elif not isinstance(raw_version, str):
+        raise RuntimeError("invalid plugin version in plugin.json: expected string")
+    else:
+        version = raw_version.strip()
+        if not version:
+            raise RuntimeError("invalid plugin version in plugin.json: must not be blank")
+    try:
+        _validate_plugin_version_segment(version)
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+    installed_root = codex_home / "plugins" / "cache" / marketplace / plugin_name / version
+    if installed_root.exists():
+        shutil.rmtree(installed_root)
+    installed_root.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(plugin_source, installed_root)
+    _remove_old_plugin_versions(installed_root.parent, version)
+    return version, installed_root
+
+
+def _remove_old_plugin_versions(target_root: Path, plugin_version: str) -> None:
+    if not target_root.is_dir():
+        return
+    for entry in target_root.iterdir():
+        if not entry.is_dir():
+            continue
+        old_version = entry.name
+        if old_version == plugin_version:
+            continue
+        try:
+            _validate_plugin_version_segment(old_version)
+        except ValueError:
+            continue
+        try:
+            shutil.rmtree(entry)
+        except OSError as exc:
+            if _old_plugin_version_would_stay_active(old_version, plugin_version):
+                raise RuntimeError(
+                    f"failed to activate updated plugin cache version `{plugin_version}` while `{old_version}` remains active"
+                ) from exc
+
+
+def _remove_installed_plugin_cache(codex_home: Path, marketplace: str, plugin_name: str) -> None:
+    plugin_cache_root = codex_home / "plugins" / "cache" / marketplace / plugin_name
+    if plugin_cache_root.exists():
+        shutil.rmtree(plugin_cache_root)
+
+
+def _marketplace_root_display(marketplace: str, marketplace_entry: Mapping[str, Any]) -> str:
+    try:
+        _validate_plugin_segment(marketplace, "marketplace name")
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+    source_value = marketplace_entry.get("source")
+    if not isinstance(source_value, str) or not source_value:
+        raise RuntimeError(f"`{marketplace}` <invalid source>: configured local marketplace source is missing or empty")
+    if marketplace_entry.get("source_type") == "local":
+        marketplace_root = Path(source_value)
+        _read_marketplace_manifest(marketplace_root)
+        return str(marketplace_root)
+    return source_value
+
+
+def _plugin_manifest_version(plugin_root: Path) -> str:
+    manifest_path = plugin_root / ".codex-plugin" / "plugin.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    if not isinstance(manifest, MutableMapping):
+        return ""
+    version = manifest.get("version")
+    return version if isinstance(version, str) else ""
+
+
+def _installed_plugin_version(codex_home: Path, marketplace: str, plugin_name: str) -> str:
+    plugin_cache_root = codex_home / "plugins" / "cache" / marketplace / plugin_name
+    if not plugin_cache_root.is_dir():
+        return ""
+    versions = [
+        path.name
+        for path in plugin_cache_root.iterdir()
+        if path.is_dir()
+    ]
+    versions = [
+        version
+        for version in versions
+        if not _version_segment_invalid(version)
+    ]
+    if not versions:
+        return ""
+    if _DEFAULT_PLUGIN_VERSION in versions:
+        active_version = _DEFAULT_PLUGIN_VERSION
+    else:
+        active_version = sorted(versions, key=cmp_to_key(_compare_plugin_versions))[-1]
+    active_root = plugin_cache_root / active_version
+    return _plugin_manifest_version(active_root) or active_version
+
+
+def _local_marketplace_plugin_path(marketplace_root: Path, plugin: Mapping[str, Any]) -> Path | None:
+    source = plugin.get("source")
+    if not isinstance(source, MutableMapping) or source.get("source") != "local":
+        return None
+    plugin_path_value = source.get("path")
+    if not isinstance(plugin_path_value, str) or not plugin_path_value:
+        return None
+    return (marketplace_root / plugin_path_value).resolve()
+
+
+def _render_plugin_table_for_marketplace(
+    codex_home: Path,
+    marketplace: str,
+    marketplace_entry: Mapping[str, Any],
+    plugin_config: Mapping[str, Any],
+    *,
+    stdout: TextIO,
+) -> bool:
+    if marketplace_entry.get("source_type") != "local":
+        return False
+    source_value = marketplace_entry.get("source")
+    if not isinstance(source_value, str) or not source_value:
+        raise RuntimeError("configured local marketplace source is missing or empty")
+    marketplace_root = Path(source_value)
+    manifest = _read_marketplace_manifest(marketplace_root)
+    plugins = manifest.get("plugins")
+    if not isinstance(plugins, list):
+        raise RuntimeError("marketplace manifest must contain a plugins array")
+
+    rows: list[tuple[str, str, str, str]] = []
+    for plugin in plugins:
+        if not isinstance(plugin, MutableMapping):
+            continue
+        name = plugin.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        try:
+            _validate_plugin_segment(name, "plugin name")
+        except ValueError:
+            continue
+        plugin_key = _plugin_key(name, marketplace)
+        configured = plugin_config.get(plugin_key)
+        installed = isinstance(configured, MutableMapping)
+        enabled = not isinstance(configured, MutableMapping) or configured.get("enabled", True) is not False
+        if installed and enabled:
+            status = "installed, enabled"
+        elif installed:
+            status = "installed, disabled"
+        else:
+            status = "not installed"
+        version = _installed_plugin_version(codex_home, marketplace, name) if installed else ""
+        plugin_path = _local_marketplace_plugin_path(marketplace_root, plugin)
+        rows.append((plugin_key, status, version, str(plugin_path) if plugin_path is not None else ""))
+
+    plugin_width = max(["PLUGIN".__len__(), *(len(row[0]) for row in rows)] or [len("PLUGIN")])
+    status_width = max(["STATUS".__len__(), *(len(row[1]) for row in rows)] or [len("STATUS")])
+    version_width = max(["VERSION".__len__(), *(len(row[2]) for row in rows)] or [len("VERSION")])
+    path_width = max(["PATH".__len__(), *(len(row[3]) for row in rows)] or [len("PATH")])
+
+    print(f"Marketplace `{marketplace}`", file=stdout)
+    print(marketplace_root / ".agents" / "plugins" / "marketplace.json", file=stdout)
+    print("", file=stdout)
+    print(
+        f"{'PLUGIN':<{plugin_width}}  {'STATUS':<{status_width}}  {'VERSION':<{version_width}}  {'PATH':<{path_width}}",
+        file=stdout,
+    )
+    for plugin_key, status, version, path in rows:
+        print(
+            f"{plugin_key:<{plugin_width}}  {status:<{status_width}}  {version:<{version_width}}  {path:<{path_width}}",
+            file=stdout,
+        )
+    return True
 
 
 def _parse_app_server_out_argument(args: tuple[str, ...]) -> str | None:
@@ -2623,10 +3060,6 @@ def _run_plugin_command(command_args: tuple[str, ...], *, stdout: TextIO, stderr
     except RuntimeError as exc:
         print(f"pycodex: {exc}", file=stderr)
         return 2
-    plugins = state.get("plugins")
-    if not isinstance(plugins, MutableMapping):
-        plugins = {}
-
     subcommand = command_args[0]
 
     if subcommand == "marketplace":
@@ -2635,11 +3068,22 @@ def _run_plugin_command(command_args: tuple[str, ...], *, stdout: TextIO, stderr
             return 2
         market_action = command_args[1]
         if market_action == "list":
-            marketplaces = state.get("marketplaces")
-            if not isinstance(marketplaces, MutableMapping):
-                marketplaces = {}
-            for market in sorted(marketplaces):
-                print(market, file=stdout)
+            try:
+                marketplaces, _config = _load_marketplace_config(codex_home)
+            except OSError as exc:
+                print(f"pycodex: failed to read {CONFIG_TOML_FILE}: {exc}", file=stderr)
+                return 2
+            rows: list[tuple[str, str]] = []
+            for market, market_entry in sorted(marketplaces.items(), key=lambda item: item[0]):
+                try:
+                    root_display = _marketplace_root_display(market, market_entry)
+                except RuntimeError as exc:
+                    print(f"pycodex: failed to load marketplace(s): {exc}", file=stderr)
+                    return 2
+                rows.append((market, root_display))
+            print("MARKETPLACE  ROOT", file=stdout)
+            for market, root_display in rows:
+                print(f"{market:<{len('MARKETPLACE')}}  {root_display}", file=stdout)
             return 0
 
         if market_action == "add":
@@ -2647,9 +3091,6 @@ def _run_plugin_command(command_args: tuple[str, ...], *, stdout: TextIO, stderr
                 print("plugin marketplace add requires source.", file=stderr)
                 return 2
             source = command_args[2]
-            markets = state.get("marketplaces")
-            if not isinstance(markets, MutableMapping):
-                markets = {}
             index = 3
             sparse: list[str] = []
             ref: str | None = None
@@ -2666,37 +3107,48 @@ def _run_plugin_command(command_args: tuple[str, ...], *, stdout: TextIO, stderr
                         index += 1
                     continue
                 index += 1
-            market_info = {"source": source}
-            if ref is not None:
-                market_info["ref"] = ref
-            if sparse:
-                market_info["sparse"] = sparse
-            markets[source] = market_info
-            state["marketplaces"] = markets
             try:
-                _write_json_state(path, state)
-            except OSError as exc:
-                print(f"pycodex: failed to write plugin state: {exc}", file=stderr)
+                market_name = _plugin_marketplace_name_from_source(source)
+                market_info = _marketplace_config_update(source, ref, sparse)
+            except RuntimeError as exc:
+                print(f"pycodex: {exc}", file=stderr)
                 return 2
-            print(f"Added marketplace '{source}'.", file=stdout)
+            try:
+                markets, config = _load_marketplace_config(codex_home)
+                already_added = market_name in markets
+                markets[market_name] = market_info
+                _write_marketplace_config(codex_home, markets, config)
+            except OSError as exc:
+                print(f"pycodex: failed to write {CONFIG_TOML_FILE}: {exc}", file=stderr)
+                return 2
+            if already_added:
+                print(f"Marketplace '{market_name}' is already added from {source}.", file=stdout)
+            else:
+                print(f"Added marketplace '{market_name}' from {source}.", file=stdout)
             return 0
 
         if market_action == "upgrade":
-            marketplaces = state.get("marketplaces")
-            if not isinstance(marketplaces, MutableMapping):
-                marketplaces = {}
             if len(command_args) > 3:
                 print("plugin marketplace upgrade accepts at most one marketplace name.", file=stderr)
                 return 2
+            try:
+                marketplaces, config = _load_marketplace_config(codex_home)
+            except OSError as exc:
+                print(f"pycodex: failed to read {CONFIG_TOML_FILE}: {exc}", file=stderr)
+                return 2
             if len(command_args) == 2:
-                for market_name in marketplaces:
-                    if isinstance(marketplaces[market_name], MutableMapping):
-                        marketplaces[market_name]["updated_at"] = datetime.now(timezone.utc).isoformat()
-                state["marketplaces"] = marketplaces
+                updated = False
+                for market_name, market_entry in marketplaces.items():
+                    if isinstance(market_entry, MutableMapping) and market_entry.get("source_type") == "git":
+                        market_entry["last_updated"] = datetime.now(timezone.utc).isoformat()
+                        updated = True
+                if not updated:
+                    print("No configured Git marketplaces to upgrade.", file=stdout)
+                    return 0
                 try:
-                    _write_json_state(path, state)
+                    _write_marketplace_config(codex_home, marketplaces, config)
                 except OSError as exc:
-                    print(f"pycodex: failed to write plugin state: {exc}", file=stderr)
+                    print(f"pycodex: failed to write {CONFIG_TOML_FILE}: {exc}", file=stderr)
                     return 2
                 print("Upgraded all marketplaces.", file=stdout)
                 return 0
@@ -2705,13 +3157,12 @@ def _run_plugin_command(command_args: tuple[str, ...], *, stdout: TextIO, stderr
             if not isinstance(market_entry, MutableMapping):
                 print(f"pycodex: marketplace '{market_name}' not found.", file=stderr)
                 return 2
-            market_entry["updated_at"] = datetime.now(timezone.utc).isoformat()
+            market_entry["last_updated"] = datetime.now(timezone.utc).isoformat()
             marketplaces[market_name] = market_entry
-            state["marketplaces"] = marketplaces
             try:
-                _write_json_state(path, state)
+                _write_marketplace_config(codex_home, marketplaces, config)
             except OSError as exc:
-                print(f"pycodex: failed to write plugin state: {exc}", file=stderr)
+                print(f"pycodex: failed to write {CONFIG_TOML_FILE}: {exc}", file=stderr)
                 return 2
             print(f"Upgraded marketplace '{market_name}'.", file=stdout)
             return 0
@@ -2724,17 +3175,18 @@ def _run_plugin_command(command_args: tuple[str, ...], *, stdout: TextIO, stderr
                 print("plugin marketplace remove requires marketplace name.", file=stderr)
                 return 2
             market_name = command_args[2]
-            marketplaces = state.get("marketplaces")
-            if not isinstance(marketplaces, MutableMapping):
-                marketplaces = {}
+            try:
+                marketplaces, config = _load_marketplace_config(codex_home)
+            except OSError as exc:
+                print(f"pycodex: failed to read {CONFIG_TOML_FILE}: {exc}", file=stderr)
+                return 2
             if not marketplaces.pop(market_name, None):
                 print(f"pycodex: marketplace '{market_name}' not found.", file=stderr)
                 return 2
-            state["marketplaces"] = marketplaces
             try:
-                _write_json_state(path, state)
+                _write_marketplace_config(codex_home, marketplaces, config)
             except OSError as exc:
-                print(f"pycodex: failed to write plugin state: {exc}", file=stderr)
+                print(f"pycodex: failed to write {CONFIG_TOML_FILE}: {exc}", file=stderr)
                 return 2
             print(f"Removed marketplace '{market_name}'.", file=stdout)
             return 0
@@ -2756,45 +3208,92 @@ def _run_plugin_command(command_args: tuple[str, ...], *, stdout: TextIO, stderr
             print(f"pycodex: {exc}", file=stderr)
             return 2
         plugin_key = _plugin_key(plugin_name, marketplace)
-        plugin_list = dict(plugins)
         if subcommand == "add":
-            plugin_list[plugin_key] = {
-                "name": plugin_name,
-                "marketplace": marketplace,
-                "added_at": datetime.now(timezone.utc).isoformat(),
-            }
-            state["plugins"] = plugin_list
             try:
-                _write_json_state(path, state)
+                marketplaces, _market_config = _load_marketplace_config(codex_home)
+                if marketplace not in marketplaces:
+                    print(f"pycodex: plugin `{plugin_name}` was not found in marketplace `{marketplace}`", file=stderr)
+                    return 2
+                marketplace_entry = marketplaces[marketplace]
+                if not isinstance(marketplace_entry, MutableMapping):
+                    print(f"pycodex: plugin `{plugin_name}` was not found in marketplace `{marketplace}`", file=stderr)
+                    return 2
+                try:
+                    installed_version, installed_path = _copy_local_marketplace_plugin(
+                        codex_home,
+                        marketplace,
+                        plugin_name,
+                        marketplace_entry,
+                    )
+                except RuntimeError as exc:
+                    print(f"pycodex: {exc}", file=stderr)
+                    return 2
+                plugin_list, config = _load_plugin_config(codex_home)
+                plugin_entry = dict(plugin_list.get(plugin_key, {})) if isinstance(plugin_list.get(plugin_key), MutableMapping) else {}
+                plugin_entry["enabled"] = True
+                plugin_list[plugin_key] = plugin_entry
+                _write_plugin_config(codex_home, plugin_list, config)
             except OSError as exc:
-                print(f"pycodex: failed to write plugin state: {exc}", file=stderr)
+                print(f"pycodex: failed to write {CONFIG_TOML_FILE}: {exc}", file=stderr)
                 return 2
-            print(f"Added plugin '{plugin_name}'.", file=stdout)
+            print(f"Added plugin `{plugin_name}` from marketplace `{marketplace}`.", file=stdout)
+            print(f"Installed plugin root: {installed_path}", file=stdout)
             return 0
 
+        try:
+            plugin_list, config = _load_plugin_config(codex_home)
+        except OSError as exc:
+            print(f"pycodex: failed to read {CONFIG_TOML_FILE}: {exc}", file=stderr)
+            return 2
         if plugin_key not in plugin_list:
             print(f"pycodex: plugin '{plugin_name}' not found.", file=stderr)
             return 2
         del plugin_list[plugin_key]
-        state["plugins"] = plugin_list
         try:
-            _write_json_state(path, state)
+            _remove_installed_plugin_cache(codex_home, marketplace, plugin_name)
+            _write_plugin_config(codex_home, plugin_list, config)
         except OSError as exc:
-            print(f"pycodex: failed to write plugin state: {exc}", file=stderr)
+            print(f"pycodex: failed to write {CONFIG_TOML_FILE}: {exc}", file=stderr)
             return 2
-        print(f"Removed plugin '{plugin_name}'.", file=stdout)
+        print(f"Removed plugin `{plugin_name}` from marketplace `{marketplace}`.", file=stdout)
         return 0
 
     if subcommand == "list":
-        listed = list(plugins)
+        try:
+            plugin_list, _config = _load_plugin_config(codex_home)
+            marketplaces, _market_config = _load_marketplace_config(codex_home)
+        except OSError as exc:
+            print(f"pycodex: failed to read {CONFIG_TOML_FILE}: {exc}", file=stderr)
+            return 2
+        selected_marketplace = None
         if len(command_args) == 3 and command_args[1] in {"--marketplace", "-m"}:
-            marketplace = command_args[2]
-            listed = [key for key in listed if key.endswith(f"@{marketplace}")]
-        if not listed:
-            print("No plugins configured.", file=stdout)
+            selected_marketplace = command_args[2]
+        rendered = False
+        matched_marketplaces = [
+            (name, entry)
+            for name, entry in sorted(marketplaces.items(), key=lambda item: item[0])
+            if selected_marketplace is None or name == selected_marketplace
+        ]
+        try:
+            for index, (marketplace, marketplace_entry) in enumerate(matched_marketplaces):
+                if index > 0:
+                    print("", file=stdout)
+                rendered = _render_plugin_table_for_marketplace(
+                    codex_home,
+                    marketplace,
+                    marketplace_entry,
+                    plugin_list,
+                    stdout=stdout,
+                ) or rendered
+        except RuntimeError as exc:
+            print(f"pycodex: {exc}", file=stderr)
+            return 2
+        if not rendered:
+            if selected_marketplace is not None:
+                print(f"No plugins found in marketplace `{selected_marketplace}`.", file=stdout)
+            else:
+                print("No marketplace plugins found.", file=stdout)
             return 0
-        for key in sorted(listed):
-            print(key, file=stdout)
         return 0
 
     print(f"Unrecognized plugin subcommand: {subcommand}", file=stderr)
@@ -2804,20 +3303,159 @@ def _run_plugin_command(command_args: tuple[str, ...], *, stdout: TextIO, stderr
 def _plugin_help_text(command_args: tuple[str, ...]) -> str:
     positional = [arg for arg in command_args if not arg.startswith("-")]
     if not positional:
-        return "Usage: codex plugin [OPTIONS] <SUBCOMMAND>"
+        return "\n".join(
+            [
+                "Manage Codex plugins.",
+                "",
+                "Usage: codex plugin <COMMAND>",
+                "",
+                "Commands:",
+                "  list                         List configured plugins.",
+                "  add <PLUGIN>[@<MARKETPLACE>] Add a plugin.",
+                "  remove <PLUGIN>[@<MARKETPLACE>]",
+                "                               Remove a plugin.",
+                "  marketplace <COMMAND>        Manage plugin marketplaces.",
+                "",
+                "Options:",
+                "  -h, --help                   Show this help message.",
+            ]
+        )
 
     subcommand = positional[0]
     if subcommand == "marketplace":
         if len(positional) == 1:
-            return "Usage: codex plugin marketplace [OPTIONS] <COMMAND>"
-        return "Usage: codex plugin marketplace <SUBCOMMAND>"
+            return "\n".join(
+                [
+                    "Manage Codex plugin marketplaces.",
+                    "",
+                    "Usage: codex plugin marketplace <COMMAND>",
+                    "",
+                    "Commands:",
+                    "  list                         List configured marketplaces.",
+                    "  add <SOURCE> [--ref REF] [--sparse PATH...]",
+                    "                               Add a marketplace from a source.",
+                    "  upgrade [MARKETPLACE]        Upgrade one or all marketplaces.",
+                    "  remove <MARKETPLACE>         Remove a marketplace.",
+                    "",
+                    "Options:",
+                    "  -h, --help                   Show this help message.",
+                ]
+            )
+        market_subcommand = positional[1]
+        if market_subcommand == "add":
+            return "\n".join(
+                [
+                    "Add a Codex plugin marketplace.",
+                    "",
+                    "Usage: codex plugin marketplace add <SOURCE> [--ref REF] [--sparse PATH...]",
+                    "",
+                    "Arguments:",
+                    "  SOURCE        Local path, repository, or URL for the marketplace source.",
+                    "",
+                    "Options:",
+                    "      --ref REF          Git ref to use for a git marketplace source.",
+                    "      --sparse PATH...   Sparse checkout path(s) for git marketplace sources.",
+                    "  -h, --help             Show this help message.",
+                ]
+            )
+        if market_subcommand == "list":
+            return "Usage: codex plugin marketplace list [--help]"
+        if market_subcommand == "upgrade":
+            return "Usage: codex plugin marketplace upgrade [MARKETPLACE] [--help]"
+        if market_subcommand == "remove":
+            return "Usage: codex plugin marketplace remove <MARKETPLACE> [--help]"
+        return "Usage: codex plugin marketplace <COMMAND>"
 
     if subcommand in {"add", "remove"}:
-        return f"Usage: codex plugin {subcommand} [OPTIONS]"
+        return "\n".join(
+            [
+                f"{'Add' if subcommand == 'add' else 'Remove'} a Codex plugin.",
+                "",
+                f"Usage: codex plugin {subcommand} <PLUGIN>[@<MARKETPLACE>] [--marketplace MARKETPLACE]",
+                "",
+                "Arguments:",
+                "  PLUGIN        Plugin id or name, optionally suffixed with @marketplace.",
+                "",
+                "Options:",
+                "  -m, --marketplace MARKETPLACE",
+                "                Select the marketplace explicitly.",
+                "  -h, --help    Show this help message.",
+            ]
+        )
     if subcommand == "list":
-        return "Usage: codex plugin list [OPTIONS]"
+        return "\n".join(
+            [
+                "List configured Codex plugins.",
+                "",
+                "Usage: codex plugin list [--marketplace MARKETPLACE]",
+                "",
+                "Options:",
+                "  -m, --marketplace MARKETPLACE",
+                "                Filter plugins by marketplace.",
+                "  -h, --help    Show this help message.",
+            ]
+        )
 
     return "Usage: codex plugin"
+
+
+def _mcp_help_text(command_args: tuple[str, ...]) -> str:
+    positional = [arg for arg in command_args if not arg.startswith("-")]
+    if not positional:
+        return "\n".join(
+            [
+                "Manage external MCP servers for Codex.",
+                "",
+                "Usage: codex mcp <COMMAND>",
+                "",
+                "Commands:",
+                "  list [--json]                         List configured MCP servers.",
+                "  get <NAME> [--json]                   Show one MCP server.",
+                "  add <NAME> --url URL                  Add an HTTP MCP server.",
+                "  add <NAME> [--env KEY=VALUE] -- CMD   Add a command MCP server.",
+                "  remove <NAME>                         Remove an MCP server.",
+                "  login <NAME> [--scopes SCOPES]        Log in to an MCP server.",
+                "  logout <NAME>                         Log out from an MCP server.",
+                "",
+                "Options:",
+                "  -h, --help                            Show this help message.",
+            ]
+        )
+
+    subcommand = positional[0]
+    if subcommand == "list":
+        return "Usage: codex mcp list [--json] [--help]"
+    if subcommand == "get":
+        return "Usage: codex mcp get <NAME> [--json] [--help]"
+    if subcommand == "remove":
+        return "Usage: codex mcp remove <NAME> [--help]"
+    if subcommand == "login":
+        return "Usage: codex mcp login <NAME> [--scopes SCOPES] [--help]"
+    if subcommand == "logout":
+        return "Usage: codex mcp logout <NAME> [--help]"
+    if subcommand == "add":
+        return "\n".join(
+            [
+                "Add an external MCP server.",
+                "",
+                "Usage: codex mcp add <NAME> --url URL [OPTIONS]",
+                "       codex mcp add <NAME> [--env KEY=VALUE] -- COMMAND [ARGS...]",
+                "",
+                "Arguments:",
+                "  NAME                         MCP server name.",
+                "  COMMAND [ARGS...]            Command-mode server process.",
+                "",
+                "Options:",
+                "      --url URL                 HTTP MCP server URL.",
+                "      --env KEY=VALUE           Environment variable for command mode.",
+                "      --bearer-token-env-var ENV",
+                "                                Environment variable containing a bearer token.",
+                "      --oauth-client-id ID      OAuth client id.",
+                "      --oauth-resource RESOURCE OAuth resource identifier.",
+                "  -h, --help                    Show this help message.",
+            ]
+        )
+    return "Usage: codex mcp <COMMAND>"
 
 
 def _run_app_server_command(
@@ -3638,6 +4276,225 @@ def _remote_control_human_lines(
 
 def _unimplemented_command_help_text(command: str) -> str:
     return f"Usage: codex {command} [OPTIONS]"
+
+
+def _exec_help_text() -> str:
+    return "\n".join(
+        [
+            "Run Codex non-interactively.",
+            "",
+            "Usage: codex exec [OPTIONS] [PROMPT]",
+            "       codex exec [OPTIONS] resume [OPTIONS] [SESSION_ID] [PROMPT]",
+            "       codex exec [OPTIONS] review [OPTIONS] [PROMPT]",
+            "",
+            "Options:",
+            "  -c, --config key=value      Override a configuration value.",
+            "  -i, --image PATH            Attach an image to the initial prompt.",
+            "      --output-schema PATH    Validate the final answer against a JSON schema.",
+            "      --color <always|never|auto>",
+            "                              Control colored human-readable output.",
+            "      --json                  Emit JSON events.",
+            "  -o, --output-last-message PATH",
+            "                              Write the final assistant message to a file.",
+            "  -m, --model MODEL           Override the model.",
+            "      --oss                   Use a local OSS provider preset.",
+            "      --local-provider ID     Select a local provider.",
+            "  -p, --profile PROFILE       Select a config profile.",
+            "  -s, --sandbox MODE          Override sandbox mode.",
+            "  -C, --cd DIR                Set the working directory.",
+            "      --add-dir DIR           Add another writable/readable directory.",
+            "      --skip-git-repo-check   Allow running outside a Git repository.",
+            "      --ephemeral             Do not persist the session.",
+            "      --ignore-user-config    Ignore user config.",
+            "      --ignore-rules          Ignore repository/user instructions.",
+            "      --full-auto             Deprecated alias for workspace-write behavior.",
+            "      --dangerously-bypass-approvals-and-sandbox",
+            "                              Disable approval and sandbox protections.",
+            "      --dangerously-bypass-hook-trust",
+            "                              Skip hook trust checks.",
+            "  -h, --help                  Show this help message.",
+            "",
+            "Subcommands:",
+            "  resume      Resume a previous session.",
+            "  review      Run a code review through the exec pipeline.",
+        ]
+    )
+
+
+def _exec_help_text_for_args(command_args: tuple[str, ...]) -> str:
+    subcommand = _first_non_option_arg(command_args)
+    if subcommand == "resume":
+        return _exec_resume_help_text()
+    if subcommand == "review":
+        return _exec_review_help_text()
+    return _exec_help_text()
+
+
+def _exec_resume_help_text() -> str:
+    return "\n".join(
+        [
+            "Resume a previous Codex session non-interactively.",
+            "",
+            "Usage: codex exec resume [OPTIONS] [SESSION_ID] [PROMPT]",
+            "",
+            "Arguments:",
+            "  SESSION_ID       Session/thread id to resume. Omit with --last to resume the most recent session.",
+            "  PROMPT           Optional prompt to send after resuming.",
+            "",
+            "Resume options:",
+            "      --last       Resume the most recent session.",
+            "      --all        Include all sessions when selecting a session.",
+            "  -i, --image PATH Attach an image to the resumed turn.",
+            "",
+            "Shared exec options:",
+            "  -c, --config key=value      Override a configuration value.",
+            "      --json                  Emit JSON events.",
+            "  -o, --output-last-message PATH",
+            "                              Write the final assistant message to a file.",
+            "  -m, --model MODEL           Override the model.",
+            "      --skip-git-repo-check   Allow running outside a Git repository.",
+            "      --ephemeral             Do not persist the session.",
+            "      --ignore-user-config    Ignore user config.",
+            "      --ignore-rules          Ignore repository/user instructions.",
+            "  -h, --help                  Show this help message.",
+        ]
+    )
+
+
+def _exec_review_help_text() -> str:
+    return "\n".join(
+        [
+            "Run a code review through the exec pipeline.",
+            "",
+            "Usage: codex exec review [OPTIONS] [PROMPT]",
+            "",
+            "Review target options:",
+            "      --uncommitted           Review uncommitted changes.",
+            "      --base REF              Review changes relative to a base ref.",
+            "      --commit SHA            Review a specific commit.",
+            "      --title TITLE           Title for the commit review; requires --commit.",
+            "",
+            "Shared exec options:",
+            "  -c, --config key=value      Override a configuration value.",
+            "      --json                  Emit JSON events.",
+            "  -o, --output-last-message PATH",
+            "                              Write the final assistant message to a file.",
+            "  -m, --model MODEL           Override the model.",
+            "      --skip-git-repo-check   Allow running outside a Git repository.",
+            "      --ephemeral             Do not persist the session.",
+            "      --ignore-user-config    Ignore user config.",
+            "      --ignore-rules          Ignore repository/user instructions.",
+            "  -h, --help                  Show this help message.",
+        ]
+    )
+
+
+def _review_help_text() -> str:
+    return "\n".join(
+        [
+            "Run a code review non-interactively.",
+            "",
+            "Usage: codex review [OPTIONS] [PROMPT]",
+            "",
+            "Review target options:",
+            "      --uncommitted           Review uncommitted changes.",
+            "      --base REF              Review changes relative to a base ref.",
+            "      --commit SHA            Review a specific commit.",
+            "      --title TITLE           Title for the commit review; requires --commit.",
+            "",
+            "Shared exec options:",
+            "  -c, --config key=value      Override a configuration value.",
+            "      --output-schema PATH    Validate the final answer against a JSON schema.",
+            "      --json                  Emit JSON events.",
+            "  -o, --output-last-message PATH",
+            "                              Write the final assistant message to a file.",
+            "  -m, --model MODEL           Override the model.",
+            "      --skip-git-repo-check   Allow running outside a Git repository.",
+            "      --ephemeral             Do not persist the session.",
+            "      --ignore-user-config    Ignore user config.",
+            "      --ignore-rules          Ignore repository/user instructions.",
+            "      --dangerously-bypass-approvals-and-sandbox",
+            "                              Disable approval and sandbox protections.",
+            "      --dangerously-bypass-hook-trust",
+            "                              Skip hook trust checks.",
+            "  -h, --help                  Show this help message.",
+        ]
+    )
+
+
+def _features_help_text() -> str:
+    return "\n".join(
+        [
+            "Inspect and update Codex feature flags.",
+            "",
+            "Usage: codex features <COMMAND>",
+            "",
+            "Commands:",
+            "  list               List known feature flags, stages, and enabled state.",
+            "  enable FEATURE     Enable a feature in config.toml.",
+            "  disable FEATURE    Disable a feature in config.toml.",
+            "",
+            "Options:",
+            "  -h, --help         Show this help message.",
+        ]
+    )
+
+
+def _apply_help_text() -> str:
+    return "\n".join(
+        [
+            "Apply the latest diff produced by a Codex Cloud task to the local working tree.",
+            "",
+            "Usage: codex apply <TASK_ID>",
+            "",
+            "Arguments:",
+            "  TASK_ID        Codex Cloud task id whose latest available diff should be applied.",
+            "",
+            "Options:",
+            "  -h, --help     Show this help message.",
+            "",
+            "This command fetches the task, selects the latest available diff, and applies it with git apply.",
+        ]
+    )
+
+
+def _resume_help_text() -> str:
+    return "\n".join(
+        [
+            "Resume a previous interactive Codex session.",
+            "",
+            "Usage: codex resume [OPTIONS] [SESSION_ID] [PROMPT]",
+            "",
+            "Arguments:",
+            "  SESSION_ID       Session/thread id to resume. Omit with --last to resume the most recent session.",
+            "  PROMPT           Optional prompt to send after resuming.",
+            "",
+            "Options:",
+            "      --last       Resume the most recent session.",
+            "      --all        Show all sessions when selecting a session.",
+            "  -i, --image PATH Attach an image to the resumed turn.",
+            "  -h, --help       Show this help message.",
+        ]
+    )
+
+
+def _fork_help_text() -> str:
+    return "\n".join(
+        [
+            "Fork a previous interactive Codex session into a new session.",
+            "",
+            "Usage: codex fork [OPTIONS] [SESSION_ID] [PROMPT]",
+            "",
+            "Arguments:",
+            "  SESSION_ID       Session/thread id to fork. Omit it to choose interactively.",
+            "  PROMPT           Optional prompt to send after forking.",
+            "",
+            "Options:",
+            "      --all        Show all sessions when selecting a session.",
+            "  -i, --image PATH Attach an image to the forked turn.",
+            "  -h, --help       Show this help message.",
+        ]
+    )
 
 
 def _read_responses_api_auth_header(
@@ -6926,6 +7783,9 @@ def _build_exec_session_config(bootstrap: ExecConfigBootstrapPlan) -> ExecSessio
         model_provider_id=bootstrap.harness_overrides.model_provider,
         cwd=bootstrap.config_cwd,
         workspace_roots=bootstrap.harness_overrides.additional_writable_roots,
+        user_instructions=bootstrap.user_instructions,
+        instruction_sources=bootstrap.instruction_sources,
+        startup_warnings=bootstrap.startup_warnings,
         approval_policy=bootstrap.harness_overrides.approval_policy or AskForApproval.NEVER,
         ephemeral=bool(bootstrap.harness_overrides.ephemeral),
     )
@@ -6947,8 +7807,8 @@ def _build_resume_args(exec_cli: ExecCli) -> tuple[dict[str, object] | None, str
 
 def _build_noninteractive_exec_event_processor(exec_cli: ExecCli) -> HumanEventProcessor | JsonEventProcessor:
     if exec_cli.json:
-        return JsonEventProcessor(last_message_file=exec_cli.last_message_file)
-    return HumanEventProcessor(last_message_file=exec_cli.last_message_file)
+        return JsonEventProcessor(last_message_path=exec_cli.last_message_file)
+    return HumanEventProcessor(last_message_path=exec_cli.last_message_file)
 
 
 def _resolve_exec_remote_endpoint(
@@ -7047,10 +7907,12 @@ def _print_local_app_server_connect_hint(
 def _run_noninteractive_exec(
     parsed: "ParsedCli",
     *,
+    stdout: TextIO | None = None,
     stderr: TextIO,
     stdin: object | None = None,
     stdin_is_terminal: bool | None = None,
 ) -> int:
+    out = sys.stdout if stdout is None else stdout
     try:
         if parsed.command == "exec":
             exec_cli = parsed.exec_cli()
@@ -7075,7 +7937,8 @@ def _run_noninteractive_exec(
         print(warning, file=stderr)
 
     try:
-        bootstrap_plan = build_exec_config_bootstrap_plan(exec_cli)
+        config_toml = read_toml_mapping(Path(find_codex_home()) / CONFIG_TOML_FILE)
+        bootstrap_plan = build_exec_config_bootstrap_plan(exec_cli, config_toml=config_toml)
         plan = prepare_exec_run_plan(
             exec_cli,
             stdin=stdin,
@@ -7088,6 +7951,74 @@ def _run_noninteractive_exec(
 
     command_name = parsed.command
     print(f"pycodex: prepared non-interactive {command_name} plan.", file=stderr)
+
+    if local_http_exec_enabled():
+        if exec_cli.command in {"review", "resume"}:
+            print(
+                "pycodex: PYCODEX_EXEC_LOCAL_HTTP currently supports only fresh `codex exec` user turns.",
+                file=stderr,
+            )
+            return 2
+        processor = _build_noninteractive_exec_event_processor(exec_cli)
+        try:
+            session_config = _build_exec_session_config(bootstrap_plan)
+            auth_json = read_auth_json()
+            model_client, provider, model_info, resolved_auth = build_default_local_http_exec_runtime(
+                session_config,
+                auth=auth_json,
+                config_toml=config_toml,
+            )
+            summary_config, summary_session = local_http_exec_config_summary(
+                session_config,
+                model=model_info.slug,
+                provider_id=session_config.model_provider_id or "openai",
+                session_id=str(model_client.state.session_id),
+                thread_id=str(model_client.state.thread_id),
+            )
+            if isinstance(processor, JsonEventProcessor):
+                processor.print_config_summary(summary_config, plan.prompt_summary, summary_session, output=out)
+            else:
+                processor.print_config_summary(
+                    summary_config,
+                    plan.prompt_summary,
+                    summary_session,
+                    stderr=stderr,
+                    version=__version__,
+                )
+            run_local_http_sampling = (
+                run_exec_user_turn_with_shell_tools_http_sampling
+                if local_http_exec_shell_tools_enabled()
+                else run_exec_user_turn_http_sampling
+            )
+            sampling_kwargs = {"auth": resolved_auth}
+            if run_local_http_sampling is run_exec_user_turn_with_shell_tools_http_sampling:
+                sampling_kwargs["max_tool_rounds"] = local_http_exec_max_tool_rounds()
+                sampling_kwargs["tool_output_max_chars"] = local_http_exec_tool_output_max_chars()
+            local_result = asyncio.run(
+                run_local_http_sampling(
+                    session_config,
+                    plan,
+                    model_client,
+                    provider,
+                    model_info,
+                    **sampling_kwargs,
+                )
+            )
+        except ValueError as exc:
+            emit_local_http_exec_error(processor, str(exc), stdout=out, stderr=stderr)
+            return 2
+        except (OSError, RuntimeError) as exc:
+            emit_local_http_exec_error(processor, str(exc), stdout=out, stderr=stderr)
+            return 1
+
+        emit_local_http_exec_result(
+            processor,
+            local_result,
+            stdout=out,
+            stderr=stderr,
+        )
+        print(f"pycodex: completed local HTTP non-interactive {command_name} execution.", file=stderr)
+        return 0
 
     try:
         remote_arg, endpoint, codex_home = _resolve_exec_remote_endpoint(parsed, bootstrap_plan)

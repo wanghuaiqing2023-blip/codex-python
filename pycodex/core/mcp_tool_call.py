@@ -128,25 +128,27 @@ class McpToolApprovalMetadata:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "annotations", ToolAnnotations.from_value(self.annotations))
-        object.__setattr__(self, "connector_id", _optional_str(self.connector_id))
-        object.__setattr__(self, "connector_name", _optional_str(self.connector_name))
-        object.__setattr__(
-            self,
+        for field_name in (
+            "connector_id",
+            "connector_name",
             "connector_description",
-            _optional_str(self.connector_description),
-        )
-        object.__setattr__(self, "plugin_id", _optional_str(self.plugin_id))
-        object.__setattr__(self, "tool_title", _optional_str(self.tool_title))
-        object.__setattr__(self, "tool_description", _optional_str(self.tool_description))
-        object.__setattr__(self, "mcp_app_resource_uri", _optional_str(self.mcp_app_resource_uri))
-        if self.openai_file_input_params is not None and not isinstance(
-            self.openai_file_input_params, tuple
+            "plugin_id",
+            "tool_title",
+            "tool_description",
+            "mcp_app_resource_uri",
         ):
-            object.__setattr__(
-                self,
-                "openai_file_input_params",
-                tuple(str(param) for param in self.openai_file_input_params),
-            )
+            value = getattr(self, field_name)
+            if value is not None and not isinstance(value, str):
+                raise TypeError(f"{field_name} must be a string or None")
+        if self.codex_apps_meta is not None and not isinstance(self.codex_apps_meta, Mapping):
+            raise TypeError("codex_apps_meta must be a mapping or None")
+        if self.openai_file_input_params is not None:
+            if isinstance(self.openai_file_input_params, str) or not isinstance(self.openai_file_input_params, (list, tuple)):
+                raise TypeError("openai_file_input_params must be a list or tuple of strings")
+            if not isinstance(self.openai_file_input_params, tuple):
+                object.__setattr__(self, "openai_file_input_params", tuple(self.openai_file_input_params))
+            if not all(isinstance(param, str) for param in self.openai_file_input_params):
+                raise TypeError("openai_file_input_params entries must be strings")
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, JsonValue] | None) -> "McpToolApprovalMetadata | None":
@@ -177,9 +179,12 @@ class McpToolApprovalKey:
     tool_name: str
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "server", str(self.server))
-        object.__setattr__(self, "connector_id", _optional_str(self.connector_id))
-        object.__setattr__(self, "tool_name", str(self.tool_name))
+        if not isinstance(self.server, str):
+            raise TypeError("server must be a string")
+        if self.connector_id is not None and not isinstance(self.connector_id, str):
+            raise TypeError("connector_id must be a string or None")
+        if not isinstance(self.tool_name, str):
+            raise TypeError("tool_name must be a string")
 
 
 class McpAppInvocationType(str, Enum):
@@ -193,8 +198,10 @@ class McpAppUsageMetadata:
     app_name: str | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "connector_id", _optional_str(self.connector_id))
-        object.__setattr__(self, "app_name", _optional_str(self.app_name))
+        if self.connector_id is not None and not isinstance(self.connector_id, str):
+            raise TypeError("connector_id must be a string or None")
+        if self.app_name is not None and not isinstance(self.app_name, str):
+            raise TypeError("app_name must be a string or None")
 
 
 @dataclass(frozen=True)
@@ -204,8 +211,10 @@ class McpAppInvocation:
     invocation_type: McpAppInvocationType | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "connector_id", _optional_str(self.connector_id))
-        object.__setattr__(self, "app_name", _optional_str(self.app_name))
+        if self.connector_id is not None and not isinstance(self.connector_id, str):
+            raise TypeError("connector_id must be a string or None")
+        if self.app_name is not None and not isinstance(self.app_name, str):
+            raise TypeError("app_name must be a string or None")
         if self.invocation_type is not None:
             object.__setattr__(
                 self,
@@ -238,7 +247,8 @@ class McpToolApprovalDecision:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "kind", McpToolApprovalDecisionKind(self.kind))
-        object.__setattr__(self, "message", _optional_str(self.message))
+        if self.message is not None and not isinstance(self.message, str):
+            raise TypeError("message must be a string or None")
 
     @classmethod
     def accept(cls) -> "McpToolApprovalDecision":
@@ -284,6 +294,12 @@ class RenderedMcpToolApprovalParam:
     name: str
     value: JsonValue
     display_name: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str):
+            raise TypeError("name must be a string")
+        if not isinstance(self.display_name, str):
+            raise TypeError("display_name must be a string")
 
     def to_mapping(self) -> dict[str, JsonValue]:
         return {

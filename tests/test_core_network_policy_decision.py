@@ -77,6 +77,9 @@ class CoreNetworkPolicyDecisionTests(unittest.TestCase):
         self.assertIsNone(parse_network_policy_decision("allow"))
         self.assertIsNone(parse_network_policy_decision(None))
 
+        with self.assertRaisesRegex(TypeError, "value must be a string"):
+            parse_network_policy_decision(1)  # type: ignore[arg-type]
+
     def test_execpolicy_network_rule_amendment_maps_protocol_action_and_justification(self) -> None:
         amendment = NetworkPolicyAmendment("example.com", NetworkPolicyRuleAction.DENY)
         context = NetworkApprovalContext(
@@ -179,6 +182,33 @@ class CoreNetworkPolicyDecisionTests(unittest.TestCase):
         self.assertEqual(blocked.host, "example.com")
         self.assertEqual(blocked.to_mapping()["client"], "curl")
         self.assertEqual(blocked.to_mapping()["timestamp"], 123)
+
+    def test_blocked_request_rejects_non_rust_field_shapes(self) -> None:
+        with self.assertRaisesRegex(TypeError, "host must be a string"):
+            BlockedRequest(host=object(), reason="denied")  # type: ignore[arg-type]
+
+        with self.assertRaisesRegex(TypeError, "port must be an integer"):
+            BlockedRequest(host="example.com", reason="denied", port=True)  # type: ignore[arg-type]
+
+    def test_execpolicy_network_rule_amendment_rejects_bad_inputs(self) -> None:
+        context = NetworkApprovalContext(
+            host="example.com",
+            protocol=NetworkApprovalProtocol.HTTP,
+        )
+
+        with self.assertRaisesRegex(TypeError, "amendment must be a NetworkPolicyAmendment"):
+            execpolicy_network_rule_amendment(  # type: ignore[arg-type]
+                object(),
+                context,
+                "example.com",
+            )
+
+        with self.assertRaisesRegex(TypeError, "host must be a string"):
+            execpolicy_network_rule_amendment(
+                NetworkPolicyAmendment("example.com", NetworkPolicyRuleAction.ALLOW),
+                context,
+                object(),  # type: ignore[arg-type]
+            )
 
 
 if __name__ == "__main__":

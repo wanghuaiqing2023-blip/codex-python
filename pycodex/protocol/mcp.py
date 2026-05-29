@@ -30,13 +30,16 @@ def _required_str(value: Mapping[str, JsonValue], key: str) -> str:
     return raw
 
 
-def _optional_str(value: Mapping[str, JsonValue], key: str) -> str | None:
-    raw = value.get(key)
+def _ensure_optional_str(raw: JsonValue, key: str) -> str | None:
     if raw is None:
         return None
     if not isinstance(raw, str):
         raise TypeError(f"{key} must be a string")
     return raw
+
+
+def _optional_str(value: Mapping[str, JsonValue], key: str) -> str | None:
+    return _ensure_optional_str(value.get(key), key)
 
 
 def _alias(value: Mapping[str, JsonValue], primary: str, alternate: str, default: JsonValue = None) -> JsonValue:
@@ -67,6 +70,14 @@ def _optional_i64_lossy(value: JsonValue) -> int | None:
     raise TypeError("size must be a number")
 
 
+def _ensure_i64(value: JsonValue, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{label} must be an integer")
+    if not _I64_MIN <= value <= _I64_MAX:
+        raise ValueError(f"{label} must fit in i64")
+    return value
+
+
 def _put_optional(result: dict[str, JsonValue], key: str, value: JsonValue) -> None:
     if value is not None:
         result[key] = value
@@ -81,6 +92,8 @@ class RequestId:
     def __post_init__(self) -> None:
         if isinstance(self.value, bool) or not isinstance(self.value, str | int):
             raise TypeError("request id must be a string or integer")
+        if isinstance(self.value, int):
+            _ensure_i64(self.value, "request id")
 
     @classmethod
     def from_value(cls, value: "RequestId | str | int") -> "RequestId":
@@ -115,6 +128,14 @@ class Tool:
     meta: JsonValue | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.name, str):
+            raise TypeError("name must be a string")
+        if self.title is not None and not isinstance(self.title, str):
+            raise TypeError("title must be a string")
+        if self.description is not None and not isinstance(self.description, str):
+            raise TypeError("description must be a string")
+        if self.icons is not None and (isinstance(self.icons, str) or not isinstance(self.icons, list | tuple)):
+            raise TypeError("icons must be a list")
         if self.icons is not None and not isinstance(self.icons, tuple):
             object.__setattr__(self, "icons", tuple(self.icons))
 
@@ -160,6 +181,20 @@ class Resource:
     meta: JsonValue | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.name, str):
+            raise TypeError("name must be a string")
+        if not isinstance(self.uri, str):
+            raise TypeError("uri must be a string")
+        if self.description is not None and not isinstance(self.description, str):
+            raise TypeError("description must be a string")
+        if self.mime_type is not None and not isinstance(self.mime_type, str):
+            raise TypeError("mime_type must be a string")
+        if self.size is not None:
+            object.__setattr__(self, "size", _ensure_i64(self.size, "size"))
+        if self.title is not None and not isinstance(self.title, str):
+            raise TypeError("title must be a string")
+        if self.icons is not None and (isinstance(self.icons, str) or not isinstance(self.icons, list | tuple)):
+            raise TypeError("icons must be a list")
         if self.icons is not None and not isinstance(self.icons, tuple):
             object.__setattr__(self, "icons", tuple(self.icons))
 
@@ -171,7 +206,7 @@ class Resource:
             uri=_required_str(data, "uri"),
             annotations=data.get("annotations"),
             description=_optional_str(data, "description"),
-            mime_type=_alias(data, "mimeType", "mime_type"),
+            mime_type=_ensure_optional_str(_alias(data, "mimeType", "mime_type"), "mimeType"),
             size=_optional_i64_lossy(data.get("size")),
             title=_optional_str(data, "title"),
             icons=_optional_icons(data.get("icons")),
@@ -204,9 +239,15 @@ class ResourceContent:
     meta: JsonValue | None = None
 
     def __post_init__(self) -> None:
-        if self.variant == "text" and self.text is None:
+        if not isinstance(self.variant, str):
+            raise TypeError("variant must be a string")
+        if not isinstance(self.uri, str):
+            raise TypeError("uri must be a string")
+        if self.mime_type is not None and not isinstance(self.mime_type, str):
+            raise TypeError("mime_type must be a string")
+        if self.variant == "text" and not isinstance(self.text, str):
             raise ValueError("text resource content requires text")
-        if self.variant == "blob" and self.blob is None:
+        if self.variant == "blob" and not isinstance(self.blob, str):
             raise ValueError("blob resource content requires blob")
         if self.variant not in {"text", "blob"}:
             raise ValueError(f"unknown resource content variant: {self.variant}")
@@ -235,7 +276,7 @@ class ResourceContent:
     def from_mcp_value(cls, value: JsonValue) -> "ResourceContent":
         data = _mapping(value, "resource content")
         uri = _required_str(data, "uri")
-        mime_type = _alias(data, "mimeType", "mime_type")
+        mime_type = _ensure_optional_str(_alias(data, "mimeType", "mime_type"), "mimeType")
         meta = data.get("_meta")
         if "text" in data:
             text = data["text"]
@@ -269,6 +310,18 @@ class ResourceTemplate:
     description: str | None = None
     mime_type: str | None = None
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.uri_template, str):
+            raise TypeError("uri_template must be a string")
+        if not isinstance(self.name, str):
+            raise TypeError("name must be a string")
+        if self.title is not None and not isinstance(self.title, str):
+            raise TypeError("title must be a string")
+        if self.description is not None and not isinstance(self.description, str):
+            raise TypeError("description must be a string")
+        if self.mime_type is not None and not isinstance(self.mime_type, str):
+            raise TypeError("mime_type must be a string")
+
     @classmethod
     def from_mcp_value(cls, value: JsonValue) -> "ResourceTemplate":
         data = _mapping(value, "resource template")
@@ -281,7 +334,7 @@ class ResourceTemplate:
             annotations=data.get("annotations"),
             title=_optional_str(data, "title"),
             description=_optional_str(data, "description"),
-            mime_type=_alias(data, "mimeType", "mime_type"),
+            mime_type=_ensure_optional_str(_alias(data, "mimeType", "mime_type"), "mimeType"),
         )
 
     def to_mapping(self) -> dict[str, JsonValue]:
@@ -304,6 +357,8 @@ class CallToolResult:
     meta: JsonValue | None = None
 
     def __post_init__(self) -> None:
+        if isinstance(self.content, str) or not isinstance(self.content, list | tuple):
+            raise TypeError("content must be a list")
         if not isinstance(self.content, tuple):
             object.__setattr__(self, "content", tuple(self.content))
         if self.is_error is not None and not isinstance(self.is_error, bool):

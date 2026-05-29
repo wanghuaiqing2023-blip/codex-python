@@ -172,6 +172,50 @@ class CoreSandboxTagsTests(unittest.TestCase):
             "workspace-write",
         )
 
+    def test_rejects_non_rust_input_shapes(self) -> None:
+        with self.assertRaises(TypeError):
+            get_platform_sandbox(1)  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            should_require_platform_sandbox(
+                "restricted",  # type: ignore[arg-type]
+                NetworkSandboxPolicy.RESTRICTED,
+                False,
+            )
+        with self.assertRaises(TypeError):
+            should_require_platform_sandbox(
+                FileSystemSandboxPolicy.default(),
+                "restricted",  # type: ignore[arg-type]
+                False,
+            )
+        with self.assertRaises(TypeError):
+            should_require_platform_sandbox(
+                FileSystemSandboxPolicy.default(),
+                NetworkSandboxPolicy.RESTRICTED,
+                1,  # type: ignore[arg-type]
+            )
+        with self.assertRaises(TypeError):
+            permission_profile_sandbox_tag(
+                object(),  # type: ignore[arg-type]
+                WindowsSandboxLevel.DISABLED,
+                False,
+            )
+        with self.assertRaises(TypeError):
+            permission_profile_sandbox_tag(
+                PermissionProfile.read_only(),
+                "disabled",  # type: ignore[arg-type]
+                False,
+            )
+        with self.assertRaises(TypeError):
+            permission_profile_sandbox_tag(
+                PermissionProfile.read_only(),
+                WindowsSandboxLevel.DISABLED,
+                1,  # type: ignore[arg-type]
+            )
+        with self.assertRaises(TypeError):
+            permission_profile_policy_tag(object(), Path.cwd())  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            permission_profile_policy_tag(PermissionProfile.read_only(), 1)  # type: ignore[arg-type]
+
 
 if __name__ == "__main__":
     unittest.main()

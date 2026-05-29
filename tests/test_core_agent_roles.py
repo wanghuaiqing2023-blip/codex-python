@@ -52,6 +52,10 @@ class AgentRolesTests(unittest.TestCase):
             normalize_agent_role_nickname_candidates("agents.reviewer.nickname_candidates", [" Ada ", "Grace-1"]),
             ("Ada", "Grace-1"),
         )
+        with self.assertRaisesRegex(TypeError, "nickname_candidates must be an iterable of strings"):
+            normalize_agent_role_nickname_candidates("agents.reviewer.nickname_candidates", "Ada")
+        with self.assertRaisesRegex(TypeError, "nickname_candidates must contain only strings"):
+            normalize_agent_role_nickname_candidates("agents.reviewer.nickname_candidates", ["Ada", 7])  # type: ignore[list-item]
         with self.assertRaisesRegex(AgentRoleError, "must contain at least one name"):
             normalize_agent_role_nickname_candidates("agents.reviewer.nickname_candidates", [])
         with self.assertRaisesRegex(AgentRoleError, "cannot contain blank names"):
@@ -143,6 +147,16 @@ model = "gpt-5"
         self.assertEqual(merged.config_file, Path("role.toml"))
         self.assertEqual(merged.nickname_candidates, ("Ada",))
 
+    def test_agent_role_config_rejects_non_rust_field_shapes(self) -> None:
+        with self.assertRaisesRegex(TypeError, "description must be a string"):
+            AgentRoleConfig(description=object())  # type: ignore[arg-type]
+
+        with self.assertRaisesRegex(TypeError, "config_file must be a Path"):
+            AgentRoleConfig(config_file="role.toml")  # type: ignore[arg-type]
+
+        with self.assertRaisesRegex(TypeError, "nickname_candidates must contain only strings"):
+            AgentRoleConfig(nickname_candidates=("Ada", 1))  # type: ignore[arg-type]
+
     def test_built_in_roles_and_config_contents(self) -> None:
         roles = built_in_agent_role_configs()
 
@@ -173,6 +187,13 @@ model = "gpt-5"
         self.assertIn("default: {\nDefault agent.\n}", spec)
         self.assertNotIn("Explorers are fast and authoritative.", spec)
         self.assertLess(spec.index("explorer: {\nuser override\n}"), spec.index("default: {\nDefault agent.\n}"))
+
+    def test_build_spawn_agent_tool_description_rejects_bad_role_map(self) -> None:
+        with self.assertRaisesRegex(TypeError, "agent role names must be strings"):
+            build_spawn_agent_tool_description({1: AgentRoleConfig()})  # type: ignore[dict-item]
+
+        with self.assertRaisesRegex(TypeError, "agent role declarations must be AgentRoleConfig values"):
+            build_spawn_agent_tool_description({"bad": object()})  # type: ignore[dict-item]
 
     def test_locked_settings_note_for_role_marks_model_reasoning_and_service_tier(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -209,6 +230,8 @@ model = "gpt-5"
         self.assertEqual(format_agent_nickname("Ada", 2), "Ada the 3rd")
         self.assertEqual(format_agent_nickname("Ada", 10), "Ada the 11th")
         self.assertEqual(format_agent_nickname("Ada", 20), "Ada the 21st")
+        with self.assertRaisesRegex(TypeError, "nickname_reset_count must be an integer"):
+            format_agent_nickname("Ada", "1")  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":

@@ -5,6 +5,8 @@ import uuid
 from pathlib import Path
 
 from pycodex.core import (
+    CommitLogEntry,
+    GitDiffToRemote,
     canonicalize_git_remote_url,
     collect_git_info,
     current_branch_name,
@@ -17,6 +19,7 @@ from pycodex.core import (
     recent_commits,
     resolve_root_git_project_for_trust,
 )
+from pycodex.protocol import GitSha
 
 
 def workspace_tempdir() -> Path:
@@ -84,6 +87,8 @@ class CoreGitInfoTests(unittest.TestCase):
             "ghe.company.com:2222/Org/Repo",
         )
         self.assertIsNone(canonicalize_git_remote_url("file:///tmp/repo"))
+        with self.assertRaisesRegex(TypeError, "url must be a string"):
+            canonicalize_git_remote_url(123)  # type: ignore[arg-type]
 
     def test_parse_git_remote_urls_only_keeps_fetch_entries(self):
         self.assertEqual(
@@ -94,6 +99,8 @@ class CoreGitInfoTests(unittest.TestCase):
             ),
             {"origin": "https://example.test/repo.git", "upstream": "git@example.test:Org/Repo.git"},
         )
+        with self.assertRaisesRegex(TypeError, "stdout must be a string"):
+            parse_git_remote_urls(b"origin\turl (fetch)")  # type: ignore[arg-type]
 
     def test_collect_git_info_for_repo_remote_and_detached_head(self):
         repo = self.make_repo()
@@ -133,6 +140,10 @@ class CoreGitInfoTests(unittest.TestCase):
         entries = recent_commits(repo, 2)
         self.assertEqual([entry.subject for entry in entries], ["second change", "first change"])
         self.assertTrue(all(entry.sha and entry.timestamp for entry in entries))
+        with self.assertRaisesRegex(ValueError, "limit must be non-negative"):
+            recent_commits(repo, -1)
+        with self.assertRaisesRegex(TypeError, "limit must be an integer"):
+            recent_commits(repo, True)  # type: ignore[arg-type]
 
     def test_get_has_changes(self):
         repo = self.make_repo()
@@ -171,6 +182,15 @@ class CoreGitInfoTests(unittest.TestCase):
 
         self.assertEqual(resolve_root_git_project_for_trust(worktree), repo)
         self.assertEqual(resolve_root_git_project_for_trust(repo), repo)
+
+    def test_git_info_dataclasses_reject_non_rust_shapes(self):
+        with self.assertRaisesRegex(TypeError, "timestamp must be an integer"):
+            CommitLogEntry("abc", True, "subject")  # type: ignore[arg-type]
+
+        with self.assertRaisesRegex(TypeError, "sha must be a GitSha"):
+            GitDiffToRemote("abc", "diff")  # type: ignore[arg-type]
+
+        self.assertEqual(GitDiffToRemote(GitSha.new("a" * 40), "diff").diff, "diff")
 
 
 if __name__ == "__main__":

@@ -14,7 +14,12 @@ class HookToolName:
 
     def __post_init__(self) -> None:
         if not isinstance(self.matcher_aliases, tuple):
-            object.__setattr__(self, "matcher_aliases", tuple(self.matcher_aliases))
+            raise TypeError("matcher_aliases must be a tuple")
+        if not isinstance(self.name, str):
+            raise TypeError("name must be a string")
+        for alias in self.matcher_aliases:
+            if not isinstance(alias, str):
+                raise TypeError("matcher aliases must be strings")
 
     @classmethod
     def new(cls, name: str) -> "HookToolName":

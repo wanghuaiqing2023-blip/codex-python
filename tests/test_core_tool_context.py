@@ -7,12 +7,17 @@ from pycodex.core import (
     FunctionToolOutput,
     JsonToolOutput,
     McpToolOutput,
+    PostToolUseFeedbackOutput,
     TELEMETRY_PREVIEW_MAX_BYTES,
     TELEMETRY_PREVIEW_MAX_LINES,
     TELEMETRY_PREVIEW_TRUNCATION_NOTICE,
+    ToolCallSource,
+    ToolInvocation,
+    ToolOutput,
     ToolPayload,
     ToolSearchOutput,
     approx_tokens_from_byte_count_i64,
+    boxed_tool_output,
     formatted_truncate_text,
     formatted_truncate_text_content_items_with_policy,
     telemetry_preview,
@@ -25,11 +30,128 @@ from pycodex.protocol import (
     FunctionCallOutputContentItem,
     ImageDetail,
     SearchToolCallParams,
+    ToolName,
     TruncationPolicyConfig,
 )
 
 
 class ToolContextTests(unittest.TestCase):
+    def test_tool_call_source_matches_rust_direct_and_code_mode_variants(self) -> None:
+        direct = ToolCallSource.direct()
+        code_mode = ToolCallSource.code_mode("cell-1", "runtime-call-2")
+
+        self.assertTrue(direct.is_direct)
+        self.assertFalse(direct.is_code_mode)
+        self.assertTrue(code_mode.is_code_mode)
+        self.assertEqual(code_mode.cell_id, "cell-1")
+        self.assertEqual(code_mode.runtime_tool_call_id, "runtime-call-2")
+
+    def test_tool_call_source_rejects_mixed_or_missing_variant_fields(self) -> None:
+        with self.assertRaises(ValueError):
+            ToolCallSource("direct", cell_id="cell")
+        empty = ToolCallSource.code_mode("", "")
+        self.assertEqual(empty.cell_id, "")
+        self.assertEqual(empty.runtime_tool_call_id, "")
+        with self.assertRaises(TypeError):
+            ToolCallSource.code_mode(1, "runtime")  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            ToolCallSource.code_mode("cell", 1)  # type: ignore[arg-type]
+        with self.assertRaises(ValueError):
+            ToolCallSource("other")
+
+    def test_tool_invocation_wraps_runtime_context_and_payload(self) -> None:
+        invocation = ToolInvocation(
+            session=object(),
+            turn=object(),
+            cancellation_token=object(),
+            tracker=object(),
+            call_id="call-1",
+            tool_name="shell",
+            source=ToolCallSource.code_mode("cell", "runtime"),
+            payload=ToolPayload.function("{}"),
+        )
+
+        self.assertTrue(invocation.is_code_mode)
+        self.assertEqual(invocation.call_id, "call-1")
+        self.assertEqual(invocation.tool_name, ToolName.plain("shell"))
+
+        named_invocation = ToolInvocation(
+            session=object(),
+            turn=object(),
+            cancellation_token=object(),
+            tracker=object(),
+            call_id="call-2",
+            tool_name=ToolName.namespaced("mcp__", "search"),
+            source=ToolCallSource.direct(),
+            payload=ToolPayload.function("{}"),
+        )
+        self.assertEqual(named_invocation.tool_name, ToolName.namespaced("mcp__", "search"))
+
+    def test_tool_invocation_rejects_non_rust_context_shapes(self) -> None:
+        with self.assertRaises(TypeError):
+            ToolInvocation(
+                session=None,
+                turn=None,
+                cancellation_token=None,
+                tracker=None,
+                call_id="",
+                tool_name="shell",
+                source=ToolCallSource.direct(),
+                payload=ToolPayload.function("{}"),
+            )
+        with self.assertRaises(TypeError):
+            ToolInvocation(
+                session=None,
+                turn=None,
+                cancellation_token=None,
+                tracker=None,
+                call_id="call",
+                tool_name=object(),
+                source=ToolCallSource.direct(),
+                payload=ToolPayload.function("{}"),
+            )
+        with self.assertRaises(TypeError):
+            ToolInvocation(
+                session=None,
+                turn=None,
+                cancellation_token=None,
+                tracker=None,
+                call_id="call",
+                tool_name="",
+                source=ToolCallSource.direct(),
+                payload=ToolPayload.function("{}"),
+            )
+        with self.assertRaises(TypeError):
+            ToolInvocation(
+                session=None,
+                turn=None,
+                cancellation_token=None,
+                tracker=None,
+                call_id="call",
+                tool_name="shell",
+                source="direct",  # type: ignore[arg-type]
+                payload=ToolPayload.function("{}"),
+            )
+        with self.assertRaises(TypeError):
+            ToolInvocation(
+                session=None,
+                turn=None,
+                cancellation_token=None,
+                tracker=None,
+                call_id="call",
+                tool_name="shell",
+                source=ToolCallSource.direct(),
+                payload="{}",  # type: ignore[arg-type]
+            )
+
+    def test_boxed_tool_output_preserves_trait_like_output_boundary(self) -> None:
+        output = FunctionToolOutput.from_text("ok", True)
+
+        self.assertIs(boxed_tool_output(output), output)
+        self.assertIsInstance(output, ToolOutput)
+        with self.assertRaises(TypeError):
+            boxed_tool_output(object())  # type: ignore[arg-type]
+
     def test_custom_tool_calls_should_roundtrip_as_custom_outputs(self) -> None:
         response = FunctionToolOutput.from_text("patched", True).to_response_item(
             "call-42",
@@ -48,6 +170,28 @@ class ToolContextTests(unittest.TestCase):
             ToolPayload.tool_search(SearchToolCallParams("calendar", limit=2)).log_payload(),
             "calendar",
         )
+
+    def test_tool_payload_rejects_non_rust_variant_shapes(self) -> None:
+        with self.assertRaises(TypeError):
+            ToolPayload(1)  # type: ignore[arg-type]
+        with self.assertRaises(ValueError):
+            ToolPayload("unknown")
+        with self.assertRaises(TypeError):
+            ToolPayload.function(1)  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            ToolPayload.custom(1)  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            ToolPayload.tool_search("calendar")  # type: ignore[arg-type]
+        with self.assertRaises(ValueError):
+            ToolPayload("function", arguments="{}", input="extra")
+        with self.assertRaises(ValueError):
+            ToolPayload("custom", input="raw", arguments="{}")
+        with self.assertRaises(ValueError):
+            ToolPayload(
+                "tool_search",
+                input="raw",
+                search_arguments=SearchToolCallParams("calendar"),
+            )
 
     def test_function_payloads_remain_function_outputs(self) -> None:
         response = FunctionToolOutput.from_text("ok", True).to_response_item(
@@ -125,6 +269,20 @@ class ToolContextTests(unittest.TestCase):
         self.assertEqual(response.status, "completed")
         self.assertEqual(response.execution, "client")
         self.assertEqual(response.tools[0]["name"], "create_event")
+
+    def test_post_tool_use_feedback_output_replaces_model_visible_only(self) -> None:
+        original = JsonToolOutput.with_success({"raw": True}, False)
+        feedback = PostToolUseFeedbackOutput(
+            original=original,
+            model_visible=FunctionToolOutput.from_text("hook feedback", None),
+        )
+        response = feedback.to_response_item("call-feedback", ToolPayload.function("{}"))
+
+        self.assertEqual(response.output.to_text(), "hook feedback")
+        self.assertIsNone(response.output.success)
+        self.assertEqual(feedback.log_preview(), '{"raw":true}')
+        self.assertFalse(feedback.success_for_logging())
+        self.assertEqual(feedback.code_mode_result(ToolPayload.function("{}")), {"raw": True})
 
     def test_mcp_tool_output_response_item_includes_wall_time(self) -> None:
         output = McpToolOutput(
@@ -228,6 +386,34 @@ class ToolContextTests(unittest.TestCase):
         self.assertEqual(output.post_tool_use_input(ToolPayload.function("{}")), {"path": "image.png"})
         self.assertEqual(output.post_tool_use_response("mcp-call-original", ToolPayload.function("{}"))["isError"], False)
 
+    def test_mcp_image_detail_meta_accepts_all_upstream_detail_values(self) -> None:
+        for raw_detail, expected_detail in (
+            ("auto", ImageDetail.AUTO),
+            ("low", ImageDetail.LOW),
+            ("high", ImageDetail.HIGH),
+        ):
+            output = McpToolOutput(
+                result=CallToolResult(
+                    content=(
+                        {
+                            "type": "image",
+                            "mimeType": "image/png",
+                            "data": "AAA",
+                            "_meta": {"codex/imageDetail": raw_detail},
+                        },
+                    ),
+                    is_error=False,
+                ),
+                tool_input={},
+                wall_time_seconds=0.5,
+                original_image_detail_supported=True,
+                truncation_policy=TruncationPolicyConfig.bytes(1024),
+            )
+
+            response = output.to_response_item("mcp-call-detail", ToolPayload.function("{}"))
+
+            self.assertEqual(response.output.content_items[1].detail, expected_detail)
+
     def test_aborted_tool_search_returns_empty_completed_search_output(self) -> None:
         response = AbortedToolOutput("cancelled").to_response_item(
             "search-abort",
@@ -264,6 +450,14 @@ class ToolContextTests(unittest.TestCase):
         lines = preview.splitlines()
         self.assertLessEqual(len(lines), TELEMETRY_PREVIEW_MAX_LINES + 1)
         self.assertEqual(lines[-1], TELEMETRY_PREVIEW_TRUNCATION_NOTICE)
+
+    def test_telemetry_preview_preserves_line_boundary_newline_before_notice(self) -> None:
+        content = "".join(f"line {idx}\n" for idx in range(TELEMETRY_PREVIEW_MAX_LINES + 1))
+
+        preview = telemetry_preview(content)
+
+        self.assertTrue(preview.endswith(f"\n{TELEMETRY_PREVIEW_TRUNCATION_NOTICE}"))
+        self.assertIn(f"line {TELEMETRY_PREVIEW_MAX_LINES - 1}\n", preview)
 
     def test_formatted_truncate_text_matches_output_truncation_policy(self) -> None:
         self.assertEqual(

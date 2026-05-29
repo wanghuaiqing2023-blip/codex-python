@@ -53,6 +53,34 @@ class ProtocolSmallModulesTests(unittest.TestCase):
         )
         self.assertEqual(msg.to_mapping()["memory_citation"]["rolloutIds"], ["r1"])
 
+    def test_memory_citation_rejects_non_rust_shapes(self):
+        with self.assertRaisesRegex(TypeError, "path must be a string"):
+            MemoryCitationEntry(123, 1, 2, "note")
+
+        with self.assertRaisesRegex(TypeError, "line_start must be an integer"):
+            MemoryCitationEntry("memory.md", True, 2, "note")
+
+        with self.assertRaisesRegex(ValueError, "line_end must fit in u32"):
+            MemoryCitationEntry("memory.md", 1, 2**32, "note")
+
+        with self.assertRaisesRegex(TypeError, "note must be a string"):
+            MemoryCitationEntry("memory.md", 1, 2, 123)
+
+        with self.assertRaisesRegex(TypeError, "entries must be a list or tuple"):
+            MemoryCitation(entries=MemoryCitationEntry("memory.md", 1, 2, "note"))
+
+        with self.assertRaisesRegex(TypeError, "entries must contain MemoryCitationEntry"):
+            MemoryCitation(entries=({"path": "memory.md"},))
+
+        with self.assertRaisesRegex(TypeError, "rollout_ids must be a list or tuple"):
+            MemoryCitation(rollout_ids="rollout-1")
+
+        with self.assertRaisesRegex(TypeError, "rollout_ids must contain strings"):
+            MemoryCitation(rollout_ids=(123,))
+
+        with self.assertRaisesRegex(TypeError, "rolloutIds must contain strings"):
+            MemoryCitation.from_mapping({"entries": [], "rolloutIds": [123]})
+
     def test_network_policy_decision_payload(self):
         payload = NetworkPolicyDecisionPayload.from_mapping(
             {

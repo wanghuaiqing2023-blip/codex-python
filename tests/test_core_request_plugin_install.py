@@ -17,6 +17,7 @@ from pycodex.core import (
     DiscoverableTool,
     DiscoverableToolAction,
     DiscoverableToolType,
+    FunctionCallError,
     ListAvailablePluginsToInstallHandler,
     PlannedTools,
     PluginInstallElicitationTelemetryMetadata,
@@ -43,8 +44,9 @@ from pycodex.core import (
     verified_connector_install_completed,
     verified_plugin_install_completed,
     verify_request_plugin_install_completed,
+    truncate_to_char_boundary,
 )
-from pycodex.protocol import ElicitationRequest, ElicitationRequestEvent, EventMsg, ToolName
+from pycodex.protocol import ElicitationRequest, ElicitationRequestEvent, EventMsg, SearchToolCallParams, ToolName
 
 
 def calendar_connector() -> DiscoverableTool:
@@ -158,6 +160,52 @@ class RequestPluginInstallDataTests(unittest.TestCase):
             },
         )
 
+    def test_request_plugin_install_structs_reject_non_rust_shapes(self) -> None:
+        with self.assertRaises(TypeError):
+            RequestPluginInstallArgs(
+                tool_type=DiscoverableToolType.CONNECTOR,
+                action_type=DiscoverableToolAction.INSTALL,
+                tool_id=123,
+                suggest_reason="Use calendar",
+            )
+        with self.assertRaises(TypeError):
+            RequestPluginInstallResult(
+                completed=1,
+                user_confirmed=True,
+                tool_type=DiscoverableToolType.CONNECTOR,
+                action_type=DiscoverableToolAction.INSTALL,
+                tool_id="calendar",
+                tool_name="Calendar",
+                suggest_reason="Use calendar",
+            )
+        with self.assertRaises(TypeError):
+            build_request_plugin_install_meta(
+                DiscoverableToolType.CONNECTOR,
+                DiscoverableToolAction.INSTALL,
+                "Use calendar",
+                "calendar",
+                "Calendar",
+                42,
+            )
+
+    def test_elicitation_request_builder_rejects_non_string_ids(self) -> None:
+        args = RequestPluginInstallArgs(
+            tool_type=DiscoverableToolType.CONNECTOR,
+            action_type=DiscoverableToolAction.INSTALL,
+            tool_id="connector_2128aebfecb84f64a069897515042a44",
+            suggest_reason="Plan and reference events from your calendar",
+        )
+
+        with self.assertRaises(TypeError):
+            build_request_plugin_install_elicitation_request(
+                CODEX_APPS_MCP_SERVER_NAME,
+                1,
+                "turn-1",
+                args,
+                "Plan and reference events from your calendar",
+                calendar_connector(),
+            )
+
     def test_plugin_install_elicitation_telemetry_metadata_requires_install_tool_suggestion(self) -> None:
         event = EventMsg.with_payload(
             "elicitation_request",
@@ -269,6 +317,10 @@ class RequestPluginInstallDataTests(unittest.TestCase):
         self.assertFalse(
             all_requested_connectors_picked_up(["calendar", "gmail"], accessible)
         )
+        with self.assertRaises(TypeError):
+            verified_connector_install_completed(1, accessible)
+        with self.assertRaises(TypeError):
+            all_requested_connectors_picked_up("calendar", accessible)
 
     def test_plugin_completion_helper_requires_installed_plugin(self) -> None:
         marketplaces = [
@@ -307,6 +359,14 @@ class RequestPluginInstallDataTests(unittest.TestCase):
                 [{"id": "missing@openai-curated", "installed": False}],
             )
         )
+        self.assertFalse(
+            verified_plugin_install_completed(
+                "missing@openai-curated",
+                [{"id": "missing@openai-curated", "installed": 1}],
+            )
+        )
+        with self.assertRaises(TypeError):
+            verified_plugin_install_completed(1, marketplaces)
 
     def test_refresh_missing_requested_connectors_uses_current_or_refreshed_tools(self) -> None:
         accessible = [AppInfo(id="calendar", name="Calendar", is_accessible=True)]
@@ -618,6 +678,25 @@ class RequestPluginInstallSpecAndHandlerTests(unittest.TestCase):
             MAX_LIST_AVAILABLE_PLUGINS_TO_INSTALL_DESCRIPTION_CHARS,
         )
 
+    def test_list_available_handler_rejects_non_rust_entry_shapes(self) -> None:
+        with self.assertRaises(TypeError):
+            ListAvailablePluginsToInstallHandler.new("calendar")
+        with self.assertRaises(TypeError):
+            ListAvailablePluginsToInstallHandler.new([object()])
+        with self.assertRaises(FunctionCallError) as unsupported:
+            ListAvailablePluginsToInstallHandler.new([]).handle(ToolPayload.custom("raw"))
+        self.assertTrue(unsupported.exception.is_fatal)
+        self.assertIn(
+            "list_available_plugins_to_install handler received unsupported payload",
+            str(unsupported.exception),
+        )
+        with self.assertRaises(TypeError):
+            truncate_to_char_boundary(123, 10)
+        with self.assertRaises(TypeError):
+            truncate_to_char_boundary("calendar", True)
+        with self.assertRaises(ValueError):
+            truncate_to_char_boundary("calendar", -1)
+
     def test_request_plugin_install_handler_builds_request_and_serializes_result(self) -> None:
         captured = {}
 
@@ -628,11 +707,11 @@ class RequestPluginInstallSpecAndHandlerTests(unittest.TestCase):
             return RequestPluginInstallResult(
                 completed=True,
                 user_confirmed=True,
-                tool_type=args.tool_type,
+                tool_type=DiscoverableToolType.PLUGIN,
                 action_type=args.action_type,
-                tool_id=tool.id(),
-                tool_name=tool.name(),
-                suggest_reason=args.suggest_reason.strip(),
+                tool_id="wrong-tool-id",
+                tool_name="Wrong Tool",
+                suggest_reason="wrong reason",
             )
 
         handler = RequestPluginInstallHandler(
@@ -673,7 +752,7 @@ class RequestPluginInstallSpecAndHandlerTests(unittest.TestCase):
     def test_request_plugin_install_handler_validates_model_arguments(self) -> None:
         handler = RequestPluginInstallHandler(discoverable_tools=(sample_plugin(),))
 
-        with self.assertRaisesRegex(ValueError, "suggest_reason must not be empty"):
+        with self.assertRaisesRegex(FunctionCallError, "suggest_reason must not be empty"):
             handler.handle(
                 ToolPayload.function(
                     json.dumps(
@@ -691,7 +770,7 @@ class RequestPluginInstallSpecAndHandlerTests(unittest.TestCase):
             discoverable_tools=(sample_plugin(),),
             app_server_client_name="codex-tui",
         )
-        with self.assertRaisesRegex(ValueError, "not available in codex-tui"):
+        with self.assertRaisesRegex(FunctionCallError, "not available in codex-tui"):
             tui_handler.handle(
                 ToolPayload.function(
                     json.dumps(
@@ -705,7 +784,21 @@ class RequestPluginInstallSpecAndHandlerTests(unittest.TestCase):
                 )
             )
 
-        with self.assertRaisesRegex(ValueError, "tool_id must match"):
+        with self.assertRaisesRegex(FunctionCallError, 'currently support only action_type="install"'):
+            handler.handle(
+                ToolPayload.function(
+                    json.dumps(
+                        {
+                            "tool_type": "plugin",
+                            "action_type": "enable",
+                            "tool_id": "sample@openai-curated",
+                            "suggest_reason": "Use sample plugin",
+                        }
+                    )
+                )
+            )
+
+        with self.assertRaisesRegex(FunctionCallError, "tool_id must match"):
             handler.handle(
                 ToolPayload.function(
                     json.dumps(
@@ -714,6 +807,20 @@ class RequestPluginInstallSpecAndHandlerTests(unittest.TestCase):
                             "action_type": "install",
                             "tool_id": "missing@openai-curated",
                             "suggest_reason": "Use sample plugin",
+                        }
+                    )
+                )
+            )
+
+        with self.assertRaisesRegex(FunctionCallError, "requires a request callback"):
+            RequestPluginInstallHandler(discoverable_tools=(calendar_connector(),)).handle(
+                ToolPayload.function(
+                    json.dumps(
+                        {
+                            "tool_type": "connector",
+                            "action_type": "install",
+                            "tool_id": "connector_2128aebfecb84f64a069897515042a44",
+                            "suggest_reason": "Plan with calendar",
                         }
                     )
                 )
@@ -770,6 +877,34 @@ class RequestPluginInstallSpecAndHandlerTests(unittest.TestCase):
             ListAvailablePluginsToInstallHandler.new(entries).tool_name(),
             ToolName.plain(LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME),
         )
+
+    def test_handlers_reject_non_tool_payload_matches(self) -> None:
+        list_handler = ListAvailablePluginsToInstallHandler.new([])
+        request_handler = RequestPluginInstallHandler(discoverable_tools=())
+
+        with self.assertRaises(TypeError):
+            list_handler.matches_kind(object())
+        with self.assertRaises(TypeError):
+            request_handler.matches_kind(object())
+        self.assertTrue(
+            list_handler.matches_kind(
+                ToolPayload.tool_search(SearchToolCallParams("plugin"))
+            )
+        )
+        self.assertTrue(
+            request_handler.matches_kind(
+                ToolPayload.tool_search(SearchToolCallParams("plugin"))
+            )
+        )
+        with self.assertRaises(FunctionCallError) as request_unsupported:
+            request_handler.handle(ToolPayload.custom("raw"))
+        self.assertTrue(request_unsupported.exception.is_fatal)
+        self.assertIn(
+            "request_plugin_install handler received unsupported payload",
+            str(request_unsupported.exception),
+        )
+        with self.assertRaises(TypeError):
+            RequestPluginInstallHandler(discoverable_tools=(), thread_id=1)
 
 
 if __name__ == "__main__":

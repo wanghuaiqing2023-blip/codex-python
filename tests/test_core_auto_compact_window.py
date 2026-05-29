@@ -2,8 +2,10 @@ import unittest
 
 from pycodex.core import (
     AutoCompactWindow,
+    AutoCompactWindowPrefill,
     AutoCompactWindowPrefillKind,
     AutoCompactWindowSnapshot,
+    U64_MAX,
 )
 from pycodex.protocol import TokenUsage
 
@@ -67,12 +69,12 @@ class AutoCompactWindowTests(unittest.TestCase):
 
     def test_start_next_saturates_u64_ordinal_and_clears_prefill(self) -> None:
         window = AutoCompactWindow()
-        window.ordinal = (1 << 64) - 1
+        window.ordinal = U64_MAX
         window.set_estimated_prefill(10)
 
         window.start_next()
 
-        self.assertEqual(window.snapshot(), AutoCompactWindowSnapshot((1 << 64) - 1, None))
+        self.assertEqual(window.snapshot(), AutoCompactWindowSnapshot(U64_MAX, None))
 
     def test_clear_prefill_keeps_window_ordinal(self) -> None:
         window = AutoCompactWindow()
@@ -82,6 +84,29 @@ class AutoCompactWindowTests(unittest.TestCase):
         window.clear_prefill()
 
         self.assertEqual(window.snapshot(), AutoCompactWindowSnapshot(2, None))
+
+    def test_rejects_non_rust_input_shapes(self) -> None:
+        with self.assertRaises(TypeError):
+            AutoCompactWindowSnapshot(True)  # type: ignore[arg-type]
+        with self.assertRaises(ValueError):
+            AutoCompactWindowSnapshot(-1)
+        with self.assertRaises(ValueError):
+            AutoCompactWindowSnapshot(1, -1)
+        with self.assertRaises(TypeError):
+            AutoCompactWindowPrefill("estimated", 1)  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            AutoCompactWindowPrefill(AutoCompactWindowPrefillKind.ESTIMATED, True)  # type: ignore[arg-type]
+
+        window = AutoCompactWindow()
+        with self.assertRaises(TypeError):
+            window.ensure_server_observed_prefill_from_usage(object())  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            window.set_estimated_prefill(1.5)  # type: ignore[arg-type]
+        with self.assertRaises(ValueError):
+            window.set_estimated_prefill(1 << 63)
+        window.ordinal = -1
+        with self.assertRaises(ValueError):
+            window.start_next()
 
 
 if __name__ == "__main__":

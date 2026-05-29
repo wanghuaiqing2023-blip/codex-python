@@ -4,19 +4,29 @@ from pycodex.core import (
     PlannedTools,
     RegisteredTool,
     ToolCall,
+    CodeModeExecuteHandler,
+    CodeModeWaitHandler,
+    PUBLIC_TOOL_NAME,
     ToolExposure,
     ToolPayload,
     ToolPlanOptions,
     ToolSearchHandler,
     ToolSearchInfo,
+    WAIT_TOOL_NAME,
     add_apply_patch_tool,
+    add_hosted_model_tools,
     append_tool_search_executor,
     build_model_visible_specs_and_registry,
     build_tool_router_from_plan,
+    code_mode_namespace_descriptions,
+    hosted_model_tool_specs,
+    image_generation_tool_enabled,
+    is_hidden_by_code_mode_only,
     merge_into_namespaces,
+    prepend_code_mode_executors,
 )
 from pycodex.protocol import ApplyPatchToolType
-from pycodex.protocol import ToolName
+from pycodex.protocol import ToolName, WebSearchMode, WebSearchToolType
 
 
 def function_spec(name: str, description: str | None = None) -> dict[str, object]:
@@ -67,8 +77,16 @@ class SpecPlanTests(unittest.TestCase):
         self.assertEqual(merged[2]["description"], "Tools in the empty__ namespace.")
 
     def test_model_visible_specs_follow_tool_exposure(self) -> None:
+        class StringNamedRuntime:
+            def tool_name(self):
+                return "string_named"
+
+            def spec(self):
+                return function_spec("string_named")
+
         planned = PlannedTools()
         planned.add(RegisteredTool.plain("direct", tool_spec=function_spec("direct")))
+        planned.add(StringNamedRuntime())
         planned.add_with_exposure(
             RegisteredTool.plain("deferred", tool_spec=function_spec("deferred")),
             ToolExposure.DEFERRED,
@@ -88,7 +106,7 @@ class SpecPlanTests(unittest.TestCase):
 
         self.assertEqual(
             [spec["name"] for spec in specs],
-            ["direct", "model_only"],
+            ["direct", "string_named", "model_only"],
         )
         self.assertEqual(
             registry.tool_names(),
@@ -97,6 +115,7 @@ class SpecPlanTests(unittest.TestCase):
                 ToolName.plain("direct"),
                 ToolName.plain("hidden"),
                 ToolName.plain("model_only"),
+                ToolName.plain("string_named"),
             ),
         )
         self.assertEqual(registry.tool_exposure(ToolName.plain("hidden")), ToolExposure.HIDDEN)
@@ -159,6 +178,133 @@ class SpecPlanTests(unittest.TestCase):
 
         self.assertEqual(specs, (function_spec("hosted"),))
         self.assertIsNotNone(registry.tool(ToolName.namespaced("mcp__calendar__", "create_event")))
+
+    def test_code_mode_enabled_prepends_exec_and_wait_handlers(self) -> None:
+        planned = PlannedTools()
+        planned.add(RegisteredTool.plain("lookup_order", tool_spec=function_spec("lookup_order")))
+
+        prepend_code_mode_executors(planned, ToolPlanOptions(code_mode_enabled=True))
+
+        self.assertIsInstance(planned.runtimes[0], CodeModeExecuteHandler)
+        self.assertIsInstance(planned.runtimes[1], CodeModeWaitHandler)
+
+        specs, registry = build_model_visible_specs_and_registry(
+            PlannedTools(runtimes=[RegisteredTool.plain("lookup_order", tool_spec=function_spec("lookup_order"))]),
+            ToolPlanOptions(code_mode_enabled=True),
+        )
+
+        self.assertEqual([spec["name"] for spec in specs[:3]], [PUBLIC_TOOL_NAME, WAIT_TOOL_NAME, "lookup_order"])
+        self.assertIsNotNone(registry.tool(ToolName.plain(PUBLIC_TOOL_NAME)))
+        self.assertIsNotNone(registry.tool(ToolName.plain(WAIT_TOOL_NAME)))
+
+    def test_code_mode_only_hides_nested_tools_but_keeps_model_only_tools(self) -> None:
+        planned = PlannedTools()
+        planned.add(RegisteredTool.plain("lookup_order", tool_spec=function_spec("lookup_order")))
+        planned.add_with_exposure(
+            RegisteredTool.plain("model_only", tool_spec=function_spec("model_only")),
+            ToolExposure.DIRECT_MODEL_ONLY,
+        )
+
+        options = ToolPlanOptions(code_mode_enabled=True, code_mode_only=True)
+        specs, registry = build_model_visible_specs_and_registry(planned, options)
+
+        self.assertEqual([spec["name"] for spec in specs], [PUBLIC_TOOL_NAME, WAIT_TOOL_NAME, "model_only"])
+        self.assertTrue(is_hidden_by_code_mode_only(ToolName.plain("lookup_order"), ToolExposure.DIRECT, options))
+        self.assertFalse(
+            is_hidden_by_code_mode_only(ToolName.plain("model_only"), ToolExposure.DIRECT_MODEL_ONLY, options)
+        )
+        self.assertIsNotNone(registry.tool(ToolName.plain("lookup_order")))
+
+    def test_code_mode_namespace_descriptions_keep_first_non_empty_description(self) -> None:
+        planned = PlannedTools()
+        planned.add(
+            RegisteredTool.namespaced(
+                "mcp__calendar__",
+                "list_events",
+                tool_spec=namespace_spec("mcp__calendar__", "list_events"),
+            )
+        )
+        planned.add(
+            RegisteredTool.namespaced(
+                "mcp__calendar__",
+                "create_event",
+                tool_spec=namespace_spec("mcp__calendar__", "create_event", description="Calendar tools"),
+            )
+        )
+
+        descriptions = code_mode_namespace_descriptions(planned.runtimes)
+
+        self.assertEqual(descriptions["mcp__calendar__"].name, "mcp__calendar__")
+        self.assertEqual(descriptions["mcp__calendar__"].description, "Calendar tools")
+
+    def test_hosted_model_tool_specs_follow_provider_and_standalone_web_run(self) -> None:
+        options = ToolPlanOptions(
+            provider_web_search=True,
+            web_search_mode=WebSearchMode.LIVE,
+            web_search_tool_type=WebSearchToolType.TEXT_AND_IMAGE,
+        )
+
+        specs = tuple(spec.to_mapping() for spec in hosted_model_tool_specs(options))
+
+        self.assertEqual(
+            specs,
+            (
+                {
+                    "type": "web_search",
+                    "external_web_access": True,
+                    "search_content_types": ["text", "image"],
+                },
+            ),
+        )
+        self.assertEqual(
+            hosted_model_tool_specs(
+                ToolPlanOptions(
+                    provider_web_search=True,
+                    standalone_web_run_available=True,
+                    web_search_mode=WebSearchMode.LIVE,
+                )
+            ),
+            (),
+        )
+
+    def test_hosted_model_tool_specs_gate_image_generation_like_rust(self) -> None:
+        disabled = ToolPlanOptions(
+            auth_uses_codex_backend=True,
+            provider_image_generation=True,
+            image_generation_enabled=True,
+            model_supports_image_input=False,
+        )
+        enabled = ToolPlanOptions(
+            auth_uses_codex_backend=True,
+            provider_image_generation=True,
+            image_generation_enabled=True,
+            model_supports_image_input=True,
+        )
+
+        self.assertFalse(image_generation_tool_enabled(disabled))
+        self.assertTrue(image_generation_tool_enabled(enabled))
+        self.assertEqual(
+            tuple(spec.to_mapping() for spec in hosted_model_tool_specs(enabled)),
+            ({"type": "image_generation", "output_format": "png"},),
+        )
+
+    def test_build_model_visible_specs_adds_hosted_specs_from_options(self) -> None:
+        planned = PlannedTools()
+        add_hosted_model_tools(
+            planned,
+            ToolPlanOptions(provider_web_search=True, web_search_mode=WebSearchMode.CACHED),
+        )
+        self.assertEqual(
+            [spec.to_mapping() for spec in planned.hosted_specs],
+            [{"type": "web_search", "external_web_access": False}],
+        )
+
+        specs, _registry = build_model_visible_specs_and_registry(
+            PlannedTools(),
+            ToolPlanOptions(provider_web_search=True, web_search_mode=WebSearchMode.CACHED),
+        )
+
+        self.assertEqual(specs, ({"type": "web_search", "external_web_access": False},))
 
     def test_build_tool_router_from_plan_preserves_specs_and_registry_queries(self) -> None:
         planned = PlannedTools()

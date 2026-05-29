@@ -1,6 +1,7 @@
 import unittest
 
 from pycodex.core import (
+    FunctionCallError,
     TOOL_SEARCH_DEFAULT_LIMIT,
     TOOL_SEARCH_TOOL_NAME,
     ToolPayload,
@@ -87,12 +88,15 @@ class ToolSearchHandlerTests(unittest.TestCase):
     def test_handle_validates_payload_query_and_limit(self) -> None:
         handler = ToolSearchHandler([])
 
-        with self.assertRaisesRegex(RuntimeError, "unsupported payload"):
+        with self.assertRaisesRegex(FunctionCallError, "unsupported payload") as unsupported:
             handler.handle(ToolPayload.function("{}"))
-        with self.assertRaisesRegex(ValueError, "query must not be empty"):
+        self.assertTrue(unsupported.exception.is_fatal)
+        with self.assertRaisesRegex(FunctionCallError, "query must not be empty") as empty_query:
             handler.handle(ToolPayload.tool_search(SearchToolCallParams("  ")))
-        with self.assertRaisesRegex(ValueError, "limit must be greater than zero"):
+        self.assertTrue(empty_query.exception.is_model_response)
+        with self.assertRaisesRegex(FunctionCallError, "limit must be greater than zero") as bad_limit:
             handler.handle(ToolPayload.tool_search(SearchToolCallParams("calendar", limit=0)))
+        self.assertTrue(bad_limit.exception.is_model_response)
 
     def test_empty_handler_returns_completed_empty_tool_search_output(self) -> None:
         output = ToolSearchHandler([]).handle(
@@ -157,6 +161,40 @@ class ToolSearchHandlerTests(unittest.TestCase):
             [tool["name"] for tool in tools[0]["tools"]],
             ["create_event", "list_events"],
         )
+
+    def test_spec_rejects_non_rust_source_and_limit_shapes(self) -> None:
+        with self.assertRaises(TypeError):
+            create_tool_search_tool([{"name": "docs"}])
+        with self.assertRaises(TypeError):
+            create_tool_search_tool([], default_limit=True)
+        with self.assertRaises(ValueError):
+            create_tool_search_tool([], default_limit=-1)
+
+    def test_handler_constructor_rejects_non_search_info_entries(self) -> None:
+        with self.assertRaises(TypeError):
+            ToolSearchHandler((object(),))
+        with self.assertRaises(TypeError):
+            ToolSearchHandler("calendar")
+
+    def test_handler_rejects_non_rust_query_limit_and_payload_shapes(self) -> None:
+        handler = ToolSearchHandler([])
+
+        with self.assertRaises(TypeError):
+            handler.matches_kind(object())
+        with self.assertRaises(TypeError):
+            handler.search(1)
+        with self.assertRaises(TypeError):
+            handler.search("calendar", True)
+        with self.assertRaises(ValueError):
+            handler.search("calendar", -1)
+
+    def test_search_output_tools_rejects_non_entry_results(self) -> None:
+        handler = ToolSearchHandler([])
+
+        with self.assertRaises(TypeError):
+            handler.search_output_tools((object(),))
+        with self.assertRaises(TypeError):
+            handler.search_output_tools("calendar")
 
 
 if __name__ == "__main__":

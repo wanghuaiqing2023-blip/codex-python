@@ -16,6 +16,12 @@ CANONICAL_POWERSHELL_SCRIPT_PREFIX = "__codex_powershell_script__"
 def canonicalize_command_for_approval(command: Sequence[str]) -> list[str]:
     """Canonicalize command argv for stable approval-cache matching."""
 
+    if isinstance(command, str):
+        raise TypeError("command must be a sequence of strings")
+    command = tuple(command)
+    if any(not isinstance(token, str) for token in command):
+        raise TypeError("command tokens must be strings")
+
     plain_commands = parse_shell_lc_plain_commands(command)
     if plain_commands is not None and len(plain_commands) == 1:
         return list(plain_commands[0])

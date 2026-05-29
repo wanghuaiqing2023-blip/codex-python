@@ -18,6 +18,36 @@ SNAPSHOT_DIR = "shell_snapshots"
 EXCLUDED_EXPORT_VARS = ("PWD", "OLDPWD")
 
 
+def _ensure_path(value: object, field: str) -> Path:
+    if not isinstance(value, Path):
+        raise TypeError(f"{field} must be a Path")
+    return value
+
+
+def _ensure_str(value: object, field: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{field} must be a string")
+    return value
+
+
+def _ensure_bool(value: object, field: str) -> bool:
+    if not isinstance(value, bool):
+        raise TypeError(f"{field} must be a bool")
+    return value
+
+
+def _ensure_number(value: object, field: str) -> float:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise TypeError(f"{field} must be numeric")
+    return float(value)
+
+
+def _ensure_shell_type(value: object) -> ShellType:
+    if not isinstance(value, ShellType):
+        raise TypeError("shell_type must be a ShellType")
+    return value
+
+
 class ShellSnapshotError(Exception):
     """Raised when snapshot capture or validation fails."""
 
@@ -28,10 +58,8 @@ class ShellSnapshot:
     cwd: Path
 
     def __post_init__(self) -> None:
-        if not isinstance(self.path, Path):
-            object.__setattr__(self, "path", Path(self.path))
-        if not isinstance(self.cwd, Path):
-            object.__setattr__(self, "cwd", Path(self.cwd))
+        object.__setattr__(self, "path", _ensure_path(self.path, "path"))
+        object.__setattr__(self, "cwd", _ensure_path(self.cwd, "cwd"))
 
     def close(self) -> None:
         remove_snapshot_file(self.path)
@@ -49,19 +77,23 @@ class ShellSnapshot:
             pass
 
 
-def shell_snapshot_extension(shell_type: ShellType | str) -> str:
-    shell_type = _coerce_shell_type(shell_type)
+def shell_snapshot_extension(shell_type: ShellType) -> str:
+    shell_type = _ensure_shell_type(shell_type)
     return "ps1" if shell_type is ShellType.POWERSHELL else "sh"
 
 
 def shell_snapshot_paths(
-    codex_home: str | Path,
+    codex_home: Path,
     session_id: str,
-    shell_type: ShellType | str,
+    shell_type: ShellType,
     nonce: int | None = None,
 ) -> tuple[Path, Path]:
+    home = _ensure_path(codex_home, "codex_home")
+    session_id = _ensure_str(session_id, "session_id")
     generation = time.time_ns() if nonce is None else nonce
-    snapshot_dir = Path(codex_home) / SNAPSHOT_DIR
+    if not isinstance(generation, int) or isinstance(generation, bool):
+        raise TypeError("nonce must be an integer")
+    snapshot_dir = home / SNAPSHOT_DIR
     extension = shell_snapshot_extension(shell_type)
     return (
         snapshot_dir / f"{session_id}.{generation}.{extension}",
@@ -70,6 +102,7 @@ def shell_snapshot_paths(
 
 
 def strip_snapshot_preamble(snapshot: str) -> str:
+    snapshot = _ensure_str(snapshot, "snapshot")
     marker = "# Snapshot file"
     start = snapshot.find(marker)
     if start == -1:
@@ -260,8 +293,11 @@ $envVars | ForEach-Object {
 """
 
 
-def capture_snapshot(shell: Shell, cwd: str | Path) -> str:
-    shell_type = _coerce_shell_type(shell.shell_type)
+def capture_snapshot(shell: Shell, cwd: Path) -> str:
+    if not isinstance(shell, Shell):
+        raise TypeError("shell must be a Shell")
+    cwd = _ensure_path(cwd, "cwd")
+    shell_type = _ensure_shell_type(shell.shell_type)
     if shell_type is ShellType.ZSH:
         script = zsh_snapshot_script()
     elif shell_type is ShellType.BASH:
@@ -275,8 +311,10 @@ def capture_snapshot(shell: Shell, cwd: str | Path) -> str:
     return run_script_with_timeout(shell, script, SNAPSHOT_TIMEOUT_SECONDS, True, cwd)
 
 
-def write_shell_snapshot(shell_type: ShellType | str, output_path: str | Path, cwd: str | Path) -> None:
-    shell_type = _coerce_shell_type(shell_type)
+def write_shell_snapshot(shell_type: ShellType, output_path: Path, cwd: Path) -> None:
+    shell_type = _ensure_shell_type(shell_type)
+    output_path = _ensure_path(output_path, "output_path")
+    cwd = _ensure_path(cwd, "cwd")
     if shell_type in {ShellType.POWERSHELL, ShellType.CMD}:
         raise ShellSnapshotError(f"Shell snapshot not supported yet for {shell_type.name}")
     shell = get_shell(shell_type)
@@ -285,7 +323,7 @@ def write_shell_snapshot(shell_type: ShellType | str, output_path: str | Path, c
 
     raw_snapshot = capture_snapshot(shell, cwd)
     snapshot = strip_snapshot_preamble(raw_snapshot)
-    path = Path(output_path)
+    path = output_path
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(snapshot, encoding="utf-8", newline="\n")
 
@@ -295,13 +333,19 @@ def run_script_with_timeout(
     script: str,
     snapshot_timeout_seconds: float,
     use_login_shell: bool,
-    cwd: str | Path,
+    cwd: Path,
 ) -> str:
+    if not isinstance(shell, Shell):
+        raise TypeError("shell must be a Shell")
+    script = _ensure_str(script, "script")
+    snapshot_timeout_seconds = _ensure_number(snapshot_timeout_seconds, "snapshot_timeout_seconds")
+    use_login_shell = _ensure_bool(use_login_shell, "use_login_shell")
+    cwd = _ensure_path(cwd, "cwd")
     args = shell.derive_exec_args(script, use_login_shell)
     try:
         completed = subprocess.run(
             args,
-            cwd=Path(cwd),
+            cwd=cwd,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -322,8 +366,8 @@ def run_script_with_timeout(
     return stdout
 
 
-def snapshot_session_id_from_file_name(file_name: str | Path) -> str | None:
-    name = Path(file_name).name
+def snapshot_session_id_from_file_name(file_name: str) -> str | None:
+    name = _ensure_str(file_name, "file_name")
     if "." not in name:
         return None
     stem, extension = name.rsplit(".", 1)
@@ -338,7 +382,7 @@ RolloutFinder = Callable[[Path, str], str | Path | None]
 
 
 def cleanup_stale_snapshots(
-    codex_home: str | Path,
+    codex_home: Path,
     active_session_id: str,
     *,
     rollout_finder: RolloutFinder | None = None,
@@ -347,7 +391,7 @@ def cleanup_stale_snapshots(
 ) -> list[Path]:
     """Remove stale snapshots and return the files that were deleted."""
 
-    home = Path(codex_home)
+    home = _ensure_path(codex_home, "codex_home")
     snapshot_dir = home / SNAPSHOT_DIR
     if not snapshot_dir.exists():
         return []
@@ -358,8 +402,9 @@ def cleanup_stale_snapshots(
         rollout_finder = find_thread_path_by_id_str
 
     removed: list[Path] = []
-    current_time = time.time() if now is None else now
-    active = str(active_session_id)
+    current_time = time.time() if now is None else _ensure_number(now, "now")
+    retention_seconds = _ensure_number(retention_seconds, "retention_seconds")
+    active = _ensure_str(active_session_id, "active_session_id")
 
     for path in snapshot_dir.iterdir():
         if not path.is_file():
@@ -389,9 +434,10 @@ def cleanup_stale_snapshots(
     return removed
 
 
-def remove_snapshot_file(path: str | Path) -> bool:
+def remove_snapshot_file(path: Path) -> bool:
+    path = _ensure_path(path, "path")
     try:
-        Path(path).unlink()
+        path.unlink()
     except FileNotFoundError:
         return False
     except OSError:
@@ -399,8 +445,8 @@ def remove_snapshot_file(path: str | Path) -> bool:
     return True
 
 
-def _coerce_shell_type(shell_type: ShellType | str) -> ShellType:
-    return shell_type if isinstance(shell_type, ShellType) else ShellType(str(shell_type))
+def _coerce_shell_type(shell_type: ShellType) -> ShellType:
+    return _ensure_shell_type(shell_type)
 
 
 __all__ = [

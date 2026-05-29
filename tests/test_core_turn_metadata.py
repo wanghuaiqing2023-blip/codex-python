@@ -194,6 +194,11 @@ class CoreTurnMetadataTests(unittest.TestCase):
                 "thread_id": "client-supplied",
                 "thread_source": "client-supplied",
                 "turn_started_at_unix_ms": "client-supplied",
+                "turn_id": "client-supplied",
+                "forked_from_thread_id": "client-supplied",
+                "request_kind": "client-supplied",
+                "compaction": "client-supplied",
+                "window_id": "client-supplied",
             }
         )
         state.set_turn_started_at_unix_ms(1_700_000_000_123)
@@ -212,6 +217,10 @@ class CoreTurnMetadataTests(unittest.TestCase):
         self.assertEqual(parsed["thread_source"], "user")
         self.assertEqual(parsed["turn_id"], "turn-a")
         self.assertEqual(parsed["turn_started_at_unix_ms"], 1_700_000_000_123)
+        self.assertNotIn("forked_from_thread_id", parsed)
+        self.assertNotIn("request_kind", parsed)
+        self.assertNotIn("compaction", parsed)
+        self.assertNotIn("window_id", parsed)
 
         meta = state.current_meta_value_for_mcp_request(
             McpTurnMetadataContext("gpt-5.4", ReasoningEffort.HIGH)
@@ -243,6 +252,15 @@ class CoreTurnMetadataTests(unittest.TestCase):
     def test_merge_turn_metadata_returns_none_when_no_extra_metadata(self) -> None:
         self.assertIsNone(merge_turn_metadata("{}", None, None))
         self.assertIsNone(merge_turn_metadata("not json", 123, None))
+
+    def test_turn_metadata_rejects_non_rust_metadata_shapes(self) -> None:
+        state, _permission_profile = self.make_state()
+
+        with self.assertRaisesRegex(TypeError, "turn_started_at_unix_ms must be an integer"):
+            state.set_turn_started_at_unix_ms("123")  # type: ignore[arg-type]
+
+        with self.assertRaisesRegex(TypeError, "responsesapi_client_metadata value must be a string"):
+            state.set_responsesapi_client_metadata({"bad": 123})  # type: ignore[dict-item]
 
 
 if __name__ == "__main__":

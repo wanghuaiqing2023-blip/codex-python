@@ -26,6 +26,23 @@ class ApprovalPreset:
     active_permission_profile: ActivePermissionProfile
     permission_profile: PermissionProfile
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.id, str):
+            raise TypeError("id must be a string")
+        if not isinstance(self.label, str):
+            raise TypeError("label must be a string")
+        if not isinstance(self.description, str):
+            raise TypeError("description must be a string")
+        if not isinstance(self.approval, AskForApproval):
+            if isinstance(self.approval, str):
+                object.__setattr__(self, "approval", AskForApproval(self.approval))
+            else:
+                raise TypeError("approval must be an AskForApproval")
+        if not isinstance(self.active_permission_profile, ActivePermissionProfile):
+            raise TypeError("active_permission_profile must be an ActivePermissionProfile")
+        if not isinstance(self.permission_profile, PermissionProfile):
+            raise TypeError("permission_profile must be a PermissionProfile")
+
 
 def builtin_approval_presets() -> tuple[ApprovalPreset, ...]:
     return (
@@ -75,6 +92,8 @@ def builtin_approval_presets() -> tuple[ApprovalPreset, ...]:
 def builtin_permission_profile_for_active_permission_profile(
     active_permission_profile: ActivePermissionProfile,
 ) -> PermissionProfile | None:
+    if not isinstance(active_permission_profile, ActivePermissionProfile):
+        raise TypeError("active_permission_profile must be an ActivePermissionProfile")
     if active_permission_profile.extends is not None:
         return None
 

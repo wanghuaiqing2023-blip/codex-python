@@ -159,6 +159,26 @@ class CoreTurnTimingTests(unittest.TestCase):
             )
         )
 
+    def test_rejects_non_rust_input_shapes(self) -> None:
+        with self.assertRaises(TypeError):
+            ResponseEvent(1)  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            ResponseEvent.output_item_done(object())  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            ResponseEvent("created", ResponseItem.other())
+
+        state = TurnTimingState()
+        with self.assertRaises(TypeError):
+            state.mark_turn_started("now")  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            state.record_ttft_for_response_event(object())  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            state.record_ttfm_for_turn_item(object())  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            response_event_records_turn_ttft(object())  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            response_item_records_turn_ttft(object())  # type: ignore[arg-type]
+
 
 if __name__ == "__main__":
     unittest.main()

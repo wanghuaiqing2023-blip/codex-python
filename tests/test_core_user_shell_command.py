@@ -110,6 +110,43 @@ class UserShellCommandTests(unittest.TestCase):
         self.assertIn("<user_shell_command>", record)
         self.assertIn("</user_shell_command>", record)
 
+    def test_rejects_non_string_command(self) -> None:
+        exec_output = ExecToolCallOutput(
+            exit_code=0,
+            aggregated_output=StreamOutput.new("hi"),
+            duration=timedelta(milliseconds=1),
+            timed_out=False,
+        )
+
+        with self.assertRaisesRegex(TypeError, "command must be a str"):
+            user_shell_command_record_item(  # type: ignore[arg-type]
+                123,
+                exec_output,
+                TruncationPolicyConfig.bytes(1024),
+            )
+
+    def test_rejects_non_exec_output(self) -> None:
+        with self.assertRaisesRegex(TypeError, "exec_output must be an ExecToolCallOutput"):
+            format_exec_output_str(  # type: ignore[arg-type]
+                object(),
+                TruncationPolicyConfig.bytes(1024),
+            )
+
+    def test_rejects_non_truncation_policy(self) -> None:
+        exec_output = ExecToolCallOutput(
+            exit_code=0,
+            aggregated_output=StreamOutput.new("hi"),
+            duration=timedelta(milliseconds=1),
+            timed_out=False,
+        )
+
+        with self.assertRaisesRegex(TypeError, "truncation_policy must be a TruncationPolicyConfig"):
+            format_user_shell_command_record(  # type: ignore[arg-type]
+                "echo hi",
+                exec_output,
+                object(),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -41,8 +41,24 @@ class SessionRolloutInitErrorTests(unittest.TestCase):
                 self.assertIn(expected, mapped.message or "")
                 self.assertIn(str(codex_home), mapped.message or "")
 
+        invalid_data_errno = getattr(errno, "EBADMSG", None) or getattr(errno, "EILSEQ", None)
+        if invalid_data_errno is not None:
+            mapped = map_rollout_io_error(OSError(invalid_data_errno, "invalid data"), "C:/Users/me/.codex")
+            self.assertIsNotNone(mapped)
+            self.assertIn("looks corrupt or unreadable", mapped.message or "")
+
     def test_unrecognized_io_error_returns_none(self) -> None:
         self.assertIsNone(map_rollout_io_error(OSError(errno.EBUSY, "busy"), "/codex-home"))
+
+    def test_rollout_error_mapping_rejects_non_rust_argument_shapes(self) -> None:
+        with self.assertRaisesRegex(TypeError, "error must be an OSError"):
+            map_rollout_io_error(RuntimeError("boom"), "/codex-home")  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "codex_home must be a string or Path"):
+            map_rollout_io_error(FileNotFoundError(errno.ENOENT, "not found"), 123)  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "error must be an exception"):
+            map_session_init_error("boom", "/codex-home")  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "codex_home must be a string or Path"):
+            map_session_init_error(RuntimeError("boom"), 123)  # type: ignore[arg-type]
 
     def test_map_session_init_error_uses_recognized_cause(self) -> None:
         outer = RuntimeError("session init failed")

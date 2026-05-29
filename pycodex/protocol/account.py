@@ -32,6 +32,8 @@ class PlanType(str, Enum):
 
     @classmethod
     def parse(cls, raw: str) -> "PlanType":
+        if not isinstance(raw, str):
+            raise TypeError("plan type must be a string")
         try:
             return cls(raw.lower())
         except ValueError:
@@ -58,12 +60,16 @@ class PlanType(str, Enum):
 
     @classmethod
     def from_auth_plan_type(cls, plan_type: AuthPlanType) -> "PlanType":
+        if not isinstance(plan_type, AuthPlanType):
+            raise TypeError("plan_type must be an auth PlanType")
         if plan_type.known is None:
             return cls.UNKNOWN
         return cls.from_known_plan(plan_type.known)
 
     @classmethod
     def from_known_plan(cls, plan: KnownPlan) -> "PlanType":
+        if not isinstance(plan, KnownPlan):
+            raise TypeError("plan must be a KnownPlan")
         return cls(plan.raw_value())
 
 
@@ -72,6 +78,25 @@ class ProviderAccount:
     kind: str
     email: str | None = None
     plan_type: PlanType | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, str):
+            raise TypeError("kind must be a string")
+        if self.kind == "api_key":
+            if self.email is not None or self.plan_type is not None:
+                raise ValueError("api_key account cannot include email or plan_type")
+            return
+        if self.kind == "amazon_bedrock":
+            if self.email is not None or self.plan_type is not None:
+                raise ValueError("amazon_bedrock account cannot include email or plan_type")
+            return
+        if self.kind == "chatgpt":
+            if not isinstance(self.email, str):
+                raise TypeError("chatgpt account email must be a string")
+            if not isinstance(self.plan_type, PlanType):
+                raise TypeError("chatgpt account plan_type must be a PlanType")
+            return
+        raise ValueError(f"unknown provider account kind: {self.kind}")
 
     @classmethod
     def api_key(cls) -> "ProviderAccount":

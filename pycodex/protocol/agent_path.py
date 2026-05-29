@@ -12,6 +12,8 @@ class AgentPath(str):
     ROOT_SEGMENT = "root"
 
     def __new__(cls, path: str) -> "AgentPath":
+        if not isinstance(path, str):
+            raise TypeError("agent path must be a string")
         _validate_absolute_path(path)
         return str.__new__(cls, path)
 
@@ -44,6 +46,8 @@ class AgentPath(str):
         return AgentPath(f"{self}/{agent_name}")
 
     def resolve(self, reference: str) -> "AgentPath":
+        if not isinstance(reference, str):
+            raise TypeError("agent path reference must be a string")
         if reference == "":
             raise ValueError("agent path must not be empty")
         if reference == self.ROOT:
@@ -56,6 +60,8 @@ class AgentPath(str):
 
 
 def _validate_agent_name(agent_name: str) -> None:
+    if not isinstance(agent_name, str):
+        raise TypeError("agent_name must be a string")
     if agent_name == "":
         raise ValueError("agent_name must not be empty")
     if agent_name == AgentPath.ROOT_SEGMENT:
@@ -76,7 +82,7 @@ def _validate_absolute_path(path: str) -> None:
 
     stripped = path[1:]
     if stripped == "":
-        raise ValueError("absolute agent paths must start with `/root` or be `/morpheus`")
+        raise ValueError("absolute agent path must not be empty")
     segments = stripped.split("/")
     if segments[0] != AgentPath.ROOT_SEGMENT:
         raise ValueError("absolute agent paths must start with `/root` or be `/morpheus`")

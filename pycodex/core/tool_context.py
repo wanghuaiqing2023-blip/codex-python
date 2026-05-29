@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from pycodex.protocol import (
     CallToolResult,
@@ -18,6 +18,7 @@ from pycodex.protocol import (
     ImageDetail,
     ResponseInputItem,
     SearchToolCallParams,
+    ToolName,
     TruncationMode,
     TruncationPolicyConfig,
     function_call_output_content_items_to_text,
@@ -39,12 +40,101 @@ TELEMETRY_PREVIEW_MAX_LINES = 64
 TELEMETRY_PREVIEW_TRUNCATION_NOTICE = "[... telemetry preview truncated ...]"
 
 
+@runtime_checkable
+class ToolOutput(Protocol):
+    """Protocol-shaped counterpart of Rust's ``dyn ToolOutput`` trait."""
+
+    def log_preview(self) -> str:
+        ...
+
+    def success_for_logging(self) -> bool:
+        ...
+
+    def to_response_item(self, call_id: str, payload: "ToolPayload") -> ResponseInputItem:
+        ...
+
+
+def boxed_tool_output(output: ToolOutput) -> ToolOutput:
+    """Validate and return a Python tool output object.
+
+    Rust boxes ``ToolOutput`` trait objects before handing them to the tool
+    runtime. Python keeps objects by reference, so this helper preserves the
+    boundary check without introducing an unnecessary wrapper.
+    """
+
+    for method_name in ("log_preview", "success_for_logging", "to_response_item"):
+        if not callable(getattr(output, method_name, None)):
+            raise TypeError(f"tool output must expose {method_name}()")
+    return output
+
+
+SharedTurnDiffTracker = Any
+
+
+@dataclass(frozen=True)
+class ToolCallSource:
+    type: str
+    cell_id: str | None = None
+    runtime_tool_call_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.type, str):
+            raise TypeError("tool call source type must be a string")
+        if self.type == "direct":
+            if self.cell_id is not None or self.runtime_tool_call_id is not None:
+                raise ValueError("direct tool call source must not include code-mode fields")
+        elif self.type == "code_mode":
+            if not isinstance(self.cell_id, str):
+                raise TypeError("code_mode tool call source requires a string cell_id")
+            if not isinstance(self.runtime_tool_call_id, str):
+                raise TypeError("code_mode tool call source requires a string runtime_tool_call_id")
+        else:
+            raise ValueError(f"unsupported tool call source type: {self.type}")
+
+    @classmethod
+    def direct(cls) -> "ToolCallSource":
+        return cls("direct")
+
+    @classmethod
+    def code_mode(cls, cell_id: str, runtime_tool_call_id: str) -> "ToolCallSource":
+        return cls("code_mode", cell_id, runtime_tool_call_id)
+
+    @property
+    def is_direct(self) -> bool:
+        return self.type == "direct"
+
+    @property
+    def is_code_mode(self) -> bool:
+        return self.type == "code_mode"
+
+
 @dataclass(frozen=True)
 class ToolPayload:
     type: str
     arguments: str | None = None
     input: str | None = None
     search_arguments: SearchToolCallParams | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.type, str):
+            raise TypeError("tool payload type must be a string")
+        if self.type == "function":
+            if not isinstance(self.arguments, str):
+                raise TypeError("function payload arguments must be a string")
+            if self.input is not None or self.search_arguments is not None:
+                raise ValueError("function payload must not include custom or tool_search fields")
+        elif self.type == "custom":
+            if not isinstance(self.input, str):
+                raise TypeError("custom payload input must be a string")
+            if self.arguments is not None or self.search_arguments is not None:
+                raise ValueError("custom payload must not include function or tool_search fields")
+        elif self.type == "tool_search":
+            if not isinstance(self.search_arguments, SearchToolCallParams):
+                raise TypeError("tool_search payload arguments must be SearchToolCallParams")
+            if self.arguments is not None or self.input is not None:
+                raise ValueError("tool_search payload must not include function or custom fields")
+        else:
+            raise ValueError(f"unsupported tool payload type: {self.type}")
 
     @classmethod
     def function(cls, arguments: str) -> "ToolPayload":
@@ -66,6 +156,37 @@ class ToolPayload:
         if self.type == "tool_search" and self.search_arguments is not None:
             return self.search_arguments.query
         return None
+
+
+@dataclass(frozen=True)
+class ToolInvocation:
+    session: Any
+    turn: Any
+    cancellation_token: Any
+    tracker: SharedTurnDiffTracker
+    call_id: str
+    tool_name: ToolName | str
+    source: ToolCallSource
+    payload: ToolPayload
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.call_id, str) or not self.call_id:
+            raise TypeError("tool invocation call_id must be a non-empty string")
+        try:
+            tool_name = ToolName.from_value(self.tool_name)
+        except TypeError as err:
+            raise TypeError("tool invocation tool_name must be ToolName or a non-empty string") from err
+        if not tool_name.name:
+            raise TypeError("tool invocation tool_name must be a non-empty string")
+        object.__setattr__(self, "tool_name", tool_name)
+        if not isinstance(self.source, ToolCallSource):
+            raise TypeError("tool invocation source must be ToolCallSource")
+        if not isinstance(self.payload, ToolPayload):
+            raise TypeError("tool invocation payload must be ToolPayload")
+
+    @property
+    def is_code_mode(self) -> bool:
+        return self.source.is_code_mode
 
 
 @dataclass(frozen=True)
@@ -273,6 +394,38 @@ class ToolSearchOutput:
 
 
 @dataclass(frozen=True)
+class PostToolUseFeedbackOutput:
+    original: Any
+    model_visible: FunctionToolOutput
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.model_visible, FunctionToolOutput):
+            raise TypeError("model_visible must be FunctionToolOutput")
+        for method_name in (
+            "log_preview",
+            "success_for_logging",
+            "to_response_item",
+        ):
+            if not callable(getattr(self.original, method_name, None)):
+                raise TypeError(f"original must expose {method_name}()")
+
+    def log_preview(self) -> str:
+        return self.original.log_preview()
+
+    def success_for_logging(self) -> bool:
+        return self.original.success_for_logging()
+
+    def to_response_item(self, call_id: str, payload: ToolPayload) -> ResponseInputItem:
+        return self.model_visible.to_response_item(call_id, payload)
+
+    def code_mode_result(self, payload: ToolPayload) -> JsonValue:
+        method = getattr(self.original, "code_mode_result", None)
+        if method is None:
+            return {}
+        return method(payload)
+
+
+@dataclass(frozen=True)
 class ExecCommandToolOutput:
     event_call_id: str
     chunk_id: str
@@ -382,14 +535,21 @@ def telemetry_preview(content: str) -> str:
     truncated_slice = take_bytes_at_char_boundary(content, TELEMETRY_PREVIEW_MAX_BYTES)
     truncated_by_bytes = len(truncated_slice.encode("utf-8")) < len(content.encode("utf-8"))
 
-    lines = truncated_slice.splitlines()
-    preview_lines = lines[:TELEMETRY_PREVIEW_MAX_LINES]
-    truncated_by_lines = len(lines) > TELEMETRY_PREVIEW_MAX_LINES
+    lines_iter = iter(truncated_slice.splitlines())
+    preview_lines: list[str] = []
+    for _ in range(TELEMETRY_PREVIEW_MAX_LINES):
+        try:
+            preview_lines.append(next(lines_iter))
+        except StopIteration:
+            break
+    truncated_by_lines = next(lines_iter, None) is not None
     preview = "\n".join(preview_lines)
 
     if not truncated_by_bytes and not truncated_by_lines:
         return content
 
+    if len(preview) < len(truncated_slice) and truncated_slice[len(preview) : len(preview) + 1] == "\n":
+        preview += "\n"
     if preview and not preview.endswith("\n"):
         preview += "\n"
     return preview + TELEMETRY_PREVIEW_TRUNCATION_NOTICE
@@ -554,6 +714,10 @@ def _image_detail_from_mcp_meta(meta: JsonValue) -> ImageDetail | None:
     if not isinstance(meta, dict):
         return None
     detail = meta.get("codex/imageDetail")
+    if detail == ImageDetail.AUTO.value:
+        return ImageDetail.AUTO
+    if detail == ImageDetail.LOW.value:
+        return ImageDetail.LOW
     if detail == ImageDetail.HIGH.value:
         return ImageDetail.HIGH
     if detail == ImageDetail.ORIGINAL.value:
@@ -601,6 +765,7 @@ __all__ = [
     "FunctionToolOutput",
     "JsonToolOutput",
     "McpToolOutput",
+    "PostToolUseFeedbackOutput",
     "TELEMETRY_PREVIEW_MAX_BYTES",
     "TELEMETRY_PREVIEW_MAX_LINES",
     "TELEMETRY_PREVIEW_TRUNCATION_NOTICE",

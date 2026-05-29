@@ -9,8 +9,12 @@ from __future__ import annotations
 
 import math
 
+I64_MIN = -(2**63)
+I64_MAX = 2**63 - 1
+
 
 def format_with_separators(value: int) -> str:
+    value = _ensure_i64(value, "value")
     return f"{value:,}"
 
 
@@ -28,6 +32,7 @@ def _format_scaled(value: int, scale: int, frac_digits: int) -> str:
 
 
 def format_si_suffix(value: int) -> str:
+    value = _ensure_i64(value, "value")
     value = max(value, 0)
     if value < 1000:
         return format_with_separators(value)
@@ -42,3 +47,11 @@ def format_si_suffix(value: int) -> str:
             return f"{_format_scaled(value, scale, 0)}{suffix}"
 
     return f"{format_with_separators(_round_half_up(value / 1_000_000_000))}G"
+
+
+def _ensure_i64(value: int, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{label} must be an integer")
+    if not I64_MIN <= value <= I64_MAX:
+        raise ValueError(f"{label} must fit in i64")
+    return value

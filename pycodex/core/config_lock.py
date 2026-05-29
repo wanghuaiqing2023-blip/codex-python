@@ -37,6 +37,10 @@ class ConfigLockReplayOptions:
 
     allow_codex_version_mismatch: bool = False
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.allow_codex_version_mismatch, bool):
+            raise TypeError("allow_codex_version_mismatch must be a bool")
+
 
 @dataclass(frozen=True)
 class ConfigLockfile:
@@ -50,8 +54,12 @@ class ConfigLockfile:
     def __post_init__(self) -> None:
         if isinstance(self.version, bool) or not isinstance(self.version, int):
             raise config_lock_error("config lock version must be an integer")
+        if self.version < 0 or self.version > 2**32 - 1:
+            raise config_lock_error("config lock version must fit in an unsigned 32-bit integer")
         if not isinstance(self.codex_version, str):
             raise config_lock_error("config lock codex_version must be a string")
+        if not isinstance(self.upstream_source, str):
+            raise config_lock_error("config lock upstream_source must be a string")
         object.__setattr__(self, "config", _copy_mapping(self.config, "config lock config"))
 
 
@@ -64,13 +72,18 @@ class ConfigLockLayerEntry:
     value: dict[str, Any]
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "source_file", Path(self.source_file))
+        if not isinstance(self.source_file, Path):
+            raise config_lock_error("config lock layer source_file must be a Path")
+        if self.profile is not None and not isinstance(self.profile, str):
+            raise config_lock_error("config lock layer profile must be a string")
         object.__setattr__(self, "value", _copy_mapping(self.value, "config lock layer value"))
 
 
 def config_lock_error(message: str) -> ConfigLockError:
     """Create an upstream-shaped config lock error."""
 
+    if not isinstance(message, str):
+        raise TypeError("message must be a string")
     return ConfigLockError(message)
 
 
@@ -80,6 +93,8 @@ def config_lockfile(
 ) -> ConfigLockfile:
     """Build a config lock around an effective config mapping."""
 
+    if not isinstance(codex_version, str):
+        raise config_lock_error("config lock codex_version must be a string")
     return ConfigLockfile(
         version=CONFIG_LOCK_VERSION,
         codex_version=codex_version,
@@ -90,6 +105,7 @@ def config_lockfile(
 def read_config_lock_from_path(path: str | Path) -> ConfigLockfile:
     """Read, parse, and validate a config lock TOML file."""
 
+    _ensure_pathlike(path, "path")
     lock_path = Path(path)
     try:
         with lock_path.open("rb") as file:
@@ -115,6 +131,8 @@ def validate_config_lock_replay(
 ) -> None:
     """Validate that a replayed effective config matches the expected lock."""
 
+    if options is not None and not isinstance(options, ConfigLockReplayOptions):
+        raise TypeError("options must be ConfigLockReplayOptions")
     replay_options = options or ConfigLockReplayOptions()
     expected = _coerce_lockfile(expected_lock, "expected config lock")
     actual = _coerce_lockfile(actual_lock, "actual config lock")
@@ -145,6 +163,7 @@ def lock_layer_from_config(
 ) -> ConfigLockLayerEntry:
     """Return the config layer value represented by a config lock."""
 
+    _ensure_pathlike(lock_path, "lock_path")
     lock = _coerce_lockfile(lockfile, "config lock")
     value = toml_value(config_without_lock_controls(lock.config), "config lock")
     return ConfigLockLayerEntry(source_file=Path(lock_path), profile=None, value=value)
@@ -161,6 +180,8 @@ def config_without_lock_controls(config: Mapping[str, Any]) -> dict[str, Any]:
 def clear_config_lock_debug_controls(config: dict[str, Any]) -> None:
     """Remove lock-control debug settings from a mutable config mapping."""
 
+    if not isinstance(config, dict):
+        raise config_lock_error("config must be a mutable mapping")
     debug = config.get("debug")
     if not isinstance(debug, dict):
         return
@@ -186,6 +207,8 @@ def config_lock_for_comparison(
 ) -> ConfigLockfile:
     """Normalize a lock before comparing expected and replayed config values."""
 
+    if options is not None and not isinstance(options, ConfigLockReplayOptions):
+        raise TypeError("options must be ConfigLockReplayOptions")
     replay_options = options or ConfigLockReplayOptions()
     lock = _coerce_lockfile(lockfile, "config lock")
     codex_version = "" if replay_options.allow_codex_version_mismatch else lock.codex_version
@@ -199,6 +222,8 @@ def config_lock_for_comparison(
 def compact_diff(root: str, expected: Any, actual: Any) -> str:
     """Build a compact unified diff for two TOML-compatible values."""
 
+    if not isinstance(root, str):
+        raise TypeError("root must be a string")
     try:
         expected_text = _stable_text(toml_value(expected, f"expected {root} lock TOML"))
     except ConfigLockError as exc:
@@ -223,12 +248,16 @@ def compact_diff(root: str, expected: Any, actual: Any) -> str:
 def toml_value(value: Any, label: str) -> Any:
     """Return a deep TOML-compatible representation of ``value``."""
 
+    if not isinstance(label, str):
+        raise TypeError("label must be a string")
     return _to_toml_shape(value, label)
 
 
 def toml_round_trip(value: Any, label: str) -> Any:
     """Validate that ``value`` can round-trip through the supported TOML shape."""
 
+    if not isinstance(label, str):
+        raise TypeError("label must be a string")
     represented_value = toml_value(value, label)
     if toml_value(represented_value, label) != represented_value:
         raise config_lock_error(f"resolved {label} cannot be fully represented as TOML")
@@ -236,6 +265,8 @@ def toml_round_trip(value: Any, label: str) -> Any:
 
 
 def _coerce_lockfile(lockfile: ConfigLockfile | Mapping[str, Any], label: str) -> ConfigLockfile:
+    if not isinstance(label, str):
+        raise TypeError("label must be a string")
     if isinstance(lockfile, ConfigLockfile):
         return lockfile
     if isinstance(lockfile, Mapping):
@@ -244,6 +275,8 @@ def _coerce_lockfile(lockfile: ConfigLockfile | Mapping[str, Any], label: str) -
 
 
 def _lockfile_from_mapping(data: Mapping[str, Any], label: str) -> ConfigLockfile:
+    if not isinstance(label, str):
+        raise TypeError("label must be a string")
     version = data.get("version")
     codex_version = data.get("codex_version")
     config = data.get("config")
@@ -257,6 +290,8 @@ def _lockfile_from_mapping(data: Mapping[str, Any], label: str) -> ConfigLockfil
 
 
 def _copy_mapping(value: Mapping[str, Any], label: str) -> dict[str, Any]:
+    if not isinstance(label, str):
+        raise TypeError("label must be a string")
     if not isinstance(value, Mapping):
         raise config_lock_error(f"{label} must be a mapping")
 
@@ -269,6 +304,8 @@ def _copy_mapping(value: Mapping[str, Any], label: str) -> dict[str, Any]:
 
 
 def _to_toml_shape(value: Any, label: str) -> Any:
+    if not isinstance(label, str):
+        raise TypeError("label must be a string")
     if isinstance(value, ConfigLockfile):
         return {
             "version": value.version,
@@ -321,6 +358,11 @@ def _json_projection(value: Any) -> Any:
     if isinstance(value, (datetime, date, time)):
         return value.isoformat()
     return value
+
+
+def _ensure_pathlike(value: object, name: str) -> None:
+    if not isinstance(value, (str, Path)):
+        raise TypeError(f"{name} must be path-like")
 
 
 __all__ = [

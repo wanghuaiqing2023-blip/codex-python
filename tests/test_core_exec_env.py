@@ -108,10 +108,18 @@ class CoreExecEnvTests(unittest.TestCase):
             {"ONLY_VAR": "yes", CODEX_THREAD_ID_ENV_VAR: thread_id.to_json()},
         )
 
-    def test_thread_id_accepts_string_for_embedded_callers(self) -> None:
-        result = populate_env(make_vars([("PATH", "/usr/bin")]), ShellEnvironmentPolicy.default(), "thread-1")
+    def test_core_wrapper_rejects_non_thread_id_values(self) -> None:
+        with self.assertRaises(TypeError):
+            populate_env(make_vars([("PATH", "/usr/bin")]), ShellEnvironmentPolicy.default(), "thread-1")
 
-        self.assertEqual(result[CODEX_THREAD_ID_ENV_VAR], "thread-1")
+
+    def test_core_wrapper_rejects_implicit_env_coercions(self) -> None:
+        with self.assertRaises(TypeError):
+            populate_env(make_vars([("PATH", "/usr/bin")]), "default")
+        with self.assertRaises(TypeError):
+            populate_env([("PATH", 123)], ShellEnvironmentPolicy.default())
+        with self.assertRaises(TypeError):
+            populate_env([["PATH", "/usr/bin"]], ShellEnvironmentPolicy.default())
 
     @unittest.skipUnless(sys.platform == "win32", "PATHEXT insertion is Windows-specific upstream")
     def test_create_env_inserts_pathext_on_windows_when_missing(self) -> None:

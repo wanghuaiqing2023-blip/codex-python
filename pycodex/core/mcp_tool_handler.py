@@ -13,12 +13,16 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from pycodex.core.function_tool import FunctionCallError
 from pycodex.core.tool_context import FunctionToolOutput, McpToolOutput, ToolPayload
-from pycodex.core.tool_registry import ToolExposure, flat_tool_name
+from pycodex.core.hook_names import HookToolName
+from pycodex.core.tool_registry import PostToolUsePayload, PreToolUsePayload, ToolExposure, ToolInvocation, flat_tool_name
 from pycodex.core.tool_search_entry import ToolSearchInfo, ToolSearchSourceInfo
 from pycodex.protocol import CallToolResult, Tool, ToolName
 
 JsonValue = Any
+LEGACY_MCP_TOOL_NAME_PREFIX = "mcp__"
+MCP_TOOL_NAME_DELIMITER = "__"
 McpToolRequestCallback = Callable[
     ["ToolInfo", str, ToolName, JsonValue],
     FunctionToolOutput | McpToolOutput | CallToolResult | str | Mapping[str, JsonValue],
@@ -91,7 +95,10 @@ class McpHandler:
         return self.tool_info.supports_parallel_tool_calls or _tool_read_only_hint(self.tool_info.tool)
 
     def matches_kind(self, payload: ToolPayload) -> bool:
-        return payload.type == "function"
+        return isinstance(payload, ToolPayload) and payload.type in {"function", "tool_search"}
+
+    def hook_tool_name(self) -> HookToolName:
+        return HookToolName.new(ensure_mcp_prefix(join_tool_name(self.tool_name())))
 
     def search_info(self) -> ToolSearchInfo | None:
         source_name = _trimmed(self.tool_info.connector_name) or _trimmed(self.tool_info.server_name)
@@ -113,19 +120,76 @@ class McpHandler:
             tags.append(("mcp_server_origin", self.tool_info.server_origin))
         return tuple(tags)
 
+    def pre_tool_use_payload(self, invocation: ToolInvocation) -> PreToolUsePayload | None:
+        if not isinstance(invocation, ToolInvocation):
+            raise TypeError("invocation must be ToolInvocation")
+        if invocation.payload.type != "function":
+            return None
+        return PreToolUsePayload(
+            tool_name=self.hook_tool_name(),
+            tool_input=mcp_hook_tool_input(invocation.payload.arguments or ""),
+        )
+
+    def with_updated_hook_input(self, invocation: ToolInvocation, updated_input: JsonValue) -> ToolInvocation:
+        if not isinstance(invocation, ToolInvocation):
+            raise TypeError("invocation must be ToolInvocation")
+        if invocation.payload.type != "function":
+            raise FunctionCallError.respond_to_model(
+                f"tool {self.tool_name()} does not support hook input rewriting for payload {invocation.payload!r}"
+            )
+        try:
+            arguments = json.dumps(updated_input, ensure_ascii=False, separators=(",", ":"))
+        except (TypeError, ValueError) as err:
+            raise FunctionCallError.respond_to_model(
+                f"failed to serialize rewritten MCP arguments: {err}"
+            ) from err
+        from dataclasses import replace
+
+        return replace(invocation, payload=ToolPayload.function(arguments))
+
+    def post_tool_use_payload(self, invocation: ToolInvocation, result: JsonValue) -> PostToolUsePayload | None:
+        if not isinstance(invocation, ToolInvocation):
+            raise TypeError("invocation must be ToolInvocation")
+        if invocation.payload.type != "function":
+            return None
+        response_method = getattr(result, "post_tool_use_response", None)
+        input_method = getattr(result, "post_tool_use_input", None)
+        if response_method is None or input_method is None:
+            return None
+        tool_input = input_method(invocation.payload)
+        if tool_input is None:
+            return None
+        tool_response = response_method(invocation.call_id, invocation.payload)
+        if tool_response is None:
+            return None
+        return PostToolUsePayload(
+            tool_name=self.hook_tool_name(),
+            tool_use_id=invocation.call_id,
+            tool_input=tool_input,
+            tool_response=tool_response,
+        )
+
     def handle(self, invocation_or_payload: Any) -> FunctionToolOutput | McpToolOutput:
         payload = getattr(invocation_or_payload, "payload", invocation_or_payload)
         call_id = str(getattr(invocation_or_payload, "call_id", ""))
         if not isinstance(payload, ToolPayload) or payload.type != "function":
-            raise ValueError("mcp handler received unsupported payload")
+            raise FunctionCallError.respond_to_model(
+                "mcp handler received unsupported payload"
+            )
         if payload.arguments is None:
-            raise ValueError("mcp handler received unsupported payload")
+            raise FunctionCallError.respond_to_model(
+                "mcp handler received unsupported payload"
+            )
         try:
             arguments = json.loads(payload.arguments) if payload.arguments.strip() else {}
         except json.JSONDecodeError as err:
-            raise ValueError(f"failed to parse mcp tool arguments: {err}") from err
+            raise FunctionCallError.respond_to_model(
+                f"failed to parse function arguments: {err}"
+            ) from err
         if self.request_callback is None:
-            raise ValueError("mcp tool call requires a request callback in the Python port")
+            raise FunctionCallError.respond_to_model(
+                "mcp tool call requires a request callback in the Python port"
+            )
         output = self.request_callback(self.tool_info, call_id, self.tool_name(), arguments)
         if isinstance(output, FunctionToolOutput | McpToolOutput):
             return output
@@ -170,6 +234,33 @@ def mcp_tool_to_responses_api_tool(tool_info: ToolInfo) -> dict[str, JsonValue]:
     if tool.output_schema is not None:
         data["output_schema"] = copy.deepcopy(tool.output_schema)
     return data
+
+
+def join_tool_name(tool_name: ToolName) -> str:
+    if not isinstance(tool_name, ToolName):
+        raise TypeError("tool_name must be ToolName")
+    if tool_name.namespace is not None:
+        namespace = tool_name.namespace.rstrip("_")
+        name = tool_name.name.lstrip("_")
+        return f"{namespace}{MCP_TOOL_NAME_DELIMITER}{name}"
+    return tool_name.name
+
+
+def ensure_mcp_prefix(name: str) -> str:
+    if not isinstance(name, str):
+        raise TypeError("name must be a string")
+    return name if name.startswith(LEGACY_MCP_TOOL_NAME_PREFIX) else f"{LEGACY_MCP_TOOL_NAME_PREFIX}{name}"
+
+
+def mcp_hook_tool_input(raw_arguments: str) -> JsonValue:
+    if not isinstance(raw_arguments, str):
+        raise TypeError("raw_arguments must be a string")
+    if raw_arguments.strip() == "":
+        return {}
+    try:
+        return json.loads(raw_arguments)
+    except json.JSONDecodeError:
+        return raw_arguments
 
 
 def build_mcp_search_text(info: ToolInfo) -> str:
@@ -227,10 +318,15 @@ def _default_truncation_policy():
 
 
 __all__ = [
+    "LEGACY_MCP_TOOL_NAME_PREFIX",
+    "MCP_TOOL_NAME_DELIMITER",
     "McpHandler",
     "McpToolRequestCallback",
     "ToolInfo",
     "build_mcp_search_text",
     "create_mcp_tool_spec",
+    "ensure_mcp_prefix",
+    "join_tool_name",
+    "mcp_hook_tool_input",
     "mcp_tool_to_responses_api_tool",
 ]

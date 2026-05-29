@@ -54,6 +54,14 @@ class CoreCommandCanonicalizationTests(unittest.TestCase):
 
         self.assertEqual(canonicalize_command_for_approval(command), command)
 
+    def test_rejects_non_rust_command_shapes(self):
+        with self.assertRaises(TypeError):
+            canonicalize_command_for_approval("cargo fmt")  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            canonicalize_command_for_approval(["cargo", 1])  # type: ignore[list-item]
+        with self.assertRaises(TypeError):
+            canonicalize_command_for_approval(["cargo", True])  # type: ignore[list-item]
+
 
 if __name__ == "__main__":
     unittest.main()

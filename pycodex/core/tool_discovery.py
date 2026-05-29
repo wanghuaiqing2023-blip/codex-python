@@ -18,6 +18,7 @@ from pycodex.core.tool_search_handler import (
     TOOL_SEARCH_DEFAULT_LIMIT,
     TOOL_SEARCH_TOOL_NAME,
 )
+from pycodex.core.tool_search_entry import ToolSearchSourceInfo
 
 JsonValue = Any
 
@@ -53,8 +54,8 @@ class AppInfo:
     plugin_display_names: tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "id", str(self.id))
-        object.__setattr__(self, "name", str(self.name))
+        object.__setattr__(self, "id", _ensure_str(self.id, "id"))
+        object.__setattr__(self, "name", _ensure_str(self.name, "name"))
         object.__setattr__(self, "description", _optional_str(self.description))
         object.__setattr__(self, "logo_url", _optional_str(self.logo_url))
         object.__setattr__(self, "logo_url_dark", _optional_str(self.logo_url_dark))
@@ -65,8 +66,8 @@ class AppInfo:
         )
         object.__setattr__(self, "labels", _optional_tuple(self.labels))
         object.__setattr__(self, "install_url", _optional_str(self.install_url))
-        object.__setattr__(self, "is_accessible", bool(self.is_accessible))
-        object.__setattr__(self, "is_enabled", bool(self.is_enabled))
+        object.__setattr__(self, "is_accessible", _ensure_bool(self.is_accessible, "is_accessible"))
+        object.__setattr__(self, "is_enabled", _ensure_bool(self.is_enabled, "is_enabled"))
         object.__setattr__(
             self,
             "plugin_display_names",
@@ -75,9 +76,11 @@ class AppInfo:
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, JsonValue]) -> "AppInfo":
+        if not isinstance(value, Mapping):
+            raise TypeError("AppInfo mapping must be a mapping")
         return cls(
-            id=str(value["id"]),
-            name=str(value["name"]),
+            id=_ensure_str(value["id"], "id"),
+            name=_ensure_str(value["name"], "name"),
             description=_optional_str(value.get("description")),
             logo_url=_optional_str(value.get("logo_url")),
             logo_url_dark=_optional_str(value.get("logo_url_dark")),
@@ -86,8 +89,8 @@ class AppInfo:
             app_metadata=copy.deepcopy(value.get("app_metadata")),
             labels=_optional_tuple(value.get("labels")),
             install_url=_optional_str(value.get("install_url")),
-            is_accessible=bool(value.get("is_accessible", False)),
-            is_enabled=bool(value.get("is_enabled", False)),
+            is_accessible=_ensure_bool(value.get("is_accessible", False), "is_accessible"),
+            is_enabled=_ensure_bool(value.get("is_enabled", False), "is_enabled"),
             plugin_display_names=_string_tuple(value.get("plugin_display_names", ())),
         )
 
@@ -119,20 +122,22 @@ class DiscoverablePluginInfo:
     app_connector_ids: tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "id", str(self.id))
-        object.__setattr__(self, "name", str(self.name))
+        object.__setattr__(self, "id", _ensure_str(self.id, "id"))
+        object.__setattr__(self, "name", _ensure_str(self.name, "name"))
         object.__setattr__(self, "description", _optional_str(self.description))
-        object.__setattr__(self, "has_skills", bool(self.has_skills))
+        object.__setattr__(self, "has_skills", _ensure_bool(self.has_skills, "has_skills"))
         object.__setattr__(self, "mcp_server_names", _string_tuple(self.mcp_server_names))
         object.__setattr__(self, "app_connector_ids", _string_tuple(self.app_connector_ids))
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, JsonValue]) -> "DiscoverablePluginInfo":
+        if not isinstance(value, Mapping):
+            raise TypeError("DiscoverablePluginInfo mapping must be a mapping")
         return cls(
-            id=str(value["id"]),
-            name=str(value["name"]),
+            id=_ensure_str(value["id"], "id"),
+            name=_ensure_str(value["name"], "name"),
             description=_optional_str(value.get("description")),
-            has_skills=bool(value.get("has_skills", False)),
+            has_skills=_ensure_bool(value.get("has_skills", False), "has_skills"),
             mcp_server_names=_string_tuple(value.get("mcp_server_names", ())),
             app_connector_ids=_string_tuple(value.get("app_connector_ids", ())),
         )
@@ -161,16 +166,12 @@ class DiscoverableTool:
             if self.connector_info is None or self.plugin_info is not None:
                 raise ValueError("connector discoverable tool must contain only connector_info")
             if not isinstance(self.connector_info, AppInfo):
-                object.__setattr__(self, "connector_info", AppInfo.from_mapping(self.connector_info))
+                raise TypeError("connector_info must be AppInfo")
         else:
             if self.plugin_info is None or self.connector_info is not None:
                 raise ValueError("plugin discoverable tool must contain only plugin_info")
             if not isinstance(self.plugin_info, DiscoverablePluginInfo):
-                object.__setattr__(
-                    self,
-                    "plugin_info",
-                    DiscoverablePluginInfo.from_mapping(self.plugin_info),
-                )
+                raise TypeError("plugin_info must be DiscoverablePluginInfo")
 
     @classmethod
     def connector(cls, value: AppInfo | Mapping[str, JsonValue]) -> "DiscoverableTool":
@@ -187,6 +188,8 @@ class DiscoverableTool:
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, JsonValue]) -> "DiscoverableTool":
+        if not isinstance(value, Mapping):
+            raise TypeError("DiscoverableTool mapping must be a mapping")
         kind = _coerce_tool_type(value.get("type", value.get("tool_type")))
         if kind == DiscoverableToolType.CONNECTOR:
             return cls.connector(value.get("connector", value))
@@ -238,22 +241,24 @@ class RequestPluginInstallEntry:
     app_connector_ids: tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "id", str(self.id))
-        object.__setattr__(self, "name", str(self.name))
+        object.__setattr__(self, "id", _ensure_str(self.id, "id"))
+        object.__setattr__(self, "name", _ensure_str(self.name, "name"))
         object.__setattr__(self, "description", _optional_str(self.description))
         object.__setattr__(self, "tool_type", _coerce_tool_type(self.tool_type))
-        object.__setattr__(self, "has_skills", bool(self.has_skills))
+        object.__setattr__(self, "has_skills", _ensure_bool(self.has_skills, "has_skills"))
         object.__setattr__(self, "mcp_server_names", _string_tuple(self.mcp_server_names))
         object.__setattr__(self, "app_connector_ids", _string_tuple(self.app_connector_ids))
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, JsonValue]) -> "RequestPluginInstallEntry":
+        if not isinstance(value, Mapping):
+            raise TypeError("RequestPluginInstallEntry mapping must be a mapping")
         return cls(
-            id=str(value["id"]),
-            name=str(value["name"]),
+            id=_ensure_str(value["id"], "id"),
+            name=_ensure_str(value["name"], "name"),
             description=_optional_str(value.get("description")),
             tool_type=_coerce_tool_type(value["tool_type"]),
-            has_skills=bool(value.get("has_skills", False)),
+            has_skills=_ensure_bool(value.get("has_skills", False), "has_skills"),
             mcp_server_names=_string_tuple(value.get("mcp_server_names", ())),
             app_connector_ids=_string_tuple(value.get("app_connector_ids", ())),
         )
@@ -294,6 +299,8 @@ def filter_request_plugin_install_discoverable_tools_for_client(
     discoverable_tools: Iterable[DiscoverableTool | Mapping[str, JsonValue]],
     app_server_client_name: str | None,
 ) -> list[DiscoverableTool]:
+    if app_server_client_name is not None:
+        _ensure_str(app_server_client_name, "app_server_client_name")
     tools = [_coerce_discoverable_tool(tool) for tool in discoverable_tools]
     if app_server_client_name != TUI_CLIENT_NAME:
         return tools
@@ -340,6 +347,8 @@ def _coerce_discoverable_tool(
 ) -> DiscoverableTool:
     if isinstance(value, DiscoverableTool):
         return value
+    if not isinstance(value, Mapping):
+        raise TypeError("discoverable tool must be DiscoverableTool or mapping")
     return DiscoverableTool.from_mapping(value)
 
 
@@ -351,16 +360,35 @@ def _coerce_tool_type(value: DiscoverableToolType | str | JsonValue) -> Discover
     raise ValueError(f"unknown discoverable tool type: {value!r}")
 
 
+def _ensure_str(value: JsonValue, field_name: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{field_name} must be a string")
+    return value
+
+
+def _ensure_bool(value: JsonValue, field_name: str) -> bool:
+    if not isinstance(value, bool):
+        raise TypeError(f"{field_name} must be a bool")
+    return value
+
+
 def _optional_str(value: JsonValue) -> str | None:
-    return None if value is None else str(value)
+    if value is None:
+        return None
+    return _ensure_str(value, "optional string")
 
 
 def _string_tuple(value: JsonValue) -> tuple[str, ...]:
     if value is None:
         return ()
     if isinstance(value, str):
-        return (value,)
-    return tuple(str(item) for item in value)
+        raise TypeError("string list must be an iterable of strings, not a string")
+    if not isinstance(value, Iterable):
+        raise TypeError("string list must be iterable")
+    result: list[str] = []
+    for item in value:
+        result.append(_ensure_str(item, "string list item"))
+    return tuple(result)
 
 
 def _optional_tuple(value: JsonValue) -> tuple[str, ...] | None:
@@ -382,6 +410,7 @@ __all__ = [
     "TOOL_SEARCH_DEFAULT_LIMIT",
     "TOOL_SEARCH_TOOL_NAME",
     "TUI_CLIENT_NAME",
+    "ToolSearchSourceInfo",
     "collect_request_plugin_install_entries",
     "filter_request_plugin_install_discoverable_tools_for_client",
 ]

@@ -704,6 +704,34 @@ class CoreConfigEditTests(unittest.TestCase):
             (True, {"features": {"shell_tool": False}}),
         )
 
+
+    def test_config_edit_helpers_reject_implicit_coercions(self) -> None:
+        with self.assertRaises(ConfigEditError):
+            status_line_items_edit(["model", 123])
+        with self.assertRaises(ConfigEditError):
+            status_line_use_colors_edit(1)
+        with self.assertRaises(ConfigEditError):
+            keymap_binding_edit("composer", "submit", 123)
+        with self.assertRaises(ConfigEditError):
+            model_availability_nux_count_edits({"gpt-foo": -1})
+        with self.assertRaises(ConfigEditError):
+            model_availability_nux_count_edits({123: 1})
+        with self.assertRaises(ConfigEditError):
+            notice_hide_full_access_warning_edit("true")
+        with self.assertRaises(ConfigEditError):
+            ConfigEdit.set_path(("features", 123), True)
+
+    def test_config_edit_structures_reject_non_string_mapping_keys(self) -> None:
+        with self.assertRaises(ConfigEditError):
+            ConfigEdit.set_path(("root",), {1: "value"})
+        with self.assertRaises(ConfigEditError):
+            replace_mcp_servers_edit({1: McpServerConfig(McpServerTransportConfig(kind="stdio", command="cmd"))})
+        self.assertIsNone(ToolSuggestDisabledTool.from_mapping({"type": "plugin", "id": 123}))
+        with self.assertRaises(ConfigEditError):
+            SkillConfigSelector.name(123)
+        with self.assertRaises(ConfigEditError):
+            ConfigEdit.set_skill_config(SkillConfigSelector.name("demo"), 1)
+
     def test_empty_segments_are_rejected(self) -> None:
         with self.assertRaises(ConfigEditError):
             ConfigEdit.set_path((), True)

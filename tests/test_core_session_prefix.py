@@ -17,7 +17,7 @@ class SessionPrefixTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            format_subagent_notification_message("agent-b", {"completed": "done"}),
+            format_subagent_notification_message("agent-b", AgentStatus.completed("done")),
             '<subagent_notification>\n{"agent_path":"agent-b","status":{"completed":"done"}}\n</subagent_notification>',
         )
 
@@ -26,6 +26,16 @@ class SessionPrefixTests(unittest.TestCase):
         self.assertEqual(format_subagent_context_line("agent-a", ""), "- agent-a")
         self.assertEqual(format_subagent_context_line("agent-a", "builder"), "- agent-a: builder")
         self.assertEqual(format_subagent_context_line("agent-a", " "), "- agent-a:  ")
+
+    def test_rejects_non_rust_input_shapes(self) -> None:
+        with self.assertRaises(TypeError):
+            format_subagent_notification_message(123, AgentStatus.running())  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            format_subagent_notification_message("agent-a", "running")  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            format_subagent_context_line(123, None)  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            format_subagent_context_line("agent-a", 123)  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":

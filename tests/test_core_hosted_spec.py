@@ -54,6 +54,9 @@ class HostedSpecTests(unittest.TestCase):
             {"type": "image_generation", "output_format": "png"},
         )
 
+        with self.assertRaisesRegex(TypeError, "output_format must be a string"):
+            create_image_generation_tool(123)  # type: ignore[arg-type]
+
     def test_web_search_tool_preserves_configured_options(self) -> None:
         tool = create_web_search_tool(
             WebSearchToolOptions(
@@ -131,6 +134,31 @@ class HostedSpecTests(unittest.TestCase):
                 )
             )
         )
+
+    def test_tool_spec_rejects_mixed_variant_shapes(self) -> None:
+        with self.assertRaisesRegex(ValueError, "name is not valid"):
+            ToolSpec.image_generation("png").__class__(
+                type="image_generation",
+                name="bad",
+                output_format="png",
+            )
+
+        with self.assertRaisesRegex(TypeError, "format must be a FreeformToolFormat"):
+            ToolSpec(type="custom", name="exec", description="Run", format=None)
+
+        with self.assertRaisesRegex(ValueError, "unsupported tool spec type"):
+            ToolSpec(type="unknown")
+
+    def test_web_search_tool_options_reject_bad_shapes(self) -> None:
+        with self.assertRaisesRegex(TypeError, "web_search_tool_type must be a WebSearchToolType"):
+            WebSearchToolOptions(
+                web_search_mode=WebSearchMode.LIVE,
+                web_search_config=None,
+                web_search_tool_type="text",  # type: ignore[arg-type]
+            )
+
+        with self.assertRaisesRegex(TypeError, "options must be a WebSearchToolOptions"):
+            create_web_search_tool(object())  # type: ignore[arg-type]
         self.assertIsNone(
             create_web_search_tool(
                 WebSearchToolOptions(

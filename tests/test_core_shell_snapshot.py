@@ -88,19 +88,42 @@ class ShellSnapshotTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "snapshot.ps1"
             with self.assertRaisesRegex(ShellSnapshotError, "not supported yet"):
-                write_shell_snapshot(ShellType.POWERSHELL, output_path, tmpdir)
+                write_shell_snapshot(ShellType.POWERSHELL, output_path, Path(tmpdir))
             with self.assertRaisesRegex(ShellSnapshotError, "not supported yet"):
-                write_shell_snapshot(ShellType.CMD, output_path, tmpdir)
+                write_shell_snapshot(ShellType.CMD, output_path, Path(tmpdir))
 
     def test_shell_snapshot_close_removes_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "snapshot.sh"
             path.write_text("snapshot", encoding="utf-8")
-            snapshot = ShellSnapshot(path=path, cwd=tmpdir)
+            snapshot = ShellSnapshot(path=path, cwd=Path(tmpdir))
 
             snapshot.close()
 
             self.assertFalse(path.exists())
+
+
+    def test_shell_snapshot_helpers_reject_implicit_coercions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "snapshot.sh"
+            with self.assertRaises(TypeError):
+                ShellSnapshot(path=str(path), cwd=Path(tmpdir))
+            with self.assertRaises(TypeError):
+                shell_snapshot_extension("bash")
+            with self.assertRaises(TypeError):
+                shell_snapshot_paths(str(Path(tmpdir)), "thread-1", ShellType.BASH, nonce=1)
+            with self.assertRaises(TypeError):
+                shell_snapshot_paths(Path(tmpdir), 123, ShellType.BASH, nonce=1)
+            with self.assertRaises(TypeError):
+                shell_snapshot_paths(Path(tmpdir), "thread-1", ShellType.BASH, nonce=True)
+            with self.assertRaises(TypeError):
+                strip_snapshot_preamble(123)
+            with self.assertRaises(TypeError):
+                snapshot_session_id_from_file_name(path)
+            with self.assertRaises(TypeError):
+                cleanup_stale_snapshots(str(Path(tmpdir)), "active")
+            with self.assertRaises(TypeError):
+                remove_snapshot_file(str(path))
 
     def test_cleanup_stale_snapshots_removes_orphans_invalid_and_stale_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -152,7 +175,7 @@ class ShellSnapshotTests(unittest.TestCase):
 
     def test_cleanup_stale_snapshots_ignores_missing_snapshot_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            removed = cleanup_stale_snapshots(tmpdir, str(uuid.uuid4()))
+            removed = cleanup_stale_snapshots(Path(tmpdir), str(uuid.uuid4()))
 
             self.assertEqual(removed, [])
 

@@ -117,6 +117,38 @@ class ToolSearchEntryTests(unittest.TestCase):
             {"name": "Dynamic tools", "description": "Thread tools"},
         )
 
+
+    def test_tool_search_entries_reject_implicit_coercions(self) -> None:
+        with self.assertRaises(TypeError):
+            ToolSearchInfo.from_spec(123, {"type": "function", "name": "lookup"})
+        with self.assertRaises(TypeError):
+            ToolSearchSourceInfo(123, None)
+        with self.assertRaises(TypeError):
+            ToolSearchSourceInfo("source", 123)
+        with self.assertRaises(TypeError):
+            default_namespace_description(123)
+        with self.assertRaises(TypeError):
+            loadable_tool_spec_from_spec({"type": "namespace", "description": "", "tools": []})
+        with self.assertRaises(TypeError):
+            loadable_tool_spec_from_spec({"type": "namespace", "name": "mcp", "description": 123, "tools": []})
+        with self.assertRaises(TypeError):
+            loadable_tool_spec_from_spec({"type": "namespace", "name": "mcp", "description": "", "tools": {}})
+        with self.assertRaises(TypeError):
+            loadable_tool_spec_from_spec(
+                {
+                    "type": "namespace",
+                    "name": "mcp",
+                    "description": "",
+                    "tools": [{"type": "web_search", "name": "search"}],
+                }
+            )
+        with self.assertRaises(TypeError):
+            ToolSearchInfo.from_spec(
+                "lookup",
+                {"type": "function", "name": "lookup"},
+                {"name": 123},
+            )
+
     def test_loadable_namespace_specs_coalesce_in_result_order(self) -> None:
         specs = (
             {

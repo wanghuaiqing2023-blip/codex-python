@@ -156,6 +156,29 @@ class ThreadRolloutTruncationTests(unittest.TestCase):
         self.assertEqual(truncate_rollout_to_last_n_fork_turns(rollout, 2), rollout[1:])
         self.assertEqual(truncate_rollout_to_last_n_fork_turns(rollout, 1), rollout[5:])
 
+
+    def test_truncate_to_last_fork_turns_drops_startup_prefix_even_under_limit(self) -> None:
+        startup = response_item(assistant_msg("startup"))
+        rollout = [
+            startup,
+            response_item(user_msg("u1")),
+            response_item(assistant_msg("a1")),
+        ]
+
+        self.assertEqual(truncate_rollout_to_last_n_fork_turns(rollout, 10), rollout[1:])
+        self.assertEqual(truncate_rollout_to_last_n_fork_turns([startup], 10), [])
+
+    def test_truncation_counts_reject_non_usize_arguments(self) -> None:
+        rollout = [response_item(user_msg("u1"))]
+        with self.assertRaises(TypeError):
+            truncate_rollout_before_nth_user_message_from_start(rollout, True)
+        with self.assertRaises(ValueError):
+            truncate_rollout_before_nth_user_message_from_start(rollout, -1)
+        with self.assertRaises(TypeError):
+            truncate_rollout_to_last_n_fork_turns(rollout, False)
+        with self.assertRaises(ValueError):
+            truncate_rollout_to_last_n_fork_turns(rollout, -1)
+
     def test_rollout_mapping_payloads_are_supported(self) -> None:
         rollout = [
             response_item(user_msg("u1")).to_mapping(),

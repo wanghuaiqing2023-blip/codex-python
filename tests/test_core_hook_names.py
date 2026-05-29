@@ -31,6 +31,14 @@ class HookToolNameTests(unittest.TestCase):
         self.assertEqual(tool_name.name, "Bash")
         self.assertEqual(tool_name.matcher_aliases, ())
 
+    def test_rejects_non_rust_shapes(self) -> None:
+        with self.assertRaises(TypeError):
+            HookToolName.new(123)  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            HookToolName(name="tool", matcher_aliases=["Alias"])  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            HookToolName(name="tool", matcher_aliases=(1,))  # type: ignore[arg-type]
+
 
 if __name__ == "__main__":
     unittest.main()

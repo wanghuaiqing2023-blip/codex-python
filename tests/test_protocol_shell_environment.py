@@ -147,6 +147,37 @@ class ProtocolShellEnvironmentTests(unittest.TestCase):
 
         self.assertEqual(pathext_vars, [("PathExt", ".COM;.EXE;.BAT;.CMD;.PS1")])
 
+    def test_shell_environment_policy_rejects_non_rust_shapes(self):
+        with self.assertRaisesRegex(TypeError, "ignore_default_excludes must be a bool"):
+            ShellEnvironmentPolicy(ignore_default_excludes=1)  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "exclude must be a list of strings"):
+            ShellEnvironmentPolicy(exclude="*TOKEN*")  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "exclude entries must be strings"):
+            ShellEnvironmentPolicy(exclude=("*TOKEN*", 5))  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "set_values must be a mapping"):
+            ShellEnvironmentPolicy(set_values=[("FOO", "bar")])  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "set_values keys and values must be strings"):
+            ShellEnvironmentPolicy(set_values={"FOO": 5})  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "include_only must be a list of strings"):
+            ShellEnvironmentPolicy(include_only="PATH")  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "include_only entries must be strings"):
+            ShellEnvironmentPolicy(include_only=("PATH", 5))  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "use_profile must be a bool"):
+            ShellEnvironmentPolicy(use_profile=1)  # type: ignore[arg-type]
+
+    def test_populate_env_rejects_non_rust_inputs(self):
+        policy = ShellEnvironmentPolicy.default()
+        with self.assertRaisesRegex(TypeError, "policy must be a ShellEnvironmentPolicy"):
+            populate_env(make_vars([("PATH", "/usr/bin")]), object())  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "environment variables must be key/value pairs"):
+            populate_env(["PATH"], policy)  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "environment variable keys and values must be strings"):
+            populate_env([(123, "/usr/bin")], policy)  # type: ignore[list-item]
+        with self.assertRaisesRegex(TypeError, "environment variable keys and values must be strings"):
+            populate_env([("PATH", 123)], policy)  # type: ignore[list-item]
+        with self.assertRaisesRegex(TypeError, "thread_id must be a string or None"):
+            populate_env(make_vars([("PATH", "/usr/bin")]), policy, 123)  # type: ignore[arg-type]
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -15,6 +15,15 @@ class ResponseEvent:
     type: str
     item: ResponseItem | None = None
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.type, str):
+            raise TypeError("response event type must be a string")
+        if self.type in {"output_item_done", "output_item_added"}:
+            if not isinstance(self.item, ResponseItem):
+                raise TypeError(f"{self.type} event requires a ResponseItem")
+        elif self.item is not None:
+            raise TypeError(f"{self.type} event must not include an item")
+
     @classmethod
     def created(cls) -> "ResponseEvent":
         return cls("created")
@@ -80,6 +89,10 @@ class TurnTimingState:
     first_message_at: float | None = None
 
     def mark_turn_started(self, started_at: float | None = None) -> int:
+        if started_at is not None and (
+            isinstance(started_at, bool) or not isinstance(started_at, int | float)
+        ):
+            raise TypeError("started_at must be a monotonic timestamp or None")
         started_at_unix_ms = now_unix_timestamp_ms()
         self.started_at = time.monotonic() if started_at is None else started_at
         self.started_at_unix_secs_value = started_at_unix_ms // 1000
@@ -106,11 +119,15 @@ class TurnTimingState:
         self,
         event: ResponseEvent,
     ) -> timedelta | None:
+        if not isinstance(event, ResponseEvent):
+            raise TypeError("event must be a ResponseEvent")
         if not response_event_records_turn_ttft(event):
             return None
         return self._record_turn_ttft()
 
     def record_ttfm_for_turn_item(self, item: TurnItem) -> timedelta | None:
+        if not isinstance(item, TurnItem):
+            raise TypeError("item must be a TurnItem")
         if item.type != "AgentMessage":
             return None
         return self._record_turn_ttfm()
@@ -142,6 +159,8 @@ def now_unix_timestamp_ms() -> int:
 
 
 def response_event_records_turn_ttft(event: ResponseEvent) -> bool:
+    if not isinstance(event, ResponseEvent):
+        raise TypeError("event must be a ResponseEvent")
     if event.type in {"output_item_done", "output_item_added"}:
         return event.item is not None and response_item_records_turn_ttft(event.item)
     if event.type in {
@@ -154,6 +173,8 @@ def response_event_records_turn_ttft(event: ResponseEvent) -> bool:
 
 
 def response_item_records_turn_ttft(item: ResponseItem) -> bool:
+    if not isinstance(item, ResponseItem):
+        raise TypeError("item must be a ResponseItem")
     if item.type == "message":
         raw_text = raw_assistant_output_text_from_item(item)
         return raw_text is not None and raw_text != ""

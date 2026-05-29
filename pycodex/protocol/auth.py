@@ -56,8 +56,18 @@ class PlanType:
     known: KnownPlan | None = None
     unknown: str | None = None
 
+    def __post_init__(self) -> None:
+        if self.known is not None and not isinstance(self.known, KnownPlan):
+            raise TypeError("known must be a KnownPlan or None")
+        if self.unknown is not None and not isinstance(self.unknown, str):
+            raise TypeError("unknown must be a string or None")
+        if (self.known is None) == (self.unknown is None):
+            raise ValueError("plan type must contain exactly one variant")
+
     @classmethod
     def from_raw_value(cls, raw: str) -> "PlanType":
+        if not isinstance(raw, str):
+            raise TypeError("raw plan type must be a string")
         normalized = raw.lower()
         aliases = {
             "education": KnownPlan.EDU,
@@ -74,10 +84,14 @@ class PlanType:
 
     @classmethod
     def known_plan(cls, plan: KnownPlan) -> "PlanType":
+        if not isinstance(plan, KnownPlan):
+            raise TypeError("plan must be a KnownPlan")
         return cls(known=plan)
 
     @classmethod
     def unknown_plan(cls, raw: str) -> "PlanType":
+        if not isinstance(raw, str):
+            raise TypeError("raw unknown plan must be a string")
         return cls(unknown=raw)
 
     def is_known(self) -> bool:
@@ -93,6 +107,10 @@ class RefreshTokenFailedReason(str, Enum):
 
 class RefreshTokenFailedError(Exception):
     def __init__(self, reason: RefreshTokenFailedReason, message: str) -> None:
+        if not isinstance(reason, RefreshTokenFailedReason):
+            raise TypeError("reason must be a RefreshTokenFailedReason")
+        if not isinstance(message, str):
+            raise TypeError("message must be a string")
         super().__init__(message)
         self.reason = reason
         self.message = message

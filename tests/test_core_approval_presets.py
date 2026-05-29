@@ -22,6 +22,27 @@ class ApprovalPresetsTests(unittest.TestCase):
         self.assertEqual(tuple(preset.id for preset in presets), ("read-only", "auto", "full-access"))
         self.assertTrue(all(isinstance(preset, ApprovalPreset) for preset in presets))
 
+    def test_approval_preset_rejects_non_rust_shapes(self) -> None:
+        active = ActivePermissionProfile.new(BUILT_IN_PERMISSION_PROFILE_READ_ONLY)
+        profile = PermissionProfile.read_only()
+
+        with self.assertRaisesRegex(TypeError, "id must be a string"):
+            ApprovalPreset(123, "Read Only", "desc", AskForApproval.ON_REQUEST, active, profile)  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "label must be a string"):
+            ApprovalPreset("read-only", 123, "desc", AskForApproval.ON_REQUEST, active, profile)  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "description must be a string"):
+            ApprovalPreset("read-only", "Read Only", 123, AskForApproval.ON_REQUEST, active, profile)  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "approval must be an AskForApproval"):
+            ApprovalPreset("read-only", "Read Only", "desc", object(), active, profile)  # type: ignore[arg-type]
+        self.assertIs(
+            ApprovalPreset("read-only", "Read Only", "desc", "on-request", active, profile).approval,
+            AskForApproval.ON_REQUEST,
+        )
+        with self.assertRaisesRegex(TypeError, "active_permission_profile must be an ActivePermissionProfile"):
+            ApprovalPreset("read-only", "Read Only", "desc", AskForApproval.ON_REQUEST, "read-only", profile)  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "permission_profile must be a PermissionProfile"):
+            ApprovalPreset("read-only", "Read Only", "desc", AskForApproval.ON_REQUEST, active, "read-only")  # type: ignore[arg-type]
+
     def test_read_only_preset_pairs_on_request_with_read_only_profile(self) -> None:
         preset = builtin_approval_presets()[0]
 
@@ -89,6 +110,8 @@ class ApprovalPresetsTests(unittest.TestCase):
                 ActivePermissionProfile.new("custom")
             )
         )
+        with self.assertRaisesRegex(TypeError, "active_permission_profile must be an ActivePermissionProfile"):
+            builtin_permission_profile_for_active_permission_profile("read-only")  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":

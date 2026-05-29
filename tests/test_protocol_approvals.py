@@ -42,10 +42,30 @@ class ProtocolApprovalsTests(unittest.TestCase):
         self.assertEqual(amendment.command, ("git", "status"))
         self.assertEqual(amendment.command_tokens(), ("git", "status"))
 
+        with self.assertRaisesRegex(TypeError, "command must be a list of strings"):
+            ExecPolicyAmendment.new("git status")  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "command must be a list of strings"):
+            ExecPolicyAmendment.new(["git", 123])  # type: ignore[list-item]
+
     def test_network_approval_protocol_accepts_upstream_aliases(self):
         self.assertIs(NetworkApprovalProtocol.parse("http"), NetworkApprovalProtocol.HTTP)
         self.assertIs(NetworkApprovalProtocol.parse("https_connect"), NetworkApprovalProtocol.HTTPS)
         self.assertIs(NetworkApprovalProtocol.parse("http-connect"), NetworkApprovalProtocol.HTTPS)
+        with self.assertRaisesRegex(TypeError, "network approval protocol must be a string"):
+            NetworkApprovalProtocol.parse(123)  # type: ignore[arg-type]
+
+    def test_network_context_and_amendments_reject_non_rust_shapes(self):
+        self.assertEqual(
+            NetworkApprovalContext("api.example.com", "https").protocol,
+            NetworkApprovalProtocol.HTTPS,
+        )
+        with self.assertRaisesRegex(TypeError, "host must be a string"):
+            NetworkApprovalContext(123, NetworkApprovalProtocol.HTTPS)  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "protocol must be a NetworkApprovalProtocol"):
+            NetworkApprovalContext("api.example.com", object())  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "host must be a string"):
+            NetworkPolicyAmendment(123, NetworkPolicyRuleAction.ALLOW)  # type: ignore[arg-type]
+        self.assertIs(NetworkPolicyAmendment("api.example.com", "allow").action, NetworkPolicyRuleAction.ALLOW)
 
     def test_review_decision_opaque_strings_match_upstream(self):
         allow = NetworkPolicyAmendment("example.com", NetworkPolicyRuleAction.ALLOW)
@@ -174,6 +194,14 @@ class ProtocolApprovalsTests(unittest.TestCase):
         self.assertFalse(request.is_empty())
         self.assertEqual(additional, AdditionalPermissionProfile(network=NetworkPermissions(enabled=True)))
         self.assertEqual(RequestPermissionProfile.from_additional_permission_profile(additional), request)
+        with self.assertRaisesRegex(TypeError, "value must be AdditionalPermissionProfile"):
+            RequestPermissionProfile.from_additional_permission_profile({"network": {"enabled": True}})
+        with self.assertRaisesRegex(TypeError, "network must be NetworkPermissions"):
+            RequestPermissionProfile(network={"enabled": True})
+        with self.assertRaisesRegex(TypeError, "file_system must be FileSystemPermissions"):
+            RequestPermissionProfile(file_system={"read": ["/read"]})
+        with self.assertRaisesRegex(ValueError, "unknown field"):
+            RequestPermissionProfile.from_mapping({"network": {"enabled": True}, "unexpected": True})
 
     def test_request_permissions_events_and_defaults(self):
         request = RequestPermissionProfile(network=NetworkPermissions(enabled=True))
@@ -187,6 +215,82 @@ class ProtocolApprovalsTests(unittest.TestCase):
             RequestPermissionsEvent("call", 10, request, cwd=Path("/tmp")).cwd,
             Path("/tmp"),
         )
+        with self.assertRaisesRegex(TypeError, "permissions must be RequestPermissionProfile"):
+            RequestPermissionsArgs({"network": {"enabled": True}})
+        with self.assertRaisesRegex(TypeError, "reason must be a string"):
+            RequestPermissionsArgs(request, reason=123)
+        with self.assertRaisesRegex(TypeError, "permissions must be RequestPermissionProfile"):
+            RequestPermissionsResponse({"network": {"enabled": True}})
+        with self.assertRaisesRegex(TypeError, "scope must be a string"):
+            RequestPermissionsResponse(request, scope=123)
+        with self.assertRaisesRegex(TypeError, "scope must be a string"):
+            RequestPermissionsResponse.from_mapping(
+                {
+                    "permissions": {"network": {"enabled": True}},
+                    "scope": 123,
+                }
+            )
+        with self.assertRaisesRegex(TypeError, "strict_auto_review must be a bool"):
+            RequestPermissionsResponse(request, strict_auto_review="false")
+        with self.assertRaisesRegex(TypeError, "started_at_ms must be an integer"):
+            RequestPermissionsEvent("call", True, request)
+        self.assertEqual(RequestPermissionsEvent("call", -1, request).started_at_ms, -1)
+        self.assertEqual(RequestPermissionsEvent("call", -(2**63), request).started_at_ms, -(2**63))
+        self.assertEqual(RequestPermissionsEvent("call", 2**63 - 1, request).started_at_ms, 2**63 - 1)
+        with self.assertRaisesRegex(ValueError, "started_at_ms must fit in i64"):
+            RequestPermissionsEvent("call", -(2**63) - 1, request)
+        with self.assertRaisesRegex(ValueError, "started_at_ms must fit in i64"):
+            RequestPermissionsEvent("call", 2**63, request)
+        with self.assertRaisesRegex(TypeError, "permissions must be RequestPermissionProfile"):
+            RequestPermissionsEvent("call", 10, {"network": {"enabled": True}})
+        with self.assertRaisesRegex(TypeError, "cwd must be a string or Path"):
+            RequestPermissionsEvent("call", 10, request, cwd=123)
+        with self.assertRaisesRegex(TypeError, "turn_id must be a string"):
+            RequestPermissionsEvent.from_mapping(
+                {
+                    "call_id": "call",
+                    "turn_id": 123,
+                    "started_at_ms": 10,
+                    "permissions": {"network": {"enabled": True}},
+                }
+            )
+        self.assertEqual(
+            RequestPermissionsEvent.from_mapping(
+                {
+                    "call_id": "call",
+                    "started_at_ms": -1,
+                    "permissions": {"network": {"enabled": True}},
+                }
+            ).started_at_ms,
+            -1,
+        )
+        with self.assertRaisesRegex(ValueError, "started_at_ms must fit in i64"):
+            RequestPermissionsEvent.from_mapping(
+                {
+                    "call_id": "call",
+                    "started_at_ms": 2**63,
+                    "permissions": {"network": {"enabled": True}},
+                }
+            )
+
+    def test_request_permissions_args_round_trips_upstream_json_shape(self):
+        request = RequestPermissionProfile(network=NetworkPermissions(enabled=True))
+        args = RequestPermissionsArgs(request, reason="need network")
+        args_without_reason = RequestPermissionsArgs(request)
+
+        self.assertEqual(
+            args.to_mapping(),
+            {
+                "permissions": {"network": {"enabled": True}},
+                "reason": "need network",
+            },
+        )
+        self.assertEqual(RequestPermissionsArgs.from_mapping(args.to_mapping()), args)
+        self.assertEqual(
+            args_without_reason.to_mapping(),
+            {"permissions": {"network": {"enabled": True}}},
+        )
+        self.assertEqual(RequestPermissionsArgs.from_mapping(args_without_reason.to_mapping()), args_without_reason)
 
     def test_request_permissions_response_round_trips_upstream_json_shape(self):
         request = RequestPermissionProfile(network=NetworkPermissions(enabled=True))
@@ -295,6 +399,27 @@ class ProtocolApprovalsTests(unittest.TestCase):
         self.assertEqual(event.turn_id, "")
         self.assertEqual(event.started_at_ms, 0)
 
+        with self.assertRaisesRegex(TypeError, "id must be a string"):
+            GuardianAssessmentEvent(123, GuardianAssessmentStatus.APPROVED, action)  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "turn_id must be a string"):
+            GuardianAssessmentEvent("review-1", GuardianAssessmentStatus.APPROVED, action, turn_id=123)  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "started_at_ms must be an integer"):
+            GuardianAssessmentEvent("review-1", GuardianAssessmentStatus.APPROVED, action, started_at_ms=True)
+        with self.assertRaisesRegex(ValueError, "started_at_ms must fit in i64"):
+            GuardianAssessmentEvent("review-1", GuardianAssessmentStatus.APPROVED, action, started_at_ms=2**63)
+        with self.assertRaisesRegex(TypeError, "action must be a GuardianAssessmentAction"):
+            GuardianAssessmentEvent("review-1", GuardianAssessmentStatus.APPROVED, object())  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "turn_id must be a string"):
+            GuardianAssessmentEvent.from_mapping(
+                {
+                    "id": "review-1",
+                    "turn_id": 123,
+                    "started_at_ms": 0,
+                    "status": "approved",
+                    "action": {"type": "command", "source": "shell", "command": "ls", "cwd": "."},
+                }
+            )
+
     def test_guardian_assessment_event_round_trips_upstream_json_shape(self):
         payload = {
             "id": "review-1",
@@ -337,12 +462,41 @@ class ProtocolApprovalsTests(unittest.TestCase):
         self.assertEqual(event.changes[Path("move.py")].move_path, Path("new_move.py"))
         self.assertEqual(event.grant_root, Path("/repo"))
 
+        with self.assertRaisesRegex(TypeError, "add file change requires content"):
+            FileChange("add")
+        with self.assertRaisesRegex(ValueError, "add file change cannot include update fields"):
+            FileChange("add", content="new", unified_diff="--- diff")
+        with self.assertRaisesRegex(TypeError, "update file change requires unified_diff"):
+            FileChange("update")
+        with self.assertRaisesRegex(ValueError, "unknown file change type"):
+            FileChange("copy")
+        with self.assertRaisesRegex(TypeError, "call_id must be a string"):
+            ApplyPatchApprovalRequestEvent(123, 1, changes)  # type: ignore[arg-type]
+        with self.assertRaisesRegex(ValueError, "started_at_ms must fit in i64"):
+            ApplyPatchApprovalRequestEvent("call", 2**63, changes)
+        with self.assertRaisesRegex(TypeError, "changes must be a mapping"):
+            ApplyPatchApprovalRequestEvent("call", 1, [])  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "change values must be FileChange"):
+            ApplyPatchApprovalRequestEvent("call", 1, {Path("x.py"): {"type": "add"}})  # type: ignore[dict-item]
+        with self.assertRaisesRegex(TypeError, "grant_root must be a string or Path"):
+            ApplyPatchApprovalRequestEvent("call", 1, changes, grant_root=123)  # type: ignore[arg-type]
+
     def test_escalation_permissions_variants(self):
         additional = AdditionalPermissionProfile(network=NetworkPermissions(enabled=True))
         resolved = ResolvedPermissionProfile(PermissionProfile.disabled())
 
         self.assertEqual(EscalationPermissions.additional(additional).additional_permission_profile, additional)
         self.assertEqual(EscalationPermissions.resolved(resolved).resolved_permission_profile, resolved)
+        with self.assertRaisesRegex(TypeError, "permission_profile must be a PermissionProfile"):
+            ResolvedPermissionProfile("disabled")  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "additional_permission_profile must be an AdditionalPermissionProfile"):
+            EscalationPermissions.additional({"network": {"enabled": True}})  # type: ignore[arg-type]
+        with self.assertRaisesRegex(ValueError, "resolved_permission_profile variant cannot include"):
+            EscalationPermissions(
+                "resolved_permission_profile",
+                additional_permission_profile=additional,
+                resolved_permission_profile=resolved,
+            )
 
 
 if __name__ == "__main__":

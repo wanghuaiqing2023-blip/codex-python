@@ -10,11 +10,20 @@ from enum import Enum
 
 from pycodex.protocol import TokenUsage
 
+I64_MIN = -(1 << 63)
+I64_MAX = (1 << 63) - 1
+U64_MAX = (1 << 64) - 1
+
 
 @dataclass(frozen=True)
 class AutoCompactWindowSnapshot:
     ordinal: int
     prefill_input_tokens: int | None = None
+
+    def __post_init__(self) -> None:
+        _ensure_u64(self.ordinal, "ordinal")
+        if self.prefill_input_tokens is not None:
+            _ensure_non_negative_i64(self.prefill_input_tokens, "prefill_input_tokens")
 
 
 class AutoCompactWindowPrefillKind(str, Enum):
@@ -26,6 +35,11 @@ class AutoCompactWindowPrefillKind(str, Enum):
 class AutoCompactWindowPrefill:
     kind: AutoCompactWindowPrefillKind
     tokens: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, AutoCompactWindowPrefillKind):
+            raise TypeError("kind must be an AutoCompactWindowPrefillKind")
+        _ensure_non_negative_i64(self.tokens, "tokens")
 
 
 class AutoCompactWindow:
@@ -41,6 +55,8 @@ class AutoCompactWindow:
         self.clear_prefill()
 
     def ensure_server_observed_prefill_from_usage(self, usage: TokenUsage) -> None:
+        if not isinstance(usage, TokenUsage):
+            raise TypeError("usage must be a TokenUsage")
         if (
             self.prefill_input_tokens is not None
             and self.prefill_input_tokens.kind is AutoCompactWindowPrefillKind.SERVER_OBSERVED
@@ -53,6 +69,7 @@ class AutoCompactWindow:
         )
 
     def set_estimated_prefill(self, tokens: int) -> None:
+        _ensure_i64(tokens, "tokens")
         if (
             self.prefill_input_tokens is not None
             and self.prefill_input_tokens.kind is AutoCompactWindowPrefillKind.SERVER_OBSERVED
@@ -76,7 +93,32 @@ class AutoCompactWindow:
 
 
 def _saturating_add_u64(value: int, increment: int) -> int:
-    return min(max(value, 0) + max(increment, 0), (1 << 64) - 1)
+    _ensure_u64(value, "value")
+    _ensure_u64(increment, "increment")
+    return min(value + increment, U64_MAX)
+
+
+def _ensure_i64(value: int, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer")
+    if value < I64_MIN or value > I64_MAX:
+        raise ValueError(f"{name} out of i64 range")
+    return value
+
+
+def _ensure_non_negative_i64(value: int, name: str) -> int:
+    _ensure_i64(value, name)
+    if value < 0:
+        raise ValueError(f"{name} must be non-negative")
+    return value
+
+
+def _ensure_u64(value: int, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer")
+    if value < 0 or value > U64_MAX:
+        raise ValueError(f"{name} out of u64 range")
+    return value
 
 
 __all__ = [
@@ -84,4 +126,5 @@ __all__ = [
     "AutoCompactWindowPrefill",
     "AutoCompactWindowPrefillKind",
     "AutoCompactWindowSnapshot",
+    "U64_MAX",
 ]

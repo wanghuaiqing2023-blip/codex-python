@@ -136,8 +136,14 @@ class PermissionsPromptConfig:
     request_permissions_tool_enabled: bool = False
 
     def __post_init__(self) -> None:
+        if not isinstance(self.approval_policy, AskForApproval | GranularApprovalConfig):
+            raise TypeError("approval_policy must be an AskForApproval or GranularApprovalConfig")
         if not isinstance(self.approvals_reviewer, ApprovalsReviewer):
-            object.__setattr__(self, "approvals_reviewer", ApprovalsReviewer.parse(str(self.approvals_reviewer)))
+            raise TypeError("approvals_reviewer must be an ApprovalsReviewer")
+        if not isinstance(self.exec_permission_approvals_enabled, bool):
+            raise TypeError("exec_permission_approvals_enabled must be a bool")
+        if not isinstance(self.request_permissions_tool_enabled, bool):
+            raise TypeError("request_permissions_tool_enabled must be a bool")
 
 
 @dataclass(frozen=True)
@@ -220,10 +226,12 @@ class CommandPrefixPolicy:
         if not prefix:
             raise ValueError("prefix cannot be empty")
         if not isinstance(decision, Decision):
-            decision = Decision(str(decision))
+            raise TypeError("decision must be a Decision")
         if decision is not Decision.ALLOW:
             return
-        rendered = tuple(str(token) for token in prefix)
+        rendered = tuple(prefix)
+        if any(not isinstance(token, str) for token in rendered):
+            raise TypeError("prefix tokens must be strings")
         if rendered not in self.allowed_prefixes:
             self.allowed_prefixes.append(rendered)
 
@@ -232,6 +240,10 @@ class CommandPrefixPolicy:
 
 
 def append_section(text: str, section: str) -> str:
+    if not isinstance(text, str):
+        raise TypeError("text must be a string")
+    if not isinstance(section, str):
+        raise TypeError("section must be a string")
     if not text.endswith("\n"):
         text += "\n"
     return text + section
@@ -241,6 +253,10 @@ def sandbox_prompt_from_profile(
     permission_profile: PermissionProfile,
     cwd: Path | str,
 ) -> tuple[SandboxMode, tuple[WritableRoot, ...] | None]:
+    if not isinstance(permission_profile, PermissionProfile):
+        raise TypeError("permission_profile must be a PermissionProfile")
+    if not isinstance(cwd, Path | str):
+        raise TypeError("cwd must be a path")
     if permission_profile.type in {"disabled", "external"}:
         return SandboxMode.DANGER_FULL_ACCESS, None
 
@@ -255,14 +271,16 @@ def sandbox_prompt_from_profile(
 
 
 def network_access_from_policy(network_policy: NetworkSandboxPolicy) -> NetworkAccess:
+    if not isinstance(network_policy, NetworkSandboxPolicy):
+        raise TypeError("network_policy must be a NetworkSandboxPolicy")
     return NetworkAccess.ENABLED if network_policy.is_enabled() else NetworkAccess.RESTRICTED
 
 
 def sandbox_text(mode: SandboxMode, network_access: NetworkAccess) -> str:
     if not isinstance(mode, SandboxMode):
-        mode = SandboxMode(str(mode))
+        raise TypeError("mode must be a SandboxMode")
     if not isinstance(network_access, NetworkAccess):
-        network_access = NetworkAccess(str(network_access))
+        raise TypeError("network_access must be a NetworkAccess")
     template = {
         SandboxMode.DANGER_FULL_ACCESS: SANDBOX_MODE_DANGER_FULL_ACCESS,
         SandboxMode.WORKSPACE_WRITE: SANDBOX_MODE_WORKSPACE_WRITE,
@@ -274,7 +292,11 @@ def sandbox_text(mode: SandboxMode, network_access: NetworkAccess) -> str:
 def writable_roots_text(writable_roots: Iterable[WritableRoot] | None) -> str | None:
     if writable_roots is None:
         return None
+    if isinstance(writable_roots, str):
+        raise TypeError("writable_roots must be an iterable of WritableRoot values")
     roots = sorted(writable_roots, key=lambda root: str(root.root))
+    if any(not isinstance(root, WritableRoot) for root in roots):
+        raise TypeError("writable_roots must contain WritableRoot values")
     if not roots:
         return None
     roots_list = [f"`{root.root}`" for root in roots]
@@ -292,6 +314,10 @@ def approval_text(
 ) -> str:
     approval_policy = _coerce_approval_policy(approval_policy)
     approvals_reviewer = _coerce_approvals_reviewer(approvals_reviewer)
+    if not isinstance(exec_permission_approvals_enabled, bool):
+        raise TypeError("exec_permission_approvals_enabled must be a bool")
+    if not isinstance(request_permissions_tool_enabled, bool):
+        raise TypeError("request_permissions_tool_enabled must be a bool")
 
     if isinstance(approval_policy, GranularApprovalConfig):
         text = granular_instructions(
@@ -347,6 +373,12 @@ def granular_instructions(
     exec_permission_approvals_enabled: bool = False,
     request_permissions_tool_enabled: bool = False,
 ) -> str:
+    if not isinstance(granular_config, GranularApprovalConfig):
+        raise TypeError("granular_config must be a GranularApprovalConfig")
+    if not isinstance(exec_permission_approvals_enabled, bool):
+        raise TypeError("exec_permission_approvals_enabled must be a bool")
+    if not isinstance(request_permissions_tool_enabled, bool):
+        raise TypeError("request_permissions_tool_enabled must be a bool")
     sandbox_approval_prompts_allowed = granular_config.allows_sandbox_approval()
     shell_permission_requests_available = exec_permission_approvals_enabled and sandbox_approval_prompts_allowed
     request_permissions_tool_prompts_allowed = (
@@ -387,6 +419,10 @@ def granular_instructions(
 
 
 def _with_request_permissions_tool(text: str, request_permissions_tool_enabled: bool) -> str:
+    if not isinstance(text, str):
+        raise TypeError("text must be a string")
+    if not isinstance(request_permissions_tool_enabled, bool):
+        raise TypeError("request_permissions_tool_enabled must be a bool")
     if request_permissions_tool_enabled:
         return f"{text}\n\n{request_permissions_tool_prompt_section()}"
     return text
@@ -403,8 +439,16 @@ def _allowed_prefixes_from_policy(exec_policy: object | None) -> list[list[str]]
     if not prefixes:
         return []
     if all(isinstance(token, str) for token in prefixes):
-        return [[str(token) for token in prefixes]]
-    return [[str(token) for token in prefix] for prefix in prefixes]
+        return [list(prefixes)]
+    rendered: list[list[str]] = []
+    for prefix in prefixes:
+        if isinstance(prefix, str):
+            raise TypeError("approved prefix entries must be string sequences")
+        prefix_tokens = list(prefix)
+        if any(not isinstance(token, str) for token in prefix_tokens):
+            raise TypeError("approved prefix tokens must be strings")
+        rendered.append(prefix_tokens)
+    return rendered
 
 
 def _coerce_approval_policy(
@@ -414,13 +458,13 @@ def _coerce_approval_policy(
         return approval_policy
     if isinstance(approval_policy, AskForApproval):
         return approval_policy
-    return AskForApproval.parse(str(approval_policy))
+    raise TypeError("approval_policy must be an AskForApproval or GranularApprovalConfig")
 
 
 def _coerce_approvals_reviewer(approvals_reviewer: ApprovalsReviewer | str) -> ApprovalsReviewer:
     if isinstance(approvals_reviewer, ApprovalsReviewer):
         return approvals_reviewer
-    return ApprovalsReviewer.parse(str(approvals_reviewer))
+    raise TypeError("approvals_reviewer must be an ApprovalsReviewer")
 
 
 __all__ = [

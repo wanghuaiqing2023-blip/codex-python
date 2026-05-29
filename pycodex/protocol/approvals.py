@@ -19,6 +19,8 @@ from .models import AdditionalPermissionProfile, PermissionProfile
 from .request_permissions import RequestPermissionProfile
 
 JsonValue = Any
+I64_MIN = -(2**63)
+I64_MAX = 2**63 - 1
 
 
 def _mapping(value: JsonValue, label: str) -> dict[str, JsonValue]:
@@ -59,6 +61,22 @@ def _optional_int(value: dict[str, JsonValue], key: str) -> int | None:
     return raw
 
 
+def _ensure_i64(value: JsonValue, key: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{key} must be an integer")
+    if not I64_MIN <= value <= I64_MAX:
+        raise ValueError(f"{key} must fit in i64")
+    return value
+
+
+def _ensure_u16(value: JsonValue, key: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{key} must be an integer")
+    if not 0 <= value <= 65535:
+        raise ValueError(f"{key} must fit in u16")
+    return value
+
+
 def _string_list(value: JsonValue, label: str) -> tuple[str, ...]:
     if not isinstance(value, list | tuple) or not all(isinstance(item, str) for item in value):
         raise TypeError(f"{label} must be a list of strings")
@@ -73,12 +91,33 @@ def _path_list(value: JsonValue, label: str) -> tuple[Path, ...]:
 class ResolvedPermissionProfile:
     permission_profile: PermissionProfile
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.permission_profile, PermissionProfile):
+            raise TypeError("permission_profile must be a PermissionProfile")
+
 
 @dataclass(frozen=True)
 class EscalationPermissions:
     type: str
     additional_permission_profile: AdditionalPermissionProfile | None = None
     resolved_permission_profile: ResolvedPermissionProfile | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.type, str):
+            raise TypeError("type must be a string")
+        if self.type == "additional_permission_profile":
+            if not isinstance(self.additional_permission_profile, AdditionalPermissionProfile):
+                raise TypeError("additional_permission_profile must be an AdditionalPermissionProfile")
+            if self.resolved_permission_profile is not None:
+                raise ValueError("additional_permission_profile variant cannot include resolved_permission_profile")
+            return
+        if self.type == "resolved_permission_profile":
+            if not isinstance(self.resolved_permission_profile, ResolvedPermissionProfile):
+                raise TypeError("resolved_permission_profile must be a ResolvedPermissionProfile")
+            if self.additional_permission_profile is not None:
+                raise ValueError("resolved_permission_profile variant cannot include additional_permission_profile")
+            return
+        raise ValueError(f"unknown escalation permissions type: {self.type}")
 
     @classmethod
     def additional(cls, profile: AdditionalPermissionProfile) -> "EscalationPermissions":
@@ -92,6 +131,13 @@ class EscalationPermissions:
 @dataclass(frozen=True)
 class ExecPolicyAmendment:
     command: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if isinstance(self.command, str) or not isinstance(self.command, (list, tuple)):
+            raise TypeError("command must be a list of strings")
+        object.__setattr__(self, "command", tuple(self.command))
+        if not all(isinstance(token, str) for token in self.command):
+            raise TypeError("command must be a list of strings")
 
     @classmethod
     def new(cls, command: list[str] | tuple[str, ...]) -> "ExecPolicyAmendment":
@@ -120,6 +166,8 @@ class NetworkApprovalProtocol(str, Enum):
 
     @classmethod
     def parse(cls, value: str) -> "NetworkApprovalProtocol":
+        if not isinstance(value, str):
+            raise TypeError("network approval protocol must be a string")
         if value in {"https_connect", "http-connect"}:
             return cls.HTTPS
         return cls(value)
@@ -129,6 +177,15 @@ class NetworkApprovalProtocol(str, Enum):
 class NetworkApprovalContext:
     host: str
     protocol: NetworkApprovalProtocol
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.host, str):
+            raise TypeError("host must be a string")
+        if not isinstance(self.protocol, NetworkApprovalProtocol):
+            if isinstance(self.protocol, str):
+                object.__setattr__(self, "protocol", NetworkApprovalProtocol.parse(self.protocol))
+            else:
+                raise TypeError("protocol must be a NetworkApprovalProtocol")
 
 
 class NetworkPolicyRuleAction(str, Enum):
@@ -140,6 +197,11 @@ class NetworkPolicyRuleAction(str, Enum):
 class NetworkPolicyAmendment:
     host: str
     action: NetworkPolicyRuleAction
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.host, str):
+            raise TypeError("host must be a string")
+        object.__setattr__(self, "action", NetworkPolicyRuleAction(self.action))
 
     @classmethod
     def from_mapping(cls, value: JsonValue) -> "NetworkPolicyAmendment":
@@ -365,14 +427,36 @@ class GuardianAssessmentEvent:
     rationale: str | None = None
     decision_source: GuardianAssessmentDecisionSource | None = None
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.id, str):
+            raise TypeError("id must be a string")
+        if self.target_item_id is not None and not isinstance(self.target_item_id, str):
+            raise TypeError("target_item_id must be a string")
+        if not isinstance(self.turn_id, str):
+            raise TypeError("turn_id must be a string")
+        object.__setattr__(self, "started_at_ms", _ensure_i64(self.started_at_ms, "started_at_ms"))
+        if self.completed_at_ms is not None:
+            object.__setattr__(self, "completed_at_ms", _ensure_i64(self.completed_at_ms, "completed_at_ms"))
+        object.__setattr__(self, "status", GuardianAssessmentStatus(self.status))
+        if self.risk_level is not None:
+            object.__setattr__(self, "risk_level", GuardianRiskLevel(self.risk_level))
+        if self.user_authorization is not None:
+            object.__setattr__(self, "user_authorization", GuardianUserAuthorization(self.user_authorization))
+        if self.rationale is not None and not isinstance(self.rationale, str):
+            raise TypeError("rationale must be a string")
+        if self.decision_source is not None:
+            object.__setattr__(self, "decision_source", GuardianAssessmentDecisionSource(self.decision_source))
+        if not isinstance(self.action, GuardianAssessmentAction):
+            raise TypeError("action must be a GuardianAssessmentAction")
+
     @classmethod
     def from_mapping(cls, value: JsonValue) -> "GuardianAssessmentEvent":
         data = _mapping(value, "guardian assessment event")
         return cls(
             id=_required_str(data, "id"),
             target_item_id=_optional_str(data, "target_item_id"),
-            turn_id=str(data.get("turn_id", "")),
-            started_at_ms=int(data.get("started_at_ms", 0)),
+            turn_id=_optional_str(data, "turn_id") or "",
+            started_at_ms=_ensure_i64(data.get("started_at_ms", 0), "started_at_ms"),
             completed_at_ms=_optional_int(data, "completed_at_ms"),
             status=GuardianAssessmentStatus(_required_str(data, "status")),
             risk_level=GuardianRiskLevel(_required_str(data, "risk_level")) if data.get("risk_level") is not None else None,
@@ -681,6 +765,27 @@ class FileChange:
     unified_diff: str | None = None
     move_path: Path | None = None
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.type, str):
+            raise TypeError("type must be a string")
+        if self.type in {"add", "delete"}:
+            if not isinstance(self.content, str):
+                raise TypeError(f"{self.type} file change requires content")
+            if self.unified_diff is not None or self.move_path is not None:
+                raise ValueError(f"{self.type} file change cannot include update fields")
+            return
+        if self.type == "update":
+            if not isinstance(self.unified_diff, str):
+                raise TypeError("update file change requires unified_diff")
+            if self.content is not None:
+                raise ValueError("update file change cannot include content")
+            if self.move_path is not None:
+                if not isinstance(self.move_path, (str, Path)):
+                    raise TypeError("move_path must be a string or Path")
+                object.__setattr__(self, "move_path", Path(self.move_path))
+            return
+        raise ValueError(f"unknown file change type: {self.type}")
+
     @classmethod
     def add(cls, content: str) -> "FileChange":
         return cls(type="add", content=content)
@@ -702,3 +807,26 @@ class ApplyPatchApprovalRequestEvent:
     turn_id: str = ""
     reason: str | None = None
     grant_root: Path | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.call_id, str):
+            raise TypeError("call_id must be a string")
+        if not isinstance(self.turn_id, str):
+            raise TypeError("turn_id must be a string")
+        object.__setattr__(self, "started_at_ms", _ensure_i64(self.started_at_ms, "started_at_ms"))
+        if not isinstance(self.changes, dict):
+            raise TypeError("changes must be a mapping")
+        parsed_changes: dict[Path, FileChange] = {}
+        for path, change in self.changes.items():
+            if not isinstance(path, (str, Path)):
+                raise TypeError("change paths must be strings or Path")
+            if not isinstance(change, FileChange):
+                raise TypeError("change values must be FileChange")
+            parsed_changes[Path(path)] = change
+        object.__setattr__(self, "changes", parsed_changes)
+        if self.reason is not None and not isinstance(self.reason, str):
+            raise TypeError("reason must be a string")
+        if self.grant_root is not None:
+            if not isinstance(self.grant_root, (str, Path)):
+                raise TypeError("grant_root must be a string or Path")
+            object.__setattr__(self, "grant_root", Path(self.grant_root))

@@ -111,7 +111,7 @@ class CoreManagedFeaturesTests(unittest.TestCase):
 
         self.assertEqual(display, "[shell_tool=false, personality=true]")
 
-    def test_explicit_feature_settings_collects_base_profile_and_legacy_toggle(self) -> None:
+    def test_explicit_feature_settings_collects_base_config_only_and_legacy_toggle(self) -> None:
         cfg = {
             "features": {"personality": False},
             "experimental_use_unified_exec_tool": True,
@@ -128,8 +128,6 @@ class CoreManagedFeaturesTests(unittest.TestCase):
             [
                 ("features.personality", Feature.PERSONALITY, False),
                 ("experimental_use_unified_exec_tool", Feature.UNIFIED_EXEC, True),
-                ("profiles.work.features.shell_tool", Feature.SHELL_TOOL, False),
-                ("profiles.work.experimental_use_unified_exec_tool", Feature.UNIFIED_EXEC, False),
             ],
         )
 
@@ -142,12 +140,12 @@ class CoreManagedFeaturesTests(unittest.TestCase):
         self.assertEqual(caught.exception.candidate, "features.personality=false")
         self.assertEqual(caught.exception.allowed, "[personality=true]")
 
-    def test_validate_feature_requirements_normalizes_configured_values(self) -> None:
+    def test_validate_feature_requirements_normalizes_base_configured_values(self) -> None:
         cfg = {
             "features": {"personality": False, "shell_tool": True},
             "profiles": {
                 "work": {
-                    "features": {"personality": False, "shell_tool": True},
+                    "features": {"code_mode_only": True},
                 }
             },
         }
@@ -157,7 +155,7 @@ class CoreManagedFeaturesTests(unittest.TestCase):
             sourced({"personality": True, "shell_tool": False}),
         )
 
-    def test_validate_feature_requirements_prefixes_profile_errors(self) -> None:
+    def test_validate_feature_requirements_ignores_profiles_like_upstream(self) -> None:
         cfg = {
             "profiles": {
                 "work": {
@@ -166,11 +164,10 @@ class CoreManagedFeaturesTests(unittest.TestCase):
             }
         }
 
-        with self.assertRaisesRegex(ValueError, "invalid feature configuration for profile `work`"):
-            validate_feature_requirements_in_config_toml(
-                cfg,
-                sourced({"code_mode": False}),
-            )
+        validate_feature_requirements_in_config_toml(
+            cfg,
+            sourced({"code_mode": False}),
+        )
 
     def test_validate_feature_requirements_for_config_toml_runs_explicit_check_first(self) -> None:
         with self.assertRaises(ConstraintError) as caught:
@@ -180,6 +177,22 @@ class CoreManagedFeaturesTests(unittest.TestCase):
             )
 
         self.assertEqual(caught.exception.candidate, "features.personality=false")
+
+
+    def test_feature_requirement_inputs_reject_implicit_coercions(self) -> None:
+        with self.assertRaises(TypeError):
+            FeatureRequirementsToml.from_entries({123: True})
+        with self.assertRaises(TypeError):
+            FeatureRequirementsToml.from_entries({"personality": 1})
+        with self.assertRaises(TypeError):
+            RequirementSource.mdm_managed_preferences(123, "key")
+        with self.assertRaises(TypeError):
+            RequirementSource.system_requirements_toml(123)
+        managed = ManagedFeatures.from_configured(Features.with_defaults(), sourced({"personality": True}))
+        with self.assertRaises(TypeError):
+            managed.set_enabled(Feature.PERSONALITY, 1)
+        with self.assertRaises(TypeError):
+            explicit_feature_settings_in_config({"experimental_use_unified_exec_tool": 1})
 
     def test_normalize_candidate_returns_independent_feature_set(self) -> None:
         original = Features.with_defaults()

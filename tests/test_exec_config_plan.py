@@ -54,6 +54,12 @@ class ExecConfigPlanTests(unittest.TestCase):
             exec_model_provider_override(parse_exec_args(["--oss", "prompt"]), {})
         self.assertEqual(str(NO_DEFAULT_OSS_PROVIDER_MESSAGE), NO_DEFAULT_OSS_PROVIDER_MESSAGE)
 
+    def test_exec_model_and_provider_can_come_from_config_toml(self):
+        cli = parse_exec_args(["prompt"])
+
+        self.assertEqual(exec_model_provider_override(cli, {"model_provider": "local-openai"}), "local-openai")
+        self.assertEqual(exec_model_override(cli, config_toml={"model": "gpt-config"}), "gpt-config")
+
     def test_harness_overrides_mapping_matches_upstream_config_overrides_slice(self):
         cli = parse_exec_args(
             [
@@ -118,6 +124,18 @@ class ExecConfigPlanTests(unittest.TestCase):
         self.assertEqual([(override.path, override.value) for override in plan.cli_overrides], [("model", "gpt-5.2")])
         self.assertEqual(plan.harness_overrides.additional_writable_roots, (extra,))
         self.assertEqual(plan.harness_overrides.to_mapping()["cwd"], "project")
+
+    def test_build_exec_config_bootstrap_plan_uses_config_model_and_provider(self):
+        cli = parse_exec_args(["prompt"])
+
+        plan = build_exec_config_bootstrap_plan(
+            cli,
+            config_toml={"model": "gpt-config", "model_provider": "local-openai"},
+            current_dir=Path.cwd(),
+        )
+
+        self.assertEqual(plan.harness_overrides.model, "gpt-config")
+        self.assertEqual(plan.harness_overrides.model_provider, "local-openai")
 
     def test_resolve_exec_config_cwd_rejects_missing_cd_path(self):
         with tempfile.TemporaryDirectory() as tmpdir:

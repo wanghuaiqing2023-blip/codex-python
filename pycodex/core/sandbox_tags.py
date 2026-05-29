@@ -28,6 +28,8 @@ class SandboxType(str, Enum):
 def get_platform_sandbox(
     windows_sandbox_enabled: bool,
 ) -> SandboxType | None:
+    if not isinstance(windows_sandbox_enabled, bool):
+        raise TypeError("windows_sandbox_enabled must be a bool")
     if sys.platform == "darwin":
         return SandboxType.MACOS_SEATBELT
     if sys.platform.startswith("linux"):
@@ -42,6 +44,12 @@ def should_require_platform_sandbox(
     network_policy: NetworkSandboxPolicy,
     has_managed_network_requirements: bool,
 ) -> bool:
+    if not isinstance(file_system_policy, FileSystemSandboxPolicy):
+        raise TypeError("file_system_policy must be a FileSystemSandboxPolicy")
+    if not isinstance(network_policy, NetworkSandboxPolicy):
+        raise TypeError("network_policy must be a NetworkSandboxPolicy")
+    if not isinstance(has_managed_network_requirements, bool):
+        raise TypeError("has_managed_network_requirements must be a bool")
     if has_managed_network_requirements:
         return True
 
@@ -58,6 +66,12 @@ def permission_profile_sandbox_tag(
     windows_sandbox_level: WindowsSandboxLevel,
     enforce_managed_network: bool,
 ) -> str:
+    if not isinstance(profile, PermissionProfile):
+        raise TypeError("profile must be a PermissionProfile")
+    if not isinstance(windows_sandbox_level, WindowsSandboxLevel):
+        raise TypeError("windows_sandbox_level must be a WindowsSandboxLevel")
+    if not isinstance(enforce_managed_network, bool):
+        raise TypeError("enforce_managed_network must be a bool")
     if profile.type == "disabled":
         return "none"
     if profile.type == "external":
@@ -86,6 +100,10 @@ def permission_profile_policy_tag(
     profile: PermissionProfile,
     cwd: Path | str,
 ) -> str:
+    if not isinstance(profile, PermissionProfile):
+        raise TypeError("profile must be a PermissionProfile")
+    if not isinstance(cwd, Path | str):
+        raise TypeError("cwd must be a path")
     if profile.type == "disabled":
         return "danger-full-access"
     if profile.type == "external":

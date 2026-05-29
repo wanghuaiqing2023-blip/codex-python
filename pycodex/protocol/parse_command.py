@@ -45,6 +45,42 @@ class ParsedCommand:
     path: Path | str | None = None
     query: str | None = None
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.type, str):
+            raise TypeError("type must be a string")
+        if not isinstance(self.cmd, str):
+            raise TypeError("cmd must be a string")
+        if self.type == "read":
+            if not isinstance(self.name, str):
+                raise TypeError("read command name must be a string")
+            if not isinstance(self.path, (str, Path)):
+                raise TypeError("read command path must be a string or Path")
+            object.__setattr__(self, "path", Path(self.path))
+            if self.query is not None:
+                raise ValueError("read command cannot include query")
+            return
+        if self.type == "list_files":
+            if self.name is not None:
+                raise ValueError("list_files command cannot include name")
+            if self.path is not None and not isinstance(self.path, str):
+                raise TypeError("list_files command path must be a string or None")
+            if self.query is not None:
+                raise ValueError("list_files command cannot include query")
+            return
+        if self.type == "search":
+            if self.name is not None:
+                raise ValueError("search command cannot include name")
+            if self.path is not None and not isinstance(self.path, str):
+                raise TypeError("search command path must be a string or None")
+            if self.query is not None and not isinstance(self.query, str):
+                raise TypeError("search command query must be a string or None")
+            return
+        if self.type == "unknown":
+            if self.name is not None or self.path is not None or self.query is not None:
+                raise ValueError("unknown command cannot include name, path, or query")
+            return
+        raise ValueError(f"unknown parsed command type: {self.type}")
+
     @classmethod
     def read(cls, cmd: str, name: str, path: Path | str) -> "ParsedCommand":
         return cls("read", cmd=cmd, name=name, path=Path(path))

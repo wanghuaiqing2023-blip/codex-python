@@ -123,11 +123,7 @@ class CoreApplyPatchTests(unittest.TestCase):
 
     def test_convert_apply_patch_rejects_unknown_change_type(self) -> None:
         with self.assertRaisesRegex(ValueError, "unknown apply_patch file change type"):
-            convert_apply_patch_to_protocol(
-                ApplyPatchAction(
-                    {Path("bad.txt"): ApplyPatchFileChange(type="chmod")}
-                )
-            )
+            ApplyPatchFileChange(type="chmod")
 
     def test_create_apply_patch_freeform_tool_matches_default_grammar(self) -> None:
         tool = create_apply_patch_freeform_tool(False)
@@ -158,6 +154,8 @@ class CoreApplyPatchTests(unittest.TestCase):
             definition,
         )
         self.assertIn("*** Add File: ", definition)
+        with self.assertRaisesRegex(TypeError, "include_environment_id must be a bool"):
+            create_apply_patch_freeform_tool(1)  # type: ignore[arg-type]
 
     def test_apply_patch_handler_exposes_custom_tool(self) -> None:
         handler = ApplyPatchHandler.new(True)
@@ -799,6 +797,32 @@ class CoreApplyPatchTests(unittest.TestCase):
             result.error.message,
             "The first line of the patch must be '*** Begin Patch'",
         )
+
+    def test_apply_patch_dataclasses_reject_mixed_rust_shapes(self) -> None:
+        with self.assertRaisesRegex(ValueError, "invalid_patch errors must not have a line_number"):
+            ApplyPatchParseError("invalid_patch", "bad", 1)
+
+        with self.assertRaisesRegex(TypeError, "old_lines must contain only strings"):
+            UpdateFileChunk(None, old_lines=("ok", 1))  # type: ignore[arg-type]
+
+        with self.assertRaisesRegex(ValueError, "delete hunks must not have chunks"):
+            Hunk(type="delete", path=Path("gone.txt"), chunks=(UpdateFileChunk(None),))
+
+        with self.assertRaisesRegex(TypeError, "hunks must contain only Hunk values"):
+            ApplyPatchArgs("patch", (object(),))  # type: ignore[arg-type]
+
+        with self.assertRaisesRegex(ValueError, "content is not valid for this variant"):
+            ApplyPatchFileChange(type="update", unified_diff="@@\n", content="bad")
+
+        with self.assertRaisesRegex(TypeError, "changes keys must be Paths"):
+            ApplyPatchAction({"file.txt": ApplyPatchFileChange.add("x")})  # type: ignore[dict-item]
+
+        with self.assertRaisesRegex(TypeError, "changes keys must be strings"):
+            ApplyPatchAction.from_mapping(
+                {
+                    "changes": {Path("file.txt"): {"type": "add", "content": "x"}},
+                }
+            )
 
 
 if __name__ == "__main__":

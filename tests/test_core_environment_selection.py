@@ -71,7 +71,7 @@ class EnvironmentSelectionTests(unittest.TestCase):
         resolved = resolve_environment_selections(
             manager,
             (
-                {"environment_id": "remote", "cwd": str(Path("/selected"))},
+                TurnEnvironmentSelection("remote", Path("/selected")),
                 TurnEnvironmentSelection("local", Path("/repo")),
             ),
         )
@@ -97,6 +97,28 @@ class EnvironmentSelectionTests(unittest.TestCase):
         self.assertIsNone(resolved.primary())
         self.assertIsNone(resolved.primary_environment())
         self.assertIsNone(resolved.primary_filesystem())
+
+    def test_rejects_non_rust_input_shapes(self) -> None:
+        with self.assertRaises(TypeError):
+            TurnEnvironment(1, FakeEnvironment("fs"), Path("/repo"))  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            TurnEnvironment("local", FakeEnvironment("fs"), 1)  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            TurnEnvironment("local", FakeEnvironment("fs"), Path("/repo"), shell=1)  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            ResolvedTurnEnvironments((object(),))  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            default_thread_environment_selections(object(), Path("/repo"))
+        with self.assertRaises(TypeError):
+            default_thread_environment_selections(FakeEnvironmentManager({}, (1,)), Path("/repo"))  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            default_thread_environment_selections(FakeEnvironmentManager({}), 1)  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            resolve_environment_selections(object(), ())
+        with self.assertRaises(TypeError):
+            resolve_environment_selections(FakeEnvironmentManager({}), {"environment_id": "local"})  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            resolve_environment_selections(FakeEnvironmentManager({}), ({"environment_id": "local", "cwd": "/repo"},))  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":

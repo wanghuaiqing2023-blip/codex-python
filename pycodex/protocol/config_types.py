@@ -130,6 +130,27 @@ class ShellEnvironmentPolicy:
     include_only: tuple[str, ...] = ()
     use_profile: bool = False
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "inherit", ShellEnvironmentPolicyInherit(self.inherit))
+        if not isinstance(self.ignore_default_excludes, bool):
+            raise TypeError("ignore_default_excludes must be a bool")
+        if isinstance(self.exclude, str):
+            raise TypeError("exclude must be a list of strings")
+        object.__setattr__(self, "exclude", tuple(self.exclude))
+        if not all(isinstance(item, str) for item in self.exclude):
+            raise TypeError("exclude entries must be strings")
+        if not isinstance(self.set_values, dict):
+            raise TypeError("set_values must be a mapping")
+        if not all(isinstance(key, str) and isinstance(value, str) for key, value in self.set_values.items()):
+            raise TypeError("set_values keys and values must be strings")
+        if isinstance(self.include_only, str):
+            raise TypeError("include_only must be a list of strings")
+        object.__setattr__(self, "include_only", tuple(self.include_only))
+        if not all(isinstance(item, str) for item in self.include_only):
+            raise TypeError("include_only entries must be strings")
+        if not isinstance(self.use_profile, bool):
+            raise TypeError("use_profile must be a bool")
+
     @classmethod
     def default(cls) -> "ShellEnvironmentPolicy":
         return cls()

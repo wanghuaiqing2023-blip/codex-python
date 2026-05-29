@@ -5,7 +5,9 @@ Ported in slices from ``codex/codex-rs/protocol/src/models.rs``.
 
 from __future__ import annotations
 
+import base64
 import json
+import mimetypes
 import os
 import re
 from dataclasses import dataclass, field
@@ -49,6 +51,27 @@ class ContentItem:
     image_url: str | None = None
     detail: ImageDetail | None = None
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.type, str):
+            raise TypeError("type must be a string")
+        if self.type in {"input_text", "output_text"}:
+            if not isinstance(self.text, str):
+                raise TypeError("text must be a string")
+            if self.image_url is not None:
+                raise ValueError(f"{self.type} content item cannot include image_url")
+            if self.detail is not None:
+                raise ValueError(f"{self.type} content item cannot include detail")
+            return
+        if self.type == "input_image":
+            if not isinstance(self.image_url, str):
+                raise TypeError("image_url must be a string")
+            if self.text is not None:
+                raise ValueError("input_image content item cannot include text")
+            if self.detail is not None and not isinstance(self.detail, ImageDetail):
+                object.__setattr__(self, "detail", ImageDetail(self.detail))
+            return
+        raise ValueError(f"unknown content item type: {self.type}")
+
     @classmethod
     def input_text(cls, text: str) -> "ContentItem":
         return cls(type="input_text", text=text)
@@ -69,10 +92,9 @@ class ContentItem:
         if item_type == "input_text":
             return cls.input_text(_required_str(value, "text"))
         if item_type == "input_image":
-            detail = value.get("detail")
             return cls.input_image(
                 _required_str(value, "image_url"),
-                detail=ImageDetail(detail) if isinstance(detail, str) else None,
+                detail=_optional_image_detail(value, "detail"),
             )
         if item_type == "output_text":
             return cls.output_text(_required_str(value, "text"))
@@ -81,9 +103,9 @@ class ContentItem:
     def to_mapping(self) -> dict[str, JsonValue]:
         data: dict[str, JsonValue] = {"type": self.type}
         if self.type in {"input_text", "output_text"}:
-            data["text"] = self.text or ""
+            data["text"] = self.text
         elif self.type == "input_image":
-            data["image_url"] = self.image_url or ""
+            data["image_url"] = self.image_url
             if self.detail is not None:
                 data["detail"] = self.detail.value
         return data
@@ -96,6 +118,31 @@ class FunctionCallOutputContentItem:
     image_url: str | None = None
     detail: ImageDetail | None = None
     encrypted_content: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.type, str):
+            raise TypeError("type must be a string")
+        if self.type == "input_text":
+            if not isinstance(self.text, str):
+                raise TypeError("text must be a string")
+            if self.image_url is not None or self.detail is not None or self.encrypted_content is not None:
+                raise ValueError("input_text function output item cannot include other payload fields")
+            return
+        if self.type == "input_image":
+            if not isinstance(self.image_url, str):
+                raise TypeError("image_url must be a string")
+            if self.text is not None or self.encrypted_content is not None:
+                raise ValueError("input_image function output item cannot include text or encrypted_content")
+            if self.detail is not None and not isinstance(self.detail, ImageDetail):
+                object.__setattr__(self, "detail", ImageDetail(self.detail))
+            return
+        if self.type == "encrypted_content":
+            if not isinstance(self.encrypted_content, str):
+                raise TypeError("encrypted_content must be a string")
+            if self.text is not None or self.image_url is not None or self.detail is not None:
+                raise ValueError("encrypted_content function output item cannot include other payload fields")
+            return
+        raise ValueError(f"unknown function call output content item type: {self.type}")
 
     @classmethod
     def input_text(cls, text: str) -> "FunctionCallOutputContentItem":
@@ -122,10 +169,9 @@ class FunctionCallOutputContentItem:
         if item_type == "input_text":
             return cls.input_text(_required_str(data, "text"))
         if item_type == "input_image":
-            detail = data.get("detail")
             return cls.input_image(
                 _required_str(data, "image_url"),
-                detail=ImageDetail(detail) if isinstance(detail, str) else None,
+                detail=_optional_image_detail(data, "detail"),
             )
         if item_type == "encrypted_content":
             return cls.encrypted(_required_str(data, "encrypted_content"))
@@ -133,14 +179,14 @@ class FunctionCallOutputContentItem:
 
     def to_mapping(self) -> dict[str, JsonValue]:
         if self.type == "input_text":
-            return {"type": "input_text", "text": self.text or ""}
+            return {"type": "input_text", "text": self.text}
         if self.type == "input_image":
-            data: dict[str, JsonValue] = {"type": "input_image", "image_url": self.image_url or ""}
+            data: dict[str, JsonValue] = {"type": "input_image", "image_url": self.image_url}
             if self.detail is not None:
                 data["detail"] = self.detail.value
             return data
         if self.type == "encrypted_content":
-            return {"type": "encrypted_content", "encrypted_content": self.encrypted_content or ""}
+            return {"type": "encrypted_content", "encrypted_content": self.encrypted_content}
         return {"type": self.type}
 
 
@@ -164,18 +210,26 @@ class FunctionCallOutputBody:
     content_items: tuple[FunctionCallOutputContentItem, ...] = ()
 
     def __post_init__(self) -> None:
-        if not isinstance(self.content_items, tuple):
+        if not isinstance(self.type, str):
+            raise TypeError("type must be a string")
+        if self.type == "text":
+            if not isinstance(self.text, str):
+                raise TypeError("text must be a string")
+            if self.content_items:
+                raise ValueError("text function output body cannot include content_items")
+            return
+        if self.type == "content_items":
+            if self.text is not None:
+                raise ValueError("content_items function output body cannot include text")
+            if isinstance(self.content_items, str) or not isinstance(self.content_items, (list, tuple)):
+                raise TypeError("content_items must be a list or tuple")
             object.__setattr__(
                 self,
                 "content_items",
                 tuple(FunctionCallOutputContentItem.from_mapping(item) for item in self.content_items),
             )
-        else:
-            object.__setattr__(
-                self,
-                "content_items",
-                tuple(FunctionCallOutputContentItem.from_mapping(item) for item in self.content_items),
-            )
+            return
+        raise ValueError(f"unknown function call output body type: {self.type}")
 
     @classmethod
     def text_body(cls, text: str) -> "FunctionCallOutputBody":
@@ -189,7 +243,7 @@ class FunctionCallOutputBody:
         return cls(
             type="content_items",
             text=None,
-            content_items=tuple(FunctionCallOutputContentItem.from_mapping(item) for item in content_items),
+            content_items=content_items,
         )
 
     @classmethod
@@ -202,13 +256,13 @@ class FunctionCallOutputBody:
 
     def to_text(self) -> str | None:
         if self.type == "text":
-            return self.text or ""
+            return self.text
         return function_call_output_content_items_to_text(self.content_items)
 
     def to_json(self) -> JsonValue:
         if self.type == "content_items":
             return [item.to_mapping() for item in self.content_items]
-        return self.text or ""
+        return self.text
 
 
 @dataclass(frozen=True)
@@ -219,6 +273,8 @@ class FunctionCallOutputPayload:
     def __post_init__(self) -> None:
         if not isinstance(self.body, FunctionCallOutputBody):
             object.__setattr__(self, "body", FunctionCallOutputBody.from_value(self.body))
+        if self.success is not None and not isinstance(self.success, bool):
+            raise TypeError("success must be a bool or None")
 
     @classmethod
     def text(cls, content: str, success: bool | None = None) -> "FunctionCallOutputPayload":
@@ -252,11 +308,6 @@ class FunctionCallOutputPayload:
             return cls.text(value)
         if isinstance(value, list | tuple):
             return cls.structured(tuple(value))
-        if isinstance(value, dict):
-            if "content" in value and isinstance(value["content"], str):
-                return cls.text(value["content"])
-            if "content_items" in value and isinstance(value["content_items"], list | tuple):
-                return cls.structured(tuple(value["content_items"]))
         raise TypeError("function call output payload must be a string or content item list")
 
     @property
@@ -282,19 +333,106 @@ class SearchToolCallParams:
     query: str
     limit: int | None = None
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.query, str):
+            raise TypeError("query must be a string")
+        if self.limit is not None:
+            if not isinstance(self.limit, int) or isinstance(self.limit, bool):
+                raise TypeError("limit must be an integer or None")
+            if self.limit < 0:
+                raise ValueError("limit must be non-negative")
+
     @classmethod
     def from_mapping(cls, value: JsonValue) -> "SearchToolCallParams":
         data = _as_mapping(value, "search tool call params")
-        raw_limit = data.get("limit")
         return cls(
             query=_required_str(data, "query"),
-            limit=int(raw_limit) if raw_limit is not None else None,
+            limit=_optional_usize(data, "limit"),
         )
 
     def to_mapping(self) -> dict[str, JsonValue]:
         data: dict[str, JsonValue] = {"query": self.query}
         if self.limit is not None:
             data["limit"] = self.limit
+        return data
+
+
+@dataclass(frozen=True)
+class ShellCommandToolCallParams:
+    command: str
+    workdir: str | None = None
+    login: bool | None = None
+    timeout_ms: int | None = None
+    sandbox_permissions: SandboxPermissions | None = None
+    prefix_rule: tuple[str, ...] | None = None
+    additional_permissions: AdditionalPermissionProfile | None = None
+    justification: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.command, str):
+            raise TypeError("command must be a string")
+        if self.workdir is not None and not isinstance(self.workdir, str):
+            raise TypeError("workdir must be a string or None")
+        if self.login is not None and not isinstance(self.login, bool):
+            raise TypeError("login must be a bool or None")
+        if self.timeout_ms is not None:
+            if not isinstance(self.timeout_ms, int) or isinstance(self.timeout_ms, bool):
+                raise TypeError("timeout_ms must be an integer or None")
+            if self.timeout_ms < 0 or self.timeout_ms > 2**64 - 1:
+                raise ValueError("timeout_ms must fit in u64")
+        if self.sandbox_permissions is not None and not isinstance(self.sandbox_permissions, SandboxPermissions):
+            object.__setattr__(self, "sandbox_permissions", SandboxPermissions(self.sandbox_permissions))
+        if self.prefix_rule is not None:
+            if isinstance(self.prefix_rule, str) or not isinstance(self.prefix_rule, (list, tuple)):
+                raise TypeError("prefix_rule must be a list or tuple of strings")
+            if not all(isinstance(item, str) for item in self.prefix_rule):
+                raise TypeError("prefix_rule entries must be strings")
+            object.__setattr__(self, "prefix_rule", tuple(self.prefix_rule))
+        if self.additional_permissions is not None and not isinstance(self.additional_permissions, AdditionalPermissionProfile):
+            raise TypeError("additional_permissions must be AdditionalPermissionProfile or None")
+        if self.justification is not None and not isinstance(self.justification, str):
+            raise TypeError("justification must be a string or None")
+
+    @classmethod
+    def from_mapping(cls, value: JsonValue) -> "ShellCommandToolCallParams":
+        data = _as_mapping(value, "shell command tool call params")
+        timeout_ms = data.get("timeout_ms", data.get("timeout"))
+        raw_additional = data.get("additional_permissions")
+        return cls(
+            command=_required_str(data, "command"),
+            workdir=_optional_str_value(data, "workdir"),
+            login=_optional_bool_value(data, "login"),
+            timeout_ms=_optional_u64_value(timeout_ms, "timeout_ms"),
+            sandbox_permissions=(
+                SandboxPermissions(_optional_str_value(data, "sandbox_permissions"))
+                if data.get("sandbox_permissions") is not None
+                else None
+            ),
+            prefix_rule=_optional_str_tuple(data, "prefix_rule"),
+            additional_permissions=(
+                AdditionalPermissionProfile.from_mapping(raw_additional)
+                if raw_additional is not None
+                else None
+            ),
+            justification=_optional_str_value(data, "justification"),
+        )
+
+    def to_mapping(self) -> dict[str, JsonValue]:
+        data: dict[str, JsonValue] = {"command": self.command}
+        if self.workdir is not None:
+            data["workdir"] = self.workdir
+        if self.login is not None:
+            data["login"] = self.login
+        if self.timeout_ms is not None:
+            data["timeout_ms"] = self.timeout_ms
+        if self.sandbox_permissions is not None:
+            data["sandbox_permissions"] = self.sandbox_permissions.value
+        if self.prefix_rule is not None:
+            data["prefix_rule"] = list(self.prefix_rule)
+        if self.additional_permissions is not None:
+            data["additional_permissions"] = self.additional_permissions.to_mapping()
+        if self.justification is not None:
+            data["justification"] = self.justification
         return data
 
 
@@ -312,10 +450,55 @@ class ResponseInputItem:
     tools: tuple[JsonValue, ...] = ()
 
     def __post_init__(self) -> None:
-        if not isinstance(self.content, tuple):
-            object.__setattr__(self, "content", tuple(self.content))
-        if not isinstance(self.tools, tuple):
-            object.__setattr__(self, "tools", tuple(self.tools))
+        if not isinstance(self.type, str):
+            raise TypeError("type must be a string")
+        if self.type not in {
+            "message",
+            "function_call_output",
+            "mcp_tool_call_output",
+            "custom_tool_call_output",
+            "tool_search_output",
+        }:
+            raise ValueError("unknown response input item type")
+        if self.type == "message":
+            if not isinstance(self.role, str):
+                raise TypeError("role must be a string")
+            if isinstance(self.content, (str, bytes)) or not isinstance(self.content, (list, tuple)):
+                raise TypeError("content must be a list or tuple")
+            content = tuple(self.content)
+            if not all(isinstance(item, ContentItem) for item in content):
+                raise TypeError("content entries must be ContentItem")
+            object.__setattr__(self, "content", content)
+            object.__setattr__(self, "phase", self.phase if self.phase is None else MessagePhase(self.phase))
+            return
+        if self.type in {"function_call_output", "mcp_tool_call_output", "custom_tool_call_output", "tool_search_output"}:
+            if not isinstance(self.call_id, str):
+                raise TypeError("call_id must be a string")
+        if self.type == "function_call_output":
+            if self.output is None:
+                raise TypeError("output is required")
+            if not isinstance(self.output, FunctionCallOutputPayload):
+                object.__setattr__(self, "output", FunctionCallOutputPayload.from_value(self.output))
+            return
+        if self.type == "mcp_tool_call_output":
+            if self.output is None:
+                raise TypeError("output is required")
+            return
+        if self.type == "custom_tool_call_output":
+            if self.name is not None and not isinstance(self.name, str):
+                raise TypeError("name must be a string or None")
+            if self.output is None:
+                raise TypeError("output is required")
+            if not isinstance(self.output, FunctionCallOutputPayload):
+                object.__setattr__(self, "output", FunctionCallOutputPayload.from_value(self.output))
+            return
+        if not isinstance(self.status, str):
+            raise TypeError("status must be a string")
+        if not isinstance(self.execution, str):
+            raise TypeError("execution must be a string")
+        if isinstance(self.tools, (str, bytes)) or not isinstance(self.tools, (list, tuple)):
+            raise TypeError("tools must be a list or tuple")
+        object.__setattr__(self, "tools", tuple(self.tools))
 
     @classmethod
     def message(
@@ -327,9 +510,8 @@ class ResponseInputItem:
         return cls(type="message", role=role, content=tuple(content), phase=phase)
 
     @classmethod
-    def function_call_output(cls, call_id: str, output: FunctionCallOutputPayload | str) -> "ResponseInputItem":
-        payload = FunctionCallOutputPayload.from_value(output) if isinstance(output, str) else output
-        return cls(type="function_call_output", call_id=call_id, output=payload)
+    def function_call_output(cls, call_id: str, output: FunctionCallOutputPayload | JsonValue) -> "ResponseInputItem":
+        return cls(type="function_call_output", call_id=call_id, output=output)
 
     @classmethod
     def mcp_tool_call_output(cls, call_id: str, output: JsonValue) -> "ResponseInputItem":
@@ -339,11 +521,10 @@ class ResponseInputItem:
     def custom_tool_call_output(
         cls,
         call_id: str,
-        output: FunctionCallOutputPayload | str,
+        output: FunctionCallOutputPayload | JsonValue,
         name: str | None = None,
     ) -> "ResponseInputItem":
-        payload = FunctionCallOutputPayload.from_value(output) if isinstance(output, str) else output
-        return cls(type="custom_tool_call_output", call_id=call_id, name=name, output=payload)
+        return cls(type="custom_tool_call_output", call_id=call_id, name=name, output=output)
 
     @classmethod
     def tool_search_output(
@@ -357,56 +538,149 @@ class ResponseInputItem:
 
     @classmethod
     def from_user_inputs(cls, items: tuple[JsonValue, ...] | list[JsonValue]) -> "ResponseInputItem":
+        if isinstance(items, (str, bytes)) or not isinstance(items, (list, tuple)):
+            raise TypeError("items must be a list or tuple of UserInput")
         content: list[ContentItem] = []
+        image_index = 0
         for item in items:
-            item_type = getattr(item, "type", None)
+            if not hasattr(item, "type"):
+                raise TypeError("items entries must be UserInput-like values")
+            item_type = item.type
             if item_type == "text":
-                content.append(ContentItem.input_text(getattr(item, "text", "") or ""))
+                if not isinstance(item.text, str):
+                    raise TypeError("text input requires text")
+                content.append(ContentItem.input_text(item.text))
             elif item_type == "image":
-                detail = getattr(item, "detail", None) or DEFAULT_IMAGE_DETAIL
-                content.extend(
-                    (
-                        ContentItem.input_text(image_open_tag_text()),
-                        ContentItem.input_image(getattr(item, "image_url", "") or "", detail=detail),
-                        ContentItem.input_text(image_close_tag_text()),
-                    )
-                )
+                image_index += 1
+                detail = item.detail or DEFAULT_IMAGE_DETAIL
+                if not isinstance(item.image_url, str):
+                    raise TypeError("image input requires image_url")
+                content.append(ContentItem.input_image(item.image_url, detail=detail))
             elif item_type == "local_image":
-                detail = getattr(item, "detail", None) or DEFAULT_IMAGE_DETAIL
-                path = Path(getattr(item, "path", ""))
-                content.extend(
-                    (
-                        ContentItem.input_text(local_image_open_tag_text(len([c for c in content if c.type == "input_image"]) + 1)),
-                        ContentItem.input_text(
-                            f"Codex could not read the local image at `{path}`: local image conversion is not available in this port yet"
-                        ),
-                        ContentItem.input_text(local_image_close_tag_text()),
-                    )
-                )
-                _ = detail
+                image_index += 1
+                detail = item.detail or DEFAULT_IMAGE_DETAIL
+                if not isinstance(item.path, (str, Path)):
+                    raise TypeError("local_image input requires path")
+                content.extend(_local_image_content_items_with_label_number(Path(item.path), image_index, detail))
+            elif item_type in {"skill", "mention"}:
+                continue
+            else:
+                raise ValueError(f"unknown user input type: {item_type}")
         return cls.message("user", tuple(content))
 
     def to_mapping(self) -> dict[str, JsonValue]:
         data: dict[str, JsonValue] = {"type": self.type}
-        if self.role is not None:
+        if self.type == "message":
             data["role"] = self.role
-        if self.content:
             data["content"] = [item.to_mapping() for item in self.content]
-        if self.phase is not None:
-            data["phase"] = self.phase.value
-        if self.call_id is not None:
+            if self.phase is not None:
+                data["phase"] = self.phase.value
+            return data
+        if self.type in {"function_call_output", "mcp_tool_call_output", "custom_tool_call_output", "tool_search_output"}:
             data["call_id"] = self.call_id
-        if self.output is not None:
-            data["output"] = self.output.to_json() if isinstance(self.output, FunctionCallOutputPayload) else self.output
-        if self.name is not None:
+        if self.type in {"function_call_output", "mcp_tool_call_output", "custom_tool_call_output"}:
+            if isinstance(self.output, FunctionCallOutputPayload):
+                data["output"] = self.output.to_json()
+                if self.output.success is not None:
+                    data["success"] = self.output.success
+            else:
+                data["output"] = self.output
+        if self.type == "custom_tool_call_output" and self.name is not None:
             data["name"] = self.name
-        if self.status is not None:
+        if self.type == "tool_search_output":
             data["status"] = self.status
-        if self.execution is not None:
             data["execution"] = self.execution
-        if self.tools:
             data["tools"] = list(self.tools)
         return data
+
+
+@dataclass(frozen=True)
+class LocalShellExecAction:
+    command: tuple[str, ...]
+    timeout_ms: int | None = None
+    working_directory: str | None = None
+    env: dict[str, str] | None = None
+    user: str | None = None
+
+    def __post_init__(self) -> None:
+        if isinstance(self.command, str) or not isinstance(self.command, (list, tuple)):
+            raise TypeError("command must be a list or tuple of strings")
+        object.__setattr__(self, "command", tuple(self.command))
+        if not all(isinstance(item, str) for item in self.command):
+            raise TypeError("command entries must be strings")
+        if self.timeout_ms is not None:
+            if not isinstance(self.timeout_ms, int) or isinstance(self.timeout_ms, bool):
+                raise TypeError("timeout_ms must be an integer or None")
+            if self.timeout_ms < 0 or self.timeout_ms > 2**64 - 1:
+                raise ValueError("timeout_ms must fit in u64")
+        if self.working_directory is not None and not isinstance(self.working_directory, str):
+            raise TypeError("working_directory must be a string or None")
+        if self.env is not None:
+            if not isinstance(self.env, dict):
+                raise TypeError("env must be a mapping or None")
+            if not all(isinstance(key, str) and isinstance(value, str) for key, value in self.env.items()):
+                raise TypeError("env entries must be strings")
+            object.__setattr__(self, "env", dict(self.env))
+        if self.user is not None and not isinstance(self.user, str):
+            raise TypeError("user must be a string or None")
+
+    @classmethod
+    def from_mapping(cls, value: JsonValue) -> "LocalShellExecAction":
+        data = _as_mapping(value, "local shell exec action")
+        return cls(
+            command=_required_value(data, "command"),
+            timeout_ms=data.get("timeout_ms"),
+            working_directory=data.get("working_directory"),
+            env=data.get("env"),
+            user=data.get("user"),
+        )
+
+    def to_mapping(self) -> dict[str, JsonValue]:
+        data: dict[str, JsonValue] = {"command": list(self.command)}
+        if self.timeout_ms is not None:
+            data["timeout_ms"] = self.timeout_ms
+        if self.working_directory is not None:
+            data["working_directory"] = self.working_directory
+        if self.env is not None:
+            data["env"] = dict(self.env)
+        if self.user is not None:
+            data["user"] = self.user
+        return data
+
+
+@dataclass(frozen=True)
+class LocalShellAction:
+    type: str
+    exec: LocalShellExecAction | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.type, str):
+            raise TypeError("type must be a string")
+        if self.type != "exec":
+            raise ValueError(f"unknown local shell action type: {self.type}")
+        if not isinstance(self.exec, LocalShellExecAction):
+            raise TypeError("exec must be LocalShellExecAction")
+
+    @classmethod
+    def exec_action(cls, action: LocalShellExecAction) -> "LocalShellAction":
+        return cls("exec", action)
+
+    @classmethod
+    def from_mapping(cls, value: JsonValue) -> "LocalShellAction":
+        data = _as_mapping(value, "local shell action")
+        action_type = _required_str(data, "type")
+        if action_type == "exec":
+            return cls.exec_action(LocalShellExecAction.from_mapping(data))
+        raise ValueError(f"unknown local shell action type: {action_type}")
+
+    def to_mapping(self) -> dict[str, JsonValue]:
+        return {"type": "exec", **self.exec.to_mapping()}
+
+
+class LocalShellStatus(str, Enum):
+    COMPLETED = "completed"
+    IN_PROGRESS = "in_progress"
+    INCOMPLETE = "incomplete"
 
 
 @dataclass(frozen=True)
@@ -417,16 +691,64 @@ class WebSearchAction:
     url: str | None = None
     pattern: str | None = None
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.type, str):
+            raise TypeError("type must be a string")
+        if self.type == "search":
+            if self.query is not None and not isinstance(self.query, str):
+                raise TypeError("query must be a string or None")
+            if self.queries is not None:
+                if isinstance(self.queries, str) or not isinstance(self.queries, (list, tuple)):
+                    raise TypeError("queries must be a list or tuple of strings")
+                if not all(isinstance(item, str) for item in self.queries):
+                    raise TypeError("queries entries must be strings")
+                object.__setattr__(self, "queries", tuple(self.queries))
+            if self.url is not None or self.pattern is not None:
+                raise ValueError("search web search action cannot include url or pattern")
+            return
+        if self.type == "open_page":
+            if self.url is not None and not isinstance(self.url, str):
+                raise TypeError("url must be a string or None")
+            if self.query is not None or self.queries is not None or self.pattern is not None:
+                raise ValueError("open_page web search action cannot include query, queries, or pattern")
+            return
+        if self.type == "find_in_page":
+            if self.url is not None and not isinstance(self.url, str):
+                raise TypeError("url must be a string or None")
+            if self.pattern is not None and not isinstance(self.pattern, str):
+                raise TypeError("pattern must be a string or None")
+            if self.query is not None or self.queries is not None:
+                raise ValueError("find_in_page web search action cannot include query or queries")
+            return
+        if self.type == "other":
+            if self.query is not None or self.queries is not None or self.url is not None or self.pattern is not None:
+                raise ValueError("other web search action cannot include fields")
+            return
+        raise ValueError(f"unknown web search action type: {self.type}")
+
     @classmethod
     def search(cls, query: str | None = None, queries: tuple[str, ...] | list[str] | None = None) -> "WebSearchAction":
+        if query is not None and not isinstance(query, str):
+            raise TypeError("query must be a string or None")
+        if queries is not None:
+            if isinstance(queries, str) or not isinstance(queries, (list, tuple)):
+                raise TypeError("queries must be a list or tuple of strings")
+            if not all(isinstance(item, str) for item in queries):
+                raise TypeError("queries entries must be strings")
         return cls("search", query=query, queries=tuple(queries) if queries is not None else None)
 
     @classmethod
     def open_page(cls, url: str | None = None) -> "WebSearchAction":
+        if url is not None and not isinstance(url, str):
+            raise TypeError("url must be a string or None")
         return cls("open_page", url=url)
 
     @classmethod
     def find_in_page(cls, url: str | None = None, pattern: str | None = None) -> "WebSearchAction":
+        if url is not None and not isinstance(url, str):
+            raise TypeError("url must be a string or None")
+        if pattern is not None and not isinstance(pattern, str):
+            raise TypeError("pattern must be a string or None")
         return cls("find_in_page", url=url, pattern=pattern)
 
     @classmethod
@@ -439,17 +761,16 @@ class WebSearchAction:
             raise TypeError("web search action must be a mapping")
         action_type = _required_str(value, "type")
         if action_type == "search":
-            queries = value.get("queries")
             return cls.search(
-                query=value.get("query") if isinstance(value.get("query"), str) else None,
-                queries=tuple(queries) if isinstance(queries, list | tuple) else None,
+                query=_optional_str_value(value, "query"),
+                queries=_optional_str_tuple(value, "queries"),
             )
         if action_type == "open_page":
-            return cls.open_page(value.get("url") if isinstance(value.get("url"), str) else None)
+            return cls.open_page(_optional_str_value(value, "url"))
         if action_type == "find_in_page":
             return cls.find_in_page(
-                url=value.get("url") if isinstance(value.get("url"), str) else None,
-                pattern=value.get("pattern") if isinstance(value.get("pattern"), str) else None,
+                url=_optional_str_value(value, "url"),
+                pattern=_optional_str_value(value, "pattern"),
             )
         return cls.other()
 
@@ -471,9 +792,25 @@ class ReasoningItemReasoningSummary:
     type: str
     text: str
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.type, str):
+            raise TypeError("type must be a string")
+        if self.type != "summary_text":
+            raise ValueError(f"unknown reasoning summary type: {self.type}")
+        if not isinstance(self.text, str):
+            raise TypeError("text must be a string")
+
     @classmethod
     def summary_text(cls, text: str) -> "ReasoningItemReasoningSummary":
         return cls("summary_text", text)
+
+    @classmethod
+    def from_mapping(cls, value: JsonValue) -> "ReasoningItemReasoningSummary":
+        data = _as_mapping(value, "reasoning summary")
+        summary_type = _required_str(data, "type")
+        if summary_type != "summary_text":
+            raise ValueError(f"unknown reasoning summary type: {summary_type}")
+        return cls.summary_text(_required_str(data, "text"))
 
     def to_mapping(self) -> dict[str, str]:
         return {"type": self.type, "text": self.text}
@@ -484,6 +821,14 @@ class ReasoningItemContent:
     type: str
     text: str
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.type, str):
+            raise TypeError("type must be a string")
+        if self.type not in {"reasoning_text", "text"}:
+            raise ValueError(f"unknown reasoning content type: {self.type}")
+        if not isinstance(self.text, str):
+            raise TypeError("text must be a string")
+
     @classmethod
     def reasoning_text(cls, text: str) -> "ReasoningItemContent":
         return cls("reasoning_text", text)
@@ -491,6 +836,16 @@ class ReasoningItemContent:
     @classmethod
     def text_content(cls, text: str) -> "ReasoningItemContent":
         return cls("text", text)
+
+    @classmethod
+    def from_mapping(cls, value: JsonValue) -> "ReasoningItemContent":
+        data = _as_mapping(value, "reasoning content")
+        content_type = _required_str(data, "type")
+        if content_type == "reasoning_text":
+            return cls.reasoning_text(_required_str(data, "text"))
+        if content_type == "text":
+            return cls.text_content(_required_str(data, "text"))
+        raise ValueError(f"unknown reasoning content type: {content_type}")
 
     def to_mapping(self) -> dict[str, str]:
         return {"type": self.type, "text": self.text}
@@ -521,7 +876,7 @@ class ResponseItem:
     status: str | None = None
     execution: str | None = None
     tools: tuple[JsonValue, ...] = ()
-    action: WebSearchAction | None = None
+    action: WebSearchAction | LocalShellAction | None = None
     revised_prompt: str | None = None
     result: str | None = None
 
@@ -566,6 +921,7 @@ class ResponseItem:
         cls,
         arguments: SearchToolCallParams | JsonValue,
         call_id: str | None = None,
+        status: str | None = None,
         execution: str | None = None,
         id: str | None = None,
     ) -> "ResponseItem":
@@ -575,6 +931,7 @@ class ResponseItem:
             type="tool_search_call",
             id=id,
             call_id=call_id,
+            status=status,
             execution=execution,
             arguments=arguments,
         )
@@ -585,9 +942,10 @@ class ResponseItem:
         name: str,
         input: str,
         call_id: str,
+        status: str | None = None,
         id: str | None = None,
     ) -> "ResponseItem":
-        return cls(type="custom_tool_call", id=id, name=name, input=input, call_id=call_id)
+        return cls(type="custom_tool_call", id=id, status=status, name=name, input=input, call_id=call_id)
 
     @classmethod
     def from_mapping(cls, value: JsonValue) -> "ResponseItem":
@@ -596,59 +954,100 @@ class ResponseItem:
         if item_type == "message":
             return cls.message(
                 _required_str(data, "role"),
-                tuple(ContentItem.from_mapping(item) for item in data.get("content", ())),
-                id=data.get("id") if isinstance(data.get("id"), str) else None,
-                phase=MessagePhase(data["phase"]) if isinstance(data.get("phase"), str) else None,
+                tuple(ContentItem.from_mapping(item) for item in _required_value(data, "content")),
+                id=_optional_str_value(data, "id"),
+                phase=_optional_message_phase(data, "phase"),
+            )
+        if item_type == "reasoning":
+            raw_content = data.get("content")
+            return cls(
+                type="reasoning",
+                id=_optional_str_value(data, "id"),
+                summary=tuple(
+                    ReasoningItemReasoningSummary.from_mapping(item)
+                    for item in _required_value(data, "summary")
+                ),
+                reasoning_content=(
+                    tuple(ReasoningItemContent.from_mapping(item) for item in raw_content)
+                    if raw_content is not None
+                    else None
+                ),
+                encrypted_content=_optional_str_value(data, "encrypted_content"),
+            )
+        if item_type == "local_shell_call":
+            return cls(
+                type="local_shell_call",
+                id=_optional_str_value(data, "id"),
+                call_id=_optional_str_value(data, "call_id"),
+                status=LocalShellStatus(_required_str(data, "status")).value,
+                action=LocalShellAction.from_mapping(_required_value(data, "action")),
             )
         if item_type == "function_call":
             return cls.function_call(
                 _required_str(data, "name"),
                 _required_str(data, "arguments"),
                 _required_str(data, "call_id"),
-                namespace=data.get("namespace") if isinstance(data.get("namespace"), str) else None,
-                id=data.get("id") if isinstance(data.get("id"), str) else None,
+                namespace=_optional_str_value(data, "namespace"),
+                id=_optional_str_value(data, "id"),
             )
         if item_type == "tool_search_call":
             return cls.tool_search_call(
-                data.get("arguments", {}),
-                call_id=data.get("call_id") if isinstance(data.get("call_id"), str) else None,
-                execution=data.get("execution") if isinstance(data.get("execution"), str) else None,
-                id=data.get("id") if isinstance(data.get("id"), str) else None,
+                _required_value(data, "arguments"),
+                call_id=_optional_str_value(data, "call_id"),
+                status=_optional_str_value(data, "status"),
+                execution=_required_str(data, "execution"),
+                id=_optional_str_value(data, "id"),
             )
         if item_type == "custom_tool_call":
             return cls.custom_tool_call(
                 _required_str(data, "name"),
                 _required_str(data, "input"),
                 _required_str(data, "call_id"),
-                id=data.get("id") if isinstance(data.get("id"), str) else None,
+                status=_optional_str_value(data, "status"),
+                id=_optional_str_value(data, "id"),
             )
         if item_type == "function_call_output":
+            output_payload = FunctionCallOutputPayload.from_value(_required_value(data, "output"))
             return cls(
                 type="function_call_output",
                 call_id=_required_str(data, "call_id"),
-                output=FunctionCallOutputPayload.from_value(data.get("output", "")),
+                output=FunctionCallOutputPayload(output_payload.body, success=_optional_bool_field(data, "success")),
             )
         if item_type == "custom_tool_call_output":
+            output_payload = FunctionCallOutputPayload.from_value(_required_value(data, "output"))
             return cls(
                 type="custom_tool_call_output",
                 call_id=_required_str(data, "call_id"),
-                name=data.get("name") if isinstance(data.get("name"), str) else None,
-                output=FunctionCallOutputPayload.from_value(data.get("output", "")),
+                name=_optional_str_value(data, "name"),
+                output=FunctionCallOutputPayload(output_payload.body, success=_optional_bool_field(data, "success")),
             )
         if item_type == "tool_search_output":
             return cls(
                 type="tool_search_output",
-                call_id=_required_str(data, "call_id"),
-                status=data.get("status") if isinstance(data.get("status"), str) else None,
-                execution=data.get("execution") if isinstance(data.get("execution"), str) else None,
-                tools=tuple(data.get("tools", ())),
+                call_id=_optional_str_value(data, "call_id"),
+                status=_required_str(data, "status"),
+                execution=_required_str(data, "execution"),
+                tools=tuple(_required_value(data, "tools")),
             )
         if item_type == "web_search_call":
             return cls.web_search_call(
-                id=data.get("id") if isinstance(data.get("id"), str) else None,
-                status=data.get("status") if isinstance(data.get("status"), str) else None,
-                action=WebSearchAction.from_mapping(data["action"]) if isinstance(data.get("action"), dict) else None,
+                id=_optional_str_value(data, "id"),
+                status=_optional_str_value(data, "status"),
+                action=_optional_web_search_action(data, "action"),
             )
+        if item_type == "image_generation_call":
+            return cls.image_generation_call(
+                id=_required_str(data, "id"),
+                status=_required_str(data, "status"),
+                revised_prompt=_optional_str_value(data, "revised_prompt"),
+                result=_required_str(data, "result"),
+            )
+        if item_type in {"compaction", "compaction_summary"}:
+            return cls.compaction(_required_str(data, "encrypted_content"))
+        if item_type == "compaction_trigger":
+            return cls.compaction_trigger()
+        if item_type == "context_compaction":
+            return cls.context_compaction(_optional_str_value(data, "encrypted_content"))
         return cls(type=item_type)
 
     @classmethod
@@ -733,7 +1132,12 @@ class ResponseItem:
         if should_serialize_reasoning_content(self.reasoning_content):
             data["content"] = [item.to_mapping() for item in self.reasoning_content or ()]
         if self.output is not None:
-            data["output"] = self.output.to_json() if isinstance(self.output, FunctionCallOutputPayload) else self.output
+            if isinstance(self.output, FunctionCallOutputPayload):
+                data["output"] = self.output.to_json()
+                if self.output.success is not None:
+                    data["success"] = self.output.success
+            else:
+                data["output"] = self.output
         if self.tools:
             data["tools"] = list(self.tools)
         if self.action is not None:
@@ -820,12 +1224,138 @@ def local_image_close_tag_text() -> str:
     return LOCAL_IMAGE_CLOSE_TAG
 
 
+def _local_image_content_items_with_label_number(path: Path, label_number: int, detail: ImageDetail) -> tuple[ContentItem, ...]:
+    try:
+        file_bytes = path.read_bytes()
+    except OSError as exc:
+        return (ContentItem.input_text(f"Codex could not read the local image at `{path}`: {exc}"),)
+    mime_type, _encoding = mimetypes.guess_type(str(path))
+    if mime_type is None or not mime_type.startswith("image/"):
+        return (
+            ContentItem.input_text(
+                f"Codex cannot attach image at `{path}`: unsupported image `{mime_type or 'application/octet-stream'}`."
+            ),
+        )
+    if not _looks_like_supported_image(file_bytes, mime_type):
+        return (ContentItem.input_text(f"Image located at `{path}` is invalid: could not decode image"),)
+    image_url = f"data:{mime_type};base64,{base64.b64encode(file_bytes).decode('ascii')}"
+    return (
+        ContentItem.input_text(local_image_open_tag_text(label_number)),
+        ContentItem.input_image(image_url, detail=detail),
+        ContentItem.input_text(local_image_close_tag_text()),
+    )
+
+
+def _looks_like_supported_image(file_bytes: bytes, mime_type: str) -> bool:
+    if mime_type == "image/png":
+        return file_bytes.startswith(b"\x89PNG\r\n\x1a\n")
+    if mime_type in {"image/jpeg", "image/jpg"}:
+        return file_bytes.startswith(b"\xff\xd8\xff")
+    if mime_type == "image/gif":
+        return file_bytes.startswith((b"GIF87a", b"GIF89a"))
+    if mime_type == "image/webp":
+        return len(file_bytes) >= 12 and file_bytes.startswith(b"RIFF") and file_bytes[8:12] == b"WEBP"
+    if mime_type == "image/bmp":
+        return file_bytes.startswith(b"BM")
+    if mime_type in {"image/tiff", "image/x-tiff"}:
+        return file_bytes.startswith((b"II*\x00", b"MM\x00*"))
+    return False
+
+
 def _required_str(value: dict[str, JsonValue], key: str) -> str:
     if key not in value:
         raise KeyError(key)
     raw = value[key]
     if not isinstance(raw, str):
         raise TypeError(f"{key} must be a string")
+    return raw
+
+
+def _required_value(value: dict[str, JsonValue], key: str) -> JsonValue:
+    if key not in value:
+        raise KeyError(key)
+    return value[key]
+
+
+def _optional_str_value(value: dict[str, JsonValue], key: str) -> str | None:
+    raw = value.get(key)
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise TypeError(f"{key} must be a string")
+    return raw
+
+
+def _optional_str_tuple(value: dict[str, JsonValue], key: str) -> tuple[str, ...] | None:
+    raw = value.get(key)
+    if raw is None:
+        return None
+    if isinstance(raw, str) or not isinstance(raw, (list, tuple)):
+        raise TypeError(f"{key} must be a list or tuple of strings")
+    if not all(isinstance(item, str) for item in raw):
+        raise TypeError(f"{key} entries must be strings")
+    return tuple(raw)
+
+
+def _optional_usize(value: dict[str, JsonValue], key: str) -> int | None:
+    raw = value.get(key)
+    if raw is None:
+        return None
+    if not isinstance(raw, int) or isinstance(raw, bool):
+        raise TypeError(f"{key} must be an integer")
+    if raw < 0:
+        raise ValueError(f"{key} must be non-negative")
+    return raw
+
+
+def _optional_u64_value(raw: JsonValue, key: str) -> int | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, int) or isinstance(raw, bool):
+        raise TypeError(f"{key} must be an integer")
+    if raw < 0 or raw > 2**64 - 1:
+        raise ValueError(f"{key} must fit in u64")
+    return raw
+
+
+def _optional_bool_value(value: dict[str, JsonValue], key: str) -> bool | None:
+    raw = value.get(key)
+    if raw is None:
+        return None
+    if not isinstance(raw, bool):
+        raise TypeError(f"{key} must be a bool")
+    return raw
+
+
+def _optional_image_detail(value: dict[str, JsonValue], key: str) -> ImageDetail | None:
+    raw = value.get(key)
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise TypeError(f"{key} must be a string")
+    return ImageDetail(raw)
+
+
+def _optional_message_phase(value: dict[str, JsonValue], key: str) -> MessagePhase | None:
+    raw = value.get(key)
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise TypeError(f"{key} must be a string")
+    return MessagePhase(raw)
+
+
+def _optional_web_search_action(value: dict[str, JsonValue], key: str) -> WebSearchAction | None:
+    raw = value.get(key)
+    if raw is None:
+        return None
+    return WebSearchAction.from_mapping(raw)
+
+
+def _optional_bool_field(value: dict[str, JsonValue], key: str, default: bool = False) -> bool:
+    raw = value.get(key, default)
+    if not isinstance(raw, bool):
+        raise TypeError(f"{key} must be a bool")
     return raw
 
 
@@ -859,6 +1389,12 @@ class NetworkSandboxPolicy(str, Enum):
     def is_enabled(self) -> bool:
         return self is NetworkSandboxPolicy.ENABLED
 
+    @classmethod
+    def parse(cls, value: JsonValue) -> "NetworkSandboxPolicy":
+        if not isinstance(value, str):
+            raise TypeError("network must be a string")
+        return cls(value)
+
 
 def _as_mapping(value: JsonValue, label: str = "value") -> dict[str, JsonValue]:
     if not isinstance(value, dict):
@@ -889,6 +1425,8 @@ class FileSystemAccessMode(str, Enum):
 
     @classmethod
     def parse(cls, value: str) -> "FileSystemAccessMode":
+        if not isinstance(value, str):
+            raise TypeError("access must be a string")
         if value == "none":
             return cls.DENY
         return cls(value)
@@ -923,6 +1461,23 @@ class FileSystemSpecialPath:
     subpath: Path | None = None
     path: str | None = None
 
+    def __post_init__(self) -> None:
+        if self.kind not in {"root", "minimal", "project_roots", "tmpdir", "slash_tmp", "unknown"}:
+            raise ValueError(f"unknown filesystem special path kind: {self.kind}")
+        if self.subpath is not None and not isinstance(self.subpath, Path):
+            object.__setattr__(self, "subpath", Path(self.subpath))
+        if self.kind == "project_roots":
+            if self.path is not None:
+                raise ValueError("project_roots special path cannot include path")
+        elif self.kind == "unknown":
+            if not isinstance(self.path, str):
+                raise TypeError("unknown special path requires path")
+        else:
+            if self.subpath is not None:
+                raise ValueError(f"{self.kind} special path cannot include subpath")
+            if self.path is not None:
+                raise ValueError(f"{self.kind} special path cannot include path")
+
     @classmethod
     def root(cls) -> "FileSystemSpecialPath":
         return cls("root")
@@ -950,20 +1505,28 @@ class FileSystemSpecialPath:
     @classmethod
     def from_mapping(cls, value: JsonValue) -> "FileSystemSpecialPath":
         data = _as_mapping(value, "special path")
-        kind = str(data["kind"])
+        if not isinstance(data.get("kind"), str):
+            raise TypeError("kind must be a string")
+        kind = data["kind"]
+        raw_subpath = data.get("subpath")
+        if raw_subpath is not None and not isinstance(raw_subpath, str):
+            raise TypeError("subpath must be a string")
         if kind == "root":
             return cls.root()
         if kind == "minimal":
             return cls.minimal()
         if kind in {"project_roots", "current_working_directory"}:
-            return cls.project_roots(_optional_path(data.get("subpath")))
+            return cls.project_roots(_optional_path(raw_subpath))
         if kind == "tmpdir":
             return cls.tmpdir()
         if kind == "slash_tmp":
             return cls.slash_tmp()
         if kind == "unknown":
-            return cls.unknown(str(data.get("path", "")), _optional_path(data.get("subpath")))
-        return cls.unknown(kind, _optional_path(data.get("subpath")))
+            raw_path = data.get("path")
+            if not isinstance(raw_path, str):
+                raise TypeError("path must be a string")
+            return cls.unknown(raw_path, _optional_path(raw_subpath))
+        return cls.unknown(kind, _optional_path(raw_subpath))
 
     def to_mapping(self) -> dict[str, JsonValue]:
         data: dict[str, JsonValue] = {"kind": self.kind}
@@ -981,6 +1544,33 @@ class FileSystemPath:
     pattern: str | None = None
     value: FileSystemSpecialPath | None = None
 
+    def __post_init__(self) -> None:
+        if self.type not in {"path", "glob_pattern", "special"}:
+            raise ValueError(f"unknown filesystem path type: {self.type}")
+        if self.type == "path":
+            if self.path is None:
+                raise TypeError("path filesystem path requires path")
+            if not isinstance(self.path, Path):
+                object.__setattr__(self, "path", Path(self.path))
+            if self.pattern is not None:
+                raise ValueError("path filesystem path cannot include pattern")
+            if self.value is not None:
+                raise ValueError("path filesystem path cannot include value")
+        elif self.type == "glob_pattern":
+            if not isinstance(self.pattern, str):
+                raise TypeError("glob_pattern filesystem path requires pattern")
+            if self.path is not None:
+                raise ValueError("glob_pattern filesystem path cannot include path")
+            if self.value is not None:
+                raise ValueError("glob_pattern filesystem path cannot include value")
+        elif self.type == "special":
+            if not isinstance(self.value, FileSystemSpecialPath):
+                raise TypeError("special filesystem path requires FileSystemSpecialPath")
+            if self.path is not None:
+                raise ValueError("special filesystem path cannot include path")
+            if self.pattern is not None:
+                raise ValueError("special filesystem path cannot include pattern")
+
     @classmethod
     def explicit_path(cls, path: Path | str) -> "FileSystemPath":
         return cls(type="path", path=Path(path))
@@ -996,11 +1586,19 @@ class FileSystemPath:
     @classmethod
     def from_mapping(cls, value: JsonValue) -> "FileSystemPath":
         data = _as_mapping(value, "filesystem path")
-        path_type = str(data["type"])
+        if not isinstance(data.get("type"), str):
+            raise TypeError("type must be a string")
+        path_type = data["type"]
         if path_type == "path":
-            return cls.explicit_path(str(data["path"]))
+            raw_path = data.get("path")
+            if not isinstance(raw_path, str):
+                raise TypeError("path must be a string")
+            return cls.explicit_path(raw_path)
         if path_type == "glob_pattern":
-            return cls.glob_pattern(str(data["pattern"]))
+            raw_pattern = data.get("pattern")
+            if not isinstance(raw_pattern, str):
+                raise TypeError("pattern must be a string")
+            return cls.glob_pattern(raw_pattern)
         if path_type == "special":
             return cls.special(FileSystemSpecialPath.from_mapping(data["value"]))
         raise ValueError(f"unknown filesystem path type: {path_type}")
@@ -1019,6 +1617,12 @@ class FileSystemPath:
 class FileSystemSandboxEntry:
     path: FileSystemPath
     access: FileSystemAccessMode
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.path, FileSystemPath):
+            raise TypeError("path must be FileSystemPath")
+        if not isinstance(self.access, FileSystemAccessMode):
+            raise TypeError("access must be FileSystemAccessMode")
 
     @classmethod
     def from_mapping(cls, value: JsonValue) -> "FileSystemSandboxEntry":
@@ -1083,10 +1687,42 @@ class SandboxPolicy:
     exclude_slash_tmp: bool = False
 
     def __post_init__(self) -> None:
+        if self.type not in {"danger-full-access", "read-only", "external-sandbox", "workspace-write"}:
+            raise ValueError(f"unknown sandbox policy type: {self.type}")
+        if not isinstance(self.writable_roots, list | tuple):
+            raise TypeError("writable_roots must be a list")
+        if not all(isinstance(path, Path | str) for path in self.writable_roots):
+            raise TypeError("writable_roots entries must be strings or Path")
         if not isinstance(self.writable_roots, tuple):
             object.__setattr__(self, "writable_roots", tuple(Path(path) for path in self.writable_roots))
         else:
             object.__setattr__(self, "writable_roots", tuple(Path(path) for path in self.writable_roots))
+        if not all(isinstance(path, Path) for path in self.writable_roots):
+            raise TypeError("writable_roots must contain Path")
+        for field_name in ("exclude_tmpdir_env_var", "exclude_slash_tmp"):
+            if not isinstance(getattr(self, field_name), bool):
+                raise TypeError(f"{field_name} must be a bool")
+        if self.type == "external-sandbox":
+            if self.writable_roots:
+                raise ValueError("external-sandbox policy cannot include writable_roots")
+            if not isinstance(self.network_access, NetworkSandboxPolicy):
+                raise TypeError("external-sandbox network_access must be NetworkSandboxPolicy")
+            if self.exclude_tmpdir_env_var:
+                raise ValueError("external-sandbox policy cannot include exclude_tmpdir_env_var")
+            if self.exclude_slash_tmp:
+                raise ValueError("external-sandbox policy cannot include exclude_slash_tmp")
+        else:
+            if not isinstance(self.network_access, bool):
+                raise TypeError(f"{self.type} network_access must be a bool")
+            if self.type == "danger-full-access" and self.network_access:
+                raise ValueError("danger-full-access policy cannot include network_access")
+            if self.type != "workspace-write":
+                if self.writable_roots:
+                    raise ValueError(f"{self.type} policy cannot include writable_roots")
+                if self.exclude_tmpdir_env_var:
+                    raise ValueError(f"{self.type} policy cannot include exclude_tmpdir_env_var")
+                if self.exclude_slash_tmp:
+                    raise ValueError(f"{self.type} policy cannot include exclude_slash_tmp")
 
     @classmethod
     def danger_full_access(cls) -> "SandboxPolicy":
@@ -1111,6 +1747,10 @@ class SandboxPolicy:
         exclude_tmpdir_env_var: bool = False,
         exclude_slash_tmp: bool = False,
     ) -> "SandboxPolicy":
+        if not isinstance(writable_roots, list | tuple):
+            raise TypeError("writable_roots must be a list")
+        if not all(isinstance(path, Path | str) for path in writable_roots):
+            raise TypeError("writable_roots entries must be strings or Path")
         return cls(
             "workspace-write",
             writable_roots=tuple(Path(path) for path in writable_roots),
@@ -1179,20 +1819,37 @@ class SandboxPolicy:
     @classmethod
     def from_mapping(cls, value: JsonValue) -> "SandboxPolicy":
         data = _as_mapping(value, "sandbox policy")
-        policy_type = str(data["type"])
+        policy_type = _required_str(data, "type")
         if policy_type == "danger-full-access":
+            unknown = set(data) - {"type"}
+            if unknown:
+                raise ValueError(f"unknown field: {sorted(unknown)[0]}")
             return cls.danger_full_access()
         if policy_type == "read-only":
-            return cls.read_only(network_access=bool(data.get("network_access", False)))
+            unknown = set(data) - {"type", "network_access"}
+            if unknown:
+                raise ValueError(f"unknown field: {sorted(unknown)[0]}")
+            return cls.read_only(network_access=_optional_bool_field(data, "network_access"))
         if policy_type == "external-sandbox":
+            unknown = set(data) - {"type", "network_access"}
+            if unknown:
+                raise ValueError(f"unknown field: {sorted(unknown)[0]}")
             raw_network = data.get("network_access", NetworkSandboxPolicy.RESTRICTED.value)
-            return cls.external_sandbox(NetworkSandboxPolicy(str(raw_network)))
+            return cls.external_sandbox(NetworkSandboxPolicy.parse(raw_network))
         if policy_type == "workspace-write":
+            unknown = set(data) - {"type", "writable_roots", "network_access", "exclude_tmpdir_env_var", "exclude_slash_tmp"}
+            if unknown:
+                raise ValueError(f"unknown field: {sorted(unknown)[0]}")
+            writable_roots = data.get("writable_roots", ())
+            if not isinstance(writable_roots, list | tuple):
+                raise TypeError("writable_roots must be a list")
+            if not all(isinstance(path, str) for path in writable_roots):
+                raise TypeError("writable_roots entries must be strings")
             return cls.workspace_write(
-                tuple(Path(str(path)) for path in data.get("writable_roots", ())),
-                network_access=bool(data.get("network_access", False)),
-                exclude_tmpdir_env_var=bool(data.get("exclude_tmpdir_env_var", False)),
-                exclude_slash_tmp=bool(data.get("exclude_slash_tmp", False)),
+                tuple(Path(path) for path in writable_roots),
+                network_access=_optional_bool_field(data, "network_access"),
+                exclude_tmpdir_env_var=_optional_bool_field(data, "exclude_tmpdir_env_var"),
+                exclude_slash_tmp=_optional_bool_field(data, "exclude_slash_tmp"),
             )
         raise ValueError(f"unknown sandbox policy type: {policy_type}")
 
@@ -1228,6 +1885,17 @@ class SandboxPolicy:
 class FileSystemPermissions:
     entries: tuple[FileSystemSandboxEntry, ...] = ()
     glob_scan_max_depth: int | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.entries, tuple):
+            object.__setattr__(self, "entries", tuple(self.entries))
+        if not all(isinstance(entry, FileSystemSandboxEntry) for entry in self.entries):
+            raise TypeError("entries must contain FileSystemSandboxEntry")
+        if self.glob_scan_max_depth is not None:
+            if isinstance(self.glob_scan_max_depth, bool) or not isinstance(self.glob_scan_max_depth, int):
+                raise TypeError("glob_scan_max_depth must be an integer")
+            if self.glob_scan_max_depth <= 0:
+                raise ValueError("glob_scan_max_depth must be non-zero")
 
     def is_empty(self) -> bool:
         return len(self.entries) == 0
@@ -1271,8 +1939,16 @@ class FileSystemPermissions:
     @classmethod
     def from_mapping(cls, value: JsonValue) -> "FileSystemPermissions":
         data = _as_mapping(value, "filesystem permissions")
+        canonical_keys = {"entries", "glob_scan_max_depth"}
+        legacy_keys = {"read", "write"}
+        allowed_keys = canonical_keys if any(key in data for key in canonical_keys) else legacy_keys
+        unknown = set(data) - allowed_keys
+        if unknown:
+            raise ValueError(f"unknown field: {sorted(unknown)[0]}")
         raw_depth = data.get("glob_scan_max_depth")
-        glob_scan_max_depth = int(raw_depth) if raw_depth is not None else None
+        if raw_depth is not None and (isinstance(raw_depth, bool) or not isinstance(raw_depth, int)):
+            raise TypeError("glob_scan_max_depth must be an integer")
+        glob_scan_max_depth = raw_depth
         if glob_scan_max_depth is not None and glob_scan_max_depth <= 0:
             raise ValueError("glob_scan_max_depth must be greater than zero")
         if "entries" in data:
@@ -1286,6 +1962,16 @@ class FileSystemPermissions:
         )
 
     def to_mapping(self) -> dict[str, JsonValue]:
+        legacy_roots = self.legacy_read_write_roots()
+        if legacy_roots is not None:
+            read, write = legacy_roots
+            legacy: dict[str, JsonValue] = {}
+            if read:
+                legacy["read"] = [str(path) for path in read]
+            if write:
+                legacy["write"] = [str(path) for path in write]
+            return legacy
+
         data: dict[str, JsonValue] = {"entries": [entry.to_mapping() for entry in self.entries]}
         if self.glob_scan_max_depth is not None:
             data["glob_scan_max_depth"] = self.glob_scan_max_depth
@@ -1295,6 +1981,10 @@ class FileSystemPermissions:
 @dataclass(frozen=True)
 class NetworkPermissions:
     enabled: bool | None = None
+
+    def __post_init__(self) -> None:
+        if self.enabled is not None and not isinstance(self.enabled, bool):
+            raise TypeError("enabled must be a bool")
 
     def is_empty(self) -> bool:
         return self.enabled is None
@@ -1312,6 +2002,12 @@ class NetworkPermissions:
 class AdditionalPermissionProfile:
     network: NetworkPermissions | None = None
     file_system: FileSystemPermissions | None = None
+
+    def __post_init__(self) -> None:
+        if self.network is not None and not isinstance(self.network, NetworkPermissions):
+            raise TypeError("network must be NetworkPermissions")
+        if self.file_system is not None and not isinstance(self.file_system, FileSystemPermissions):
+            raise TypeError("file_system must be FileSystemPermissions")
 
     def is_empty(self) -> bool:
         return self.network is None and self.file_system is None
@@ -1362,6 +2058,19 @@ class FileSystemSandboxPolicy:
     )
     glob_scan_max_depth: int | None = None
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, FileSystemSandboxKind):
+            raise TypeError("kind must be FileSystemSandboxKind")
+        if not isinstance(self.entries, tuple):
+            object.__setattr__(self, "entries", tuple(self.entries))
+        if not all(isinstance(entry, FileSystemSandboxEntry) for entry in self.entries):
+            raise TypeError("entries must contain FileSystemSandboxEntry")
+        if self.glob_scan_max_depth is not None:
+            if isinstance(self.glob_scan_max_depth, bool) or not isinstance(self.glob_scan_max_depth, int):
+                raise TypeError("glob_scan_max_depth must be an integer")
+            if self.glob_scan_max_depth < 0:
+                raise ValueError("glob_scan_max_depth must be non-negative")
+
     @classmethod
     def default(cls) -> "FileSystemSandboxPolicy":
         return cls()
@@ -1381,13 +2090,19 @@ class FileSystemSandboxPolicy:
     @classmethod
     def from_mapping(cls, value: JsonValue) -> "FileSystemSandboxPolicy":
         data = _as_mapping(value, "filesystem sandbox policy")
-        kind = FileSystemSandboxKind(str(data.get("kind", FileSystemSandboxKind.RESTRICTED.value)))
+        raw_kind = data.get("kind", FileSystemSandboxKind.RESTRICTED.value)
+        if not isinstance(raw_kind, str):
+            raise TypeError("kind must be a string")
+        raw_depth = data.get("glob_scan_max_depth")
+        if raw_depth is not None and (isinstance(raw_depth, bool) or not isinstance(raw_depth, int)):
+            raise TypeError("glob_scan_max_depth must be an integer")
+        entries = data.get("entries", ())
+        if not isinstance(entries, list | tuple):
+            raise TypeError("entries must be a list")
         return cls(
-            kind=kind,
-            entries=tuple(FileSystemSandboxEntry.from_mapping(item) for item in data.get("entries", ())),
-            glob_scan_max_depth=(
-                int(data["glob_scan_max_depth"]) if data.get("glob_scan_max_depth") is not None else None
-            ),
+            kind=FileSystemSandboxKind(raw_kind),
+            entries=tuple(FileSystemSandboxEntry.from_mapping(item) for item in entries),
+            glob_scan_max_depth=raw_depth,
         )
 
     def to_mapping(self) -> dict[str, JsonValue]:
@@ -1405,6 +2120,14 @@ class FileSystemSandboxPolicy:
         exclude_tmpdir_env_var: bool = False,
         exclude_slash_tmp: bool = False,
     ) -> "FileSystemSandboxPolicy":
+        if not isinstance(writable_roots, (list, tuple)):
+            raise TypeError("writable_roots must be a list or tuple")
+        if not all(isinstance(path, (str, Path)) for path in writable_roots):
+            raise TypeError("writable_roots entries must be strings or Path")
+        if not isinstance(exclude_tmpdir_env_var, bool):
+            raise TypeError("exclude_tmpdir_env_var must be a bool")
+        if not isinstance(exclude_slash_tmp, bool):
+            raise TypeError("exclude_slash_tmp must be a bool")
         entries = [
             FileSystemSandboxEntry(FileSystemPath.special(FileSystemSpecialPath.root()), FileSystemAccessMode.READ),
             FileSystemSandboxEntry(FileSystemPath.special(FileSystemSpecialPath.project_roots()), FileSystemAccessMode.WRITE),
@@ -1929,6 +2652,23 @@ class ManagedFileSystemPermissions:
     entries: tuple[FileSystemSandboxEntry, ...] = ()
     glob_scan_max_depth: int | None = None
 
+    def __post_init__(self) -> None:
+        if self.type not in {"restricted", "unrestricted"}:
+            raise ValueError(f"unknown managed filesystem permission type: {self.type}")
+        if not isinstance(self.entries, tuple):
+            object.__setattr__(self, "entries", tuple(self.entries))
+        if not all(isinstance(entry, FileSystemSandboxEntry) for entry in self.entries):
+            raise TypeError("entries must contain FileSystemSandboxEntry")
+        if self.type == "unrestricted" and self.entries:
+            raise ValueError("unrestricted managed filesystem permissions cannot include entries")
+        if self.type == "unrestricted" and self.glob_scan_max_depth is not None:
+            raise ValueError("unrestricted managed filesystem permissions cannot include glob_scan_max_depth")
+        if self.glob_scan_max_depth is not None:
+            if isinstance(self.glob_scan_max_depth, bool) or not isinstance(self.glob_scan_max_depth, int):
+                raise TypeError("glob_scan_max_depth must be an integer")
+            if self.glob_scan_max_depth <= 0:
+                raise ValueError("glob_scan_max_depth must be non-zero")
+
     @classmethod
     def restricted(
         cls,
@@ -1944,12 +2684,22 @@ class ManagedFileSystemPermissions:
     @classmethod
     def from_mapping(cls, value: JsonValue) -> "ManagedFileSystemPermissions":
         data = _as_mapping(value, "managed filesystem permissions")
-        permission_type = str(data["type"])
+        if not isinstance(data.get("type"), str):
+            raise TypeError("type must be a string")
+        permission_type = data["type"]
         if permission_type == "unrestricted":
+            unknown = set(data) - {"type"}
+            if unknown:
+                raise ValueError(f"unknown field: {sorted(unknown)[0]}")
             return cls.unrestricted()
         if permission_type == "restricted":
+            unknown = set(data) - {"type", "entries", "glob_scan_max_depth"}
+            if unknown:
+                raise ValueError(f"unknown field: {sorted(unknown)[0]}")
             raw_depth = data.get("glob_scan_max_depth")
-            glob_scan_max_depth = int(raw_depth) if raw_depth is not None else None
+            if raw_depth is not None and (isinstance(raw_depth, bool) or not isinstance(raw_depth, int)):
+                raise TypeError("glob_scan_max_depth must be an integer")
+            glob_scan_max_depth = raw_depth
             if glob_scan_max_depth is not None and glob_scan_max_depth <= 0:
                 raise ValueError("glob_scan_max_depth must be greater than zero")
             return cls.restricted(
@@ -1997,6 +2747,12 @@ class ActivePermissionProfile:
     id: str
     extends: str | None = None
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.id, str):
+            raise TypeError("id must be a string")
+        if self.extends is not None and not isinstance(self.extends, str):
+            raise TypeError("extends must be a string")
+
     @classmethod
     def new(cls, id: str) -> "ActivePermissionProfile":
         return cls(id=id)
@@ -2028,6 +2784,25 @@ class PermissionProfile:
     type: str
     file_system: ManagedFileSystemPermissions | None = None
     network: NetworkSandboxPolicy | None = None
+
+    def __post_init__(self) -> None:
+        if self.type not in {"managed", "disabled", "external"}:
+            raise ValueError(f"unknown permission profile type: {self.type}")
+        if self.type == "managed":
+            if not isinstance(self.file_system, ManagedFileSystemPermissions):
+                raise TypeError("managed permission profile requires ManagedFileSystemPermissions")
+            if not isinstance(self.network, NetworkSandboxPolicy):
+                raise TypeError("managed permission profile requires NetworkSandboxPolicy")
+        elif self.type == "disabled":
+            if self.file_system is not None:
+                raise ValueError("disabled permission profile cannot include file_system")
+            if self.network is not None:
+                raise ValueError("disabled permission profile cannot include network")
+        elif self.type == "external":
+            if self.file_system is not None:
+                raise ValueError("external permission profile cannot include file_system")
+            if not isinstance(self.network, NetworkSandboxPolicy):
+                raise TypeError("external permission profile requires NetworkSandboxPolicy")
 
     @classmethod
     def default(cls) -> "PermissionProfile":
@@ -2182,16 +2957,27 @@ class PermissionProfile:
             )
             return cls.from_runtime_permissions(file_system_sandbox_policy, network_sandbox_policy)
 
-        profile_type = str(data["type"])
+        if not isinstance(data["type"], str):
+            raise TypeError("type must be a string")
+        profile_type = data["type"]
         if profile_type == "managed":
+            unknown = set(data) - {"type", "file_system", "network"}
+            if unknown:
+                raise ValueError(f"unknown field: {sorted(unknown)[0]}")
             return cls.managed(
                 ManagedFileSystemPermissions.from_mapping(data["file_system"]),
-                NetworkSandboxPolicy(str(data["network"])),
+                NetworkSandboxPolicy.parse(data["network"]),
             )
         if profile_type == "disabled":
+            unknown = set(data) - {"type"}
+            if unknown:
+                raise ValueError(f"unknown field: {sorted(unknown)[0]}")
             return cls.disabled()
         if profile_type == "external":
-            return cls.external(NetworkSandboxPolicy(str(data["network"])))
+            unknown = set(data) - {"type", "network"}
+            if unknown:
+                raise ValueError(f"unknown field: {sorted(unknown)[0]}")
+            return cls.external(NetworkSandboxPolicy.parse(data["network"]))
         raise ValueError(f"unknown permission profile type: {profile_type}")
 
     def to_mapping(self) -> dict[str, JsonValue]:

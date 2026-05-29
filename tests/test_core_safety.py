@@ -216,6 +216,44 @@ class SafetyTests(unittest.TestCase):
                 SafetyCheck.ask_user(),
             )
 
+
+    def test_safety_public_models_reject_implicit_coercions(self) -> None:
+        with self.assertRaises(ValueError):
+            SafetyCheck("unknown")
+        with self.assertRaises(TypeError):
+            SafetyCheck.auto_approve(SandboxType.NONE, user_explicitly_approved=1)
+        with self.assertRaises(TypeError):
+            SafetyCheck.reject(123)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cwd = Path(tmpdir)
+            profile = PermissionProfile.workspace_write(exclude_tmpdir_env_var=True, exclude_slash_tmp=True)
+            action = ApplyPatchAction.new_add_for_test(cwd / "inside.txt", "")
+            with self.assertRaises(TypeError):
+                assess_patch_safety(
+                    action,
+                    "on-request",
+                    profile,
+                    profile.file_system_sandbox_policy(),
+                    cwd,
+                    WindowsSandboxLevel.DISABLED,
+                )
+            with self.assertRaises(TypeError):
+                assess_patch_safety(
+                    action,
+                    AskForApproval.ON_REQUEST,
+                    profile,
+                    profile.file_system_sandbox_policy(),
+                    123,
+                    WindowsSandboxLevel.DISABLED,
+                )
+            with self.assertRaises(TypeError):
+                is_write_patch_constrained_to_writable_paths(
+                    action,
+                    profile.file_system_sandbox_policy(),
+                    123,
+                )
+
     def test_managed_inside_patch_uses_platform_sandbox_when_available(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             cwd = Path(tmpdir)

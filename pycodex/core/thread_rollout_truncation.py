@@ -20,6 +20,16 @@ from .context import is_contextual_user_fragment
 USIZE_MAX = sys.maxsize * 2 + 1
 
 
+def _ensure_usize(value: object, field: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError(f"{field} must be a usize integer")
+    if value < 0:
+        raise ValueError(f"{field} must be non-negative")
+    if value > USIZE_MAX:
+        raise ValueError(f"{field} exceeds usize::MAX")
+    return value
+
+
 def initial_history_has_prior_user_turns(conversation_history: InitialHistory) -> bool:
     history = InitialHistory.from_mapping(conversation_history)
     return history.scan_rollout_items(rollout_item_is_user_turn_boundary)
@@ -84,6 +94,7 @@ def truncate_rollout_before_nth_user_message_from_start(
     items: Sequence[RolloutItem | Any],
     n_from_start: int,
 ) -> list[RolloutItem | Any]:
+    n_from_start = _ensure_usize(n_from_start, "n_from_start")
     if n_from_start == USIZE_MAX:
         return list(items)
 
@@ -99,14 +110,17 @@ def truncate_rollout_to_last_n_fork_turns(
     items: Sequence[RolloutItem | Any],
     n_from_end: int,
 ) -> list[RolloutItem | Any]:
+    n_from_end = _ensure_usize(n_from_end, "n_from_end")
     if n_from_end == 0:
         return []
 
     fork_turn_positions = fork_turn_positions_in_rollout(items)
-    if len(fork_turn_positions) <= n_from_end:
-        return list(items)
-
-    keep_idx = fork_turn_positions[len(fork_turn_positions) - n_from_end]
+    if not fork_turn_positions:
+        return []
+    if len(fork_turn_positions) >= n_from_end:
+        keep_idx = fork_turn_positions[len(fork_turn_positions) - n_from_end]
+    else:
+        keep_idx = fork_turn_positions[0]
     return list(items[keep_idx:])
 
 
@@ -174,7 +188,11 @@ def _thread_rolled_back_event(item: RolloutItem) -> ThreadRolledBackEvent | None
 
 
 def _saturating_num_turns(value: int) -> int:
-    return min(max(int(value), 0), USIZE_MAX)
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError("num_turns must be an integer")
+    if value < 0 or value > USIZE_MAX:
+        return USIZE_MAX
+    return value
 
 
 __all__ = [

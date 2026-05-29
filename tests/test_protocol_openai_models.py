@@ -103,38 +103,53 @@ class ProtocolOpenAiModelsTests(unittest.TestCase):
         self.assertEqual(variables.get_personality_message(Personality.NONE), "")
 
     def test_model_info_from_mapping_defaults(self):
-        model = ModelInfo.from_mapping(
-            {
-                "slug": "test-model",
-                "display_name": "Test Model",
-                "description": None,
-                "supported_reasoning_levels": [],
-                "shell_type": "shell_command",
-                "visibility": "list",
-                "supported_in_api": True,
-                "priority": 1,
-                "upgrade": None,
-                "base_instructions": "base",
-                "model_messages": None,
-                "supports_reasoning_summaries": False,
-                "default_reasoning_summary": "auto",
-                "support_verbosity": False,
-                "default_verbosity": None,
-                "apply_patch_tool_type": None,
-                "truncation_policy": {"mode": "bytes", "limit": 10000},
-                "supports_parallel_tool_calls": False,
-                "context_window": None,
-                "auto_compact_token_limit": None,
-                "effective_context_window_percent": 95,
-                "experimental_supported_tools": [],
-            }
-        )
+        model = ModelInfo.from_mapping(_model_info_payload())
 
         self.assertIsNone(model.availability_nux)
         self.assertFalse(model.supports_image_detail_original)
         self.assertEqual(model.web_search_tool_type, WebSearchToolType.TEXT)
         self.assertFalse(model.supports_search_tool)
         self.assertEqual(model.input_modalities, (InputModality.TEXT, InputModality.IMAGE))
+
+    def test_model_info_from_mapping_rejects_non_rust_wire_shapes(self):
+        payload = _model_info_payload()
+        payload["supports_search_tool"] = "yes"
+        with self.assertRaisesRegex(TypeError, "supports_search_tool must be a bool"):
+            ModelInfo.from_mapping(payload)
+
+        payload = _model_info_payload()
+        payload["supports_image_detail_original"] = 1
+        with self.assertRaisesRegex(TypeError, "supports_image_detail_original must be a bool"):
+            ModelInfo.from_mapping(payload)
+
+        payload = _model_info_payload()
+        payload["input_modalities"] = ["text", 5]
+        with self.assertRaisesRegex(TypeError, "input_modalities entries must be strings"):
+            ModelInfo.from_mapping(payload)
+
+        payload = _model_info_payload()
+        payload["additional_speed_tiers"] = ["fast", 5]
+        with self.assertRaisesRegex(TypeError, "additional_speed_tiers entries must be strings"):
+            ModelInfo.from_mapping(payload)
+
+        payload = _model_info_payload()
+        payload["experimental_supported_tools"] = ["web_search", 5]
+        with self.assertRaisesRegex(TypeError, "experimental_supported_tools entries must be strings"):
+            ModelInfo.from_mapping(payload)
+
+        payload = _model_info_payload()
+        payload["priority"] = 2**31
+        with self.assertRaisesRegex(ValueError, "priority must fit in i32"):
+            ModelInfo.from_mapping(payload)
+
+        payload = _model_info_payload()
+        payload["truncation_policy"] = {"mode": "bytes", "limit": 2**63}
+        with self.assertRaisesRegex(ValueError, "limit must fit in i64"):
+            ModelInfo.from_mapping(payload)
+
+        payload = _model_info_payload()
+        payload["effective_context_window_percent"] = 0
+        self.assertEqual(ModelInfo.from_mapping(payload).effective_context_window_percent, 0)
 
     def test_resolved_context_window_and_auto_compact_limit(self):
         model = test_model()
@@ -260,6 +275,35 @@ def _model_kwargs(model: ModelInfo, **overrides) -> dict:
         "input_modalities": model.input_modalities,
         "used_fallback_model_metadata": model.used_fallback_model_metadata,
         "supports_search_tool": model.supports_search_tool,
+    }
+    data.update(overrides)
+    return data
+
+
+def _model_info_payload(**overrides) -> dict:
+    data = {
+        "slug": "test-model",
+        "display_name": "Test Model",
+        "description": None,
+        "supported_reasoning_levels": [],
+        "shell_type": "shell_command",
+        "visibility": "list",
+        "supported_in_api": True,
+        "priority": 1,
+        "upgrade": None,
+        "base_instructions": "base",
+        "model_messages": None,
+        "supports_reasoning_summaries": False,
+        "default_reasoning_summary": "auto",
+        "support_verbosity": False,
+        "default_verbosity": None,
+        "apply_patch_tool_type": None,
+        "truncation_policy": {"mode": "bytes", "limit": 10000},
+        "supports_parallel_tool_calls": False,
+        "context_window": None,
+        "auto_compact_token_limit": None,
+        "effective_context_window_percent": 95,
+        "experimental_supported_tools": [],
     }
     data.update(overrides)
     return data

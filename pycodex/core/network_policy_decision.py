@@ -40,6 +40,18 @@ class BlockedRequest:
     port: int | None = None
     timestamp: int = 0
 
+    def __post_init__(self) -> None:
+        _ensure_str(self.host, "host")
+        _ensure_str(self.reason, "reason")
+        _ensure_optional_str_value(self.client, "client")
+        _ensure_optional_str_value(self.method, "method")
+        _ensure_optional_str_value(self.mode, "mode")
+        _ensure_str(self.protocol, "protocol")
+        _ensure_optional_str_value(self.decision, "decision")
+        _ensure_optional_str_value(self.source, "source")
+        _ensure_optional_int_value(self.port, "port")
+        _ensure_int_value(self.timestamp, "timestamp")
+
     @classmethod
     def from_mapping(cls, value: JsonValue) -> "BlockedRequest":
         if not isinstance(value, dict):
@@ -85,14 +97,23 @@ class ExecPolicyNetworkRuleAmendment:
     decision: Decision
     justification: str
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.protocol, ExecPolicyNetworkRuleProtocol):
+            raise TypeError("protocol must be an ExecPolicyNetworkRuleProtocol")
+        if not isinstance(self.decision, Decision):
+            raise TypeError("decision must be a Decision")
+        _ensure_str(self.justification, "justification")
+
 
 def parse_network_policy_decision(value: str | None) -> NetworkPolicyDecision | None:
     if value is None:
         return None
-    try:
-        return NetworkPolicyDecision(value)
-    except ValueError:
-        return None
+    _ensure_str(value, "value")
+    if value == "deny":
+        return NetworkPolicyDecision.DENY
+    if value == "ask":
+        return NetworkPolicyDecision.ASK
+    return None
 
 
 def network_approval_context_from_payload(
@@ -144,13 +165,20 @@ def execpolicy_network_rule_amendment(
     network_approval_context: NetworkApprovalContext,
     host: str,
 ) -> ExecPolicyNetworkRuleAmendment:
+    if not isinstance(amendment, NetworkPolicyAmendment):
+        raise TypeError("amendment must be a NetworkPolicyAmendment")
+    if not isinstance(network_approval_context, NetworkApprovalContext):
+        raise TypeError("network_approval_context must be a NetworkApprovalContext")
+    _ensure_str(host, "host")
     protocol = _execpolicy_protocol(network_approval_context.protocol)
     if amendment.action is NetworkPolicyRuleAction.ALLOW:
         decision = Decision.ALLOW
         action_verb = "Allow"
-    else:
+    elif amendment.action is NetworkPolicyRuleAction.DENY:
         decision = Decision.FORBIDDEN
         action_verb = "Deny"
+    else:
+        raise ValueError("unsupported network policy rule action")
     protocol_label = _protocol_label(network_approval_context.protocol)
     return ExecPolicyNetworkRuleAmendment(
         protocol=protocol,
@@ -166,7 +194,9 @@ def _execpolicy_protocol(protocol: NetworkApprovalProtocol) -> ExecPolicyNetwork
         return ExecPolicyNetworkRuleProtocol.HTTPS
     if protocol is NetworkApprovalProtocol.SOCKS5_TCP:
         return ExecPolicyNetworkRuleProtocol.SOCKS5_TCP
-    return ExecPolicyNetworkRuleProtocol.SOCKS5_UDP
+    if protocol is NetworkApprovalProtocol.SOCKS5_UDP:
+        return ExecPolicyNetworkRuleProtocol.SOCKS5_UDP
+    raise ValueError("unsupported network approval protocol")
 
 
 def _protocol_label(protocol: NetworkApprovalProtocol) -> str:
@@ -176,7 +206,9 @@ def _protocol_label(protocol: NetworkApprovalProtocol) -> str:
         return "https_connect"
     if protocol is NetworkApprovalProtocol.SOCKS5_TCP:
         return "socks5_tcp"
-    return "socks5_udp"
+    if protocol is NetworkApprovalProtocol.SOCKS5_UDP:
+        return "socks5_udp"
+    raise ValueError("unsupported network approval protocol")
 
 
 def _required_str(value: dict[str, JsonValue], key: str) -> str:
@@ -199,9 +231,30 @@ def _optional_int(value: dict[str, JsonValue], key: str) -> int | None:
     raw = value.get(key)
     if raw is None:
         return None
-    if isinstance(raw, bool) or not isinstance(raw, int):
-        raise TypeError(f"{key} must be an integer")
+    _ensure_int_value(raw, key)
     return raw
+
+
+def _ensure_str(value: object, name: str) -> None:
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a string")
+
+
+def _ensure_optional_str_value(value: object, name: str) -> None:
+    if value is None:
+        return
+    _ensure_str(value, name)
+
+
+def _ensure_int_value(value: object, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer")
+
+
+def _ensure_optional_int_value(value: object, name: str) -> None:
+    if value is None:
+        return
+    _ensure_int_value(value, name)
 
 
 __all__ = [

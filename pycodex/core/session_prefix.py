@@ -9,13 +9,20 @@ from .context import SubagentNotification
 
 def format_subagent_notification_message(
     agent_reference: str,
-    status: AgentStatus | str | dict[str, object],
+    status: AgentStatus,
 ) -> str:
-    parsed_status = AgentStatus.from_mapping(status)
-    return SubagentNotification.new(str(agent_reference), parsed_status).render()
+    if not isinstance(agent_reference, str):
+        raise TypeError("agent_reference must be a string")
+    if not isinstance(status, AgentStatus):
+        raise TypeError("status must be an AgentStatus")
+    return SubagentNotification.new(agent_reference, status).render()
 
 
 def format_subagent_context_line(agent_reference: str, agent_nickname: str | None) -> str:
+    if not isinstance(agent_reference, str):
+        raise TypeError("agent_reference must be a string")
+    if agent_nickname is not None and not isinstance(agent_nickname, str):
+        raise TypeError("agent_nickname must be a string or None")
     if agent_nickname is not None and agent_nickname != "":
         return f"- {agent_reference}: {agent_nickname}"
     return f"- {agent_reference}"

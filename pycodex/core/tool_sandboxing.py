@@ -20,9 +20,13 @@ from pycodex.protocol import (
     FileSystemSandboxKind,
     FileSystemSandboxPolicy,
     GranularApprovalConfig,
+    PermissionProfile,
     ReviewDecision,
     SandboxPermissions,
+    ToolName,
+    WindowsSandboxLevel,
 )
+from pycodex.core.network_approval import CancellationToken
 
 _NetworkT = TypeVar("_NetworkT")
 
@@ -32,8 +36,18 @@ class PermissionRequestPayload:
     tool_name: HookToolName
     tool_input: dict[str, Any]
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.tool_name, HookToolName):
+            raise TypeError("tool_name must be HookToolName")
+        if not isinstance(self.tool_input, dict):
+            raise TypeError("tool_input must be a dict")
+
     @classmethod
     def bash(cls, command: str, description: str | None = None) -> "PermissionRequestPayload":
+        if not isinstance(command, str):
+            raise TypeError("command must be a string")
+        if description is not None and not isinstance(description, str):
+            raise TypeError("description must be a string or None")
         tool_input: dict[str, Any] = {"command": command}
         if description is not None:
             tool_input["description"] = description
@@ -85,6 +99,30 @@ class ExecApprovalRequirement:
     reason: str | None = None
     proposed_execpolicy_amendment: ExecPolicyAmendment | None = None
 
+    def __post_init__(self) -> None:
+        if self.type == "skip":
+            if not isinstance(self.bypass_sandbox, bool):
+                raise TypeError("bypass_sandbox must be a bool")
+            if self.reason is not None:
+                raise ValueError("skip requirement must not include reason")
+        elif self.type == "needs_approval":
+            if self.bypass_sandbox:
+                raise ValueError("needs_approval requirement must not bypass sandbox")
+            if self.reason is not None and not isinstance(self.reason, str):
+                raise TypeError("reason must be a string or None")
+        elif self.type == "forbidden":
+            if self.bypass_sandbox:
+                raise ValueError("forbidden requirement must not bypass sandbox")
+            if not isinstance(self.reason, str):
+                raise TypeError("forbidden requirement requires reason")
+        else:
+            raise ValueError(f"unknown exec approval requirement type: {self.type}")
+        if (
+            self.proposed_execpolicy_amendment is not None
+            and not isinstance(self.proposed_execpolicy_amendment, ExecPolicyAmendment)
+        ):
+            raise TypeError("proposed_execpolicy_amendment must be ExecPolicyAmendment or None")
+
     @classmethod
     def skip(
         cls,
@@ -120,10 +158,96 @@ class ExecApprovalRequirement:
             return self.proposed_execpolicy_amendment
         return None
 
+    def proposed_execpolicy_amendment_ref(self) -> ExecPolicyAmendment | None:
+        return self.proposed_amendment()
+
 
 class SandboxOverride(str, Enum):
     NO_OVERRIDE = "no_override"
     BYPASS_SANDBOX_FIRST_ATTEMPT = "bypass_sandbox_first_attempt"
+
+
+@dataclass(frozen=True)
+class ToolCtx:
+    session: Any
+    turn: Any
+    call_id: str
+    tool_name: ToolName
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.call_id, str):
+            raise TypeError("call_id must be a string")
+        if not isinstance(self.tool_name, ToolName):
+            raise TypeError("tool_name must be ToolName")
+
+
+@dataclass(frozen=True)
+class ToolError:
+    type: str
+    message: str | None = None
+    error: Any = None
+
+    @classmethod
+    def rejected(cls, message: str) -> "ToolError":
+        return cls("rejected", message=message)
+
+    @classmethod
+    def codex(cls, error: Any) -> "ToolError":
+        return cls("codex", error=error)
+
+    def __post_init__(self) -> None:
+        if self.type == "rejected":
+            if not isinstance(self.message, str):
+                raise TypeError("rejected tool error requires message")
+            if self.error is not None:
+                raise ValueError("rejected tool error must not include error")
+            return
+        if self.type == "codex":
+            if self.message is not None:
+                raise ValueError("codex tool error must not include message")
+            return
+        raise ValueError(f"unknown tool error type: {self.type}")
+
+
+@dataclass(frozen=True)
+class SandboxAttempt:
+    sandbox: Any
+    permissions: PermissionProfile
+    enforce_managed_network: bool
+    manager: Any
+    sandbox_cwd: Path
+    codex_linux_sandbox_exe: Path | None = None
+    use_legacy_landlock: bool = False
+    windows_sandbox_level: WindowsSandboxLevel = WindowsSandboxLevel.DISABLED
+    windows_sandbox_private_desktop: bool = False
+    network_denial_cancellation_token: CancellationToken | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.permissions, PermissionProfile):
+            raise TypeError("permissions must be PermissionProfile")
+        if not isinstance(self.enforce_managed_network, bool):
+            raise TypeError("enforce_managed_network must be a bool")
+        if not isinstance(self.sandbox_cwd, Path):
+            object.__setattr__(self, "sandbox_cwd", Path(self.sandbox_cwd))
+        if self.codex_linux_sandbox_exe is not None and not isinstance(self.codex_linux_sandbox_exe, Path):
+            object.__setattr__(self, "codex_linux_sandbox_exe", Path(self.codex_linux_sandbox_exe))
+        if not isinstance(self.use_legacy_landlock, bool):
+            raise TypeError("use_legacy_landlock must be a bool")
+        if not isinstance(self.windows_sandbox_level, WindowsSandboxLevel):
+            object.__setattr__(self, "windows_sandbox_level", WindowsSandboxLevel.parse(str(self.windows_sandbox_level)))
+        if not isinstance(self.windows_sandbox_private_desktop, bool):
+            raise TypeError("windows_sandbox_private_desktop must be a bool")
+        if (
+            self.network_denial_cancellation_token is not None
+            and not isinstance(self.network_denial_cancellation_token, CancellationToken)
+        ):
+            raise TypeError("network_denial_cancellation_token must be CancellationToken or None")
+
+    def env_for(self, *_args: Any, **_kwargs: Any) -> Any:
+        transform = getattr(self.manager, "transform", None)
+        if transform is None:
+            raise NotImplementedError("SandboxAttempt.env_for requires a manager with transform()")
+        return transform(*_args, **_kwargs)
 
 
 def default_exec_approval_requirement(
@@ -175,6 +299,25 @@ def managed_network_for_sandbox_permissions(
     return network
 
 
+def should_bypass_approval(policy: AskForApproval | str, already_approved: bool) -> bool:
+    if not isinstance(already_approved, bool):
+        raise TypeError("already_approved must be a bool")
+    if already_approved:
+        return True
+    return AskForApproval(policy) is AskForApproval.NEVER
+
+
+def wants_no_sandbox_approval(policy: AskForApproval | GranularApprovalConfig | str) -> bool:
+    if isinstance(policy, GranularApprovalConfig):
+        return policy.sandbox_approval
+    policy = AskForApproval(policy)
+    if policy in {AskForApproval.ON_FAILURE, AskForApproval.UNLESS_TRUSTED}:
+        return True
+    if policy in {AskForApproval.NEVER, AskForApproval.ON_REQUEST}:
+        return False
+    return False
+
+
 def _serialize_approval_key(key: Any) -> str | None:
     try:
         return json.dumps(_json_approval_key(key), sort_keys=True, separators=(",", ":"))
@@ -203,8 +346,13 @@ __all__ = [
     "ExecApprovalRequirement",
     "PermissionRequestPayload",
     "SandboxOverride",
+    "SandboxAttempt",
+    "ToolCtx",
+    "ToolError",
     "default_exec_approval_requirement",
     "managed_network_for_sandbox_permissions",
     "sandbox_override_for_first_attempt",
+    "should_bypass_approval",
+    "wants_no_sandbox_approval",
     "with_cached_approval",
 ]

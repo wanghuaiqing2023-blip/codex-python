@@ -65,6 +65,7 @@ def create_env_from_vars(
     policy: ShellEnvironmentPolicy,
     thread_id: str | None = None,
 ) -> dict[str, str]:
+    _validate_policy(policy)
     env_map = populate_env(vars, policy, thread_id)
     if sys.platform == "win32" and not any(key.lower() == "pathext" for key in env_map):
         env_map["PATHEXT"] = WINDOWS_DEFAULT_PATHEXT
@@ -76,7 +77,10 @@ def populate_env(
     policy: ShellEnvironmentPolicy,
     thread_id: str | None = None,
 ) -> dict[str, str]:
-    pairs = list(vars)
+    _validate_policy(policy)
+    pairs = _normalize_vars(vars)
+    if thread_id is not None and not isinstance(thread_id, str):
+        raise TypeError("thread_id must be a string or None")
     if policy.inherit is ShellEnvironmentPolicyInherit.ALL:
         env_map = dict(pairs)
     elif policy.inherit is ShellEnvironmentPolicyInherit.NONE:
@@ -100,9 +104,26 @@ def populate_env(
         env_map = {key: value for key, value in env_map.items() if _matches_any_pattern(key, policy.include_only)}
 
     if thread_id is not None:
-        env_map[CODEX_THREAD_ID_ENV_VAR] = str(thread_id)
+        env_map[CODEX_THREAD_ID_ENV_VAR] = thread_id
 
     return env_map
+
+
+def _validate_policy(policy: ShellEnvironmentPolicy) -> None:
+    if not isinstance(policy, ShellEnvironmentPolicy):
+        raise TypeError("policy must be a ShellEnvironmentPolicy")
+
+
+def _normalize_vars(vars: Iterable[tuple[str, str]]) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    for item in vars:
+        if not isinstance(item, tuple | list) or len(item) != 2:
+            raise TypeError("environment variables must be key/value pairs")
+        key, value = item
+        if not isinstance(key, str) or not isinstance(value, str):
+            raise TypeError("environment variable keys and values must be strings")
+        pairs.append((key, value))
+    return pairs
 
 
 def _matches_any_case_insensitive(name: str, candidates: Iterable[str]) -> bool:

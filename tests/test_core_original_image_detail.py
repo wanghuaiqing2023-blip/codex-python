@@ -70,11 +70,15 @@ class OriginalImageDetailTests(unittest.TestCase):
 
     def test_explicit_non_original_detail_is_preserved(self) -> None:
         self.assertIs(
-            normalize_output_image_detail(model_info(), ImageDetail.HIGH),
-            ImageDetail.HIGH,
+            normalize_output_image_detail(model_info(), ImageDetail.AUTO),
+            ImageDetail.AUTO,
         )
         self.assertIs(
-            normalize_output_image_detail(model_info(), "high"),
+            normalize_output_image_detail(model_info(), ImageDetail.LOW),
+            ImageDetail.LOW,
+        )
+        self.assertIs(
+            normalize_output_image_detail(model_info(), ImageDetail.HIGH),
             ImageDetail.HIGH,
         )
 
@@ -115,6 +119,16 @@ class OriginalImageDetailTests(unittest.TestCase):
         )
 
         self.assertEqual(sanitize_original_image_detail(True, items), items)
+
+    def test_rejects_non_rust_input_shapes(self) -> None:
+        with self.assertRaises(TypeError):
+            can_request_original_image_detail(object())  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            normalize_output_image_detail(model_info(), "high")  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            normalize_output_image_detail(object(), ImageDetail.HIGH)  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            sanitize_original_image_detail(1, ())  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":

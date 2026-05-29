@@ -17,7 +17,7 @@ from pycodex.protocol import (
 class AgentStatusTests(unittest.TestCase):
     def test_agent_status_from_turn_started(self) -> None:
         event = EventMsg.with_payload(
-            "task_started",
+            "turn_started",
             TurnStartedEvent(turn_id="turn-1", model_context_window=None),
         )
 
@@ -25,7 +25,7 @@ class AgentStatusTests(unittest.TestCase):
 
     def test_agent_status_from_turn_complete(self) -> None:
         event = EventMsg.with_payload(
-            "task_complete",
+            "turn_complete",
             TurnCompleteEvent(turn_id="turn-1", last_agent_message="done"),
         )
 
@@ -72,6 +72,36 @@ class AgentStatusTests(unittest.TestCase):
         self.assertTrue(agent_status_is_final(AgentStatus.completed(None)))
         self.assertTrue(agent_status_is_final({"errored": "boom"}))
         self.assertTrue(agent_status_is_final("shutdown"))
+
+    def test_agent_status_rejects_non_event_inputs(self) -> None:
+        with self.assertRaises(TypeError):
+            agent_status_from_event("turn_started")  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            agent_status_from_event(EventMsg.with_payload("turn_complete", object()))
+        with self.assertRaises(TypeError):
+            agent_status_from_event(EventMsg.with_payload("turn_aborted", object()))
+        with self.assertRaises(TypeError):
+            agent_status_from_event(EventMsg.with_payload("error", object()))
+
+    def test_agent_status_rejects_invalid_payload_fields(self) -> None:
+        with self.assertRaises(TypeError):
+            agent_status_from_event(EventMsg.with_payload("turn_complete", {"last_agent_message": 1}))
+        with self.assertRaises(TypeError):
+            agent_status_from_event(EventMsg.with_payload("turn_aborted", {"reason": 1}))
+        with self.assertRaises(TypeError):
+            agent_status_from_event(EventMsg.with_payload("error", {"message": 1}))
+
+    def test_agent_status_ignores_task_legacy_aliases(self) -> None:
+        self.assertIsNone(
+            agent_status_from_event(
+                EventMsg.with_payload("task_started", TurnStartedEvent(turn_id="turn-1", model_context_window=None))
+            )
+        )
+        self.assertIsNone(
+            agent_status_from_event(
+                EventMsg.with_payload("task_complete", TurnCompleteEvent(turn_id="turn-1", last_agent_message="done"))
+            )
+        )
 
 
 if __name__ == "__main__":

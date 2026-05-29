@@ -33,6 +33,8 @@ class ToolExposure(str, Enum):
     def from_value(cls, value: "ToolExposure | str") -> "ToolExposure":
         if isinstance(value, cls):
             return value
+        if not isinstance(value, str):
+            raise TypeError("tool exposure must be ToolExposure or string")
         return cls(value)
 
     def is_direct(self) -> bool:
@@ -54,11 +56,22 @@ class CoreToolRuntime:
     def supports_parallel_tool_calls(self) -> bool:
         return False
 
+    def waits_for_runtime_cancellation(self) -> bool:
+        return False
+
     def search_info(self) -> Any:
         return None
 
     def matches_kind(self, payload: ToolPayload) -> bool:
+        if not isinstance(payload, ToolPayload):
+            raise TypeError("payload must be ToolPayload")
         return payload.type in {"function", "tool_search"}
+
+    def pre_tool_use_payload(self, invocation: "ToolInvocation") -> "PreToolUsePayload | None":
+        return pre_tool_use_payload(invocation)
+
+    def post_tool_use_payload(self, invocation: "ToolInvocation", result: Any) -> "PostToolUsePayload | None":
+        return post_tool_use_payload(invocation, result)
 
     def create_diff_consumer(self) -> Any:
         return None
@@ -70,7 +83,18 @@ class RegisteredTool(CoreToolRuntime):
     tool_spec: JsonValue = None
     exposure_value: ToolExposure = ToolExposure.DIRECT
     supports_parallel: bool = False
+    waits_for_cancellation: bool = False
     payload_types: tuple[str, ...] = ("function", "tool_search")
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, ToolName):
+            raise TypeError("name must be ToolName")
+        object.__setattr__(self, "exposure_value", ToolExposure.from_value(self.exposure_value))
+        if not isinstance(self.supports_parallel, bool):
+            raise TypeError("supports_parallel must be a bool")
+        if not isinstance(self.waits_for_cancellation, bool):
+            raise TypeError("waits_for_cancellation must be a bool")
+        object.__setattr__(self, "payload_types", _string_tuple(self.payload_types, "payload_types"))
 
     @classmethod
     def plain(
@@ -80,6 +104,7 @@ class RegisteredTool(CoreToolRuntime):
         tool_spec: JsonValue = None,
         exposure: ToolExposure | str = ToolExposure.DIRECT,
         supports_parallel: bool = False,
+        waits_for_cancellation: bool = False,
         payload_types: tuple[str, ...] = ("function", "tool_search"),
     ) -> "RegisteredTool":
         return cls(
@@ -87,6 +112,7 @@ class RegisteredTool(CoreToolRuntime):
             tool_spec=tool_spec,
             exposure_value=ToolExposure.from_value(exposure),
             supports_parallel=supports_parallel,
+            waits_for_cancellation=waits_for_cancellation,
             payload_types=payload_types,
         )
 
@@ -99,6 +125,7 @@ class RegisteredTool(CoreToolRuntime):
         tool_spec: JsonValue = None,
         exposure: ToolExposure | str = ToolExposure.DIRECT,
         supports_parallel: bool = False,
+        waits_for_cancellation: bool = False,
         payload_types: tuple[str, ...] = ("function", "tool_search"),
     ) -> "RegisteredTool":
         return cls(
@@ -106,6 +133,7 @@ class RegisteredTool(CoreToolRuntime):
             tool_spec=tool_spec,
             exposure_value=ToolExposure.from_value(exposure),
             supports_parallel=supports_parallel,
+            waits_for_cancellation=waits_for_cancellation,
             payload_types=payload_types,
         )
 
@@ -121,7 +149,12 @@ class RegisteredTool(CoreToolRuntime):
     def supports_parallel_tool_calls(self) -> bool:
         return self.exposure_value is not ToolExposure.HIDDEN and self.supports_parallel
 
+    def waits_for_runtime_cancellation(self) -> bool:
+        return self.waits_for_cancellation
+
     def matches_kind(self, payload: ToolPayload) -> bool:
+        if not isinstance(payload, ToolPayload):
+            raise TypeError("payload must be ToolPayload")
         return payload.type in self.payload_types
 
 
@@ -129,6 +162,10 @@ class RegisteredTool(CoreToolRuntime):
 class ExposureOverride(CoreToolRuntime):
     handler: Any
     exposure_value: ToolExposure
+
+    def __post_init__(self) -> None:
+        _runtime_tool_name(self.handler)
+        object.__setattr__(self, "exposure_value", ToolExposure.from_value(self.exposure_value))
 
     def tool_name(self) -> ToolName:
         return _runtime_tool_name(self.handler)
@@ -142,8 +179,17 @@ class ExposureOverride(CoreToolRuntime):
     def supports_parallel_tool_calls(self) -> bool:
         return self.exposure_value is not ToolExposure.HIDDEN and _runtime_supports_parallel_tool_calls(self.handler)
 
+    def waits_for_runtime_cancellation(self) -> bool:
+        return _runtime_waits_for_runtime_cancellation(self.handler)
+
     def matches_kind(self, payload: ToolPayload) -> bool:
         return _runtime_matches_kind(self.handler, payload)
+
+    def pre_tool_use_payload(self, invocation: "ToolInvocation") -> "PreToolUsePayload | None":
+        return _runtime_pre_tool_use_payload(self.handler, invocation)
+
+    def post_tool_use_payload(self, invocation: "ToolInvocation", result: Any) -> "PostToolUsePayload | None":
+        return _runtime_post_tool_use_payload(self.handler, invocation, result)
 
     def search_info(self) -> Any:
         return _runtime_search_info(self.handler)
@@ -157,7 +203,19 @@ class ExposureOverride(CoreToolRuntime):
 
 class ToolRegistry:
     def __init__(self, tools: Mapping[ToolName, Any] | None = None) -> None:
-        self._tools: dict[ToolName, Any] = dict(tools or {})
+        if tools is None:
+            self._tools = {}
+            return
+        if not isinstance(tools, Mapping):
+            raise TypeError("tools must be a mapping")
+        tools_by_name: dict[ToolName, Any] = {}
+        for name, tool in tools.items():
+            if not isinstance(name, ToolName):
+                raise TypeError("tool registry keys must be ToolName")
+            if _runtime_tool_name(tool) != name:
+                raise ValueError("tool registry key must match handler tool_name")
+            tools_by_name[name] = tool
+        self._tools = tools_by_name
 
     @classmethod
     def new(cls, tools: Mapping[ToolName, Any]) -> "ToolRegistry":
@@ -174,6 +232,8 @@ class ToolRegistry:
     @classmethod
     def from_tools(cls, tools: Iterable[Any] | Mapping[Any, Any]) -> "ToolRegistry":
         tools_by_name: dict[ToolName, Any] = {}
+        if isinstance(tools, (str, bytes)) or not isinstance(tools, Iterable):
+            raise TypeError("tools must be an iterable of tool runtimes")
         values = tools.values() if isinstance(tools, Mapping) else tools
         for tool in values:
             name = _runtime_tool_name(tool)
@@ -187,6 +247,8 @@ class ToolRegistry:
         return cls.from_tools([handler])
 
     def tool(self, name: ToolName) -> Any | None:
+        if not isinstance(name, ToolName):
+            raise TypeError("name must be ToolName")
         return self._tools.get(name)
 
     def tool_names(self) -> tuple[ToolName, ...]:
@@ -202,6 +264,8 @@ class ToolRegistry:
         return _runtime_exposure(tool)
 
     def create_diff_consumer(self, name: ToolName) -> Any:
+        if not isinstance(name, ToolName):
+            raise TypeError("name must be ToolName")
         tool = self.tool(name)
         if tool is None:
             return None
@@ -213,7 +277,15 @@ class ToolRegistry:
             return None
         return _runtime_supports_parallel_tool_calls(tool)
 
+    def waits_for_runtime_cancellation(self, name: ToolName) -> bool | None:
+        tool = self.tool(name)
+        if tool is None:
+            return None
+        return _runtime_waits_for_runtime_cancellation(tool)
+
     def matches_kind(self, name: ToolName, payload: ToolPayload) -> bool | None:
+        if not isinstance(payload, ToolPayload):
+            raise TypeError("payload must be ToolPayload")
         tool = self.tool(name)
         if tool is None:
             return None
@@ -241,6 +313,19 @@ class ToolCallSource:
     def code_mode(cls, cell_id: str, runtime_tool_call_id: str) -> "ToolCallSource":
         return cls(type="code_mode", cell_id=cell_id, runtime_tool_call_id=runtime_tool_call_id)
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.type, str):
+            raise TypeError("type must be a string")
+        if self.type == "direct":
+            if self.cell_id is not None or self.runtime_tool_call_id is not None:
+                raise ValueError("direct tool call source must not include code-mode ids")
+            return
+        if self.type == "code_mode":
+            if not isinstance(self.cell_id, str) or not isinstance(self.runtime_tool_call_id, str):
+                raise TypeError("code_mode source requires string cell_id and runtime_tool_call_id")
+            return
+        raise ValueError(f"unknown tool call source type: {self.type}")
+
 
 @dataclass(frozen=True)
 class ToolInvocation:
@@ -249,11 +334,25 @@ class ToolInvocation:
     payload: ToolPayload
     source: ToolCallSource = field(default_factory=ToolCallSource.direct)
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.call_id, str):
+            raise TypeError("call_id must be a string")
+        if not isinstance(self.tool_name, ToolName):
+            raise TypeError("tool_name must be ToolName")
+        if not isinstance(self.payload, ToolPayload):
+            raise TypeError("payload must be ToolPayload")
+        if not isinstance(self.source, ToolCallSource):
+            raise TypeError("source must be ToolCallSource")
+
 
 @dataclass(frozen=True)
 class PreToolUsePayload:
     tool_name: HookToolName
     tool_input: JsonValue
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.tool_name, HookToolName):
+            raise TypeError("tool_name must be HookToolName")
 
 
 @dataclass(frozen=True)
@@ -263,14 +362,24 @@ class PostToolUsePayload:
     tool_input: JsonValue
     tool_response: JsonValue
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.tool_name, HookToolName):
+            raise TypeError("tool_name must be HookToolName")
+        if not isinstance(self.tool_use_id, str):
+            raise TypeError("tool_use_id must be a string")
+
 
 def flat_tool_name(tool_name: ToolName) -> str:
+    if not isinstance(tool_name, ToolName):
+        raise TypeError("tool_name must be ToolName")
     if tool_name.namespace is None:
         return tool_name.name
     return f"{tool_name.namespace}{tool_name.name}"
 
 
 def function_hook_tool_name(invocation: ToolInvocation) -> HookToolName:
+    if not isinstance(invocation, ToolInvocation):
+        raise TypeError("invocation must be ToolInvocation")
     tool_name = invocation.tool_name
     if tool_name.name == "spawn_agent" and tool_name.namespace in {None, MULTI_AGENT_V1_NAMESPACE}:
         return HookToolName.spawn_agent()
@@ -278,6 +387,8 @@ def function_hook_tool_name(invocation: ToolInvocation) -> HookToolName:
 
 
 def function_hook_tool_input(arguments: str) -> JsonValue:
+    if not isinstance(arguments, str):
+        raise TypeError("arguments must be a string")
     if arguments.strip() == "":
         return {}
     try:
@@ -287,6 +398,8 @@ def function_hook_tool_input(arguments: str) -> JsonValue:
 
 
 def pre_tool_use_payload(invocation: ToolInvocation) -> PreToolUsePayload | None:
+    if not isinstance(invocation, ToolInvocation):
+        raise TypeError("invocation must be ToolInvocation")
     if invocation.payload.type != "function":
         return None
     return PreToolUsePayload(
@@ -296,6 +409,8 @@ def pre_tool_use_payload(invocation: ToolInvocation) -> PreToolUsePayload | None
 
 
 def post_tool_use_payload(invocation: ToolInvocation, result: Any) -> PostToolUsePayload | None:
+    if not isinstance(invocation, ToolInvocation):
+        raise TypeError("invocation must be ToolInvocation")
     if invocation.payload.type != "function":
         return None
 
@@ -324,6 +439,8 @@ def post_tool_use_payload(invocation: ToolInvocation, result: Any) -> PostToolUs
 
 
 def with_updated_hook_input(invocation: ToolInvocation, updated_input: JsonValue) -> ToolInvocation:
+    if not isinstance(invocation, ToolInvocation):
+        raise TypeError("invocation must be ToolInvocation")
     if invocation.payload.type != "function":
         raise ValueError("hook input rewrite received unsupported function tool payload")
     try:
@@ -344,7 +461,10 @@ def _post_tool_use_id(result: Any, call_id: str) -> str:
     method = getattr(result, "post_tool_use_id", None)
     if method is None:
         return call_id
-    return str(method(call_id))
+    value = method(call_id)
+    if not isinstance(value, str):
+        raise TypeError("post_tool_use_id must return a string")
+    return value
 
 
 def _model_visible_tool_response(result: Any, invocation: ToolInvocation) -> JsonValue | None:
@@ -368,6 +488,10 @@ def override_tool_exposure(handler: Any, exposure: ToolExposure | str) -> Any:
 
 
 def unsupported_tool_call_message(payload: ToolPayload, tool_name: ToolName) -> str:
+    if not isinstance(payload, ToolPayload):
+        raise TypeError("payload must be ToolPayload")
+    if not isinstance(tool_name, ToolName):
+        raise TypeError("tool_name must be ToolName")
     if payload.type == "custom":
         return f"unsupported custom tool call: {tool_name}"
     return f"unsupported call: {tool_name}"
@@ -377,11 +501,10 @@ def _runtime_tool_name(handler: Any) -> ToolName:
     value = _call_or_get(handler, "tool_name", None)
     if value is None:
         value = _call_or_get(handler, "name", None)
-    if isinstance(value, ToolName):
-        return value
-    if isinstance(value, str):
-        return ToolName.plain(value)
-    raise TypeError("registered tool must expose a ToolName via tool_name() or name")
+    try:
+        return ToolName.from_value(value)
+    except TypeError as err:
+        raise TypeError("registered tool must expose a ToolName via tool_name() or name") from err
 
 
 def _runtime_spec(handler: Any) -> JsonValue:
@@ -393,14 +516,57 @@ def _runtime_exposure(handler: Any) -> ToolExposure:
 
 
 def _runtime_supports_parallel_tool_calls(handler: Any) -> bool:
-    return bool(_call_or_get(handler, "supports_parallel_tool_calls", False))
+    value = _call_or_get(handler, "supports_parallel_tool_calls", False)
+    if not isinstance(value, bool):
+        raise TypeError("supports_parallel_tool_calls must return a bool")
+    return value
+
+
+def _runtime_waits_for_runtime_cancellation(handler: Any) -> bool:
+    value = _call_or_get(handler, "waits_for_runtime_cancellation", False)
+    if not isinstance(value, bool):
+        raise TypeError("waits_for_runtime_cancellation must return a bool")
+    return value
 
 
 def _runtime_matches_kind(handler: Any, payload: ToolPayload) -> bool:
+    if not isinstance(payload, ToolPayload):
+        raise TypeError("payload must be ToolPayload")
     matches_kind = getattr(handler, "matches_kind", None)
     if matches_kind is None:
         return payload.type in {"function", "tool_search"}
-    return bool(matches_kind(payload))
+    value = matches_kind(payload)
+    if not isinstance(value, bool):
+        raise TypeError("matches_kind must return a bool")
+    return value
+
+
+def _runtime_pre_tool_use_payload(handler: Any, invocation: ToolInvocation) -> PreToolUsePayload | None:
+    if not isinstance(invocation, ToolInvocation):
+        raise TypeError("invocation must be ToolInvocation")
+    method = getattr(handler, "pre_tool_use_payload", None)
+    if method is None:
+        return pre_tool_use_payload(invocation)
+    value = method(invocation)
+    if value is not None and not isinstance(value, PreToolUsePayload):
+        raise TypeError("pre_tool_use_payload must return PreToolUsePayload or None")
+    return value
+
+
+def _runtime_post_tool_use_payload(
+    handler: Any,
+    invocation: ToolInvocation,
+    result: Any,
+) -> PostToolUsePayload | None:
+    if not isinstance(invocation, ToolInvocation):
+        raise TypeError("invocation must be ToolInvocation")
+    method = getattr(handler, "post_tool_use_payload", None)
+    if method is None:
+        return post_tool_use_payload(invocation, result)
+    value = method(invocation, result)
+    if value is not None and not isinstance(value, PostToolUsePayload):
+        raise TypeError("post_tool_use_payload must return PostToolUsePayload or None")
+    return value
 
 
 def _runtime_search_info(handler: Any) -> Any:
@@ -422,6 +588,17 @@ def _call_or_get(handler: Any, name: str, default: Any) -> Any:
     if callable(value):
         return value()
     return value
+
+
+def _string_tuple(value: Any, field_name: str) -> tuple[str, ...]:
+    if isinstance(value, (str, bytes)) or not isinstance(value, Iterable):
+        raise TypeError(f"{field_name} must be an iterable of strings")
+    result: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise TypeError(f"{field_name} entries must be strings")
+        result.append(item)
+    return tuple(result)
 
 
 __all__ = [

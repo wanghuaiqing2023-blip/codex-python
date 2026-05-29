@@ -63,6 +63,29 @@ class ToolDefinitionTests(unittest.TestCase):
         self.assertEqual(definition.input_schema["properties"]["id"]["type"], "string")
         self.assertEqual(definition.output_schema["properties"]["ok"]["type"], "boolean")
 
+    def test_rejects_non_rust_scalar_shapes(self) -> None:
+        with self.assertRaisesRegex(TypeError, "name must be a string"):
+            ToolDefinition(123, "Lookup", {})  # type: ignore[arg-type]
+
+        with self.assertRaisesRegex(TypeError, "description must be a string"):
+            ToolDefinition("lookup", object(), {})  # type: ignore[arg-type]
+
+        with self.assertRaisesRegex(TypeError, "defer_loading must be a bool"):
+            ToolDefinition("lookup", "Lookup", {}, defer_loading=1)  # type: ignore[arg-type]
+
+        with self.assertRaisesRegex(TypeError, "defer_loading must be a bool"):
+            ToolDefinition.from_mapping(
+                {
+                    "name": "lookup",
+                    "description": "Lookup",
+                    "input_schema": {},
+                    "defer_loading": "true",
+                }
+            )
+
+        with self.assertRaisesRegex(TypeError, "name must be a string"):
+            tool_definition().renamed(123)  # type: ignore[arg-type]
+
 
 if __name__ == "__main__":
     unittest.main()

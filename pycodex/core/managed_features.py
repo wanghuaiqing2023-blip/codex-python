@@ -22,6 +22,24 @@ LOGGER = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
+def _ensure_str(value: object, field: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{field} must be a string")
+    return value
+
+
+def _ensure_bool(value: object, field: str) -> bool:
+    if not isinstance(value, bool):
+        raise TypeError(f"{field} must be a bool")
+    return value
+
+
+def _ensure_feature(value: object, field: str) -> Feature:
+    if not isinstance(value, Feature):
+        raise TypeError(f"{field} must be a Feature")
+    return value
+
+
 @dataclass(frozen=True)
 class RequirementSource:
     kind: str
@@ -33,9 +51,21 @@ class RequirementSource:
     def unknown(cls) -> "RequirementSource":
         return cls("unknown")
 
+    def __post_init__(self) -> None:
+        kind = _ensure_str(self.kind, "kind")
+        if kind == "mdm_managed_preferences":
+            object.__setattr__(self, "domain", _ensure_str(self.domain, "domain"))
+            object.__setattr__(self, "key", _ensure_str(self.key, "key"))
+        elif kind in {"system_requirements_toml", "legacy_managed_config_toml_from_file"}:
+            object.__setattr__(self, "file", _ensure_str(self.file, "file"))
+        elif kind in {"unknown", "cloud_requirements", "legacy_managed_config_toml_from_mdm"}:
+            pass
+        else:
+            raise ValueError(f"unknown requirement source kind: {kind}")
+
     @classmethod
     def mdm_managed_preferences(cls, domain: str, key: str) -> "RequirementSource":
-        return cls("mdm_managed_preferences", domain=domain, key=key)
+        return cls("mdm_managed_preferences", domain=_ensure_str(domain, "domain"), key=_ensure_str(key, "key"))
 
     @classmethod
     def cloud_requirements(cls) -> "RequirementSource":
@@ -43,11 +73,11 @@ class RequirementSource:
 
     @classmethod
     def system_requirements_toml(cls, file: str) -> "RequirementSource":
-        return cls("system_requirements_toml", file=file)
+        return cls("system_requirements_toml", file=_ensure_str(file, "file"))
 
     @classmethod
     def legacy_managed_config_toml_from_file(cls, file: str) -> "RequirementSource":
-        return cls("legacy_managed_config_toml_from_file", file=file)
+        return cls("legacy_managed_config_toml_from_file", file=_ensure_str(file, "file"))
 
     @classmethod
     def legacy_managed_config_toml_from_mdm(cls) -> "RequirementSource":
@@ -77,9 +107,15 @@ class Sourced(Generic[T]):
 class FeatureRequirementsToml:
     entries: Mapping[str, bool] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        normalized: dict[str, bool] = {}
+        for key, value in self.entries.items():
+            normalized[_ensure_str(key, "feature requirement key")] = _ensure_bool(value, "feature requirement value")
+        object.__setattr__(self, "entries", normalized)
+
     @classmethod
     def from_entries(cls, entries: Mapping[str, bool]) -> "FeatureRequirementsToml":
-        return cls({str(key): bool(value) for key, value in entries.items()})
+        return cls(entries)
 
     def is_empty(self) -> bool:
         return not self.entries
@@ -108,8 +144,15 @@ class ManagedFeatures:
         pinned_features: Mapping[Feature, bool] | None = None,
         source: RequirementSource | None = None,
     ) -> None:
+        if value is not None and not isinstance(value, Features):
+            raise TypeError("value must be a Features instance")
         self._value = _clone_features(value or Features())
-        self._pinned_features = dict(pinned_features or {})
+        self._pinned_features = {
+            _ensure_feature(feature, "pinned feature"): _ensure_bool(enabled, "pinned feature value")
+            for feature, enabled in (pinned_features or {}).items()
+        }
+        if source is not None and not isinstance(source, RequirementSource):
+            raise TypeError("source must be a RequirementSource")
         self._source = source
 
     @classmethod
@@ -166,7 +209,7 @@ class ManagedFeatures:
 
     def set_enabled(self, feature: Feature, enabled: bool) -> None:
         next_features = _clone_features(self._value)
-        next_features.set_enabled(feature, enabled)
+        next_features.set_enabled(_ensure_feature(feature, "feature"), _ensure_bool(enabled, "enabled"))
         self.set(next_features)
 
     def enable(self, feature: Feature) -> None:
@@ -224,7 +267,7 @@ def parse_feature_requirements(
 ) -> dict[Feature, bool]:
     pinned_features: dict[Feature, bool] = {}
     for key in sorted(feature_requirements.entries):
-        enabled = bool(feature_requirements.entries[key])
+        enabled = _ensure_bool(feature_requirements.entries[key], "feature requirement value")
         if key == "auto_review":
             pinned_features[Feature.GUARDIAN_APPROVAL] = enabled
             continue
@@ -265,30 +308,7 @@ def explicit_feature_settings_in_config(cfg: Any) -> list[tuple[str, Feature, bo
 
     enabled = _get_value(cfg, "experimental_use_unified_exec_tool")
     if enabled is not None:
-        explicit_settings.append(("experimental_use_unified_exec_tool", Feature.UNIFIED_EXEC, bool(enabled)))
-
-    profiles = _get_value(cfg, "profiles") or {}
-    if isinstance(profiles, Mapping):
-        profile_items = profiles.items()
-    else:
-        profile_items = ()
-    for profile_name, profile in profile_items:
-        profile_features = _features_toml_or_none(_get_value(profile, "features"))
-        if profile_features is not None:
-            for key, enabled in profile_features.entries().items():
-                feature = feature_for_key(key)
-                if feature is not None:
-                    explicit_settings.append((f"profiles.{profile_name}.features.{key}", feature, enabled))
-
-        profile_unified_exec = _get_value(profile, "experimental_use_unified_exec_tool")
-        if profile_unified_exec is not None:
-            explicit_settings.append(
-                (
-                    f"profiles.{profile_name}.experimental_use_unified_exec_tool",
-                    Feature.UNIFIED_EXEC,
-                    bool(profile_unified_exec),
-                )
-            )
+        explicit_settings.append(("experimental_use_unified_exec_tool", Feature.UNIFIED_EXEC, _ensure_bool(enabled, "experimental_use_unified_exec_tool")))
 
     return explicit_settings
 
@@ -320,16 +340,15 @@ def validate_feature_requirements_in_config_toml(
     cfg: Any,
     feature_requirements: Sourced[FeatureRequirementsToml] | None,
 ) -> None:
-    _validate_profile(cfg, None, {}, feature_requirements)
-
-    profiles = _get_value(cfg, "profiles") or {}
-    if not isinstance(profiles, Mapping):
-        return
-    for profile_name, profile in profiles.items():
-        try:
-            _validate_profile(cfg, str(profile_name), profile, feature_requirements)
-        except ConstraintError as exc:
-            raise ValueError(f"invalid feature configuration for profile `{profile_name}`: {exc}") from exc
+    configured_features = Features.from_sources(
+        FeatureConfigSource(
+            features=_features_toml_or_none(_get_value(cfg, "features")),
+            experimental_use_unified_exec_tool=_get_value(cfg, "experimental_use_unified_exec_tool"),
+        ),
+        FeatureConfigSource(),
+        FeatureOverrides(),
+    )
+    ManagedFeatures.from_configured(configured_features, feature_requirements)
 
 
 def validate_feature_requirements_for_config_toml(

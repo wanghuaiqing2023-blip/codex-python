@@ -27,6 +27,22 @@ MODEL_KEY = "model"
 REASONING_EFFORT_KEY = "reasoning_effort"
 TURN_STARTED_AT_UNIX_MS_KEY = "turn_started_at_unix_ms"
 USER_INPUT_REQUESTED_DURING_TURN_KEY = "user_input_requested_during_turn"
+REQUEST_KIND_KEY = "request_kind"
+COMPACTION_KEY = "compaction"
+WINDOW_ID_KEY = "window_id"
+FORKED_FROM_THREAD_ID_KEY = "forked_from_thread_id"
+_CLIENT_METADATA_RESERVED_KEYS = frozenset(
+    {
+        "session_id",
+        "thread_id",
+        "turn_id",
+        TURN_STARTED_AT_UNIX_MS_KEY,
+        FORKED_FROM_THREAD_ID_KEY,
+        REQUEST_KIND_KEY,
+        COMPACTION_KEY,
+        WINDOW_ID_KEY,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -124,12 +140,15 @@ def merge_turn_metadata(
         return None
 
     if turn_started_at_unix_ms is not None:
-        metadata[TURN_STARTED_AT_UNIX_MS_KEY] = int(turn_started_at_unix_ms)
+        _ensure_i64(turn_started_at_unix_ms, TURN_STARTED_AT_UNIX_MS_KEY)
+        metadata[TURN_STARTED_AT_UNIX_MS_KEY] = turn_started_at_unix_ms
     if responsesapi_client_metadata is not None:
         for key, value in responsesapi_client_metadata.items():
-            if key == TURN_STARTED_AT_UNIX_MS_KEY:
+            _ensure_str(key, "responsesapi_client_metadata key")
+            _ensure_str(value, "responsesapi_client_metadata value")
+            if key in _CLIENT_METADATA_RESERVED_KEYS:
                 continue
-            metadata.setdefault(str(key), str(value))
+            metadata.setdefault(key, value)
     return to_ascii_json_string(metadata)
 
 
@@ -274,13 +293,17 @@ class TurnMetadataState:
         self.user_input_requested_during_turn = True
 
     def set_responsesapi_client_metadata(self, responsesapi_client_metadata: Mapping[str, str]) -> None:
+        if not isinstance(responsesapi_client_metadata, Mapping):
+            raise TypeError("responsesapi_client_metadata must be a mapping")
         self.responsesapi_client_metadata = {
-            str(key): str(value)
+            key: value
             for key, value in responsesapi_client_metadata.items()
+            if _ensure_metadata_pair(key, value)
         }
 
     def set_turn_started_at_unix_ms(self, turn_started_at_unix_ms: int) -> None:
-        self.turn_started_at_unix_ms = int(turn_started_at_unix_ms)
+        _ensure_i64(turn_started_at_unix_ms, TURN_STARTED_AT_UNIX_MS_KEY)
+        self.turn_started_at_unix_ms = turn_started_at_unix_ms
 
     def enrich_with_git_metadata(self) -> None:
         if self.repo_root is None:
@@ -323,15 +346,35 @@ def _enum_value(value: object) -> str:
     return str(enum_value if enum_value is not None else value)
 
 
+def _ensure_metadata_pair(key: object, value: object) -> bool:
+    _ensure_str(key, "responsesapi_client_metadata key")
+    _ensure_str(value, "responsesapi_client_metadata value")
+    return True
+
+
+def _ensure_str(value: object, name: str) -> None:
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a string")
+
+
+def _ensure_i64(value: object, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer")
+    if value < -(2**63) or value > 2**63 - 1:
+        raise ValueError(f"{name} must fit in a signed 64-bit integer")
+
+
 __all__ = [
     "MODEL_KEY",
     "McpTurnMetadataContext",
     "REASONING_EFFORT_KEY",
+    "REQUEST_KIND_KEY",
     "TURN_STARTED_AT_UNIX_MS_KEY",
     "TurnMetadataBag",
     "TurnMetadataState",
     "TurnMetadataWorkspace",
     "USER_INPUT_REQUESTED_DURING_TURN_KEY",
+    "WINDOW_ID_KEY",
     "WorkspaceGitMetadata",
     "build_turn_metadata_bag",
     "build_turn_metadata_header",

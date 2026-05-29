@@ -14,7 +14,8 @@ UUID_RE = re.compile(
 
 
 def take_bytes_at_char_boundary(value: str, max_bytes: int) -> str:
-    text = str(value)
+    text = _ensure_str(value, "value")
+    max_bytes = _ensure_usize(max_bytes, "max_bytes")
     if max_bytes <= 0:
         return ""
     encoded = text.encode("utf-8")
@@ -24,11 +25,12 @@ def take_bytes_at_char_boundary(value: str, max_bytes: int) -> str:
 
 
 def truncate_middle_chars(value: str, max_bytes: int) -> str:
-    return _truncate_with_byte_estimate(str(value), max_bytes, use_tokens=False)
+    return _truncate_with_byte_estimate(_ensure_str(value, "value"), _ensure_usize(max_bytes, "max_bytes"), use_tokens=False)
 
 
 def truncate_middle_with_token_budget(value: str, max_tokens: int) -> tuple[str, int | None]:
-    text = str(value)
+    text = _ensure_str(value, "value")
+    max_tokens = _ensure_usize(max_tokens, "max_tokens")
     if not text:
         return "", None
 
@@ -45,23 +47,24 @@ def truncate_middle_with_token_budget(value: str, max_tokens: int) -> tuple[str,
 
 
 def approx_token_count(text: str) -> int:
-    byte_len = len(str(text).encode("utf-8"))
+    byte_len = len(_ensure_str(text, "text").encode("utf-8"))
     return (byte_len + APPROX_BYTES_PER_TOKEN - 1) // APPROX_BYTES_PER_TOKEN
 
 
 def approx_bytes_for_tokens(tokens: int) -> int:
-    return max(tokens, 0) * APPROX_BYTES_PER_TOKEN
+    return _ensure_usize(tokens, "tokens") * APPROX_BYTES_PER_TOKEN
 
 
 def approx_tokens_from_byte_count(bytes_count: int) -> int:
-    bytes_count = max(bytes_count, 0)
+    bytes_count = _ensure_usize(bytes_count, "bytes_count")
     return (bytes_count + APPROX_BYTES_PER_TOKEN - 1) // APPROX_BYTES_PER_TOKEN
 
 
 def sanitize_metric_tag_value(value: str) -> str:
+    value = _ensure_str(value, "value")
     sanitized = "".join(
         ch if ch.isascii() and (ch.isalnum() or ch in "._-/") else "_"
-        for ch in str(value)
+        for ch in value
     )
     trimmed = sanitized.strip("_")
     if not trimmed or all(not ch.isalnum() for ch in trimmed):
@@ -70,11 +73,11 @@ def sanitize_metric_tag_value(value: str) -> str:
 
 
 def find_uuids(value: str) -> list[str]:
-    return UUID_RE.findall(str(value))
+    return UUID_RE.findall(_ensure_str(value, "value"))
 
 
 def normalize_markdown_hash_location_suffix(suffix: str) -> str | None:
-    text = str(suffix)
+    text = _ensure_str(suffix, "suffix")
     if not text.startswith("#"):
         return None
     fragment = text[1:]
@@ -105,9 +108,11 @@ def normalize_markdown_hash_location_suffix(suffix: str) -> str | None:
 
 
 def truncate_to_char_boundary(value: str, max_chars: int) -> str:
+    text = _ensure_str(value, "value")
+    max_chars = _ensure_usize(max_chars, "max_chars")
     if max_chars <= 0:
         return ""
-    return str(value)[:max_chars]
+    return text[:max_chars]
 
 
 def to_ascii_json_string(value: Any) -> str:
@@ -122,6 +127,20 @@ def _parse_markdown_hash_location_point(point: str) -> tuple[str, str | None] | 
         line, column = point.split("C", 1)
         return line, column
     return point, None
+
+
+def _ensure_str(value: Any, label: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{label} must be a string")
+    return value
+
+
+def _ensure_usize(value: int, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{label} must be an integer")
+    if value < 0:
+        raise ValueError(f"{label} must be non-negative")
+    return value
 
 
 def _truncate_with_byte_estimate(text: str, max_bytes: int, use_tokens: bool) -> str:

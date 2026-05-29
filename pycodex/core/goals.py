@@ -104,24 +104,31 @@ Do not call update_goal unless the updated goal is actually complete.
 
 def should_ignore_goal_for_mode(mode: ModeKind | str) -> bool:
     if not isinstance(mode, ModeKind):
-        mode = ModeKind.parse(str(mode))
+        raise TypeError("mode must be a ModeKind")
     return mode is ModeKind.PLAN
 
 
 def validate_goal_budget(value: int | None) -> None:
-    if value is not None and value <= 0:
+    if value is None:
+        return
+    _ensure_i64(value, "goal budget")
+    if value <= 0:
         raise ValueError("goal budgets must be positive when provided")
 
 
 def goal_token_delta_for_usage(usage: TokenUsage) -> int:
+    if not isinstance(usage, TokenUsage):
+        raise TypeError("usage must be a TokenUsage")
     return usage.non_cached_input() + max(usage.output_tokens, 0)
 
 
 def escape_xml_text(value: str) -> str:
+    _ensure_str(value, "value")
     return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def continuation_prompt(goal: ThreadGoal) -> str:
+    _ensure_thread_goal(goal)
     return _render_goal_template(
         CONTINUATION_PROMPT_TEMPLATE,
         goal,
@@ -130,6 +137,7 @@ def continuation_prompt(goal: ThreadGoal) -> str:
 
 
 def budget_limit_prompt(goal: ThreadGoal) -> str:
+    _ensure_thread_goal(goal)
     return _render_goal_template(
         BUDGET_LIMIT_PROMPT_TEMPLATE,
         goal,
@@ -138,6 +146,7 @@ def budget_limit_prompt(goal: ThreadGoal) -> str:
 
 
 def objective_updated_prompt(goal: ThreadGoal) -> str:
+    _ensure_thread_goal(goal)
     return _render_goal_template(
         OBJECTIVE_UPDATED_PROMPT_TEMPLATE,
         goal,
@@ -146,10 +155,12 @@ def objective_updated_prompt(goal: ThreadGoal) -> str:
 
 
 def budget_limit_steering_item(goal: ThreadGoal) -> ResponseInputItem:
+    _ensure_thread_goal(goal)
     return goal_context_input_item(budget_limit_prompt(goal))
 
 
 def goal_context_input_item(prompt: str) -> ResponseInputItem:
+    _ensure_str(prompt, "prompt")
     return GoalContext(prompt).into_response_input_item()
 
 
@@ -159,6 +170,10 @@ def _render_goal_template(
     *,
     include_time_used: bool,
 ) -> str:
+    _ensure_str(template, "template")
+    _ensure_thread_goal(goal)
+    if not isinstance(include_time_used, bool):
+        raise TypeError("include_time_used must be a bool")
     token_budget = str(goal.token_budget) if goal.token_budget is not None else "none"
     remaining_tokens = (
         str(max(goal.token_budget - goal.tokens_used, 0))
@@ -176,6 +191,23 @@ def _render_goal_template(
     for key, value in replacements.items():
         rendered = rendered.replace("{{ " + key + " }}", value)
     return rendered
+
+
+def _ensure_str(value: object, name: str) -> None:
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a string")
+
+
+def _ensure_i64(value: object, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer")
+    if value < -(2**63) or value > 2**63 - 1:
+        raise ValueError(f"{name} must fit in a signed 64-bit integer")
+
+
+def _ensure_thread_goal(goal: object) -> None:
+    if not isinstance(goal, ThreadGoal):
+        raise TypeError("goal must be a ThreadGoal")
 
 
 __all__ = [

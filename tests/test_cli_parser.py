@@ -32,8 +32,9 @@ from pycodex.cli.parser import (
     parse_args,
     reject_remote_mode_for_subcommand,
 )
+from pycodex.cli.login import AuthDotJson
 from pycodex.core import Feature, Features
-from pycodex.protocol import AskForApproval, ProfileV2Name, SandboxMode
+from pycodex.protocol import AskForApproval, ProfileV2Name, ResponseItem, SandboxMode
 
 
 class TopLevelCliParserTests(unittest.TestCase):
@@ -5704,6 +5705,463 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("prepared non-interactive exec plan", stderr.getvalue())
 
+    def test_main_exec_local_http_runtime_prints_summary_and_final_message(self):
+        previous_enabled = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP")
+        previous_key = os.environ.get("OPENAI_API_KEY")
+        os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = "1"
+        os.environ["OPENAI_API_KEY"] = "sk-test"
+
+        class FakeResult:
+            response_items = (
+                ResponseItem.from_mapping(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "done"}],
+                    }
+                ),
+            )
+            raw_result = None
+
+        async def fake_run(*_args, **_kwargs):
+            return FakeResult()
+
+        try:
+            with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.cli.parser.run_exec_user_turn_http_sampling", side_effect=fake_run):
+                    stdout = io.StringIO()
+                    stderr = io.StringIO()
+                    code = main(["exec", "prompt"], stdout=stdout, stderr=stderr)
+        finally:
+            if previous_enabled is None:
+                os.environ.pop("PYCODEX_EXEC_LOCAL_HTTP", None)
+            else:
+                os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = previous_enabled
+            if previous_key is None:
+                os.environ.pop("OPENAI_API_KEY", None)
+            else:
+                os.environ["OPENAI_API_KEY"] = previous_key
+
+        self.assertEqual(code, 0)
+        self.assertIn("OpenAI Codex v", stderr.getvalue())
+        self.assertIn("provider: openai", stderr.getvalue())
+        self.assertIn("completed local HTTP non-interactive exec execution", stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "done\n")
+
+    def test_main_exec_local_http_json_outputs_thread_and_turn_events(self):
+        previous_enabled = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP")
+        previous_key = os.environ.get("OPENAI_API_KEY")
+        os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = "1"
+        os.environ["OPENAI_API_KEY"] = "sk-test"
+
+        class FakeRaw:
+            raw_result = {
+                "usage": {
+                    "input_tokens": 4,
+                    "output_tokens": 2,
+                }
+            }
+
+        class FakeResult:
+            response_items = (
+                ResponseItem.from_mapping(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "done"}],
+                    }
+                ),
+            )
+            raw_result = FakeRaw()
+
+        async def fake_run(*_args, **_kwargs):
+            return FakeResult()
+
+        try:
+            with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.cli.parser.run_exec_user_turn_http_sampling", side_effect=fake_run):
+                    stdout = io.StringIO()
+                    stderr = io.StringIO()
+                    code = main(["exec", "--json", "prompt"], stdout=stdout, stderr=stderr)
+        finally:
+            if previous_enabled is None:
+                os.environ.pop("PYCODEX_EXEC_LOCAL_HTTP", None)
+            else:
+                os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = previous_enabled
+            if previous_key is None:
+                os.environ.pop("OPENAI_API_KEY", None)
+            else:
+                os.environ["OPENAI_API_KEY"] = previous_key
+
+        self.assertEqual(code, 0)
+        events = [json.loads(line) for line in stdout.getvalue().splitlines()]
+        self.assertEqual(
+            [event["type"] for event in events],
+            ["thread.started", "turn.started", "item.completed", "turn.completed"],
+        )
+        self.assertEqual(events[2]["item"]["type"], "agent_message")
+        self.assertEqual(events[2]["item"]["text"], "done")
+        self.assertEqual(events[3]["usage"]["input_tokens"], 4)
+        self.assertEqual(events[3]["usage"]["output_tokens"], 2)
+        self.assertIn("completed local HTTP non-interactive exec execution", stderr.getvalue())
+
+    def test_main_exec_local_http_missing_api_key_prints_human_error(self):
+        previous_enabled = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP")
+        previous_key = os.environ.get("OPENAI_API_KEY")
+        os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = "1"
+        os.environ.pop("OPENAI_API_KEY", None)
+
+        try:
+            with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                code = main(["exec", "prompt"], stdout=stdout, stderr=stderr)
+        finally:
+            if previous_enabled is None:
+                os.environ.pop("PYCODEX_EXEC_LOCAL_HTTP", None)
+            else:
+                os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = previous_enabled
+            if previous_key is None:
+                os.environ.pop("OPENAI_API_KEY", None)
+            else:
+                os.environ["OPENAI_API_KEY"] = previous_key
+
+        self.assertEqual(code, 2)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("ERROR: OPENAI_API_KEY is required for PYCODEX_EXEC_LOCAL_HTTP=1", stderr.getvalue())
+
+    def test_main_exec_local_http_missing_api_key_prints_json_turn_failed(self):
+        previous_enabled = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP")
+        previous_key = os.environ.get("OPENAI_API_KEY")
+        os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = "1"
+        os.environ.pop("OPENAI_API_KEY", None)
+
+        try:
+            with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                code = main(["exec", "--json", "prompt"], stdout=stdout, stderr=stderr)
+        finally:
+            if previous_enabled is None:
+                os.environ.pop("PYCODEX_EXEC_LOCAL_HTTP", None)
+            else:
+                os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = previous_enabled
+            if previous_key is None:
+                os.environ.pop("OPENAI_API_KEY", None)
+            else:
+                os.environ["OPENAI_API_KEY"] = previous_key
+
+        self.assertEqual(code, 2)
+        events = [json.loads(line) for line in stdout.getvalue().splitlines()]
+        self.assertEqual([event["type"] for event in events], ["turn.started", "turn.failed"])
+        self.assertEqual(
+            events[1]["error"]["message"],
+            "OPENAI_API_KEY is required for PYCODEX_EXEC_LOCAL_HTTP=1",
+        )
+
+    def test_main_exec_local_http_provider_error_prints_human_error(self):
+        previous_enabled = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP")
+        previous_key = os.environ.get("OPENAI_API_KEY")
+        os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = "1"
+        os.environ["OPENAI_API_KEY"] = "sk-test"
+
+        async def fake_run(*_args, **_kwargs):
+            raise RuntimeError("Responses API request failed with HTTP 400: bad schema")
+
+        try:
+            with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.cli.parser.run_exec_user_turn_http_sampling", side_effect=fake_run):
+                    stdout = io.StringIO()
+                    stderr = io.StringIO()
+                    code = main(["exec", "prompt"], stdout=stdout, stderr=stderr)
+        finally:
+            if previous_enabled is None:
+                os.environ.pop("PYCODEX_EXEC_LOCAL_HTTP", None)
+            else:
+                os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = previous_enabled
+            if previous_key is None:
+                os.environ.pop("OPENAI_API_KEY", None)
+            else:
+                os.environ["OPENAI_API_KEY"] = previous_key
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("ERROR: Responses API request failed with HTTP 400: bad schema", stderr.getvalue())
+
+    def test_main_exec_local_http_provider_error_prints_json_turn_failed(self):
+        previous_enabled = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP")
+        previous_key = os.environ.get("OPENAI_API_KEY")
+        os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = "1"
+        os.environ["OPENAI_API_KEY"] = "sk-test"
+
+        async def fake_run(*_args, **_kwargs):
+            raise RuntimeError("Responses API request failed with HTTP 400: bad schema")
+
+        try:
+            with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                with patch("pycodex.cli.parser.run_exec_user_turn_http_sampling", side_effect=fake_run):
+                    stdout = io.StringIO()
+                    stderr = io.StringIO()
+                    code = main(["exec", "--json", "prompt"], stdout=stdout, stderr=stderr)
+        finally:
+            if previous_enabled is None:
+                os.environ.pop("PYCODEX_EXEC_LOCAL_HTTP", None)
+            else:
+                os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = previous_enabled
+            if previous_key is None:
+                os.environ.pop("OPENAI_API_KEY", None)
+            else:
+                os.environ["OPENAI_API_KEY"] = previous_key
+
+        self.assertEqual(code, 1)
+        events = [json.loads(line) for line in stdout.getvalue().splitlines()]
+        self.assertEqual([event["type"] for event in events], ["thread.started", "turn.started", "turn.failed"])
+        self.assertEqual(events[2]["error"]["message"], "Responses API request failed with HTTP 400: bad schema")
+
+    def test_main_exec_local_http_writes_last_message_file(self):
+        previous_enabled = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP")
+        previous_key = os.environ.get("OPENAI_API_KEY")
+        os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = "1"
+        os.environ["OPENAI_API_KEY"] = "sk-test"
+
+        class FakeResult:
+            response_items = (
+                ResponseItem.from_mapping(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "done"}],
+                    }
+                ),
+            )
+            raw_result = None
+
+        async def fake_run(*_args, **_kwargs):
+            return FakeResult()
+
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                last_message_path = Path(tmpdir) / "last-message.txt"
+                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.parser.run_exec_user_turn_http_sampling", side_effect=fake_run):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(
+                            ["exec", "--output-last-message", str(last_message_path), "prompt"],
+                            stdout=stdout,
+                            stderr=stderr,
+                        )
+                written = last_message_path.read_text(encoding="utf-8")
+        finally:
+            if previous_enabled is None:
+                os.environ.pop("PYCODEX_EXEC_LOCAL_HTTP", None)
+            else:
+                os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = previous_enabled
+            if previous_key is None:
+                os.environ.pop("OPENAI_API_KEY", None)
+            else:
+                os.environ["OPENAI_API_KEY"] = previous_key
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout.getvalue(), "done\n")
+        self.assertEqual(written, "done")
+
+    def test_main_exec_local_http_json_writes_last_message_file(self):
+        previous_enabled = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP")
+        previous_key = os.environ.get("OPENAI_API_KEY")
+        os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = "1"
+        os.environ["OPENAI_API_KEY"] = "sk-test"
+
+        class FakeResult:
+            response_items = (
+                ResponseItem.from_mapping(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "done"}],
+                    }
+                ),
+            )
+            raw_result = None
+
+        async def fake_run(*_args, **_kwargs):
+            return FakeResult()
+
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                last_message_path = Path(tmpdir) / "last-message.txt"
+                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.parser.run_exec_user_turn_http_sampling", side_effect=fake_run):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(
+                            ["exec", "--json", "--output-last-message", str(last_message_path), "prompt"],
+                            stdout=stdout,
+                            stderr=stderr,
+                        )
+                written = last_message_path.read_text(encoding="utf-8")
+        finally:
+            if previous_enabled is None:
+                os.environ.pop("PYCODEX_EXEC_LOCAL_HTTP", None)
+            else:
+                os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = previous_enabled
+            if previous_key is None:
+                os.environ.pop("OPENAI_API_KEY", None)
+            else:
+                os.environ["OPENAI_API_KEY"] = previous_key
+
+        self.assertEqual(code, 0)
+        events = [json.loads(line) for line in stdout.getvalue().splitlines()]
+        self.assertEqual(
+            [event["type"] for event in events],
+            ["thread.started", "turn.started", "item.completed", "turn.completed"],
+        )
+        self.assertEqual(events[2]["item"]["text"], "done")
+        self.assertEqual(written, "done")
+
+    def test_main_exec_local_http_uses_auth_json_api_key(self):
+        previous_enabled = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP")
+        previous_key = os.environ.get("OPENAI_API_KEY")
+        os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = "1"
+        os.environ.pop("OPENAI_API_KEY", None)
+        seen = {}
+
+        class FakeResult:
+            response_items = (
+                ResponseItem.from_mapping(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "done"}],
+                    }
+                ),
+            )
+            raw_result = None
+
+        async def fake_run(*_args, **kwargs):
+            seen["auth"] = kwargs["auth"]
+            return FakeResult()
+
+        try:
+            with patch(
+                "pycodex.cli.parser.read_auth_json",
+                return_value=AuthDotJson(openai_api_key="sk-auth-json"),
+            ):
+                with patch("pycodex.cli.parser.run_exec_user_turn_http_sampling", side_effect=fake_run):
+                    stdout = io.StringIO()
+                    stderr = io.StringIO()
+                    code = main(["exec", "prompt"], stdout=stdout, stderr=stderr)
+        finally:
+            if previous_enabled is None:
+                os.environ.pop("PYCODEX_EXEC_LOCAL_HTTP", None)
+            else:
+                os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = previous_enabled
+            if previous_key is None:
+                os.environ.pop("OPENAI_API_KEY", None)
+            else:
+                os.environ["OPENAI_API_KEY"] = previous_key
+
+        self.assertEqual(code, 0)
+        self.assertEqual(seen["auth"].openai_api_key, "sk-auth-json")
+        self.assertEqual(stdout.getvalue(), "done\n")
+
+    def test_main_exec_reads_config_toml_for_local_http_session_config(self):
+        previous_enabled = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP")
+        previous_key = os.environ.get("OPENAI_API_KEY")
+        previous_home = os.environ.get("CODEX_HOME")
+        os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = "1"
+        os.environ["OPENAI_API_KEY"] = "sk-test"
+        seen = {}
+
+        class FakeResult:
+            response_items = (
+                ResponseItem.from_mapping(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "done"}],
+                    }
+                ),
+            )
+            raw_result = None
+
+        async def fake_run(config, *_args, **_kwargs):
+            seen["user_instructions"] = config.user_instructions
+            return FakeResult()
+
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                os.environ["CODEX_HOME"] = tmpdir
+                (Path(tmpdir) / "config.toml").write_text('user_instructions = "from config"\n', encoding="utf-8")
+                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.parser.run_exec_user_turn_http_sampling", side_effect=fake_run):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(["exec", "prompt"], stdout=stdout, stderr=stderr)
+        finally:
+            if previous_enabled is None:
+                os.environ.pop("PYCODEX_EXEC_LOCAL_HTTP", None)
+            else:
+                os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = previous_enabled
+            if previous_key is None:
+                os.environ.pop("OPENAI_API_KEY", None)
+            else:
+                os.environ["OPENAI_API_KEY"] = previous_key
+            if previous_home is None:
+                os.environ.pop("CODEX_HOME", None)
+            else:
+                os.environ["CODEX_HOME"] = previous_home
+
+        self.assertEqual(code, 0)
+        self.assertTrue(seen["user_instructions"].startswith("from config"))
+        self.assertEqual(stdout.getvalue(), "done\n")
+
+    def test_main_exec_local_http_prefers_env_api_key_over_auth_json(self):
+        previous_enabled = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP")
+        previous_key = os.environ.get("OPENAI_API_KEY")
+        os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = "1"
+        os.environ["OPENAI_API_KEY"] = "sk-env"
+        seen = {}
+
+        class FakeResult:
+            response_items = (
+                ResponseItem.from_mapping(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "done"}],
+                    }
+                ),
+            )
+            raw_result = None
+
+        async def fake_run(*_args, **kwargs):
+            seen["auth"] = kwargs["auth"]
+            return FakeResult()
+
+        try:
+            with patch(
+                "pycodex.cli.parser.read_auth_json",
+                return_value=AuthDotJson(openai_api_key="sk-auth-json"),
+            ):
+                with patch("pycodex.cli.parser.run_exec_user_turn_http_sampling", side_effect=fake_run):
+                    stdout = io.StringIO()
+                    stderr = io.StringIO()
+                    code = main(["exec", "prompt"], stdout=stdout, stderr=stderr)
+        finally:
+            if previous_enabled is None:
+                os.environ.pop("PYCODEX_EXEC_LOCAL_HTTP", None)
+            else:
+                os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = previous_enabled
+            if previous_key is None:
+                os.environ.pop("OPENAI_API_KEY", None)
+            else:
+                os.environ["OPENAI_API_KEY"] = previous_key
+
+        self.assertEqual(code, 0)
+        self.assertEqual(seen["auth"], "sk-env")
+        self.assertEqual(stdout.getvalue(), "done\n")
+
     def test_main_exec_when_local_app_server_missing_prints_start_hint(self):
         previous_home = os.environ.get("CODEX_HOME")
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -7366,6 +7824,163 @@ class TopLevelCliParserTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertIn("codex 0.1.0", stdout.getvalue())
+
+    def test_main_exec_local_http_uses_config_provider_env_key(self):
+        seen = {}
+
+        async def fake_run(config, _plan, _model_client, provider, _model_info, **kwargs):
+            seen["auth"] = kwargs["auth"]
+            seen["provider_base_url"] = provider.base_url
+            seen["model_provider_id"] = config.model_provider_id
+            text_part = type("TextPart", (), {"text": "done"})()
+            response_item = type("ResponseItem", (), {"content": [text_part]})()
+            return type(
+                "Result",
+                (),
+                {
+                    "response_items": (response_item,),
+                    "raw_result": {
+                        "output": [
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "done"}],
+                            }
+                        ]
+                    },
+                },
+            )()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.toml"
+            config_path.write_text(
+                "\n".join(
+                    (
+                        'model_provider = "local-openai"',
+                        "",
+                        "[model_providers.local-openai]",
+                        'base_url = "https://local.example.test/v1"',
+                        'env_key = "LOCAL_OPENAI_KEY"',
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "OPENAI_API_KEY": "",
+                    "LOCAL_OPENAI_KEY": "sk-local",
+                },
+            ):
+                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.parser.run_exec_user_turn_http_sampling", side_effect=fake_run):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(["exec", "hello"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(seen["auth"], "sk-local")
+        self.assertEqual(seen["provider_base_url"], "https://local.example.test/v1")
+        self.assertEqual(seen["model_provider_id"], "local-openai")
+        self.assertIn("done", stdout.getvalue())
+
+    def test_main_exec_local_http_shell_tools_flag_uses_tool_loop(self):
+        seen = {}
+
+        async def fake_run(config, _plan, _model_client, _provider, _model_info, **kwargs):
+            seen["auth"] = kwargs["auth"]
+            seen["max_tool_rounds"] = kwargs["max_tool_rounds"]
+            seen["tool_output_max_chars"] = kwargs["tool_output_max_chars"]
+            seen["cwd"] = str(config.cwd)
+            text_part = type("TextPart", (), {"text": "done"})()
+            response_item = type("ResponseItem", (), {"content": [text_part]})()
+            return type(
+                "Result",
+                (),
+                {
+                    "response_items": (response_item,),
+                    "raw_result": {
+                        "output": [
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "done"}],
+                            }
+                        ]
+                    },
+                },
+            )()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_MAX_TOOL_ROUNDS": "2",
+                    "PYCODEX_EXEC_LOCAL_HTTP_TOOL_OUTPUT_MAX_CHARS": "50",
+                    "OPENAI_API_KEY": "sk-env",
+                },
+            ):
+                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                    with patch(
+                        "pycodex.cli.parser.run_exec_user_turn_with_shell_tools_http_sampling",
+                        side_effect=fake_run,
+                    ) as run_tool_loop:
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(["exec", "hello"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(run_tool_loop.call_count, 1)
+        self.assertEqual(seen["auth"], "sk-env")
+        self.assertEqual(seen["max_tool_rounds"], 2)
+        self.assertEqual(seen["tool_output_max_chars"], 50)
+        self.assertIn("done", stdout.getvalue())
+
+    def test_main_exec_local_http_shell_tools_rejects_invalid_max_rounds(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_MAX_TOOL_ROUNDS": "many",
+                    "OPENAI_API_KEY": "sk-env",
+                },
+            ):
+                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                    stdout = io.StringIO()
+                    stderr = io.StringIO()
+                    code = main(["exec", "hello"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("PYCODEX_EXEC_LOCAL_HTTP_MAX_TOOL_ROUNDS must be a non-negative integer", stderr.getvalue())
+
+    def test_main_exec_local_http_shell_tools_rejects_invalid_output_max_chars(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_TOOL_OUTPUT_MAX_CHARS": "0",
+                    "OPENAI_API_KEY": "sk-env",
+                },
+            ):
+                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                    stdout = io.StringIO()
+                    stderr = io.StringIO()
+                    code = main(["exec", "hello"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertIn("PYCODEX_EXEC_LOCAL_HTTP_TOOL_OUTPUT_MAX_CHARS must be a positive integer", stderr.getvalue())
 
 
 if __name__ == "__main__":

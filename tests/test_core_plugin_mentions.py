@@ -85,6 +85,8 @@ class PluginMentionsTests(unittest.TestCase):
         self.assertIs(tool_kind_for_path("/tmp/file.txt"), ToolMentionKind.OTHER)
         self.assertTrue(is_skill_filename(r"C:\repo\Skill.md"))
         self.assertEqual(normalize_skill_path("skill:///tmp/SKILL.md"), "/tmp/SKILL.md")
+        with self.assertRaisesRegex(TypeError, "path must be a string"):
+            tool_kind_for_path(123)  # type: ignore[arg-type]
 
     def test_path_extractors_return_non_empty_prefixed_values(self) -> None:
         self.assertEqual(app_id_from_path("app://calendar"), "calendar")
@@ -108,6 +110,10 @@ class PluginMentionsTests(unittest.TestCase):
 
         self.assertEqual(collected.plain_names, frozenset({"sample"}))
         self.assertEqual(collected.paths, frozenset({"plugin://sample@test"}))
+        with self.assertRaisesRegex(TypeError, "message must be a string"):
+            collect_tool_mentions_from_messages([object()])  # type: ignore[list-item]
+        with self.assertRaisesRegex(TypeError, "sigil must be a string"):
+            collect_tool_mentions_from_messages_with_sigil(["use @sample"], 1)  # type: ignore[arg-type]
 
     def test_collect_explicit_app_ids_from_linked_text_mentions(self) -> None:
         app_ids = collect_explicit_app_ids([text_input("use [$calendar](app://calendar)")])
@@ -213,6 +219,10 @@ class PluginMentionsTests(unittest.TestCase):
 
         self.assertEqual(collect_explicit_app_ids([{"type": "mention", "path": "app://calendar"}]), {"calendar"})
         self.assertEqual(mentioned, [plugin("sample@test", "sample")])
+        with self.assertRaisesRegex(TypeError, "text must be a string"):
+            collect_explicit_app_ids([{"type": "text", "text": object()}])
+        with self.assertRaisesRegex(TypeError, "path must be a string"):
+            collect_explicit_app_ids([{"type": "mention", "path": object()}])
 
     def test_build_connector_slug_counts_uses_display_label_slug(self) -> None:
         counts = build_connector_slug_counts(
@@ -224,6 +234,8 @@ class PluginMentionsTests(unittest.TestCase):
         )
 
         self.assertEqual(counts, {"google-calendar": 2, "app": 1})
+        with self.assertRaisesRegex(TypeError, "connector name must be a string"):
+            build_connector_slug_counts([{"name": 123}])
 
 
 if __name__ == "__main__":

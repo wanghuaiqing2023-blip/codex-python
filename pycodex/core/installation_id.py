@@ -20,6 +20,8 @@ def resolve_installation_id(codex_home: Path | str) -> str:
     contents with a fresh UUID.
     """
 
+    if not isinstance(codex_home, (str, Path)):
+        raise TypeError("codex_home must be a string or Path")
     codex_home = Path(codex_home)
     path = codex_home / INSTALLATION_ID_FILENAME
     codex_home.mkdir(parents=True, exist_ok=True)
@@ -45,6 +47,8 @@ def resolve_installation_id(codex_home: Path | str) -> str:
 
 
 def _parse_uuid(value: str) -> str | None:
+    if not isinstance(value, str):
+        raise TypeError("value must be a string")
     if not value:
         return None
     try:

@@ -75,9 +75,18 @@ class AgentRoleConfig:
     nickname_candidates: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
+        if self.description is not None and not isinstance(self.description, str):
+            raise TypeError("description must be a string")
         if self.config_file is not None and not isinstance(self.config_file, Path):
-            object.__setattr__(self, "config_file", Path(self.config_file))
+            raise TypeError("config_file must be a Path")
         if self.nickname_candidates is not None:
+            if isinstance(self.nickname_candidates, (str, bytes)) or not isinstance(
+                self.nickname_candidates,
+                Iterable,
+            ):
+                raise TypeError("nickname_candidates must be an iterable of strings")
+            if not all(isinstance(candidate, str) for candidate in self.nickname_candidates):
+                raise TypeError("nickname_candidates must contain only strings")
             object.__setattr__(self, "nickname_candidates", tuple(self.nickname_candidates))
 
 
@@ -90,12 +99,33 @@ class ResolvedAgentRoleFile:
     nickname_candidates: tuple[str, ...] | None
     config: dict[str, Any]
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.role_name, str):
+            raise TypeError("role_name must be a string")
+        if self.description is not None and not isinstance(self.description, str):
+            raise TypeError("description must be a string")
+        if self.nickname_candidates is not None:
+            if isinstance(self.nickname_candidates, (str, bytes)) or not isinstance(
+                self.nickname_candidates,
+                Iterable,
+            ):
+                raise TypeError("nickname_candidates must be an iterable of strings")
+            if not all(isinstance(candidate, str) for candidate in self.nickname_candidates):
+                raise TypeError("nickname_candidates must contain only strings")
+            object.__setattr__(self, "nickname_candidates", tuple(self.nickname_candidates))
+        if not isinstance(self.config, dict):
+            raise TypeError("config must be a dict")
+
 
 def normalize_agent_role_description(field_label: str, description: str | None) -> str | None:
     """Trim an optional role description and reject blank values."""
 
+    if not isinstance(field_label, str):
+        raise TypeError("field_label must be a string")
     if description is None:
         return None
+    if not isinstance(description, str):
+        raise TypeError("description must be a string")
     normalized = description.strip()
     if not normalized:
         raise AgentRoleError(f"{field_label} cannot be blank")
@@ -105,6 +135,10 @@ def normalize_agent_role_description(field_label: str, description: str | None) 
 def validate_required_agent_role_description(role_name: str, description: str | None) -> None:
     """Require a role description after config-layer merging."""
 
+    if not isinstance(role_name, str):
+        raise TypeError("role_name must be a string")
+    if description is not None and not isinstance(description, str):
+        raise TypeError("description must be a string")
     if description is None:
         raise AgentRoleError(f"agent role `{role_name}` must define a description")
 
@@ -117,6 +151,10 @@ def validate_agent_role_file_developer_instructions(
     """Validate the developer instructions metadata in a role file."""
 
     label = Path(role_file_label)
+    if developer_instructions is not None and not isinstance(developer_instructions, str):
+        raise TypeError("developer_instructions must be a string")
+    if not isinstance(require_present, bool):
+        raise TypeError("require_present must be a bool")
     if developer_instructions is not None:
         if not developer_instructions.strip():
             raise AgentRoleError(f"agent role file at {label}.developer_instructions cannot be blank")
@@ -131,13 +169,19 @@ def normalize_agent_role_nickname_candidates(
 ) -> tuple[str, ...] | None:
     """Normalize and validate optional nickname candidates."""
 
+    if not isinstance(field_label, str):
+        raise TypeError("field_label must be a string")
     if nickname_candidates is None:
         return None
+    if isinstance(nickname_candidates, (str, bytes)) or not isinstance(nickname_candidates, Iterable):
+        raise TypeError("nickname_candidates must be an iterable of strings")
 
     normalized_candidates: list[str] = []
     seen_candidates: set[str] = set()
     for nickname in nickname_candidates:
-        normalized = str(nickname).strip()
+        if not isinstance(nickname, str):
+            raise TypeError("nickname_candidates must contain only strings")
+        normalized = nickname.strip()
         if not normalized:
             raise AgentRoleError(f"{field_label} cannot contain blank names")
         if normalized in seen_candidates:
@@ -161,6 +205,10 @@ def parse_agent_role_file_contents(
     role_name_hint: str | None = None,
 ) -> ResolvedAgentRoleFile:
     """Parse a TOML role file into metadata plus config-layer contents."""
+    if not isinstance(contents, str):
+        raise TypeError("contents must be a string")
+    if role_name_hint is not None and not isinstance(role_name_hint, str):
+        raise TypeError("role_name_hint must be a string")
     label = Path(role_file_label)
     _ = Path(config_base_dir) if config_base_dir is not None else label.parent
 
@@ -217,6 +265,10 @@ def parse_agent_role_file_contents(
 def merge_missing_role_fields(role: AgentRoleConfig, fallback: AgentRoleConfig) -> AgentRoleConfig:
     """Fill missing metadata fields from a lower-precedence role."""
 
+    if not isinstance(role, AgentRoleConfig):
+        raise TypeError("role must be an AgentRoleConfig")
+    if not isinstance(fallback, AgentRoleConfig):
+        raise TypeError("fallback must be an AgentRoleConfig")
     return AgentRoleConfig(
         description=role.description or fallback.description,
         config_file=role.config_file or fallback.config_file,
@@ -333,15 +385,25 @@ def resolve_role_config(
 ) -> AgentRoleConfig | None:
     """Resolve a user-defined role before falling back to built-ins."""
 
+    if not isinstance(user_defined_agent_roles, Mapping):
+        raise TypeError("user_defined_agent_roles must be a mapping")
+    if not isinstance(role_name, str):
+        raise TypeError("role_name must be a string")
     return user_defined_agent_roles.get(role_name) or built_in_agent_role_configs().get(role_name)
 
 
 def build_spawn_agent_tool_description(user_defined_agent_roles: Mapping[str, AgentRoleConfig]) -> str:
     """Build the spawn-agent ``agent_type`` description text."""
 
+    if not isinstance(user_defined_agent_roles, Mapping):
+        raise TypeError("user_defined_agent_roles must be a mapping")
     formatted_roles: list[str] = []
     seen: set[str] = set()
     for name, declaration in sorted(user_defined_agent_roles.items()):
+        if not isinstance(name, str):
+            raise TypeError("agent role names must be strings")
+        if not isinstance(declaration, AgentRoleConfig):
+            raise TypeError("agent role declarations must be AgentRoleConfig values")
         if name not in seen:
             seen.add(name)
             formatted_roles.append(format_role_for_spawn_tool(name, declaration))
@@ -360,6 +422,10 @@ def build_spawn_agent_tool_description(user_defined_agent_roles: Mapping[str, Ag
 def format_role_for_spawn_tool(name: str, declaration: AgentRoleConfig) -> str:
     """Format a single role declaration for the spawn-agent tool spec."""
 
+    if not isinstance(name, str):
+        raise TypeError("name must be a string")
+    if not isinstance(declaration, AgentRoleConfig):
+        raise TypeError("declaration must be an AgentRoleConfig")
     if declaration.description is None:
         return f"{name}: no description"
 
@@ -417,6 +483,10 @@ def locked_settings_note_for_role(declaration: AgentRoleConfig) -> str:
 def format_agent_nickname(name: str, nickname_reset_count: int) -> str:
     """Format a nickname after the available name pool has been reset."""
 
+    if not isinstance(name, str):
+        raise TypeError("name must be a string")
+    if isinstance(nickname_reset_count, bool) or not isinstance(nickname_reset_count, int):
+        raise TypeError("nickname_reset_count must be an integer")
     if nickname_reset_count == 0:
         return name
     value = nickname_reset_count + 1

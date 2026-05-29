@@ -131,7 +131,8 @@ class ProtocolErrorTests(unittest.TestCase):
         )
         self.assertEqual(
             str(lower_blocked),
-            f"{CLOUDFLARE_BLOCKED_MESSAGE} (status 403 Forbidden), request id: req-lower",
+            "unexpected status 403 Forbidden: "
+            "<html><body>cloudflare error: blocked by policy</body></html>, request id: req-lower",
         )
 
     def test_codex_error_maps_to_protocol_error_event(self):
@@ -160,6 +161,9 @@ class ProtocolErrorTests(unittest.TestCase):
             stderr=StreamOutput.new("stderr detail"),
         )
         self.assertEqual(get_error_message_ui(CodexErr.sandbox(SandboxDenied(output))), "stderr detail\nstdout detail")
+
+        output = ExecToolCallOutput(exit_code=11, stdout=StreamOutput.new("stdout only"))
+        self.assertEqual(get_error_message_ui(CodexErr.sandbox(SandboxDenied(output))), "stdout only")
 
         output = ExecToolCallOutput(exit_code=13)
         self.assertEqual(

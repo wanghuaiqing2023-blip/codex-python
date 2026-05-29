@@ -55,6 +55,11 @@ class PlanItemArg:
     step: str
     status: StepStatus
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.step, str):
+            raise TypeError("step must be a string")
+        object.__setattr__(self, "status", StepStatus(self.status))
+
     @classmethod
     def from_mapping(cls, value: JsonValue) -> "PlanItemArg":
         data = _mapping(value, "plan item")
@@ -71,8 +76,14 @@ class UpdatePlanArgs:
     explanation: str | None = None
 
     def __post_init__(self) -> None:
+        if isinstance(self.plan, str) or not isinstance(self.plan, (list, tuple)):
+            raise TypeError("plan must be a list or tuple")
         if not isinstance(self.plan, tuple):
             object.__setattr__(self, "plan", tuple(self.plan))
+        if not all(isinstance(item, PlanItemArg) for item in self.plan):
+            raise TypeError("plan entries must be PlanItemArg")
+        if self.explanation is not None and not isinstance(self.explanation, str):
+            raise TypeError("explanation must be a string or None")
 
     @classmethod
     def from_mapping(cls, value: JsonValue) -> "UpdatePlanArgs":

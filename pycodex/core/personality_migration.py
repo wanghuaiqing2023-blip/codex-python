@@ -20,6 +20,24 @@ from .rollout import (
 PERSONALITY_MIGRATION_FILENAME = ".personality_migration"
 
 
+def _ensure_pathlike(value: object, field: str) -> str | Path:
+    if isinstance(value, (str, Path)):
+        return value
+    raise TypeError(f"{field} must be path-like")
+
+
+def _ensure_mapping(value: object, field: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{field} must be a mapping")
+    return value
+
+
+def _ensure_str(value: object, field: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{field} must be a string")
+    return value
+
+
 class PersonalityMigrationStatus(str, Enum):
     SKIPPED_MARKER = "skipped_marker"
     SKIPPED_EXPLICIT_PERSONALITY = "skipped_explicit_personality"
@@ -33,22 +51,20 @@ def maybe_migrate_personality(
     *,
     override_profile: str | None = None,
 ) -> PersonalityMigrationStatus:
-    home = Path(codex_home)
+    if override_profile is not None:
+        _ensure_str(override_profile, "override_profile")
+    home = Path(_ensure_pathlike(codex_home, "codex_home"))
     marker_path = home / PERSONALITY_MIGRATION_FILENAME
     if marker_path.exists():
         return PersonalityMigrationStatus.SKIPPED_MARKER
 
-    config = dict(config_toml) if config_toml is not None else read_config_toml(home)
-    profile = config_profile(config, override_profile)
-    if config.get("personality") is not None or profile.get("personality") is not None:
+    config = dict(_ensure_mapping(config_toml, "config_toml")) if config_toml is not None else read_config_toml(home)
+    if config.get("personality") is not None:
         create_personality_migration_marker(marker_path)
         return PersonalityMigrationStatus.SKIPPED_EXPLICIT_PERSONALITY
 
-    model_provider_id = str(
-        profile.get("model_provider")
-        or config.get("model_provider")
-        or "openai"
-    )
+    model_provider_value = config.get("model_provider")
+    model_provider_id = _ensure_str(model_provider_value, "model_provider") if model_provider_value is not None else "openai"
     if not has_recorded_sessions(home, model_provider_id):
         create_personality_migration_marker(marker_path)
         return PersonalityMigrationStatus.SKIPPED_NO_SESSIONS
@@ -59,7 +75,7 @@ def maybe_migrate_personality(
 
 
 def read_config_toml(codex_home: str | Path) -> dict[str, Any]:
-    path = Path(codex_home) / "config.toml"
+    path = Path(_ensure_pathlike(codex_home, "codex_home")) / "config.toml"
     if not path.exists():
         return {}
     with path.open("rb") as file:
@@ -70,7 +86,7 @@ def config_profile(
     config_toml: Mapping[str, Any],
     override_profile: str | None = None,
 ) -> dict[str, Any]:
-    profile_name = override_profile or _optional_str(config_toml.get("profile"))
+    profile_name = _ensure_str(override_profile, "override_profile") if override_profile is not None else _optional_str(config_toml.get("profile"))
     profiles = config_toml.get("profiles")
     if not profile_name or not isinstance(profiles, Mapping):
         return {}
@@ -79,7 +95,8 @@ def config_profile(
 
 
 def has_recorded_sessions(codex_home: str | Path, default_provider: str = "openai") -> bool:
-    home = Path(codex_home)
+    home = Path(_ensure_pathlike(codex_home, "codex_home"))
+    default_provider = _ensure_str(default_provider, "default_provider")
     active = get_threads_in_root(
         home / SESSIONS_SUBDIR,
         page_size=1,
@@ -98,7 +115,7 @@ def has_recorded_sessions(codex_home: str | Path, default_provider: str = "opena
 
 
 def create_personality_migration_marker(marker_path: str | Path) -> None:
-    path = Path(marker_path)
+    path = Path(_ensure_pathlike(marker_path, "marker_path"))
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         with path.open("x", encoding="utf-8", newline="\n") as file:
@@ -108,8 +125,10 @@ def create_personality_migration_marker(marker_path: str | Path) -> None:
 
 
 def set_top_level_toml_string(path: str | Path, key: str, value: str) -> None:
-    target = Path(path)
+    target = Path(_ensure_pathlike(path, "path"))
     target.parent.mkdir(parents=True, exist_ok=True)
+    key = _ensure_str(key, "key")
+    value = _ensure_str(value, "value")
     assignment = f'{key} = "{_escape_basic_toml_string(value)}"'
     if not target.exists():
         target.write_text(f"{assignment}\n", encoding="utf-8", newline="\n")
@@ -144,6 +163,7 @@ def _optional_str(value: Any) -> str | None:
 
 
 def _escape_basic_toml_string(value: str) -> str:
+    value = _ensure_str(value, "value")
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 

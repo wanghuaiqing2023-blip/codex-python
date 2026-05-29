@@ -36,6 +36,7 @@ class AgentPathTests(unittest.TestCase):
         cases = [
             (lambda: AgentPath.root().join("BadName"), "agent_name must use only lowercase letters"),
             (lambda: AgentPath("/not-root"), "absolute agent paths must start with `/root` or be `/morpheus`"),
+            (lambda: AgentPath("/"), "absolute agent path must not be empty"),
             (lambda: AgentPath.root().resolve("../sibling"), "agent_name `..` is reserved"),
             (lambda: AgentPath.root().join("root"), "agent_name `root` is reserved"),
             (lambda: AgentPath("/root/"), "absolute agent path must not end with `/`"),
@@ -45,6 +46,14 @@ class AgentPathTests(unittest.TestCase):
             with self.subTest(message=message):
                 with self.assertRaisesRegex(ValueError, message):
                     call()
+
+    def test_rejects_non_string_inputs(self):
+        with self.assertRaisesRegex(TypeError, "agent path must be a string"):
+            AgentPath(123)  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "agent_name must be a string"):
+            AgentPath.root().join(123)  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "agent path reference must be a string"):
+            AgentPath.root().resolve(123)  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":

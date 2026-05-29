@@ -328,6 +328,9 @@ class ExecSessionConfig:
     model_provider_id: str | None
     cwd: Path
     workspace_roots: tuple[Path, ...] = ()
+    user_instructions: str | None = None
+    instruction_sources: tuple[Path, ...] = ()
+    startup_warnings: tuple[str, ...] = ()
     approval_policy: AskForApproval = AskForApproval.NEVER
     approvals_reviewer: ApprovalsReviewer = ApprovalsReviewer.USER
     permission_profile: PermissionProfile = PermissionProfile.read_only()
@@ -339,6 +342,8 @@ class ExecSessionConfig:
         if not isinstance(self.cwd, Path):
             object.__setattr__(self, "cwd", Path(self.cwd))
         object.__setattr__(self, "workspace_roots", tuple(Path(root) for root in self.workspace_roots))
+        object.__setattr__(self, "instruction_sources", tuple(Path(path) for path in self.instruction_sources))
+        object.__setattr__(self, "startup_warnings", tuple(str(warning) for warning in self.startup_warnings))
 
 
 @dataclass(frozen=True)
@@ -971,6 +976,9 @@ def exec_session_config_mapping(config: ExecSessionConfig) -> dict[str, JsonValu
             "modelProviderId": config.model_provider_id,
             "cwd": str(config.cwd),
             "workspaceRoots": [str(root) for root in config.workspace_roots],
+            "userInstructions": config.user_instructions,
+            "instructionSources": [str(path) for path in config.instruction_sources],
+            "startupWarnings": list(config.startup_warnings),
             "approvalPolicy": _enum(config.approval_policy),
             "approvalsReviewer": _enum(config.approvals_reviewer),
             "permissionProfile": _to_json(config.permission_profile),
@@ -2679,6 +2687,19 @@ def approvals_reviewer_override_from_config(config: ExecSessionConfig) -> Approv
     return config.approvals_reviewer
 
 
+def _session_instruction_config(config: ExecSessionConfig) -> dict[str, JsonValue] | None:
+    instruction_config = _drop_none(
+        {
+            "userInstructions": config.user_instructions,
+            "instructionSources": [str(path) for path in config.instruction_sources],
+            "startupWarnings": list(config.startup_warnings),
+        }
+    )
+    if not instruction_config:
+        return None
+    return instruction_config
+
+
 def thread_start_params_from_config(config: ExecSessionConfig) -> ThreadStartParams:
     permissions = permissions_selection_from_config(config)
     sandbox = None if permissions is not None else sandbox_mode_from_permission_profile(config.permission_profile, config.cwd)
@@ -2691,6 +2712,7 @@ def thread_start_params_from_config(config: ExecSessionConfig) -> ThreadStartPar
         approvals_reviewer=approvals_reviewer_override_from_config(config),
         sandbox=sandbox,
         permissions=permissions,
+        config=_session_instruction_config(config),
         ephemeral=config.ephemeral,
         thread_source=ThreadSource.USER,
     )
@@ -2709,6 +2731,7 @@ def thread_resume_params_from_config(config: ExecSessionConfig, thread_id: str) 
         approvals_reviewer=approvals_reviewer_override_from_config(config),
         sandbox=sandbox,
         permissions=permissions,
+        config=_session_instruction_config(config),
     )
 
 

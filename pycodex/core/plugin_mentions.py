@@ -61,6 +61,11 @@ class ToolMentions:
     paths: frozenset[str]
     plain_names: frozenset[str]
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "names", _ensure_str_frozenset(self.names, "names"))
+        object.__setattr__(self, "paths", _ensure_str_frozenset(self.paths, "paths"))
+        object.__setattr__(self, "plain_names", _ensure_str_frozenset(self.plain_names, "plain_names"))
+
     def is_empty(self) -> bool:
         return not self.names and not self.paths
 
@@ -70,9 +75,14 @@ class CollectedToolMentions:
     plain_names: frozenset[str]
     paths: frozenset[str]
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "plain_names", _ensure_str_frozenset(self.plain_names, "plain_names"))
+        object.__setattr__(self, "paths", _ensure_str_frozenset(self.paths, "paths"))
+
 
 def tool_kind_for_path(path: str | Path) -> ToolMentionKind:
-    value = str(path)
+    _ensure_str(path, "path")
+    value = path
     if value.startswith(APP_PATH_PREFIX):
         return ToolMentionKind.APP
     if value.startswith(MCP_PATH_PREFIX):
@@ -85,12 +95,14 @@ def tool_kind_for_path(path: str | Path) -> ToolMentionKind:
 
 
 def is_skill_filename(path: str | Path) -> bool:
-    file_name = str(path).replace("\\", "/").rsplit("/", 1)[-1]
+    _ensure_str(path, "path")
+    file_name = path.replace("\\", "/").rsplit("/", 1)[-1]
     return file_name.lower() == SKILL_FILENAME.lower()
 
 
 def app_id_from_path(path: str | Path) -> str | None:
-    value = str(path)
+    _ensure_str(path, "path")
+    value = path
     if not value.startswith(APP_PATH_PREFIX):
         return None
     app_id = value[len(APP_PATH_PREFIX) :]
@@ -98,7 +110,8 @@ def app_id_from_path(path: str | Path) -> str | None:
 
 
 def plugin_config_name_from_path(path: str | Path) -> str | None:
-    value = str(path)
+    _ensure_str(path, "path")
+    value = path
     if not value.startswith(PLUGIN_PATH_PREFIX):
         return None
     config_name = value[len(PLUGIN_PATH_PREFIX) :]
@@ -106,17 +119,21 @@ def plugin_config_name_from_path(path: str | Path) -> str | None:
 
 
 def normalize_skill_path(path: str | Path) -> str:
-    value = str(path)
+    _ensure_str(path, "path")
+    value = path
     if value.startswith(SKILL_PATH_PREFIX):
         return value[len(SKILL_PATH_PREFIX) :]
     return value
 
 
 def extract_tool_mentions(text: str) -> ToolMentions:
+    _ensure_str(text, "text")
     return extract_tool_mentions_with_sigil(text, TOOL_MENTION_SIGIL)
 
 
 def extract_tool_mentions_with_sigil(text: str, sigil: str) -> ToolMentions:
+    _ensure_str(text, "text")
+    _ensure_str(sigil, "sigil")
     if len(sigil) != 1:
         raise ValueError("sigil must be a single character")
 
@@ -176,16 +193,22 @@ def collect_tool_mentions_from_messages_with_sigil(
     messages: Iterable[str],
     sigil: str,
 ) -> CollectedToolMentions:
+    _ensure_str(sigil, "sigil")
+    if isinstance(messages, (str, bytes)):
+        raise TypeError("messages must be an iterable of strings")
     plain_names: set[str] = set()
     paths: set[str] = set()
     for message in messages:
-        mentions = extract_tool_mentions_with_sigil(str(message), sigil)
+        _ensure_str(message, "message")
+        mentions = extract_tool_mentions_with_sigil(message, sigil)
         plain_names.update(mentions.plain_names)
         paths.update(mentions.paths)
     return CollectedToolMentions(frozenset(plain_names), frozenset(paths))
 
 
 def collect_explicit_app_ids(user_input: Iterable[Any]) -> set[str]:
+    if isinstance(user_input, (str, bytes)):
+        raise TypeError("user_input must be an iterable of user input items")
     items = tuple(user_input)
     messages = _text_messages(items)
     paths = set(_mention_paths(items))
@@ -203,6 +226,10 @@ def collect_explicit_plugin_mentions(
     user_input: Iterable[Any],
     plugins: Iterable[PluginCapabilitySummary | Mapping[str, JsonValue] | Any],
 ) -> list[PluginCapabilitySummary]:
+    if isinstance(user_input, (str, bytes)):
+        raise TypeError("user_input must be an iterable of user input items")
+    if isinstance(plugins, (str, bytes)):
+        raise TypeError("plugins must be an iterable of plugin summaries")
     plugin_items = tuple(PluginCapabilitySummary.from_value(plugin) for plugin in plugins)
     if not plugin_items:
         return []
@@ -226,6 +253,8 @@ def collect_explicit_plugin_mentions(
 
 
 def build_connector_slug_counts(connectors: Iterable[AppInfo | Mapping[str, JsonValue] | Any]) -> dict[str, int]:
+    if isinstance(connectors, (str, bytes)):
+        raise TypeError("connectors must be an iterable of connector infos")
     counts: Counter[str] = Counter()
     for connector in connectors:
         name = _connector_name(connector)
@@ -234,6 +263,12 @@ def build_connector_slug_counts(connectors: Iterable[AppInfo | Mapping[str, Json
 
 
 def _parse_linked_tool_mention(text: str, start: int, sigil: str) -> tuple[str, str, int] | None:
+    _ensure_str(text, "text")
+    if isinstance(start, bool) or not isinstance(start, int):
+        raise TypeError("start must be an integer")
+    if start < 0:
+        raise ValueError("start must be non-negative")
+    _ensure_str(sigil, "sigil")
     sigil_index = start + 1
     if sigil_index >= len(text) or text[sigil_index] != sigil:
         return None
@@ -268,49 +303,83 @@ def _parse_linked_tool_mention(text: str, start: int, sigil: str) -> tuple[str, 
 
 
 def _is_mention_name_char(character: str) -> bool:
+    _ensure_str(character, "character")
+    if len(character) != 1:
+        raise ValueError("character must be a single character")
     return character.isascii() and (character.isalnum() or character in "_-:")
 
 
 def _is_ascii_whitespace(character: str) -> bool:
+    _ensure_str(character, "character")
+    if len(character) != 1:
+        raise ValueError("character must be a single character")
     return character.isascii() and character.isspace()
 
 
 def _is_common_env_var(name: str) -> bool:
+    _ensure_str(name, "name")
     return name.upper() in _COMMON_ENV_VARS
 
 
 def _text_messages(items: Iterable[Any]) -> list[str]:
-    return [
-        str(text)
-        for item in items
-        if _field_value(item, "type") == "text"
-        for text in (_field_value(item, "text"),)
-        if text is not None
-    ]
+    messages: list[str] = []
+    for item in items:
+        if _field_value(item, "type") != "text":
+            continue
+        text = _field_value(item, "text")
+        if text is None:
+            continue
+        _ensure_str(text, "text")
+        messages.append(text)
+    return messages
 
 
 def _mention_paths(items: Iterable[Any]) -> list[str]:
-    return [
-        str(path)
-        for item in items
-        if _field_value(item, "type") == "mention"
-        for path in (_field_value(item, "path"),)
-        if path is not None
-    ]
+    paths: list[str] = []
+    for item in items:
+        if _field_value(item, "type") != "mention":
+            continue
+        path = _field_value(item, "path")
+        if path is None:
+            continue
+        _ensure_str(path, "path")
+        paths.append(path)
+    return paths
 
 
 def _connector_name(value: AppInfo | Mapping[str, JsonValue] | Any) -> str:
     if isinstance(value, AppInfo):
         return value.name
     if isinstance(value, Mapping):
-        return str(value.get("name", value.get("display_name", value.get("id", ""))))
-    return str(getattr(value, "name", getattr(value, "display_name", getattr(value, "id", ""))))
+        raw = value.get("name", value.get("display_name", value.get("id", "")))
+        _ensure_str(raw, "connector name")
+        return raw
+    raw = getattr(value, "name", getattr(value, "display_name", getattr(value, "id", "")))
+    _ensure_str(raw, "connector name")
+    return raw
 
 
 def _field_value(value: Any, name: str) -> Any:
     if isinstance(value, Mapping):
         return value.get(name)
     return getattr(value, name, None)
+
+
+def _ensure_str(value: object, name: str) -> None:
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a string")
+
+
+def _ensure_str_frozenset(value: object, name: str) -> frozenset[str]:
+    if isinstance(value, (str, bytes)):
+        raise TypeError(f"{name} must be an iterable of strings")
+    try:
+        items = frozenset(value)  # type: ignore[arg-type]
+    except TypeError as exc:
+        raise TypeError(f"{name} must be an iterable of strings") from exc
+    if not all(isinstance(item, str) for item in items):
+        raise TypeError(f"{name} must contain only strings")
+    return items
 
 
 __all__ = [

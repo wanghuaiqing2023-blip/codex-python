@@ -23,6 +23,10 @@ def _new_uuid() -> uuid.UUID:
 class ThreadId:
     uuid: uuid.UUID
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.uuid, uuid.UUID):
+            raise TypeError("thread id uuid must be a UUID")
+
     @classmethod
     def new(cls) -> "ThreadId":
         return cls(_new_uuid())
@@ -33,6 +37,8 @@ class ThreadId:
 
     @classmethod
     def from_string(cls, value: str) -> "ThreadId":
+        if not isinstance(value, str):
+            raise TypeError("thread id must be a string")
         return cls(uuid.UUID(value))
 
     def to_json(self) -> str:
@@ -46,6 +52,10 @@ class ThreadId:
 class SessionId:
     uuid: uuid.UUID
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.uuid, uuid.UUID):
+            raise TypeError("session id uuid must be a UUID")
+
     @classmethod
     def new(cls) -> "SessionId":
         return cls(_new_uuid())
@@ -56,10 +66,14 @@ class SessionId:
 
     @classmethod
     def from_string(cls, value: str) -> "SessionId":
+        if not isinstance(value, str):
+            raise TypeError("session id must be a string")
         return cls(uuid.UUID(value))
 
     @classmethod
     def from_thread_id(cls, value: ThreadId) -> "SessionId":
+        if not isinstance(value, ThreadId):
+            raise TypeError("value must be a ThreadId")
         return cls(value.uuid)
 
     def to_thread_id(self) -> ThreadId:

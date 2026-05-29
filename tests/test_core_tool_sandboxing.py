@@ -1,14 +1,20 @@
 import unittest
+from pathlib import Path
 
 from pycodex.core import (
     ApprovalStore,
     ExecApprovalRequirement,
     HookToolName,
     PermissionRequestPayload,
+    SandboxAttempt,
     SandboxOverride,
+    ToolCtx,
+    ToolError,
     default_exec_approval_requirement,
     managed_network_for_sandbox_permissions,
     sandbox_override_for_first_attempt,
+    should_bypass_approval,
+    wants_no_sandbox_approval,
     with_cached_approval,
 )
 from pycodex.protocol import (
@@ -19,8 +25,11 @@ from pycodex.protocol import (
     FileSystemSandboxEntry,
     FileSystemSandboxPolicy,
     GranularApprovalConfig,
+    PermissionProfile,
     ReviewDecision,
     SandboxPermissions,
+    ToolName,
+    WindowsSandboxLevel,
 )
 
 
@@ -42,6 +51,16 @@ class ToolSandboxingTests(unittest.TestCase):
                 },
             ),
         )
+
+    def test_permission_request_payload_rejects_non_rust_shapes(self) -> None:
+        with self.assertRaises(TypeError):
+            PermissionRequestPayload("Bash", {})  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            PermissionRequestPayload(HookToolName.bash(), [])  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            PermissionRequestPayload.bash(123)  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            PermissionRequestPayload.bash("echo hi", 123)  # type: ignore[arg-type]
 
     def test_external_sandbox_skips_exec_approval_on_request(self) -> None:
         self.assertEqual(
@@ -160,10 +179,28 @@ class ToolSandboxingTests(unittest.TestCase):
             amendment,
         )
         self.assertEqual(
+            ExecApprovalRequirement.skip(proposed_execpolicy_amendment=amendment).proposed_execpolicy_amendment_ref(),
+            amendment,
+        )
+        self.assertEqual(
             ExecApprovalRequirement.needs_approval(proposed_execpolicy_amendment=amendment).proposed_amendment(),
             amendment,
         )
         self.assertIsNone(ExecApprovalRequirement.forbidden("no").proposed_amendment())
+
+    def test_exec_approval_requirement_rejects_invalid_variant_shapes(self) -> None:
+        with self.assertRaises(ValueError):
+            ExecApprovalRequirement("future")
+        with self.assertRaises(TypeError):
+            ExecApprovalRequirement.skip(bypass_sandbox=1)  # type: ignore[arg-type]
+        with self.assertRaises(ValueError):
+            ExecApprovalRequirement("skip", reason="why")
+        with self.assertRaises(ValueError):
+            ExecApprovalRequirement("needs_approval", bypass_sandbox=True)
+        with self.assertRaises(TypeError):
+            ExecApprovalRequirement("forbidden")
+        with self.assertRaises(TypeError):
+            ExecApprovalRequirement.skip(proposed_execpolicy_amendment=object())  # type: ignore[arg-type]
 
     def test_cached_approval_skips_fetch_only_when_all_keys_are_approved_for_session(self) -> None:
         store = ApprovalStore()
@@ -213,6 +250,92 @@ class ToolSandboxingTests(unittest.TestCase):
         )
         self.assertIsNone(
             managed_network_for_sandbox_permissions(network, SandboxPermissions.REQUIRE_ESCALATED)
+        )
+
+    def test_tool_ctx_matches_runtime_boundary_shape(self) -> None:
+        ctx = ToolCtx(
+            session=object(),
+            turn=object(),
+            call_id="call-1",
+            tool_name=ToolName.plain("shell_command"),
+        )
+
+        self.assertEqual(ctx.call_id, "call-1")
+        self.assertEqual(ctx.tool_name, ToolName.plain("shell_command"))
+        with self.assertRaises(TypeError):
+            ToolCtx(object(), object(), 1, ToolName.plain("x"))  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            ToolCtx(object(), object(), "call", "x")  # type: ignore[arg-type]
+
+    def test_tool_error_variants_reject_invalid_shapes(self) -> None:
+        self.assertEqual(ToolError.rejected("no").message, "no")
+        self.assertEqual(ToolError.codex({"kind": "fatal"}).error, {"kind": "fatal"})
+        with self.assertRaises(TypeError):
+            ToolError.rejected(123)  # type: ignore[arg-type]
+        with self.assertRaises(ValueError):
+            ToolError("rejected", message="no", error=object())
+        with self.assertRaises(ValueError):
+            ToolError("codex", message="no", error=object())
+        with self.assertRaises(ValueError):
+            ToolError("future")
+
+    def test_sandbox_attempt_preserves_runtime_options_without_fake_transform(self) -> None:
+        attempt = SandboxAttempt(
+            sandbox="linux-seccomp",
+            permissions=PermissionProfile.workspace_write(),
+            enforce_managed_network=True,
+            manager=object(),
+            sandbox_cwd="/repo",
+            codex_linux_sandbox_exe="/usr/bin/codex-linux-sandbox",
+            use_legacy_landlock=True,
+            windows_sandbox_level=WindowsSandboxLevel.DISABLED,
+            windows_sandbox_private_desktop=False,
+        )
+
+        self.assertEqual(attempt.sandbox_cwd, Path("/repo"))
+        self.assertEqual(attempt.codex_linux_sandbox_exe, Path("/usr/bin/codex-linux-sandbox"))
+        with self.assertRaises(NotImplementedError):
+            attempt.env_for(["echo", "hi"])
+        with self.assertRaises(TypeError):
+            SandboxAttempt(
+                sandbox="none",
+                permissions=object(),  # type: ignore[arg-type]
+                enforce_managed_network=False,
+                manager=object(),
+                sandbox_cwd=Path("/repo"),
+            )
+
+    def test_should_bypass_approval_matches_appovable_default(self) -> None:
+        self.assertTrue(should_bypass_approval(AskForApproval.ON_REQUEST, True))
+        self.assertTrue(should_bypass_approval(AskForApproval.NEVER, False))
+        self.assertFalse(should_bypass_approval(AskForApproval.ON_REQUEST, False))
+
+    def test_wants_no_sandbox_approval_matches_appovable_default(self) -> None:
+        self.assertTrue(wants_no_sandbox_approval(AskForApproval.ON_FAILURE))
+        self.assertTrue(wants_no_sandbox_approval(AskForApproval.UNLESS_TRUSTED))
+        self.assertFalse(wants_no_sandbox_approval(AskForApproval.NEVER))
+        self.assertFalse(wants_no_sandbox_approval(AskForApproval.ON_REQUEST))
+        self.assertTrue(
+            wants_no_sandbox_approval(
+                GranularApprovalConfig(
+                    sandbox_approval=True,
+                    rules=True,
+                    skill_approval=True,
+                    request_permissions=True,
+                    mcp_elicitations=True,
+                )
+            )
+        )
+        self.assertFalse(
+            wants_no_sandbox_approval(
+                GranularApprovalConfig(
+                    sandbox_approval=False,
+                    rules=True,
+                    skill_approval=True,
+                    request_permissions=True,
+                    mcp_elicitations=True,
+                )
+            )
         )
 
 

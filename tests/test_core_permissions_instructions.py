@@ -193,6 +193,44 @@ class CorePermissionsInstructionsTests(unittest.TestCase):
             '- ["a"]\n- ["b"]\n- ["aa"]\n- ["b", "a"]\n- ["b", "zz"]\n- ["a", "b", "c"]',
         )
 
+    def test_rejects_non_rust_input_shapes(self):
+        with self.assertRaises(TypeError):
+            PermissionsPromptConfig(
+                approval_policy="on-request",  # type: ignore[arg-type]
+                approvals_reviewer=ApprovalsReviewer.USER,
+            )
+        with self.assertRaises(TypeError):
+            PermissionsPromptConfig(
+                approval_policy=AskForApproval.ON_REQUEST,
+                approvals_reviewer="user",  # type: ignore[arg-type]
+            )
+        with self.assertRaises(TypeError):
+            PermissionsPromptConfig(
+                approval_policy=AskForApproval.ON_REQUEST,
+                approvals_reviewer=ApprovalsReviewer.USER,
+                exec_permission_approvals_enabled=1,  # type: ignore[arg-type]
+            )
+        with self.assertRaises(TypeError):
+            sandbox_text("workspace-write", NetworkAccess.RESTRICTED)  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            sandbox_text(SandboxMode.WORKSPACE_WRITE, "restricted")  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            writable_roots_text(("not-a-root",))  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            approval_text("on-request", ApprovalsReviewer.USER)  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            approval_text(AskForApproval.ON_REQUEST, "user")  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            approval_text(
+                AskForApproval.ON_REQUEST,
+                ApprovalsReviewer.USER,
+                exec_permission_approvals_enabled=1,  # type: ignore[arg-type]
+            )
+        with self.assertRaises(TypeError):
+            CommandPrefixPolicy.empty().add_prefix_rule(("git", "pull"), "allow")  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            CommandPrefixPolicy.empty().add_prefix_rule(("git", 1))  # type: ignore[list-item]
+
 
 if __name__ == "__main__":
     unittest.main()

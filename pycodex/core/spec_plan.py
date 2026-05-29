@@ -14,7 +14,23 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from pycodex.core.apply_patch import ApplyPatchHandler
+from pycodex.core.code_mode import (
+    CodeModeExecuteHandler,
+    CodeModeWaitHandler,
+    ToolNamespaceDescription,
+    augment_tool_spec_for_code_mode,
+    code_mode_name_for_tool_name,
+    code_mode_namespace_name,
+    collect_code_mode_exec_prompt_tool_definitions,
+    is_code_mode_nested_tool,
+    sort_code_mode_tool_definitions,
+)
 from pycodex.core.dynamic_tool_handler import DynamicToolHandler, DynamicToolRequestCallback
+from pycodex.core.hosted_spec import (
+    WebSearchToolOptions,
+    create_image_generation_tool,
+    create_web_search_tool,
+)
 from pycodex.core.mcp_tool_handler import McpHandler, McpToolRequestCallback
 from pycodex.core.request_plugin_install import (
     ListAvailablePluginsToInstallHandler,
@@ -29,7 +45,7 @@ from pycodex.core.tool_registry import ToolExposure, ToolRegistry, override_tool
 from pycodex.core.tool_router import ToolRouter
 from pycodex.core.tool_search_entry import default_namespace_description
 from pycodex.core.tool_search_handler import ToolSearchHandler
-from pycodex.protocol import ToolName
+from pycodex.protocol import ToolName, WebSearchConfig, WebSearchMode, WebSearchToolType
 
 JsonValue = Any
 
@@ -56,6 +72,17 @@ class PlannedTools:
 class ToolPlanOptions:
     search_tool_enabled: bool = True
     namespace_tools_enabled: bool = True
+    code_mode_enabled: bool = False
+    code_mode_only: bool = False
+    provider_web_search: bool = False
+    standalone_web_run_available: bool = False
+    web_search_mode: WebSearchMode | None = None
+    web_search_config: WebSearchConfig | None = None
+    web_search_tool_type: WebSearchToolType = WebSearchToolType.TEXT
+    provider_image_generation: bool = False
+    image_generation_enabled: bool = False
+    auth_uses_codex_backend: bool = False
+    model_supports_image_input: bool = False
 
 
 def build_tool_router_from_plan(
@@ -72,7 +99,9 @@ def build_model_visible_specs_and_registry(
 ) -> tuple[tuple[JsonValue, ...], ToolRegistry]:
     options = options or ToolPlanOptions()
     planned_tools = _copy_plan(planned_tools)
+    add_hosted_model_tools(planned_tools, options)
     append_tool_search_executor(planned_tools, options)
+    prepend_code_mode_executors(planned_tools, options)
 
     specs: list[JsonValue] = []
     seen_tool_names: set[ToolName] = set()
@@ -83,10 +112,14 @@ def build_model_visible_specs_and_registry(
         seen_tool_names.add(tool_name)
 
         exposure = _runtime_exposure(runtime)
-        if exposure.is_direct():
-            specs.append(spec_for_model_request(exposure, _runtime_spec(runtime)))
+        if exposure.is_direct() and not is_hidden_by_code_mode_only(tool_name, exposure, options):
+            specs.append(spec_for_model_request(exposure, _runtime_spec(runtime), options))
 
-    specs.extend(_spec_to_mapping(spec) for spec in planned_tools.hosted_specs)
+    specs.extend(
+        _spec_to_mapping(spec)
+        for spec in planned_tools.hosted_specs
+        if not is_hidden_by_code_mode_only(ToolName.plain(_spec_name(spec)), ToolExposure.DIRECT, options)
+    )
     model_visible_specs = tuple(
         spec
         for spec in merge_into_namespaces(specs)
@@ -108,6 +141,69 @@ def append_tool_search_executor(planned_tools: PlannedTools, options: ToolPlanOp
     search_infos = [info for info in search_infos if info is not None]
     if search_infos:
         planned_tools.add(ToolSearchHandler(search_infos))
+
+
+def hosted_model_tool_specs(options: ToolPlanOptions | None = None) -> tuple[JsonValue, ...]:
+    options = options or ToolPlanOptions()
+    specs: list[JsonValue] = []
+    web_search_mode = (
+        options.web_search_mode
+        if options.provider_web_search and not options.standalone_web_run_available
+        else None
+    )
+    web_search_config = options.web_search_config if options.provider_web_search else None
+    web_search_tool = create_web_search_tool(
+        WebSearchToolOptions(
+            web_search_mode=web_search_mode,
+            web_search_config=web_search_config,
+            web_search_tool_type=options.web_search_tool_type,
+        )
+    )
+    if web_search_tool is not None:
+        specs.append(web_search_tool)
+    if image_generation_tool_enabled(options):
+        specs.append(create_image_generation_tool("png"))
+    return tuple(specs)
+
+
+def add_hosted_model_tools(planned_tools: PlannedTools, options: ToolPlanOptions | None = None) -> None:
+    for spec in hosted_model_tool_specs(options):
+        planned_tools.add_hosted_spec(spec)
+
+
+def image_generation_tool_enabled(options: ToolPlanOptions | None = None) -> bool:
+    options = options or ToolPlanOptions()
+    return (
+        options.auth_uses_codex_backend
+        and options.provider_image_generation
+        and options.image_generation_enabled
+        and options.model_supports_image_input
+    )
+
+
+def prepend_code_mode_executors(planned_tools: PlannedTools, options: ToolPlanOptions | None = None) -> None:
+    options = options or ToolPlanOptions()
+    if not options.code_mode_enabled:
+        return
+
+    deferred_tools_available = options.search_tool_enabled and any(
+        _runtime_exposure(runtime) is ToolExposure.DEFERRED for runtime in planned_tools.runtimes
+    )
+    namespace_descriptions = code_mode_namespace_descriptions(planned_tools.runtimes)
+    planned_tools.runtimes[0:0] = [
+        CodeModeExecuteHandler(
+            nested_tool_specs=tuple(
+                _runtime_spec(runtime)
+                for runtime in planned_tools.runtimes
+                if _runtime_exposure(runtime)
+                not in {ToolExposure.DIRECT_MODEL_ONLY, ToolExposure.HIDDEN}
+            ),
+            namespace_descriptions=namespace_descriptions,
+            code_mode_only=options.code_mode_only,
+            deferred_tools_available=deferred_tools_available,
+        ),
+        CodeModeWaitHandler(),
+    ]
 
 
 def add_dynamic_tools(
@@ -189,8 +285,18 @@ def add_discoverable_install_tools(
     )
 
 
-def spec_for_model_request(_exposure: ToolExposure, spec: JsonValue) -> JsonValue:
-    return _spec_to_mapping(spec)
+def spec_for_model_request(
+    exposure: ToolExposure,
+    spec: JsonValue,
+    options: ToolPlanOptions | None = None,
+) -> JsonValue:
+    options = options or ToolPlanOptions()
+    data = _spec_to_mapping(spec)
+    if options.code_mode_enabled and exposure is not ToolExposure.DIRECT_MODEL_ONLY:
+        spec_name = _spec_name(data)
+        if is_code_mode_nested_tool(spec_name):
+            return augment_tool_spec_for_code_mode(data)
+    return data
 
 
 def merge_into_namespaces(specs: Iterable[JsonValue]) -> tuple[JsonValue, ...]:
@@ -232,6 +338,49 @@ def merge_into_namespaces(specs: Iterable[JsonValue]) -> tuple[JsonValue, ...]:
     return tuple(merged_specs)
 
 
+def is_hidden_by_code_mode_only(
+    tool_name: ToolName,
+    exposure: ToolExposure | str,
+    options: ToolPlanOptions | None = None,
+) -> bool:
+    options = options or ToolPlanOptions()
+    return (
+        options.code_mode_enabled
+        and options.code_mode_only
+        and ToolExposure.from_value(exposure) is not ToolExposure.DIRECT_MODEL_ONLY
+        and is_code_mode_nested_tool(code_mode_name_for_tool_name(tool_name))
+    )
+
+
+def code_mode_namespace_descriptions(
+    runtimes: Iterable[Any],
+) -> dict[str, ToolNamespaceDescription]:
+    descriptions: dict[str, ToolNamespaceDescription] = {}
+    for runtime in runtimes:
+        exposure = _runtime_exposure(runtime)
+        if exposure in {ToolExposure.DEFERRED, ToolExposure.DIRECT_MODEL_ONLY, ToolExposure.HIDDEN}:
+            continue
+        for definition in collect_code_mode_exec_prompt_tool_definitions((_runtime_spec(runtime),)):
+            namespace = definition.tool_name.namespace
+            if namespace is None:
+                continue
+            description = _namespace_description_from_spec(_runtime_spec(runtime), namespace)
+            existing = descriptions.get(namespace)
+            if existing is None:
+                descriptions[namespace] = ToolNamespaceDescription(namespace, description)
+            elif existing.description.strip() == "" and description.strip() != "":
+                descriptions[namespace] = ToolNamespaceDescription(existing.name, description)
+    return descriptions
+
+
+def code_mode_tool_sort_key(
+    definition: Any,
+    namespace_descriptions: Mapping[str, ToolNamespaceDescription | Mapping[str, str]] | None = None,
+) -> tuple[int, str, str, str]:
+    namespace = code_mode_namespace_name(definition, namespace_descriptions)
+    return (0 if namespace is None else 1, namespace or "", definition.tool_name.name, definition.name)
+
+
 def _copy_plan(planned_tools: PlannedTools) -> PlannedTools:
     return PlannedTools(
         runtimes=list(planned_tools.runtimes),
@@ -241,11 +390,10 @@ def _copy_plan(planned_tools: PlannedTools) -> PlannedTools:
 
 def _runtime_tool_name(handler: Any) -> ToolName:
     value = _call_or_get(handler, "tool_name", None)
-    if isinstance(value, ToolName):
-        return value
-    if isinstance(value, str):
-        return ToolName.plain(value)
-    raise TypeError("planned tool must expose a ToolName via tool_name()")
+    try:
+        return ToolName.from_value(value)
+    except TypeError as err:
+        raise TypeError("planned tool must expose a ToolName via tool_name()") from err
 
 
 def _runtime_spec(handler: Any) -> JsonValue:
@@ -275,6 +423,18 @@ def _spec_type(spec: JsonValue) -> str | None:
     return _spec_to_mapping(spec).get("type")
 
 
+def _spec_name(spec: JsonValue) -> str:
+    return str(_spec_to_mapping(spec).get("name", ""))
+
+
+def _namespace_description_from_spec(spec: JsonValue, namespace: str) -> str:
+    data = _spec_to_mapping(spec)
+    if data.get("type") == "namespace" and str(data.get("name", "")) == namespace:
+        description = data.get("description", "")
+        return description if isinstance(description, str) else ""
+    return ""
+
+
 def _call_or_get(handler: Any, name: str, default: Any) -> Any:
     value = getattr(handler, name, default)
     if callable(value):
@@ -288,10 +448,17 @@ __all__ = [
     "add_discoverable_install_tools",
     "add_apply_patch_tool",
     "add_dynamic_tools",
+    "add_hosted_model_tools",
     "add_mcp_tools",
     "append_tool_search_executor",
     "build_model_visible_specs_and_registry",
     "build_tool_router_from_plan",
+    "code_mode_namespace_descriptions",
+    "code_mode_tool_sort_key",
+    "hosted_model_tool_specs",
+    "image_generation_tool_enabled",
+    "is_hidden_by_code_mode_only",
     "merge_into_namespaces",
+    "prepend_code_mode_executors",
     "spec_for_model_request",
 ]

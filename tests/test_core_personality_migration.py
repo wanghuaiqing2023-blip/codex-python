@@ -115,9 +115,10 @@ class PersonalityMigrationTests(unittest.TestCase):
             self.assertEqual(read_config_toml(codex_home)["personality"], "friendly")
             self.assertTrue((codex_home / PERSONALITY_MIGRATION_FILENAME).exists())
 
-    def test_skips_when_selected_profile_has_personality(self) -> None:
+    def test_profile_personality_no_longer_blocks_current_upstream_migration(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             codex_home = Path(tmpdir)
+            write_session_with_user_event(codex_home)
             config = {
                 "profile": "work",
                 "profiles": {"work": {"personality": "friendly"}},
@@ -125,8 +126,8 @@ class PersonalityMigrationTests(unittest.TestCase):
 
             status = maybe_migrate_personality(codex_home, config)
 
-            self.assertEqual(status, PersonalityMigrationStatus.SKIPPED_EXPLICIT_PERSONALITY)
-            self.assertFalse((codex_home / "config.toml").exists())
+            self.assertEqual(status, PersonalityMigrationStatus.APPLIED)
+            self.assertEqual(read_config_toml(codex_home)["personality"], "pragmatic")
             self.assertTrue((codex_home / PERSONALITY_MIGRATION_FILENAME).exists())
 
     def test_skips_when_no_sessions(self) -> None:
@@ -159,6 +160,21 @@ class PersonalityMigrationTests(unittest.TestCase):
         self.assertEqual(config_profile(config), {"personality": "friendly"})
         self.assertEqual(config_profile(config, "override"), {"model_provider": "anthropic"})
         self.assertEqual(config_profile(config, "missing"), {})
+
+
+    def test_personality_migration_rejects_implicit_coercions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            with self.assertRaises(TypeError):
+                maybe_migrate_personality(codex_home, [])
+            with self.assertRaises(TypeError):
+                maybe_migrate_personality(codex_home, {"model_provider": 123})
+            with self.assertRaises(TypeError):
+                has_recorded_sessions(codex_home, 123)
+            with self.assertRaises(TypeError):
+                set_top_level_toml_string(codex_home / "config.toml", 123, "value")
+            with self.assertRaises(TypeError):
+                set_top_level_toml_string(codex_home / "config.toml", "key", 123)
 
     def test_set_top_level_toml_string_inserts_before_tables(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

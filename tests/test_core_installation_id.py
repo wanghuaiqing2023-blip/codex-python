@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 
 from pycodex.core.installation_id import INSTALLATION_ID_FILENAME, resolve_installation_id
+from pycodex.core.installation_id import _parse_uuid
 
 
 class InstallationIdTests(unittest.TestCase):
@@ -52,6 +53,12 @@ class InstallationIdTests(unittest.TestCase):
 
             self.assertEqual(str(uuid.UUID(resolved)), resolved)
             self.assertEqual(path.read_text(encoding="utf-8"), resolved)
+
+    def test_installation_id_rejects_non_rust_shapes(self) -> None:
+        with self.assertRaisesRegex(TypeError, "codex_home must be a string or Path"):
+            resolve_installation_id(123)  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "value must be a string"):
+            _parse_uuid(123)  # type: ignore[arg-type]
 
     @unittest.skipIf(sys.platform == "win32", "Unix mode correction is Unix-specific upstream")
     def test_resolve_installation_id_repairs_file_permissions(self) -> None:

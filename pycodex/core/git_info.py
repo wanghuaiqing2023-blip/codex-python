@@ -19,14 +19,25 @@ class CommitLogEntry:
     timestamp: int
     subject: str
 
+    def __post_init__(self) -> None:
+        _ensure_str(self.sha, "sha")
+        _ensure_i64(self.timestamp, "timestamp")
+        _ensure_str(self.subject, "subject")
+
 
 @dataclass(frozen=True)
 class GitDiffToRemote:
     sha: GitSha
     diff: str
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.sha, GitSha):
+            raise TypeError("sha must be a GitSha")
+        _ensure_str(self.diff, "diff")
+
 
 def get_git_repo_root(base_dir: Path | str) -> Path | None:
+    _ensure_pathlike(base_dir, "base_dir")
     base_path = Path(base_dir)
     base = base_path if base_path.is_dir() else base_path.parent
     current = base
@@ -39,6 +50,7 @@ def get_git_repo_root(base_dir: Path | str) -> Path | None:
 
 
 def collect_git_info(cwd: Path | str) -> GitInfo | None:
+    _ensure_pathlike(cwd, "cwd")
     cwd = Path(cwd)
     repo_check = run_git_command_with_timeout(("rev-parse", "--git-dir"), cwd)
     if repo_check is None or repo_check.returncode != 0:
@@ -56,6 +68,7 @@ def collect_git_info(cwd: Path | str) -> GitInfo | None:
 
 
 def get_git_remote_urls(cwd: Path | str) -> dict[str, str] | None:
+    _ensure_pathlike(cwd, "cwd")
     cwd = Path(cwd)
     repo_check = run_git_command_with_timeout(("rev-parse", "--git-dir"), cwd)
     if repo_check is None or repo_check.returncode != 0:
@@ -64,6 +77,7 @@ def get_git_remote_urls(cwd: Path | str) -> dict[str, str] | None:
 
 
 def get_git_remote_urls_assume_git_repo(cwd: Path | str) -> dict[str, str] | None:
+    _ensure_pathlike(cwd, "cwd")
     output = run_git_command_with_timeout(("remote", "-v"), Path(cwd))
     if output is None or output.returncode != 0:
         return None
@@ -71,6 +85,7 @@ def get_git_remote_urls_assume_git_repo(cwd: Path | str) -> dict[str, str] | Non
 
 
 def get_head_commit_hash(cwd: Path | str) -> GitSha | None:
+    _ensure_pathlike(cwd, "cwd")
     output = run_git_command_with_timeout(("rev-parse", "HEAD"), Path(cwd))
     if output is None or output.returncode != 0:
         return None
@@ -79,6 +94,7 @@ def get_head_commit_hash(cwd: Path | str) -> GitSha | None:
 
 
 def canonicalize_git_remote_url(url: str) -> str | None:
+    _ensure_str(url, "url")
     value = _trim_git_suffix(url.strip().rstrip("/"))
     if not value:
         return None
@@ -96,6 +112,7 @@ def canonicalize_git_remote_url(url: str) -> str | None:
 
 
 def get_has_changes(cwd: Path | str) -> bool | None:
+    _ensure_pathlike(cwd, "cwd")
     output = run_git_command_with_timeout(("status", "--porcelain"), Path(cwd))
     if output is None or output.returncode != 0:
         return None
@@ -103,6 +120,8 @@ def get_has_changes(cwd: Path | str) -> bool | None:
 
 
 def recent_commits(cwd: Path | str, limit: int) -> list[CommitLogEntry]:
+    _ensure_pathlike(cwd, "cwd")
+    _ensure_usize(limit, "limit")
     cwd = Path(cwd)
     repo_check = run_git_command_with_timeout(("rev-parse", "--git-dir"), cwd)
     if repo_check is None or repo_check.returncode != 0:
@@ -130,6 +149,7 @@ def recent_commits(cwd: Path | str, limit: int) -> list[CommitLogEntry]:
 
 
 def git_diff_to_remote(cwd: Path | str) -> GitDiffToRemote | None:
+    _ensure_pathlike(cwd, "cwd")
     cwd = Path(cwd)
     if get_git_repo_root(cwd) is None:
         return None
@@ -149,6 +169,7 @@ def git_diff_to_remote(cwd: Path | str) -> GitDiffToRemote | None:
 
 
 def default_branch_name(cwd: Path | str) -> str | None:
+    _ensure_pathlike(cwd, "cwd")
     cwd = Path(cwd)
     for remote in _get_git_remotes(cwd) or []:
         symref = run_git_command_with_timeout(("symbolic-ref", "--quiet", f"refs/remotes/{remote}/HEAD"), cwd)
@@ -168,6 +189,7 @@ def default_branch_name(cwd: Path | str) -> str | None:
 
 
 def local_git_branches(cwd: Path | str) -> list[str]:
+    _ensure_pathlike(cwd, "cwd")
     cwd = Path(cwd)
     output = run_git_command_with_timeout(("branch", "--format=%(refname:short)"), cwd)
     if output is None or output.returncode != 0:
@@ -185,6 +207,7 @@ def local_git_branches(cwd: Path | str) -> list[str]:
 
 
 def current_branch_name(cwd: Path | str) -> str | None:
+    _ensure_pathlike(cwd, "cwd")
     output = run_git_command_with_timeout(("branch", "--show-current"), Path(cwd))
     if output is None or output.returncode != 0:
         return None
@@ -193,6 +216,7 @@ def current_branch_name(cwd: Path | str) -> str | None:
 
 
 def resolve_root_git_project_for_trust(cwd: Path | str) -> Path | None:
+    _ensure_pathlike(cwd, "cwd")
     repo_root = get_git_repo_root(cwd)
     if repo_root is None:
         return None
@@ -216,13 +240,20 @@ def resolve_root_git_project_for_trust(cwd: Path | str) -> Path | None:
 
 
 def run_git_command_with_timeout(args: Iterable[str], cwd: Path) -> subprocess.CompletedProcess[bytes] | None:
+    if isinstance(args, (str, bytes)):
+        raise TypeError("args must be an iterable of strings")
+    args_list = list(args)
+    if not all(isinstance(arg, str) for arg in args_list):
+        raise TypeError("args must contain only strings")
+    if not isinstance(cwd, Path):
+        raise TypeError("cwd must be a Path")
     command = [
         "git",
         "-c",
         f"core.hooksPath={os.devnull}",
         "-c",
         "core.fsmonitor=false",
-        *list(args),
+        *args_list,
     ]
     env = os.environ.copy()
     env["GIT_OPTIONAL_LOCKS"] = "0"
@@ -241,6 +272,7 @@ def run_git_command_with_timeout(args: Iterable[str], cwd: Path) -> subprocess.C
 
 
 def parse_git_remote_urls(stdout: str) -> dict[str, str] | None:
+    _ensure_str(stdout, "stdout")
     remotes: dict[str, str] = {}
     for line in stdout.splitlines():
         if not line.endswith(" (fetch)"):
@@ -259,6 +291,8 @@ def parse_git_remote_urls(stdout: str) -> dict[str, str] | None:
 
 
 def _canonicalize_git_url_like_remote(scheme: str, rest: str) -> str | None:
+    _ensure_str(scheme, "scheme")
+    _ensure_str(rest, "rest")
     default_port = {"git": "9418", "http": "80", "https": "443", "ssh": "22"}.get(scheme)
     if default_port is None:
         return None
@@ -270,6 +304,7 @@ def _canonicalize_git_url_like_remote(scheme: str, rest: str) -> str | None:
 
 
 def _parse_scp_like_remote(remote: str) -> tuple[str, str] | None:
+    _ensure_str(remote, "remote")
     slash = remote.find("/")
     colon = remote.find(":")
     if slash != -1 and (colon == -1 or slash < colon):
@@ -283,6 +318,10 @@ def _parse_scp_like_remote(remote: str) -> tuple[str, str] | None:
 
 
 def _canonicalize_git_remote_host_path(host_part: str, path: str, default_port: str | None = None) -> str | None:
+    _ensure_str(host_part, "host_part")
+    _ensure_str(path, "path")
+    if default_port is not None:
+        _ensure_str(default_port, "default_port")
     host = _normalize_remote_host(host_part.rsplit("@", 1)[-1].strip().rstrip("/"), default_port)
     if not host:
         return None
@@ -300,6 +339,9 @@ def _canonicalize_git_remote_host_path(host_part: str, path: str, default_port: 
 
 
 def _normalize_remote_host(host: str, default_port: str | None) -> str:
+    _ensure_str(host, "host")
+    if default_port is not None:
+        _ensure_str(default_port, "default_port")
     host = host.lower()
     if default_port is not None and ":" in host:
         host_without_port, port = host.rsplit(":", 1)
@@ -309,6 +351,7 @@ def _normalize_remote_host(host: str, default_port: str | None) -> str:
 
 
 def _trim_git_suffix(value: str) -> str:
+    _ensure_str(value, "value")
     return value.removesuffix(".git")
 
 
@@ -434,10 +477,35 @@ def _branch_name(value: str) -> str | None:
 
 
 def _split_commit_line(line: str) -> tuple[str, str, str]:
+    _ensure_str(line, "line")
     parts = line.split("\x1f", 2)
     while len(parts) < 3:
         parts.append("")
     return parts[0].strip(), parts[1].strip(), parts[2].strip()
+
+
+def _ensure_pathlike(value: object, name: str) -> None:
+    if not isinstance(value, (str, Path)):
+        raise TypeError(f"{name} must be a path-like value")
+
+
+def _ensure_str(value: object, name: str) -> None:
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a string")
+
+
+def _ensure_i64(value: object, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer")
+    if value < -(2**63) or value > 2**63 - 1:
+        raise ValueError(f"{name} must fit in a signed 64-bit integer")
+
+
+def _ensure_usize(value: object, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer")
+    if value < 0:
+        raise ValueError(f"{name} must be non-negative")
 
 
 __all__ = [

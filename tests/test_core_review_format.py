@@ -129,6 +129,20 @@ class CoreReviewFormatTests(unittest.TestCase):
         )
         self.assertEqual(render_review_output_text(ReviewOutputEvent()), REVIEW_FALLBACK_MESSAGE)
 
+    def test_rejects_non_rust_input_shapes(self) -> None:
+        with self.assertRaises(TypeError):
+            format_location(object())  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            format_review_findings_block("not-findings")  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            format_review_findings_block((object(),))  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            format_review_findings_block((self.finding("Bug"),), selection="x")  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            format_review_findings_block((self.finding("Bug"),), selection=(1,))  # type: ignore[list-item]
+        with self.assertRaises(TypeError):
+            render_review_output_text(object())  # type: ignore[arg-type]
+
 
 if __name__ == "__main__":
     unittest.main()

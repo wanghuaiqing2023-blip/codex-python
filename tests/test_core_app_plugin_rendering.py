@@ -79,7 +79,7 @@ class AppPluginRenderingTests(unittest.TestCase):
 
     def test_render_explicit_plugin_instructions_lists_skills_servers_and_apps(self) -> None:
         rendered = render_explicit_plugin_instructions(
-            {"display_name": "github", "has_skills": True},
+            PluginCapabilitySummary(config_name="github@test", display_name="github", has_skills=True),
             ("github-mcp", "issues"),
             ("pull-requests",),
         )
@@ -92,6 +92,26 @@ class AppPluginRenderingTests(unittest.TestCase):
             "- Apps from this plugin available in this session: `pull-requests`.\n"
             "Use these plugin-associated capabilities to help solve the task.",
         )
+
+    def test_rejects_non_rust_input_shapes(self) -> None:
+        with self.assertRaises(TypeError):
+            render_apps_section((object(),))
+        with self.assertRaises(TypeError):
+            render_plugins_section(({"display_name": "sample"},))  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            render_explicit_plugin_instructions({"display_name": "sample"}, (), ())  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            render_explicit_plugin_instructions(
+                PluginCapabilitySummary("sample", "sample"),
+                (1,),  # type: ignore[list-item]
+                (),
+            )
+        with self.assertRaises(TypeError):
+            render_explicit_plugin_instructions(
+                PluginCapabilitySummary("sample", "sample"),
+                (),
+                (1,),  # type: ignore[list-item]
+            )
 
 
 if __name__ == "__main__":

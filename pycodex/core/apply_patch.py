@@ -68,6 +68,15 @@ class ApplyPatchParseError(Exception):
     message: str
     line_number: int | None = None
 
+    def __post_init__(self) -> None:
+        if self.kind not in {"invalid_patch", "invalid_hunk"}:
+            raise ValueError("unknown apply_patch parse error kind")
+        _ensure_str(self.message, "message")
+        if self.kind == "invalid_patch" and self.line_number is not None:
+            raise ValueError("invalid_patch errors must not have a line_number")
+        if self.kind == "invalid_hunk":
+            _ensure_positive_int(self.line_number, "line_number")
+
     @classmethod
     def invalid_patch(cls, message: str) -> "ApplyPatchParseError":
         return cls(kind="invalid_patch", message=message)
@@ -121,6 +130,14 @@ class UpdateFileChunk:
     new_lines: tuple[str, ...] = ()
     is_end_of_file: bool = False
 
+    def __post_init__(self) -> None:
+        if self.change_context is not None:
+            _ensure_str(self.change_context, "change_context")
+        object.__setattr__(self, "old_lines", _ensure_str_tuple(self.old_lines, "old_lines"))
+        object.__setattr__(self, "new_lines", _ensure_str_tuple(self.new_lines, "new_lines"))
+        if not isinstance(self.is_end_of_file, bool):
+            raise TypeError("is_end_of_file must be a bool")
+
 
 @dataclass(frozen=True)
 class Hunk:
@@ -130,12 +147,39 @@ class Hunk:
     move_path: Path | None = None
     chunks: tuple[UpdateFileChunk, ...] = ()
 
+    def __post_init__(self) -> None:
+        if self.type not in {"add", "delete", "update"}:
+            raise ValueError("unknown hunk type")
+        if not isinstance(self.path, Path):
+            raise TypeError("path must be a Path")
+        object.__setattr__(self, "chunks", tuple(self.chunks))
+        if not all(isinstance(chunk, UpdateFileChunk) for chunk in self.chunks):
+            raise TypeError("chunks must contain only UpdateFileChunk values")
+        if self.type == "add":
+            _ensure_str(self.contents, "contents")
+            _ensure_absent(self.move_path, "move_path")
+            if self.chunks:
+                raise ValueError("add hunks must not have chunks")
+            return
+        if self.type == "delete":
+            _ensure_absent(self.contents, "contents")
+            _ensure_absent(self.move_path, "move_path")
+            if self.chunks:
+                raise ValueError("delete hunks must not have chunks")
+            return
+        _ensure_absent(self.contents, "contents")
+        if self.move_path is not None and not isinstance(self.move_path, Path):
+            raise TypeError("move_path must be a Path")
+
     @classmethod
     def add_file(cls, path: str | Path, contents: str) -> "Hunk":
+        _ensure_pathlike(path, "path")
+        _ensure_str(contents, "contents")
         return cls(type="add", path=Path(path), contents=contents)
 
     @classmethod
     def delete_file(cls, path: str | Path) -> "Hunk":
+        _ensure_pathlike(path, "path")
         return cls(type="delete", path=Path(path))
 
     @classmethod
@@ -146,6 +190,9 @@ class Hunk:
         move_path: str | Path | None = None,
         chunks: tuple[UpdateFileChunk, ...] | list[UpdateFileChunk] = (),
     ) -> "Hunk":
+        _ensure_pathlike(path, "path")
+        if move_path is not None:
+            _ensure_pathlike(move_path, "move_path")
         return cls(
             type="update",
             path=Path(path),
@@ -157,6 +204,7 @@ class Hunk:
         return self.move_path if self.type == "update" and self.move_path is not None else self.path
 
     def resolve_path(self, cwd: str | Path) -> Path:
+        _ensure_pathlike(cwd, "cwd")
         path = self.path
         if path.is_absolute():
             return path
@@ -170,12 +218,38 @@ class ApplyPatchArgs:
     workdir: str | None = None
     environment_id: str | None = None
 
+    def __post_init__(self) -> None:
+        _ensure_str(self.patch, "patch")
+        object.__setattr__(self, "hunks", tuple(self.hunks))
+        if not all(isinstance(hunk, Hunk) for hunk in self.hunks):
+            raise TypeError("hunks must contain only Hunk values")
+        if self.workdir is not None:
+            _ensure_str(self.workdir, "workdir")
+        if self.environment_id is not None:
+            _ensure_str(self.environment_id, "environment_id")
+
 
 @dataclass(frozen=True)
 class MaybeApplyPatch:
     type: str
     body: ApplyPatchArgs | None = None
     error: ApplyPatchParseError | str | None = None
+
+    def __post_init__(self) -> None:
+        if self.type not in {"body", "patch_parse_error", "shell_parse_error", "not_apply_patch"}:
+            raise ValueError("unknown maybe apply_patch type")
+        if self.type == "body":
+            if not isinstance(self.body, ApplyPatchArgs):
+                raise TypeError("body must be an ApplyPatchArgs")
+            _ensure_absent(self.error, "error")
+            return
+        _ensure_absent(self.body, "body")
+        if self.type == "patch_parse_error" and not isinstance(self.error, ApplyPatchParseError):
+            raise TypeError("error must be an ApplyPatchParseError")
+        if self.type == "shell_parse_error":
+            _ensure_str(self.error, "error")
+        if self.type == "not_apply_patch":
+            _ensure_absent(self.error, "error")
 
     @classmethod
     def body_result(cls, body: ApplyPatchArgs) -> "MaybeApplyPatch":
@@ -462,6 +536,41 @@ class ApplyPatchFileChange:
     old_content: str | None = None
     overwritten_move_content: str | None = None
 
+    def __post_init__(self) -> None:
+        if self.type not in {"add", "delete", "update"}:
+            raise ValueError("unknown apply_patch file change type")
+        if self.type == "add":
+            _ensure_str(self.content, "content")
+            _ensure_absent(self.unified_diff, "unified_diff")
+            _ensure_absent(self.move_path, "move_path")
+            _ensure_absent(self.old_content, "old_content")
+            _ensure_absent(self.overwritten_move_content, "overwritten_move_content")
+            if self.new_content is not None:
+                _ensure_str(self.new_content, "new_content")
+            if self.overwritten_content is not None:
+                _ensure_str(self.overwritten_content, "overwritten_content")
+            return
+        if self.type == "delete":
+            _ensure_str(self.content, "content")
+            _ensure_absent(self.unified_diff, "unified_diff")
+            _ensure_absent(self.move_path, "move_path")
+            _ensure_absent(self.new_content, "new_content")
+            _ensure_absent(self.overwritten_content, "overwritten_content")
+            _ensure_absent(self.old_content, "old_content")
+            _ensure_absent(self.overwritten_move_content, "overwritten_move_content")
+            return
+        _ensure_absent(self.content, "content")
+        _ensure_str(self.unified_diff, "unified_diff")
+        if self.move_path is not None and not isinstance(self.move_path, Path):
+            raise TypeError("move_path must be a Path")
+        if self.new_content is not None:
+            _ensure_str(self.new_content, "new_content")
+        if self.old_content is not None:
+            _ensure_str(self.old_content, "old_content")
+        if self.overwritten_move_content is not None:
+            _ensure_str(self.overwritten_move_content, "overwritten_move_content")
+        _ensure_absent(self.overwritten_content, "overwritten_content")
+
     @classmethod
     def add(
         cls,
@@ -470,6 +579,7 @@ class ApplyPatchFileChange:
         new_content: str | None = None,
         overwritten_content: str | None = None,
     ) -> "ApplyPatchFileChange":
+        _ensure_str(content, "content")
         return cls(
             type="add",
             content=content,
@@ -479,6 +589,7 @@ class ApplyPatchFileChange:
 
     @classmethod
     def delete(cls, content: str) -> "ApplyPatchFileChange":
+        _ensure_str(content, "content")
         return cls(type="delete", content=content)
 
     @classmethod
@@ -491,6 +602,9 @@ class ApplyPatchFileChange:
         old_content: str | None = None,
         overwritten_move_content: str | None = None,
     ) -> "ApplyPatchFileChange":
+        _ensure_str(unified_diff, "unified_diff")
+        if move_path is not None:
+            _ensure_pathlike(move_path, "move_path")
         return cls(
             type="update",
             unified_diff=unified_diff,
@@ -502,7 +616,9 @@ class ApplyPatchFileChange:
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, JsonValue]) -> "ApplyPatchFileChange":
-        change_type = str(value["type"])
+        if not isinstance(value, Mapping):
+            raise TypeError("value must be a mapping")
+        change_type = _required_str(value, "type")
         if change_type == "add":
             return cls.add(
                 _required_str(value, "content"),
@@ -529,12 +645,31 @@ class ApplyPatchAction:
     cwd: Path | None = None
     patch: str = ""
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.changes, dict):
+            raise TypeError("changes must be a dict")
+        normalized: dict[Path, ApplyPatchFileChange] = {}
+        for path, change in self.changes.items():
+            if not isinstance(path, Path):
+                raise TypeError("changes keys must be Paths")
+            if not isinstance(change, ApplyPatchFileChange):
+                raise TypeError("changes values must be ApplyPatchFileChange values")
+            normalized[path] = change
+        object.__setattr__(self, "changes", normalized)
+        if self.cwd is not None and not isinstance(self.cwd, Path):
+            raise TypeError("cwd must be a Path")
+        _ensure_str(self.patch, "patch")
+
     @classmethod
     def new_add_for_test(cls, path: str | Path, content: str) -> "ApplyPatchAction":
+        _ensure_pathlike(path, "path")
+        _ensure_str(content, "content")
         return cls({Path(path): ApplyPatchFileChange.add(content)})
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, JsonValue]) -> "ApplyPatchAction":
+        if not isinstance(value, Mapping):
+            raise TypeError("value must be a mapping")
         raw_changes = value.get("changes")
         if not isinstance(raw_changes, Mapping):
             raise TypeError("changes must be a mapping")
@@ -542,7 +677,7 @@ class ApplyPatchAction:
         patch = value.get("patch")
         return cls(
             changes={
-                Path(str(path)): _coerce_apply_patch_file_change(change)
+                _path_from_mapping_key(path): _coerce_apply_patch_file_change(change)
                 for path, change in raw_changes.items()
             },
             cwd=Path(cwd) if isinstance(cwd, str) else None,
@@ -555,6 +690,11 @@ class ApplyPatchFileUpdate:
     unified_diff: str
     original_content: str
     content: str
+
+    def __post_init__(self) -> None:
+        _ensure_str(self.unified_diff, "unified_diff")
+        _ensure_str(self.original_content, "original_content")
+        _ensure_str(self.content, "content")
 
 
 @dataclass(frozen=True)
@@ -792,6 +932,8 @@ def unified_diff_from_chunks_with_context(
 
 
 def create_apply_patch_freeform_tool(include_environment_id: bool) -> ToolSpec:
+    if not isinstance(include_environment_id, bool):
+        raise TypeError("include_environment_id must be a bool")
     definition = APPLY_PATCH_LARK_GRAMMAR
     if include_environment_id:
         definition = definition.replace(
@@ -1326,6 +1468,12 @@ def _coerce_apply_patch_file_change(value: ApplyPatchFileChange | Mapping[str, J
     return ApplyPatchFileChange.from_mapping(value)
 
 
+def _path_from_mapping_key(value: object) -> Path:
+    if not isinstance(value, str):
+        raise TypeError("changes keys must be strings")
+    return Path(value)
+
+
 def _required_str(value: Mapping[str, JsonValue], key: str) -> str:
     raw = value.get(key)
     if not isinstance(raw, str):
@@ -1340,6 +1488,40 @@ def _optional_str(value: Mapping[str, JsonValue], key: str) -> str | None:
     if not isinstance(raw, str):
         raise TypeError(f"{key} must be a string")
     return raw
+
+
+def _ensure_str(value: object, name: str) -> None:
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a string")
+
+
+def _ensure_pathlike(value: object, name: str) -> None:
+    if not isinstance(value, (str, Path)):
+        raise TypeError(f"{name} must be path-like")
+
+
+def _ensure_absent(value: object, name: str) -> None:
+    if value is not None:
+        raise ValueError(f"{name} is not valid for this variant")
+
+
+def _ensure_positive_int(value: object, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer")
+    if value <= 0:
+        raise ValueError(f"{name} must be positive")
+
+
+def _ensure_str_tuple(value: object, name: str) -> tuple[str, ...]:
+    if isinstance(value, (str, bytes)):
+        raise TypeError(f"{name} must be an iterable of strings")
+    try:
+        items = tuple(value)  # type: ignore[arg-type]
+    except TypeError as exc:
+        raise TypeError(f"{name} must be an iterable of strings") from exc
+    if not all(isinstance(item, str) for item in items):
+        raise TypeError(f"{name} must contain only strings")
+    return items
 
 
 __all__ = [

@@ -26,6 +26,11 @@ class FreeformToolFormat:
     syntax: str
     definition: str
 
+    def __post_init__(self) -> None:
+        _ensure_str(self.type, "type")
+        _ensure_str(self.syntax, "syntax")
+        _ensure_str(self.definition, "definition")
+
     @classmethod
     def grammar(cls, *, syntax: str, definition: str) -> "FreeformToolFormat":
         return cls(type="grammar", syntax=syntax, definition=definition)
@@ -50,6 +55,60 @@ class ToolSpec:
     user_location: WebSearchUserLocation | None = None
     search_context_size: WebSearchContextSize | None = None
     search_content_types: tuple[str, ...] | None = None
+
+    def __post_init__(self) -> None:
+        _ensure_str(self.type, "type")
+        if self.type == "image_generation":
+            _ensure_str(self.output_format, "output_format")
+            _ensure_absent(self.name, "name")
+            _ensure_absent(self.description, "description")
+            _ensure_absent(self.format, "format")
+            _ensure_absent(self.external_web_access, "external_web_access")
+            _ensure_absent(self.filters, "filters")
+            _ensure_absent(self.user_location, "user_location")
+            _ensure_absent(self.search_context_size, "search_context_size")
+            _ensure_absent(self.search_content_types, "search_content_types")
+            return
+
+        if self.type == "custom":
+            _ensure_str(self.name, "name")
+            _ensure_str(self.description, "description")
+            if not isinstance(self.format, FreeformToolFormat):
+                raise TypeError("format must be a FreeformToolFormat")
+            _ensure_absent(self.output_format, "output_format")
+            _ensure_absent(self.external_web_access, "external_web_access")
+            _ensure_absent(self.filters, "filters")
+            _ensure_absent(self.user_location, "user_location")
+            _ensure_absent(self.search_context_size, "search_context_size")
+            _ensure_absent(self.search_content_types, "search_content_types")
+            return
+
+        if self.type == "web_search":
+            _ensure_absent(self.name, "name")
+            _ensure_absent(self.description, "description")
+            _ensure_absent(self.format, "format")
+            _ensure_absent(self.output_format, "output_format")
+            if self.external_web_access is not None and not isinstance(self.external_web_access, bool):
+                raise TypeError("external_web_access must be a bool")
+            if self.filters is not None and not isinstance(self.filters, WebSearchFilters):
+                raise TypeError("filters must be a WebSearchFilters")
+            if self.user_location is not None and not isinstance(self.user_location, WebSearchUserLocation):
+                raise TypeError("user_location must be a WebSearchUserLocation")
+            if self.search_context_size is not None and not isinstance(
+                self.search_context_size,
+                WebSearchContextSize,
+            ):
+                raise TypeError("search_context_size must be a WebSearchContextSize")
+            if self.search_content_types is not None:
+                if isinstance(self.search_content_types, (str, bytes)):
+                    raise TypeError("search_content_types must be an iterable of strings")
+                content_types = tuple(self.search_content_types)
+                if not all(isinstance(content_type, str) for content_type in content_types):
+                    raise TypeError("search_content_types must contain only strings")
+                object.__setattr__(self, "search_content_types", content_types)
+            return
+
+        raise ValueError("unsupported tool spec type")
 
     @classmethod
     def image_generation(cls, output_format: str) -> "ToolSpec":
@@ -130,12 +189,23 @@ class WebSearchToolOptions:
     web_search_config: WebSearchConfig | None
     web_search_tool_type: WebSearchToolType
 
+    def __post_init__(self) -> None:
+        if self.web_search_mode is not None and not isinstance(self.web_search_mode, WebSearchMode):
+            raise TypeError("web_search_mode must be a WebSearchMode")
+        if self.web_search_config is not None and not isinstance(self.web_search_config, WebSearchConfig):
+            raise TypeError("web_search_config must be a WebSearchConfig")
+        if not isinstance(self.web_search_tool_type, WebSearchToolType):
+            raise TypeError("web_search_tool_type must be a WebSearchToolType")
+
 
 def create_image_generation_tool(output_format: str) -> ToolSpec:
+    _ensure_str(output_format, "output_format")
     return ToolSpec.image_generation(output_format)
 
 
 def create_web_search_tool(options: WebSearchToolOptions) -> ToolSpec | None:
+    if not isinstance(options, WebSearchToolOptions):
+        raise TypeError("options must be a WebSearchToolOptions")
     if options.web_search_mode is WebSearchMode.CACHED:
         external_web_access = False
     elif options.web_search_mode is WebSearchMode.LIVE:
@@ -156,6 +226,16 @@ def create_web_search_tool(options: WebSearchToolOptions) -> ToolSpec | None:
         search_context_size=config.search_context_size if config is not None else None,
         search_content_types=search_content_types,
     )
+
+
+def _ensure_str(value: object, name: str) -> None:
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a string")
+
+
+def _ensure_absent(value: object, name: str) -> None:
+    if value is not None:
+        raise ValueError(f"{name} is not valid for this tool spec type")
 
 
 __all__ = [

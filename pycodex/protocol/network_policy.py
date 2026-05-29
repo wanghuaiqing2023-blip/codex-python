@@ -69,6 +69,33 @@ def _optional_int(value: dict[str, JsonValue], key: str) -> int | None:
     return raw
 
 
+def _optional_protocol(value: dict[str, JsonValue], key: str) -> NetworkApprovalProtocol | None:
+    raw = value.get(key)
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise TypeError(f"{key} must be a string")
+    return NetworkApprovalProtocol.parse(raw)
+
+
+def _ensure_optional_str(raw: JsonValue, key: str) -> str | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise TypeError(f"{key} must be a string")
+    return raw
+
+
+def _ensure_optional_u16(raw: JsonValue, key: str) -> int | None:
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise TypeError(f"{key} must be an integer")
+    if not 0 <= raw <= 65535:
+        raise ValueError(f"{key} must fit in u16")
+    return raw
+
+
 @dataclass(frozen=True)
 class NetworkPolicyDecisionPayload:
     decision: NetworkPolicyDecision
@@ -78,14 +105,25 @@ class NetworkPolicyDecisionPayload:
     reason: str | None = None
     port: int | None = None
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "decision", NetworkPolicyDecision(self.decision))
+        object.__setattr__(self, "source", NetworkDecisionSource(self.source))
+        if self.protocol is not None and not isinstance(self.protocol, NetworkApprovalProtocol):
+            if isinstance(self.protocol, str):
+                object.__setattr__(self, "protocol", NetworkApprovalProtocol.parse(self.protocol))
+            else:
+                raise TypeError("protocol must be a NetworkApprovalProtocol or None")
+        object.__setattr__(self, "host", _ensure_optional_str(self.host, "host"))
+        object.__setattr__(self, "reason", _ensure_optional_str(self.reason, "reason"))
+        object.__setattr__(self, "port", _ensure_optional_u16(self.port, "port"))
+
     @classmethod
     def from_mapping(cls, value: JsonValue) -> "NetworkPolicyDecisionPayload":
         data = _mapping(value, "network policy decision payload")
-        protocol = data.get("protocol")
         return cls(
             decision=NetworkPolicyDecision(_required_str(data, "decision")),
             source=NetworkDecisionSource(_required_str(data, "source")),
-            protocol=NetworkApprovalProtocol.parse(protocol) if isinstance(protocol, str) else None,
+            protocol=_optional_protocol(data, "protocol"),
             host=_optional_str(data, "host"),
             reason=_optional_str(data, "reason"),
             port=_optional_int(data, "port"),
