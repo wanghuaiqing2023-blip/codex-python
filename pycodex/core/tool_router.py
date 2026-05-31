@@ -8,14 +8,20 @@ from __future__ import annotations
 
 import json
 import inspect
+import logging
+import sys
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
 from pycodex.core.function_tool import FunctionCallError
+from pycodex.core.memory_usage import emit_metric_for_tool_read
 from pycodex.core.tool_context import FunctionToolOutput, PostToolUseFeedbackOutput, ToolPayload
+from pycodex.core.tool_dispatch_trace import ToolDispatchTrace
 from pycodex.core.hook_runtime import (
     PostToolUseHookOutcome,
     PreToolUseHookResult,
+    additional_context_messages,
     post_tool_use_replacement_text,
 )
 from pycodex.core.tool_lifecycle import ToolCallOutcome, notify_tool_finish, notify_tool_start
@@ -25,12 +31,14 @@ from pycodex.core.tool_registry import (
     ToolCallSource,
     ToolInvocation,
     ToolRegistry,
+    flat_tool_name,
     unsupported_tool_call_message,
     with_updated_hook_input,
 )
 from pycodex.protocol import ResponseItem, SearchToolCallParams, ToolName, TruncationPolicyConfig
 
 JsonValue = Any
+LOG = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -171,7 +179,12 @@ class ToolRouter:
             tool_name=call.tool_name,
             source=source or ToolCallSource.direct(),
             payload=call.payload,
+            session=stores.get("session"),
+            turn=stores.get("turn"),
+            cancellation_token=stores.get("cancellation_token"),
+            tracker=stores.get("tracker"),
         )
+        lifecycle_stores = _lifecycle_stores(stores)
         return await dispatch_tool_call_with_terminal_outcome(
             self._registry,
             invocation,
@@ -179,7 +192,7 @@ class ToolRouter:
             pre_tool_use_hook=pre_tool_use_hook,
             post_tool_use_hook=post_tool_use_hook,
             terminal_outcome_reached=terminal_outcome_reached,
-            **stores,
+            **lifecycle_stores,
         )
 
     @staticmethod
@@ -247,6 +260,14 @@ def _ensure_str(value: JsonValue, field_name: str) -> str:
     return value
 
 
+def _lifecycle_stores(stores: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in stores.items()
+        if key not in {"session", "turn", "cancellation_token", "tracker"}
+    }
+
+
 async def dispatch_tool_call(
     registry: ToolRegistry,
     invocation: ToolInvocation,
@@ -281,15 +302,42 @@ async def dispatch_tool_call_with_terminal_outcome(
         raise TypeError("registry must be ToolRegistry")
     if not isinstance(invocation, ToolInvocation):
         raise TypeError("invocation must be ToolInvocation")
+    _increment_active_turn_tool_calls(invocation, **stores)
+    dispatch_trace = _tool_dispatch_trace(invocation, **stores)
     tool = registry.tool(invocation.tool_name)
     if tool is None:
-        raise FunctionCallError.respond_to_model(
+        err = FunctionCallError.respond_to_model(
             unsupported_tool_call_message(invocation.payload, invocation.tool_name)
         )
+        await _record_tool_result_telemetry(
+            invocation,
+            success=False,
+            output=None,
+            error=err,
+            telemetry_tags=(),
+            extra_trace_fields=(),
+            duration_seconds=0.0,
+            **stores,
+        )
+        dispatch_trace.record_failed(err)
+        raise err
+    telemetry_tags, extra_trace_fields = await _tool_telemetry_fields(tool, invocation)
     if not (registry.matches_kind(invocation.tool_name, invocation.payload) or False):
-        raise FunctionCallError.fatal(
+        err = FunctionCallError.fatal(
             f"tool {invocation.tool_name} invoked with incompatible payload"
         )
+        await _record_tool_result_telemetry(
+            invocation,
+            success=False,
+            output=None,
+            error=err,
+            telemetry_tags=telemetry_tags,
+            extra_trace_fields=extra_trace_fields,
+            duration_seconds=0.0,
+            **stores,
+        )
+        dispatch_trace.record_failed(err)
+        raise err
 
     await notify_tool_start(lifecycle_contributors, invocation, **stores)
     try:
@@ -297,6 +345,7 @@ async def dispatch_tool_call_with_terminal_outcome(
             tool,
             invocation,
             pre_tool_use_hook,
+            dispatch_trace=dispatch_trace,
             lifecycle_contributors=lifecycle_contributors,
             terminal_outcome_reached=terminal_outcome_reached,
             **stores,
@@ -306,42 +355,87 @@ async def dispatch_tool_call_with_terminal_outcome(
     handler_executed = False
     try:
         handler_executed = True
+        handler_start = time.perf_counter()
         output = await _handle_tool(tool, invocation)
     except FunctionCallError as err:
-        await notify_tool_finish_if_unclaimed(
+        handler_duration = time.perf_counter() - handler_start if handler_executed else 0.0
+        finished = await notify_tool_finish_if_unclaimed(
             lifecycle_contributors,
             invocation,
             terminal_outcome_reached,
             ToolCallOutcome.failed(handler_executed),
             **stores,
         )
+        await _apply_tool_completed_goal_runtime(invocation, finished, **stores)
+        await _record_tool_result_telemetry(
+            invocation,
+            success=False,
+            output=None,
+            error=err,
+            telemetry_tags=telemetry_tags,
+            extra_trace_fields=extra_trace_fields,
+            duration_seconds=handler_duration,
+            **stores,
+        )
+        await _emit_metric_for_tool_read(invocation, False, **stores)
+        dispatch_trace.record_failed(err)
         raise err
     except Exception as err:
-        await notify_tool_finish_if_unclaimed(
+        handler_duration = time.perf_counter() - handler_start if handler_executed else 0.0
+        fatal = FunctionCallError.fatal(str(err))
+        finished = await notify_tool_finish_if_unclaimed(
             lifecycle_contributors,
             invocation,
             terminal_outcome_reached,
             ToolCallOutcome.failed(handler_executed),
             **stores,
         )
-        raise FunctionCallError.fatal(str(err)) from err
+        await _apply_tool_completed_goal_runtime(invocation, finished, **stores)
+        await _record_tool_result_telemetry(
+            invocation,
+            success=False,
+            output=None,
+            error=fatal,
+            telemetry_tags=telemetry_tags,
+            extra_trace_fields=extra_trace_fields,
+            duration_seconds=handler_duration,
+            **stores,
+        )
+        await _emit_metric_for_tool_read(invocation, False, **stores)
+        dispatch_trace.record_failed(fatal)
+        raise fatal from err
 
     from pycodex.core.tool_parallel import ToolCallResult
 
+    output_success = _success_for_logging(output)
+    handler_duration = time.perf_counter() - handler_start if handler_executed else 0.0
+    await _record_tool_result_telemetry(
+        invocation,
+        success=output_success,
+        output=output,
+        error=None,
+        telemetry_tags=telemetry_tags,
+        extra_trace_fields=extra_trace_fields,
+        duration_seconds=handler_duration,
+        **stores,
+    )
+    await _emit_metric_for_tool_read(invocation, output_success, **stores)
     result = ToolCallResult(
         call_id=invocation.call_id,
         payload=invocation.payload,
         result=output,
-        post_tool_use_payload=_tool_post_tool_use_payload(tool, invocation, output),
+        post_tool_use_payload=_tool_post_tool_use_payload(tool, invocation, output) if output_success else None,
     )
-    result = await _apply_post_tool_use_hook(result, post_tool_use_hook)
-    await notify_tool_finish_if_unclaimed(
+    result = await _apply_post_tool_use_hook(result, post_tool_use_hook, invocation=invocation, **stores)
+    finished = await notify_tool_finish_if_unclaimed(
         lifecycle_contributors,
         invocation,
         terminal_outcome_reached,
         ToolCallOutcome.completed(_success_for_logging(result.result)),
         **stores,
     )
+    await _apply_tool_completed_goal_runtime(invocation, finished, **stores)
+    dispatch_trace.record_completed(invocation, result.call_id, result.payload, result.result)
     return result
 
 
@@ -350,6 +444,7 @@ async def _apply_pre_tool_use_hook(
     invocation: ToolInvocation,
     pre_tool_use_hook: Any,
     *,
+    dispatch_trace: ToolDispatchTrace,
     lifecycle_contributors: Any,
     terminal_outcome_reached: Any,
     **stores: Any,
@@ -364,6 +459,8 @@ async def _apply_pre_tool_use_hook(
         raw_result = await raw_result
     result = _coerce_pre_tool_use_result(raw_result)
     if result.type == "blocked":
+        err = FunctionCallError.respond_to_model(result.message or "")
+        dispatch_trace.record_failed(err)
         await notify_tool_finish_if_unclaimed(
             lifecycle_contributors,
             invocation,
@@ -371,12 +468,13 @@ async def _apply_pre_tool_use_hook(
             ToolCallOutcome.blocked(),
             **stores,
         )
-        raise FunctionCallError.respond_to_model(result.message or "")
+        raise err
     if result.updated_input is None:
         return invocation
     try:
         return with_updated_hook_input(invocation, result.updated_input)
-    except FunctionCallError:
+    except FunctionCallError as err:
+        dispatch_trace.record_failed(err)
         await notify_tool_finish_if_unclaimed(
             lifecycle_contributors,
             invocation,
@@ -386,6 +484,8 @@ async def _apply_pre_tool_use_hook(
         )
         raise
     except Exception as err:
+        fatal = FunctionCallError.fatal(str(err))
+        dispatch_trace.record_failed(fatal)
         await notify_tool_finish_if_unclaimed(
             lifecycle_contributors,
             invocation,
@@ -393,17 +493,330 @@ async def _apply_pre_tool_use_hook(
             ToolCallOutcome.failed(False),
             **stores,
         )
-        raise FunctionCallError.fatal(str(err)) from err
+        raise fatal from err
 
 
-async def _apply_post_tool_use_hook(result: Any, post_tool_use_hook: Any) -> Any:
+async def _apply_post_tool_use_hook(
+    result: Any,
+    post_tool_use_hook: Any,
+    *,
+    invocation: ToolInvocation,
+    **stores: Any,
+) -> Any:
     if post_tool_use_hook is None or result.post_tool_use_payload is None:
         return result
     raw_outcome = post_tool_use_hook(result.post_tool_use_payload, result)
     if inspect.isawaitable(raw_outcome):
         raw_outcome = await raw_outcome
     outcome = _coerce_post_tool_use_outcome(raw_outcome)
+    await _record_post_tool_use_additional_contexts(outcome, invocation=invocation, **stores)
     return apply_post_tool_use_feedback(result, post_tool_use_replacement_text(outcome))
+
+
+async def _record_post_tool_use_additional_contexts(
+    outcome: PostToolUseHookOutcome,
+    *,
+    invocation: ToolInvocation,
+    **stores: Any,
+) -> None:
+    if not outcome.additional_contexts:
+        return
+    messages = additional_context_messages(outcome.additional_contexts)
+    recorder = stores.get("additional_context_recorder")
+    if recorder is not None:
+        await _call_additional_context_recorder(recorder, messages)
+        return
+    for target in (
+        invocation.session,
+        invocation.turn,
+        stores.get("session"),
+        stores.get("turn"),
+    ):
+        if target is None:
+            continue
+        for method_name in (
+            "record_additional_contexts",
+            "record_additional_context_messages",
+            "add_additional_context_messages",
+        ):
+            method = getattr(target, method_name, None)
+            if method is not None:
+                await _call_additional_context_recorder(method, messages)
+                return
+
+
+async def _call_additional_context_recorder(recorder: Any, messages: tuple[ResponseItem, ...]) -> None:
+    if not callable(recorder):
+        raise TypeError("additional_context_recorder must be callable")
+    result = recorder(messages)
+    if inspect.isawaitable(result):
+        await result
+
+
+async def _apply_tool_completed_goal_runtime(
+    invocation: ToolInvocation,
+    finished: bool,
+    **stores: Any,
+) -> None:
+    if not finished:
+        return
+    session = invocation.session if invocation.session is not None else stores.get("session")
+    if session is None:
+        return
+    apply = getattr(session, "goal_runtime_apply", None)
+    if apply is None:
+        return
+    if not callable(apply):
+        LOG.warning("failed to account thread goal progress after tool call: session.goal_runtime_apply is not callable")
+        return
+    turn = invocation.turn if invocation.turn is not None else stores.get("turn")
+    event = {
+        "type": "tool_completed",
+        "turn_context": turn,
+        "tool_name": invocation.tool_name.name,
+    }
+    try:
+        result = apply(event)
+        if inspect.isawaitable(result):
+            await result
+    except Exception as err:
+        LOG.warning("failed to account thread goal progress after tool call: %s", err)
+
+
+def _tool_dispatch_trace(invocation: ToolInvocation, **stores: Any) -> ToolDispatchTrace:
+    trace_context = stores.get("tool_dispatch_trace_context")
+    if trace_context is None:
+        trace_context = stores.get("rollout_thread_trace")
+    session = invocation.session if invocation.session is not None else stores.get("session")
+    if trace_context is None and session is not None:
+        services = _field_or_attr(session, "services")
+        trace_context = _field_or_attr(services, "rollout_thread_trace")
+    turn = invocation.turn if invocation.turn is not None else stores.get("turn")
+    return ToolDispatchTrace.start(
+        invocation,
+        trace_context,
+        thread_id=_trace_thread_id(session),
+        codex_turn_id=_trace_turn_id(turn),
+    )
+
+
+async def _tool_telemetry_fields(tool: Any, invocation: ToolInvocation) -> tuple[tuple[tuple[str, str], ...], tuple[tuple[str, str], ...]]:
+    method = getattr(tool, "telemetry_tags", None)
+    if method is None:
+        return (), ()
+    try:
+        raw_tags = method(invocation)
+    except TypeError:
+        raw_tags = method()
+    if inspect.isawaitable(raw_tags):
+        raw_tags = await raw_tags
+    tags = _coerce_telemetry_tags(raw_tags)
+    normal_tags: list[tuple[str, str]] = []
+    extra_trace_fields: list[tuple[str, str]] = []
+    for key, value in tags:
+        if key in {"mcp_server", "mcp_server_origin"}:
+            extra_trace_fields.append((key, value))
+        else:
+            normal_tags.append((key, value))
+    return tuple(normal_tags), tuple(extra_trace_fields)
+
+
+def _coerce_telemetry_tags(value: Any) -> tuple[tuple[str, str], ...]:
+    if value is None:
+        return ()
+    if isinstance(value, (str, bytes)):
+        raise TypeError("telemetry_tags must be an iterable of (str, str) pairs")
+    result = []
+    for entry in value:
+        if not isinstance(entry, (tuple, list)) or len(entry) != 2:
+            raise TypeError("telemetry_tags must be an iterable of (str, str) pairs")
+        key, tag_value = entry
+        if not isinstance(key, str) or not isinstance(tag_value, str):
+            raise TypeError("telemetry_tags entries must contain string key/value pairs")
+        result.append((key, tag_value))
+    return tuple(result)
+
+
+async def _record_tool_result_telemetry(
+    invocation: ToolInvocation,
+    *,
+    success: bool,
+    output: Any,
+    error: Any,
+    telemetry_tags: tuple[tuple[str, str], ...],
+    extra_trace_fields: tuple[tuple[str, str], ...],
+    duration_seconds: float,
+    **stores: Any,
+) -> None:
+    recorder = stores.get("tool_result_telemetry_recorder")
+    if recorder is None:
+        session = invocation.session if invocation.session is not None else stores.get("session")
+        recorder = _field_or_attr(session, "tool_result_with_tags") if session is not None else None
+    if recorder is None:
+        return
+    if not callable(recorder):
+        raise TypeError("tool_result_telemetry_recorder must be callable")
+    event = {
+        "tool_name": flat_tool_name(invocation.tool_name),
+        "call_id": invocation.call_id,
+        "log_payload": invocation.payload.log_payload(),
+        "log_preview": _log_preview_for_telemetry(output),
+        "duration_seconds": duration_seconds,
+        "success": success,
+        "telemetry_tags": _tool_result_base_tags(invocation, **stores) + telemetry_tags,
+        "extra_trace_fields": extra_trace_fields,
+        "output": output,
+        "error": error,
+        "error_message": None if error is None else str(error),
+    }
+    result = recorder(event)
+    if inspect.isawaitable(result):
+        await result
+
+
+def _increment_active_turn_tool_calls(invocation: ToolInvocation, **stores: Any) -> None:
+    session = invocation.session if invocation.session is not None else stores.get("session")
+    if session is None:
+        return
+    active_turn = _unwrap_optional_holder(_field_or_attr(session, "active_turn"))
+    if active_turn is None:
+        return
+    turn_state = _unwrap_optional_holder(_field_or_attr(active_turn, "turn_state"))
+    if turn_state is None:
+        return
+    current = _field_or_attr(turn_state, "tool_calls")
+    if not isinstance(current, int) or isinstance(current, bool):
+        return
+    next_value = current + 1 if current < ((1 << 64) - 1) else current
+    if isinstance(turn_state, dict):
+        turn_state["tool_calls"] = next_value
+    else:
+        try:
+            setattr(turn_state, "tool_calls", next_value)
+        except (AttributeError, TypeError):
+            return
+
+
+def _unwrap_optional_holder(value: Any) -> Any:
+    if callable(value):
+        value = value()
+    if isinstance(value, dict) and "value" in value:
+        return value.get("value")
+    return value
+
+
+def _field_or_attr(value: Any, name: str) -> Any:
+    if isinstance(value, dict):
+        return value.get(name)
+    return getattr(value, name, None)
+
+
+def _call_or_value(value: Any) -> Any:
+    return value() if callable(value) else value
+
+
+def _log_preview_for_telemetry(output: Any) -> str | None:
+    if output is None:
+        return None
+    method = getattr(output, "log_preview", None)
+    if method is None:
+        return None
+    preview = method()
+    if not isinstance(preview, str):
+        raise TypeError("log_preview must return a string")
+    return preview
+
+
+def _tool_result_base_tags(invocation: ToolInvocation, **stores: Any) -> tuple[tuple[str, str], ...]:
+    turn = invocation.turn if invocation.turn is not None else stores.get("turn")
+    profile = stores.get("permission_profile")
+    if profile is None:
+        profile = _call_or_value(_field_or_attr(turn, "permission_profile"))
+    if profile is None:
+        config = _field_or_attr(turn, "config")
+        profile = _call_or_value(_field_or_attr(config, "permission_profile"))
+    if profile is None:
+        return ()
+    cwd = stores.get("cwd") or _field_or_attr(turn, "cwd") or _field_or_attr(_field_or_attr(turn, "config"), "cwd") or "."
+    network = stores.get("network")
+    if network is None:
+        network = _field_or_attr(turn, "network")
+    windows_sandbox_level = stores.get("windows_sandbox_level")
+    if windows_sandbox_level is None:
+        windows_sandbox_level = _field_or_attr(turn, "windows_sandbox_level")
+    return (
+        ("sandbox", _permission_profile_sandbox_tag(profile, windows_sandbox_level, network is not None)),
+        ("sandbox_policy", _permission_profile_policy_tag(profile, cwd)),
+    )
+
+
+def _permission_profile_sandbox_tag(profile: Any, windows_sandbox_level: Any, enforce_managed_network: bool) -> str:
+    profile_type = _field_or_attr(profile, "type")
+    if profile_type == "disabled":
+        return "none"
+    if profile_type == "external":
+        return "external"
+    file_system_policy = _call_method(profile, "file_system_sandbox_policy")
+    network_policy = _call_method(profile, "network_sandbox_policy")
+    if file_system_policy is not None:
+        full_write = bool(_call_method(file_system_policy, "has_full_disk_write_access"))
+        network_enabled = bool(_call_method(network_policy, "is_enabled")) if network_policy is not None else False
+        if full_write and (network_enabled or not enforce_managed_network):
+            return "none"
+    if sys.platform == "win32":
+        level = getattr(windows_sandbox_level, "value", windows_sandbox_level)
+        if str(level).lower() == "elevated":
+            return "windows_elevated"
+        if str(level).lower() == "disabled":
+            return "none"
+        return "windows_sandbox"
+    if sys.platform == "darwin":
+        return "seatbelt"
+    if sys.platform.startswith("linux"):
+        return "seccomp"
+    return "none"
+
+
+def _permission_profile_policy_tag(profile: Any, cwd: Any) -> str:
+    profile_type = _field_or_attr(profile, "type")
+    if profile_type == "disabled":
+        return "danger-full-access"
+    if profile_type == "external":
+        return "external-sandbox"
+    file_system_policy = _call_method(profile, "file_system_sandbox_policy")
+    if file_system_policy is None:
+        return "read-only"
+    if bool(_call_method(file_system_policy, "has_full_disk_write_access")):
+        return "danger-full-access"
+    writable_roots = _call_method(file_system_policy, "get_writable_roots_with_cwd", cwd)
+    return "read-only" if not writable_roots else "workspace-write"
+
+
+def _call_method(value: Any, name: str, *args: Any) -> Any:
+    method = _field_or_attr(value, name)
+    if not callable(method):
+        return None
+    return method(*args)
+
+
+def _trace_thread_id(session: Any) -> str:
+    if session is None:
+        return ""
+    for name in ("conversation_id", "thread_id", "session_id"):
+        value = _field_or_attr(session, name)
+        if value is not None:
+            return str(value)
+    return ""
+
+
+def _trace_turn_id(turn: Any) -> str:
+    if turn is None:
+        return ""
+    for name in ("sub_id", "turn_id", "id"):
+        value = _field_or_attr(turn, name)
+        if value is not None:
+            return str(value)
+    return ""
 
 
 def apply_post_tool_use_feedback(result: Any, replacement_text: str | None) -> Any:
@@ -512,6 +925,48 @@ def _success_for_logging(output: Any) -> bool:
     if not isinstance(value, bool):
         raise TypeError("success_for_logging must return a bool")
     return value
+
+
+async def _emit_metric_for_tool_read(invocation: ToolInvocation, success: bool, **stores: Any) -> None:
+    telemetry = stores.get("session_telemetry") or stores.get("telemetry")
+    session = invocation.session if invocation.session is not None else stores.get("session")
+    turn = invocation.turn if invocation.turn is not None else stores.get("turn")
+    if telemetry is None:
+        telemetry = _field_or_attr(turn, "session_telemetry") or _field_or_attr(session, "session_telemetry")
+    if telemetry is None:
+        return
+
+    session_shell = stores.get("session_shell")
+    if session_shell is None:
+        user_shell = _field_or_attr(session, "user_shell")
+        if callable(user_shell):
+            session_shell = user_shell()
+        elif user_shell is not None:
+            session_shell = user_shell
+
+    allow_login_shell = stores.get("allow_login_shell")
+    if allow_login_shell is None:
+        permissions = _field_or_attr(_field_or_attr(_field_or_attr(turn, "config"), "permissions"), "allow_login_shell")
+        allow_login_shell = permissions if isinstance(permissions, bool) else False
+
+    unified_exec_shell_mode = stores.get("unified_exec_shell_mode") or _field_or_attr(turn, "unified_exec_shell_mode")
+    resolve_path = stores.get("resolve_path")
+    if resolve_path is None:
+        turn_resolver = _field_or_attr(turn, "resolve_path")
+        resolve_path = turn_resolver if callable(turn_resolver) else None
+
+    try:
+        emit_metric_for_tool_read(
+            invocation,
+            success,
+            telemetry,
+            session_shell=session_shell,
+            allow_login_shell=allow_login_shell,
+            unified_exec_shell_mode=unified_exec_shell_mode,
+            resolve_path=resolve_path,
+        )
+    except Exception as err:
+        LOG.warning("failed to emit tool read memory metric: %s", err)
 
 
 __all__ = [

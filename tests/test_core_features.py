@@ -46,6 +46,10 @@ class CoreFeaturesTests(unittest.TestCase):
         self.assertEqual(Feature.NETWORK_PROXY.stage().kind, StageKind.EXPERIMENTAL)
         self.assertFalse(Feature.NETWORK_PROXY.default_enabled())
         self.assertEqual(Feature.UNIFIED_EXEC.default_enabled(), sys.platform != "win32")
+        self.assertEqual(Feature.REQUEST_PERMISSIONS_TOOL.stage().kind, StageKind.UNDER_DEVELOPMENT)
+        self.assertFalse(Feature.REQUEST_PERMISSIONS_TOOL.default_enabled())
+        self.assertEqual(feature_for_key("request_permissions_tool"), Feature.REQUEST_PERMISSIONS_TOOL)
+        self.assertTrue(is_known_feature_key("request_permissions_tool"))
 
     def test_feature_lookup_accepts_canonical_and_legacy_keys(self) -> None:
         self.assertEqual(feature_for_key("apply_patch_freeform"), Feature.APPLY_PATCH_FREEFORM)

@@ -31,7 +31,7 @@ import platform
 import webbrowser
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Iterable, Mapping, MutableMapping, TextIO
+from typing import Any, Callable, Iterable, Mapping, MutableMapping, TextIO
 import shlex
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError, URLError
@@ -59,6 +59,7 @@ from pycodex.exec import (
     RemoteAppServerEndpoint,
 )
 from pycodex.exec.local_runtime import (
+    align_local_http_exec_resume_model_client,
     build_default_local_http_exec_runtime,
     emit_local_http_exec_error,
     emit_local_http_exec_result,
@@ -67,6 +68,8 @@ from pycodex.exec.local_runtime import (
     local_http_exec_shell_tools_enabled,
     local_http_exec_tool_output_max_chars,
     local_http_exec_config_summary,
+    persist_local_http_exec_rollout,
+    run_exec_resume_user_turn_http_sampling,
     run_exec_user_turn_http_sampling,
     run_exec_user_turn_with_shell_tools_http_sampling,
 )
@@ -89,9 +92,34 @@ from pycodex.cli.login import (
 
 from .features import FeatureCliError, FeatureToggles, FeaturesCli, parse_features_args, run_features_command
 from .features import FeaturesSubcommand
+from .doctor_updates import (
+    default_reachability_plan,
+    doctor_background_server_check,
+    doctor_auth_check,
+    doctor_config_check,
+    doctor_fallback_state_check,
+    doctor_git_check,
+    doctor_installation_check,
+    doctor_mcp_check,
+    doctor_network_check,
+    doctor_provider_reachability_check,
+    doctor_runtime_check,
+    doctor_sandbox_check,
+    doctor_search_check,
+    doctor_state_check,
+    doctor_system_check,
+    doctor_terminal_check,
+    doctor_terminal_title_check,
+    doctor_thread_inventory_check,
+    doctor_updates_check_from_config,
+    doctor_websocket_check,
+    provider_reachability_plan_from_config,
+    redacted_doctor_checks_mapping,
+    redacted_doctor_report_mapping,
+)
 from pycodex.tui import run_tui
 from pycodex.core.git_info import current_branch_name, default_branch_name
-from pycodex.core.paths import find_codex_home, runtime_db_paths
+from pycodex.core.paths import find_codex_home
 from pycodex.core.config_edit import CONFIG_TOML_FILE, read_toml_mapping, write_toml_mapping
 from .spec import COMMANDS_BY_NAME, UPSTREAM_CLI_MAIN, CommandSpec, visible_commands
 
@@ -164,6 +192,7 @@ class ParsedCli:
 
         if self.command != "exec":
             raise CliParseError("Parsed CLI invocation is not an exec command")
+        reject_remote_mode_for_subcommand(self.remote, self.remote_auth_token_env, "exec")
 
         exec_cli = parse_exec_args(
             self.command_args,
@@ -250,7 +279,14 @@ def parse_args(argv: Iterable[str] | None = None) -> ParsedCli:
 
         command = COMMANDS_BY_NAME.get(token)
         if command is not None and not positional:
-            command_args = _parse_command_args(command.name, tuple(tokens[i + 1 :]))
+            raw_command_args = tuple(tokens[i + 1 :])
+            if command.name not in _REMOTE_INTERACTIVE_SUBCOMMANDS:
+                reject_remote_mode_for_subcommand(
+                    state.remote,
+                    state.remote_auth_token_env,
+                    _remote_command_name_for_subcommand(command.name, raw_command_args),
+                )
+            command_args = _parse_command_args(command.name, raw_command_args)
             return ParsedCli(
                 command=command.name,
                 command_spec=command,
@@ -5773,10 +5809,23 @@ def _normalize_execpolicy_source(source: str) -> str:
             if token.string == "not_match":
                 normalized_tokens.append((token.type, "__not_match"))
                 continue
+        if token.type == tokenize.STRING:
+            normalized_tokens.append((token.type, _normalize_execpolicy_string_token(token.string)))
+            continue
 
         normalized_tokens.append((token.type, token.string))
 
     return tokenize.untokenize(normalized_tokens)
+
+
+def _normalize_execpolicy_string_token(raw: str) -> str:
+    try:
+        ast.literal_eval(raw)
+        return raw
+    except (SyntaxError, ValueError):
+        if "\\" not in raw:
+            return raw
+        return raw.replace("\\", "\\\\")
 
 
 def _parse_execpolicy_decision(value: object, *, path: str) -> str:
@@ -5935,10 +5984,10 @@ def _parse_execpolicy_file(path: str) -> tuple[
     except OSError as exc:
         raise RuntimeError(f"failed to read policy at {path}: {exc}")
 
-    normalized_source = _normalize_execpolicy_source(source)
     try:
+        normalized_source = _normalize_execpolicy_source(source)
         module = ast.parse(normalized_source)
-    except SyntaxError as exc:
+    except (SyntaxError, tokenize.TokenError) as exc:
         raise RuntimeError(f"failed to parse policy at {path}: {exc}")
 
     rules_by_program: dict[str, list[_ExecPolicyRule]] = {}
@@ -6208,10 +6257,6 @@ def _run_execpolicy_check(
     stdout: TextIO,
     stderr: TextIO,
 ) -> int:
-    if any(arg in {"-h", "--help"} for arg in command_args):
-        print(_unimplemented_command_help_text("execpolicy"), file=stdout)
-        return 0
-
     if not command_args or command_args[0] != "check":
         print("pycodex: unknown execpolicy subcommand.", file=stderr)
         return 2
@@ -6226,6 +6271,9 @@ def _run_execpolicy_check(
     while index < len(args):
         arg = args[index]
 
+        if arg in {"-h", "--help"}:
+            print(_unimplemented_command_help_text("execpolicy"), file=stdout)
+            return 0
         if arg == "--pretty":
             pretty = True
             index += 1
@@ -7282,105 +7330,183 @@ def _run_doctor(*, parsed: "ParsedCli", stdout: TextIO, stderr: TextIO) -> int:
         return 0
 
     checks: dict[str, dict[str, object]] = {}
+    config: Mapping[str, Any] = {}
+    stored_auth: dict[str, Any] | None = None
+    checks["system"] = _timed_doctor_mapping(lambda: doctor_system_check().to_mapping())
 
     try:
-        codex_home = find_codex_home()
-        checks["codex_home"] = {
-            "status": "ok",
-            "path": str(codex_home),
-            "runtime_dbs": [
-                {
-                    "name": item.label,
-                    "path": str(item.path),
-                    "exists": item.path.exists(),
-                }
-                for item in runtime_db_paths(codex_home)
-            ],
-        }
+        codex_home_path: Path | None = find_codex_home()
+        codex_home_error: str | None = None
     except Exception as exc:
-        checks["codex_home"] = {
-            "status": "warn",
-            "path": None,
-            "runtime_dbs": [],
-            "error": str(exc),
-        }
+        codex_home_path = None
+        codex_home_error = str(exc)
 
-    checks["python"] = {
-        "status": "ok",
-        "executable": sys.executable,
-        "version": sys.version.split(" ", 1)[0],
-        "platform": sys.platform,
-    }
+    checks["installation"] = _timed_doctor_mapping(
+        lambda: _doctor_installation_mapping(
+            codex_home=codex_home_path,
+            show_details="--all" in parsed.command_args,
+        )
+    )
+    checks["runtime"] = _timed_doctor_mapping(
+        lambda: doctor_runtime_check(
+            current_version=__version__,
+            codex_home=codex_home_path,
+        ).to_mapping()
+    )
+    checks["search"] = _timed_doctor_mapping(lambda: doctor_search_check(codex_home=codex_home_path).to_mapping())
 
-    checks["environment"] = {
-        "status": "ok",
-        "cwd": str(Path.cwd()),
-        "timestamp_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-    }
+    config_error: str | None = None
+    if codex_home_path is None:
+        config_error = codex_home_error or "CODEX_HOME unavailable"
+    else:
+        try:
+            config = read_toml_mapping(codex_home_path / CONFIG_TOML_FILE)
+        except Exception as exc:
+            config = {}
+            config_error = str(exc)
 
-    try:
-        auth = read_auth_json()
-        if auth is None:
-            checks["auth"] = {"status": "warn", "state": "not_logged_in"}
-        else:
-            auth_mode = resolve_auth_mode(auth)
-            checks["auth"] = {
-                "status": "ok",
-                "state": "logged_in",
-                "mode": auth_mode,
+    if config_error is None and codex_home_path is not None:
+        checks["state"] = _timed_doctor_mapping(lambda: doctor_state_check(codex_home=codex_home_path).to_mapping())
+        checks["config"] = _timed_doctor_mapping(
+            lambda: doctor_config_check(codex_home=codex_home_path, config=dict(config)).to_mapping()
+        )
+        try:
+            auth = read_auth_json(codex_home=codex_home_path)
+            stored_auth = auth.to_mapping() if auth is not None else None
+        except Exception:
+            stored_auth = None
+        checks["auth"] = _timed_doctor_mapping(lambda: doctor_auth_check(codex_home=codex_home_path).to_mapping())
+        checks["sandbox"] = _timed_doctor_mapping(lambda: doctor_sandbox_check(config=dict(config)).to_mapping())
+        checks["terminal_title"] = _timed_doctor_mapping(
+            lambda: doctor_terminal_title_check(cwd=Path.cwd(), config=dict(config)).to_mapping()
+        )
+        checks["updates"] = _timed_doctor_mapping(
+            lambda: _doctor_updates_mapping(
+                config=dict(config),
+                codex_home=codex_home_path,
+            )
+        )
+        checks["mcp"] = _timed_doctor_mapping(lambda: doctor_mcp_check(config=dict(config)).to_mapping())
+        checks["websocket"] = _timed_doctor_mapping(lambda: doctor_websocket_check(config=dict(config)).to_mapping())
+        checks["background_server"] = _timed_doctor_mapping(
+            lambda: doctor_background_server_check(codex_home=codex_home_path).to_mapping()
+        )
+        checks["thread_inventory"] = _timed_doctor_mapping(
+            lambda: doctor_thread_inventory_check(
+                codex_home=codex_home_path,
+                default_provider=str(config.get("model_provider_id", "openai")),
+            ).to_mapping()
+        )
+    else:
+        checks["config"] = _timed_doctor_mapping(
+            lambda: {
+                "status": "fail",
+                "summary": "config could not be loaded",
+                "details": [config_error or "unknown config error"],
+                "remediation": "Fix the reported config error, then rerun codex doctor.",
             }
-    except (ValueError, OSError) as exc:
-        checks["auth"] = {
-            "status": "warn",
-            "state": "invalid_auth_file",
-            "error": str(exc),
-        }
+        )
+        if codex_home_path is not None:
+            checks["state"] = _timed_doctor_mapping(
+                lambda: doctor_fallback_state_check(codex_home=codex_home_path).to_mapping()
+            )
+        else:
+            checks["state"] = _timed_doctor_mapping(lambda: doctor_fallback_state_check(error=config_error).to_mapping())
 
-    branch = current_branch_name(os.getcwd())
-    default_branch = default_branch_name(os.getcwd())
-    checks["git"] = {
-        "status": "ok" if branch is not None else "warn",
-        "branch": branch,
-        "default_branch": default_branch,
-    }
+    checks["network"] = _timed_doctor_mapping(lambda: doctor_network_check().to_mapping())
+    checks["terminal"] = _timed_doctor_mapping(
+        lambda: doctor_terminal_check(no_color_flag="--no-color" in parsed.command_args).to_mapping()
+    )
+    reachability_plan = (
+        default_reachability_plan()
+        if config_error is not None
+        else provider_reachability_plan_from_config(config=dict(config), stored_auth=stored_auth)
+    )
+    checks["provider_reachability"] = _timed_doctor_mapping(
+        lambda: doctor_provider_reachability_check(plan=reachability_plan).to_mapping()
+    )
 
-    summary_ok = all(value.get("status") == "ok" for value in checks.values())
+    checks["git"] = _timed_doctor_mapping(lambda: doctor_git_check(cwd=Path.cwd()).to_mapping())
+
+    check_statuses = [_doctor_cli_status(value.get("status")) for value in checks.values()]
+    passed_count = sum(1 for status in check_statuses if status == "ok")
+    failed_count = sum(1 for status in check_statuses if status == "fail")
+    warning_count = sum(1 for status in check_statuses if status == "warn")
+    overall_status = "fail" if failed_count else "ok" if warning_count == 0 else "warn"
+    exit_code = 1 if failed_count else 0
     if "--json" in parsed.command_args:
         print(
             json.dumps(
-                {
-                    "status": "ok" if summary_ok else "warn",
-                    "summary": {
-                        "passed": sum(1 for value in checks.values() if value.get("status") == "ok"),
-                        "warnings": sum(
-                            1 for value in checks.values() if value.get("status") != "ok"
-                        ),
-                    },
-                    "checks": checks,
-                },
+                redacted_doctor_report_mapping(
+                    checks=checks,
+                    overall_status=overall_status,
+                    codex_version=__version__,
+                ),
                 ensure_ascii=False,
-                indent=2 if "--ascii" in parsed.command_args else None,
+                indent=2,
             ),
             file=stdout,
         )
-        return 0
+        return exit_code
 
     if "--summary" in parsed.command_args or "--all" in parsed.command_args:
         print(
             "doctor: "
-            f"{'ok' if summary_ok else 'warning'} "
-            f"({sum(1 for value in checks.values() if value.get('status') == 'ok')} checks passed, "
-            f"{sum(1 for value in checks.values() if value.get('status') != 'ok')} warnings)",
+            f"{overall_status} "
+            f"({passed_count} checks passed, "
+            f"{warning_count} warnings, "
+            f"{failed_count} failed)",
             file=stdout,
         )
-        return 0
+        return exit_code
 
     print("doctor: checking local environment", file=stdout)
-    for key, data in checks.items():
+    display_checks = redacted_doctor_checks_mapping(checks)
+    for key, data in display_checks.items():
         state = data.get("status", "warn")
         details = ", ".join(f"{name}={value}" for name, value in data.items() if name != "status")
         print(f"  - {key}: {state} ({details})", file=stdout)
-    return 0
+    return exit_code
+
+
+def _doctor_cli_status(status: object) -> str:
+    normalized = str(status).strip().lower()
+    if normalized == "warning":
+        return "warn"
+    if normalized in {"ok", "warn", "fail"}:
+        return normalized
+    return "warn"
+
+
+def _timed_doctor_mapping(builder: Callable[[], dict[str, object]]) -> dict[str, object]:
+    start = time.perf_counter()
+    mapping = builder()
+    elapsed_ms = int((time.perf_counter() - start) * 1000)
+    mapping["duration_ms"] = max(elapsed_ms, 0)
+    return mapping
+
+
+def _doctor_installation_mapping(
+    *,
+    codex_home: Path | None,
+    show_details: bool,
+) -> dict[str, object]:
+    return doctor_installation_check(
+        codex_home=codex_home,
+        show_details=show_details,
+    ).to_mapping()
+
+
+def _doctor_updates_mapping(
+    *,
+    config: dict[str, object],
+    codex_home: Path,
+) -> dict[str, object]:
+    return doctor_updates_check_from_config(
+        config,
+        codex_home=codex_home,
+        current_version=__version__,
+    ).to_mapping()
 
 
 def _run_sandbox(
@@ -7917,6 +8043,8 @@ def _run_noninteractive_exec(
         if parsed.command == "exec":
             exec_cli = parsed.exec_cli()
         elif parsed.command in {"review", "resume"}:
+            if parsed.command == "review":
+                reject_remote_mode_for_subcommand(parsed.remote, parsed.remote_auth_token_env, "review")
             # Top-level `codex review` and `codex resume` are aliases for `codex exec` subcommands.
             exec_cli = parse_exec_args(
                 (parsed.command, *parsed.command_args),
@@ -7929,7 +8057,7 @@ def _run_noninteractive_exec(
                 file=stderr,
             )
             return 2
-    except ExecCliParseError as exc:
+    except (CliParseError, ExecCliParseError) as exc:
         print(str(exc), file=stderr)
         return 2
 
@@ -7937,7 +8065,8 @@ def _run_noninteractive_exec(
         print(warning, file=stderr)
 
     try:
-        config_toml = read_toml_mapping(Path(find_codex_home()) / CONFIG_TOML_FILE)
+        codex_home = Path(find_codex_home())
+        config_toml = read_toml_mapping(codex_home / CONFIG_TOML_FILE)
         bootstrap_plan = build_exec_config_bootstrap_plan(exec_cli, config_toml=config_toml)
         plan = prepare_exec_run_plan(
             exec_cli,
@@ -7951,9 +8080,11 @@ def _run_noninteractive_exec(
 
     command_name = parsed.command
     print(f"pycodex: prepared non-interactive {command_name} plan.", file=stderr)
+    if command_name == "review":
+        return 0
 
     if local_http_exec_enabled():
-        if exec_cli.command in {"review", "resume"}:
+        if exec_cli.command == "review":
             print(
                 "pycodex: PYCODEX_EXEC_LOCAL_HTTP currently supports only fresh `codex exec` user turns.",
                 file=stderr,
@@ -7968,6 +8099,31 @@ def _run_noninteractive_exec(
                 auth=auth_json,
                 config_toml=config_toml,
             )
+            resolved_thread_id = None
+            session_name = None
+            use_shell_tools = False
+            resolved_resume_rollout_path = None
+            if exec_cli.command == "resume":
+                if exec_cli.resume is None:
+                    raise ValueError("resume command is missing resume arguments")
+                resolved_thread_id = direct_resume_thread_id(exec_cli.resume.session_id)
+                session_name = (
+                    exec_cli.resume.session_id
+                    if exec_cli.resume.session_id is not None and resolved_thread_id is None
+                    else None
+                )
+                resolved_resume_rollout_path = align_local_http_exec_resume_model_client(
+                    codex_home,
+                    session_config,
+                    model_client,
+                    thread_id=resolved_thread_id,
+                    session_name=session_name,
+                    resume_last=exec_cli.resume.last,
+                    include_all=exec_cli.resume.all,
+                )
+                if resolved_resume_rollout_path is None:
+                    raise ValueError("no local rollout found for resume")
+                use_shell_tools = local_http_exec_shell_tools_enabled()
             summary_config, summary_session = local_http_exec_config_summary(
                 session_config,
                 model=model_info.slug,
@@ -7985,25 +8141,54 @@ def _run_noninteractive_exec(
                     stderr=stderr,
                     version=__version__,
                 )
-            run_local_http_sampling = (
-                run_exec_user_turn_with_shell_tools_http_sampling
-                if local_http_exec_shell_tools_enabled()
-                else run_exec_user_turn_http_sampling
-            )
-            sampling_kwargs = {"auth": resolved_auth}
-            if run_local_http_sampling is run_exec_user_turn_with_shell_tools_http_sampling:
-                sampling_kwargs["max_tool_rounds"] = local_http_exec_max_tool_rounds()
-                sampling_kwargs["tool_output_max_chars"] = local_http_exec_tool_output_max_chars()
-            local_result = asyncio.run(
-                run_local_http_sampling(
-                    session_config,
-                    plan,
-                    model_client,
-                    provider,
-                    model_info,
-                    **sampling_kwargs,
+            if exec_cli.command == "resume":
+                local_result = asyncio.run(
+                    run_exec_resume_user_turn_http_sampling(
+                        codex_home,
+                        session_config,
+                        plan,
+                        model_client,
+                        provider,
+                        model_info,
+                        thread_id=resolved_thread_id,
+                        session_name=session_name,
+                        resume_last=exec_cli.resume.last,
+                        include_all=exec_cli.resume.all,
+                        auth=resolved_auth,
+                        use_shell_tools=use_shell_tools,
+                        max_tool_rounds=local_http_exec_max_tool_rounds() if use_shell_tools else 1,
+                        tool_output_max_chars=local_http_exec_tool_output_max_chars() if use_shell_tools else None,
+                        resolved_rollout_path=resolved_resume_rollout_path,
+                    )
                 )
-            )
+            else:
+                run_local_http_sampling = (
+                    run_exec_user_turn_with_shell_tools_http_sampling
+                    if local_http_exec_shell_tools_enabled()
+                    else run_exec_user_turn_http_sampling
+                )
+                sampling_kwargs = {"auth": resolved_auth}
+                if run_local_http_sampling is run_exec_user_turn_with_shell_tools_http_sampling:
+                    sampling_kwargs["max_tool_rounds"] = local_http_exec_max_tool_rounds()
+                    sampling_kwargs["tool_output_max_chars"] = local_http_exec_tool_output_max_chars()
+                local_result = asyncio.run(
+                    run_local_http_sampling(
+                        session_config,
+                        plan,
+                        model_client,
+                        provider,
+                        model_info,
+                        **sampling_kwargs,
+                    )
+                )
+                persist_local_http_exec_rollout(
+                    codex_home,
+                    session_config,
+                    local_result,
+                    model_client,
+                    input_items=plan.initial_operation.items if plan.initial_operation.kind == "user_turn" else (),
+                    cli_version=__version__,
+                )
         except ValueError as exc:
             emit_local_http_exec_error(processor, str(exc), stdout=out, stderr=stderr)
             return 2

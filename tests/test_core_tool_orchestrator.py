@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 
 from pycodex.core import (
@@ -7,6 +8,7 @@ from pycodex.core import (
     ToolOrchestratorPlan,
     approval_step_decision,
     build_denial_reason_from_output,
+    build_tool_orchestrator_plan_for_session,
     initial_attempt_plan,
     reject_if_not_approved,
     retry_decision_for_sandbox_denial,
@@ -73,6 +75,26 @@ class ToolOrchestratorTests(unittest.TestCase):
 
         self.assertEqual(plan.approval.kind, OrchestratorApprovalKind.REQUESTED)
         self.assertFalse(plan.initial_attempt.bypass_sandbox_first_attempt)
+
+    def test_build_plan_for_session_reads_strict_auto_review(self) -> None:
+        class Session:
+            async def strict_auto_review(self):
+                return True
+
+        plan = asyncio.run(
+            build_tool_orchestrator_plan_for_session(
+                Session(),
+                explicit_requirement=ExecApprovalRequirement.skip(),
+                approval_policy=AskForApproval.NEVER,
+                file_system_sandbox_policy=FileSystemSandboxPolicy.default(),
+                sandbox_permissions=SandboxPermissions.USE_DEFAULT,
+                managed_network_active=False,
+            )
+        )
+
+        self.assertEqual(plan.approval.kind, OrchestratorApprovalKind.REQUESTED)
+        self.assertTrue(plan.approval.strict_auto_review)
+        self.assertTrue(plan.approval.guardian_review_id_required)
 
     def test_reject_if_not_approved_matches_rust_decisions(self) -> None:
         self.assertIsNone(reject_if_not_approved(ReviewDecision.approved()))

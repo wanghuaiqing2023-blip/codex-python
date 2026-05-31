@@ -111,6 +111,22 @@ class CorePermissionsInstructionsTests(unittest.TestCase):
         self.assertIn("with_additional_permissions", on_request)
         self.assertIn(request_permissions_tool_prompt_section(), on_request)
 
+    def test_on_request_orders_request_permissions_section_before_approved_prefixes(self):
+        policy = CommandPrefixPolicy.empty()
+        policy.add_prefix_rule(("npm", "test"))
+
+        text = approval_text(
+            AskForApproval.ON_REQUEST,
+            ApprovalsReviewer.USER,
+            policy,
+            exec_permission_approvals_enabled=True,
+            request_permissions_tool_enabled=True,
+        )
+
+        self.assertLess(text.index("# Permission Requests"), text.index("# request_permissions Tool"))
+        self.assertLess(text.index("# request_permissions Tool"), text.index("## Approved command prefixes"))
+        self.assertIn('["npm", "test"]', text)
+
     def test_auto_review_approval_suffix(self):
         text = approval_text(AskForApproval.ON_REQUEST, ApprovalsReviewer.AUTO_REVIEW)
 

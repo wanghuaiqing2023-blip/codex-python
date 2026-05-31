@@ -326,23 +326,44 @@ class ToolCallSource:
             return
         raise ValueError(f"unknown tool call source type: {self.type}")
 
+    @property
+    def is_direct(self) -> bool:
+        return self.type == "direct"
+
+    @property
+    def is_code_mode(self) -> bool:
+        return self.type == "code_mode"
+
 
 @dataclass(frozen=True)
 class ToolInvocation:
     call_id: str
-    tool_name: ToolName
+    tool_name: ToolName | str
     payload: ToolPayload
     source: ToolCallSource = field(default_factory=ToolCallSource.direct)
+    session: Any = None
+    turn: Any = None
+    cancellation_token: Any = None
+    tracker: Any = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.call_id, str):
-            raise TypeError("call_id must be a string")
-        if not isinstance(self.tool_name, ToolName):
-            raise TypeError("tool_name must be ToolName")
+        if not isinstance(self.call_id, str) or not self.call_id:
+            raise TypeError("call_id must be a non-empty string")
+        try:
+            tool_name = ToolName.from_value(self.tool_name)
+        except TypeError as exc:
+            raise TypeError("tool_name must be ToolName or string") from exc
+        if not tool_name.name:
+            raise TypeError("tool_name must be non-empty")
+        object.__setattr__(self, "tool_name", tool_name)
         if not isinstance(self.payload, ToolPayload):
             raise TypeError("payload must be ToolPayload")
         if not isinstance(self.source, ToolCallSource):
             raise TypeError("source must be ToolCallSource")
+
+    @property
+    def is_code_mode(self) -> bool:
+        return self.source.is_code_mode
 
 
 @dataclass(frozen=True)

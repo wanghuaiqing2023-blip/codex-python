@@ -1,8 +1,12 @@
 import json
 import unittest
+from unittest.mock import patch
 
 from pycodex.core.http_transport import (
+    CODEX_EXEC_ORIGINATOR,
+    CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR,
     HttpTransportConfig,
+    exec_originator_header_value,
     http_transport_config_from_provider,
     model_client_http_sampler,
     response_items_from_responses_payload,
@@ -12,7 +16,7 @@ from pycodex.core.http_transport import (
 from pycodex.core.client import ModelClient
 from pycodex.core.turn_sampler import PreparedSamplingRequest
 from pycodex.core.turn_runtime import UserTurnSamplingRequest, run_user_turn_sampling_from_session
-from pycodex.protocol import BaseInstructions, ContentItem, ResponseItem, UserInput
+from pycodex.protocol import BaseInstructions, ContentItem, ReasoningEffort, ResponseItem, UserInput
 
 
 class FakeResponse:
@@ -82,6 +86,7 @@ class HttpTransportTests(unittest.TestCase):
             seen["url"] = request.full_url
             seen["method"] = request.get_method()
             seen["body"] = json.loads(request.data.decode("utf-8"))
+            seen["headers"] = {key.lower(): value for key, value in request.header_items()}
             seen["content_type"] = request.headers["Content-type"]
             seen["authorization"] = request.headers["Authorization"]
             return FakeResponse(
@@ -114,6 +119,27 @@ class HttpTransportTests(unittest.TestCase):
         self.assertEqual(seen["authorization"], "Bearer test")
         self.assertEqual(result.response_items[0].content[0].text, "done")
 
+    def test_send_prepared_http_sampling_request_serializes_enum_values(self) -> None:
+        seen = {}
+
+        def opener(request):
+            seen["body"] = json.loads(request.data.decode("utf-8"))
+            seen["headers"] = {key.lower(): value for key, value in request.header_items()}
+            return FakeResponse({"output": []})
+
+        prepared = PreparedSamplingRequest(
+            sampling_request=UserTurnSamplingRequest(session=None, turn_context=None, request_plan=None),
+            prepared_request={"reasoning": {"effort": ReasoningEffort.HIGH}},
+        )
+
+        send_prepared_http_sampling_request(
+            prepared,
+            HttpTransportConfig("https://api.example.test/responses"),
+            opener=opener,
+        )
+
+        self.assertEqual(seen["body"], {"reasoning": {"effort": "high"}})
+
     def test_http_transport_config_from_provider_combines_endpoint_auth_and_client_headers(self) -> None:
         client = ModelClient(
             session_id="session",
@@ -135,14 +161,51 @@ class HttpTransportTests(unittest.TestCase):
         self.assertEqual(config.headers["Authorization"], "Bearer sk-test")
         self.assertEqual(config.headers["x-codex-beta-features"], "feature-a")
         self.assertEqual(config.headers["x-codex-turn-metadata"], "turn-meta")
+        self.assertEqual(config.headers["x-codex-installation-id"], "install")
+        self.assertEqual(config.headers["x-client-request-id"], "thread")
+        self.assertEqual(config.headers["session-id"], "session")
+        self.assertEqual(config.headers["thread-id"], "thread")
         self.assertEqual(config.headers["x-codex-window-id"], "thread:0")
         self.assertEqual(config.headers["x-responsesapi-include-timing-metrics"], "true")
+        self.assertEqual(config.headers["Originator"], CODEX_EXEC_ORIGINATOR)
+
+
+    def test_http_transport_config_skips_invalid_identity_header_values(self) -> None:
+        client = ModelClient(
+            session_id="session",
+            thread_id="bad\nthread",
+            installation_id="bad\rinstall",
+        )
+        provider = {"base_url": "https://api.example.test/v1"}
+
+        config = http_transport_config_from_provider(client, provider)
+
+        self.assertNotIn("x-codex-installation-id", config.headers)
+        self.assertNotIn("x-client-request-id", config.headers)
+        self.assertEqual(config.headers["session-id"], "session")
+        self.assertNotIn("thread-id", config.headers)
+
+    def test_http_transport_config_sets_exec_originator_and_supports_override(self) -> None:
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = {"base_url": "https://api.example.test/v1"}
+
+        self.assertEqual(exec_originator_header_value({}), "codex_exec")
+        self.assertEqual(
+            exec_originator_header_value({CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR: "codex_exec_override"}),
+            "codex_exec_override",
+        )
+
+        with patch.dict("os.environ", {CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR: "codex_exec_override"}):
+            config = http_transport_config_from_provider(client, provider)
+
+        self.assertEqual(config.headers["Originator"], "codex_exec_override")
 
     def test_model_client_http_sampler_can_run_user_turn_runtime(self) -> None:
         seen = {}
 
         def opener(request):
             seen["body"] = json.loads(request.data.decode("utf-8"))
+            seen["headers"] = {key.lower(): value for key, value in request.header_items()}
             return FakeResponse(
                 {
                     "output": [
@@ -200,6 +263,7 @@ class HttpTransportTests(unittest.TestCase):
             seen["authorization"] = request.headers["Authorization"]
             seen["window"] = request.headers["X-codex-window-id"]
             seen["body"] = json.loads(request.data.decode("utf-8"))
+            seen["headers"] = {key.lower(): value for key, value in request.header_items()}
             return FakeResponse(
                 {
                     "output": [

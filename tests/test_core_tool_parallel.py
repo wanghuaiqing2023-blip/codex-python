@@ -15,7 +15,7 @@ from pycodex.core.tool_parallel import (
     should_return_completed_after_cancellation,
     tool_runtime_decision,
 )
-from pycodex.core.tool_registry import RegisteredTool, ToolRegistry
+from pycodex.core.tool_registry import RegisteredTool, ToolCallSource, ToolRegistry
 from pycodex.core.tool_router import FunctionCallError, ToolCall, ToolRouter
 from pycodex.protocol import ToolName
 
@@ -172,6 +172,78 @@ class ToolParallelTests(unittest.TestCase):
         result = asyncio.run(runtime.handle_tool_call_with_source(call, dispatch))
 
         self.assertEqual(result.to_response_item().output.to_text(), "ok")
+
+    def test_inflight_cancellation_aborts_non_waiting_tool(self) -> None:
+        recorder = Recorder()
+        runtime = ToolCallRuntime(ToolRouter.from_parts(()), lifecycle_contributors=[recorder])
+        token = CancellationToken()
+        call = ToolCall(
+            tool_name=ToolName.plain("view_image"),
+            call_id="call-1",
+            payload=ToolPayload.function("{}"),
+        )
+
+        async def scenario():
+            started = asyncio.Event()
+
+            async def dispatch(received_call, source, received_token):
+                started.set()
+                await asyncio.sleep(10)
+
+            task = asyncio.create_task(
+                runtime.handle_tool_call_with_source(call, dispatch, cancellation_token=token, turn_id="turn-1")
+            )
+            await started.wait()
+            token.cancel()
+            return await task
+
+        result = asyncio.run(scenario())
+
+        self.assertIn("aborted by user", result.to_response_item().output.to_text())
+        self.assertEqual(recorder.outcomes, [ToolCallOutcome.aborted()])
+
+    def test_inflight_cancellation_waits_for_runtime_cleanup_then_aborts(self) -> None:
+        recorder = Recorder()
+        registry = ToolRegistry.from_tools(
+            [RegisteredTool.plain("view_image", waits_for_cancellation=True)]
+        )
+        runtime = ToolCallRuntime(ToolRouter.from_parts(registry), lifecycle_contributors=[recorder])
+        token = CancellationToken()
+        call = ToolCall(
+            tool_name=ToolName.plain("view_image"),
+            call_id="call-1",
+            payload=ToolPayload.function("{}"),
+        )
+
+        async def scenario():
+            started = asyncio.Event()
+            cleanup_started = asyncio.Event()
+            allow_cleanup = asyncio.Event()
+
+            async def dispatch(received_call, source, received_token):
+                started.set()
+                await received_token.cancelled()
+                cleanup_started.set()
+                await allow_cleanup.wait()
+                return ToolCallResult(
+                    call_id=received_call.call_id,
+                    payload=received_call.payload,
+                    result=FunctionToolOutput.from_text("cleanup complete", True),
+                )
+
+            task = asyncio.create_task(
+                runtime.handle_tool_call_with_source(call, dispatch, cancellation_token=token, turn_id="turn-1")
+            )
+            await started.wait()
+            token.cancel()
+            await cleanup_started.wait()
+            allow_cleanup.set()
+            return await task
+
+        result = asyncio.run(scenario())
+
+        self.assertIn("aborted by user", result.to_response_item().output.to_text())
+        self.assertEqual(recorder.outcomes, [ToolCallOutcome.aborted()])
 
     def test_handle_tool_call_wraps_router_dispatch_output(self) -> None:
         class Router(ToolRouter):

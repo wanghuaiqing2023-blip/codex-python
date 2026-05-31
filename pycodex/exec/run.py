@@ -244,7 +244,7 @@ def load_output_schema(path: str | Path | None) -> JsonValue | None:
     schema_path = Path(path)
     try:
         schema_str = schema_path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         raise ExecRunError(f"Failed to read output schema file {schema_path}: {exc}") from exc
     try:
         return json.loads(schema_str)

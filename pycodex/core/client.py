@@ -14,7 +14,7 @@ from enum import Enum
 from typing import Any, Callable, Mapping, MutableMapping, Sequence
 
 from pycodex.core.client_common import Prompt
-from pycodex.protocol import InternalSessionSource, ResponseItem, SessionSource, SubAgentSource
+from pycodex.protocol import InternalSessionSource, ResponseItem, ServiceTier, SessionSource, SubAgentSource
 
 
 OPENAI_BETA_HEADER = "OpenAI-Beta"
@@ -256,21 +256,19 @@ class ModelClient:
     def build_subagent_headers(self) -> dict[str, str]:
         headers: dict[str, str] = {}
         subagent = subagent_header_value(self.state.session_source)
-        if subagent is not None:
-            headers[X_OPENAI_SUBAGENT_HEADER] = subagent
+        insert_header_if_valid(headers, X_OPENAI_SUBAGENT_HEADER, subagent)
         if (
             self.state.session_source.type == "internal"
             and self.state.session_source.internal_source == InternalSessionSource.MEMORY_CONSOLIDATION
         ):
-            headers[X_OPENAI_MEMGEN_REQUEST_HEADER] = "true"
+            insert_header_if_valid(headers, X_OPENAI_MEMGEN_REQUEST_HEADER, "true")
         return headers
 
     def build_responses_identity_headers(self) -> dict[str, str]:
         headers = self.build_subagent_headers()
         parent_thread_id = parent_thread_id_header_value(self.state.session_source)
-        if parent_thread_id is not None:
-            headers[X_CODEX_PARENT_THREAD_ID_HEADER] = parent_thread_id
-        headers[X_CODEX_WINDOW_ID_HEADER] = self.current_window_id()
+        insert_header_if_valid(headers, X_CODEX_PARENT_THREAD_ID_HEADER, parent_thread_id)
+        insert_header_if_valid(headers, X_CODEX_WINDOW_ID_HEADER, self.current_window_id())
         return headers
 
     def build_ws_client_metadata(self, turn_metadata_header: str | None = None) -> dict[str, str]:
@@ -278,7 +276,9 @@ class ModelClient:
             X_CODEX_INSTALLATION_ID_HEADER: self.state.installation_id,
             X_CODEX_WINDOW_ID_HEADER: self.current_window_id(),
         }
-        metadata.update(self.build_subagent_headers())
+        subagent = subagent_header_value(self.state.session_source)
+        if subagent is not None:
+            metadata[X_OPENAI_SUBAGENT_HEADER] = subagent
         parent_thread_id = parent_thread_id_header_value(self.state.session_source)
         if parent_thread_id is not None:
             metadata[X_CODEX_PARENT_THREAD_ID_HEADER] = parent_thread_id
@@ -312,13 +312,12 @@ class ModelClient:
             turn_state,
             parse_turn_metadata_header(turn_metadata_header),
         )
-        headers["x-client-request-id"] = str(self.state.thread_id)
-        headers["x-session-id"] = str(self.state.session_id)
-        headers["x-thread-id"] = str(self.state.thread_id)
+        insert_header_if_valid(headers, "x-client-request-id", str(self.state.thread_id))
+        headers.update(build_session_headers(str(self.state.session_id), str(self.state.thread_id)))
         headers.update(self.build_responses_identity_headers())
-        headers[OPENAI_BETA_HEADER] = RESPONSES_WEBSOCKETS_V2_BETA_HEADER_VALUE
+        insert_header_if_valid(headers, OPENAI_BETA_HEADER, RESPONSES_WEBSOCKETS_V2_BETA_HEADER_VALUE)
         if self.state.include_timing_metrics:
-            headers[X_RESPONSESAPI_INCLUDE_TIMING_METRICS_HEADER] = "true"
+            insert_header_if_valid(headers, X_RESPONSESAPI_INCLUDE_TIMING_METRICS_HEADER, "true")
         return headers
 
     def build_responses_request(
@@ -566,10 +565,29 @@ def parse_turn_metadata_header(turn_metadata_header: str | None) -> str | None:
         return None
     if not isinstance(turn_metadata_header, str):
         raise TypeError("turn_metadata_header must be a string or None")
-    if "\r" in turn_metadata_header or "\n" in turn_metadata_header:
+    if not _valid_header_value(turn_metadata_header):
         return None
     return turn_metadata_header
 
+
+def _valid_header_value(value: str) -> bool:
+    return "\r" not in value and "\n" not in value
+
+
+def insert_header_if_valid(headers: dict[str, str], name: str, value: str | None) -> None:
+    if value is not None and _valid_header_value(value):
+        headers[name] = value
+
+
+def build_session_headers(session_id: str | None, thread_id: str | None) -> dict[str, str]:
+    """Return Rust codex-api session headers for Responses requests."""
+
+    headers: dict[str, str] = {}
+    if session_id is not None:
+        insert_header_if_valid(headers, "session-id", str(session_id))
+    if thread_id is not None:
+        insert_header_if_valid(headers, "thread-id", str(thread_id))
+    return headers
 
 def build_responses_headers(
     beta_features_header: str | None,
@@ -577,12 +595,14 @@ def build_responses_headers(
     turn_metadata_header: str | None,
 ) -> dict[str, str]:
     headers: dict[str, str] = {}
-    if beta_features_header:
-        headers["x-codex-beta-features"] = beta_features_header
+    if beta_features_header and _valid_header_value(beta_features_header):
+        insert_header_if_valid(headers, "x-codex-beta-features", beta_features_header)
     if turn_state is not None and turn_state.get():
-        headers[X_CODEX_TURN_STATE_HEADER] = turn_state.get() or ""
-    if turn_metadata_header is not None:
-        headers[X_CODEX_TURN_METADATA_HEADER] = turn_metadata_header
+        state = turn_state.get() or ""
+        if _valid_header_value(state):
+            insert_header_if_valid(headers, X_CODEX_TURN_STATE_HEADER, state)
+    if turn_metadata_header is not None and _valid_header_value(turn_metadata_header):
+        insert_header_if_valid(headers, X_CODEX_TURN_METADATA_HEADER, turn_metadata_header)
     return headers
 
 
@@ -622,8 +642,16 @@ def build_reasoning(model_info: Any, effort: Any, summary: Any) -> dict[str, Any
     if not getattr(model_info, "supports_reasoning_summaries", False):
         return None
     default_effort = getattr(model_info, "default_reasoning_level", None)
-    effective_summary = None if str(summary).lower() in {"none", "reasoningsummary.none"} else summary
+    effective_summary = None if _reasoning_summary_is_none(summary) else summary
     return {"effort": effort or default_effort, "summary": effective_summary}
+
+
+def _reasoning_summary_is_none(summary: Any) -> bool:
+    if summary is None:
+        return True
+    if isinstance(summary, Enum):
+        return str(summary.value).lower() == "none"
+    return str(summary).lower() in {"none", "reasoningsummary.none"}
 
 
 def create_text_param_for_request(
@@ -660,20 +688,33 @@ def create_tools_json_for_responses_api(tools: Sequence[Any]) -> list[dict[str, 
             raise TypeError("tool must be a mapping or expose to_mapping()")
         if not isinstance(value, Mapping):
             raise TypeError("tool.to_mapping() must return a mapping")
-        tools_json.append(dict(value))
+        serialized = _serialize_request_value(value)
+        if not isinstance(serialized, Mapping):
+            raise TypeError("tool serialization must produce a mapping")
+        tools_json.append(dict(serialized))
     return tools_json
 
 
 def serialize_responses_request(request: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(request, Mapping):
         raise TypeError("request must be a mapping")
-    serialized = dict(request)
+    serialized = {str(key): _serialize_request_value(value) for key, value in request.items()}
     if serialized.get("instructions") == "":
         serialized.pop("instructions", None)
     for key in ("service_tier", "prompt_cache_key", "text", "client_metadata"):
         if serialized.get(key) is None:
             serialized.pop(key, None)
     return serialized
+
+
+def _serialize_request_value(value: Any) -> Any:
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, Mapping):
+        return {str(key): _serialize_request_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_serialize_request_value(item) for item in value]
+    return value
 
 
 def response_create_client_metadata(
@@ -2499,11 +2540,26 @@ def stamp_ws_stream_request_start_ms(request: MutableMapping[str, Any]) -> None:
     metadata[X_CODEX_WS_STREAM_REQUEST_START_MS_CLIENT_METADATA_KEY] = str(int(time.time() * 1000))
 
 
-def _service_tier_for_request(model_info: Any, service_tier: str | None) -> str | None:
+def _service_tier_for_request(model_info: Any, service_tier: Any | None) -> str | None:
+    service_tier = _service_tier_request_value(service_tier)
     method = getattr(model_info, "service_tier_for_request", None)
     if callable(method):
         return method(service_tier)
     return service_tier
+
+
+def _service_tier_request_value(service_tier: Any | None) -> str | None:
+    if service_tier is None:
+        return None
+    request_value = getattr(service_tier, "request_value", None)
+    if callable(request_value):
+        return str(request_value())
+    if isinstance(service_tier, str):
+        parsed = ServiceTier.from_request_value(service_tier)
+        return parsed.request_value() if parsed is not None else service_tier
+    if isinstance(service_tier, Enum):
+        return str(service_tier.value)
+    return str(service_tier)
 
 
 def _starts_with(items: Sequence[Any], prefix: Sequence[Any]) -> bool:
@@ -2570,6 +2626,8 @@ __all__ = [
     "WebsocketStreamOutcome",
     "build_reasoning",
     "build_responses_headers",
+    "build_session_headers",
+    "insert_header_if_valid",
     "create_text_param_for_request",
     "create_tools_json_for_responses_api",
     "parent_thread_id_header_value",

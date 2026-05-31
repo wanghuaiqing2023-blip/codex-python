@@ -33,6 +33,7 @@ from pycodex.protocol import (
     ThreadSource,
     ThreadId,
     TurnContextItem,
+    TurnItem,
     UserInput,
 )
 
@@ -40,6 +41,7 @@ from .run import ExecRunPlan
 from .websocket import StdlibWebSocket, encode_websocket_text_message, websocket_frame_event
 
 JsonValue = Any
+RESUME_LOOKUP_REQUEST_ID = 0
 REMOTE_APP_SERVER_CONNECT_TIMEOUT_SECONDS = 10
 REMOTE_APP_SERVER_INITIALIZE_TIMEOUT_SECONDS = 10
 REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE = 128 << 20
@@ -429,6 +431,7 @@ class TurnStartParams:
     thread_id: str
     input: tuple[UserInput, ...]
     responsesapi_client_metadata: JsonValue | None = None
+    additional_context: JsonValue | None = None
     environments: JsonValue | None = None
     cwd: Path | str | None = None
     runtime_workspace_roots: tuple[Path, ...] | None = None
@@ -458,6 +461,7 @@ class TurnStartParams:
                 "threadId": self.thread_id,
                 "input": [item.to_mapping() for item in self.input],
                 "responsesapiClientMetadata": _to_json(self.responsesapi_client_metadata),
+                "additionalContext": _to_json(self.additional_context),
                 "environments": _to_json(self.environments),
                 "cwd": str(self.cwd) if self.cwd is not None else None,
                 "runtimeWorkspaceRoots": _paths(self.runtime_workspace_roots),
@@ -2083,8 +2087,9 @@ def json_rpc_error_from_mapping(value: JsonValue) -> JsonRpcError:
 
 
 def unsupported_remote_server_request_error(method: str) -> JsonRpcError:
+    normalized_method = _SERVER_REQUEST_METHOD_ALIASES.get(str(method), str(method))
     return JsonRpcError(
-        message=f"unsupported remote app-server request `{method}`",
+        message=f"unsupported remote app-server request `{normalized_method}`",
         code=-32601,
         data=None,
     )
@@ -2688,13 +2693,13 @@ def approvals_reviewer_override_from_config(config: ExecSessionConfig) -> Approv
 
 
 def _session_instruction_config(config: ExecSessionConfig) -> dict[str, JsonValue] | None:
-    instruction_config = _drop_none(
-        {
-            "userInstructions": config.user_instructions,
-            "instructionSources": [str(path) for path in config.instruction_sources],
-            "startupWarnings": list(config.startup_warnings),
-        }
-    )
+    instruction_config = {}
+    if config.user_instructions is not None:
+        instruction_config["userInstructions"] = config.user_instructions
+    if config.instruction_sources:
+        instruction_config["instructionSources"] = [str(path) for path in config.instruction_sources]
+    if config.startup_warnings:
+        instruction_config["startupWarnings"] = list(config.startup_warnings)
     if not instruction_config:
         return None
     return instruction_config
@@ -2843,6 +2848,8 @@ def next_initial_operation_request(
 def initial_operation_result_from_response(method: str, response: JsonValue) -> InitialOperationResult:
     turn = _required_field(response, "turn")
     task_id = str(_required_field(turn, "id"))
+    if method == "turn/start":
+        return InitialOperationResult(task_id=task_id)
     if method == "review/start":
         review_thread_id = str(_required_field(response, "reviewThreadId", "review_thread_id"))
         return InitialOperationResult(
@@ -2855,7 +2862,7 @@ def initial_operation_result_from_response(method: str, response: JsonValue) -> 
                 },
             },
         )
-    return InitialOperationResult(task_id=task_id)
+    raise ValueError(f"unsupported initial operation response method `{method}`")
 
 
 def task_id_from_initial_operation_response(method: str, response: JsonValue) -> str:
@@ -3545,6 +3552,22 @@ def resume_thread_id_lookup_step(
     )
 
 
+def resume_thread_id_lookup_request(
+    config: ExecSessionConfig,
+    resume_args: JsonValue,
+    *,
+    cursor: str | None = None,
+) -> ResumeThreadIdLookup:
+    """Build Rust's resume lookup step with fixed request id 0."""
+
+    return resume_thread_id_lookup_step(
+        RESUME_LOOKUP_REQUEST_ID,
+        config,
+        resume_args,
+        cursor=cursor,
+    )
+
+
 def resume_thread_id_from_list_response(
     response: JsonValue,
     config: ExecSessionConfig,
@@ -3576,6 +3599,10 @@ def resume_thread_id_from_local_sources(
 
     state_thread_id = _optional_string(_field(state_db_thread, "id", "threadId", "thread_id"))
     if state_thread_id is not None:
+        if not bool(_field(resume_args, "all")):
+            state_cwd = _field(state_db_thread, "cwd")
+            if state_cwd is not None and not cwds_match(config.cwd, Path(str(state_cwd))):
+                return None
         return state_thread_id
 
     meta = _field(rollout_meta, "meta") or rollout_meta
@@ -3593,7 +3620,7 @@ def resume_thread_id_from_local_sources(
 def parse_latest_turn_context_cwd(path: Path | str) -> Path | None:
     try:
         text = Path(path).read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
     for line in reversed(text.splitlines()):
         trimmed = line.strip()
@@ -3697,7 +3724,7 @@ def canceled_mcp_server_elicitation_response() -> dict[str, JsonValue]:
 
 
 def server_request_method_name(request: JsonValue) -> str:
-    raw = _field(request, "method", "type")
+    raw = _field(request, "method", "type", "kind")
     if raw is None:
         return "unknown"
     return _SERVER_REQUEST_METHOD_ALIASES.get(str(raw), str(raw))
@@ -4257,7 +4284,10 @@ def turn_items_for_thread(thread: JsonValue, turn_id: str) -> JsonValue | None:
         return None
     for turn in turns:
         if _field(turn, "id") == turn_id:
-            return _field(turn, "items")
+            items = _field(turn, "items")
+            if isinstance(items, list | tuple):
+                return [_to_json_preserve_none(item) for item in items]
+            return items
     return None
 
 
@@ -4348,6 +4378,23 @@ def _to_json_preserve_none(value: JsonValue) -> JsonValue:
     return value
 
 
+def _turn_item_to_app_server_json(value: JsonValue) -> JsonValue:
+    if isinstance(value, TurnItem):
+        return value.to_app_server_mapping()
+    if isinstance(value, Mapping):
+        try:
+            return TurnItem.from_mapping(value).to_app_server_mapping()
+        except (KeyError, TypeError, ValueError):
+            return _to_json_preserve_none(value)
+    return _to_json_preserve_none(value)
+
+
+def _turn_items_to_app_server_json(value: JsonValue) -> JsonValue:
+    if isinstance(value, tuple | list):
+        return [_turn_item_to_app_server_json(item) for item in value]
+    return _to_json_preserve_none(value)
+
+
 def _compact_json(value: JsonValue) -> str:
     return json.dumps(_to_json_preserve_none(value), ensure_ascii=False, separators=(",", ":"))
 
@@ -4386,7 +4433,7 @@ def _notification_with_turn_items(notification: JsonValue, items: JsonValue) -> 
         return notification
 
     updated_turn = dict(turn)
-    updated_turn["items"] = _to_json_preserve_none(items)
+    updated_turn["items"] = _turn_items_to_app_server_json(items)
     updated_params = dict(params)
     updated_params["turn"] = updated_turn
 
@@ -4428,40 +4475,9 @@ _SERVER_REQUEST_METHOD_ALIASES = {
 
 
 def _notification_method(notification: JsonValue) -> str | None:
-    raw = _field(notification, "method", "type")
-    if raw is None:
-        return None
-    raw = str(raw)
-    aliases = {
-        "ConfigWarning": "configWarning",
-        "config_warning": "configWarning",
-        "DeprecationNotice": "deprecationNotice",
-        "deprecation_notice": "deprecationNotice",
-        "Error": "error",
-        "HookStarted": "hook/started",
-        "hook_started": "hook/started",
-        "HookCompleted": "hook/completed",
-        "hook_completed": "hook/completed",
-        "ItemStarted": "item/started",
-        "item_started": "item/started",
-        "ItemCompleted": "item/completed",
-        "item_completed": "item/completed",
-        "ModelRerouted": "model/rerouted",
-        "model_rerouted": "model/rerouted",
-        "ModelVerification": "model/verification",
-        "model_verification": "model/verification",
-        "ThreadTokenUsageUpdated": "thread/tokenUsage/updated",
-        "thread_token_usage_updated": "thread/tokenUsage/updated",
-        "TurnCompleted": "turn/completed",
-        "turn_completed": "turn/completed",
-        "TurnDiffUpdated": "turn/diff/updated",
-        "turn_diff_updated": "turn/diff/updated",
-        "TurnPlanUpdated": "turn/plan/updated",
-        "turn_plan_updated": "turn/plan/updated",
-        "TurnStarted": "turn/started",
-        "turn_started": "turn/started",
-    }
-    return aliases.get(raw, raw)
+    from .event_processor import notification_method
+
+    return notification_method(notification)
 
 
 def _notification_params(notification: JsonValue) -> JsonValue:
@@ -4574,6 +4590,7 @@ __all__ = [
     "RemoteWorkerExitResult",
     "InitialOperationRequest",
     "InitialOperationResult",
+    "RESUME_LOOKUP_REQUEST_ID",
     "RequestIdSequencer",
     "ReviewStartParams",
     "ResumeThreadIdListResult",
@@ -4711,6 +4728,7 @@ __all__ = [
     "resume_lookup_model_providers",
     "resume_thread_id_from_local_sources",
     "resume_thread_id_from_list_response",
+    "resume_thread_id_lookup_request",
     "resume_thread_id_lookup_step",
     "resolve_remote_addr",
     "resolve_remote_endpoint",

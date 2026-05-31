@@ -13,7 +13,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from pycodex.protocol import Op, SessionSource, ThreadMemoryMode, W3cTraceContext
+from pycodex.protocol import CollaborationMode, ModeKind, Op, SessionSource, Settings, ThreadMemoryMode, W3cTraceContext
+
+SETTINGS_UNSET = object()
+_UNSET = SETTINGS_UNSET
 
 
 class CodexThreadError(Exception):
@@ -77,9 +80,9 @@ class CodexThreadSettingsOverrides:
     active_permission_profile: Any = None
     windows_sandbox_level: Any = None
     model: str | None = None
-    effort: Any = None
+    effort: Any = _UNSET
     summary: Any = None
-    service_tier: str | None | object = None
+    service_tier: str | None | object = _UNSET
     collaboration_mode: Any = None
     personality: Any = None
 
@@ -97,12 +100,42 @@ class CodexThreadSettingsOverrides:
     def default(cls) -> "CodexThreadSettingsOverrides":
         return cls()
 
+    @classmethod
+    def from_thread_settings_overrides(cls, overrides: Any) -> "CodexThreadSettingsOverrides":
+        """Build core settings overrides from protocol ``ThreadSettingsOverrides``.
+
+        The protocol layer uses its own private sentinel for double-option
+        fields such as ``effort`` and ``service_tier``.  Normalize that shape to
+        this module's shared unset sentinel so downstream settings updates keep
+        Rust's "omitted vs explicit null" distinction.
+        """
+
+        return cls(
+            cwd=getattr(overrides, "cwd", None),
+            workspace_roots=getattr(overrides, "workspace_roots", None),
+            profile_workspace_roots=getattr(overrides, "profile_workspace_roots", None),
+            approval_policy=getattr(overrides, "approval_policy", None),
+            approvals_reviewer=getattr(overrides, "approvals_reviewer", None),
+            sandbox_policy=getattr(overrides, "sandbox_policy", None),
+            permission_profile=getattr(overrides, "permission_profile", None),
+            active_permission_profile=getattr(overrides, "active_permission_profile", None),
+            windows_sandbox_level=getattr(overrides, "windows_sandbox_level", None),
+            model=getattr(overrides, "model", None),
+            effort=_protocol_nullable_setting(getattr(overrides, "effort", SETTINGS_UNSET)),
+            summary=getattr(overrides, "summary", None),
+            service_tier=_protocol_nullable_setting(getattr(overrides, "service_tier", SETTINGS_UNSET)),
+            collaboration_mode=getattr(overrides, "collaboration_mode", None),
+            personality=getattr(overrides, "personality", None),
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class SessionSettingsUpdate:
     cwd: Path | None = None
     workspace_roots: tuple[Path, ...] | None = None
     profile_workspace_roots: tuple[Path, ...] | None = None
+    environments: Any = None
+    final_output_json_schema: Any = _UNSET
     approval_policy: Any = None
     approvals_reviewer: Any = None
     sandbox_policy: Any = None
@@ -111,7 +144,7 @@ class SessionSettingsUpdate:
     windows_sandbox_level: Any = None
     collaboration_mode: Any = None
     reasoning_summary: Any = None
-    service_tier: Any = None
+    service_tier: Any = _UNSET
     personality: Any = None
 
 
@@ -245,8 +278,14 @@ class CodexThread:
         if collaboration_mode is None:
             session = _nested_get(self.codex, "session")
             current = await _maybe_await(_call_optional(session, "collaboration_mode"))
+            if current is None:
+                current = _default_collaboration_mode(session, self._session_configured, overrides.model)
             updater = getattr(current, "with_updates", None)
-            collaboration_mode = updater(overrides.model, overrides.effort, None) if callable(updater) else current
+            collaboration_mode = (
+                _with_collaboration_updates(updater, overrides.model, overrides.effort)
+                if callable(updater)
+                else current
+            )
 
         return SessionSettingsUpdate(
             cwd=overrides.cwd,
@@ -334,7 +373,10 @@ class CodexThread:
         return state_db() if callable(state_db) else None
 
     async def config_snapshot(self) -> ThreadConfigSnapshot:
-        return await _call_required(self.codex, "thread_config_snapshot")
+        snapshot = _call_optional(self.codex, "thread_config_snapshot")
+        if snapshot is not None:
+            return await _maybe_await(snapshot)
+        return await _call_required(_nested_get(self.codex, "session"), "thread_config_snapshot")
 
     async def config(self) -> Any:
         return await _call_required(_nested_get(self.codex, "session"), "get_config")
@@ -412,7 +454,54 @@ def _call_optional(target: Any, name: str, *args: Any) -> Any:
     method = getattr(target, name, None)
     if callable(method):
         return method(*args)
+    if not args:
+        return method
     return None
+
+
+def _default_collaboration_mode(session: Any, session_configured: Any, override_model: str | None) -> CollaborationMode:
+    return CollaborationMode(
+        mode=ModeKind.DEFAULT,
+        settings=Settings(model=_default_model(session, session_configured, override_model)),
+    )
+
+
+def _default_model(session: Any, session_configured: Any, override_model: str | None) -> str:
+    if override_model is not None:
+        return override_model
+    model = _field_or_mapping(session_configured, "model")
+    if model is not None:
+        return str(model)
+    model_info = getattr(session, "model_info", None)
+    slug = getattr(model_info, "slug", None)
+    if slug is not None:
+        return str(slug)
+    return ""
+
+
+def _with_collaboration_updates(updater: Any, model: str | None, effort: Any) -> Any:
+    kwargs: dict[str, Any] = {}
+    if model is not None:
+        kwargs["model"] = model
+    if effort is not SETTINGS_UNSET:
+        kwargs["effort"] = effort
+    try:
+        return updater(**kwargs)
+    except TypeError:
+        legacy_effort = None if effort is SETTINGS_UNSET else effort
+        return updater(model, legacy_effort, None)
+
+
+def _protocol_nullable_setting(value: Any) -> Any:
+    if value is SETTINGS_UNSET or type(value) is object:
+        return SETTINGS_UNSET
+    return value
+
+
+def _field_or_mapping(value: Any, name: str) -> Any:
+    if isinstance(value, Mapping):
+        return value.get(name)
+    return getattr(value, name, None)
 
 
 async def _call_required(target: Any, name: str, *args: Any) -> Any:

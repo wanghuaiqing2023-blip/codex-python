@@ -14,8 +14,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from pycodex.core.handler_utils import resolve_tool_environment
 from pycodex.core.hosted_spec import FreeformToolFormat, ToolSpec
-from pycodex.core.tool_context import ToolPayload
+from pycodex.core.tool_context import ApplyPatchToolOutput, ToolPayload
+from pycodex.core.tool_router import FunctionCallError
 from pycodex.core.tool_registry import CoreToolRuntime
 from pycodex.protocol import FileChange
 from pycodex.protocol import ToolName
@@ -713,6 +715,130 @@ class ApplyPatchHandler(CoreToolRuntime):
 
     def matches_kind(self, payload: ToolPayload) -> bool:
         return payload.type == "custom"
+
+    def handle(self, invocation: Any) -> ApplyPatchToolOutput:
+        resolved = resolve_apply_patch_invocation(
+            invocation,
+            multi_environment=self.multi_environment,
+        )
+        verified = verify_apply_patch_args(resolved.args, resolved.cwd)
+        if verified.type == "body":
+            assert verified.body is not None
+            return ApplyPatchToolOutput.from_text(apply_patch_action_to_disk(verified.body))
+        if verified.type == "correctness_error":
+            raise FunctionCallError.respond_to_model(
+                f"apply_patch verification failed: {verified.error}"
+            )
+        raise FunctionCallError.respond_to_model(
+            "apply_patch handler received invalid patch input"
+        )
+
+
+@dataclass(frozen=True)
+class ResolvedApplyPatchInvocation:
+    args: ApplyPatchArgs
+    selected_environment_id: str | None
+    turn_environment: Any
+    cwd: Path
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.args, ApplyPatchArgs):
+            raise TypeError("args must be ApplyPatchArgs")
+        if self.selected_environment_id is not None:
+            _ensure_str(self.selected_environment_id, "selected_environment_id")
+        if not isinstance(self.cwd, Path):
+            object.__setattr__(self, "cwd", Path(self.cwd))
+
+
+def resolve_apply_patch_invocation(
+    invocation: Any,
+    *,
+    multi_environment: bool = False,
+) -> ResolvedApplyPatchInvocation:
+    payload = getattr(invocation, "payload", None)
+    if payload is None or getattr(payload, "type", None) != "custom":
+        raise FunctionCallError.respond_to_model("apply_patch handler received unsupported payload")
+    patch_input = getattr(payload, "input", None)
+    if not isinstance(patch_input, str):
+        raise FunctionCallError.respond_to_model("apply_patch handler received unsupported payload")
+    try:
+        args = parse_patch(patch_input)
+    except ApplyPatchParseError as parse_error:
+        raise FunctionCallError.respond_to_model(
+            f"apply_patch verification failed: {parse_error}"
+        ) from parse_error
+    selected_environment_id = require_apply_patch_environment_id(
+        args.environment_id,
+        multi_environment,
+    )
+    turn_environment = resolve_tool_environment(
+        getattr(invocation, "turn", None),
+        selected_environment_id,
+    )
+    if turn_environment is None:
+        raise FunctionCallError.respond_to_model("apply_patch is unavailable in this session")
+    return ResolvedApplyPatchInvocation(
+        args=args,
+        selected_environment_id=selected_environment_id,
+        turn_environment=turn_environment,
+        cwd=Path(getattr(turn_environment, "cwd")),
+    )
+
+
+def require_apply_patch_environment_id(
+    parsed_environment_id: str | None,
+    allow_environment_id: bool,
+) -> str | None:
+    if parsed_environment_id is not None and not allow_environment_id:
+        raise FunctionCallError.respond_to_model(
+            "apply_patch environment selection is unavailable for this turn"
+        )
+    return parsed_environment_id
+
+
+def apply_patch_action_to_disk(action: ApplyPatchAction) -> str:
+    if not isinstance(action, ApplyPatchAction):
+        raise TypeError("action must be ApplyPatchAction")
+    added: list[Path] = []
+    modified: list[Path] = []
+    deleted: list[Path] = []
+    for path, change in action.changes.items():
+        if change.type == "add":
+            assert change.content is not None
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(change.content, encoding="utf-8")
+            added.append(path)
+            continue
+        if change.type == "delete":
+            path.unlink()
+            deleted.append(path)
+            continue
+        if change.type == "update":
+            if change.new_content is None:
+                raise ApplyPatchError.compute_replacements(
+                    f"missing computed content for update {path}"
+                )
+            output_path = change.move_path or path
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(change.new_content, encoding="utf-8")
+            if change.move_path is not None and change.move_path != path:
+                path.unlink()
+            modified.append(path)
+            continue
+        raise ValueError(f"unknown apply_patch file change type: {change.type}")
+    return apply_patch_summary(added, modified, deleted)
+
+
+def apply_patch_summary(
+    added: list[Path] | tuple[Path, ...],
+    modified: list[Path] | tuple[Path, ...],
+    deleted: list[Path] | tuple[Path, ...],
+) -> str:
+    lines = ["Success. Updated the following files:"]
+    lines.extend(f"A {path}" for path in added)
+    lines.extend(f"M {path}" for path in modified)
+    lines.extend(f"D {path}" for path in deleted)
+    return "\n".join(lines) + "\n"
 
 
 def convert_apply_patch_to_protocol(
@@ -1550,14 +1676,19 @@ __all__ = [
     "Hunk",
     "MaybeApplyPatch",
     "MaybeApplyPatchVerified",
+    "ResolvedApplyPatchInvocation",
     "StreamingPatchParser",
     "UpdateFileChunk",
+    "apply_patch_action_to_disk",
+    "apply_patch_summary",
     "convert_apply_patch_to_protocol",
     "create_apply_patch_freeform_tool",
     "derive_new_contents_from_chunks",
     "maybe_parse_apply_patch",
     "maybe_parse_apply_patch_verified",
     "parse_patch",
+    "require_apply_patch_environment_id",
+    "resolve_apply_patch_invocation",
     "unified_diff_from_chunks",
     "unified_diff_from_chunks_with_context",
     "verify_apply_patch_args",

@@ -3,20 +3,25 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from urllib.parse import urljoin
 
-from pycodex.core.client import ModelClient, ModelClientSession, RESPONSES_ENDPOINT, build_responses_headers
+from pycodex.core.client import ModelClient, ModelClientSession, RESPONSES_ENDPOINT, build_responses_headers, build_session_headers, insert_header_if_valid
 from pycodex.core.turn_sampler import PreparedSamplingRequest, PreparedSamplingResult
 from pycodex.core.turn_sampler import sample_with_model_client_session
 from pycodex.core.turn_runtime import BuiltToolsFn, SamplerFn, UserTurnSamplingResult
 from pycodex.core.turn_runtime import run_user_turn_sampling_from_session
 from pycodex.protocol import UserInput
 from pycodex.protocol import ResponseItem
+
+CODEX_EXEC_ORIGINATOR = "codex_exec"
+CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR = "CODEX_INTERNAL_ORIGINATOR_OVERRIDE"
 
 
 @dataclass(frozen=True)
@@ -45,10 +50,14 @@ def http_transport_config_from_provider(
         None,
         turn_metadata_header,
     )
+    insert_header_if_valid(headers, "x-codex-installation-id", str(model_client.state.installation_id))
+    insert_header_if_valid(headers, "x-client-request-id", str(model_client.state.thread_id))
+    headers.update(build_session_headers(str(model_client.state.session_id), str(model_client.state.thread_id)))
     headers.update(model_client.build_responses_identity_headers())
     if model_client.state.include_timing_metrics:
-        headers["x-responsesapi-include-timing-metrics"] = "true"
+        insert_header_if_valid(headers, "x-responsesapi-include-timing-metrics", "true")
     headers.update(_auth_headers_from_value(auth if auth is not None else getattr(provider, "auth", None)))
+    insert_header_if_valid(headers, "Originator", exec_originator_header_value())
     return HttpTransportConfig(resolved_endpoint, headers=headers, timeout=timeout)
 
 
@@ -85,6 +94,8 @@ def send_prepared_http_sampling_request(
 
 
 def _to_json_compatible(value: Any) -> Any:
+    if isinstance(value, Enum):
+        return value.value
     if hasattr(value, "to_mapping"):
         return _to_json_compatible(value.to_mapping())
     if isinstance(value, Mapping):
@@ -179,6 +190,12 @@ def _auth_headers_from_value(auth: Any) -> dict[str, str]:
     return {}
 
 
+def exec_originator_header_value(env: Mapping[str, str] | None = None) -> str:
+    source = os.environ if env is None else env
+    override = source.get(CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR)
+    return override if override else CODEX_EXEC_ORIGINATOR
+
+
 def model_client_http_sampler(
     model_session: ModelClientSession,
     config: HttpTransportConfig,
@@ -212,9 +229,14 @@ async def run_user_turn_http_sampling_from_session(
     effort: Any = None,
     summary: Any = None,
     service_tier: str | None = None,
+    thread_settings: Any = None,
+    responsesapi_client_metadata: Mapping[str, str] | None = None,
+    additional_context: Mapping[str, Any] | None = None,
+    environments: tuple[Any, ...] | list[Any] | None = None,
     turn_metadata_header: str | None = None,
     output_schema: Any = None,
     output_schema_strict: bool = True,
+    max_tool_followups: int = 8,
 ) -> UserTurnSamplingResult:
     """Run a user turn through the stdlib HTTP sampler path."""
 
@@ -238,8 +260,13 @@ async def run_user_turn_http_sampling_from_session(
         effort=effort,
         summary=summary,
         service_tier=service_tier,
+        thread_settings=thread_settings,
+        responsesapi_client_metadata=responsesapi_client_metadata,
+        additional_context=additional_context,
+        environments=environments,
         output_schema=output_schema,
         output_schema_strict=output_schema_strict,
+        max_tool_followups=max_tool_followups,
     )
 
 
@@ -261,7 +288,10 @@ def response_items_from_responses_payload(payload: Any) -> tuple[ResponseItem, .
 
 
 __all__ = [
+    "CODEX_EXEC_ORIGINATOR",
+    "CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR",
     "HttpTransportConfig",
+    "exec_originator_header_value",
     "http_transport_config_from_provider",
     "model_client_http_sampler",
     "response_items_from_responses_payload",

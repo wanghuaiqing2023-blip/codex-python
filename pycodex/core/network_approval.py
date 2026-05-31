@@ -683,6 +683,7 @@ def apply_network_review_decision(
     pending = service.pending_host_approvals.get(key)
     if pending is not None:
         pending.set_decision(resolution.decision)
+        service.pending_host_approvals.pop(key, None)
 
     if registration_id is not None and resolution.outcome is not None:
         service.record_call_outcome(registration_id, resolution.outcome)

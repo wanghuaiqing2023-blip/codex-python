@@ -32,6 +32,11 @@ from pycodex.protocol import (
     RequestPermissionsResponse,
     ResolvedPermissionProfile,
     ReviewDecision,
+    command_execution_approval_decision_to_mapping,
+    command_execution_request_approval_response,
+    file_change_approval_decision_to_mapping,
+    file_change_request_approval_response,
+    permissions_request_approval_response,
 )
 
 
@@ -99,6 +104,8 @@ class ProtocolApprovalsTests(unittest.TestCase):
 
         self.assertEqual(simple.to_mapping(), "approved_for_session")
         self.assertEqual(ReviewDecision.from_mapping("approved_for_session"), simple)
+        self.assertEqual(ReviewDecision.from_mapping("acceptForSession"), simple)
+        self.assertEqual(ReviewDecision.from_mapping("Cancel"), ReviewDecision.abort())
         self.assertEqual(
             exec_decision.to_mapping(),
             {
@@ -108,6 +115,10 @@ class ProtocolApprovalsTests(unittest.TestCase):
             },
         )
         self.assertEqual(ReviewDecision.from_mapping(exec_decision.to_mapping()), exec_decision)
+        self.assertEqual(
+            ReviewDecision.from_mapping({"acceptWithExecpolicyAmendment": {"execpolicyAmendment": {"command": ["npm", "test"]}}}),
+            exec_decision,
+        )
         self.assertEqual(
             network_decision.to_mapping(),
             {
@@ -120,6 +131,43 @@ class ProtocolApprovalsTests(unittest.TestCase):
             },
         )
         self.assertEqual(ReviewDecision.from_mapping(network_decision.to_mapping()), network_decision)
+        self.assertEqual(
+            ReviewDecision.from_mapping(
+                {"applyNetworkPolicyAmendment": {"networkPolicyAmendment": {"host": "api.example.com", "action": "allow"}}}
+            ),
+            network_decision,
+        )
+
+    def test_command_execution_approval_response_uses_app_server_decision_shape(self):
+        exec_amendment = ExecPolicyAmendment.new(["npm", "test"])
+        network_amendment = NetworkPolicyAmendment("api.example.com", NetworkPolicyRuleAction.ALLOW)
+
+        self.assertEqual(command_execution_approval_decision_to_mapping(ReviewDecision.approved()), "accept")
+        self.assertEqual(command_execution_approval_decision_to_mapping(ReviewDecision.approved_for_session()), "acceptForSession")
+        self.assertEqual(command_execution_approval_decision_to_mapping(ReviewDecision.denied()), "decline")
+        self.assertEqual(command_execution_approval_decision_to_mapping(ReviewDecision.timed_out()), "decline")
+        self.assertEqual(command_execution_approval_decision_to_mapping(ReviewDecision.abort()), "cancel")
+        self.assertEqual(
+            command_execution_approval_decision_to_mapping(ReviewDecision.approved_execpolicy_amendment(exec_amendment)),
+            {"acceptWithExecpolicyAmendment": {"execpolicyAmendment": {"command": ["npm", "test"]}}},
+        )
+        self.assertEqual(
+            command_execution_approval_decision_to_mapping(ReviewDecision.network_policy_amendment_decision(network_amendment)),
+            {"applyNetworkPolicyAmendment": {"networkPolicyAmendment": {"host": "api.example.com", "action": "allow"}}},
+        )
+        self.assertEqual(command_execution_request_approval_response(ReviewDecision.approved()), {"decision": "accept"})
+
+    def test_file_change_approval_response_uses_app_server_decision_shape(self):
+        self.assertEqual(file_change_approval_decision_to_mapping(ReviewDecision.approved()), "accept")
+        self.assertEqual(file_change_approval_decision_to_mapping(ReviewDecision.approved_for_session()), "acceptForSession")
+        self.assertEqual(file_change_approval_decision_to_mapping(ReviewDecision.denied()), "decline")
+        self.assertEqual(file_change_approval_decision_to_mapping(ReviewDecision.timed_out()), "decline")
+        self.assertEqual(file_change_approval_decision_to_mapping(ReviewDecision.abort()), "cancel")
+        self.assertEqual(file_change_request_approval_response(ReviewDecision.approved()), {"decision": "accept"})
+        with self.assertRaisesRegex(ValueError, "unsupported file change approval decision"):
+            file_change_approval_decision_to_mapping(
+                ReviewDecision.approved_execpolicy_amendment(ExecPolicyAmendment.new(["npm"]))
+            )
 
     def test_exec_approval_effective_approval_id_falls_back_to_call_id(self):
         self.assertEqual(
@@ -314,6 +362,16 @@ class ProtocolApprovalsTests(unittest.TestCase):
             },
         )
         self.assertEqual(RequestPermissionsResponse.from_mapping(strict_response.to_mapping()), strict_response)
+        self.assertEqual(
+            RequestPermissionsResponse.from_mapping(
+                {"permissions": {"network": {"enabled": True}}, "scope": "turn", "strictAutoReview": True}
+            ),
+            strict_response,
+        )
+        self.assertEqual(
+            permissions_request_approval_response(strict_response),
+            {"permissions": {"network": {"enabled": True}}, "scope": "turn", "strictAutoReview": True},
+        )
 
     def test_guardian_assessment_action_shapes(self):
         permissions = RequestPermissionProfile(network=NetworkPermissions(enabled=True))

@@ -1,3 +1,4 @@
+import asyncio
 from datetime import timedelta
 
 import pytest
@@ -6,14 +7,17 @@ from pycodex.core.exec import (
     DEFAULT_EXEC_COMMAND_TIMEOUT_MS,
     EXEC_OUTPUT_MAX_BYTES,
     EXEC_TIMEOUT_EXIT_CODE,
+    CancellationToken,
     ExecCapturePolicy,
     ExecExpiration,
+    ExecExpirationOutcome,
     ExecSandboxDenied,
     ExecSandboxSignal,
     ExecSandboxTimeout,
     RawExecToolCallOutput,
     aggregate_output,
     append_capped,
+    cancel_when_either,
     finalize_exec_result,
     is_likely_sandbox_denied,
 )
@@ -30,6 +34,39 @@ def test_capture_policy_matches_shell_tool_defaults():
 def test_exec_expiration_from_optional_timeout():
     assert ExecExpiration.from_timeout_ms(None).timeout_ms() == DEFAULT_EXEC_COMMAND_TIMEOUT_MS
     assert ExecExpiration.from_timeout_ms(250).timeout_ms() == 250
+
+
+def test_cancel_when_either_is_lazy_and_observes_either_parent():
+    first = CancellationToken()
+    second = CancellationToken()
+
+    combined = cancel_when_either(first, second)
+
+    assert combined.is_cancelled() is False
+    second.cancel()
+    assert combined.is_cancelled() is True
+    asyncio.run(combined.cancelled())
+
+
+def test_exec_expiration_with_cancellation_can_combine_without_running_loop():
+    first = CancellationToken()
+    second = CancellationToken()
+
+    expiration = ExecExpiration.cancellation(first).with_cancellation(second)
+
+    assert expiration.timeout_ms() is None
+    assert expiration.cancellation is not None
+    assert expiration.cancellation.is_cancelled() is False
+    first.cancel()
+    assert expiration.cancellation.is_cancelled() is True
+
+
+def test_timeout_or_cancellation_prefers_pre_cancelled_token():
+    token = CancellationToken()
+    token.cancel()
+    expiration = ExecExpiration.timeout_or_cancellation(timedelta(seconds=60), token)
+
+    assert asyncio.run(expiration.wait_with_outcome()) is ExecExpirationOutcome.CANCELLED
 
 
 def test_append_capped_stops_at_limit():

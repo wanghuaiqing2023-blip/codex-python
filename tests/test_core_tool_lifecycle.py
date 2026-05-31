@@ -130,6 +130,17 @@ class ToolLifecycleTests(unittest.TestCase):
         self.assertEqual(contributor.finished[0].outcome, ToolCallOutcome.blocked())
         self.assertEqual(contributor.finished[1].outcome, ToolCallOutcome.aborted())
 
+    def test_notify_helpers_ignore_missing_contributors_and_callbacks(self) -> None:
+        invocation = ToolInvocation(
+            call_id="call-1",
+            tool_name=ToolName.plain("lookup"),
+            payload=ToolPayload.function("{}"),
+        )
+
+        asyncio.run(notify_tool_start(None, invocation, turn_id="turn-1"))
+        asyncio.run(notify_tool_finish((), invocation, ToolCallOutcome.completed(True), turn_id="turn-1"))
+        asyncio.run(notify_tool_aborted([object()], invocation, turn_id="turn-1"))
+
     def test_notify_parts_helpers_call_finish_contributors_without_invocation(self) -> None:
         contributor = RecordingContributor()
 

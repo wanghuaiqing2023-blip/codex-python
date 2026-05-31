@@ -14,6 +14,7 @@ import inspect
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Mapping, MutableMapping, Sequence
 
+from pycodex.core.handler_utils import normalize_request_permissions_response
 from pycodex.protocol import (
     Event,
     EventMsg,
@@ -406,6 +407,11 @@ async def handle_request_permissions(
             parent_session,
             call_id,
             cancel_token,
+        )
+        response = normalize_request_permissions_response(
+            args.permissions,
+            response,
+            cwd,
         )
     await submit_to_codex(codex, Op.request_permissions_response(id=call_id, response=response))
     return response

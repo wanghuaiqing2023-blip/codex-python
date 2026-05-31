@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from pycodex.core.handler_utils import resolve_tool_environment
 from pycodex.core.tool_context import FunctionToolOutput, ToolPayload
 from pycodex.core.tool_router import FunctionCallError
 from pycodex.protocol import (
@@ -204,12 +205,21 @@ class ViewImageHandler:
                 "view_image handler received unsupported payload"
             )
         args = parse_view_image_arguments(arguments)
-        if args.environment_id is not None and not self.options.include_environment_id:
+        image_detail = _effective_detail(args.detail, self.options)
+        cwd = self.cwd
+        turn = getattr(invocation_or_payload, "turn", None)
+        if turn is not None:
+            turn_environment = resolve_tool_environment(turn, args.environment_id)
+            if turn_environment is None:
+                raise FunctionCallError.respond_to_model(
+                    "view_image is unavailable in this session"
+                )
+            cwd = Path(getattr(turn_environment, "cwd", cwd))
+        elif args.environment_id is not None:
             raise FunctionCallError.respond_to_model(
                 "view_image is unavailable in this session"
             )
-        image_detail = _effective_detail(args.detail, self.options)
-        path = _resolve_path(self.cwd, args.path)
+        path = _resolve_path(cwd, args.path)
 
         if not path.exists():
             raise FunctionCallError.respond_to_model(

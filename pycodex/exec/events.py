@@ -17,6 +17,8 @@ from typing import Any
 from pycodex.protocol import (
     AgentMessageItem,
     CallToolResult,
+    CollabAgentToolCallItem,
+    CommandExecutionItem,
     FileChangeItem,
     McpToolCallItem,
     ReasoningItem,
@@ -246,7 +248,7 @@ def web_search_item(id: str, item: WebSearchItem) -> ExecThreadItem:
         {
             "id": item.id,
             "query": item.query,
-            "action": _to_json(item.action),
+            "action": _web_search_action(item.action),
         },
     )
 
@@ -269,10 +271,28 @@ def exec_item_from_turn_item(item: TurnItem, id: str) -> ExecThreadItem | None:
         return reasoning_item(id, text)
     if item.type == "McpToolCall" and isinstance(item.item, McpToolCallItem):
         return mcp_tool_call_item(id, item.item)
+    if item.type == "CommandExecution" and isinstance(item.item, CommandExecutionItem):
+        return command_execution_item(
+            id,
+            command=item.item.command,
+            aggregated_output=item.item.aggregated_output or "",
+            exit_code=item.item.exit_code,
+            status=item.item.status,
+        )
     if item.type == "FileChange" and isinstance(item.item, FileChangeItem):
         return file_change_item(id, item.item)
     if item.type == "WebSearch" and isinstance(item.item, WebSearchItem):
         return web_search_item(id, item.item)
+    if item.type == "CollabAgentToolCall" and isinstance(item.item, CollabAgentToolCallItem):
+        return collab_tool_call_item(
+            id,
+            tool=item.item.tool,
+            sender_thread_id=item.item.sender_thread_id,
+            receiver_thread_ids=item.item.receiver_thread_ids,
+            prompt=item.item.prompt,
+            agents_states=item.item.agents_states,
+            status=item.item.status,
+        )
     return None
 
 
@@ -300,21 +320,30 @@ def _call_tool_result_to_mapping(result: CallToolResult) -> dict[str, JsonValue]
     return data
 
 
-def _mcp_status(status: str) -> str:
-    if status == "completed":
+def _mcp_status(status: JsonValue) -> str:
+    raw = getattr(status, "value", status)
+    if raw is None:
+        return McpToolCallStatus.IN_PROGRESS.value
+    if raw in {"inProgress", "InProgress", "in_progress"}:
+        return McpToolCallStatus.IN_PROGRESS.value
+    if raw in {"completed", "Completed"}:
         return McpToolCallStatus.COMPLETED.value
-    if status == "failed":
+    if raw in {"failed", "Failed"}:
         return McpToolCallStatus.FAILED.value
-    return McpToolCallStatus.IN_PROGRESS.value
+    return str(raw)
 
 
 def _collab_tool_call_status(status: JsonValue) -> str:
     raw = getattr(status, "value", status)
+    if raw is None:
+        return CollabToolCallStatus.IN_PROGRESS.value
+    if raw in {"inProgress", "InProgress", "in_progress"}:
+        return CollabToolCallStatus.IN_PROGRESS.value
     if raw in {"completed", "Completed"}:
         return CollabToolCallStatus.COMPLETED.value
     if raw in {"failed", "Failed"}:
         return CollabToolCallStatus.FAILED.value
-    return CollabToolCallStatus.IN_PROGRESS.value
+    return str(raw)
 
 
 def _collab_tool(tool: JsonValue) -> str:
@@ -325,7 +354,9 @@ def _collab_tool(tool: JsonValue) -> str:
         return CollabTool.SEND_INPUT.value
     if raw in {"closeAgent", "CloseAgent", "close_agent"}:
         return CollabTool.CLOSE_AGENT.value
-    return CollabTool.WAIT.value
+    if raw in {"resumeAgent", "ResumeAgent", "resume_agent", "wait", "Wait"}:
+        return CollabTool.WAIT.value
+    return str(raw)
 
 
 def _collab_agent_status(status: JsonValue) -> str:
@@ -363,22 +394,30 @@ def _collab_agents_states(states: Mapping[str, JsonValue]) -> dict[str, dict[str
 
 def _command_status(status: JsonValue) -> str:
     raw = getattr(status, "value", status)
+    if raw is None:
+        return CommandExecutionStatus.IN_PROGRESS.value
+    if raw in {"inProgress", "InProgress", "in_progress"}:
+        return CommandExecutionStatus.IN_PROGRESS.value
     if raw in {"completed", "Completed"}:
         return CommandExecutionStatus.COMPLETED.value
     if raw in {"failed", "Failed"}:
         return CommandExecutionStatus.FAILED.value
     if raw in {"declined", "Declined"}:
         return CommandExecutionStatus.DECLINED.value
-    return CommandExecutionStatus.IN_PROGRESS.value
+    return str(raw)
 
 
 def _patch_status(status: JsonValue) -> str:
     raw = getattr(status, "value", status)
-    if raw == "completed":
+    if raw is None:
+        return PatchApplyStatus.IN_PROGRESS.value
+    if raw in {"inProgress", "InProgress", "in_progress"}:
+        return PatchApplyStatus.IN_PROGRESS.value
+    if raw in {"completed", "Completed"}:
         return PatchApplyStatus.COMPLETED.value
-    if raw in {"failed", "declined"}:
+    if raw in {"failed", "Failed", "declined", "Declined"}:
         return PatchApplyStatus.FAILED.value
-    return PatchApplyStatus.IN_PROGRESS.value
+    return str(raw)
 
 
 def _patch_kind(change: JsonValue) -> str:
@@ -388,7 +427,46 @@ def _patch_kind(change: JsonValue) -> str:
         return PatchChangeKind.ADD.value
     if raw == "delete":
         return PatchChangeKind.DELETE.value
-    return PatchChangeKind.UPDATE.value
+    if raw in {"update", "Update"} or raw is None:
+        return PatchChangeKind.UPDATE.value
+    return str(raw)
+
+
+def _web_search_action(action: JsonValue) -> dict[str, JsonValue]:
+    if action is None:
+        return {"type": "other"}
+    if hasattr(action, "to_mapping") and callable(action.to_mapping):
+        return _web_search_action(action.to_mapping())
+    if not isinstance(action, Mapping):
+        return {"type": "other"}
+    action_type = _field(action, "type")
+    if action_type == "search":
+        data: dict[str, JsonValue] = {"type": "search"}
+        query = _field(action, "query")
+        queries = _field(action, "queries")
+        if query is not None:
+            data["query"] = query
+        if queries is not None:
+            data["queries"] = _to_json(queries)
+        return data
+    if action_type == "open_page":
+        data = {"type": "open_page"}
+        url = _field(action, "url")
+        if url is not None:
+            data["url"] = url
+        return data
+    if action_type == "find_in_page":
+        data = {"type": "find_in_page"}
+        url = _field(action, "url")
+        pattern = _field(action, "pattern")
+        if url is not None:
+            data["url"] = url
+        if pattern is not None:
+            data["pattern"] = pattern
+        return data
+    if action_type == "other":
+        return {"type": "other"}
+    return {"type": "other"}
 
 
 def _field(value: JsonValue, *names: str) -> JsonValue:

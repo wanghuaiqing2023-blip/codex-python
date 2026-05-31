@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from pycodex.core import (
     VIEW_IMAGE_TOOL_NAME,
@@ -88,6 +89,46 @@ class ViewImageHandlerTests(unittest.TestCase):
             self.assertTrue(handler.matches_kind(ToolPayload.function("{}")))
             self.assertTrue(output.image_url.startswith("data:image/png;base64,"))
             self.assertEqual(output.image_detail, ImageDetail.ORIGINAL)
+
+    def test_handler_resolves_environment_id_from_invocation_turn(self) -> None:
+        with tempfile.TemporaryDirectory() as local_dir, tempfile.TemporaryDirectory() as remote_dir:
+            local_root = Path(local_dir)
+            remote_root = Path(remote_dir)
+            (local_root / "image.png").write_bytes(b"not a png")
+            (remote_root / "image.png").write_bytes(
+                b"\x89PNG\r\n\x1a\n"
+                b"\x00\x00\x00\rIHDR"
+                b"\x00\x00\x00\x01\x00\x00\x00\x01"
+                b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+                b"\x00\x00\x00\nIDATx\x9cc\xf8\x0f\x00\x01\x01\x01\x00\x18\xdd\x8d\xb0"
+                b"\x00\x00\x00\x00IEND\xaeB`\x82"
+            )
+            invocation = SimpleNamespace(
+                turn=SimpleNamespace(
+                    environments=(
+                        SimpleNamespace(environment_id="local", cwd=local_root),
+                        SimpleNamespace(environment_id="remote", cwd=remote_root),
+                    )
+                ),
+                payload=ToolPayload.function(
+                    json.dumps({"path": "image.png", "environment_id": "remote"})
+                ),
+            )
+
+            output = ViewImageHandler().handle(invocation)
+
+            self.assertTrue(output.image_url.startswith("data:image/png;base64,"))
+
+            with self.assertRaises(FunctionCallError) as unknown:
+                ViewImageHandler().handle(
+                    SimpleNamespace(
+                        turn=invocation.turn,
+                        payload=ToolPayload.function(
+                            json.dumps({"path": "image.png", "environment_id": "missing"})
+                        ),
+                    )
+                )
+            self.assertIn("unknown turn environment id `missing`", str(unknown.exception))
 
     def test_handler_rejects_unsupported_and_bad_paths(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

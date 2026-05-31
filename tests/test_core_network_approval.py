@@ -498,6 +498,30 @@ class NetworkApprovalTests(unittest.TestCase):
         self.assertIs(pending.decision, PendingApprovalDecision.DENY)
         self.assertNotIn(key, service.session_approved_hosts)
         self.assertIn(key, service.session_denied_hosts)
+        self.assertNotIn(key, service.pending_host_approvals)
+
+    def test_apply_network_review_decision_caches_allow_amendment_and_clears_pending(self) -> None:
+        from pycodex.core.network_approval import apply_network_review_decision
+        from pycodex.protocol.approvals import NetworkPolicyAmendment, NetworkPolicyRuleAction, ReviewDecision
+
+        service = NetworkApprovalService()
+        key = HostApprovalKey("example.com", "https", 443)
+        service.session_denied_hosts.add(key)
+        pending, _ = service.get_or_create_pending_approval(key)
+
+        resolution = apply_network_review_decision(
+            service,
+            key,
+            ReviewDecision.network_policy_amendment_decision(
+                NetworkPolicyAmendment("example.com", NetworkPolicyRuleAction.ALLOW)
+            ),
+        )
+
+        self.assertIs(resolution.decision, PendingApprovalDecision.ALLOW_FOR_SESSION)
+        self.assertIs(pending.decision, PendingApprovalDecision.ALLOW_FOR_SESSION)
+        self.assertIn(key, service.session_approved_hosts)
+        self.assertNotIn(key, service.session_denied_hosts)
+        self.assertNotIn(key, service.pending_host_approvals)
 
     def test_apply_network_review_decision_records_call_outcome_for_denial(self) -> None:
         from pycodex.core.network_approval import apply_network_review_decision

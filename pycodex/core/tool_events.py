@@ -7,6 +7,7 @@ session/runtime delivery as an injected boundary.
 
 from __future__ import annotations
 
+import shlex
 import time
 from dataclasses import dataclass
 from datetime import timedelta
@@ -17,19 +18,26 @@ from pycodex.core.function_tool import FunctionCallError
 from pycodex.core.turn_diff_tracker import AppliedPatchDelta, TurnDiffTracker
 from pycodex.core.user_shell_command import format_exec_output_str
 from pycodex.protocol import (
+    CommandExecutionItem,
     EventMsg,
     ExecCommandBeginEvent,
     ExecCommandEndEvent,
+    ExecCommandOutputDeltaEvent,
     ExecCommandSource,
     ExecCommandStatus,
     ExecToolCallOutput,
     FileChange,
     FileChangeItem,
+    GuardianAssessmentDecisionSource,
+    GuardianAssessmentEvent,
+    GuardianAssessmentStatus,
     PatchApplyStatus,
     TruncationPolicyConfig,
     TurnDiffEvent,
     TurnItem,
 )
+from pycodex.protocol.parse_command import ParsedCommand
+from pycodex.shell_command import parse_command
 
 JsonValue = Any
 
@@ -362,6 +370,196 @@ def build_exec_command_end_event(
     )
 
 
+def build_command_execution_begin_item(payload: ExecCommandBeginEvent) -> TurnItem:
+    if not isinstance(payload, ExecCommandBeginEvent):
+        raise TypeError("payload must be ExecCommandBeginEvent")
+    return TurnItem.command_execution(
+        CommandExecutionItem(
+            id=payload.call_id,
+            command=shlex.join(payload.command),
+            cwd=payload.cwd,
+            process_id=payload.process_id,
+            source=_command_execution_source(payload.source),
+            status="inProgress",
+            command_actions=_command_actions_from_parsed_commands(payload.parsed_cmd, payload.cwd),
+            aggregated_output=None,
+            exit_code=None,
+            duration_ms=None,
+        )
+    )
+
+
+def build_command_execution_end_item(payload: ExecCommandEndEvent) -> TurnItem:
+    if not isinstance(payload, ExecCommandEndEvent):
+        raise TypeError("payload must be ExecCommandEndEvent")
+    return TurnItem.command_execution(
+        CommandExecutionItem(
+            id=payload.call_id,
+            command=shlex.join(payload.command),
+            cwd=payload.cwd,
+            process_id=payload.process_id,
+            source=_command_execution_source(payload.source),
+            status=_command_execution_status(payload.status),
+            command_actions=_command_actions_from_parsed_commands(payload.parsed_cmd, payload.cwd),
+            aggregated_output=payload.aggregated_output or None,
+            exit_code=payload.exit_code,
+            duration_ms=_duration_ms(payload.duration),
+        )
+    )
+
+
+def build_command_execution_item_from_guardian_event(
+    assessment: GuardianAssessmentEvent,
+    status: str,
+) -> TurnItem | None:
+    if not isinstance(assessment, GuardianAssessmentEvent):
+        raise TypeError("assessment must be GuardianAssessmentEvent")
+    if assessment.target_item_id is None:
+        return None
+
+    action = assessment.action
+    if action.type == "command":
+        command = action.command or ""
+        return TurnItem.command_execution(
+            CommandExecutionItem(
+                id=assessment.target_item_id,
+                command=command,
+                cwd=action.cwd or Path("."),
+                process_id=None,
+                source="agent",
+                status=status,
+                command_actions=({"type": "unknown", "command": command},),
+                aggregated_output=None,
+                exit_code=None,
+                duration_ms=None,
+            )
+        )
+
+    if action.type == "execve":
+        argv = (action.program or "",) if not action.argv else (action.program or "", *action.argv[1:])
+        command = shlex.join(tuple(part for part in argv if part != ""))
+        parsed_cmd = parse_command(argv)
+        command_actions = (
+            tuple(_command_action_from_parsed(parsed, action.cwd or Path(".")) for parsed in parsed_cmd)
+            if parsed_cmd
+            else ({"type": "unknown", "command": command},)
+        )
+        return TurnItem.command_execution(
+            CommandExecutionItem(
+                id=assessment.target_item_id,
+                command=command,
+                cwd=action.cwd or Path("."),
+                process_id=None,
+                source="agent",
+                status=status,
+                command_actions=command_actions,
+                aggregated_output=None,
+                exit_code=None,
+                duration_ms=None,
+            )
+        )
+
+    return None
+
+
+def build_command_execution_item_mapping_from_guardian_event(
+    assessment: GuardianAssessmentEvent,
+) -> dict[str, JsonValue] | None:
+    status = command_execution_status_from_guardian_status(assessment.status)
+    if status is None:
+        return None
+    item = build_command_execution_item_from_guardian_event(assessment, status)
+    if item is None:
+        return None
+    return _command_execution_notification_item_mapping(item)
+
+
+def guardian_auto_approval_review_notification(
+    thread_id: str,
+    event_turn_id: str,
+    assessment: GuardianAssessmentEvent,
+) -> dict[str, JsonValue]:
+    if not isinstance(assessment, GuardianAssessmentEvent):
+        raise TypeError("assessment must be GuardianAssessmentEvent")
+    params: dict[str, JsonValue] = {
+        "threadId": str(thread_id),
+        "turnId": assessment.turn_id or str(event_turn_id),
+        "startedAtMs": assessment.started_at_ms,
+        "reviewId": assessment.id,
+        "targetItemId": assessment.target_item_id,
+        "review": {
+            "status": _guardian_review_status(assessment.status),
+            "riskLevel": assessment.risk_level.value if assessment.risk_level is not None else None,
+            "userAuthorization": assessment.user_authorization.value if assessment.user_authorization is not None else None,
+            "rationale": assessment.rationale,
+        },
+        "action": _guardian_review_action_mapping(assessment.action),
+    }
+    if assessment.status == GuardianAssessmentStatus.IN_PROGRESS:
+        return {"method": "item/autoApprovalReview/started", "params": params}
+    params["completedAtMs"] = assessment.completed_at_ms if assessment.completed_at_ms is not None else assessment.started_at_ms
+    params["decisionSource"] = _auto_review_decision_source(assessment.decision_source)
+    return {"method": "item/autoApprovalReview/completed", "params": params}
+
+
+def command_execution_status_from_guardian_status(status: GuardianAssessmentStatus) -> str | None:
+    if not isinstance(status, GuardianAssessmentStatus):
+        status = GuardianAssessmentStatus(status)
+    if status == GuardianAssessmentStatus.IN_PROGRESS:
+        return "inProgress"
+    if status in {GuardianAssessmentStatus.DENIED, GuardianAssessmentStatus.ABORTED}:
+        return "declined"
+    if status == GuardianAssessmentStatus.TIMED_OUT:
+        return "failed"
+    return None
+
+
+def _guardian_review_status(status: GuardianAssessmentStatus) -> str:
+    if not isinstance(status, GuardianAssessmentStatus):
+        status = GuardianAssessmentStatus(status)
+    return {
+        GuardianAssessmentStatus.IN_PROGRESS: "inProgress",
+        GuardianAssessmentStatus.APPROVED: "approved",
+        GuardianAssessmentStatus.DENIED: "denied",
+        GuardianAssessmentStatus.TIMED_OUT: "timedOut",
+        GuardianAssessmentStatus.ABORTED: "aborted",
+    }[status]
+
+
+def _auto_review_decision_source(source: GuardianAssessmentDecisionSource | None) -> str:
+    if source is None:
+        return "agent"
+    if not isinstance(source, GuardianAssessmentDecisionSource):
+        source = GuardianAssessmentDecisionSource(source)
+    return source.value
+
+
+def _guardian_command_source(source: JsonValue) -> str:
+    raw = getattr(source, "value", source)
+    if raw == "unified_exec":
+        return "unifiedExec"
+    return str(raw or "shell")
+
+
+def _guardian_review_action_mapping(action: JsonValue) -> dict[str, JsonValue]:
+    action_type = getattr(action, "type", None)
+    if action_type == "command":
+        return {"type": "command", "source": _guardian_command_source(getattr(action, "source", None)), "command": getattr(action, "command", None), "cwd": str(getattr(action, "cwd", ""))}
+    if action_type == "execve":
+        return {"type": "execve", "source": _guardian_command_source(getattr(action, "source", None)), "program": getattr(action, "program", None), "argv": list(getattr(action, "argv", ())), "cwd": str(getattr(action, "cwd", ""))}
+    if action_type == "apply_patch":
+        return {"type": "applyPatch", "cwd": str(getattr(action, "cwd", "")), "files": [str(file) for file in getattr(action, "files", ())]}
+    if action_type == "network_access":
+        protocol = getattr(action, "protocol", None)
+        return {"type": "networkAccess", "target": getattr(action, "target", None), "host": getattr(action, "host", None), "protocol": getattr(protocol, "value", protocol), "port": getattr(action, "port", None)}
+    if action_type == "mcp_tool_call":
+        return {"type": "mcpToolCall", "server": getattr(action, "server", None), "toolName": getattr(action, "tool_name", None), "connectorId": getattr(action, "connector_id", None), "connectorName": getattr(action, "connector_name", None), "toolTitle": getattr(action, "tool_title", None)}
+    if action_type == "request_permissions":
+        permissions = getattr(action, "permissions", None)
+        return {"type": "requestPermissions", "reason": getattr(action, "reason", None), "permissions": permissions.to_mapping() if permissions is not None else None}
+    raise ValueError(f"unknown guardian assessment action type: {action_type}")
+
+
 def build_exec_stage_events(
     ctx: ToolEventCtx,
     exec_input: ExecCommandInput,
@@ -375,6 +573,86 @@ def build_exec_stage_events(
     if result is None:
         return ()
     return (build_exec_command_end_event(ctx, exec_input, result, completed_at_ms=timestamp_ms),)
+
+
+def command_execution_notification_from_event_msg(
+    thread_id: str,
+    turn_id: str,
+    msg: EventMsg,
+) -> dict[str, JsonValue]:
+    if not isinstance(msg, EventMsg):
+        raise TypeError("msg must be EventMsg")
+
+    if msg.type == "exec_command_begin" and isinstance(msg.payload, ExecCommandBeginEvent):
+        return {
+            "method": "item/started",
+            "params": {
+                "threadId": str(thread_id),
+                "turnId": str(turn_id),
+                "item": build_command_execution_begin_item(msg.payload).to_app_server_mapping(),
+                "startedAtMs": msg.payload.started_at_ms,
+            },
+        }
+
+    if msg.type == "exec_command_end" and isinstance(msg.payload, ExecCommandEndEvent):
+        return {
+            "method": "item/completed",
+            "params": {
+                "threadId": str(thread_id),
+                "turnId": str(turn_id),
+                "item": build_command_execution_end_item(msg.payload).to_app_server_mapping(),
+                "completedAtMs": msg.payload.completed_at_ms,
+            },
+        }
+
+    if msg.type == "exec_command_output_delta" and isinstance(msg.payload, ExecCommandOutputDeltaEvent):
+        return {
+            "method": "item/commandExecution/outputDelta",
+            "params": {
+                "threadId": str(thread_id),
+                "turnId": str(turn_id),
+                "itemId": msg.payload.call_id,
+                "delta": msg.payload.chunk.decode("utf-8", errors="replace"),
+            },
+        }
+
+    raise ValueError(f"unsupported command execution event: {msg.type}")
+
+
+def turn_item_lifecycle_notification(
+    thread_id: str,
+    turn_id: str,
+    item: TurnItem,
+    *,
+    timestamp_ms: int | None = None,
+) -> dict[str, JsonValue]:
+    if not isinstance(item, TurnItem):
+        raise TypeError("item must be a TurnItem")
+    timestamp = now_unix_timestamp_ms() if timestamp_ms is None else _int_ms(timestamp_ms)
+    params: dict[str, JsonValue] = {
+        "threadId": str(thread_id),
+        "turnId": str(turn_id),
+        "item": item.to_app_server_mapping(),
+    }
+    if _turn_item_is_in_progress(item):
+        params["startedAtMs"] = timestamp
+        return {"method": "item/started", "params": params}
+    params["completedAtMs"] = timestamp
+    return {"method": "item/completed", "params": params}
+
+
+def file_change_notification_from_turn_item(
+    thread_id: str,
+    turn_id: str,
+    item: TurnItem,
+    *,
+    timestamp_ms: int | None = None,
+) -> dict[str, JsonValue]:
+    if not isinstance(item, TurnItem):
+        raise TypeError("item must be a TurnItem")
+    if item.type != "FileChange" or not isinstance(item.item, FileChangeItem):
+        raise TypeError("item must be a FileChange TurnItem")
+    return turn_item_lifecycle_notification(thread_id, turn_id, item, timestamp_ms=timestamp_ms)
 
 
 @dataclass(frozen=True)
@@ -663,6 +941,81 @@ def _normalize_changes(changes: Mapping[str | Path, FileChange]) -> dict[Path, F
     return result
 
 
+def _command_execution_source(source: ExecCommandSource) -> str:
+    if not isinstance(source, ExecCommandSource):
+        source = ExecCommandSource(source)
+    aliases = {
+        ExecCommandSource.AGENT: "agent",
+        ExecCommandSource.USER_SHELL: "userShell",
+        ExecCommandSource.UNIFIED_EXEC_STARTUP: "unifiedExecStartup",
+        ExecCommandSource.UNIFIED_EXEC_INTERACTION: "unifiedExecInteraction",
+    }
+    return aliases[source]
+
+
+def _command_execution_status(status: ExecCommandStatus) -> str:
+    if not isinstance(status, ExecCommandStatus):
+        status = ExecCommandStatus(status)
+    return status.value
+
+
+def _command_execution_notification_item_mapping(item: TurnItem) -> dict[str, JsonValue]:
+    if item.type != "CommandExecution" or not isinstance(item.item, CommandExecutionItem):
+        raise TypeError("item must be a CommandExecution TurnItem")
+    return item.to_app_server_mapping()
+
+
+def _turn_item_is_in_progress(item: TurnItem) -> bool:
+    if item.type == "CommandExecution" and isinstance(item.item, CommandExecutionItem):
+        return item.item.status == "inProgress"
+    if item.type == "FileChange" and isinstance(item.item, FileChangeItem):
+        return item.item.status is None
+    raise ValueError(f"app-server lifecycle notification is not implemented for {item.type}")
+
+
+def _command_actions_from_parsed_commands(parsed_cmd: tuple[JsonValue, ...], cwd: Path) -> tuple[dict[str, JsonValue], ...]:
+    return tuple(_command_action_from_parsed(_parsed_command(command), cwd) for command in parsed_cmd)
+
+
+def _parsed_command(value: JsonValue) -> ParsedCommand:
+    if isinstance(value, ParsedCommand):
+        return value
+    if isinstance(value, Mapping):
+        return ParsedCommand.from_mapping(value)
+    raise TypeError("parsed command must be ParsedCommand or mapping")
+
+
+def _command_action_from_parsed(parsed: ParsedCommand, cwd: Path) -> dict[str, JsonValue]:
+    if not isinstance(parsed, ParsedCommand):
+        raise TypeError("parsed must be ParsedCommand")
+    if parsed.type == "read":
+        return {
+            "type": "read",
+            "command": parsed.cmd,
+            "name": parsed.name or "",
+            "path": str(Path(cwd) / Path(parsed.path or "")),
+        }
+    if parsed.type == "list_files":
+        return {"type": "listFiles", "command": parsed.cmd, "path": parsed.path}
+    if parsed.type == "search":
+        return {"type": "search", "command": parsed.cmd, "query": parsed.query, "path": parsed.path}
+    if parsed.type == "unknown":
+        return {"type": "unknown", "command": parsed.cmd}
+    raise ValueError(f"unknown parsed command type: {parsed.type}")
+
+
+def _duration_ms(duration: Any) -> int:
+    if isinstance(duration, timedelta):
+        return max(0, int(duration.total_seconds() * 1000))
+    if isinstance(duration, Mapping):
+        secs = duration.get("secs", 0)
+        nanos = duration.get("nanos", 0)
+        return max(0, int(secs) * 1000 + int(nanos) // 1_000_000)
+    if isinstance(duration, (int, float)) and not isinstance(duration, bool):
+        return max(0, int(duration))
+    raise TypeError("duration must be timedelta, mapping, or number")
+
+
 __all__ = [
     "ExecCommandInput",
     "ExecCommandResult",
@@ -673,17 +1026,26 @@ __all__ = [
     "ToolEventStage",
     "TurnDiffTrackerUpdate",
     "apply_turn_diff_tracker_update",
+    "build_command_execution_begin_item",
+    "build_command_execution_end_item",
+    "build_command_execution_item_from_guardian_event",
+    "build_command_execution_item_mapping_from_guardian_event",
     "build_exec_command_begin_event",
     "build_exec_command_end_event",
     "build_exec_stage_events",
     "build_patch_begin_item",
     "build_patch_end",
     "build_patch_end_for_stage",
+    "command_execution_notification_from_event_msg",
+    "command_execution_status_from_guardian_status",
     "exec_command_result_for_stage",
     "exec_command_result_from_message",
     "exec_command_result_from_output",
+    "file_change_notification_from_turn_item",
+    "guardian_auto_approval_review_notification",
     "now_unix_timestamp_ms",
     "patch_status_for_failure",
     "patch_status_for_output",
     "tracker_update_for_known_delta",
+    "turn_item_lifecycle_notification",
 ]

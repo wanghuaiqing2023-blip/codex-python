@@ -35,6 +35,7 @@ from pycodex.exec import (
     RemoteInitializeState,
     RemoteWebSocketClient,
     RemoteWebSocketClientCloseResult,
+    RESUME_LOOKUP_REQUEST_ID,
     RequestIdSequencer,
     ReviewStartParams,
     ServerRequestDecision,
@@ -98,6 +99,7 @@ from pycodex.exec import (
     pick_resume_thread_id_from_list_response,
     resume_lookup_model_providers,
     resume_thread_id_from_list_response,
+    resume_thread_id_lookup_request,
     resume_thread_id_lookup_step,
     resolve_server_request_error,
     reject_server_request_error,
@@ -199,6 +201,8 @@ from pycodex.exec import (
 )
 from pycodex.protocol import (
     ActivePermissionProfile,
+    AgentMessageContent,
+    AgentMessageItem,
     ApprovalsReviewer,
     AskForApproval,
     FileSystemSandboxPolicy,
@@ -209,6 +213,7 @@ from pycodex.protocol import (
     ReviewTarget,
     SandboxMode,
     ThreadSource,
+    TurnItem,
     UserInput,
 )
 
@@ -306,6 +311,14 @@ class ExecSessionRequestBuilderTests(unittest.TestCase):
                 "threadSource": "user",
             },
         )
+
+    def test_thread_start_params_include_ephemeral_false_like_upstream(self) -> None:
+        config = ExecSessionConfig("gpt-5.5", "openai", Path("C:/work/project"), ephemeral=False)
+
+        params = thread_start_params_from_config(config).to_mapping()
+
+        self.assertIn("ephemeral", params)
+        self.assertIs(params["ephemeral"], False)
 
     def test_thread_resume_uses_active_permissions_profile_instead_of_legacy_sandbox(self) -> None:
         config = ExecSessionConfig(
@@ -406,10 +419,12 @@ class ExecSessionRequestBuilderTests(unittest.TestCase):
             thread_id="thread-1",
             input=(UserInput.text_input("hello"),),
             responsesapi_client_metadata={"session": "exec"},
+            additional_context={"note": "from exec"},
             environments={"shell": {"os": "windows"}},
         )
 
         self.assertEqual(params.to_mapping()["responsesapiClientMetadata"], {"session": "exec"})
+        self.assertEqual(params.to_mapping()["additionalContext"], {"note": "from exec"})
         self.assertEqual(params.to_mapping()["environments"], {"shell": {"os": "windows"}})
 
     def test_review_start_params_and_client_request_match_app_server_wire_shape(self) -> None:
@@ -497,6 +512,10 @@ class ExecSessionRequestBuilderTests(unittest.TestCase):
         self.assertEqual(result.task_id, "turn-1")
         self.assertIsNone(result.synthetic_notification)
         self.assertEqual(task_id_from_initial_operation_response("turn/start", response), "turn-1")
+
+    def test_initial_operation_result_rejects_unknown_method(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unsupported initial operation response method"):
+            initial_operation_result_from_response("thread/read", {"turn": {"id": "turn-1"}})
 
     def test_initial_operation_result_for_review_synthesizes_turn_started_notification(self) -> None:
         response = {
@@ -764,6 +783,34 @@ class ExecSessionRequestBuilderTests(unittest.TestCase):
         self.assertEqual(result.exit_code, 1)
         self.assertEqual(processor.final_output_count, 1)
         self.assertEqual([message["method"] for message in map(decode_jsonrpc_message, websocket.sent_text)], ["thread/unsubscribe"])
+
+    def test_remote_exec_session_run_loop_final_server_error_exits_nonzero(self) -> None:
+        server_error = {
+            "method": "error",
+            "params": {
+                "threadId": "thread-1",
+                "turnId": "turn-1",
+                "message": "synthetic server error",
+                "willRetry": False,
+            },
+        }
+        websocket = FakeWebSocket((websocket_json_frame(server_error),))
+        client = RemoteWebSocketClient(websocket, endpoint="ws://localhost/app")
+        processor = RecordingExecProcessor()
+
+        result = remote_exec_session_run_loop(
+            client,
+            ExecLoopState(thread_id="thread-1", turn_id="turn-1"),
+            processor=processor,
+            request_ids=RequestIdSequencer(40),
+        )
+
+        self.assertTrue(result.ok)
+        self.assertTrue(result.state.error_seen)
+        self.assertEqual(result.exit_code, 1)
+        self.assertEqual(processor.notifications, [server_error])
+        self.assertEqual(processor.final_output_count, 1)
+        self.assertTrue(websocket.closed)
 
     def test_remote_exec_session_run_loop_rejects_server_request_then_continues(self) -> None:
         server_request = {
@@ -2185,6 +2232,10 @@ class ExecSessionRequestBuilderTests(unittest.TestCase):
         self.assertFalse(is_supported_remote_server_request_method("unknown/request"))
         self.assertEqual(unsupported_remote_server_request_error("unknown/request").code, -32601)
         self.assertEqual(
+            unsupported_remote_server_request_error("SomeLegacyAlias").message,
+            "unsupported remote app-server request `SomeLegacyAlias`",
+        )
+        self.assertEqual(
             unknown.outgoing.to_mapping(),
             {
                 "id": "server-2",
@@ -2699,7 +2750,15 @@ class ExecSessionRequestBuilderTests(unittest.TestCase):
             server_request_method_name({"type": "CommandExecutionRequestApproval"}),
             "item/commandExecution/requestApproval",
         )
+        self.assertEqual(
+            server_request_method_name({"kind": "PermissionsRequestApproval"}),
+            "item/permissions/requestApproval",
+        )
         self.assertEqual(server_request_method_name({"type": "apply_patch_approval"}), "applyPatchApproval")
+        self.assertEqual(
+            unsupported_remote_server_request_error("apply_patch_approval").message,
+            "unsupported remote app-server request `applyPatchApproval`",
+        )
 
         decision = exec_mode_server_request_decision(
             {"type": "ExecCommandApproval", "request_id": "legacy-1", "payload": {"conversation_id": "thread-9"}}
@@ -2973,6 +3032,47 @@ class ExecSessionRequestBuilderTests(unittest.TestCase):
         self.assertEqual(notification["params"]["turn"]["items"], [])
         self.assertIs(backfill_turn_completed_notification(True, notification, response), notification)
 
+    def test_backfill_turn_completed_notification_serializes_turn_items_as_app_server_v2(self) -> None:
+        notification = {
+            "method": "turn/completed",
+            "params": {
+                "threadId": "thread-1",
+                "turn": {"id": "turn-1", "status": "completed", "items": []},
+            },
+        }
+        response = {
+            "thread": {
+                "turns": [
+                    {
+                        "id": "turn-1",
+                        "items": [
+                            TurnItem.agent_message(
+                                AgentMessageItem(
+                                    "msg-1",
+                                    (AgentMessageContent.text_content("final"),),
+                                )
+                            )
+                        ],
+                    }
+                ]
+            }
+        }
+
+        backfilled = backfill_turn_completed_notification(False, notification, response)
+
+        self.assertEqual(
+            backfilled["params"]["turn"]["items"],
+            [
+                {
+                    "type": "agentMessage",
+                    "id": "msg-1",
+                    "text": "final",
+                    "phase": None,
+                    "memoryCitation": None,
+                }
+            ],
+        )
+
     def test_exec_loop_server_event_decision_dispatches_request_notification_and_lagged(self) -> None:
         server_request = exec_loop_server_event_decision(
             {
@@ -3003,6 +3103,21 @@ class ExecSessionRequestBuilderTests(unittest.TestCase):
         self.assertTrue(server_notification.notification.should_process)
         self.assertEqual(lagged.kind, "lagged")
         self.assertEqual(lagged.warning, "in-process app-server event stream lagged; dropped 3 events")
+
+        typed_notification = exec_loop_server_event_decision(
+            {
+                "type": "ServerNotification",
+                "notification": {
+                    "kind": "Error",
+                    "payload": {"threadId": "thread-1", "turnId": "turn-1", "willRetry": False},
+                },
+            },
+            "thread-1",
+            "turn-1",
+        )
+        self.assertEqual(typed_notification.kind, "server_notification")
+        self.assertTrue(typed_notification.event_indicates_error)
+        self.assertTrue(typed_notification.notification.should_process)
 
     def test_exec_loop_step_handles_requests_warnings_and_shutdown(self) -> None:
         state = ExecLoopState(thread_id="thread-1", turn_id="turn-1")
@@ -3184,6 +3299,10 @@ class ExecSessionRequestBuilderTests(unittest.TestCase):
     def test_notification_indicates_exec_error_only_for_terminal_failures(self) -> None:
         retrying_error = {"method": "error", "params": {"threadId": "thread-1", "turnId": "turn-1", "willRetry": True}}
         final_error = {"method": "error", "params": {"threadId": "thread-1", "turnId": "turn-1", "willRetry": False}}
+        typed_final_error = {
+            "kind": "Error",
+            "payload": {"threadId": "thread-1", "turnId": "turn-1", "willRetry": False},
+        }
         failed_turn = {
             "method": "turn/completed",
             "params": {"threadId": "thread-1", "turn": {"id": "turn-1", "status": "failed"}},
@@ -3195,6 +3314,7 @@ class ExecSessionRequestBuilderTests(unittest.TestCase):
 
         self.assertFalse(notification_indicates_exec_error(retrying_error, "thread-1", "turn-1"))
         self.assertTrue(notification_indicates_exec_error(final_error, "thread-1", "turn-1"))
+        self.assertTrue(notification_indicates_exec_error(typed_final_error, "thread-1", "turn-1"))
         self.assertTrue(notification_indicates_exec_error(failed_turn, "thread-1", "turn-1"))
         self.assertFalse(notification_indicates_exec_error(completed_turn, "thread-1", "turn-1"))
 
@@ -3214,6 +3334,10 @@ class ExecSessionRequestBuilderTests(unittest.TestCase):
         self.assertFalse(should_backfill_turn_completed_items(True, notification))
         self.assertEqual(turn_items_for_thread(thread, "turn-1"), [{"type": "AgentMessage"}])
         self.assertIsNone(turn_items_for_thread(thread, "missing"))
+        items = turn_items_for_thread(thread, "turn-1")
+        assert isinstance(items, list)
+        items.append({"type": "mutated"})
+        self.assertEqual(thread["turns"][0]["items"], [{"type": "AgentMessage"}])
 
     def test_lagged_event_warning_message_matches_upstream_text(self) -> None:
         self.assertEqual(lagged_event_warning_message(12), "in-process app-server event stream lagged; dropped 12 events")
@@ -3291,6 +3415,15 @@ class ExecSessionRequestBuilderTests(unittest.TestCase):
         self.assertEqual(empty_lookup.kind, "none")
         self.assertIsNone(empty_lookup.request)
 
+    def test_resume_thread_id_lookup_request_uses_upstream_fixed_request_id(self) -> None:
+        config = ExecSessionConfig("gpt-5.5", "openai", Path("C:/work/project"))
+
+        lookup = resume_thread_id_lookup_request(config, {"last": True, "all": False})
+
+        self.assertEqual(RESUME_LOOKUP_REQUEST_ID, 0)
+        self.assertEqual(lookup.kind, "list")
+        self.assertEqual(lookup.request.request_id, 0)
+
     def test_resume_thread_id_from_list_response_tracks_match_or_next_cursor(self) -> None:
         config = ExecSessionConfig("gpt-5.5", "openai", Path("C:/work/project"))
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -3358,6 +3491,39 @@ class ExecSessionRequestBuilderTests(unittest.TestCase):
                 state_db_thread={"id": "state-thread"},
             )
         )
+
+    def test_resume_thread_id_from_local_sources_filters_state_db_cwd_when_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            current = Path(tmpdir) / "current"
+            other = Path(tmpdir) / "other"
+            current.mkdir()
+            other.mkdir()
+            config = ExecSessionConfig("gpt-5.5", "openai", current)
+            resume_args = {"session_id": "Daily work", "last": False, "all": False}
+
+            self.assertEqual(
+                resume_thread_id_from_local_sources(
+                    config,
+                    resume_args,
+                    state_db_thread={"id": "state-thread", "cwd": str(current)},
+                ),
+                "state-thread",
+            )
+            self.assertIsNone(
+                resume_thread_id_from_local_sources(
+                    config,
+                    resume_args,
+                    state_db_thread={"id": "state-thread", "cwd": str(other)},
+                )
+            )
+            self.assertEqual(
+                resume_thread_id_from_local_sources(
+                    config,
+                    {"session_id": "Daily work", "last": False, "all": True},
+                    state_db_thread={"id": "state-thread", "cwd": str(other)},
+                ),
+                "state-thread",
+            )
 
     def test_resume_thread_id_from_local_sources_applies_rollout_cwd_filter(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -3437,6 +3603,14 @@ class ExecSessionRequestBuilderTests(unittest.TestCase):
     def test_latest_thread_cwd_falls_back_to_thread_cwd(self) -> None:
         self.assertEqual(latest_thread_cwd({"path": "missing.jsonl", "cwd": "C:/fallback"}), Path("C:/fallback"))
 
+    def test_latest_thread_cwd_falls_back_on_invalid_utf8_rollout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rollout = Path(tmpdir) / "thread.jsonl"
+            rollout.write_bytes(b"\xff")
+
+            self.assertIsNone(parse_latest_turn_context_cwd(rollout))
+            self.assertEqual(latest_thread_cwd({"path": str(rollout), "cwd": "C:/fallback"}), Path("C:/fallback"))
+
     def test_cwds_match_resolves_existing_paths_and_falls_back_to_direct_equality(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -3504,6 +3678,7 @@ class ExecSessionRequestBuilderTests(unittest.TestCase):
                     "approvalPolicy": "never",
                     "approvalsReviewer": "user",
                     "sandbox": "read-only",
+                    "config": {"instructionSources": [], "startupWarnings": []},
                 },
             },
         )

@@ -11,6 +11,11 @@ class ExecCliTests(unittest.TestCase):
         self.assertIsNone(cli.command)
         self.assertEqual(cli.prompt, "summarize")
 
+    def test_root_config_overrides_are_prepended_before_exec_overrides(self):
+        cli = parse_exec_args(["-c", "model='inner'", "summarize"], root_config_overrides=("sandbox='read-only'",))
+
+        self.assertEqual(cli.config_overrides, ("sandbox='read-only'", "model='inner'"))
+
     def test_resume_parses_prompt_after_global_flags(self):
         prompt = "echo resume-with-global-flags-after-subcommand"
         cli = parse_exec_args(
@@ -20,6 +25,10 @@ class ExecCliTests(unittest.TestCase):
                 "--json",
                 "--model",
                 "gpt-5.2-codex",
+                "--config",
+                "openai_base_url='http://localhost:1234/v1'",
+                "--config",
+                "reasoning_level='xhigh'",
                 "--dangerously-bypass-approvals-and-sandbox",
                 "--skip-git-repo-check",
                 "--ephemeral",
@@ -34,6 +43,10 @@ class ExecCliTests(unittest.TestCase):
         self.assertTrue(cli.ignore_rules)
         self.assertTrue(cli.json)
         self.assertEqual(cli.model, "gpt-5.2-codex")
+        self.assertEqual(
+            cli.config_overrides,
+            ("openai_base_url='http://localhost:1234/v1'", "reasoning_level='xhigh'"),
+        )
         self.assertEqual(cli.command, "resume")
         self.assertIsNotNone(cli.resume)
         self.assertEqual(cli.resume.prompt, prompt)
@@ -79,6 +92,12 @@ class ExecCliTests(unittest.TestCase):
             cli.removed_full_auto_warning(),
             "warning: `--full-auto` is deprecated; use `--sandbox workspace-write` instead.",
         )
+        self.assertIs(cli.effective_sandbox_mode(), SandboxMode.WORKSPACE_WRITE)
+
+    def test_dangerous_bypass_projects_to_danger_full_access(self):
+        cli = parse_exec_args(["--dangerously-bypass-approvals-and-sandbox", "summarize"])
+
+        self.assertIs(cli.effective_sandbox_mode(), SandboxMode.DANGER_FULL_ACCESS)
 
     def test_full_auto_conflicts_with_dangerous_bypass_flag(self):
         with self.assertRaisesRegex(ExecCliParseError, "conflicts"):

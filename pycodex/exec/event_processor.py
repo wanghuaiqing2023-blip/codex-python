@@ -10,11 +10,20 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
+import json
 from pathlib import Path
 import sys
 from typing import Any, TextIO
 
-from pycodex.protocol import NetworkSandboxPolicy, PermissionProfile, SandboxPolicy, SessionConfiguredEvent, TurnItem
+from pycodex.protocol import (
+    NetworkSandboxPolicy,
+    PermissionProfile,
+    SandboxPolicy,
+    SessionConfiguredEvent,
+    TurnItem,
+    turn_completed_notification as protocol_turn_completed_notification,
+    turn_started_notification as protocol_turn_started_notification,
+)
 
 from .events import (
     ExecThreadItem,
@@ -34,6 +43,15 @@ from .events import (
 
 JsonValue = Any
 DEFAULT_CODEX_VERSION = "0.0.0"
+_EXEC_JSON_TURN_ITEM_TYPES = {
+    "AgentMessage",
+    "Reasoning",
+    "CommandExecution",
+    "FileChange",
+    "McpToolCall",
+    "CollabAgentToolCall",
+    "WebSearch",
+}
 
 
 class CodexStatus(str, Enum):
@@ -45,6 +63,39 @@ class CodexStatus(str, Enum):
 class CollectedThreadEvents:
     events: tuple[ThreadEvent, ...]
     status: CodexStatus
+
+
+def exec_turn_started_notification(
+    thread_id: str,
+    turn_id: str,
+    items: tuple[TurnItem, ...] | list[TurnItem] = (),
+    *,
+    started_at: int | float | None = None,
+) -> dict[str, JsonValue]:
+    return protocol_turn_started_notification(thread_id, turn_id, items, started_at=started_at)
+
+
+def exec_turn_completed_notification(
+    thread_id: str,
+    turn_id: str,
+    items: tuple[TurnItem, ...] | list[TurnItem],
+    *,
+    status: str = "completed",
+    started_at: int | float | None = None,
+    completed_at: int | float | None = None,
+    duration_ms: int | float | None = None,
+    error: JsonValue = None,
+) -> dict[str, JsonValue]:
+    return protocol_turn_completed_notification(
+        thread_id,
+        turn_id,
+        items,
+        status=status,
+        error=error,
+        started_at=started_at,
+        completed_at=completed_at,
+        duration_ms=duration_ms,
+    )
 
 
 @dataclass
@@ -60,9 +111,12 @@ def handle_last_message(
     stderr: TextIO | None = None,
 ) -> None:
     path = Path(output_file)
-    path.write_text(last_agent_message or "", encoding="utf-8")
+    err = sys.stderr if stderr is None else stderr
+    try:
+        path.write_text(last_agent_message or "", encoding="utf-8")
+    except OSError as exc:
+        print(f"Failed to write last message file {json.dumps(str(path))}: {exc}", file=err)
     if last_agent_message is None:
-        err = sys.stderr if stderr is None else stderr
         print(f"Warning: no last agent message; wrote empty content to {path}", file=err)
 
 
@@ -143,9 +197,13 @@ class JsonEventProcessor:
         usage: Usage | None = None,
     ) -> CollectedThreadEvents:
         events: list[ThreadEvent] = []
+        if self.running_todo_list is not None:
+            events.append(ThreadEvent.item_completed(todo_list_item(self.running_todo_list.item_id, self.running_todo_list.items)))
+            self.running_todo_list = None
         events.extend(self._reconcile_unfinished_started_items(tuple(items)))
+        normalized_status = _normalized_status(status)
 
-        if status == "completed":
+        if normalized_status == "completed":
             final_message = final_message_from_turn_items(tuple(items))
             if final_message is not None:
                 self.final_message = final_message
@@ -153,14 +211,14 @@ class JsonEventProcessor:
             events.append(ThreadEvent.turn_completed(usage or self.last_usage or Usage()))
             return CollectedThreadEvents(tuple(events), CodexStatus.INITIATE_SHUTDOWN)
 
-        if status == "failed":
+        if normalized_status == "failed":
             self.final_message = None
             self.emit_final_message_on_shutdown = False
             failure = ThreadErrorEvent(error or (self.last_critical_error.message if self.last_critical_error else "turn failed"))
             events.append(ThreadEvent.turn_failed(failure))
             return CollectedThreadEvents(tuple(events), CodexStatus.INITIATE_SHUTDOWN)
 
-        if status == "interrupted":
+        if normalized_status == "interrupted":
             self.final_message = None
             self.emit_final_message_on_shutdown = False
             return CollectedThreadEvents(tuple(events), CodexStatus.INITIATE_SHUTDOWN)
@@ -172,13 +230,13 @@ class JsonEventProcessor:
         params = notification_params(notification)
 
         if method == "configWarning":
-            return self.collect_warning(_message_with_details(_field(params, "summary") or "", _field(params, "details")))
+            return self.collect_warning(_message_with_details(_warning_summary(params), _field(params, "details")))
 
         if method == "error":
             return self.collect_error(_turn_error_message(_field(params, "error") or params) or "")
 
         if method == "deprecationNotice":
-            return self.collect_warning(_message_with_details(_field(params, "summary") or "", _field(params, "details")))
+            return self.collect_warning(_message_with_details(_warning_summary(params), _field(params, "details")))
 
         if method in {"hook/started", "hook/completed", "model/verification", "turn/diff/updated"}:
             return CollectedThreadEvents(events=(), status=CodexStatus.RUNNING)
@@ -294,6 +352,8 @@ class JsonEventProcessor:
     def _map_started_item(self, item: TurnItem) -> ExecThreadItem | None:
         if item.type in {"AgentMessage", "Reasoning"}:
             return None
+        if item.type not in _EXEC_JSON_TURN_ITEM_TYPES:
+            return None
         return exec_item_from_turn_item(item, self._started_item_id(item.id()))
 
     def _map_completed_item(self, item: TurnItem) -> ExecThreadItem | None:
@@ -303,6 +363,8 @@ class JsonEventProcessor:
                 return None
         if item.type in {"AgentMessage", "Reasoning"}:
             return exec_item_from_turn_item(item, self.next_item_id())
+        if item.type not in _EXEC_JSON_TURN_ITEM_TYPES:
+            return None
         return exec_item_from_turn_item(item, self._completed_item_id(item.id()))
 
     def _reconcile_unfinished_started_items(self, turn_items: tuple[TurnItem, ...]) -> tuple[ThreadEvent, ...]:
@@ -317,6 +379,10 @@ class JsonEventProcessor:
         return tuple(events)
 
     def _map_started_notification_item(self, item: JsonValue) -> ExecThreadItem | None:
+        if _uses_raw_exec_notification_boundary(item):
+            raw_id = _item_id(item)
+            make_id = (lambda: self._started_item_id(raw_id)) if raw_id is not None else self.next_item_id
+            return exec_item_from_app_server_item(item, make_id)
         turn_item = _turn_item_from_value(item)
         if turn_item is not None:
             return self._map_started_item(turn_item)
@@ -325,6 +391,10 @@ class JsonEventProcessor:
         return exec_item_from_app_server_item(item, make_id)
 
     def _map_completed_notification_item(self, item: JsonValue) -> ExecThreadItem | None:
+        if _uses_raw_exec_notification_boundary(item):
+            raw_id = _item_id(item)
+            make_id = (lambda: self._completed_item_id(raw_id)) if raw_id is not None else self.next_item_id
+            return exec_item_from_app_server_item(item, make_id)
         turn_item = _turn_item_from_value(item)
         if turn_item is not None:
             return self._map_completed_item(turn_item)
@@ -377,15 +447,28 @@ class HumanEventProcessor:
     def process_warning(self, message: str, *, stderr: TextIO | None = None) -> CodexStatus:
         return self.collect_warning(message, stderr=stderr)
 
+    def collect_item_started(self, item: TurnItem, *, stderr: TextIO | None = None) -> CodexStatus:
+        err = sys.stderr if stderr is None else stderr
+        for line in human_item_started_lines(item):
+            print(line, file=err)
+        return CodexStatus.RUNNING
+
     def collect_item_completed(self, item: TurnItem, *, stderr: TextIO | None = None) -> CodexStatus:
+        err = sys.stderr if stderr is None else stderr
         if item.type == "AgentMessage":
             final_message = final_message_from_turn_items((item,))
             self.final_message = final_message
             self.final_message_rendered = final_message is not None
             if final_message is not None:
-                err = sys.stderr if stderr is None else stderr
                 print("codex", file=err)
                 print(final_message, file=err)
+        else:
+            for line in human_item_completed_lines(
+                item,
+                show_agent_reasoning=self.show_agent_reasoning,
+                show_raw_agent_reasoning=self.show_raw_agent_reasoning,
+            ):
+                print(line, file=err)
         return CodexStatus.RUNNING
 
     def collect_turn_completed(
@@ -393,8 +476,12 @@ class HumanEventProcessor:
         *,
         status: str,
         items: tuple[TurnItem, ...] | list[TurnItem] = (),
+        error: str | None = None,
+        stderr: TextIO | None = None,
     ) -> CodexStatus:
-        if status == "completed":
+        err = sys.stderr if stderr is None else stderr
+        normalized_status = _normalized_status(status)
+        if normalized_status == "completed":
             rendered_message = self.final_message if self.final_message_rendered else None
             final_message = final_message_from_turn_items(tuple(items))
             if final_message is not None:
@@ -403,10 +490,14 @@ class HumanEventProcessor:
             self.emit_final_message_on_shutdown = True
             return CodexStatus.INITIATE_SHUTDOWN
 
-        if status in {"failed", "interrupted"}:
+        if normalized_status in {"failed", "interrupted"}:
             self.final_message = None
             self.final_message_rendered = False
             self.emit_final_message_on_shutdown = False
+            if normalized_status == "failed" and error is not None:
+                print(f"ERROR: {error}", file=err)
+            if normalized_status == "interrupted":
+                print("turn interrupted", file=err)
             return CodexStatus.INITIATE_SHUTDOWN
 
         return CodexStatus.RUNNING
@@ -593,30 +684,126 @@ def format_with_separators(value: int) -> str:
 
 
 def notification_method(notification: JsonValue) -> str | None:
-    raw = _field(notification, "method", "type")
+    raw = _field(notification, "method", "type", "kind")
     if raw is None:
         return None
     raw = str(raw)
     aliases = {
+        "AccountLoginCompleted": "account/login/completed",
+        "account_login_completed": "account/login/completed",
+        "AccountRateLimitsUpdated": "account/rateLimits/updated",
+        "account_rate_limits_updated": "account/rateLimits/updated",
+        "AccountUpdated": "account/updated",
+        "account_updated": "account/updated",
+        "AgentMessageDelta": "item/agentMessage/delta",
+        "agent_message_delta": "item/agentMessage/delta",
+        "AppListUpdated": "app/list/updated",
+        "app_list_updated": "app/list/updated",
+        "CommandExecOutputDelta": "command/exec/outputDelta",
+        "command_exec_output_delta": "command/exec/outputDelta",
+        "CommandExecutionOutputDelta": "item/commandExecution/outputDelta",
+        "command_execution_output_delta": "item/commandExecution/outputDelta",
         "ConfigWarning": "configWarning",
         "config_warning": "configWarning",
+        "ContextCompacted": "thread/compacted",
+        "context_compacted": "thread/compacted",
         "DeprecationNotice": "deprecationNotice",
         "deprecation_notice": "deprecationNotice",
         "Error": "error",
+        "ExternalAgentConfigImportCompleted": "externalAgentConfig/import/completed",
+        "external_agent_config_import_completed": "externalAgentConfig/import/completed",
+        "FileChangeOutputDelta": "item/fileChange/outputDelta",
+        "file_change_output_delta": "item/fileChange/outputDelta",
+        "FileChangePatchUpdated": "item/fileChange/patchUpdated",
+        "file_change_patch_updated": "item/fileChange/patchUpdated",
+        "FsChanged": "fs/changed",
+        "fs_changed": "fs/changed",
+        "FuzzyFileSearchSessionCompleted": "fuzzyFileSearch/sessionCompleted",
+        "fuzzy_file_search_session_completed": "fuzzyFileSearch/sessionCompleted",
+        "FuzzyFileSearchSessionUpdated": "fuzzyFileSearch/sessionUpdated",
+        "fuzzy_file_search_session_updated": "fuzzyFileSearch/sessionUpdated",
+        "GuardianWarning": "guardianWarning",
+        "guardian_warning": "guardianWarning",
         "HookStarted": "hook/started",
         "hook_started": "hook/started",
         "HookCompleted": "hook/completed",
         "hook_completed": "hook/completed",
         "ItemStarted": "item/started",
         "item_started": "item/started",
+        "ItemGuardianApprovalReviewStarted": "item/autoApprovalReview/started",
+        "item_guardian_approval_review_started": "item/autoApprovalReview/started",
+        "ItemGuardianApprovalReviewCompleted": "item/autoApprovalReview/completed",
+        "item_guardian_approval_review_completed": "item/autoApprovalReview/completed",
         "ItemCompleted": "item/completed",
         "item_completed": "item/completed",
         "ModelRerouted": "model/rerouted",
         "model_rerouted": "model/rerouted",
         "ModelVerification": "model/verification",
         "model_verification": "model/verification",
+        "McpServerOauthLoginCompleted": "mcpServer/oauthLogin/completed",
+        "mcp_server_oauth_login_completed": "mcpServer/oauthLogin/completed",
+        "McpServerStatusUpdated": "mcpServer/startupStatus/updated",
+        "mcp_server_status_updated": "mcpServer/startupStatus/updated",
+        "McpToolCallProgress": "item/mcpToolCall/progress",
+        "mcp_tool_call_progress": "item/mcpToolCall/progress",
+        "PlanDelta": "item/plan/delta",
+        "plan_delta": "item/plan/delta",
+        "ProcessExited": "process/exited",
+        "process_exited": "process/exited",
+        "ProcessOutputDelta": "process/outputDelta",
+        "process_output_delta": "process/outputDelta",
+        "RawResponseItemCompleted": "rawResponseItem/completed",
+        "raw_response_item_completed": "rawResponseItem/completed",
+        "ReasoningSummaryPartAdded": "item/reasoning/summaryPartAdded",
+        "reasoning_summary_part_added": "item/reasoning/summaryPartAdded",
+        "ReasoningSummaryTextDelta": "item/reasoning/summaryTextDelta",
+        "reasoning_summary_text_delta": "item/reasoning/summaryTextDelta",
+        "ReasoningTextDelta": "item/reasoning/textDelta",
+        "reasoning_text_delta": "item/reasoning/textDelta",
+        "RemoteControlStatusChanged": "remoteControl/status/changed",
+        "remote_control_status_changed": "remoteControl/status/changed",
+        "ServerRequestResolved": "serverRequest/resolved",
+        "server_request_resolved": "serverRequest/resolved",
+        "SkillsChanged": "skills/changed",
+        "skills_changed": "skills/changed",
+        "TerminalInteraction": "item/commandExecution/terminalInteraction",
+        "terminal_interaction": "item/commandExecution/terminalInteraction",
+        "ThreadArchived": "thread/archived",
+        "thread_archived": "thread/archived",
+        "ThreadUnarchived": "thread/unarchived",
+        "thread_unarchived": "thread/unarchived",
+        "ThreadClosed": "thread/closed",
+        "thread_closed": "thread/closed",
+        "ThreadGoalCleared": "thread/goal/cleared",
+        "thread_goal_cleared": "thread/goal/cleared",
+        "ThreadGoalUpdated": "thread/goal/updated",
+        "thread_goal_updated": "thread/goal/updated",
+        "ThreadNameUpdated": "thread/name/updated",
+        "thread_name_updated": "thread/name/updated",
+        "ThreadSettingsUpdated": "thread/settings/updated",
+        "thread_settings_updated": "thread/settings/updated",
+        "ThreadStarted": "thread/started",
+        "thread_started": "thread/started",
+        "ThreadStatusChanged": "thread/status/changed",
+        "thread_status_changed": "thread/status/changed",
         "ThreadTokenUsageUpdated": "thread/tokenUsage/updated",
         "thread_token_usage_updated": "thread/tokenUsage/updated",
+        "ThreadRealtimeClosed": "thread/realtime/closed",
+        "thread_realtime_closed": "thread/realtime/closed",
+        "ThreadRealtimeError": "thread/realtime/error",
+        "thread_realtime_error": "thread/realtime/error",
+        "ThreadRealtimeItemAdded": "thread/realtime/itemAdded",
+        "thread_realtime_item_added": "thread/realtime/itemAdded",
+        "ThreadRealtimeOutputAudioDelta": "thread/realtime/outputAudio/delta",
+        "thread_realtime_output_audio_delta": "thread/realtime/outputAudio/delta",
+        "ThreadRealtimeSdp": "thread/realtime/sdp",
+        "thread_realtime_sdp": "thread/realtime/sdp",
+        "ThreadRealtimeStarted": "thread/realtime/started",
+        "thread_realtime_started": "thread/realtime/started",
+        "ThreadRealtimeTranscriptDelta": "thread/realtime/transcript/delta",
+        "thread_realtime_transcript_delta": "thread/realtime/transcript/delta",
+        "ThreadRealtimeTranscriptDone": "thread/realtime/transcript/done",
+        "thread_realtime_transcript_done": "thread/realtime/transcript/done",
         "TurnCompleted": "turn/completed",
         "turn_completed": "turn/completed",
         "TurnDiffUpdated": "turn/diff/updated",
@@ -625,6 +812,11 @@ def notification_method(notification: JsonValue) -> str | None:
         "turn_plan_updated": "turn/plan/updated",
         "TurnStarted": "turn/started",
         "turn_started": "turn/started",
+        "Warning": "warning",
+        "WindowsSandboxSetupCompleted": "windowsSandbox/setupCompleted",
+        "windows_sandbox_setup_completed": "windowsSandbox/setupCompleted",
+        "WindowsWorldWritableWarning": "windows/worldWritableWarning",
+        "windows_world_writable_warning": "windows/worldWritableWarning",
     }
     return aliases.get(raw, raw)
 
@@ -662,8 +854,36 @@ def map_todo_items(plan: JsonValue) -> tuple[tuple[str, bool], ...]:
 
 
 def exec_item_from_app_server_item(item: JsonValue, make_id: Any) -> ExecThreadItem | None:
+    if isinstance(item, Mapping):
+        item_type = _normalized_item_type(_field(item, "type"))
+        if item_type == "web_search":
+            return web_search_item(
+                make_id(),
+                type(
+                    "WebSearchNotificationItem",
+                    (),
+                    {
+                        "id": str(_field(item, "id") or ""),
+                        "query": str(_field(item, "query") or ""),
+                        "action": _field(item, "action"),
+                    },
+                )(),
+            )
+        if item_type == "collab_agent_tool_call":
+            return collab_tool_call_item(
+                make_id(),
+                tool=_field(item, "tool"),
+                sender_thread_id=str(_field(item, "senderThreadId", "sender_thread_id") or ""),
+                receiver_thread_ids=tuple(str(thread_id) for thread_id in (_field(item, "receiverThreadIds", "receiver_thread_ids") or ())),
+                prompt=_optional_str(_field(item, "prompt")),
+                agents_states=_field(item, "agentsStates", "agents_states") or {},
+                status=_field(item, "status"),
+            )
+
     turn_item = _turn_item_from_value(item)
     if turn_item is not None:
+        if not _turn_item_emits_exec_json(turn_item):
+            return None
         return exec_item_from_turn_item(turn_item, make_id())
 
     item_type = _normalized_item_type(_field(item, "type"))
@@ -691,7 +911,7 @@ def exec_item_from_app_server_item(item: JsonValue, make_id: Any) -> ExecThreadI
             "file_change",
             {
                 "changes": _file_change_entries(_field(item, "changes") or ()),
-                "status": _patch_status_text(_field(item, "status")),
+                "status": _patch_status_for_exec_json(_field(item, "status")),
             },
         )
 
@@ -762,6 +982,15 @@ def final_message_from_notification_items(items: tuple[JsonValue, ...] | list[Js
     return None
 
 
+def _turn_item_emits_exec_json(item: TurnItem) -> bool:
+    if item.type not in _EXEC_JSON_TURN_ITEM_TYPES:
+        return False
+    if item.type == "Reasoning":
+        text = "\n".join(str(entry) for entry in getattr(item.item, "summary_text", ()))
+        return bool(text.strip())
+    return True
+
+
 def agent_message_text_from_notification_item(item: JsonValue) -> str | None:
     turn_item = _turn_item_from_value(item)
     if turn_item is not None:
@@ -778,6 +1007,10 @@ def agent_message_text_from_notification_item(item: JsonValue) -> str | None:
 
 
 def human_item_started_lines(item: JsonValue) -> tuple[str, ...]:
+    turn_item = _turn_item_from_value(item)
+    if turn_item is not None:
+        item = _turn_item_to_app_server_like_mapping(turn_item)
+
     item_type = _normalized_item_type(_field(item, "type"))
     if item_type == "command_execution":
         return (
@@ -849,10 +1082,8 @@ def reasoning_text_from_notification_item(item: JsonValue, *, show_raw_agent_rea
     else:
         summary = tuple(str(entry) for entry in (_field(item, "summary", "summary_text") or ()))
         raw_content = tuple(str(entry) for entry in (_field(item, "content", "raw_content") or ()))
-    parts = list(summary)
-    if show_raw_agent_reasoning:
-        parts.extend(raw_content)
-    return "\n".join(parts)
+    entries = raw_content if show_raw_agent_reasoning and raw_content else summary
+    return "\n".join(entries)
 
 
 def human_notification_lines(notification: JsonValue) -> tuple[str, ...]:
@@ -860,13 +1091,13 @@ def human_notification_lines(notification: JsonValue) -> tuple[str, ...]:
     params = notification_params(notification)
 
     if method == "configWarning":
-        return (f"warning: {_message_with_details(_field(params, 'summary') or '', _field(params, 'details'))}",)
+        return (f"warning: {_message_with_details(_warning_summary(params), _field(params, 'details'))}",)
 
     if method == "error":
         return (f"ERROR: {_turn_error_message(_field(params, 'error') or params) or ''}",)
 
     if method == "deprecationNotice":
-        lines = [f"deprecated: {_field(params, 'summary') or ''}"]
+        lines = [f"deprecated: {_warning_summary(params)}"]
         details = _field(params, "details")
         if details:
             lines.append(str(details))
@@ -1013,6 +1244,10 @@ def _message_with_details(summary: JsonValue, details: JsonValue) -> str:
     return summary_text
 
 
+def _warning_summary(params: JsonValue) -> str:
+    return str(_field(params, "summary", "message") or "")
+
+
 def _turn_error_message(error: JsonValue) -> str | None:
     if error is None:
         return None
@@ -1028,8 +1263,18 @@ def _model_rerouted_message(params: JsonValue, *, include_reason: bool) -> str:
     message = f"model rerouted: {_field(params, 'fromModel', 'from_model')} -> {_field(params, 'toModel', 'to_model')}"
     reason = _field(params, "reason")
     if include_reason:
-        message = f"{message} ({_enum_value(reason)})"
+        message = f"{message} ({_model_reroute_reason_debug(reason)})"
     return message
+
+
+def _model_reroute_reason_debug(reason: JsonValue) -> str:
+    value = _enum_value(reason)
+    if value is None:
+        return "None"
+    text = str(value)
+    if "_" in text:
+        return "".join(part[:1].upper() + part[1:] for part in text.split("_") if part)
+    return text[:1].upper() + text[1:] if text else text
 
 
 def _turn_items(turn: JsonValue) -> tuple[JsonValue, ...]:
@@ -1040,20 +1285,7 @@ def _turn_items(turn: JsonValue) -> tuple[JsonValue, ...]:
 def _turn_item_from_value(value: JsonValue) -> TurnItem | None:
     if isinstance(value, TurnItem):
         return value
-    item_type = _field(value, "type")
-    if item_type not in {
-        "UserMessage",
-        "HookPrompt",
-        "AgentMessage",
-        "Plan",
-        "Reasoning",
-        "WebSearch",
-        "ImageView",
-        "ImageGeneration",
-        "FileChange",
-        "McpToolCall",
-        "ContextCompaction",
-    }:
+    if not isinstance(value, Mapping):
         return None
     try:
         return TurnItem.from_mapping(value)
@@ -1117,38 +1349,17 @@ def _normalized_item_type(value: JsonValue) -> str:
     return aliases.get(raw, raw)
 
 
+def _uses_raw_exec_notification_boundary(item: JsonValue) -> bool:
+    if not isinstance(item, Mapping):
+        return False
+    return _normalized_item_type(_field(item, "type")) in {"web_search", "collab_agent_tool_call"}
+
+
 def _turn_item_to_app_server_like_mapping(item: TurnItem) -> dict[str, JsonValue]:
-    if item.type == "AgentMessage":
-        return {"type": "agentMessage", "id": item.id(), "text": final_message_from_turn_items((item,))}
-    if item.type == "Reasoning":
-        return {
-            "type": "reasoning",
-            "id": item.id(),
-            "summary": list(getattr(item.item, "summary_text", ())),
-            "content": list(getattr(item.item, "raw_content", ())),
-        }
-    if item.type == "McpToolCall":
-        return {
-            "type": "mcpToolCall",
-            "id": item.id(),
-            "server": item.item.server,
-            "tool": item.item.tool,
-            "arguments": item.item.arguments,
-            "result": item.item.result.to_mapping() if item.item.result is not None else None,
-            "error": {"message": item.item.error.message} if item.item.error is not None else None,
-            "status": item.item.status,
-        }
-    if item.type == "FileChange":
-        return {
-            "type": "fileChange",
-            "id": item.id(),
-            "changes": [{"path": str(path), "kind": _patch_kind_text(change.type)} for path, change in item.item.changes.items()],
-            "status": item.item.status,
-        }
-    if item.type == "WebSearch":
-        return {"type": "webSearch", "id": item.id(), "query": item.item.query, "action": item.item.action}
-    if item.type == "ContextCompaction":
-        return {"type": "contextCompaction", "id": item.id()}
+    try:
+        return item.to_app_server_mapping()
+    except ValueError:
+        pass
     return {"type": item.type, "id": item.id()}
 
 
@@ -1157,16 +1368,25 @@ def _file_change_entries(changes: JsonValue) -> list[dict[str, str]]:
         return [
             {
                 "path": str(path),
-                "kind": _patch_kind_text(_field(change, "kind", "type") if isinstance(change, Mapping) else change),
+                "kind": _patch_kind_text(_patch_kind_value(change)),
             }
             for path, change in changes.items()
         ]
     if isinstance(changes, list | tuple):
         return [
-            {"path": str(_field(change, "path") or ""), "kind": _patch_kind_text(_field(change, "kind"))}
+            {"path": str(_field(change, "path") or ""), "kind": _patch_kind_text(_patch_kind_value(_field(change, "kind")))}
             for change in changes
         ]
     return []
+
+
+def _patch_kind_value(value: JsonValue) -> JsonValue:
+    if isinstance(value, Mapping):
+        kind = _field(value, "kind")
+        if kind is not None:
+            return _patch_kind_value(kind)
+        return _field(value, "type")
+    return value
 
 
 def _patch_kind_text(value: JsonValue) -> str:
@@ -1175,7 +1395,9 @@ def _patch_kind_text(value: JsonValue) -> str:
         return "add"
     if raw in {"delete", "Delete"}:
         return "delete"
-    return "update"
+    if raw in {"update", "Update", ""}:
+        return "update"
+    return raw
 
 
 def _patch_status_text(value: JsonValue) -> str:
@@ -1184,7 +1406,16 @@ def _patch_status_text(value: JsonValue) -> str:
         return "completed"
     if status in {"failed", "declined"}:
         return status
-    return "in_progress"
+    if status in {"in_progress", ""}:
+        return "in_progress"
+    return status
+
+
+def _patch_status_for_exec_json(value: JsonValue) -> str:
+    status = _patch_status_text(value)
+    if status == "declined":
+        return "failed"
+    return status
 
 
 def _mcp_status_text(value: JsonValue) -> str:
@@ -1193,7 +1424,9 @@ def _mcp_status_text(value: JsonValue) -> str:
         return "completed"
     if status == "failed":
         return "failed"
-    return "in_progress"
+    if status in {"in_progress", ""}:
+        return "in_progress"
+    return status
 
 
 def _mcp_result_mapping(value: JsonValue) -> JsonValue:
@@ -1274,6 +1507,8 @@ __all__ = [
     "blended_total",
     "config_summary_entries",
     "config_summary_lines",
+    "exec_turn_completed_notification",
+    "exec_turn_started_notification",
     "exec_item_from_app_server_item",
     "format_with_separators",
     "handle_last_message",

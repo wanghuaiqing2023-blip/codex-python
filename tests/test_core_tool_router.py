@@ -1,18 +1,28 @@
 import asyncio
+import json
+import shutil
+import sys
+import tempfile
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 
 from pycodex.core import (
     ConversationHistory,
     FunctionCallError,
     FunctionToolOutput,
     HookToolName,
+    MEMORIES_USAGE_METRIC,
     JsonToolOutput,
     PostToolUsePayload,
     PostToolUseHookOutcome,
     PreToolUsePayload,
     PreToolUseHookResult,
     RegisteredTool,
+    Shell,
+    ShellType,
     TerminalOutcomeFlag,
+    ExecutionStatus,
     ToolCall,
     ToolCallOutcome,
     ToolExposure,
@@ -21,10 +31,12 @@ from pycodex.core import (
     ToolRegistry,
     ToolRouter,
     apply_post_tool_use_feedback,
+    build_environment_tool_router_from_turn_context,
     build_tool_call,
     dispatch_tool_call,
+    dispatch_tool_call_with_terminal_outcome,
 )
-from pycodex.protocol import ResponseItem, SearchToolCallParams, ToolName, TruncationPolicyConfig
+from pycodex.protocol import NetworkSandboxPolicy, PermissionProfile, ResponseItem, SearchToolCallParams, ToolName, TruncationPolicyConfig
 
 
 class EchoHandler:
@@ -56,6 +68,31 @@ class JsonEchoHandler(EchoHandler):
         return JsonToolOutput.new({"ok": True})
 
 
+class SpawnAgentPostHookHandler(JsonEchoHandler):
+    def __init__(self):
+        super().__init__("spawn_agent")
+
+
+class TelemetryHandler(EchoHandler):
+    def telemetry_tags(self, _invocation):
+        return (
+            ("mcp_server", "codex-apps"),
+            ("mcp_server_origin", "plugin"),
+            ("custom_tag", "custom-value"),
+        )
+
+
+class TelemetryCustomOnlyHandler(TelemetryHandler):
+    def matches_kind(self, payload):
+        return payload.type == "custom"
+
+
+class NamespacedTelemetryHandler(TelemetryHandler):
+    def __init__(self):
+        super().__init__("lookup")
+        self.name = ToolName.namespaced("mcp__server__", "lookup")
+
+
 class LifecycleRecorder:
     def __init__(self):
         self.started = []
@@ -66,6 +103,34 @@ class LifecycleRecorder:
 
     async def on_tool_finish(self, input):
         self.finished.append(input)
+
+
+class TraceContext:
+    def __init__(self):
+        self.invocations = []
+        self.completed = []
+        self.failed = []
+
+    def start_tool_dispatch_trace(self, invocation_factory):
+        self.invocations.append(invocation_factory())
+        return self
+
+    def is_enabled(self):
+        return True
+
+    def record_completed(self, status, result):
+        self.completed.append((status, result))
+
+    def record_failed(self, error):
+        self.failed.append(error)
+
+
+class CounterTelemetry:
+    def __init__(self):
+        self.calls = []
+
+    def counter(self, metric, inc, tags):
+        self.calls.append((metric, inc, tuple(tags)))
 
 
 class ToolRouterTests(unittest.TestCase):
@@ -104,6 +169,63 @@ class ToolRouterTests(unittest.TestCase):
         self.assertEqual(call.call_id, "call-shell")
         self.assertEqual(call.payload, ToolPayload.function('{"command":"pwd"}'))
         self.assertEqual(call.function_arguments(), '{"command":"pwd"}')
+
+    def test_dispatch_tool_call_emits_tool_read_memory_metric(self) -> None:
+        telemetry = CounterTelemetry()
+        router = ToolRouter.from_parts(ToolRegistry.with_handler_for_test(EchoHandler("shell_command")), ())
+        call = ToolCall(
+            tool_name=ToolName.plain("shell_command"),
+            call_id="call-memory",
+            payload=ToolPayload.function(json.dumps({"command": "cat /home/me/memories/MEMORY.md"})),
+        )
+
+        asyncio.run(
+            router.dispatch_tool_call_with_terminal_outcome(
+                call,
+                session_telemetry=telemetry,
+                session_shell=Shell(ShellType.BASH, "/bin/bash"),
+            )
+        )
+
+        self.assertEqual(
+            telemetry.calls,
+            [
+                (
+                    MEMORIES_USAGE_METRIC,
+                    1,
+                    (("kind", "memory_md"), ("tool", "shell_command"), ("success", "true")),
+                )
+            ],
+        )
+
+    def test_dispatch_tool_call_emits_failed_tool_read_memory_metric(self) -> None:
+        telemetry = CounterTelemetry()
+        router = ToolRouter.from_parts(ToolRegistry.with_handler_for_test(FailingHandler("shell_command")), ())
+        call = ToolCall(
+            tool_name=ToolName.plain("shell_command"),
+            call_id="call-memory-failed",
+            payload=ToolPayload.function(json.dumps({"command": "cat /home/me/memories/MEMORY.md"})),
+        )
+
+        with self.assertRaises(FunctionCallError):
+            asyncio.run(
+                router.dispatch_tool_call_with_terminal_outcome(
+                    call,
+                    session_telemetry=telemetry,
+                    session_shell=Shell(ShellType.BASH, "/bin/bash"),
+                )
+            )
+
+        self.assertEqual(
+            telemetry.calls,
+            [
+                (
+                    MEMORIES_USAGE_METRIC,
+                    1,
+                    (("kind", "memory_md"), ("tool", "shell_command"), ("success", "false")),
+                )
+            ],
+        )
 
     def test_tool_call_function_arguments_rejects_incompatible_payloads(self) -> None:
         call = ToolCall(
@@ -227,6 +349,8 @@ class ToolRouterTests(unittest.TestCase):
                     execution="client",
                 )
             )
+        self.assertEqual(caught.exception.kind, "respond_to_model")
+        self.assertIn("failed to parse tool_search arguments", str(caught.exception))
 
     def test_build_tool_call_handles_custom_tool_calls(self) -> None:
         call = build_tool_call(
@@ -318,8 +442,6 @@ class ToolRouterTests(unittest.TestCase):
                 )
             )
         )
-        self.assertEqual(caught.exception.kind, "respond_to_model")
-        self.assertIn("failed to parse tool_search arguments", str(caught.exception))
 
     def test_dispatch_tool_call_wraps_handler_output_and_lifecycle(self) -> None:
         handler = EchoHandler()
@@ -344,6 +466,471 @@ class ToolRouterTests(unittest.TestCase):
         self.assertEqual(handler.invocations, [invocation])
         self.assertEqual(recorder.started[0].call_id, "call-1")
         self.assertEqual(recorder.finished[0].outcome, ToolCallOutcome.completed(True))
+
+    def test_dispatch_tool_call_records_rollout_trace_completion(self) -> None:
+        trace = TraceContext()
+        session = SimpleNamespace(conversation_id="thread-1")
+        turn = SimpleNamespace(sub_id="turn-1")
+        invocation = ToolInvocation(
+            call_id="call-1",
+            tool_name=ToolName.plain("echo"),
+            payload=ToolPayload.function("{}"),
+            session=session,
+            turn=turn,
+        )
+
+        result = asyncio.run(
+            dispatch_tool_call(
+                ToolRegistry.from_tools([EchoHandler()]),
+                invocation,
+                tool_dispatch_trace_context=trace,
+            )
+        )
+
+        self.assertEqual(result.to_response_item().output.to_text(), "ok")
+        self.assertEqual(trace.invocations[0].thread_id, "thread-1")
+        self.assertEqual(trace.invocations[0].codex_turn_id, "turn-1")
+        self.assertEqual(trace.invocations[0].tool_call_id, "call-1")
+        self.assertEqual(trace.completed[0][0], ExecutionStatus.COMPLETED)
+        self.assertEqual(trace.completed[0][1].type, "direct_response")
+
+    def test_dispatch_tool_call_reads_mapping_trace_context_and_ids(self) -> None:
+        trace = TraceContext()
+        session = {
+            "conversation_id": "thread-map",
+            "services": {
+                "rollout_thread_trace": trace,
+            },
+        }
+        turn = {"sub_id": "turn-map"}
+        invocation = ToolInvocation(
+            call_id="call-1",
+            tool_name=ToolName.plain("echo"),
+            payload=ToolPayload.function("{}"),
+            session=session,
+            turn=turn,
+        )
+
+        result = asyncio.run(
+            dispatch_tool_call(
+                ToolRegistry.from_tools([EchoHandler()]),
+                invocation,
+            )
+        )
+
+        self.assertEqual(result.to_response_item().output.to_text(), "ok")
+        self.assertEqual(trace.invocations[0].thread_id, "thread-map")
+        self.assertEqual(trace.invocations[0].codex_turn_id, "turn-map")
+        self.assertEqual(trace.completed[0][0], ExecutionStatus.COMPLETED)
+
+    def test_dispatch_tool_call_increments_active_turn_tool_calls_before_lookup(self) -> None:
+        session = SimpleNamespace(
+            active_turn=SimpleNamespace(
+                turn_state=SimpleNamespace(tool_calls=3)
+            )
+        )
+        invocation = ToolInvocation(
+            call_id="call-missing",
+            tool_name=ToolName.plain("missing"),
+            payload=ToolPayload.function("{}"),
+            session=session,
+        )
+
+        with self.assertRaises(FunctionCallError):
+            asyncio.run(dispatch_tool_call(ToolRegistry.empty(), invocation))
+
+        self.assertEqual(session.active_turn.turn_state.tool_calls, 4)
+
+    def test_dispatch_tool_call_records_missing_tool_telemetry_failure(self) -> None:
+        telemetry_events = []
+        invocation = ToolInvocation(
+            call_id="call-missing",
+            tool_name=ToolName.namespaced("mcp__missing__", "lookup"),
+            payload=ToolPayload.function("{}"),
+        )
+
+        with self.assertRaises(FunctionCallError):
+            asyncio.run(
+                dispatch_tool_call(
+                    ToolRegistry.empty(),
+                    invocation,
+                    tool_result_telemetry_recorder=telemetry_events.append,
+                )
+            )
+
+        self.assertEqual(len(telemetry_events), 1)
+        self.assertEqual(telemetry_events[0]["tool_name"], "mcp__missing__lookup")
+        self.assertEqual(telemetry_events[0]["duration_seconds"], 0.0)
+        self.assertFalse(telemetry_events[0]["success"])
+        self.assertEqual(telemetry_events[0]["telemetry_tags"], ())
+        self.assertEqual(telemetry_events[0]["extra_trace_fields"], ())
+        self.assertIsInstance(telemetry_events[0]["error"], FunctionCallError)
+        self.assertIn("unsupported tool", telemetry_events[0]["error_message"])
+
+    def test_dispatch_tool_call_saturates_active_turn_tool_calls(self) -> None:
+        max_u64 = (1 << 64) - 1
+        session = {
+            "active_turn": {
+                "turn_state": {
+                    "tool_calls": max_u64,
+                },
+            },
+        }
+        invocation = ToolInvocation(
+            call_id="call-1",
+            tool_name=ToolName.plain("echo"),
+            payload=ToolPayload.function("{}"),
+            session=session,
+        )
+
+        result = asyncio.run(
+            dispatch_tool_call(
+                ToolRegistry.from_tools([EchoHandler()]),
+                invocation,
+            )
+        )
+
+        self.assertEqual(result.to_response_item().output.to_text(), "ok")
+        self.assertEqual(session["active_turn"]["turn_state"]["tool_calls"], max_u64)
+
+    def test_dispatch_tool_call_records_rollout_trace_failure(self) -> None:
+        trace = TraceContext()
+        invocation = ToolInvocation(
+            call_id="call-fail",
+            tool_name=ToolName.plain("fail"),
+            payload=ToolPayload.function("{}"),
+        )
+
+        with self.assertRaises(FunctionCallError):
+            asyncio.run(
+                dispatch_tool_call(
+                    ToolRegistry.from_tools([FailingHandler("fail")]),
+                    invocation,
+                    tool_dispatch_trace_context=trace,
+                )
+            )
+
+        self.assertEqual(trace.completed, [])
+        self.assertEqual(len(trace.failed), 1)
+        self.assertIsInstance(trace.failed[0], FunctionCallError)
+
+    def test_dispatch_tool_call_records_split_telemetry_tags(self) -> None:
+        telemetry_events = []
+        invocation = ToolInvocation(
+            call_id="call-1",
+            tool_name=ToolName.plain("telemetry"),
+            payload=ToolPayload.function("{}"),
+        )
+
+        result = asyncio.run(
+            dispatch_tool_call(
+                ToolRegistry.from_tools([TelemetryHandler("telemetry")]),
+                invocation,
+                post_tool_use_hook=lambda _payload, _result: PostToolUseHookOutcome(
+                    feedback_message="post hook feedback",
+                ),
+                tool_result_telemetry_recorder=telemetry_events.append,
+            )
+        )
+
+        self.assertEqual(result.to_response_item().output.to_text(), "post hook feedback")
+        self.assertEqual(telemetry_events[0]["tool_name"], "telemetry")
+        self.assertEqual(telemetry_events[0]["log_payload"], "{}")
+        self.assertEqual(telemetry_events[0]["log_preview"], "ok")
+        self.assertGreaterEqual(telemetry_events[0]["duration_seconds"], 0.0)
+        self.assertIsNone(telemetry_events[0]["error_message"])
+        self.assertTrue(telemetry_events[0]["success"])
+        self.assertEqual(
+            telemetry_events[0]["output"].to_response_item("call-1", invocation.payload).output.to_text(),
+            "ok",
+        )
+        self.assertEqual(telemetry_events[0]["telemetry_tags"], (("custom_tag", "custom-value"),))
+        self.assertEqual(
+            telemetry_events[0]["extra_trace_fields"],
+            (("mcp_server", "codex-apps"), ("mcp_server_origin", "plugin")),
+        )
+
+    def test_dispatch_tool_call_records_base_sandbox_telemetry_tags(self) -> None:
+        telemetry_events = []
+        turn = SimpleNamespace(permission_profile=PermissionProfile.disabled(), cwd=Path("/tmp/work"), network=None)
+        invocation = ToolInvocation(
+            call_id="call-1",
+            tool_name=ToolName.plain("telemetry"),
+            payload=ToolPayload.function("{}"),
+            turn=turn,
+        )
+
+        result = asyncio.run(
+            dispatch_tool_call(
+                ToolRegistry.from_tools([TelemetryHandler("telemetry")]),
+                invocation,
+                tool_result_telemetry_recorder=telemetry_events.append,
+            )
+        )
+
+        self.assertEqual(result.to_response_item().output.to_text(), "ok")
+        self.assertEqual(
+            telemetry_events[0]["telemetry_tags"],
+            (
+                ("sandbox", "none"),
+                ("sandbox_policy", "danger-full-access"),
+                ("custom_tag", "custom-value"),
+            ),
+        )
+
+    def test_dispatch_tool_call_records_external_sandbox_telemetry_tags(self) -> None:
+        telemetry_events = []
+        turn = SimpleNamespace(
+            permission_profile=PermissionProfile.external(NetworkSandboxPolicy.RESTRICTED),
+            cwd=Path("/tmp/work"),
+            network=None,
+        )
+        invocation = ToolInvocation(
+            call_id="call-1",
+            tool_name=ToolName.plain("telemetry"),
+            payload=ToolPayload.function("{}"),
+            turn=turn,
+        )
+
+        asyncio.run(
+            dispatch_tool_call(
+                ToolRegistry.from_tools([TelemetryHandler("telemetry")]),
+                invocation,
+                tool_result_telemetry_recorder=telemetry_events.append,
+            )
+        )
+
+        self.assertEqual(telemetry_events[0]["telemetry_tags"][0:2], (("sandbox", "external"), ("sandbox_policy", "external-sandbox")))
+
+    def test_dispatch_tool_call_records_workspace_write_policy_telemetry_tag(self) -> None:
+        telemetry_events = []
+        cwd = Path("/tmp/work")
+        turn = SimpleNamespace(permission_profile=PermissionProfile.workspace_write((cwd,)), cwd=cwd, network=None)
+        invocation = ToolInvocation(
+            call_id="call-1",
+            tool_name=ToolName.plain("telemetry"),
+            payload=ToolPayload.function("{}"),
+            turn=turn,
+        )
+
+        asyncio.run(
+            dispatch_tool_call(
+                ToolRegistry.from_tools([TelemetryHandler("telemetry")]),
+                invocation,
+                tool_result_telemetry_recorder=telemetry_events.append,
+            )
+        )
+
+        self.assertEqual(telemetry_events[0]["telemetry_tags"][1], ("sandbox_policy", "workspace-write"))
+
+    def test_dispatch_tool_call_records_telemetry_from_mapping_session(self) -> None:
+        telemetry_events = []
+        invocation = ToolInvocation(
+            call_id="call-1",
+            tool_name=ToolName.plain("telemetry"),
+            payload=ToolPayload.function("{}"),
+            session={"tool_result_with_tags": telemetry_events.append},
+        )
+
+        result = asyncio.run(
+            dispatch_tool_call(
+                ToolRegistry.from_tools([TelemetryHandler("telemetry")]),
+                invocation,
+            )
+        )
+
+        self.assertEqual(result.to_response_item().output.to_text(), "ok")
+        self.assertTrue(telemetry_events[0]["success"])
+        self.assertEqual(telemetry_events[0]["tool_name"], "telemetry")
+        self.assertEqual(telemetry_events[0]["telemetry_tags"], (("custom_tag", "custom-value"),))
+
+    def test_dispatch_tool_call_records_flat_namespaced_telemetry_tool_name(self) -> None:
+        telemetry_events = []
+        handler = NamespacedTelemetryHandler()
+        invocation = ToolInvocation(
+            call_id="call-1",
+            tool_name=handler.tool_name(),
+            payload=ToolPayload.function("{}"),
+        )
+
+        result = asyncio.run(
+            dispatch_tool_call(
+                ToolRegistry.from_tools([handler]),
+                invocation,
+                tool_result_telemetry_recorder=telemetry_events.append,
+            )
+        )
+
+        self.assertEqual(result.to_response_item().output.to_text(), "ok")
+        self.assertEqual(telemetry_events[0]["tool_name"], "mcp__server__lookup")
+
+    def test_dispatch_tool_call_records_incompatible_telemetry_failure(self) -> None:
+        telemetry_events = []
+        invocation = ToolInvocation(
+            call_id="call-1",
+            tool_name=ToolName.plain("telemetry_custom_only"),
+            payload=ToolPayload.function("{}"),
+        )
+
+        with self.assertRaises(FunctionCallError):
+            asyncio.run(
+                dispatch_tool_call(
+                    ToolRegistry.from_tools([TelemetryCustomOnlyHandler("telemetry_custom_only")]),
+                    invocation,
+                    tool_result_telemetry_recorder=telemetry_events.append,
+                )
+            )
+
+        self.assertFalse(telemetry_events[0]["success"])
+        self.assertIsInstance(telemetry_events[0]["error"], FunctionCallError)
+        self.assertIn("incompatible payload", telemetry_events[0]["error_message"])
+        self.assertEqual(telemetry_events[0]["extra_trace_fields"][0], ("mcp_server", "codex-apps"))
+
+    def test_dispatch_tool_call_skips_memory_metric_for_incompatible_payload(self) -> None:
+        telemetry = CounterTelemetry()
+        invocation = ToolInvocation(
+            call_id="call-1",
+            tool_name=ToolName.plain("shell_command"),
+            payload=ToolPayload.function(json.dumps({"command": "cat /home/me/memories/MEMORY.md"})),
+        )
+
+        with self.assertRaises(FunctionCallError):
+            asyncio.run(
+                dispatch_tool_call(
+                    ToolRegistry.from_tools([TelemetryCustomOnlyHandler("shell_command")]),
+                    invocation,
+                    session_telemetry=telemetry,
+                    session_shell=Shell(ShellType.BASH, "/bin/bash"),
+                )
+            )
+
+        self.assertEqual(telemetry.calls, [])
+
+    def test_router_dispatch_records_post_hook_contexts_from_invocation_session(self) -> None:
+        class ContextSession:
+            def __init__(self):
+                self.recorded = []
+
+            def record_additional_context_messages(self, messages):
+                self.recorded.extend(messages)
+
+        session = ContextSession()
+        router = ToolRouter.from_parts(ToolRegistry.from_tools([JsonEchoHandler("json_echo")]), ())
+        call = ToolCall(
+            tool_name=ToolName.plain("json_echo"),
+            call_id="call-1",
+            payload=ToolPayload.function("{}"),
+        )
+
+        result = asyncio.run(
+            router.dispatch_tool_call_with_terminal_outcome(
+                call,
+                session=session,
+                post_tool_use_hook=lambda _payload, _result: PostToolUseHookOutcome(
+                    feedback_message="post hook feedback",
+                    additional_contexts=("context from high-level router",),
+                ),
+            )
+        )
+
+        self.assertEqual(result.to_response_item().output.to_text(), "post hook feedback")
+        self.assertEqual(
+            [message.content[0].text for message in session.recorded],
+            ["context from high-level router"],
+        )
+
+    def test_dispatch_tool_call_applies_tool_completed_goal_runtime_after_finish(self) -> None:
+        class GoalSession:
+            def __init__(self):
+                self.events = []
+
+            async def goal_runtime_apply(self, event):
+                self.events.append(event)
+
+        session = GoalSession()
+        turn = SimpleNamespace(turn_id="turn-1")
+        recorder = LifecycleRecorder()
+        invocation = ToolInvocation(
+            call_id="call-1",
+            tool_name=ToolName.plain("echo"),
+            payload=ToolPayload.function("{}"),
+            session=session,
+            turn=turn,
+        )
+
+        result = asyncio.run(
+            dispatch_tool_call(
+                ToolRegistry.from_tools([EchoHandler()]),
+                invocation,
+                lifecycle_contributors=[recorder],
+            )
+        )
+
+        self.assertEqual(result.to_response_item().output.to_text(), "ok")
+        self.assertEqual(recorder.finished[0].outcome, ToolCallOutcome.completed(True))
+        self.assertEqual(
+            session.events,
+            [{"type": "tool_completed", "turn_context": turn, "tool_name": "echo"}],
+        )
+
+    def test_dispatch_tool_call_skips_goal_runtime_when_finish_is_claimed(self) -> None:
+        session = SimpleNamespace(events=[])
+
+        async def goal_runtime_apply(event):
+            session.events.append(event)
+
+        session.goal_runtime_apply = goal_runtime_apply
+        flag = TerminalOutcomeFlag(True)
+        invocation = ToolInvocation(
+            call_id="call-1",
+            tool_name=ToolName.plain("echo"),
+            payload=ToolPayload.function("{}"),
+            session=session,
+            turn=SimpleNamespace(turn_id="turn-1"),
+        )
+
+        result = asyncio.run(
+            dispatch_tool_call_with_terminal_outcome(
+                ToolRegistry.from_tools([EchoHandler()]),
+                invocation,
+                terminal_outcome_reached=flag,
+            )
+        )
+
+        self.assertEqual(result.to_response_item().output.to_text(), "ok")
+        self.assertEqual(session.events, [])
+
+    def test_environment_tool_router_dispatches_exec_command(self) -> None:
+        if sys.platform == "win32":
+            shell = Shell(ShellType.POWERSHELL, shutil.which("powershell") or "powershell.exe")
+            command = "(Get-Location).Path"
+        else:
+            shell = Shell(ShellType.SH, shutil.which("sh") or "/bin/sh")
+            command = "pwd"
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            turn = SimpleNamespace(
+                environments=(SimpleNamespace(environment_id="local", cwd=root),),
+                truncation_policy=TruncationPolicyConfig.tokens(10_000),
+            )
+            router = build_environment_tool_router_from_turn_context(turn)
+            call = ToolCall(
+                tool_name=ToolName.plain("exec_command"),
+                call_id="call-routed-exec",
+                payload=ToolPayload.function(json.dumps({"cmd": command})),
+            )
+
+            result = asyncio.run(
+                router.dispatch_tool_call_with_terminal_outcome(
+                    call,
+                    session=SimpleNamespace(user_shell=lambda: shell),
+                    turn=turn,
+                )
+            )
+
+            self.assertEqual(result.result.exit_code, 0)
+            self.assertIn(str(root), result.result.raw_output.decode("utf-8", errors="replace"))
 
     def test_dispatch_tool_call_reports_missing_and_incompatible_tools_like_rust(self) -> None:
         missing = ToolInvocation(
@@ -433,6 +1020,37 @@ class ToolRouterTests(unittest.TestCase):
         self.assertEqual(result.to_response_item().output.to_text(), "ok")
         self.assertEqual(replaced.to_response_item().output.to_text(), "post hook says stop")
         self.assertTrue(replaced.result.success_for_logging())
+
+    def test_dispatch_skips_post_tool_use_hook_for_unsuccessful_tool_output(self) -> None:
+        class UnsuccessfulHandler(EchoHandler):
+            def handle(self, invocation):
+                self.invocations.append(invocation)
+                return FunctionToolOutput.from_text("not ok", False)
+
+        hook_called = False
+
+        def post_hook(_payload, _result):
+            nonlocal hook_called
+            hook_called = True
+            return PostToolUseHookOutcome(feedback_message="should not appear")
+
+        recorder = LifecycleRecorder()
+        result = asyncio.run(
+            dispatch_tool_call(
+                ToolRegistry.from_tools([UnsuccessfulHandler()]),
+                ToolInvocation(
+                    call_id="call-1",
+                    tool_name=ToolName.plain("echo"),
+                    payload=ToolPayload.function("{}"),
+                ),
+                lifecycle_contributors=[recorder],
+                post_tool_use_hook=post_hook,
+            )
+        )
+
+        self.assertFalse(hook_called)
+        self.assertEqual(result.to_response_item().output.to_text(), "not ok")
+        self.assertEqual(recorder.finished[0].outcome, ToolCallOutcome.completed(False))
 
     def test_dispatch_pre_tool_use_hook_can_block_before_handler(self) -> None:
         handler = EchoHandler()
@@ -575,6 +1193,77 @@ class ToolRouterTests(unittest.TestCase):
 
         self.assertEqual(result.to_response_item().output.to_text(), "post hook feedback")
         self.assertEqual(result.code_mode_result(), {"ok": True})
+
+    def test_dispatch_post_tool_use_hook_uses_default_stop_feedback(self) -> None:
+        invocation = ToolInvocation(
+            call_id="call-1",
+            tool_name=ToolName.plain("json_echo"),
+            payload=ToolPayload.function("{}"),
+        )
+
+        result = asyncio.run(
+            dispatch_tool_call(
+                ToolRegistry.from_tools([JsonEchoHandler("json_echo")]),
+                invocation,
+                post_tool_use_hook=lambda _payload, _result: PostToolUseHookOutcome(should_stop=True),
+            )
+        )
+
+        self.assertEqual(result.to_response_item().output.to_text(), "PostToolUse hook stopped execution")
+        self.assertEqual(result.code_mode_result(), {"ok": True})
+
+    def test_dispatch_post_tool_use_hook_receives_matcher_aliases(self) -> None:
+        observed = []
+        invocation = ToolInvocation(
+            call_id="call-1",
+            tool_name=ToolName.plain("spawn_agent"),
+            payload=ToolPayload.function("{}"),
+        )
+
+        def post_tool_use_hook(payload, _result):
+            observed.append((payload.tool_name.name, payload.tool_name.matcher_aliases))
+            return PostToolUseHookOutcome()
+
+        result = asyncio.run(
+            dispatch_tool_call(
+                ToolRegistry.from_tools([SpawnAgentPostHookHandler()]),
+                invocation,
+                post_tool_use_hook=post_tool_use_hook,
+            )
+        )
+
+        self.assertEqual(result.to_response_item().output.to_text(), '{"ok":true}')
+        self.assertEqual(observed, [("spawn_agent", ("Agent",))])
+
+    def test_dispatch_post_tool_use_hook_records_additional_contexts_before_feedback(self) -> None:
+        invocation = ToolInvocation(
+            call_id="call-1",
+            tool_name=ToolName.plain("json_echo"),
+            payload=ToolPayload.function("{}"),
+        )
+        recorded = []
+
+        def additional_context_recorder(messages):
+            recorded.extend(messages)
+
+        result = asyncio.run(
+            dispatch_tool_call(
+                ToolRegistry.from_tools([JsonEchoHandler("json_echo")]),
+                invocation,
+                post_tool_use_hook=lambda _payload, _result: PostToolUseHookOutcome(
+                    feedback_message="post hook feedback",
+                    additional_contexts=("first tide note", "second tide note"),
+                ),
+                additional_context_recorder=additional_context_recorder,
+            )
+        )
+
+        self.assertEqual(result.to_response_item().output.to_text(), "post hook feedback")
+        self.assertEqual([message.role for message in recorded], ["developer", "developer"])
+        self.assertEqual(
+            [message.content[0].text for message in recorded],
+            ["first tide note", "second tide note"],
+        )
 
 
 if __name__ == "__main__":

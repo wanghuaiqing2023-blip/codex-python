@@ -8,6 +8,8 @@ outside this stdlib slice while preserving the observable helper behavior.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import inspect
 import threading
 from dataclasses import dataclass
@@ -181,9 +183,47 @@ class ToolCallRuntime:
             return pre_cancelled
         result = dispatch(call, source or ToolCallSource.direct(), token)
         if inspect.isawaitable(result):
-            result = await result
+            task = _ensure_task(result)
+            cancel_task = _ensure_task(token.cancelled())
+            done, pending = await asyncio_wait_first(task, cancel_task)
+            if task in done:
+                cancel_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await cancel_task
+                result = await task
+            else:
+                result = await self._handle_inflight_cancellation(
+                    call,
+                    task,
+                    elapsed_seconds=elapsed_seconds,
+                    source=source,
+                    **stores,
+                )
         if not isinstance(result, ToolCallResult):
             raise TypeError("dispatch must return ToolCallResult")
+        return result
+
+    async def _handle_inflight_cancellation(
+        self,
+        call: ToolCall,
+        task: Any,
+        *,
+        elapsed_seconds: float,
+        source: ToolCallSource | None,
+        **stores: Any,
+    ) -> ToolCallResult:
+        decision = self.decision_for_call(call)
+        if decision.waits_for_runtime_cancellation:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        else:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                result = await task
+                if isinstance(result, ToolCallResult):
+                    return result
+        result = aborted_tool_result(call, elapsed_seconds)
+        await self.notify_aborted(call, source=source, **stores)
         return result
 
     async def handle_tool_call(
@@ -305,6 +345,16 @@ def _coerce_tool_call_result(call: ToolCall, result: Any) -> ToolCallResult:
                 result=_ResponseInputItemToolOutput(response),
             )
     raise TypeError("router dispatch must return ToolCallResult or tool output")
+
+
+def _ensure_task(awaitable: Any) -> asyncio.Task[Any]:
+    if isinstance(awaitable, asyncio.Task):
+        return awaitable
+    return asyncio.create_task(awaitable)
+
+
+async def asyncio_wait_first(*tasks: asyncio.Task[Any]) -> tuple[set[asyncio.Task[Any]], set[asyncio.Task[Any]]]:
+    return await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
 
 
 @dataclass(frozen=True)

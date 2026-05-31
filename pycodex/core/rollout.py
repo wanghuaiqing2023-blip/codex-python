@@ -14,8 +14,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
+from pycodex.protocol.models import ResponseItem
 from pycodex.protocol.protocol import USER_MESSAGE_BEGIN
 
 SESSIONS_SUBDIR = "sessions"
@@ -393,6 +394,252 @@ def session_index_path(codex_home: Path) -> Path:
     return Path(codex_home) / SESSION_INDEX_FILE
 
 
+def count_session_rollout_files(codex_home: Path) -> int:
+    """Count persisted session JSONL rollout files below ``<codex_home>/sessions``."""
+
+    sessions_dir = Path(codex_home) / SESSIONS_SUBDIR
+    if not sessions_dir.exists():
+        return 0
+    return sum(1 for path in sessions_dir.rglob("*.jsonl") if path.is_file())
+
+
+def append_response_item_to_rollout(path: Path, payload: Mapping[str, Any], *, timestamp: str | None = None) -> None:
+    """Append one persisted Responses item payload to an existing rollout JSONL."""
+
+    rollout_path = Path(path)
+    rollout_path.parent.mkdir(parents=True, exist_ok=True)
+    line = {
+        "timestamp": timestamp or _format_rfc3339(datetime.now(timezone.utc)),
+        "type": "response_item",
+        "payload": dict(payload),
+    }
+    with rollout_path.open("a", encoding="utf-8", newline="\n") as file:
+        file.write(json.dumps(line, separators=(",", ":"), ensure_ascii=False))
+        file.write("\n")
+
+
+def append_turn_context_to_rollout(path: Path, cwd: Path | str, *, timestamp: str | None = None) -> None:
+    """Append a turn context item that records the cwd for the next resumed turn."""
+
+    rollout_path = Path(path)
+    rollout_path.parent.mkdir(parents=True, exist_ok=True)
+    line = {
+        "timestamp": timestamp or _format_rfc3339(datetime.now(timezone.utc)),
+        "type": "turn_context",
+        "payload": {
+            "cwd": os.fspath(cwd),
+            "approval_policy": "never",
+            "sandbox_policy": {"type": "read-only", "network_access": False},
+            "model": "unknown",
+        },
+    }
+    with rollout_path.open("a", encoding="utf-8", newline="\n") as file:
+        file.write(json.dumps(line, separators=(",", ":"), ensure_ascii=False))
+        file.write("\n")
+
+
+def append_turn_to_rollout(
+    path: Path,
+    user_payload: Mapping[str, Any] | None,
+    response_payloads: Iterable[Mapping[str, Any]],
+    *,
+    timestamp: str | None = None,
+    cwd: Path | str | None = None,
+) -> None:
+    """Append one resumed turn's user input and response items to an existing rollout."""
+
+    resolved_timestamp = timestamp or _format_rfc3339(datetime.now(timezone.utc))
+    if cwd is not None:
+        append_turn_context_to_rollout(path, cwd, timestamp=resolved_timestamp)
+    if user_payload is not None:
+        append_response_item_to_rollout(path, user_payload, timestamp=resolved_timestamp)
+    for payload in response_payloads:
+        append_response_item_to_rollout(path, payload, timestamp=resolved_timestamp)
+
+
+def append_turn_to_thread_rollout(
+    codex_home: Path,
+    thread_id: str,
+    user_payload: Mapping[str, Any] | None,
+    response_payloads: Iterable[Mapping[str, Any]],
+    *,
+    timestamp: str | None = None,
+    cwd: Path | str | None = None,
+) -> Path | None:
+    """Append one turn to an existing session rollout selected by thread id."""
+
+    path = find_thread_path_by_id_str(codex_home, thread_id)
+    if path is None:
+        return None
+    append_turn_to_rollout(path, user_payload, response_payloads, timestamp=timestamp, cwd=cwd)
+    return path
+
+
+def append_turn_to_latest_thread_rollout(
+    codex_home: Path,
+    user_payload: Mapping[str, Any] | None,
+    response_payloads: Iterable[Mapping[str, Any]],
+    *,
+    current_cwd: Path | None = None,
+    include_all: bool = False,
+    timestamp: str | None = None,
+) -> Path | None:
+    """Append one turn to the newest matching session rollout."""
+
+    page = get_threads(
+        codex_home,
+        page_size=1,
+        sort_key=ThreadSortKey.UPDATED_AT,
+        cwd_filters=None if include_all or current_cwd is None else (Path(current_cwd),),
+        allowed_sources=("cli",),
+    )
+    if not page.items:
+        return None
+    path = page.items[0].path
+    append_turn_to_rollout(path, user_payload, response_payloads, timestamp=timestamp, cwd=current_cwd)
+    return path
+
+
+def find_session_rollout_containing_response_marker(codex_home: Path, marker: str) -> Path | None:
+    """Find a session rollout whose response message content contains ``marker``."""
+
+    if not marker:
+        return None
+    sessions_dir = Path(codex_home) / SESSIONS_SUBDIR
+    if not sessions_dir.exists():
+        return None
+    for path in sessions_dir.rglob("*.jsonl"):
+        if not path.is_file():
+            continue
+        if _rollout_response_items_contain_marker(path, marker):
+            return path
+    return None
+
+
+def last_user_image_count_in_rollout(path: Path) -> int:
+    """Return the image count from the last persisted user message in a rollout."""
+
+    last_count = 0
+    try:
+        file = Path(path).open("r", encoding="utf-8")
+    except OSError:
+        return 0
+    with file:
+        for line in file:
+            trimmed = line.strip()
+            if not trimmed:
+                continue
+            try:
+                item = json.loads(trimmed)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(item, dict) or item.get("type") != "response_item":
+                continue
+            payload = item.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            if payload.get("type") != "message" or payload.get("role") != "user":
+                continue
+            content = payload.get("content")
+            if not isinstance(content, list | tuple):
+                continue
+            last_count = sum(
+                1
+                for entry in content
+                if isinstance(entry, dict) and entry.get("type") == "input_image"
+            )
+    return last_count
+
+
+def read_response_items_from_rollout(path: Path, *, max_items: int | None = None) -> tuple[ResponseItem, ...]:
+    """Read persisted response items from a rollout JSONL in prompt order."""
+
+    if max_items is not None and max_items <= 0:
+        return ()
+    items: list[ResponseItem] = []
+    try:
+        file = Path(path).open("r", encoding="utf-8")
+    except OSError:
+        return ()
+    try:
+        with file:
+            for line in file:
+                trimmed = line.strip()
+                if not trimmed:
+                    continue
+                try:
+                    rollout_line = json.loads(trimmed)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(rollout_line, dict) or rollout_line.get("type") != "response_item":
+                    continue
+                payload = rollout_line.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                try:
+                    item = ResponseItem.from_mapping(payload)
+                except (KeyError, TypeError, ValueError):
+                    continue
+                items.append(item)
+                if max_items is not None and len(items) >= max_items:
+                    break
+    except UnicodeDecodeError:
+        return ()
+    return tuple(items)
+
+
+def materialize_session_rollout(
+    codex_home: Path,
+    meta: SessionMeta,
+    *,
+    ephemeral: bool = False,
+    git: GitInfo | None = None,
+) -> Path | None:
+    """Create the initial session rollout JSONL unless the thread is ephemeral."""
+
+    if ephemeral:
+        return None
+    timestamp = meta.timestamp
+    date = timestamp[:10]
+    year, month, day = date[:4], date[5:7], date[8:10]
+    file_timestamp = timestamp.replace(":", "-").replace("+00-00", "Z")
+    path = Path(codex_home) / SESSIONS_SUBDIR / year / month / day / f"rollout-{file_timestamp}-{meta.id}.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = {
+        "timestamp": timestamp,
+        "type": "session_meta",
+        "payload": SessionMetaLine(meta=meta, git=git).to_mapping(),
+    }
+    path.write_text(json.dumps(line, separators=(",", ":")) + "\n", encoding="utf-8")
+    return path
+
+
+def _rollout_response_items_contain_marker(path: Path, marker: str) -> bool:
+    try:
+        file = Path(path).open("r", encoding="utf-8")
+    except OSError:
+        return False
+    with file:
+        for index, line in enumerate(file):
+            if index == 0:
+                continue
+            trimmed = line.strip()
+            if not trimmed:
+                continue
+            try:
+                item = json.loads(trimmed)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(item, dict) or item.get("type") != "response_item":
+                continue
+            payload = item.get("payload")
+            if not isinstance(payload, dict) or payload.get("type") != "message":
+                continue
+            if marker in json.dumps(payload.get("content"), ensure_ascii=False):
+                return True
+    return False
+
+
 def append_thread_name(codex_home: Path, thread_id: str | uuid.UUID, name: str) -> None:
     updated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     append_session_index_entry(
@@ -620,6 +867,9 @@ def _build_thread_item(
     updated_at: str | None,
 ) -> ThreadItem | None:
     summary = _read_head_summary(path, HEAD_RECORD_LIMIT)
+    latest_cwd = _read_latest_turn_context_cwd(path)
+    if latest_cwd is not None:
+        summary.cwd = latest_cwd
     if allowed_sources and (summary.source is None or summary.source not in allowed_sources):
         return None
     if not _matches_provider(summary.model_provider, model_providers, default_provider):
@@ -707,6 +957,10 @@ def _read_head_summary(path: Path, head_limit: int) -> _HeadSummary:
             elif item_type == "response_item":
                 if summary.created_at is None and isinstance(timestamp, str):
                     summary.created_at = timestamp
+            elif item_type == "turn_context":
+                cwd = _turn_context_cwd(payload)
+                if cwd is not None:
+                    summary.cwd = cwd
             elif item_type == "event_msg":
                 preview, is_user_message = _event_msg_preview(payload)
                 if preview is None:
@@ -716,9 +970,44 @@ def _read_head_summary(path: Path, head_limit: int) -> _HeadSummary:
                 if is_user_message and summary.first_user_message is None:
                     summary.first_user_message = preview
 
-            if summary.saw_session_meta and summary.preview is not None and summary.first_user_message is not None:
+            if (
+                lines_scanned >= head_limit
+                and summary.saw_session_meta
+                and summary.preview is not None
+                and summary.first_user_message is not None
+            ):
                 break
     return summary
+
+
+def _turn_context_cwd(payload: Any) -> Path | None:
+    if not isinstance(payload, dict):
+        return None
+    cwd = payload.get("cwd")
+    if not isinstance(cwd, str) or not cwd:
+        return None
+    return Path(cwd)
+
+
+def _read_latest_turn_context_cwd(path: Path) -> Path | None:
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    for line in reversed(text.splitlines()):
+        trimmed = line.strip()
+        if not trimmed:
+            continue
+        try:
+            rollout_line = json.loads(trimmed)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(rollout_line, dict) or rollout_line.get("type") != "turn_context":
+            continue
+        cwd = _turn_context_cwd(rollout_line.get("payload"))
+        if cwd is not None:
+            return cwd
+    return None
 
 
 def _event_msg_preview(payload: Any) -> tuple[str | None, bool]:

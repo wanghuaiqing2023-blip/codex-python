@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from pycodex.core.handler_utils import session_strict_auto_review
 from pycodex.core.tool_sandboxing import (
     ExecApprovalRequirement,
     SandboxOverride,
@@ -211,6 +212,27 @@ def approval_step_decision(
     raise ValueError(f"unsupported exec approval requirement type: {requirement.type}")
 
 
+async def build_tool_orchestrator_plan_for_session(
+    session: Any,
+    *,
+    explicit_requirement: ExecApprovalRequirement | None,
+    approval_policy: ApprovalPolicy,
+    file_system_sandbox_policy: FileSystemSandboxPolicy,
+    sandbox_permissions: SandboxPermissions,
+    managed_network_active: bool,
+    routes_to_guardian: bool = False,
+) -> ToolOrchestratorPlan:
+    return ToolOrchestratorPlan.build(
+        explicit_requirement=explicit_requirement,
+        approval_policy=approval_policy,
+        file_system_sandbox_policy=file_system_sandbox_policy,
+        sandbox_permissions=sandbox_permissions,
+        managed_network_active=managed_network_active,
+        strict_auto_review=await session_strict_auto_review(session),
+        routes_to_guardian=routes_to_guardian,
+    )
+
+
 def initial_attempt_plan(
     sandbox_permissions: SandboxPermissions,
     requirement: ExecApprovalRequirement,
@@ -351,6 +373,7 @@ __all__ = [
     "ToolOrchestratorPlan",
     "approval_step_decision",
     "build_denial_reason_from_output",
+    "build_tool_orchestrator_plan_for_session",
     "initial_attempt_plan",
     "reject_if_not_approved",
     "retry_decision_for_sandbox_denial",

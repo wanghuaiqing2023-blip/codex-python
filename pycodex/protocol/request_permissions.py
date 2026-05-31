@@ -55,6 +55,29 @@ def _optional_str(value: dict[str, JsonValue], key: str) -> str | None:
     return raw
 
 
+def _alias_value(value: dict[str, JsonValue], *keys: str, default: JsonValue = None) -> JsonValue:
+    for key in keys:
+        if key in value:
+            return value[key]
+    return default
+
+
+def _required_str_alias(value: dict[str, JsonValue], *keys: str) -> str:
+    raw = _alias_value(value, *keys)
+    if not isinstance(raw, str):
+        raise TypeError(f"{keys[0]} must be a string")
+    return raw
+
+
+def _required_int_alias(value: dict[str, JsonValue], *keys: str) -> int:
+    raw = _alias_value(value, *keys)
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise TypeError(f"{keys[0]} must be an integer")
+    if raw < I64_MIN or raw > I64_MAX:
+        raise ValueError(f"{keys[0]} must fit in i64")
+    return raw
+
+
 class PermissionGrantScope(str, Enum):
     TURN = "turn"
     SESSION = "session"
@@ -101,12 +124,13 @@ class RequestPermissionProfile:
     @classmethod
     def from_mapping(cls, value: JsonValue) -> "RequestPermissionProfile":
         data = _mapping(value, "request permission profile")
-        unknown = set(data) - {"network", "file_system"}
+        unknown = set(data) - {"network", "file_system", "fileSystem"}
         if unknown:
             raise ValueError(f"unknown field: {sorted(unknown)[0]}")
+        file_system = _alias_value(data, "file_system", "fileSystem")
         return cls(
             network=NetworkPermissions.from_mapping(data["network"]) if data.get("network") is not None else None,
-            file_system=FileSystemPermissions.from_mapping(data["file_system"]) if data.get("file_system") is not None else None,
+            file_system=FileSystemPermissions.from_mapping(file_system) if file_system is not None else None,
         )
 
     def to_mapping(self) -> dict[str, JsonValue]:
@@ -161,10 +185,13 @@ class RequestPermissionsResponse:
     @classmethod
     def from_mapping(cls, value: JsonValue) -> "RequestPermissionsResponse":
         data = _mapping(value, "request permissions response")
+        strict = _alias_value(data, "strict_auto_review", "strictAutoReview")
+        if strict is not None and not isinstance(strict, bool):
+            raise TypeError("strict_auto_review must be a bool")
         return cls(
             permissions=RequestPermissionProfile.from_mapping(data["permissions"]),
             scope=_permission_grant_scope(data.get("scope", PermissionGrantScope.TURN.value)),
-            strict_auto_review=_required_bool(data, "strict_auto_review") if "strict_auto_review" in data else False,
+            strict_auto_review=strict if strict is not None else False,
         )
 
     def to_mapping(self) -> dict[str, JsonValue]:
@@ -210,13 +237,13 @@ class RequestPermissionsEvent:
         cwd = data.get("cwd")
         if cwd is not None and not isinstance(cwd, str):
             raise TypeError("cwd must be a string")
-        turn_id = data.get("turn_id", "")
+        turn_id = _alias_value(data, "turn_id", "turnId", default="")
         if not isinstance(turn_id, str):
             raise TypeError("turn_id must be a string")
         return cls(
-            call_id=_required_str(data, "call_id"),
+            call_id=_required_str_alias(data, "call_id", "itemId"),
             turn_id=turn_id,
-            started_at_ms=_required_int(data, "started_at_ms"),
+            started_at_ms=_required_int_alias(data, "started_at_ms", "startedAtMs"),
             reason=_optional_str(data, "reason"),
             permissions=RequestPermissionProfile.from_mapping(data["permissions"]),
             cwd=Path(cwd) if isinstance(cwd, str) else None,
@@ -234,3 +261,24 @@ class RequestPermissionsEvent:
         if self.cwd is not None:
             data["cwd"] = str(self.cwd)
         return data
+
+
+def permissions_request_approval_response(response: RequestPermissionsResponse | JsonValue) -> dict[str, JsonValue]:
+    if not isinstance(response, RequestPermissionsResponse):
+        response = RequestPermissionsResponse.from_mapping(response)
+    data: dict[str, JsonValue] = {
+        "permissions": _permission_profile_to_app_server_mapping(response.permissions),
+        "scope": response.scope.value,
+    }
+    if response.strict_auto_review:
+        data["strictAutoReview"] = True
+    return data
+
+
+def _permission_profile_to_app_server_mapping(profile: RequestPermissionProfile) -> dict[str, JsonValue]:
+    data: dict[str, JsonValue] = {}
+    if profile.network is not None:
+        data["network"] = profile.network.to_mapping()
+    if profile.file_system is not None:
+        data["fileSystem"] = profile.file_system.to_mapping()
+    return data

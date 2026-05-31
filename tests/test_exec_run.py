@@ -8,6 +8,7 @@ from pycodex.exec import (
     PromptDecodeError,
     build_review_request,
     decode_prompt_bytes,
+    load_output_schema,
     parse_exec_args,
     prepare_exec_run_plan,
     prompt_with_stdin_context,
@@ -25,6 +26,17 @@ class ExecRunPreparationTests(unittest.TestCase):
     def test_decode_prompt_bytes_decodes_utf16_boms(self):
         self.assertEqual(decode_prompt_bytes(b"\xff\xfeh\x00i\x00\n\x00"), "hi\n")
         self.assertEqual(decode_prompt_bytes(b"\xfe\xff\x00h\x00i\x00\n"), "hi\n")
+
+    def test_decode_prompt_bytes_rejects_invalid_utf16_lengths(self):
+        with self.assertRaises(PromptDecodeError) as ctx:
+            decode_prompt_bytes(b"\xff\xfeh")
+
+        self.assertEqual(ctx.exception.kind, "invalid_utf16")
+        self.assertEqual(ctx.exception.encoding, "UTF-16LE")
+        self.assertEqual(
+            str(ctx.exception),
+            "input looked like UTF-16LE but could not be decoded. Convert it to UTF-8 and retry.",
+        )
 
     def test_decode_prompt_bytes_rejects_utf32_boms(self):
         with self.assertRaises(PromptDecodeError) as ctx:
@@ -110,12 +122,34 @@ class ExecRunPreparationTests(unittest.TestCase):
             ReviewRequest(ReviewTarget.custom("custom review instructions")),
         )
 
+    def test_build_review_request_reads_dash_prompt_from_stdin_and_trims(self):
+        review = parse_exec_args(["review", "-"]).review
+        self.assertIsNotNone(review)
+
+        request = build_review_request(
+            review,
+            stdin=b"  review stdin instructions  \n",
+            stdin_is_terminal=False,
+            stderr=io.StringIO(),
+        )
+
+        self.assertEqual(request, ReviewRequest(ReviewTarget.custom("review stdin instructions")))
+
     def test_build_review_request_requires_target(self):
         review = parse_exec_args(["review"]).review
         self.assertIsNotNone(review)
 
         with self.assertRaisesRegex(ExecRunError, "Specify --uncommitted"):
             build_review_request(review)
+
+    def test_prepare_exec_run_plan_review_ignores_output_schema_like_upstream(self):
+        cli = parse_exec_args(["--output-schema", "missing-schema.json", "review", "--uncommitted"])
+
+        plan = prepare_exec_run_plan(cli, stdin_is_terminal=True, stderr=io.StringIO())
+
+        self.assertEqual(plan.initial_operation.kind, "review")
+        self.assertEqual(plan.initial_operation.review_request, ReviewRequest(ReviewTarget.uncommitted_changes()))
+        self.assertEqual(plan.prompt_summary, "current changes")
 
     def test_review_user_facing_hint_matches_upstream_text(self):
         self.assertEqual(review_user_facing_hint(ReviewTarget.uncommitted_changes()), "current changes")
@@ -151,6 +185,45 @@ class ExecRunPreparationTests(unittest.TestCase):
         self.assertEqual(plan.initial_operation.output_schema["properties"]["ok"]["type"], "boolean")
         self.assertEqual(plan.prompt_summary, "Summarize this concisely\n\n<stdin>\nmy output\n</stdin>")
 
+    def test_prepare_exec_run_plan_preserves_full_output_schema_like_upstream_request(self):
+        schema_contents = {
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+            "additionalProperties": False,
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            schema = Path(tmpdir) / "schema.json"
+            schema.write_text(
+                '{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false}',
+                encoding="utf-8",
+            )
+            cli = parse_exec_args(["--output-schema", str(schema), "tell me a joke"])
+
+            plan = prepare_exec_run_plan(cli, stdin_is_terminal=True, stderr=io.StringIO())
+
+        self.assertEqual(plan.initial_operation.kind, "user_turn")
+        self.assertEqual(plan.initial_operation.output_schema, schema_contents)
+        self.assertEqual(plan.initial_operation.items, (UserInput.text_input("tell me a joke"),))
+        self.assertEqual(plan.prompt_summary, "tell me a joke")
+
+    def test_load_output_schema_reports_invalid_utf8_as_read_error(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            schema = Path(tmpdir) / "schema.json"
+            schema.write_bytes(b"\xff")
+
+            with self.assertRaisesRegex(ExecRunError, "Failed to read output schema file"):
+                load_output_schema(schema)
+
+    def test_load_output_schema_reports_invalid_json_like_upstream(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            schema = Path(tmpdir) / "schema.json"
+            schema.write_text("{not json", encoding="utf-8")
+
+            with self.assertRaisesRegex(ExecRunError, "Output schema file .* is not valid JSON"):
+                load_output_schema(schema)
+
     def test_prepare_exec_run_plan_resume_uses_last_session_as_prompt_and_merges_images(self):
         cli = parse_exec_args(["--image", "root.png", "resume", "--last", "--image", "resume.png", "continue"])
 
@@ -165,6 +238,39 @@ class ExecRunPreparationTests(unittest.TestCase):
             ),
         )
         self.assertEqual(plan.prompt_summary, "continue")
+
+    def test_prepare_exec_run_plan_resume_loads_output_schema_like_upstream(self):
+        schema_contents = {
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer"],
+            "additionalProperties": False,
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            schema = Path(tmpdir) / "schema.json"
+            schema.write_text(
+                '{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"],"additionalProperties":false}',
+                encoding="utf-8",
+            )
+            cli = parse_exec_args(["resume", "session-123", "--output-schema", str(schema), "continue"])
+
+            plan = prepare_exec_run_plan(cli, stdin_is_terminal=True, stderr=io.StringIO())
+
+        self.assertEqual(plan.initial_operation.kind, "user_turn")
+        self.assertEqual(plan.initial_operation.output_schema, schema_contents)
+        self.assertEqual(plan.prompt_summary, "continue")
+
+    def test_prepare_exec_run_plan_resume_last_single_positional_becomes_prompt(self):
+        cli = parse_exec_args(["resume", "--last", "session-123"])
+
+        plan = prepare_exec_run_plan(cli, stdin_is_terminal=True, stderr=io.StringIO())
+
+        self.assertIsNotNone(cli.resume)
+        self.assertIsNone(cli.resume.session_id)
+        self.assertEqual(cli.resume.prompt, "session-123")
+        self.assertEqual(plan.initial_operation.items, (UserInput.text_input("session-123"),))
+        self.assertEqual(plan.prompt_summary, "session-123")
 
     def test_prepare_exec_run_plan_review_uses_review_request_and_hint(self):
         cli = parse_exec_args(["review", "--commit", "123456789", "--title", "Fix"])

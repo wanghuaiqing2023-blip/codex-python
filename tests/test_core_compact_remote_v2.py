@@ -1,8 +1,10 @@
 import unittest
+from pathlib import Path
 
 from pycodex.core import (
     RemoteCompactionV2OutputError,
     RemoteCompactionV2StreamError,
+    apply_remote_compaction_v2_install_plan,
     build_remote_compaction_v2_install_plan,
     build_remote_compaction_v2_prompt,
     build_remote_compaction_v2_success_plan,
@@ -17,12 +19,22 @@ from pycodex.core import (
 )
 from pycodex.core.compact import InitialContextInjection
 from pycodex.core.features import Feature
+from pycodex.core.session_runtime import InMemoryCodexSession
 from pycodex.core.responses_retry import RetryableResponseStreamAction
-from pycodex.protocol import BaseInstructions, CodexErr, ContentItem, MessagePhase, ResponseItem
+from pycodex.protocol import AskForApproval, BaseInstructions, CodexErr, ContentItem, MessagePhase, ResponseItem, SandboxPolicy, TurnContextItem
 
 
 def message(role: str, text: str, phase: MessagePhase | None = None) -> ResponseItem:
     return ResponseItem.message(role, (ContentItem.input_text(text),), phase=phase)
+
+
+def reference_context_item() -> TurnContextItem:
+    return TurnContextItem(
+        cwd=Path("C:/work/project"),
+        approval_policy=AskForApproval.ON_REQUEST,
+        sandbox_policy=SandboxPolicy.danger_full_access(),
+        model="gpt-test",
+    )
 
 
 class FeatureSet:
@@ -41,7 +53,7 @@ class ProviderInfo:
         return self.retries
 
 
-class CompactRemoteV2Tests(unittest.TestCase):
+class CompactRemoteV2Tests(unittest.IsolatedAsyncioTestCase):
     def test_build_remote_compaction_v2_prompt_appends_compaction_trigger(self) -> None:
         user = message("user", "hello")
         base = BaseInstructions("base")
@@ -231,7 +243,7 @@ class CompactRemoteV2Tests(unittest.TestCase):
         )
 
     def test_build_remote_compaction_v2_install_plan_keeps_reference_context_for_mid_turn_injection(self) -> None:
-        reference_context = message("developer", "fresh context")
+        reference_context = reference_context_item()
 
         plan = build_remote_compaction_v2_install_plan(
             (message("user", "before"),),
@@ -254,7 +266,8 @@ class CompactRemoteV2Tests(unittest.TestCase):
         trace_input_history = (message("user", "before"), ResponseItem.function_call("tool", "{}", "call-1"))
         old = message("user", "old")
         latest = message("user", "latest")
-        reference_context = message("developer", "fresh context")
+        reference_context = reference_context_item()
+        reference_message = message("developer", "fresh context")
         compaction_output = ResponseItem.compaction("encrypted")
 
         plan = build_remote_compaction_v2_success_plan(
@@ -262,11 +275,11 @@ class CompactRemoteV2Tests(unittest.TestCase):
             (old, message("developer", "stale"), latest),
             compaction_output,
             InitialContextInjection.BEFORE_LAST_USER_MESSAGE,
-            (reference_context,),
+            (reference_message,),
             reference_context,
         )
 
-        self.assertEqual(plan.new_history, (old, reference_context, latest, compaction_output))
+        self.assertEqual(plan.new_history, (old, reference_message, latest, compaction_output))
         self.assertIs(plan.reference_context_item, reference_context)
         self.assertEqual(plan.compacted_item.replacement_history, tuple(item.to_mapping() for item in plan.new_history))
         self.assertEqual(
@@ -276,6 +289,23 @@ class CompactRemoteV2Tests(unittest.TestCase):
                 "replacement_history": [item.to_mapping() for item in plan.new_history],
             },
         )
+
+    async def test_apply_remote_compaction_v2_install_plan_updates_in_memory_session(self) -> None:
+        reference_context = reference_context_item()
+        new_history = (message("user", "after"), ResponseItem.compaction("encrypted"))
+        plan = build_remote_compaction_v2_install_plan(
+            (message("user", "before"),),
+            new_history,
+            InitialContextInjection.BEFORE_LAST_USER_MESSAGE,
+            reference_context,
+        )
+        session = InMemoryCodexSession(cwd="C:/work/project")
+
+        await apply_remote_compaction_v2_install_plan(session, plan)
+
+        self.assertEqual(session.history, list(new_history))
+        self.assertEqual(await session.reference_context_item(), reference_context)
+        self.assertEqual(session.compacted_items, [plan.compacted_item])
 
     def test_build_v2_compacted_history_filters_to_installed_retention_shape(self) -> None:
         input_items = (

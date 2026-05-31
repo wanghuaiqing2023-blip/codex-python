@@ -8,8 +8,16 @@ from pycodex.core import (
     SESSIONS_SUBDIR,
     Cursor,
     SessionIndexEntry,
+    SessionMeta,
+    append_response_item_to_rollout,
     append_session_index_entry,
     append_thread_name,
+    append_turn_context_to_rollout,
+    append_turn_to_latest_thread_rollout,
+    append_turn_to_thread_rollout,
+    append_turn_to_rollout,
+    count_session_rollout_files,
+    find_session_rollout_containing_response_marker,
     find_archived_thread_path_by_id_str,
     find_thread_meta_by_name_str,
     find_thread_name_by_id,
@@ -17,9 +25,12 @@ from pycodex.core import (
     find_thread_path_by_id_str,
     get_threads,
     get_threads_in_root,
+    last_user_image_count_in_rollout,
+    materialize_session_rollout,
     parse_cursor,
     parse_timestamp_uuid_from_filename,
     read_head_for_summary,
+    read_response_items_from_rollout,
     read_session_meta_line,
     read_thread_item_from_rollout,
     rollout_date_parts,
@@ -99,6 +110,343 @@ def write_thread_rollout(
 
 
 class CoreRolloutTests(unittest.TestCase):
+    def test_count_session_rollout_files_matches_exec_ephemeral_suite_counting_rule(self):
+        root = workspace_tempdir()
+        thread_id = str(uuid.uuid4())
+        saved = root / SESSIONS_SUBDIR / "2025" / "01" / "02" / f"rollout-2025-01-02T00-00-00-{thread_id}.jsonl"
+        write_rollout(saved, thread_id)
+        nested = root / SESSIONS_SUBDIR / "custom" / "manual.jsonl"
+        nested.parent.mkdir(parents=True, exist_ok=True)
+        nested.write_text("{}\n", encoding="utf-8")
+        ignored = root / "archived_sessions" / "archived.jsonl"
+        ignored.parent.mkdir(parents=True, exist_ok=True)
+        ignored.write_text("{}\n", encoding="utf-8")
+
+        self.assertEqual(count_session_rollout_files(root), 2)
+        self.assertEqual(count_session_rollout_files(root / "empty"), 0)
+
+    def test_materialize_session_rollout_respects_ephemeral_flag(self):
+        root = workspace_tempdir()
+        default_id = str(uuid.uuid4())
+        ephemeral_id = str(uuid.uuid4())
+        default_meta = SessionMeta(
+            id=default_id,
+            timestamp="2025-01-02T03:04:05Z",
+            cwd=".",
+            originator="codex_exec",
+            cli_version="test-version",
+            source="cli",
+            model_provider="openai",
+        )
+        ephemeral_meta = SessionMeta(
+            id=ephemeral_id,
+            timestamp="2025-01-02T03:04:06Z",
+            cwd=".",
+            originator="codex_exec",
+            cli_version="test-version",
+            source="cli",
+            model_provider="openai",
+        )
+
+        default_path = materialize_session_rollout(root, default_meta)
+        ephemeral_path = materialize_session_rollout(root, ephemeral_meta, ephemeral=True)
+
+        self.assertIsNotNone(default_path)
+        assert default_path is not None
+        self.assertTrue(default_path.name.startswith("rollout-2025-01-02T03-04-05Z-"))
+        self.assertEqual(count_session_rollout_files(root), 1)
+        self.assertIsNone(ephemeral_path)
+        self.assertEqual(read_session_meta_line(default_path).meta.id, default_id)
+
+    def test_find_session_rollout_containing_response_marker_matches_resume_suite_scan(self):
+        root = workspace_tempdir()
+        first_id = str(uuid.uuid4())
+        second_id = str(uuid.uuid4())
+        marker = f"resume-marker-{uuid.uuid4()}"
+        first = root / SESSIONS_SUBDIR / "2025" / "01" / "02" / f"rollout-2025-01-02T00-00-00-{first_id}.jsonl"
+        second = root / SESSIONS_SUBDIR / "2025" / "01" / "02" / f"rollout-2025-01-02T00-00-01-{second_id}.jsonl"
+        write_rollout(
+            first,
+            first_id,
+            [
+                {
+                    "timestamp": "2025-01-02T00:00:00Z",
+                    "type": "response_item",
+                    "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "other"}]},
+                }
+            ],
+        )
+        write_rollout(
+            second,
+            second_id,
+            [
+                {"timestamp": "x", "type": "event_msg", "payload": {"message": marker}},
+                {
+                    "timestamp": "2025-01-02T00:00:01Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": f"contains {marker}"}],
+                    },
+                },
+            ],
+        )
+
+        self.assertEqual(find_session_rollout_containing_response_marker(root, marker), second)
+        self.assertIsNone(find_session_rollout_containing_response_marker(root, "missing-marker"))
+
+    def test_append_response_item_to_rollout_supports_resume_append_marker_evidence(self):
+        root = workspace_tempdir()
+        thread_id = str(uuid.uuid4())
+        marker = f"resume-append-{uuid.uuid4()}"
+        path = root / SESSIONS_SUBDIR / "2025" / "01" / "02" / f"rollout-2025-01-02T00-00-00-{thread_id}.jsonl"
+        write_rollout(path, thread_id)
+
+        append_response_item_to_rollout(
+            path,
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": f"new marker {marker}"}],
+            },
+            timestamp="2025-01-02T00:00:01Z",
+        )
+
+        self.assertEqual(find_session_rollout_containing_response_marker(root, marker), path)
+        self.assertEqual(count_session_rollout_files(root), 1)
+        self.assertIn(marker, path.read_text(encoding="utf-8"))
+
+    def test_last_user_image_count_in_rollout_matches_resume_suite_scan(self):
+        root = workspace_tempdir()
+        thread_id = str(uuid.uuid4())
+        path = root / SESSIONS_SUBDIR / "2025" / "01" / "02" / f"rollout-2025-01-02T00-00-00-{thread_id}.jsonl"
+        write_rollout(
+            path,
+            thread_id,
+            [
+                {
+                    "timestamp": "2025-01-02T00:00:00Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "first"},
+                            {"type": "input_image", "image_url": "file://one.png"},
+                        ],
+                    },
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:01Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "ignored"}],
+                    },
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:02Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [
+                            {"type": "input_image", "image_url": "file://two.png"},
+                            {"type": "input_image", "image_url": "file://three.png"},
+                        ],
+                    },
+                },
+            ],
+        )
+
+        self.assertEqual(last_user_image_count_in_rollout(path), 2)
+        self.assertEqual(last_user_image_count_in_rollout(root / "missing.jsonl"), 0)
+
+    def test_read_response_items_from_rollout_recovers_resume_history_in_order(self):
+        root = workspace_tempdir()
+        thread_id = str(uuid.uuid4())
+        path = root / SESSIONS_SUBDIR / "2025" / "01" / "02" / f"rollout-2025-01-02T00-00-00-{thread_id}.jsonl"
+        write_rollout(
+            path,
+            thread_id,
+            [
+                {"timestamp": "x", "type": "response_item", "payload": {"role": "assistant"}},
+                "not-a-rollout-dict",
+                {
+                    "timestamp": "2025-01-02T00:00:00Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "first"}],
+                    },
+                },
+                {"timestamp": "ignored", "type": "event_msg", "payload": {"message": "not history"}},
+                {
+                    "timestamp": "2025-01-02T00:00:01Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "second"}],
+                    },
+                },
+            ],
+        )
+
+        items = read_response_items_from_rollout(path)
+
+        self.assertEqual([item.role for item in items], ["user", "assistant"])
+        self.assertEqual(items[0].content[0].text, "first")
+        self.assertEqual(items[1].content[0].text, "second")
+        self.assertEqual(len(read_response_items_from_rollout(path, max_items=1)), 1)
+        self.assertEqual(read_response_items_from_rollout(root / "missing.jsonl"), ())
+
+    def test_append_turn_to_rollout_supports_resume_append_file_and_image_evidence(self):
+        root = workspace_tempdir()
+        thread_id = str(uuid.uuid4())
+        marker = f"resume-turn-{uuid.uuid4()}"
+        path = root / SESSIONS_SUBDIR / "2025" / "01" / "02" / f"rollout-2025-01-02T00-00-00-{thread_id}.jsonl"
+        write_rollout(path, thread_id)
+
+        append_turn_to_rollout(
+            path,
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "resume prompt"},
+                    {"type": "input_image", "image_url": "file://resume-one.png"},
+                    {"type": "input_image", "image_url": "file://resume-two.png"},
+                ],
+            },
+            (
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": f"resumed answer {marker}"}],
+                },
+            ),
+            timestamp="2025-01-02T00:00:03Z",
+        )
+
+        self.assertEqual(find_session_rollout_containing_response_marker(root, marker), path)
+        self.assertEqual(last_user_image_count_in_rollout(path), 2)
+        self.assertEqual(count_session_rollout_files(root), 1)
+
+    def test_append_turn_context_to_rollout_updates_thread_item_cwd(self):
+        root = workspace_tempdir()
+        thread_id = str(uuid.uuid4())
+        old_cwd = str(root / "old")
+        new_cwd = str(root / "new")
+        path = write_thread_rollout(root, "2025-01-02T00-00-00", thread_id, cwd=old_cwd)
+        with path.open("a", encoding="utf-8", newline="\n") as file:
+            for index in range(12):
+                file.write(
+                    json.dumps(
+                        {
+                            "timestamp": f"2025-01-02T00:00:{index + 1:02d}Z",
+                            "type": "response_item",
+                            "payload": {"type": "message", "role": "assistant", "content": []},
+                        }
+                    )
+                    + "\n"
+                )
+
+        append_turn_context_to_rollout(path, new_cwd, timestamp="2025-01-02T00:00:04Z")
+
+        self.assertEqual(read_thread_item_from_rollout(path).cwd, Path(new_cwd))
+
+    def test_append_turn_to_thread_rollout_uses_existing_file_by_id(self):
+        root = workspace_tempdir()
+        thread_id = str(uuid.uuid4())
+        marker = f"resume-by-id-{uuid.uuid4()}"
+        path = root / SESSIONS_SUBDIR / "2025" / "01" / "02" / f"rollout-2025-01-02T00-00-00-{thread_id}.jsonl"
+        write_rollout(path, thread_id)
+
+        appended_path = append_turn_to_thread_rollout(
+            root,
+            thread_id,
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "resume"}]},
+            (
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": f"answer {marker}"}],
+                },
+            ),
+            timestamp="2025-01-02T00:00:04Z",
+        )
+
+        self.assertEqual(appended_path, path)
+        self.assertEqual(find_session_rollout_containing_response_marker(root, marker), path)
+        self.assertEqual(count_session_rollout_files(root), 1)
+        self.assertIsNone(append_turn_to_thread_rollout(root, "not-a-uuid", None, ()))
+
+    def test_append_turn_to_latest_thread_rollout_respects_cwd_filter_and_all(self):
+        root = workspace_tempdir()
+        id_a = str(uuid.uuid4())
+        id_b = str(uuid.uuid4())
+        cwd_a = str(root / "a")
+        cwd_b = str(root / "b")
+        marker_a = f"resume-last-a-{uuid.uuid4()}"
+        marker_b = f"resume-last-b-{uuid.uuid4()}"
+        marker_c = f"resume-last-c-{uuid.uuid4()}"
+        path_a = write_thread_rollout(root, "2025-01-01T00-00-00", id_a, message="first", cwd=cwd_a)
+        path_b = write_thread_rollout(root, "2025-01-02T00-00-00", id_b, message="second", cwd=cwd_b)
+
+        appended_for_cwd = append_turn_to_latest_thread_rollout(
+            root,
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "resume cwd"}]},
+            (
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": f"cwd match {marker_a}"}],
+                },
+            ),
+            current_cwd=Path(cwd_a),
+            timestamp="2025-01-03T00:00:00Z",
+        )
+        appended_all = append_turn_to_latest_thread_rollout(
+            root,
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "resume all"}]},
+            (
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": f"all match {marker_b}"}],
+                },
+            ),
+            current_cwd=Path(cwd_a),
+            include_all=True,
+            timestamp="2025-01-03T00:00:01Z",
+        )
+        appended_after_cwd_update = append_turn_to_latest_thread_rollout(
+            root,
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "resume after all"}]},
+            (
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": f"after cwd update {marker_c}"}],
+                },
+            ),
+            current_cwd=Path(cwd_a),
+            timestamp="2025-01-03T00:00:02Z",
+        )
+
+        self.assertEqual(appended_for_cwd, path_a)
+        self.assertEqual(appended_all, path_b)
+        self.assertEqual(appended_after_cwd_update, path_b)
+        self.assertEqual(read_thread_item_from_rollout(path_b).cwd, Path(cwd_a))
+        self.assertEqual(find_session_rollout_containing_response_marker(root, marker_a), path_a)
+        self.assertEqual(find_session_rollout_containing_response_marker(root, marker_b), path_b)
+        self.assertEqual(find_session_rollout_containing_response_marker(root, marker_c), path_b)
+        self.assertEqual(count_session_rollout_files(root), 2)
+
     def test_rollout_date_parts_extracts_directory_components(self):
         file_name = "rollout-2025-03-01T09-00-00-123.jsonl"
 

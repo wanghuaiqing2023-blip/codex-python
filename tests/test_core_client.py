@@ -9,6 +9,7 @@ from pycodex.core import (
     X_CODEX_TURN_METADATA_HEADER,
     X_CODEX_TURN_STATE_HEADER,
     X_CODEX_WINDOW_ID_HEADER,
+    X_OPENAI_SUBAGENT_HEADER,
     WS_REQUEST_HEADER_TRACEPARENT_CLIENT_METADATA_KEY,
     WS_REQUEST_HEADER_TRACESTATE_CLIENT_METADATA_KEY,
     LastResponse,
@@ -25,6 +26,7 @@ from pycodex.core import (
     WebsocketSession,
     WebsocketStreamOutcome,
     build_responses_headers,
+    build_session_headers,
     create_tools_json_for_responses_api,
     create_text_param_for_request,
     execute_sampling_request_runtime_plan,
@@ -68,7 +70,7 @@ from pycodex.core.stream_events_utils import (
     SamplingStreamEventApplyPlan,
     SamplingToolCallInputDeltaApplyPlan,
 )
-from pycodex.protocol import ResponseItem, SessionSource, SubAgentSource, ThreadId
+from pycodex.protocol import ReasoningEffort, ReasoningSummary, ResponseItem, ServiceTier, SessionSource, SubAgentSource, ThreadId
 
 
 class FeatureSet:
@@ -90,6 +92,28 @@ def test_build_responses_headers_includes_beta_turn_state_and_metadata():
     assert headers[X_CODEX_TURN_METADATA_HEADER] == "turn-meta"
 
 
+def test_build_responses_headers_skips_invalid_header_values():
+    turn_state = TurnState()
+    turn_state.set("bad\nstate")
+
+    headers = build_responses_headers("bad\rfeatures", turn_state, "bad\nmetadata")
+
+    assert "x-codex-beta-features" not in headers
+    assert X_CODEX_TURN_STATE_HEADER not in headers
+    assert X_CODEX_TURN_METADATA_HEADER not in headers
+
+def test_build_session_headers_matches_rust_optional_session_thread_headers():
+    assert build_session_headers("sess_123", "thread_123") == {
+        "session-id": "sess_123",
+        "thread-id": "thread_123",
+    }
+    assert build_session_headers(None, "thread_123") == {"thread-id": "thread_123"}
+    assert build_session_headers("sess_123", None) == {"session-id": "sess_123"}
+    assert build_session_headers(None, None) == {}
+    assert build_session_headers("bad\r\nsession", "thread_123") == {"thread-id": "thread_123"}
+    assert build_session_headers("sess_123", "bad\nthread") == {"session-id": "sess_123"}
+
+
 def test_parse_turn_metadata_header_rejects_newlines():
     assert parse_turn_metadata_header("ok") == "ok"
     assert parse_turn_metadata_header("bad\nheader") is None
@@ -102,6 +126,25 @@ def test_subagent_and_parent_thread_headers_match_thread_spawn_source():
     assert subagent_header_value(source) == "collab_spawn"
     assert parent_thread_id_header_value(source) == str(parent_thread_id)
 
+
+
+
+
+
+def test_build_ws_client_metadata_keeps_subagent_metadata_unfiltered():
+    source = SessionSource.subagent(SubAgentSource.other_source("bad\nlabel"))
+    client = ModelClient(session_id="session", thread_id="thread", installation_id="install", session_source=source)
+
+    metadata = client.build_ws_client_metadata()
+
+    assert metadata[X_OPENAI_SUBAGENT_HEADER] == "bad\nlabel"
+def test_build_subagent_headers_skip_invalid_other_label():
+    source = SessionSource.subagent(SubAgentSource.other_source("bad\nlabel"))
+    client = ModelClient(session_id="session", thread_id="thread", installation_id="install", session_source=source)
+
+    headers = client.build_subagent_headers()
+
+    assert "x-openai-subagent" not in headers
 
 def test_model_client_window_generation_resets_cached_websocket_session():
     provider = SimpleNamespace(info=lambda: SimpleNamespace(supports_websockets=True))
@@ -137,6 +180,18 @@ def test_build_websocket_headers_include_identity_and_beta():
     assert headers[X_CODEX_TURN_METADATA_HEADER] == "turn"
     assert headers[OPENAI_BETA_HEADER] == RESPONSES_WEBSOCKETS_V2_BETA_HEADER_VALUE
 
+
+
+
+def test_build_websocket_headers_skip_invalid_identity_values():
+    client = ModelClient(session_id="session", thread_id="bad\nthread", installation_id="install")
+
+    headers = client.build_websocket_headers(turn_metadata_header="ok")
+
+    assert "x-client-request-id" not in headers
+    assert "thread-id" not in headers
+    assert headers["session-id"] == "session"
+    assert headers[X_CODEX_TURN_METADATA_HEADER] == "ok"
 
 def test_model_client_session_incremental_items_use_last_response_baseline():
     client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
@@ -3519,6 +3574,55 @@ def test_build_responses_request_uses_default_reasoning_effort_and_omits_none_su
     assert request["include"] == ["reasoning.encrypted_content"]
 
 
+def test_build_responses_request_treats_reasoning_summary_none_enum_as_absent_summary():
+    client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+    provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+    model_info = SimpleNamespace(
+        slug="gpt-default-reasoning",
+        supports_reasoning_summaries=True,
+        default_reasoning_level="medium",
+        support_verbosity=False,
+        service_tier_for_request=lambda tier: tier,
+    )
+
+    request = client.build_responses_request(
+        provider,
+        Prompt.default(),
+        model_info,
+        effort=None,
+        summary=ReasoningSummary.NONE,
+    )
+
+    assert request["reasoning"] == {"effort": "medium", "summary": None}
+
+
+def test_build_responses_request_normalizes_service_tier_request_values():
+    client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+    provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+    model_info = SimpleNamespace(
+        slug="gpt-service-tier",
+        supports_reasoning_summaries=False,
+        support_verbosity=False,
+        service_tier_for_request=lambda tier: tier if tier in {"priority", "flex"} else None,
+    )
+
+    fast_request = client.build_responses_request(
+        provider,
+        Prompt.default(),
+        model_info,
+        service_tier=ServiceTier.FAST,
+    )
+    legacy_fast_request = client.build_responses_request(
+        provider,
+        Prompt.default(),
+        model_info,
+        service_tier="fast",
+    )
+
+    assert fast_request["service_tier"] == "priority"
+    assert legacy_fast_request["service_tier"] == "priority"
+
+
 def test_serialize_responses_request_matches_rust_skip_rules():
     request = {
         "model": "gpt-test",
@@ -3545,6 +3649,25 @@ def test_serialize_responses_request_matches_rust_skip_rules():
     assert "text" not in serialized
     assert "client_metadata" not in serialized
     assert serialized["reasoning"] is None
+
+
+def test_serialize_responses_request_serializes_nested_enum_values():
+    request = {
+        "model": "gpt-test",
+        "instructions": "base",
+        "input": [],
+        "tools": [],
+        "tool_choice": "auto",
+        "parallel_tool_calls": False,
+        "reasoning": {"effort": ReasoningEffort.HIGH},
+        "store": False,
+        "stream": True,
+        "include": [],
+    }
+
+    serialized = serialize_responses_request(request)
+
+    assert serialized["reasoning"] == {"effort": "high"}
 
 
 def test_prepare_websocket_request_uses_serialized_payload_shape():
@@ -3663,6 +3786,22 @@ def test_create_tools_json_for_responses_api_preserves_mapping_tools():
     tool = {"type": "function", "name": "plain_mapping"}
 
     assert create_tools_json_for_responses_api([tool]) == [{"type": "function", "name": "plain_mapping"}]
+
+
+def test_create_tools_json_for_responses_api_serializes_nested_enum_values():
+    tool = {
+        "type": "function",
+        "name": "plain_mapping",
+        "metadata": {"effort": ReasoningEffort.HIGH},
+    }
+
+    assert create_tools_json_for_responses_api([tool]) == [
+        {
+            "type": "function",
+            "name": "plain_mapping",
+            "metadata": {"effort": "high"},
+        }
+    ]
 
 
 def test_create_tools_json_for_responses_api_rejects_non_json_tool():

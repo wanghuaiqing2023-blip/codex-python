@@ -13,19 +13,38 @@ from pycodex.core import (
     ToolEventStage,
     TurnDiffTracker,
     TurnDiffTrackerUpdate,
+    build_command_execution_begin_item,
+    build_command_execution_end_item,
+    build_command_execution_item_from_guardian_event,
+    build_command_execution_item_mapping_from_guardian_event,
     build_exec_stage_events,
     build_patch_begin_item,
     build_patch_end_for_stage,
+    command_execution_notification_from_event_msg,
+    command_execution_status_from_guardian_status,
     exec_command_result_for_stage,
+    file_change_notification_from_turn_item,
+    guardian_auto_approval_review_notification,
     patch_status_for_failure,
     tracker_update_for_known_delta,
+    turn_item_lifecycle_notification,
 )
 from pycodex.protocol import (
+    EventMsg,
+    ExecCommandOutputDeltaEvent,
     ExecCommandSource,
     ExecCommandStatus,
     ExecToolCallOutput,
     FileChange,
+    GuardianAssessmentAction,
+    GuardianAssessmentDecisionSource,
+    GuardianAssessmentEvent,
+    GuardianAssessmentStatus,
+    GuardianCommandSource,
+    GuardianRiskLevel,
+    GuardianUserAuthorization,
     PatchApplyStatus,
+    ParsedCommand,
     StreamOutput,
     TruncationPolicyConfig,
     TurnItem,
@@ -43,7 +62,7 @@ class ToolEventsTests(unittest.TestCase):
         exec_input = ExecCommandInput.new(
             ["echo", "hi"],
             Path("/tmp/project"),
-            parsed_cmd=({"cmd": "echo"},),
+            parsed_cmd=(ParsedCommand.unknown("echo hi"),),
             source=ExecCommandSource.USER_SHELL,
             process_id="pid-1",
         )
@@ -68,6 +87,236 @@ class ToolEventsTests(unittest.TestCase):
         self.assertEqual(end_event.payload.exit_code, 0)
         self.assertEqual(end_event.payload.stdout, "hi\n")
         self.assertEqual(end_event.payload.aggregated_output, "hi\n")
+
+    def test_exec_command_events_build_command_execution_turn_items(self) -> None:
+        ctx = ToolEventCtx.new(None, _Turn(), "call-1")
+        exec_input = ExecCommandInput.new(
+            ["python", "-m", "unittest"],
+            Path("/tmp/project"),
+            parsed_cmd=(ParsedCommand.unknown("python -m unittest"),),
+            source=ExecCommandSource.USER_SHELL,
+            process_id="pid-1",
+        )
+        output = ExecToolCallOutput(
+            exit_code=1,
+            stdout=StreamOutput.new(""),
+            stderr=StreamOutput.new("FAILED\n"),
+            aggregated_output=StreamOutput.new("FAILED\n"),
+            duration=timedelta(seconds=1.25),
+        )
+
+        begin_event = build_exec_stage_events(ctx, exec_input, ToolEventStage.begin(), timestamp_ms=10)[0]
+        end_event = build_exec_stage_events(ctx, exec_input, ToolEventStage.success(output), timestamp_ms=20)[0]
+        begin_item = build_command_execution_begin_item(begin_event.payload)
+        end_item = build_command_execution_end_item(end_event.payload)
+
+        self.assertEqual(begin_item.type, "CommandExecution")
+        self.assertEqual(begin_item.item.command, "python -m unittest")
+        self.assertEqual(begin_item.item.source, "userShell")
+        self.assertEqual(begin_item.item.status, "inProgress")
+        self.assertEqual(begin_item.item.command_actions, ({"type": "unknown", "command": "python -m unittest"},))
+        self.assertEqual(begin_item.item.aggregated_output, None)
+        self.assertEqual(end_item.item.status, "failed")
+        self.assertEqual(end_item.item.command_actions, ({"type": "unknown", "command": "python -m unittest"},))
+        self.assertEqual(end_item.item.aggregated_output, "FAILED\n")
+        self.assertEqual(end_item.item.exit_code, 1)
+        self.assertEqual(end_item.item.duration_ms, 1250)
+
+    def test_exec_command_events_map_to_command_execution_notifications(self) -> None:
+        ctx = ToolEventCtx.new(None, _Turn(), "call-1")
+        exec_input = ExecCommandInput.new(["echo", "hi"], Path("/tmp/project"))
+        output = ExecToolCallOutput(
+            exit_code=0,
+            stdout=StreamOutput.new("hi\n"),
+            stderr=StreamOutput.new(""),
+            aggregated_output=StreamOutput.new("hi\n"),
+        )
+
+        begin_event = build_exec_stage_events(ctx, exec_input, ToolEventStage.begin(), timestamp_ms=10)[0]
+        end_event = build_exec_stage_events(ctx, exec_input, ToolEventStage.success(output), timestamp_ms=20)[0]
+        delta_event = EventMsg.with_payload(
+            "exec_command_output_delta",
+            ExecCommandOutputDeltaEvent("call-1", "stdout", b"hi\n"),
+        )
+
+        started = command_execution_notification_from_event_msg("thread-1", "turn-1", begin_event)
+        completed = command_execution_notification_from_event_msg("thread-1", "turn-1", end_event)
+        delta = command_execution_notification_from_event_msg("thread-1", "turn-1", delta_event)
+
+        self.assertEqual(started["method"], "item/started")
+        self.assertEqual(started["params"]["startedAtMs"], 10)
+        self.assertEqual(started["params"]["item"]["type"], "commandExecution")
+        self.assertEqual(started["params"]["item"]["status"], "inProgress")
+        self.assertEqual(completed["method"], "item/completed")
+        self.assertEqual(completed["params"]["completedAtMs"], 20)
+        self.assertEqual(completed["params"]["item"]["aggregatedOutput"], "hi\n")
+        self.assertEqual(completed["params"]["item"]["exitCode"], 0)
+        self.assertEqual(delta["method"], "item/commandExecution/outputDelta")
+        self.assertEqual(delta["params"]["itemId"], "call-1")
+        self.assertEqual(delta["params"]["delta"], "hi\n")
+
+    def test_turn_item_lifecycle_notification_supports_command_execution_items(self) -> None:
+        ctx = ToolEventCtx.new(None, _Turn(), "call-1")
+        exec_input = ExecCommandInput.new(["echo", "hi"], Path("/tmp/project"))
+        output = ExecToolCallOutput(
+            exit_code=0,
+            stdout=StreamOutput.new("hi\n"),
+            stderr=StreamOutput.new(""),
+            aggregated_output=StreamOutput.new("hi\n"),
+        )
+        begin_event = build_exec_stage_events(ctx, exec_input, ToolEventStage.begin(), timestamp_ms=10)[0]
+        end_event = build_exec_stage_events(ctx, exec_input, ToolEventStage.success(output), timestamp_ms=20)[0]
+
+        started = turn_item_lifecycle_notification(
+            "thread-1",
+            "turn-1",
+            build_command_execution_begin_item(begin_event.payload),
+            timestamp_ms=10,
+        )
+        completed = turn_item_lifecycle_notification(
+            "thread-1",
+            "turn-1",
+            build_command_execution_end_item(end_event.payload),
+            timestamp_ms=20,
+        )
+
+        self.assertEqual(started["method"], "item/started")
+        self.assertEqual(started["params"]["item"]["type"], "commandExecution")
+        self.assertEqual(completed["method"], "item/completed")
+        self.assertEqual(completed["params"]["item"]["status"], "completed")
+
+    def test_guardian_command_assessment_builds_command_execution_item(self) -> None:
+        assessment = GuardianAssessmentEvent(
+            id="assessment-1",
+            status=GuardianAssessmentStatus.DENIED,
+            target_item_id="call-1",
+            action=GuardianAssessmentAction.command_action(
+                GuardianCommandSource.SHELL,
+                "rm -rf tmp",
+                Path("/repo"),
+            ),
+        )
+
+        status = command_execution_status_from_guardian_status(assessment.status)
+        item = build_command_execution_item_from_guardian_event(assessment, status)
+
+        self.assertEqual(status, "declined")
+        self.assertEqual(item.type, "CommandExecution")
+        self.assertEqual(item.item.id, "call-1")
+        self.assertEqual(item.item.command, "rm -rf tmp")
+        self.assertEqual(item.item.cwd, Path("/repo"))
+        self.assertEqual(item.item.source, "agent")
+        self.assertEqual(item.item.status, "declined")
+        self.assertEqual(item.item.command_actions, ({"type": "unknown", "command": "rm -rf tmp"},))
+
+        item_mapping = build_command_execution_item_mapping_from_guardian_event(assessment)
+
+        self.assertEqual(item_mapping["type"], "commandExecution")
+        self.assertEqual(item_mapping["id"], "call-1")
+        self.assertEqual(item_mapping["status"], "declined")
+        self.assertEqual(item_mapping["aggregatedOutput"], None)
+
+    def test_guardian_execve_assessment_parses_command_actions(self) -> None:
+        assessment = GuardianAssessmentEvent(
+            id="assessment-1",
+            status=GuardianAssessmentStatus.DENIED,
+            target_item_id="call-1",
+            action=GuardianAssessmentAction.execve(
+                GuardianCommandSource.UNIFIED_EXEC,
+                "cat",
+                ("cat", "README.md"),
+                Path("/repo"),
+            ),
+        )
+
+        item = build_command_execution_item_from_guardian_event(assessment, "declined")
+
+        self.assertEqual(item.type, "CommandExecution")
+        self.assertEqual(item.item.command, "cat README.md")
+        self.assertEqual(
+            item.item.command_actions,
+            ({"type": "read", "command": "cat README.md", "name": "README.md", "path": str(Path("/repo") / "README.md")},),
+        )
+
+    def test_exec_command_actions_include_nullable_app_server_fields(self) -> None:
+        ctx = ToolEventCtx.new(None, _Turn(), "call-1")
+        exec_input = ExecCommandInput.new(
+            ["rg", "needle"],
+            Path("/repo"),
+            parsed_cmd=(ParsedCommand.list_files("ls", None), ParsedCommand.search("rg needle", "needle", None)),
+        )
+
+        begin_event = build_exec_stage_events(ctx, exec_input, ToolEventStage.begin(), timestamp_ms=10)[0]
+        item = build_command_execution_begin_item(begin_event.payload)
+
+        self.assertEqual(
+            item.item.command_actions,
+            (
+                {"type": "listFiles", "command": "ls", "path": None},
+                {"type": "search", "command": "rg needle", "query": "needle", "path": None},
+            ),
+        )
+
+    def test_guardian_non_command_or_approved_assessment_does_not_build_command_execution_item(self) -> None:
+        assessment = GuardianAssessmentEvent(
+            id="assessment-1",
+            status=GuardianAssessmentStatus.APPROVED,
+            target_item_id="call-1",
+            action=GuardianAssessmentAction.apply_patch(Path("/repo"), (Path("a.py"),)),
+        )
+
+        self.assertIsNone(command_execution_status_from_guardian_status(assessment.status))
+        self.assertIsNone(build_command_execution_item_from_guardian_event(assessment, "inProgress"))
+        self.assertIsNone(build_command_execution_item_mapping_from_guardian_event(assessment))
+
+    def test_guardian_auto_approval_review_notifications_match_app_server_shape(self) -> None:
+        started_assessment = GuardianAssessmentEvent(
+            id="review-1",
+            status=GuardianAssessmentStatus.IN_PROGRESS,
+            target_item_id="call-1",
+            turn_id="",
+            started_at_ms=10,
+            risk_level=GuardianRiskLevel.HIGH,
+            user_authorization=GuardianUserAuthorization.LOW,
+            rationale="risky",
+            action=GuardianAssessmentAction.execve(
+                GuardianCommandSource.UNIFIED_EXEC,
+                "/bin/rm",
+                ("/bin/rm", "-rf", "tmp"),
+                Path("/repo"),
+            ),
+        )
+        completed_assessment = GuardianAssessmentEvent(
+            id="review-1",
+            status=GuardianAssessmentStatus.DENIED,
+            target_item_id="call-1",
+            turn_id="turn-actual",
+            started_at_ms=10,
+            completed_at_ms=None,
+            decision_source=GuardianAssessmentDecisionSource.AGENT,
+            action=GuardianAssessmentAction.command_action(
+                GuardianCommandSource.SHELL,
+                "rm -rf tmp",
+                Path("/repo"),
+            ),
+        )
+
+        started = guardian_auto_approval_review_notification("thread-1", "turn-fallback", started_assessment)
+        completed = guardian_auto_approval_review_notification("thread-1", "turn-fallback", completed_assessment)
+
+        self.assertEqual(started["method"], "item/autoApprovalReview/started")
+        self.assertEqual(started["params"]["turnId"], "turn-fallback")
+        self.assertEqual(started["params"]["review"]["status"], "inProgress")
+        self.assertEqual(started["params"]["review"]["riskLevel"], "high")
+        self.assertEqual(started["params"]["review"]["userAuthorization"], "low")
+        self.assertEqual(started["params"]["action"]["type"], "execve")
+        self.assertEqual(started["params"]["action"]["source"], "unifiedExec")
+        self.assertEqual(completed["method"], "item/autoApprovalReview/completed")
+        self.assertEqual(completed["params"]["turnId"], "turn-actual")
+        self.assertEqual(completed["params"]["completedAtMs"], 10)
+        self.assertEqual(completed["params"]["decisionSource"], "agent")
+        self.assertEqual(completed["params"]["review"]["status"], "denied")
+        self.assertEqual(completed["params"]["action"]["type"], "command")
 
     def test_exec_failure_messages_are_failed_and_rejections_are_declined(self) -> None:
         policy = TruncationPolicyConfig.bytes(4096)
@@ -101,11 +350,39 @@ class ToolEventsTests(unittest.TestCase):
         end_result = build_patch_end_for_stage(ctx, changes, ToolEventStage.success(output, AppliedPatchDelta.empty()))
 
         self.assertIsInstance(begin_item, TurnItem)
-        self.assertEqual(begin_item.payload.id, "patch-1")
-        self.assertTrue(begin_item.payload.auto_approved)
-        self.assertEqual(end_result.completed_item.payload.status, PatchApplyStatus.COMPLETED)
-        self.assertEqual(end_result.completed_item.payload.stdout, "done")
+        self.assertEqual(begin_item.item.id, "patch-1")
+        self.assertTrue(begin_item.item.auto_approved)
+        self.assertEqual(end_result.completed_item.item.status, PatchApplyStatus.COMPLETED)
+        self.assertEqual(end_result.completed_item.item.stdout, "done")
         self.assertIsNone(end_result.turn_diff_event)
+
+    def test_patch_items_map_to_file_change_notifications(self) -> None:
+        ctx = ToolEventCtx.new(None, _Turn(), "patch-1")
+        changes = {Path("a.txt"): FileChange.add("after")}
+        output = ExecToolCallOutput(
+            exit_code=0,
+            stdout=StreamOutput.new("done"),
+            stderr=StreamOutput.new(""),
+            aggregated_output=StreamOutput.new("done"),
+        )
+
+        begin_item = build_patch_begin_item(ctx, changes, auto_approved=True)
+        end_result = build_patch_end_for_stage(ctx, changes, ToolEventStage.success(output, AppliedPatchDelta.empty()))
+        started = file_change_notification_from_turn_item("thread-1", "turn-1", begin_item, timestamp_ms=10)
+        completed = file_change_notification_from_turn_item("thread-1", "turn-1", end_result.completed_item, timestamp_ms=20)
+
+        self.assertEqual(started["method"], "item/started")
+        self.assertEqual(started["params"]["startedAtMs"], 10)
+        self.assertEqual(started["params"]["item"]["type"], "fileChange")
+        self.assertEqual(started["params"]["item"]["status"], "inProgress")
+        self.assertEqual(completed["method"], "item/completed")
+        self.assertEqual(completed["params"]["completedAtMs"], 20)
+        self.assertEqual(completed["params"]["item"]["type"], "fileChange")
+        self.assertEqual(completed["params"]["item"]["status"], "completed")
+        self.assertEqual(
+            turn_item_lifecycle_notification("thread-1", "turn-1", begin_item, timestamp_ms=10),
+            started,
+        )
 
     def test_patch_failure_statuses_and_tracker_updates_match_rust(self) -> None:
         failed_output = ExecToolCallOutput(exit_code=1)
@@ -130,7 +407,7 @@ class ToolEventsTests(unittest.TestCase):
 
         events = emitter.emit(ctx, ToolEventStage.success(output, delta))
 
-        self.assertEqual(events[0].payload.status, PatchApplyStatus.COMPLETED)
+        self.assertEqual(events[0].item.status, PatchApplyStatus.COMPLETED)
         self.assertEqual(events[1].type, "turn_diff")
         self.assertIn("out.txt", events[1].payload.unified_diff)
 
@@ -146,8 +423,8 @@ class ToolEventsTests(unittest.TestCase):
         self.assertEqual(shell_events[0].payload.status, ExecCommandStatus.DECLINED)
         self.assertEqual(shell_events[0].payload.stderr, "exec command rejected by user")
         self.assertEqual(patch_result.message, "patch rejected by user")
-        self.assertEqual(patch_events[0].payload.status, PatchApplyStatus.DECLINED)
-        self.assertEqual(patch_events[0].payload.stderr, "patch rejected by user")
+        self.assertEqual(patch_events[0].item.status, PatchApplyStatus.DECLINED)
+        self.assertEqual(patch_events[0].item.stderr, "patch rejected by user")
 
     def test_rejects_non_rust_variant_shapes(self) -> None:
         with self.assertRaises(TypeError):

@@ -93,6 +93,15 @@ class ExecCli:
             return FULL_AUTO_WARNING
         return None
 
+    def effective_sandbox_mode(self) -> SandboxMode | None:
+        """Resolve the sandbox mode precedence applied by upstream exec runtime."""
+
+        if self.removed_full_auto:
+            return SandboxMode.WORKSPACE_WRITE
+        if self.dangerously_bypass_approvals_and_sandbox:
+            return SandboxMode.DANGER_FULL_ACCESS
+        return self.sandbox
+
     def cli_config_overrides(self) -> CliConfigOverrides:
         return CliConfigOverrides(list(self.config_overrides))
 

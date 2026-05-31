@@ -29,6 +29,8 @@ PROJECT_ROOTS_GLOB_PATTERN_PREFIX = "codex-project-roots://"
 
 
 class ImageDetail(str, Enum):
+    AUTO = "auto"
+    LOW = "low"
     HIGH = "high"
     ORIGINAL = "original"
 
@@ -534,6 +536,8 @@ class ResponseInputItem:
         execution: str,
         tools: tuple[JsonValue, ...] | list[JsonValue],
     ) -> "ResponseInputItem":
+        if isinstance(tools, (str, bytes)) or not isinstance(tools, (list, tuple)):
+            raise TypeError("tools must be a list or tuple")
         return cls(type="tool_search_output", call_id=call_id, status=status, execution=execution, tools=tuple(tools))
 
     @classmethod
@@ -1629,7 +1633,7 @@ class FileSystemSandboxEntry:
         data = _as_mapping(value, "filesystem sandbox entry")
         return cls(
             path=FileSystemPath.from_mapping(data["path"]),
-            access=FileSystemAccessMode.parse(str(data["access"])),
+            access=FileSystemAccessMode.parse(data["access"]),
         )
 
     def to_mapping(self) -> dict[str, JsonValue]:
@@ -2096,12 +2100,16 @@ class FileSystemSandboxPolicy:
         raw_depth = data.get("glob_scan_max_depth")
         if raw_depth is not None and (isinstance(raw_depth, bool) or not isinstance(raw_depth, int)):
             raise TypeError("glob_scan_max_depth must be an integer")
-        entries = data.get("entries", ())
-        if not isinstance(entries, list | tuple):
-            raise TypeError("entries must be a list")
+        entries = data.get("entries", None)
+        if entries is None:
+            entries_tuple = cls().entries if raw_kind == FileSystemSandboxKind.RESTRICTED.value else ()
+        else:
+            if not isinstance(entries, list | tuple):
+                raise TypeError("entries must be a list")
+            entries_tuple = tuple(FileSystemSandboxEntry.from_mapping(item) for item in entries)
         return cls(
             kind=FileSystemSandboxKind(raw_kind),
-            entries=tuple(FileSystemSandboxEntry.from_mapping(item) for item in entries),
+            entries=entries_tuple,
             glob_scan_max_depth=raw_depth,
         )
 

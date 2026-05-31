@@ -9,7 +9,8 @@ from pycodex.core.codex_thread import (
     InvalidThreadRequest,
     ThreadConfigSnapshot,
 )
-from pycodex.protocol import Op, SessionSource
+from pycodex.core.session_runtime import InMemoryCodexSession
+from pycodex.protocol import CollaborationMode, ModeKind, Op, ReasoningEffort, SessionSource, Settings
 
 
 class DummySession:
@@ -90,6 +91,39 @@ async def test_thread_settings_update_derives_collaboration_mode():
 
 
 @pytest.mark.asyncio
+async def test_thread_settings_update_synthesizes_collaboration_mode_for_in_memory_session():
+    session = InMemoryCodexSession(cwd="C:/work/project")
+    thread = CodexThread(SimpleNamespace(session=session), session_configured={"model": "gpt-base"})
+
+    update = await thread.thread_settings_update(
+        CodexThreadSettingsOverrides(model="gpt-5.2-codex", effort=ReasoningEffort.HIGH)
+    )
+
+    assert update.collaboration_mode.mode == ModeKind.DEFAULT
+    assert update.collaboration_mode.settings.model == "gpt-5.2-codex"
+    assert update.collaboration_mode.settings.reasoning_effort == ReasoningEffort.HIGH
+
+
+@pytest.mark.asyncio
+async def test_thread_settings_update_uses_in_memory_session_collaboration_mode_field():
+    session = InMemoryCodexSession(
+        cwd="C:/work/project",
+        collaboration_mode=CollaborationMode(
+            mode=ModeKind.DEFAULT,
+            settings=Settings(model="gpt-current", developer_instructions="keep this"),
+        ),
+    )
+    thread = CodexThread(SimpleNamespace(session=session), session_configured={"model": "gpt-base"})
+
+    update = await thread.thread_settings_update(CodexThreadSettingsOverrides(effort=ReasoningEffort.HIGH))
+
+    assert update.collaboration_mode.mode == ModeKind.DEFAULT
+    assert update.collaboration_mode.settings.model == "gpt-current"
+    assert update.collaboration_mode.settings.reasoning_effort == ReasoningEffort.HIGH
+    assert update.collaboration_mode.settings.developer_instructions == "keep this"
+
+
+@pytest.mark.asyncio
 async def test_inject_response_items_rejects_empty_and_flushes_non_empty():
     codex = DummyCodex()
     thread = CodexThread(codex, session_configured=None)
@@ -101,6 +135,26 @@ async def test_inject_response_items_rejects_empty_and_flushes_non_empty():
 
     assert codex.session.injected == [([{"item": 1}], "turn")]
     assert codex.session.flushed is True
+
+
+@pytest.mark.asyncio
+async def test_inject_response_items_works_with_in_memory_session():
+    session = InMemoryCodexSession(cwd="C:/work/project")
+    codex = SimpleNamespace(session=session)
+    thread = CodexThread(codex, session_configured=None)
+    item = {
+        "type": "message",
+        "role": "user",
+        "content": [{"type": "input_text", "text": "injected"}],
+    }
+
+    await thread.inject_response_items([item])
+
+    assert session.context_updates_recorded == 1
+    assert await session.reference_context_item() is not None
+    assert session.flush_rollout_count == 1
+    assert session.history[-1].role == "user"
+    assert session.history[-1].content[0].text == "injected"
 
 
 @pytest.mark.asyncio

@@ -414,6 +414,10 @@ class ProtocolProtocolTests(unittest.TestCase):
         }
         with_schema = Op.user_input((), final_output_json_schema=schema)
         with_metadata = Op.user_input((), responsesapi_client_metadata={"fiber_run_id": "fiber-123"})
+        with_additional_context = Op.user_input(
+            (),
+            additional_context={"app": {"kind": "application", "value": "context"}},
+        )
 
         self.assertEqual(empty.to_mapping(), {"type": "user_input", "items": []})
         self.assertEqual(Op.from_mapping({"type": "user_input", "items": []}), empty)
@@ -429,7 +433,16 @@ class ProtocolProtocolTests(unittest.TestCase):
                 "responsesapi_client_metadata": {"fiber_run_id": "fiber-123"},
             },
         )
+        self.assertEqual(
+            with_additional_context.to_mapping(),
+            {
+                "type": "user_input",
+                "items": [],
+                "additional_context": {"app": {"kind": "application", "value": "context"}},
+            },
+        )
         self.assertEqual(Op.from_mapping(with_metadata.to_mapping()), with_metadata)
+        self.assertEqual(Op.from_mapping(with_additional_context.to_mapping()), with_additional_context)
 
     def test_user_input_op_flattens_thread_settings_overrides(self):
         thread_settings = ThreadSettingsOverrides(
@@ -539,14 +552,7 @@ class ProtocolProtocolTests(unittest.TestCase):
             {
                 "permissions": {
                     "network": {"enabled": True},
-                    "file_system": {
-                        "entries": [
-                            {
-                                "path": {"type": "path", "path": str(Path("/repo"))},
-                                "access": "read",
-                            }
-                        ]
-                    },
+                    "file_system": {"read": [str(Path("/repo"))]},
                 },
                 "scope": "session",
             },
@@ -671,6 +677,50 @@ class ProtocolProtocolTests(unittest.TestCase):
         self.assertEqual(exec_msg.payload.parsed_cmd, (ParsedCommand.unknown("git status"),))
         self.assertEqual(exec_msg.to_mapping(), exec_payload)
 
+        app_server_exec_payload = {
+            "type": "exec_approval_request",
+            "itemId": "call-2",
+            "approvalId": "approval-2",
+            "turnId": "turn-2",
+            "startedAtMs": 11,
+            "command": "cat README.md",
+            "cwd": str(repo),
+            "networkApprovalContext": {"host": "api.example.com", "protocol": "https"},
+            "availableDecisions": ["accept", "acceptForSession", "Cancel"],
+            "commandActions": [
+                {"type": "read", "command": "cat README.md", "name": "README.md", "path": str(repo / "README.md")}
+            ],
+        }
+        app_server_exec_msg = EventMsg.from_mapping(app_server_exec_payload)
+
+        self.assertEqual(app_server_exec_msg.payload.call_id, "call-2")
+        self.assertEqual(app_server_exec_msg.payload.effective_approval_id(), "approval-2")
+        self.assertEqual(app_server_exec_msg.payload.turn_id, "turn-2")
+        self.assertEqual(app_server_exec_msg.payload.started_at_ms, 11)
+        self.assertEqual(app_server_exec_msg.payload.command, ("cat README.md",))
+        self.assertEqual(app_server_exec_msg.payload.parsed_cmd, (ParsedCommand.read("cat README.md", "README.md", repo / "README.md"),))
+        self.assertEqual(
+            app_server_exec_msg.payload.available_decisions,
+            (ReviewDecision.approved(), ReviewDecision.approved_for_session(), ReviewDecision.abort()),
+        )
+
+        app_server_file_change_payload = {
+            "type": "apply_patch_approval_request",
+            "itemId": "patch-1",
+            "turnId": "turn-1",
+            "startedAtMs": 12,
+            "reason": "need write access",
+            "grantRoot": str(repo),
+        }
+        app_server_file_change_msg = EventMsg.from_mapping(app_server_file_change_payload)
+
+        self.assertEqual(app_server_file_change_msg.payload.call_id, "patch-1")
+        self.assertEqual(app_server_file_change_msg.payload.turn_id, "turn-1")
+        self.assertEqual(app_server_file_change_msg.payload.started_at_ms, 12)
+        self.assertEqual(app_server_file_change_msg.payload.changes, {})
+        self.assertEqual(app_server_file_change_msg.payload.reason, "need write access")
+        self.assertEqual(app_server_file_change_msg.payload.grant_root, repo)
+
         request_permissions_payload = {
             "type": "request_permissions",
             "call_id": "perm-1",
@@ -693,6 +743,28 @@ class ProtocolProtocolTests(unittest.TestCase):
             ),
         )
         self.assertEqual(request_permissions_msg.to_mapping(), request_permissions_payload)
+
+        app_server_request_permissions_payload = {
+            "type": "request_permissions",
+            "itemId": "perm-2",
+            "turnId": "turn-2",
+            "startedAtMs": 12,
+            "reason": "need network",
+            "permissions": {"network": {"enabled": True}},
+            "cwd": str(repo),
+        }
+        app_server_request_permissions_msg = EventMsg.from_mapping(app_server_request_permissions_payload)
+        self.assertEqual(
+            app_server_request_permissions_msg.payload,
+            RequestPermissionsEvent(
+                call_id="perm-2",
+                turn_id="turn-2",
+                started_at_ms=12,
+                reason="need network",
+                permissions=RequestPermissionProfile(network=NetworkPermissions(True)),
+                cwd=repo,
+            ),
+        )
 
         request_user_input_payload = {
             "type": "request_user_input",

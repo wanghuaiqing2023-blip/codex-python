@@ -6,16 +6,17 @@ Ported from the standalone helper portions of
 
 from __future__ import annotations
 
+import inspect
 import json
 from dataclasses import dataclass
-from typing import Callable, Sequence
+from typing import Any, Callable, Sequence
 
 from pycodex.core.compact import (
     InitialContextInjection,
     insert_initial_context_before_last_real_user_or_summary,
 )
 from pycodex.core.event_mapping import parse_turn_item
-from pycodex.protocol import BaseInstructions, ResponseItem
+from pycodex.protocol import BaseInstructions, CompactedItem, ResponseItem, TurnContextItem
 
 
 def should_keep_compacted_history_item(item: ResponseItem) -> bool:
@@ -46,6 +47,80 @@ def process_compacted_history(
     filtered = [item for item in _response_items(compacted_history, "compacted_history") if should_keep_compacted_history_item(item)]
     context = _response_items(initial_context, "initial_context") if injection is InitialContextInjection.BEFORE_LAST_USER_MESSAGE else []
     return insert_initial_context_before_last_real_user_or_summary(filtered, context)
+
+
+@dataclass(frozen=True)
+class RemoteCompactionInstallPlan:
+    new_history: tuple[ResponseItem, ...]
+    reference_context_item: TurnContextItem | None
+    compacted_item: CompactedItem
+    checkpoint_payload: dict[str, list[dict[str, Any]]]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "new_history", tuple(_response_items(self.new_history, "new_history")))
+        if self.reference_context_item is not None and not isinstance(self.reference_context_item, TurnContextItem):
+            raise TypeError("reference_context_item must be a TurnContextItem or None")
+        if not isinstance(self.compacted_item, CompactedItem):
+            raise TypeError("compacted_item must be a CompactedItem")
+        if not isinstance(self.checkpoint_payload, dict):
+            raise TypeError("checkpoint_payload must be a dict")
+
+
+def build_remote_compaction_install_plan(
+    trace_input_history: Sequence[ResponseItem],
+    new_history: Sequence[ResponseItem],
+    initial_context_injection: InitialContextInjection,
+    reference_context_item: TurnContextItem | None = None,
+) -> RemoteCompactionInstallPlan:
+    trace_items = _response_items(trace_input_history, "trace_input_history")
+    replacement_history = _response_items(new_history, "new_history")
+    injection = InitialContextInjection(initial_context_injection)
+    if injection is InitialContextInjection.BEFORE_LAST_USER_MESSAGE:
+        if not isinstance(reference_context_item, TurnContextItem):
+            raise TypeError("reference_context_item must be provided for before-last-user-message injection")
+    else:
+        reference_context_item = None
+    replacement_history_json = tuple(item.to_mapping() for item in replacement_history)
+    return RemoteCompactionInstallPlan(
+        new_history=tuple(replacement_history),
+        reference_context_item=reference_context_item,
+        compacted_item=CompactedItem(message="", replacement_history=replacement_history_json),
+        checkpoint_payload={
+            "input_history": [item.to_mapping() for item in trace_items],
+            "replacement_history": [item.to_mapping() for item in replacement_history],
+        },
+    )
+
+
+def build_remote_compaction_success_plan(
+    trace_input_history: Sequence[ResponseItem],
+    compacted_history: Sequence[ResponseItem],
+    initial_context_injection: InitialContextInjection,
+    initial_context: Sequence[ResponseItem] = (),
+    reference_context_item: TurnContextItem | None = None,
+) -> RemoteCompactionInstallPlan:
+    new_history = process_compacted_history(
+        compacted_history,
+        initial_context_injection,
+        initial_context,
+    )
+    return build_remote_compaction_install_plan(
+        trace_input_history,
+        new_history,
+        initial_context_injection,
+        reference_context_item,
+    )
+
+
+async def apply_remote_compaction_install_plan(session: Any, plan: RemoteCompactionInstallPlan) -> None:
+    if not isinstance(plan, RemoteCompactionInstallPlan):
+        raise TypeError("plan must be a RemoteCompactionInstallPlan")
+    replace = getattr(session, "replace_compacted_history", None)
+    if not callable(replace):
+        raise TypeError("session must expose replace_compacted_history")
+    result = replace(plan.new_history, plan.reference_context_item, plan.compacted_item)
+    if inspect.isawaitable(result):
+        await result
 
 
 @dataclass(frozen=True)
@@ -172,8 +247,12 @@ def _response_items(value: Sequence[ResponseItem], label: str) -> list[ResponseI
 
 __all__ = [
     "CompactRequestLogData",
+    "RemoteCompactionInstallPlan",
     "TrimFunctionCallHistoryResult",
+    "apply_remote_compaction_install_plan",
     "build_compact_request_log_data",
+    "build_remote_compaction_install_plan",
+    "build_remote_compaction_success_plan",
     "estimate_response_item_model_visible_bytes",
     "is_codex_generated_item",
     "process_compacted_history",

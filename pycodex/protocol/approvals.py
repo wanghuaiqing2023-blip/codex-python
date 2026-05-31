@@ -540,13 +540,30 @@ class ReviewDecision:
         if isinstance(value, ReviewDecision):
             return value
         if isinstance(value, str):
+            normalized = _camel_to_snake(value)
             simple = {
                 "approved": cls.approved,
+                "accept": cls.approved,
                 "approved_for_session": cls.approved_for_session,
+                "accept_for_session": cls.approved_for_session,
                 "denied": cls.denied,
+                "decline": cls.denied,
                 "timed_out": cls.timed_out,
                 "abort": cls.abort,
+                "cancel": cls.abort,
             }.get(value)
+            if simple is None:
+                simple = {
+                    "approved": cls.approved,
+                    "accept": cls.approved,
+                    "approved_for_session": cls.approved_for_session,
+                    "accept_for_session": cls.approved_for_session,
+                    "denied": cls.denied,
+                    "decline": cls.denied,
+                    "timed_out": cls.timed_out,
+                    "abort": cls.abort,
+                    "cancel": cls.abort,
+                }.get(normalized)
             if simple is None:
                 raise ValueError(f"unknown review decision: {value}")
             return simple()
@@ -554,15 +571,26 @@ class ReviewDecision:
         if len(data) != 1:
             raise ValueError("review decision must have exactly one variant")
         variant, payload = next(iter(data.items()))
+        variant = _camel_to_snake(str(variant))
         if variant == "approved_execpolicy_amendment":
             payload_data = _mapping(payload, "approved execpolicy amendment")
             return cls.approved_execpolicy_amendment(
                 ExecPolicyAmendment.from_mapping(payload_data["proposed_execpolicy_amendment"])
             )
+        if variant == "accept_with_execpolicy_amendment":
+            payload_data = _mapping(payload, "accept with execpolicy amendment")
+            return cls.approved_execpolicy_amendment(
+                ExecPolicyAmendment.from_mapping(payload_data.get("execpolicyAmendment", payload_data.get("execpolicy_amendment")))
+            )
         if variant == "network_policy_amendment":
             payload_data = _mapping(payload, "network policy amendment decision")
             return cls.network_policy_amendment_decision(
                 NetworkPolicyAmendment.from_mapping(payload_data["network_policy_amendment"])
+            )
+        if variant == "apply_network_policy_amendment":
+            payload_data = _mapping(payload, "apply network policy amendment")
+            return cls.network_policy_amendment_decision(
+                NetworkPolicyAmendment.from_mapping(payload_data.get("networkPolicyAmendment", payload_data.get("network_policy_amendment")))
             )
         return cls.from_mapping(str(variant))
 
@@ -599,6 +627,60 @@ class ReviewDecision:
             "timed_out": "timed_out",
             "abort": "abort",
         }[self.type]
+
+
+def command_execution_approval_decision_to_mapping(decision: ReviewDecision | JsonValue) -> JsonValue:
+    decision = ReviewDecision.from_mapping(decision)
+    if decision.type == "approved":
+        return "accept"
+    if decision.type == "approved_for_session":
+        return "acceptForSession"
+    if decision.type == "approved_execpolicy_amendment":
+        return {
+            "acceptWithExecpolicyAmendment": {
+                "execpolicyAmendment": (
+                    decision.proposed_execpolicy_amendment.to_mapping()
+                    if decision.proposed_execpolicy_amendment is not None
+                    else None
+                )
+            }
+        }
+    if decision.type == "network_policy_amendment":
+        return {
+            "applyNetworkPolicyAmendment": {
+                "networkPolicyAmendment": (
+                    decision.network_policy_amendment.to_mapping()
+                    if decision.network_policy_amendment is not None
+                    else None
+                )
+            }
+        }
+    if decision.type in {"denied", "timed_out"}:
+        return "decline"
+    if decision.type == "abort":
+        return "cancel"
+    raise ValueError(f"unknown review decision: {decision.type}")
+
+
+def command_execution_request_approval_response(decision: ReviewDecision | JsonValue) -> dict[str, JsonValue]:
+    return {"decision": command_execution_approval_decision_to_mapping(decision)}
+
+
+def file_change_approval_decision_to_mapping(decision: ReviewDecision | JsonValue) -> str:
+    decision = ReviewDecision.from_mapping(decision)
+    if decision.type == "approved":
+        return "accept"
+    if decision.type == "approved_for_session":
+        return "acceptForSession"
+    if decision.type in {"denied", "timed_out"}:
+        return "decline"
+    if decision.type == "abort":
+        return "cancel"
+    raise ValueError(f"unsupported file change approval decision: {decision.type}")
+
+
+def file_change_request_approval_response(decision: ReviewDecision | JsonValue) -> dict[str, JsonValue]:
+    return {"decision": file_change_approval_decision_to_mapping(decision)}
 
 
 @dataclass(frozen=True)

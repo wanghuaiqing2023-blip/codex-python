@@ -40,7 +40,7 @@ from pycodex.core import (
     exec_env_for_sandbox_permissions,
     execve_prompt_is_rejected_by_policy,
     extract_shell_script,
-    flat_tool_name,
+    effective_file_system_sandbox_policy,
     is_valid_shell_variable_name,
     join_program_and_argv,
     map_exec_result,
@@ -57,7 +57,9 @@ from pycodex.core import (
     unified_exec_sandbox_cwd,
 )
 from pycodex.core import SandboxAttempt
-from pycodex.core import CancellationToken, DEFAULT_EXEC_COMMAND_TIMEOUT_MS, ExecCapturePolicy, ExecExpirationKind
+from pycodex.core import DEFAULT_EXEC_COMMAND_TIMEOUT_MS, ExecCapturePolicy, ExecExpirationKind
+from pycodex.core.exec import CancellationToken
+from pycodex.core.tool_runtimes import flat_tool_name
 from pycodex.protocol import (
     AskForApproval,
     CODEX_THREAD_ID_ENV_VAR,
@@ -65,6 +67,8 @@ from pycodex.protocol import (
     FileSystemAccessMode,
     FileSystemPath,
     FileSystemSandboxEntry,
+    FileSystemSpecialPath,
+    FileSystemSandboxKind,
     FileSystemSandboxPolicy,
     GranularApprovalConfig,
     NetworkPermissions,
@@ -123,7 +127,7 @@ class ToolRuntimesTests(unittest.TestCase):
             cwd = Path("/repo")
 
         read_entry = FileSystemSandboxEntry(
-            FileSystemPath.path(Path("/tmp/allowed")),
+            FileSystemPath.explicit_path(Path("/tmp/allowed")),
             FileSystemAccessMode.READ,
         )
         additional = AdditionalPermissionProfile(
@@ -188,6 +192,92 @@ class ToolRuntimesTests(unittest.TestCase):
 
         self.assertIsNone(apply_patch_file_system_sandbox_context_for_attempt(req, attempt))
 
+    def test_effective_file_system_policy_merges_additional_entries_like_rust(self) -> None:
+        base_entry = FileSystemSandboxEntry(
+            FileSystemPath.special(FileSystemSpecialPath.root()),
+            FileSystemAccessMode.READ,
+        )
+        write_entry = FileSystemSandboxEntry(
+            FileSystemPath.explicit_path(Path("/tmp/allowed")),
+            FileSystemAccessMode.WRITE,
+        )
+        base_policy = FileSystemSandboxPolicy.restricted((base_entry, write_entry))
+        additional = AdditionalPermissionProfile(
+            file_system=FileSystemPermissions((write_entry,))
+        )
+
+        effective = effective_file_system_sandbox_policy(base_policy, additional)
+
+        self.assertEqual(effective.entries, (base_entry, write_entry))
+
+    def test_effective_file_system_policy_ignores_additional_entries_for_non_restricted_policies(self) -> None:
+        write_entry = FileSystemSandboxEntry(
+            FileSystemPath.explicit_path(Path("/tmp/allowed")),
+            FileSystemAccessMode.WRITE,
+        )
+        additional = AdditionalPermissionProfile(
+            file_system=FileSystemPermissions((write_entry,))
+        )
+
+        self.assertEqual(
+            effective_file_system_sandbox_policy(FileSystemSandboxPolicy.unrestricted(), additional),
+            FileSystemSandboxPolicy.unrestricted(),
+        )
+        self.assertEqual(
+            effective_file_system_sandbox_policy(FileSystemSandboxPolicy.external_sandbox(), additional),
+            FileSystemSandboxPolicy.external_sandbox(),
+        )
+
+    def test_effective_file_system_policy_merges_glob_scan_depth_like_rust(self) -> None:
+        base_deny = FileSystemSandboxEntry(
+            FileSystemPath.glob_pattern("**/*.secret"),
+            FileSystemAccessMode.DENY,
+        )
+        additional_deny = FileSystemSandboxEntry(
+            FileSystemPath.glob_pattern("**/*.env"),
+            FileSystemAccessMode.DENY,
+        )
+        base_policy = FileSystemSandboxPolicy(
+            FileSystemSandboxKind.RESTRICTED,
+            (base_deny,),
+            glob_scan_max_depth=2,
+        )
+        additional = AdditionalPermissionProfile(
+            file_system=FileSystemPermissions(
+                (additional_deny,),
+                glob_scan_max_depth=4,
+            )
+        )
+
+        effective = effective_file_system_sandbox_policy(base_policy, additional)
+
+        self.assertEqual(effective.glob_scan_max_depth, 4)
+
+    def test_effective_file_system_policy_preserves_unbounded_glob_scan_like_rust(self) -> None:
+        base_deny = FileSystemSandboxEntry(
+            FileSystemPath.glob_pattern("**/*.secret"),
+            FileSystemAccessMode.DENY,
+        )
+        additional_deny = FileSystemSandboxEntry(
+            FileSystemPath.glob_pattern("**/*.env"),
+            FileSystemAccessMode.DENY,
+        )
+        base_policy = FileSystemSandboxPolicy(
+            FileSystemSandboxKind.RESTRICTED,
+            (base_deny,),
+            glob_scan_max_depth=None,
+        )
+        additional = AdditionalPermissionProfile(
+            file_system=FileSystemPermissions(
+                (additional_deny,),
+                glob_scan_max_depth=4,
+            )
+        )
+
+        effective = effective_file_system_sandbox_policy(base_policy, additional)
+
+        self.assertIsNone(effective.glob_scan_max_depth)
+
     def test_shell_runtime_boundaries_shape_keys_payload_and_network_spec(self) -> None:
         req = ShellRequest(
             command=("/bin/bash", "-lc", "echo ok"),
@@ -207,6 +297,8 @@ class ToolRuntimesTests(unittest.TestCase):
 
         self.assertEqual(shell_approval_keys(req)[0].command, req.command)
         self.assertEqual(shell_permission_request_payload(req).tool_input["description"], "because")
+        self.assertFalse(req.additional_permissions_preapproved)
+        self.assertEqual(req.approval_sandbox_permissions(), SandboxPermissions.USE_DEFAULT)
         spec = shell_network_approval_spec(req, call_id="call-1", tool_name=ToolName.plain("shell_command"))
         self.assertEqual(spec.mode, NetworkApprovalMode.IMMEDIATE)
         self.assertEqual(spec.command, "echo ok")
@@ -232,9 +324,12 @@ class ToolRuntimesTests(unittest.TestCase):
             additional_permissions=None,
             justification=None,
             exec_approval_requirement=ExecApprovalRequirement.skip(),
+            additional_permissions_preapproved=True,
         )
 
         self.assertTrue(unified_exec_approval_keys(req)[0].tty)
+        self.assertTrue(req.additional_permissions_preapproved)
+        self.assertEqual(req.approval_sandbox_permissions(), SandboxPermissions.USE_DEFAULT)
         self.assertEqual(unified_exec_permission_request_payload(req).tool_input["command"], "pwd")
         self.assertEqual(unified_exec_sandbox_cwd(req), Path("/sandbox"))
         spec = unified_exec_network_approval_spec(req, call_id="call-2", tool_name="unified_exec")
@@ -352,19 +447,45 @@ class ToolRuntimesTests(unittest.TestCase):
         self.assertEqual(ctx.exception.error.message, "command args are empty")
 
     def test_exec_env_for_escalated_permissions_removes_codex_proxy_only_when_active(self) -> None:
-        env = {"CUSTOM": "kept", PROXY_ACTIVE_ENV_KEY: "1", "HTTP_PROXY": "http://codex.proxy"}
+        env = {
+            "CUSTOM": "kept",
+            PROXY_ACTIVE_ENV_KEY: "1",
+            "HTTP_PROXY": "http://codex.proxy",
+            "GIT_SSH_COMMAND": "codex-proxy-git-ssh --proxy",
+        }
 
-        cleaned = exec_env_for_sandbox_permissions(env, SandboxPermissions.REQUIRE_ESCALATED)
+        cleaned = exec_env_for_sandbox_permissions(env, SandboxPermissions.REQUIRE_ESCALATED, target_os="darwin")
 
         self.assertEqual(cleaned, {"CUSTOM": "kept"})
         self.assertEqual(env["HTTP_PROXY"], "http://codex.proxy")
+        self.assertEqual(env["GIT_SSH_COMMAND"], "codex-proxy-git-ssh --proxy")
+
+    def test_exec_env_for_escalated_permissions_keeps_codex_git_ssh_proxy_on_non_macos(self) -> None:
+        env = {
+            "CUSTOM": "kept",
+            PROXY_ACTIVE_ENV_KEY: "1",
+            "HTTP_PROXY": "http://codex.proxy",
+            "GIT_SSH_COMMAND": "codex-proxy-git-ssh --proxy",
+        }
+
+        cleaned = exec_env_for_sandbox_permissions(env, SandboxPermissions.REQUIRE_ESCALATED, target_os="linux")
+
+        self.assertEqual(
+            cleaned,
+            {"CUSTOM": "kept", "GIT_SSH_COMMAND": "codex-proxy-git-ssh --proxy"},
+        )
 
     def test_exec_env_for_escalated_permissions_keeps_user_proxy_without_active_marker(self) -> None:
-        env = {"CUSTOM": "kept", "HTTP_PROXY": "http://user.proxy"}
+        env = {
+            "CUSTOM": "kept",
+            "HTTP_PROXY": "http://user.proxy",
+            "GIT_SSH_COMMAND": "ssh -i key",
+        }
 
         cleaned = exec_env_for_sandbox_permissions(env, SandboxPermissions.REQUIRE_ESCALATED)
 
         self.assertEqual(cleaned["HTTP_PROXY"], "http://user.proxy")
+        self.assertEqual(cleaned["GIT_SSH_COMMAND"], "ssh -i key")
         self.assertEqual(cleaned["CUSTOM"], "kept")
 
     def test_exec_env_for_default_permissions_keeps_proxy_env(self) -> None:
@@ -419,7 +540,7 @@ class ToolRuntimesTests(unittest.TestCase):
                 {},
             )
 
-        self.assertEqual(rewritten[0], "/bin/zsh")
+        self.assertEqual(rewritten[0], str(Path("/bin/zsh")))
         self.assertEqual(rewritten[1], "-c")
         self.assertIn("if . '", rewritten[2])
         self.assertIn("exec '/bin/bash' -c 'echo hello'", rewritten[2])

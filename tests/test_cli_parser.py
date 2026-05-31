@@ -32,6 +32,7 @@ from pycodex.cli.parser import (
     parse_args,
     reject_remote_mode_for_subcommand,
 )
+from pycodex.cli import DoctorUpdateCheck, NpmRootCheck, UpdateAction
 from pycodex.cli.login import AuthDotJson
 from pycodex.core import Feature, Features
 from pycodex.protocol import AskForApproval, ProfileV2Name, ResponseItem, SandboxMode
@@ -1897,6 +1898,44 @@ class TopLevelCliParserTests(unittest.TestCase):
                         }
                     }
                 ],
+            )
+        finally:
+            os.remove(policy_path)
+
+    def test_main_execpolicy_check_includes_justification_when_present(self):
+        fd, policy_path = tempfile.mkstemp()
+        try:
+            os.close(fd)
+            Path(policy_path).write_text(
+                "prefix_rule("
+                "pattern=[\"git\", \"push\"], "
+                "decision=\"forbidden\", "
+                "justification=\"pushing is blocked in this repo\""
+                ")\n"
+            )
+
+            stdout = io.StringIO()
+            code = main(
+                ["execpolicy", "check", "--rules", policy_path, "git", "push", "origin", "main"],
+                stdout=stdout,
+            )
+            self.assertEqual(code, 0)
+
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(
+                payload,
+                {
+                    "matchedRules": [
+                        {
+                            "prefixRuleMatch": {
+                                "matchedPrefix": ["git", "push"],
+                                "decision": "forbidden",
+                                "justification": "pushing is blocked in this repo",
+                            }
+                        }
+                    ],
+                    "decision": "forbidden",
+                },
             )
         finally:
             os.remove(policy_path)
@@ -5464,10 +5503,441 @@ class TopLevelCliParserTests(unittest.TestCase):
     def test_main_doctor_reports_status(self):
         stdout = io.StringIO()
 
-        code = main(["doctor"], stdout=stdout)
+        with patch("pycodex.cli.doctor_updates.fetch_latest_version", return_value="1.0.0"), patch(
+            "pycodex.cli.parser.doctor_terminal_check",
+            return_value=DoctorUpdateCheck(status="ok", summary="terminal metadata was detected", details=()),
+        ):
+            code = main(["doctor"], stdout=stdout)
 
         self.assertEqual(code, 0)
         self.assertIn("doctor:", stdout.getvalue())
+
+    def test_main_doctor_json_includes_version_cache_details(self):
+        previous = os.environ.get("CODEX_HOME")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.environ["CODEX_HOME"] = tmpdir
+            version_file = Path(tmpdir) / "version.json"
+            version_file.write_text(
+                json.dumps({"latest_version": "1.2.3", "dismissed_version": "1.2.0"}),
+                encoding="utf-8",
+            )
+            (Path(tmpdir) / "config.toml").write_text("check_for_update_on_startup = false\n", encoding="utf-8")
+            stdout = io.StringIO()
+            try:
+                with patch("pycodex.cli.doctor_updates.detect_update_action", return_value=None), patch(
+                    "pycodex.cli.doctor_updates.fetch_latest_version", return_value="1.2.4"
+                ), patch(
+                    "pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=False
+                ):
+                    code = main(["doctor", "--json"], stdout=stdout)
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(code, 0)
+        updates = payload["checks"]["updates.status"]
+        self.assertIsInstance(updates["durationMs"], int)
+        self.assertEqual(updates["details"]["check for update on startup"], "false")
+        self.assertEqual(updates["details"]["update action"], "manual or unknown")
+        self.assertEqual(updates["details"]["version cache"], str(version_file))
+        self.assertEqual(updates["details"]["cached latest version"], "1.2.3")
+        self.assertEqual(updates["details"]["dismissed version"], "1.2.0")
+        self.assertEqual(updates["details"]["latest version"], "1.2.4")
+        self.assertEqual(updates["details"]["latest version status"], "newer version is available")
+
+    def test_main_doctor_json_warns_on_latest_version_probe_error(self):
+        previous = os.environ.get("CODEX_HOME")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.environ["CODEX_HOME"] = tmpdir
+            stdout = io.StringIO()
+            try:
+                with patch("pycodex.cli.doctor_updates.detect_update_action", return_value=None), patch(
+                    "pycodex.cli.doctor_updates.fetch_latest_version", side_effect=RuntimeError("offline")
+                ), patch(
+                    "pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=False
+                ):
+                    code = main(["doctor", "--json"], stdout=stdout)
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["checks"]["updates.status"]["status"], "warning")
+        self.assertEqual(payload["checks"]["updates.status"]["details"]["latest version probe"], "offline")
+
+    def test_main_doctor_json_includes_npm_root_mismatch_remediation(self):
+        previous = os.environ.get("CODEX_HOME")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.environ["CODEX_HOME"] = tmpdir
+            stdout = io.StringIO()
+            try:
+                with patch("pycodex.cli.doctor_updates.detect_update_action", return_value=UpdateAction.NPM_GLOBAL_LATEST), patch(
+                    "pycodex.cli.doctor_updates.fetch_latest_version", return_value="1.0.0"
+                ), patch(
+                    "pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=True
+                ), patch(
+                    "pycodex.cli.doctor_updates.npm_global_root_check",
+                    return_value=NpmRootCheck.mismatch(Path("running-pkg"), Path("npm-root") / "@openai" / "codex"),
+                ) as npm_root_check:
+                    code = main(["doctor", "--json"], stdout=stdout)
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        payload = json.loads(stdout.getvalue())
+        updates = payload["checks"]["updates.status"]
+        self.assertEqual(code, 1)
+        self.assertEqual(payload["overallStatus"], "fail")
+        self.assertEqual(npm_root_check.call_count, 2)
+        self.assertNotIn("summary", payload)
+        self.assertNotIn("codex_home", payload["checks"])
+        self.assertNotIn("environment", payload["checks"])
+        self.assertNotIn("runtime.python", payload["checks"])
+        self.assertEqual(updates["status"], "fail")
+        self.assertEqual(updates["summary"], "update would target a different npm install")
+        self.assertEqual(updates["details"]["update action"], "npm install -g @openai/codex")
+        self.assertEqual(updates["details"]["running package root"], str(Path("running-pkg")))
+        self.assertEqual(updates["details"]["npm package root"], str(Path("npm-root") / "@openai" / "codex"))
+        self.assertIn("Fix PATH or npm prefix", updates["remediation"])
+        installation = payload["checks"]["installation"]
+        self.assertEqual(installation["status"], "fail")
+        self.assertEqual(installation["summary"], "npm install -g @openai/codex would update a different install")
+        self.assertEqual(installation["details"]["running package root"], str(Path("running-pkg")))
+        self.assertEqual(installation["details"]["npm package root"], str(Path("npm-root") / "@openai" / "codex"))
+        self.assertIn("Fix PATH or npm prefix", installation["remediation"])
+
+    def test_main_doctor_json_routes_latest_probe_by_detected_update_action(self):
+        previous = os.environ.get("CODEX_HOME")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.environ["CODEX_HOME"] = tmpdir
+            stdout = io.StringIO()
+            seen: list[UpdateAction | None] = []
+
+            def fake_fetch(action):
+                seen.append(action)
+                return "1.0.0"
+
+            try:
+                with patch("pycodex.cli.doctor_updates.detect_update_action", return_value=UpdateAction.BREW_UPGRADE), patch(
+                    "pycodex.cli.doctor_updates.fetch_latest_version", side_effect=fake_fetch
+                ), patch("pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=False):
+                    code = main(["doctor", "--json"], stdout=stdout)
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(seen, [UpdateAction.BREW_UPGRADE])
+        self.assertEqual(payload["checks"]["updates.status"]["details"]["update action"], "brew upgrade --cask codex")
+
+    def test_main_doctor_json_includes_installation_check(self):
+        previous = os.environ.get("CODEX_HOME")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.environ["CODEX_HOME"] = tmpdir
+            stdout = io.StringIO()
+            try:
+                with patch("pycodex.cli.doctor_updates.detect_update_action", return_value=None), patch(
+                    "pycodex.cli.doctor_updates.fetch_latest_version", return_value="1.0.0"
+                ), patch("pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=False), patch(
+                    "pycodex.cli.parser.doctor_installation_check",
+                    return_value=DoctorUpdateCheck(
+                        status="ok",
+                        summary="installation looks consistent",
+                        details=("install context: other", "managed by npm: false"),
+                    ),
+                ):
+                    code = main(["doctor", "--json"], stdout=stdout)
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["checks"]["installation"]["summary"], "installation looks consistent")
+        self.assertEqual(payload["checks"]["installation"]["details"]["install context"], "other")
+
+    def test_main_doctor_json_includes_system_check(self):
+        previous = os.environ.get("CODEX_HOME")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.environ["CODEX_HOME"] = tmpdir
+            stdout = io.StringIO()
+            try:
+                with patch("pycodex.cli.doctor_updates.detect_update_action", return_value=None), patch(
+                    "pycodex.cli.doctor_updates.fetch_latest_version", return_value="1.0.0"
+                ), patch("pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=False), patch(
+                    "pycodex.cli.parser.doctor_system_check",
+                    return_value=DoctorUpdateCheck(
+                        status="ok",
+                        summary="OS language en-US",
+                        details=("os: TestOS", "os language: en-US"),
+                    ),
+                ):
+                    code = main(["doctor", "--json"], stdout=stdout)
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["checks"]["system.environment"]["summary"], "OS language en-US")
+        self.assertEqual(payload["checks"]["system.environment"]["details"]["os"], "TestOS")
+
+    def test_main_doctor_json_includes_terminal_check(self):
+        previous = os.environ.get("CODEX_HOME")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.environ["CODEX_HOME"] = tmpdir
+            stdout = io.StringIO()
+            try:
+                with patch("pycodex.cli.doctor_updates.detect_update_action", return_value=None), patch(
+                    "pycodex.cli.doctor_updates.fetch_latest_version", return_value="1.0.0"
+                ), patch("pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=False), patch(
+                    "pycodex.cli.parser.doctor_terminal_check",
+                    return_value=DoctorUpdateCheck(
+                        status="ok",
+                        summary="terminal metadata was detected",
+                        details=("terminal: unknown", "color output: enabled"),
+                    ),
+                ) as terminal_check:
+                    code = main(["doctor", "--json", "--no-color"], stdout=stdout)
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(code, 0)
+        self.assertTrue(terminal_check.call_args.kwargs["no_color_flag"])
+        self.assertEqual(payload["checks"]["terminal.env"]["summary"], "terminal metadata was detected")
+        self.assertEqual(payload["checks"]["terminal.env"]["details"]["terminal"], "unknown")
+
+    def test_main_doctor_json_includes_runtime_check(self):
+        previous = os.environ.get("CODEX_HOME")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.environ["CODEX_HOME"] = tmpdir
+            stdout = io.StringIO()
+            try:
+                with patch("pycodex.cli.doctor_updates.detect_update_action", return_value=None), patch(
+                    "pycodex.cli.doctor_updates.fetch_latest_version", return_value="1.0.0"
+                ), patch("pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=False), patch(
+                    "pycodex.cli.parser.doctor_runtime_check",
+                    return_value=DoctorUpdateCheck(
+                        status="ok",
+                        summary="running local build on test-arch",
+                        details=("version: test", "platform: test-arch"),
+                    ),
+                ):
+                    code = main(["doctor", "--json"], stdout=stdout)
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["checks"]["runtime.provenance"]["summary"], "running local build on test-arch")
+        self.assertEqual(payload["checks"]["runtime.provenance"]["details"]["platform"], "test-arch")
+        self.assertIsInstance(payload["checks"]["runtime.provenance"]["durationMs"], int)
+
+    def test_main_doctor_json_includes_search_check(self):
+        previous = os.environ.get("CODEX_HOME")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.environ["CODEX_HOME"] = tmpdir
+            stdout = io.StringIO()
+            try:
+                with patch("pycodex.cli.doctor_updates.detect_update_action", return_value=None), patch(
+                    "pycodex.cli.doctor_updates.fetch_latest_version", return_value="1.0.0"
+                ), patch("pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=False), patch(
+                    "pycodex.cli.parser.doctor_search_check",
+                    return_value=DoctorUpdateCheck(
+                        status="ok",
+                        summary="search is OK (system)",
+                        details=("search command: rg", "search provider: system"),
+                    ),
+                ), patch(
+                    "pycodex.cli.parser.doctor_terminal_check",
+                    return_value=DoctorUpdateCheck(status="ok", summary="terminal metadata was detected", details=()),
+                ):
+                    code = main(["doctor", "--json"], stdout=stdout)
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["checks"]["runtime.search"]["summary"], "search is OK (system)")
+        self.assertEqual(payload["checks"]["runtime.search"]["details"]["search provider"], "system")
+
+    def test_main_doctor_json_includes_background_server_check_with_rust_id(self):
+        previous = os.environ.get("CODEX_HOME")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.environ["CODEX_HOME"] = tmpdir
+            stdout = io.StringIO()
+            try:
+                with patch("pycodex.cli.doctor_updates.detect_update_action", return_value=None), patch(
+                    "pycodex.cli.doctor_updates.fetch_latest_version", return_value="1.0.0"
+                ), patch("pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=False), patch(
+                    "pycodex.cli.parser.doctor_background_server_check",
+                    return_value=DoctorUpdateCheck(
+                        status="ok",
+                        summary="background server is not running",
+                        details=("status: not running",),
+                    ),
+                ):
+                    code = main(["doctor", "--json"], stdout=stdout)
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["checks"]["app_server.status"]["summary"], "background server is not running")
+        self.assertNotIn("app-server.status", payload["checks"])
+
+    def test_main_doctor_json_config_failure_uses_rust_fallback_check_set(self):
+        stdout = io.StringIO()
+        with patch("pycodex.cli.parser.find_codex_home", side_effect=RuntimeError("home missing")), patch(
+            "pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=False
+        ):
+            code = main(["doctor", "--json"], stdout=stdout)
+
+        payload = json.loads(stdout.getvalue())
+        checks = payload["checks"]
+        self.assertEqual(code, 1)
+        self.assertEqual(payload["overallStatus"], "fail")
+        self.assertEqual(checks["config.load"]["status"], "fail")
+        self.assertIsInstance(checks["config.load"]["durationMs"], int)
+        self.assertEqual(checks["config.load"]["summary"], "config could not be loaded")
+        self.assertEqual(
+            checks["config.load"]["remediation"],
+            "Fix the reported config error, then rerun codex doctor.",
+        )
+        self.assertEqual(checks["config.load"]["notes"], ["home missing"])
+        self.assertEqual(checks["state.paths"]["status"], "warning")
+        self.assertEqual(
+            checks["network.provider_reachability"]["details"]["reachability mode"],
+            "ChatGPT auth",
+        )
+        self.assertIn("network.env", checks)
+        self.assertIn("terminal.env", checks)
+        self.assertIn("git.environment", checks)
+        self.assertIn("network.provider_reachability", checks)
+        self.assertNotIn("auth.credentials", checks)
+        self.assertNotIn("sandbox.helpers", checks)
+        self.assertNotIn("terminal.title", checks)
+        self.assertNotIn("updates.status", checks)
+        self.assertNotIn("mcp.config", checks)
+        self.assertNotIn("network.websocket_reachability", checks)
+        self.assertNotIn("app_server.status", checks)
+        self.assertNotIn("state.rollout_db_parity", checks)
+
+    def test_main_doctor_json_config_failure_keeps_resolved_state_ok(self):
+        stdout = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            with patch("pycodex.cli.parser.find_codex_home", return_value=codex_home), patch(
+                "pycodex.cli.parser.read_toml_mapping", side_effect=RuntimeError("broken config")
+            ), patch("pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=False):
+                code = main(["doctor", "--json"], stdout=stdout)
+
+        payload = json.loads(stdout.getvalue())
+        checks = payload["checks"]
+        self.assertEqual(code, 1)
+        self.assertEqual(checks["config.load"]["status"], "fail")
+        self.assertEqual(checks["config.load"]["notes"], ["broken config"])
+        self.assertEqual(
+            checks["config.load"]["remediation"],
+            "Fix the reported config error, then rerun codex doctor.",
+        )
+        self.assertEqual(checks["state.paths"]["status"], "ok")
+        self.assertEqual(checks["state.paths"]["summary"], "CODEX_HOME was resolved without config")
+        self.assertEqual(checks["state.paths"]["details"]["CODEX_HOME"], str(codex_home))
+
+    def test_main_doctor_summary_returns_nonzero_on_fail(self):
+        previous = os.environ.get("CODEX_HOME")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.environ["CODEX_HOME"] = tmpdir
+            stdout = io.StringIO()
+            try:
+                with patch("pycodex.cli.doctor_updates.detect_update_action", return_value=UpdateAction.NPM_GLOBAL_LATEST), patch(
+                    "pycodex.cli.doctor_updates.fetch_latest_version", return_value="1.0.0"
+                ), patch("pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=True), patch(
+                    "pycodex.cli.doctor_updates.npm_global_root_check",
+                    return_value=NpmRootCheck.mismatch(Path("running-pkg"), Path("npm-root") / "@openai" / "codex"),
+                ):
+                    code = main(["doctor", "--summary"], stdout=stdout)
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        self.assertEqual(code, 1)
+        self.assertIn("doctor: fail", stdout.getvalue())
+
+    def test_main_doctor_summary_counts_warning_status_as_warning(self):
+        previous = os.environ.get("CODEX_HOME")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.environ["CODEX_HOME"] = tmpdir
+            stdout = io.StringIO()
+            try:
+                with patch("pycodex.cli.doctor_updates.detect_update_action", return_value=None), patch(
+                    "pycodex.cli.doctor_updates.fetch_latest_version", return_value="1.0.0"
+                ), patch("pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=False), patch(
+                    "pycodex.cli.parser.doctor_search_check",
+                    return_value=DoctorUpdateCheck(status="warning", summary="search warning", details=()),
+                ):
+                    code = main(["doctor", "--summary"], stdout=stdout)
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        self.assertEqual(code, 0)
+        self.assertIn("doctor: warn", stdout.getvalue())
+
+    def test_main_doctor_all_requests_installation_path_details(self):
+        previous = os.environ.get("CODEX_HOME")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.environ["CODEX_HOME"] = tmpdir
+            stdout = io.StringIO()
+            try:
+                with patch("pycodex.cli.doctor_updates.detect_update_action", return_value=None), patch(
+                    "pycodex.cli.doctor_updates.fetch_latest_version", return_value="1.0.0"
+                ), patch("pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=False), patch(
+                    "pycodex.cli.parser.doctor_installation_check",
+                    return_value=DoctorUpdateCheck(status="ok", summary="installation looks consistent", details=()),
+                ) as installation_check:
+                    code = main(["doctor", "--all"], stdout=stdout)
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        self.assertEqual(code, 0)
+        self.assertTrue(installation_check.call_args.kwargs["show_details"])
 
     def test_main_sandbox_requires_command(self):
         stderr = io.StringIO()
@@ -7942,6 +8412,168 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertEqual(seen["tool_output_max_chars"], 50)
         self.assertIn("done", stdout.getvalue())
 
+    def test_main_exec_resume_local_http_last_uses_resume_runner(self):
+        seen = {}
+
+        class FakeResult:
+            response_items = (
+                ResponseItem.from_mapping(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "resumed"}],
+                    }
+                ),
+            )
+            raw_result = None
+
+        async def fake_resume_run(codex_home, config, plan, _model_client, _provider, _model_info, **kwargs):
+            seen["codex_home"] = Path(codex_home)
+            seen["cwd"] = config.cwd
+            seen["prompt"] = plan.prompt_summary
+            seen["thread_id"] = kwargs.get("thread_id")
+            seen["resume_last"] = kwargs.get("resume_last")
+            seen["include_all"] = kwargs.get("include_all")
+            seen["resolved_rollout_path"] = kwargs.get("resolved_rollout_path")
+            return FakeResult()
+
+        def fake_align(_codex_home, _config, model_client, **_kwargs):
+            model_client.state.session_id = "resumed-thread"
+            model_client.state.thread_id = "resumed-thread"
+            return Path("aligned-rollout.jsonl")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "OPENAI_API_KEY": "sk-env",
+                },
+            ):
+                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.parser.align_local_http_exec_resume_model_client", side_effect=fake_align):
+                        with patch(
+                            "pycodex.cli.parser.run_exec_resume_user_turn_http_sampling",
+                            side_effect=fake_resume_run,
+                        ) as resume_runner:
+                            stdout = io.StringIO()
+                            stderr = io.StringIO()
+                            code = main(["exec", "resume", "--last", "hello"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(resume_runner.call_count, 1)
+        self.assertEqual(seen["codex_home"], Path(tmpdir))
+        self.assertEqual(seen["prompt"], "hello")
+        self.assertIsNone(seen["thread_id"])
+        self.assertTrue(seen["resume_last"])
+        self.assertFalse(seen["include_all"])
+        self.assertEqual(seen["resolved_rollout_path"], Path("aligned-rollout.jsonl"))
+        self.assertIn("thread_id: resumed-thread", stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "resumed\n")
+
+    def test_main_exec_resume_local_http_named_session_uses_resume_runner(self):
+        seen = {}
+
+        class FakeResult:
+            response_items = (
+                ResponseItem.from_mapping(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "named resumed"}],
+                    }
+                ),
+            )
+            raw_result = None
+
+        async def fake_resume_run(_codex_home, _config, plan, _model_client, _provider, _model_info, **kwargs):
+            seen["prompt"] = plan.prompt_summary
+            seen["thread_id"] = kwargs.get("thread_id")
+            seen["session_name"] = kwargs.get("session_name")
+            seen["resume_last"] = kwargs.get("resume_last")
+            return FakeResult()
+
+        def fake_align(_codex_home, _config, model_client, **_kwargs):
+            model_client.state.thread_id = "named-thread"
+            return Path("rollout.jsonl")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "OPENAI_API_KEY": "sk-env",
+                },
+            ):
+                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.parser.align_local_http_exec_resume_model_client", side_effect=fake_align):
+                        with patch("pycodex.cli.parser.run_exec_resume_user_turn_http_sampling", side_effect=fake_resume_run):
+                            stdout = io.StringIO()
+                            stderr = io.StringIO()
+                            code = main(["exec", "resume", "named-session", "hello"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(seen["prompt"], "hello")
+        self.assertIsNone(seen["thread_id"])
+        self.assertEqual(seen["session_name"], "named-session")
+        self.assertFalse(seen["resume_last"])
+        self.assertEqual(stdout.getvalue(), "named resumed\n")
+
+    def test_main_exec_resume_local_http_shell_tools_passes_tool_loop_options(self):
+        seen = {}
+
+        class FakeResult:
+            response_items = (
+                ResponseItem.from_mapping(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "shell resumed"}],
+                    }
+                ),
+            )
+            raw_result = None
+
+        async def fake_resume_run(_codex_home, _config, _plan, _model_client, _provider, _model_info, **kwargs):
+            seen["use_shell_tools"] = kwargs.get("use_shell_tools")
+            seen["max_tool_rounds"] = kwargs.get("max_tool_rounds")
+            seen["tool_output_max_chars"] = kwargs.get("tool_output_max_chars")
+            seen["resume_last"] = kwargs.get("resume_last")
+            return FakeResult()
+
+        def fake_align(_codex_home, _config, model_client, **_kwargs):
+            model_client.state.session_id = "shell-resumed-thread"
+            model_client.state.thread_id = "shell-resumed-thread"
+            return Path("rollout.jsonl")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_MAX_TOOL_ROUNDS": "2",
+                    "PYCODEX_EXEC_LOCAL_HTTP_TOOL_OUTPUT_MAX_CHARS": "50",
+                    "OPENAI_API_KEY": "sk-env",
+                },
+            ):
+                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.parser.align_local_http_exec_resume_model_client", side_effect=fake_align):
+                        with patch("pycodex.cli.parser.run_exec_resume_user_turn_http_sampling", side_effect=fake_resume_run):
+                            stdout = io.StringIO()
+                            stderr = io.StringIO()
+                            code = main(["exec", "resume", "--last", "hello"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0)
+        self.assertTrue(seen["use_shell_tools"])
+        self.assertEqual(seen["max_tool_rounds"], 2)
+        self.assertEqual(seen["tool_output_max_chars"], 50)
+        self.assertTrue(seen["resume_last"])
+        self.assertEqual(stdout.getvalue(), "shell resumed\n")
+
     def test_main_exec_local_http_shell_tools_rejects_invalid_max_rounds(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.dict(
@@ -7985,3 +8617,6 @@ class TopLevelCliParserTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+

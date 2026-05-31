@@ -8,6 +8,7 @@ stdlib-only slice.
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass
 from typing import Any, Sequence
 
@@ -19,7 +20,7 @@ from pycodex.core.features import Feature
 from pycodex.core.responses_retry import ResponsesStreamRequest, RetryableResponseStreamDecision, response_stream_retry_decision
 from pycodex.core.string_utils import approx_token_count
 from pycodex.core.tool_context import truncate_text
-from pycodex.protocol import BaseInstructions, CodexErr, CompactedItem, ContentItem, Personality, ResponseItem, TruncationPolicyConfig
+from pycodex.protocol import BaseInstructions, CodexErr, CompactedItem, ContentItem, Personality, ResponseItem, TruncationPolicyConfig, TurnContextItem
 
 
 RETAINED_MESSAGE_TOKEN_BUDGET = 64_000
@@ -37,14 +38,14 @@ class RemoteCompactionV2OutputError(RuntimeError):
 @dataclass(frozen=True)
 class RemoteCompactionV2InstallPlan:
     new_history: tuple[ResponseItem, ...]
-    reference_context_item: ResponseItem | None
+    reference_context_item: TurnContextItem | None
     compacted_item: CompactedItem
     checkpoint_payload: dict[str, list[dict[str, Any]]]
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "new_history", tuple(_response_items(self.new_history, "new_history")))
-        if self.reference_context_item is not None and not isinstance(self.reference_context_item, ResponseItem):
-            raise TypeError("reference_context_item must be a ResponseItem or None")
+        if self.reference_context_item is not None and not isinstance(self.reference_context_item, TurnContextItem):
+            raise TypeError("reference_context_item must be a TurnContextItem or None")
         if not isinstance(self.compacted_item, CompactedItem):
             raise TypeError("compacted_item must be a CompactedItem")
         if not isinstance(self.checkpoint_payload, dict):
@@ -219,13 +220,13 @@ def build_remote_compaction_v2_install_plan(
     trace_input_history: Sequence[ResponseItem],
     new_history: Sequence[ResponseItem],
     initial_context_injection: InitialContextInjection,
-    reference_context_item: ResponseItem | None = None,
+    reference_context_item: TurnContextItem | None = None,
 ) -> RemoteCompactionV2InstallPlan:
     trace_items = _response_items(trace_input_history, "trace_input_history")
     replacement_history = _response_items(new_history, "new_history")
     injection = InitialContextInjection(initial_context_injection)
     if injection is InitialContextInjection.BEFORE_LAST_USER_MESSAGE:
-        if not isinstance(reference_context_item, ResponseItem):
+        if not isinstance(reference_context_item, TurnContextItem):
             raise TypeError("reference_context_item must be provided for before-last-user-message injection")
     else:
         reference_context_item = None
@@ -241,13 +242,24 @@ def build_remote_compaction_v2_install_plan(
     )
 
 
+async def apply_remote_compaction_v2_install_plan(session: Any, plan: RemoteCompactionV2InstallPlan) -> None:
+    if not isinstance(plan, RemoteCompactionV2InstallPlan):
+        raise TypeError("plan must be a RemoteCompactionV2InstallPlan")
+    replace = getattr(session, "replace_compacted_history", None)
+    if not callable(replace):
+        raise TypeError("session must expose replace_compacted_history")
+    result = replace(plan.new_history, plan.reference_context_item, plan.compacted_item)
+    if inspect.isawaitable(result):
+        await result
+
+
 def build_remote_compaction_v2_success_plan(
     trace_input_history: Sequence[ResponseItem],
     prompt_input: Sequence[ResponseItem],
     compaction_output: ResponseItem,
     initial_context_injection: InitialContextInjection,
     initial_context: Sequence[ResponseItem] = (),
-    reference_context_item: ResponseItem | None = None,
+    reference_context_item: TurnContextItem | None = None,
 ) -> RemoteCompactionV2InstallPlan:
     compacted_history = build_v2_compacted_history(prompt_input, compaction_output)
     new_history = process_compacted_history(
@@ -433,6 +445,7 @@ __all__ = [
     "RemoteCompactionV2StreamError",
     "RemoteCompactionV2InstallPlan",
     "RemoteCompactionV2RequestOutcome",
+    "apply_remote_compaction_v2_install_plan",
     "build_remote_compaction_v2_prompt",
     "build_remote_compaction_v2_install_plan",
     "build_remote_compaction_v2_success_plan",

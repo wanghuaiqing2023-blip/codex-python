@@ -1,16 +1,21 @@
 import json
 import unittest
+from pathlib import Path
 
 from pycodex.core.compact import InitialContextInjection, SUMMARY_PREFIX
 from pycodex.core.compact_remote import (
+    apply_remote_compaction_install_plan,
     build_compact_request_log_data,
+    build_remote_compaction_install_plan,
+    build_remote_compaction_success_plan,
     estimate_response_item_model_visible_bytes,
     is_codex_generated_item,
     process_compacted_history,
     should_keep_compacted_history_item,
     trim_function_call_history_to_fit_context_window,
 )
-from pycodex.protocol import ContentItem, ResponseItem
+from pycodex.core.session_runtime import InMemoryCodexSession
+from pycodex.protocol import AskForApproval, ContentItem, ResponseItem, SandboxPolicy, TurnContextItem
 
 
 def user_message(text: str) -> ResponseItem:
@@ -25,7 +30,16 @@ def assistant_message(text: str) -> ResponseItem:
     return ResponseItem.message("assistant", (ContentItem.output_text(text),))
 
 
-class CompactRemoteTests(unittest.TestCase):
+def reference_context_item() -> TurnContextItem:
+    return TurnContextItem(
+        cwd=Path("C:/work/project"),
+        approval_policy=AskForApproval.ON_REQUEST,
+        sandbox_policy=SandboxPolicy.danger_full_access(),
+        model="gpt-test",
+    )
+
+
+class CompactRemoteTests(unittest.IsolatedAsyncioTestCase):
     def test_should_keep_compacted_history_item_filters_roles_and_kinds(self) -> None:
         self.assertFalse(should_keep_compacted_history_item(developer_message("rules")))
         self.assertFalse(
@@ -79,6 +93,66 @@ class CompactRemoteTests(unittest.TestCase):
         )
 
         self.assertEqual(processed, [kept])
+
+    def test_remote_compaction_success_plan_filters_injects_and_builds_install_plan(self) -> None:
+        reference_context = reference_context_item()
+        input_history = (user_message("before"),)
+        old_user = user_message("old")
+        fresh_context = developer_message("fresh rules")
+        latest_user = user_message("latest")
+
+        plan = build_remote_compaction_success_plan(
+            input_history,
+            (
+                old_user,
+                developer_message("stale rules"),
+                ResponseItem.compaction_trigger(),
+                latest_user,
+            ),
+            InitialContextInjection.BEFORE_LAST_USER_MESSAGE,
+            (fresh_context,),
+            reference_context,
+        )
+
+        expected_history = (old_user, fresh_context, latest_user)
+        self.assertEqual(plan.new_history, expected_history)
+        self.assertIs(plan.reference_context_item, reference_context)
+        self.assertEqual(
+            plan.compacted_item.replacement_history,
+            tuple(item.to_mapping() for item in expected_history),
+        )
+        self.assertEqual(
+            plan.checkpoint_payload,
+            {
+                "input_history": [item.to_mapping() for item in input_history],
+                "replacement_history": [item.to_mapping() for item in expected_history],
+            },
+        )
+
+    async def test_remote_compaction_install_plan_applies_to_in_memory_session(self) -> None:
+        reference_context = reference_context_item()
+        input_history = (user_message("before"),)
+        new_history = (user_message("after"), ResponseItem.compaction("encrypted"))
+        plan = build_remote_compaction_install_plan(
+            input_history,
+            new_history,
+            InitialContextInjection.BEFORE_LAST_USER_MESSAGE,
+            reference_context,
+        )
+        session = InMemoryCodexSession(cwd="C:/work/project")
+
+        await apply_remote_compaction_install_plan(session, plan)
+
+        self.assertEqual(session.history, list(new_history))
+        self.assertEqual(await session.reference_context_item(), reference_context)
+        self.assertEqual(session.compacted_items, [plan.compacted_item])
+        self.assertEqual(
+            plan.checkpoint_payload,
+            {
+                "input_history": [item.to_mapping() for item in input_history],
+                "replacement_history": [item.to_mapping() for item in new_history],
+            },
+        )
 
     def test_build_compact_request_log_data_counts_instruction_bytes_and_items(self) -> None:
         first = user_message("one")

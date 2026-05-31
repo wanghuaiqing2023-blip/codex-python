@@ -9,10 +9,20 @@ from pycodex.core.codex_delegate import (
     await_approval_with_cancel,
     event_kind,
     forward_events,
+    handle_request_permissions,
     mcp_selected_label_for_decision,
     run_codex_thread_interactive,
 )
-from pycodex.protocol import Event, EventMsg, ReviewDecision
+from pycodex.protocol import (
+    Event,
+    EventMsg,
+    FileSystemPermissions,
+    NetworkPermissions,
+    PermissionGrantScope,
+    RequestPermissionProfile,
+    RequestPermissionsResponse,
+    ReviewDecision,
+)
 
 
 class DummyCodex:
@@ -94,6 +104,75 @@ async def test_forward_events_routes_exec_approval_to_parent_and_submits_decisio
     assert codex.submitted[0].type == "exec_approval"
     assert codex.submitted[0].fields["id"] == "call-1"
     assert codex.submitted[0].fields["decision"] == ReviewDecision.approved()
+
+
+@pytest.mark.asyncio
+async def test_handle_request_permissions_normalizes_parent_response():
+    codex = DummyCodex()
+    requested_child = "/tmp/requested-child"
+
+    async def request_permissions_for_cwd(parent_ctx, call_id, args, cwd, cancel_token):
+        return RequestPermissionsResponse(
+            RequestPermissionProfile(
+                network=NetworkPermissions(enabled=True),
+                file_system=FileSystemPermissions.from_read_write_roots(None, ("/tmp",)),
+            ),
+            scope=PermissionGrantScope.SESSION,
+        )
+
+    parent_session = SimpleNamespace(request_permissions_for_cwd=request_permissions_for_cwd)
+    event = SimpleNamespace(
+        call_id="perm-1",
+        permissions=RequestPermissionProfile(
+            network=NetworkPermissions(enabled=True),
+            file_system=FileSystemPermissions.from_read_write_roots(None, (requested_child,)),
+        ),
+        reason=None,
+        cwd="/tmp",
+    )
+
+    response = await handle_request_permissions(
+        codex,
+        parent_session,
+        SimpleNamespace(cwd="/tmp"),
+        event,
+        CancellationToken(),
+    )
+
+    assert response.permissions.network == NetworkPermissions(enabled=True)
+    assert response.permissions.file_system is None
+    assert codex.submitted[0].fields["response"] == response
+
+
+@pytest.mark.asyncio
+async def test_handle_request_permissions_rejects_strict_auto_review_session_scope():
+    codex = DummyCodex()
+
+    async def request_permissions_for_cwd(parent_ctx, call_id, args, cwd, cancel_token):
+        return RequestPermissionsResponse(
+            args.permissions,
+            scope=PermissionGrantScope.SESSION,
+            strict_auto_review=True,
+        )
+
+    parent_session = SimpleNamespace(request_permissions_for_cwd=request_permissions_for_cwd)
+    event = SimpleNamespace(
+        call_id="perm-1",
+        permissions=RequestPermissionProfile(network=NetworkPermissions(enabled=True)),
+        reason=None,
+        cwd="/tmp",
+    )
+
+    response = await handle_request_permissions(
+        codex,
+        parent_session,
+        SimpleNamespace(cwd="/tmp"),
+        event,
+        CancellationToken(),
+    )
+
+    assert response == RequestPermissionsResponse(RequestPermissionProfile())
+    assert codex.submitted[0].fields["response"] == response
 
 
 @pytest.mark.asyncio

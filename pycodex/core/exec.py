@@ -79,15 +79,29 @@ class CancellationToken:
     """Minimal asyncio cancellation token for exec expiration wiring."""
 
     _event: asyncio.Event = field(default_factory=asyncio.Event)
+    _parents: tuple["CancellationToken", ...] = ()
 
     def cancel(self) -> None:
         self._event.set()
 
     def is_cancelled(self) -> bool:
-        return self._event.is_set()
+        return self._event.is_set() or any(parent.is_cancelled() for parent in self._parents)
 
     async def cancelled(self) -> None:
-        await self._event.wait()
+        if self.is_cancelled():
+            self.cancel()
+            return
+        if not self._parents:
+            await self._event.wait()
+            return
+        tasks = [asyncio.create_task(self._event.wait())]
+        tasks.extend(asyncio.create_task(parent.cancelled()) for parent in self._parents)
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        for task in done:
+            await task
+        self.cancel()
 
 
 @dataclass(frozen=True, slots=True)
@@ -262,19 +276,13 @@ class ExecSandboxSignal(ExecSandboxError):
 
 
 def cancel_when_either(first: CancellationToken, second: CancellationToken) -> CancellationToken:
-    combined = CancellationToken()
-
-    async def watch() -> None:
-        first_task = asyncio.create_task(first.cancelled())
-        second_task = asyncio.create_task(second.cancelled())
-        done, pending = await asyncio.wait((first_task, second_task), return_when=asyncio.FIRST_COMPLETED)
-        for task in pending:
-            task.cancel()
-        for task in done:
-            await task
+    if not isinstance(first, CancellationToken):
+        raise TypeError("first must be a CancellationToken")
+    if not isinstance(second, CancellationToken):
+        raise TypeError("second must be a CancellationToken")
+    combined = CancellationToken(_parents=(first, second))
+    if first.is_cancelled() or second.is_cancelled():
         combined.cancel()
-
-    asyncio.create_task(watch())
     return combined
 
 

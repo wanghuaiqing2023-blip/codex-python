@@ -412,6 +412,11 @@ class Op:
                 ),
                 final_output_json_schema=data.get("final_output_json_schema"),
                 responsesapi_client_metadata=_parse_client_metadata(data.get("responsesapi_client_metadata")),
+                additional_context=(
+                    _additional_context_mapping(data["additional_context"])
+                    if data.get("additional_context") is not None
+                    else None
+                ),
                 thread_settings=ThreadSettingsOverrides.from_mapping(data),
             )
         if op_type == "thread_settings":
@@ -483,6 +488,7 @@ class Op:
         environments: Iterable[TurnEnvironmentSelection | JsonValue] | None = None,
         final_output_json_schema: JsonValue | None = None,
         responsesapi_client_metadata: Mapping[str, str] | None = None,
+        additional_context: Mapping[str, JsonValue] | None = None,
         thread_settings: "ThreadSettingsOverrides | None" = None,
         **thread_setting_overrides: JsonValue,
     ) -> "Op":
@@ -502,6 +508,8 @@ class Op:
             fields["final_output_json_schema"] = final_output_json_schema
         if responsesapi_client_metadata is not None:
             fields["responsesapi_client_metadata"] = dict(responsesapi_client_metadata)
+        if additional_context is not None:
+            fields["additional_context"] = dict(additional_context)
         return cls("user_input", fields)
 
     @classmethod
@@ -648,8 +656,24 @@ def _user_input_op_to_mapping(fields: Mapping[str, JsonValue]) -> dict[str, Json
         data["final_output_json_schema"] = _to_json(fields["final_output_json_schema"])
     if fields.get("responsesapi_client_metadata") is not None:
         data["responsesapi_client_metadata"] = _parse_client_metadata(fields["responsesapi_client_metadata"])
+    if fields.get("additional_context") is not None:
+        data["additional_context"] = _additional_context_mapping(fields["additional_context"])
     data.update(thread_settings.to_mapping())
     return data
+
+
+def _additional_context_mapping(value: JsonValue) -> dict[str, JsonValue]:
+    data = _mapping(value, "additional_context")
+    parsed: dict[str, JsonValue] = {}
+    for key, item in data.items():
+        if not isinstance(key, str):
+            raise TypeError("additional_context keys must be strings")
+        entry = _mapping(item, "additional_context entry")
+        parsed[key] = {
+            "value": _required_str(entry, "value"),
+            "kind": _required_str(entry, "kind"),
+        }
+    return parsed
 
 
 @dataclass(frozen=True)
@@ -2222,6 +2246,19 @@ class TokenUsage:
 
     def blended_total(self) -> int:
         return max(self.non_cached_input() + max(self.output_tokens, 0), 0)
+
+    def __str__(self) -> str:
+        from pycodex.protocol.num_format import format_with_separators
+
+        cached = self.cached_input()
+        cached_suffix = f" (+ {format_with_separators(cached)} cached)" if cached > 0 else ""
+        reasoning = self.reasoning_output_tokens
+        reasoning_suffix = f" (reasoning {format_with_separators(reasoning)})" if reasoning > 0 else ""
+        return (
+            f"Token usage: total={format_with_separators(self.blended_total())} "
+            f"input={format_with_separators(self.non_cached_input())}{cached_suffix} "
+            f"output={format_with_separators(self.output_tokens)}{reasoning_suffix}"
+        )
 
     def tokens_in_context_window(self) -> int:
         return self.total_tokens
@@ -4307,24 +4344,102 @@ def _parse_network_approval_context(value: JsonValue) -> NetworkApprovalContext 
     )
 
 
+def _alias_value(data: Mapping[str, JsonValue], *keys: str, default: JsonValue = None) -> JsonValue:
+    for key in keys:
+        if key in data:
+            return data[key]
+    return default
+
+
+def _optional_str_alias(data: Mapping[str, JsonValue], *keys: str) -> str | None:
+    value = _alias_value(data, *keys)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError(f"{keys[0]} must be a string")
+    return value
+
+
+def _required_str_alias(data: Mapping[str, JsonValue], *keys: str) -> str:
+    value = _alias_value(data, *keys)
+    if not isinstance(value, str):
+        raise TypeError(f"{keys[0]} must be a string")
+    return value
+
+
+def _required_int_alias(data: Mapping[str, JsonValue], *keys: str) -> int:
+    value = _alias_value(data, *keys)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{keys[0]} must be an integer")
+    return value
+
+
+def _command_tuple(value: JsonValue) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,)
+    return _str_tuple(value, "command")
+
+
+def _parse_command_actions(value: JsonValue) -> tuple[ParsedCommand, ...]:
+    if value is None:
+        return ()
+    actions = _optional_sequence(value, "commandActions")
+    if actions is None:
+        return ()
+    parsed: list[ParsedCommand] = []
+    for action in actions:
+        data = _mapping(action, "command action")
+        action_type = _required_str(data, "type")
+        if action_type == "read":
+            parsed.append(
+                ParsedCommand.read(
+                    cmd=_required_str(data, "command"),
+                    name=_required_str(data, "name"),
+                    path=Path(_required_str(data, "path")),
+                )
+            )
+        elif action_type == "listFiles":
+            parsed.append(ParsedCommand.list_files(cmd=_required_str(data, "command"), path=_optional_str(data, "path")))
+        elif action_type == "search":
+            parsed.append(
+                ParsedCommand.search(
+                    cmd=_required_str(data, "command"),
+                    query=_optional_str(data, "query"),
+                    path=_optional_str(data, "path"),
+                )
+            )
+        elif action_type == "unknown":
+            parsed.append(ParsedCommand.unknown(cmd=_required_str(data, "command")))
+        else:
+            raise ValueError(f"unknown command action type: {action_type}")
+    return tuple(parsed)
+
+
 def _parse_exec_approval_request(data: Mapping[str, JsonValue]) -> ExecApprovalRequestEvent:
     network_amendments = _optional_sequence(
-        data.get("proposed_network_policy_amendments"),
+        _alias_value(data, "proposed_network_policy_amendments", "proposedNetworkPolicyAmendments"),
         "proposed network policy amendments",
     )
-    available_decisions = _optional_sequence(data.get("available_decisions"), "available decisions")
+    available_decisions = _optional_sequence(_alias_value(data, "available_decisions", "availableDecisions"), "available decisions")
+    parsed_cmd = (
+        _parse_parsed_commands(data["parsed_cmd"])
+        if "parsed_cmd" in data
+        else _parse_command_actions(_alias_value(data, "command_actions", "commandActions"))
+    )
     return ExecApprovalRequestEvent(
-        call_id=_required_str(data, "call_id"),
-        approval_id=_optional_str(data, "approval_id"),
-        turn_id=str(data.get("turn_id", "")),
-        started_at_ms=_required_int(data, "started_at_ms"),
-        command=_str_tuple(data.get("command"), "command"),
-        cwd=Path(_required_str(data, "cwd")),
+        call_id=_required_str_alias(data, "call_id", "itemId"),
+        approval_id=_optional_str_alias(data, "approval_id", "approvalId"),
+        turn_id=str(_alias_value(data, "turn_id", "turnId", default="")),
+        started_at_ms=_required_int_alias(data, "started_at_ms", "startedAtMs"),
+        command=_command_tuple(data.get("command")),
+        cwd=Path(_optional_str(data, "cwd") or "."),
         reason=_optional_str(data, "reason"),
-        network_approval_context=_parse_network_approval_context(data.get("network_approval_context")),
+        network_approval_context=_parse_network_approval_context(_alias_value(data, "network_approval_context", "networkApprovalContext")),
         proposed_execpolicy_amendment=(
-            ExecPolicyAmendment.from_mapping(data["proposed_execpolicy_amendment"])
-            if data.get("proposed_execpolicy_amendment") is not None
+            ExecPolicyAmendment.from_mapping(_alias_value(data, "proposed_execpolicy_amendment", "proposedExecpolicyAmendment"))
+            if _alias_value(data, "proposed_execpolicy_amendment", "proposedExecpolicyAmendment") is not None
             else None
         ),
         proposed_network_policy_amendments=(
@@ -4333,8 +4448,8 @@ def _parse_exec_approval_request(data: Mapping[str, JsonValue]) -> ExecApprovalR
             else None
         ),
         additional_permissions=(
-            AdditionalPermissionProfile.from_mapping(data["additional_permissions"])
-            if data.get("additional_permissions") is not None
+            AdditionalPermissionProfile.from_mapping(_alias_value(data, "additional_permissions", "additionalPermissions"))
+            if _alias_value(data, "additional_permissions", "additionalPermissions") is not None
             else None
         ),
         available_decisions=(
@@ -4342,17 +4457,17 @@ def _parse_exec_approval_request(data: Mapping[str, JsonValue]) -> ExecApprovalR
             if available_decisions is not None
             else None
         ),
-        parsed_cmd=_parse_parsed_commands(data.get("parsed_cmd", ())),
+        parsed_cmd=parsed_cmd,
     )
 
 
 def _parse_apply_patch_approval_request(data: Mapping[str, JsonValue]) -> ApplyPatchApprovalRequestEvent:
-    grant_root = data.get("grant_root")
+    grant_root = _alias_value(data, "grant_root", "grantRoot")
     return ApplyPatchApprovalRequestEvent(
-        call_id=_required_str(data, "call_id"),
-        turn_id=str(data.get("turn_id", "")),
-        started_at_ms=_required_int(data, "started_at_ms"),
-        changes=_file_changes_from_mapping(data["changes"]),
+        call_id=_required_str_alias(data, "call_id", "itemId"),
+        turn_id=str(_alias_value(data, "turn_id", "turnId", default="")),
+        started_at_ms=_required_int_alias(data, "started_at_ms", "startedAtMs"),
+        changes=_file_changes_from_mapping(data.get("changes", {})),
         reason=_optional_str(data, "reason"),
         grant_root=Path(grant_root) if isinstance(grant_root, str) else None,
     )

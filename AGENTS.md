@@ -41,6 +41,26 @@ For MCP/plugin/marketplace and similar extension areas:
 - Do not continue expanding these areas unless the user explicitly asks or the core runtime depends on them.
 - Document known gaps instead of fully implementing non-core extension behavior.
 
+## Upstream knowledge graph
+
+The upstream Rust source tree in `codex/` has an understand knowledge graph at:
+
+- `codex/.understand-anything/knowledge-graph.json`
+
+Use this graph as a navigation aid before doing broad source searches. It is intended to reduce token usage and search time by helping identify relevant files, symbols, import relationships, layers, and tour entry points inside the upstream implementation.
+
+Recommended workflow when comparing or porting Rust behavior:
+
+- Do not load the entire knowledge graph into model context.
+- Query it selectively with small scripts or targeted JSON inspection, and summarize only the relevant nodes, edges, layers, or tour steps.
+- Start with the knowledge graph to locate likely upstream files and relationships.
+- Then read the small set of authoritative Rust files needed for the behavior being ported.
+- Cross-check against `pycodex/` only after the upstream behavior is clear.
+- Prefer targeted searches guided by graph node paths and edge relationships over broad repository scans.
+- Treat the graph as an index, not as a replacement for source code; final behavior decisions must come from the Rust source.
+
+The graph was generated for `codex/` only. Do not assume it describes `pycodex/`, tests, or project files outside `codex/` unless a separate graph is generated for those areas.
+
 ## Porting discipline
 
 When implementing functionality:

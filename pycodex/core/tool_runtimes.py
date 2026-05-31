@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 from datetime import timedelta
 from pathlib import Path
+import sys
 from typing import Any, Mapping
 
 from pycodex.core.exec import (
@@ -25,6 +26,9 @@ from pycodex.protocol import (
     CODEX_THREAD_ID_ENV_VAR,
     ExecToolCallOutput,
     FileChange,
+    FileSystemAccessMode,
+    FileSystemSandboxEntry,
+    FileSystemSandboxKind,
     FileSystemSandboxPolicy,
     GranularApprovalConfig,
     NetworkSandboxPolicy,
@@ -263,6 +267,7 @@ class ShellRequest:
     additional_permissions: AdditionalPermissionProfile | None
     justification: str | None
     exec_approval_requirement: ExecApprovalRequirement
+    additional_permissions_preapproved: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "command", _string_tuple(self.command, "command"))
@@ -287,6 +292,14 @@ class ShellRequest:
             raise TypeError("justification must be a string or None")
         if not isinstance(self.exec_approval_requirement, ExecApprovalRequirement):
             raise TypeError("exec_approval_requirement must be ExecApprovalRequirement")
+        if not isinstance(self.additional_permissions_preapproved, bool):
+            raise TypeError("additional_permissions_preapproved must be a bool")
+
+    def approval_sandbox_permissions(self) -> SandboxPermissions:
+        return approval_sandbox_permissions(
+            self.sandbox_permissions,
+            self.additional_permissions_preapproved,
+        )
 
 
 @dataclass(frozen=True)
@@ -324,6 +337,7 @@ class UnifiedExecRequest:
     additional_permissions: AdditionalPermissionProfile | None
     justification: str | None
     exec_approval_requirement: ExecApprovalRequirement
+    additional_permissions_preapproved: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "command", _string_tuple(self.command, "command"))
@@ -349,6 +363,14 @@ class UnifiedExecRequest:
             raise TypeError("justification must be a string or None")
         if not isinstance(self.exec_approval_requirement, ExecApprovalRequirement):
             raise TypeError("exec_approval_requirement must be ExecApprovalRequirement")
+        if not isinstance(self.additional_permissions_preapproved, bool):
+            raise TypeError("additional_permissions_preapproved must be a bool")
+
+    def approval_sandbox_permissions(self) -> SandboxPermissions:
+        return approval_sandbox_permissions(
+            self.sandbox_permissions,
+            self.additional_permissions_preapproved,
+        )
 
 
 @dataclass(frozen=True)
@@ -477,9 +499,48 @@ def effective_file_system_sandbox_policy(
         raise TypeError("file_system_policy must be FileSystemSandboxPolicy")
     if additional_permissions is None or additional_permissions.file_system is None:
         return file_system_policy
-    entries = file_system_policy.entries + additional_permissions.file_system.entries
-    max_depth = additional_permissions.file_system.glob_scan_max_depth or file_system_policy.glob_scan_max_depth
-    return FileSystemSandboxPolicy(file_system_policy.kind, entries, max_depth)
+    if file_system_policy.kind is not FileSystemSandboxKind.RESTRICTED:
+        return file_system_policy
+    entries = list(file_system_policy.entries)
+    for entry in additional_permissions.file_system.entries:
+        if entry not in entries:
+            entries.append(entry)
+    max_depth = _merge_glob_scan_max_depth(
+        file_system_policy.entries,
+        file_system_policy.glob_scan_max_depth,
+        additional_permissions.file_system.entries,
+        additional_permissions.file_system.glob_scan_max_depth,
+    )
+    return FileSystemSandboxPolicy(file_system_policy.kind, tuple(entries), max_depth)
+
+
+def _merge_glob_scan_max_depth(
+    left_entries: tuple[FileSystemSandboxEntry, ...],
+    left_depth: int | None,
+    right_entries: tuple[FileSystemSandboxEntry, ...],
+    right_depth: int | None,
+) -> int | None:
+    left_effective = _effective_glob_scan_depth(left_entries, left_depth)
+    right_effective = _effective_glob_scan_depth(right_entries, right_depth)
+    if left_effective == "unbounded" or right_effective == "unbounded":
+        return None
+    depths = [depth for depth in (left_effective, right_effective) if isinstance(depth, int)]
+    if depths:
+        return max(depths)
+    return None
+
+
+def _effective_glob_scan_depth(
+    entries: tuple[FileSystemSandboxEntry, ...],
+    depth: int | None,
+) -> int | str | None:
+    has_deny_glob = any(
+        entry.access is FileSystemAccessMode.DENY and entry.path.type == "glob_pattern"
+        for entry in entries
+    )
+    if not has_deny_glob:
+        return None
+    return depth if depth is not None else "unbounded"
 
 
 def effective_network_sandbox_policy(
@@ -676,16 +737,27 @@ def flat_tool_name(tool_name: ToolName | str) -> str:
 def exec_env_for_sandbox_permissions(
     env: Mapping[str, str],
     sandbox_permissions: SandboxPermissions,
+    *,
+    target_os: str | None = None,
 ) -> dict[str, str]:
     result = _env_dict(env)
     sandbox_permissions = SandboxPermissions(sandbox_permissions)
     if sandbox_permissions.requires_escalated_permissions() and PROXY_ACTIVE_ENV_KEY in result:
         for key in PROXY_ENV_KEYS:
             result.pop(key, None)
-        git_ssh_command = result.get(PROXY_GIT_SSH_COMMAND_ENV_KEY)
-        if git_ssh_command is not None and git_ssh_command.startswith(CODEX_PROXY_GIT_SSH_COMMAND_MARKER):
-            result.pop(PROXY_GIT_SSH_COMMAND_ENV_KEY, None)
+        if _is_macos_target(target_os):
+            git_ssh_command = result.get(PROXY_GIT_SSH_COMMAND_ENV_KEY)
+            if git_ssh_command is not None and git_ssh_command.startswith(CODEX_PROXY_GIT_SSH_COMMAND_MARKER):
+                result.pop(PROXY_GIT_SSH_COMMAND_ENV_KEY, None)
     return result
+
+
+def _is_macos_target(target_os: str | None = None) -> bool:
+    if target_os is None:
+        target_os = sys.platform
+    if not isinstance(target_os, str):
+        raise TypeError("target_os must be a string or None")
+    return target_os.lower() in {"darwin", "macos", "mac", "osx"}
 
 
 def disable_powershell_profile_for_elevated_windows_sandbox(

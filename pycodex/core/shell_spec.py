@@ -154,7 +154,7 @@ def create_shell_command_tool(options: CommandToolOptions) -> dict[str, JsonValu
 def create_request_permissions_tool(description: str) -> dict[str, JsonValue]:
     if not isinstance(description, str):
         raise TypeError("description must be a string")
-    return _function_tool(
+    tool = _function_tool(
         "request_permissions",
         description,
         {
@@ -166,6 +166,8 @@ def create_request_permissions_tool(description: str) -> dict[str, JsonValue]:
         },
         ["permissions"],
     )
+    tool["output_schema"] = None
+    return tool
 
 
 def request_permissions_tool_description() -> str:
@@ -312,6 +314,7 @@ def _function_tool(
         "name": name,
         "description": description,
         "strict": False,
+        "defer_loading": None,
         "parameters": {
             "type": "object",
             "properties": properties,

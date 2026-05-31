@@ -139,6 +139,18 @@ class ToolRegistryRegistrationTests(unittest.TestCase):
         self.assertFalse(hidden.waits_for_runtime_cancellation())
         self.assertTrue(hidden.matches_kind(ToolPayload.function("{}")))
 
+    def test_exposure_override_keeps_runtime_cancellation_wait_when_hidden(self) -> None:
+        handler = RegisteredTool.plain(
+            "exec_command",
+            supports_parallel=True,
+            waits_for_cancellation=True,
+        )
+
+        hidden = override_tool_exposure(handler, ToolExposure.HIDDEN)
+
+        self.assertFalse(hidden.supports_parallel_tool_calls())
+        self.assertTrue(hidden.waits_for_runtime_cancellation())
+
     def test_exposure_override_delegates_handler_hook_payload_overrides(self) -> None:
         invocation = ToolInvocation(
             call_id="call-1",

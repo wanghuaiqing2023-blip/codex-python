@@ -37,6 +37,7 @@ from pycodex.core.request_plugin_install import (
     RequestPluginInstallCallback,
     RequestPluginInstallHandler,
 )
+from pycodex.core.request_permissions_handler import RequestPermissionsCallback, RequestPermissionsHandler
 from pycodex.core.tool_discovery import (
     DiscoverableTool,
     collect_request_plugin_install_entries,
@@ -45,6 +46,8 @@ from pycodex.core.tool_registry import ToolExposure, ToolRegistry, override_tool
 from pycodex.core.tool_router import ToolRouter
 from pycodex.core.tool_search_entry import default_namespace_description
 from pycodex.core.tool_search_handler import ToolSearchHandler
+from pycodex.core.unified_exec_handler import ExecCommandHandler, ExecCommandHandlerOptions, WriteStdinHandler
+from pycodex.core.view_image_handler import ViewImageHandler, ViewImageToolOptions
 from pycodex.protocol import ToolName, WebSearchConfig, WebSearchMode, WebSearchToolType
 
 JsonValue = Any
@@ -83,6 +86,29 @@ class ToolPlanOptions:
     image_generation_enabled: bool = False
     auth_uses_codex_backend: bool = False
     model_supports_image_input: bool = False
+
+
+def tool_environment_mode_from_turn_context(turn_context: Any) -> str:
+    environments = getattr(turn_context, "environments", None)
+    if environments is None:
+        return "none"
+    candidates = getattr(environments, "turn_environments", environments)
+    if candidates is None:
+        return "none"
+    count = len(tuple(candidates))
+    if count == 0:
+        return "none"
+    if count == 1:
+        return "single"
+    return "multiple"
+
+
+def tool_environment_has_environment(turn_context: Any) -> bool:
+    return tool_environment_mode_from_turn_context(turn_context) != "none"
+
+
+def tool_environment_includes_environment_id(turn_context: Any) -> bool:
+    return tool_environment_mode_from_turn_context(turn_context) == "multiple"
 
 
 def build_tool_router_from_plan(
@@ -241,6 +267,120 @@ def add_apply_patch_tool(
 ) -> None:
     if has_environment and apply_patch_tool_type is not None:
         planned_tools.add(ApplyPatchHandler.new(multi_environment))
+
+
+def add_apply_patch_tool_for_turn_context(
+    planned_tools: PlannedTools,
+    turn_context: Any,
+    *,
+    apply_patch_tool_type: JsonValue | None,
+) -> None:
+    add_apply_patch_tool(
+        planned_tools,
+        has_environment=tool_environment_has_environment(turn_context),
+        apply_patch_tool_type=apply_patch_tool_type,
+        multi_environment=tool_environment_includes_environment_id(turn_context),
+    )
+
+
+def add_unified_exec_tools_for_turn_context(
+    planned_tools: PlannedTools,
+    turn_context: Any,
+    *,
+    allow_login_shell: bool = False,
+    exec_permission_approvals_enabled: bool = False,
+) -> None:
+    if not tool_environment_has_environment(turn_context):
+        return
+    planned_tools.add(
+        ExecCommandHandler(
+            ExecCommandHandlerOptions(
+                allow_login_shell=allow_login_shell,
+                exec_permission_approvals_enabled=exec_permission_approvals_enabled,
+                include_environment_id=tool_environment_includes_environment_id(turn_context),
+            )
+        )
+    )
+    planned_tools.add(WriteStdinHandler())
+
+
+def add_view_image_tool_for_turn_context(
+    planned_tools: PlannedTools,
+    turn_context: Any,
+    *,
+    can_request_original_image_detail: bool = False,
+) -> None:
+    if not tool_environment_has_environment(turn_context):
+        return
+    planned_tools.add(
+        ViewImageHandler(
+            ViewImageToolOptions(
+                can_request_original_image_detail=can_request_original_image_detail,
+                include_environment_id=tool_environment_includes_environment_id(turn_context),
+            )
+        )
+    )
+
+
+def add_environment_tools_for_turn_context(
+    planned_tools: PlannedTools,
+    turn_context: Any,
+    *,
+    apply_patch_tool_type: JsonValue | None = None,
+    allow_login_shell: bool = False,
+    exec_permission_approvals_enabled: bool = False,
+    can_request_original_image_detail: bool = False,
+) -> None:
+    add_unified_exec_tools_for_turn_context(
+        planned_tools,
+        turn_context,
+        allow_login_shell=allow_login_shell,
+        exec_permission_approvals_enabled=exec_permission_approvals_enabled,
+    )
+    add_apply_patch_tool_for_turn_context(
+        planned_tools,
+        turn_context,
+        apply_patch_tool_type=apply_patch_tool_type,
+    )
+    add_view_image_tool_for_turn_context(
+        planned_tools,
+        turn_context,
+        can_request_original_image_detail=can_request_original_image_detail,
+    )
+
+
+def build_environment_tool_router_from_turn_context(
+    turn_context: Any,
+    options: ToolPlanOptions | None = None,
+    *,
+    apply_patch_tool_type: JsonValue | None = None,
+    allow_login_shell: bool = False,
+    exec_permission_approvals_enabled: bool = False,
+    can_request_original_image_detail: bool = False,
+) -> ToolRouter:
+    planned_tools = PlannedTools()
+    add_environment_tools_for_turn_context(
+        planned_tools,
+        turn_context,
+        apply_patch_tool_type=apply_patch_tool_type,
+        allow_login_shell=allow_login_shell,
+        exec_permission_approvals_enabled=exec_permission_approvals_enabled,
+        can_request_original_image_detail=can_request_original_image_detail,
+    )
+    return build_tool_router_from_plan(planned_tools, options)
+
+
+def add_request_permissions_tool(
+    planned_tools: PlannedTools,
+    *,
+    request_permissions_tool_enabled: bool,
+    request_callback: RequestPermissionsCallback | None = None,
+) -> None:
+    if not isinstance(request_permissions_tool_enabled, bool):
+        raise TypeError("request_permissions_tool_enabled must be a bool")
+    if not request_permissions_tool_enabled:
+        return
+    planned_tools.add(RequestPermissionsHandler(request_callback))
 
 
 def add_discoverable_install_tools(
@@ -447,11 +587,17 @@ __all__ = [
     "ToolPlanOptions",
     "add_discoverable_install_tools",
     "add_apply_patch_tool",
+    "add_apply_patch_tool_for_turn_context",
     "add_dynamic_tools",
+    "add_environment_tools_for_turn_context",
     "add_hosted_model_tools",
     "add_mcp_tools",
+    "add_request_permissions_tool",
+    "add_unified_exec_tools_for_turn_context",
+    "add_view_image_tool_for_turn_context",
     "append_tool_search_executor",
     "build_model_visible_specs_and_registry",
+    "build_environment_tool_router_from_turn_context",
     "build_tool_router_from_plan",
     "code_mode_namespace_descriptions",
     "code_mode_tool_sort_key",
@@ -461,4 +607,7 @@ __all__ = [
     "merge_into_namespaces",
     "prepend_code_mode_executors",
     "spec_for_model_request",
+    "tool_environment_has_environment",
+    "tool_environment_includes_environment_id",
+    "tool_environment_mode_from_turn_context",
 ]

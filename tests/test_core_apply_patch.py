@@ -1,7 +1,9 @@
 import shutil
+import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 from pycodex.core import (
     APPLY_PATCH_FREEFORM_DESCRIPTION,
@@ -14,6 +16,8 @@ from pycodex.core import (
     ApplyPatchFileUpdate,
     ApplyPatchHandler,
     ApplyPatchParseError,
+    ApplyPatchToolOutput,
+    FunctionCallError,
     Hunk,
     MaybeApplyPatch,
     StreamingPatchParser,
@@ -25,6 +29,8 @@ from pycodex.core import (
     maybe_parse_apply_patch,
     maybe_parse_apply_patch_verified,
     parse_patch,
+    require_apply_patch_environment_id,
+    resolve_apply_patch_invocation,
     unified_diff_from_chunks,
     verify_apply_patch_args,
 )
@@ -164,6 +170,161 @@ class CoreApplyPatchTests(unittest.TestCase):
         self.assertEqual(handler.spec(), create_apply_patch_freeform_tool(True))
         self.assertTrue(handler.matches_kind(ToolPayload.custom("*** Begin Patch\n")))
         self.assertFalse(handler.matches_kind(ToolPayload.function("{}")))
+
+    def test_resolve_apply_patch_invocation_uses_selected_environment(self) -> None:
+        remote = SimpleNamespace(environment_id="remote", cwd=Path("/remote"))
+        invocation = SimpleNamespace(
+            turn=SimpleNamespace(
+                environments=(
+                    SimpleNamespace(environment_id="local", cwd=Path("/local")),
+                    remote,
+                )
+            ),
+            payload=ToolPayload.custom(
+                "*** Begin Patch\n"
+                "*** Environment ID: remote\n"
+                "*** Add File: hello.txt\n"
+                "+hello\n"
+                "*** End Patch"
+            ),
+        )
+
+        resolved = resolve_apply_patch_invocation(invocation, multi_environment=True)
+
+        self.assertIs(resolved.turn_environment, remote)
+        self.assertEqual(resolved.selected_environment_id, "remote")
+        self.assertEqual(resolved.cwd, Path("/remote"))
+        self.assertEqual(resolved.args.hunks, (Hunk.add_file("hello.txt", "hello\n"),))
+
+    def test_resolve_apply_patch_invocation_defaults_to_primary_environment(self) -> None:
+        primary = SimpleNamespace(environment_id="local", cwd=Path("/local"))
+        invocation = SimpleNamespace(
+            turn=SimpleNamespace(environments=(primary,)),
+            payload=ToolPayload.custom(
+                "*** Begin Patch\n"
+                "*** Add File: hello.txt\n"
+                "+hello\n"
+                "*** End Patch"
+            ),
+        )
+
+        resolved = resolve_apply_patch_invocation(invocation)
+
+        self.assertIs(resolved.turn_environment, primary)
+        self.assertIsNone(resolved.selected_environment_id)
+        self.assertEqual(resolved.cwd, Path("/local"))
+
+    def test_apply_patch_environment_selection_errors_match_rust(self) -> None:
+        with self.assertRaises(FunctionCallError) as unavailable:
+            resolve_apply_patch_invocation(
+                SimpleNamespace(
+                    turn=SimpleNamespace(environments=()),
+                    payload=ToolPayload.custom(
+                        "*** Begin Patch\n"
+                        "*** Add File: hello.txt\n"
+                        "+hello\n"
+                        "*** End Patch"
+                    ),
+                )
+            )
+        self.assertEqual(str(unavailable.exception), "apply_patch is unavailable in this session")
+
+        with self.assertRaises(FunctionCallError) as disabled:
+            require_apply_patch_environment_id("remote", False)
+        self.assertEqual(
+            str(disabled.exception),
+            "apply_patch environment selection is unavailable for this turn",
+        )
+
+    def test_apply_patch_handler_applies_verified_patch_to_selected_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as local_dir, tempfile.TemporaryDirectory() as remote_dir:
+            local_root = Path(local_dir)
+            remote_root = Path(remote_dir)
+            (remote_root / "edit.txt").write_text("old\n", encoding="utf-8")
+            (remote_root / "gone.txt").write_text("delete me\n", encoding="utf-8")
+            invocation = SimpleNamespace(
+                turn=SimpleNamespace(
+                    environments=(
+                        SimpleNamespace(environment_id="local", cwd=local_root),
+                        SimpleNamespace(environment_id="remote", cwd=remote_root),
+                    )
+                ),
+                payload=ToolPayload.custom(
+                    "*** Begin Patch\n"
+                    "*** Environment ID: remote\n"
+                    "*** Add File: nested/new.txt\n"
+                    "+hello\n"
+                    "*** Update File: edit.txt\n"
+                    "@@\n"
+                    "-old\n"
+                    "+new\n"
+                    "*** Delete File: gone.txt\n"
+                    "*** End Patch"
+                ),
+            )
+
+            output = ApplyPatchHandler.new(True).handle(invocation)
+
+            self.assertIsInstance(output, ApplyPatchToolOutput)
+            self.assertEqual((remote_root / "nested" / "new.txt").read_text(encoding="utf-8"), "hello\n")
+            self.assertEqual((remote_root / "edit.txt").read_text(encoding="utf-8"), "new\n")
+            self.assertFalse((remote_root / "gone.txt").exists())
+            self.assertFalse((local_root / "nested" / "new.txt").exists())
+            self.assertEqual(
+                output.text,
+                "Success. Updated the following files:\n"
+                f"A {remote_root / 'nested' / 'new.txt'}\n"
+                f"M {remote_root / 'edit.txt'}\n"
+                f"D {remote_root / 'gone.txt'}\n",
+            )
+
+    def test_apply_patch_handler_reports_verification_errors_to_model(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            invocation = SimpleNamespace(
+                turn=SimpleNamespace(
+                    environments=(SimpleNamespace(environment_id="local", cwd=root),)
+                ),
+                payload=ToolPayload.custom(
+                    "*** Begin Patch\n"
+                    "*** Delete File: missing.txt\n"
+                    "*** End Patch"
+                ),
+            )
+
+            with self.assertRaises(FunctionCallError) as error:
+                ApplyPatchHandler().handle(invocation)
+
+            self.assertIn("apply_patch verification failed:", str(error.exception))
+
+    def test_apply_patch_handler_move_update_reports_original_path_like_rust(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "old.txt").write_text("old\n", encoding="utf-8")
+            invocation = SimpleNamespace(
+                turn=SimpleNamespace(
+                    environments=(SimpleNamespace(environment_id="local", cwd=root),)
+                ),
+                payload=ToolPayload.custom(
+                    "*** Begin Patch\n"
+                    "*** Update File: old.txt\n"
+                    "*** Move to: renamed/new.txt\n"
+                    "@@\n"
+                    "-old\n"
+                    "+new\n"
+                    "*** End Patch"
+                ),
+            )
+
+            output = ApplyPatchHandler().handle(invocation)
+
+            self.assertFalse((root / "old.txt").exists())
+            self.assertEqual((root / "renamed" / "new.txt").read_text(encoding="utf-8"), "new\n")
+            self.assertEqual(
+                output.text,
+                "Success. Updated the following files:\n"
+                f"M {root / 'old.txt'}\n",
+            )
 
     def test_parse_patch_parses_multiple_hunk_variants(self) -> None:
         self.assertEqual(

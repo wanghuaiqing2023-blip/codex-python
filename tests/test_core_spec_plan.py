@@ -1,4 +1,6 @@
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 
 from pycodex.core import (
     PlannedTools,
@@ -13,7 +15,11 @@ from pycodex.core import (
     ToolSearchHandler,
     ToolSearchInfo,
     WAIT_TOOL_NAME,
+    add_apply_patch_tool_for_turn_context,
     add_apply_patch_tool,
+    add_unified_exec_tools_for_turn_context,
+    add_view_image_tool_for_turn_context,
+    build_environment_tool_router_from_turn_context,
     add_hosted_model_tools,
     append_tool_search_executor,
     build_model_visible_specs_and_registry,
@@ -24,8 +30,12 @@ from pycodex.core import (
     is_hidden_by_code_mode_only,
     merge_into_namespaces,
     prepend_code_mode_executors,
+    tool_environment_includes_environment_id,
+    tool_environment_mode_from_turn_context,
 )
+from pycodex.core.spec_plan import add_request_permissions_tool
 from pycodex.protocol import ApplyPatchToolType
+from pycodex.protocol import TurnEnvironmentSelection
 from pycodex.protocol import ToolName, WebSearchMode, WebSearchToolType
 
 
@@ -372,6 +382,123 @@ class SpecPlanTests(unittest.TestCase):
                 ToolPayload.function("{}"),
             )
         )
+
+    def test_turn_environment_mode_helpers_match_rust_counts(self) -> None:
+        self.assertEqual(tool_environment_mode_from_turn_context(SimpleNamespace(environments=())), "none")
+        single = SimpleNamespace(environments=(TurnEnvironmentSelection("local", Path("C:/repo")),))
+        multiple = SimpleNamespace(
+            environments=(
+                TurnEnvironmentSelection("local", Path("C:/repo")),
+                TurnEnvironmentSelection("remote", Path("C:/remote")),
+            )
+        )
+
+        self.assertEqual(tool_environment_mode_from_turn_context(single), "single")
+        self.assertFalse(tool_environment_includes_environment_id(single))
+        self.assertEqual(tool_environment_mode_from_turn_context(multiple), "multiple")
+        self.assertTrue(tool_environment_includes_environment_id(multiple))
+
+    def test_turn_context_environment_tools_include_environment_id_only_for_multiple_environments(self) -> None:
+        no_environment = SimpleNamespace(environments=())
+        single = SimpleNamespace(environments=(TurnEnvironmentSelection("local", Path("C:/repo")),))
+        multiple = SimpleNamespace(
+            environments=(
+                TurnEnvironmentSelection("local", Path("C:/repo")),
+                TurnEnvironmentSelection("remote", Path("C:/remote")),
+            )
+        )
+
+        disabled = PlannedTools()
+        add_unified_exec_tools_for_turn_context(disabled, no_environment)
+        add_apply_patch_tool_for_turn_context(
+            disabled,
+            no_environment,
+            apply_patch_tool_type=ApplyPatchToolType.FREEFORM,
+        )
+        add_view_image_tool_for_turn_context(disabled, no_environment)
+        disabled_specs, disabled_registry = build_model_visible_specs_and_registry(disabled)
+        self.assertEqual(disabled_specs, ())
+        self.assertEqual(disabled_registry.tool_names(), ())
+
+        single_plan = PlannedTools()
+        add_unified_exec_tools_for_turn_context(single_plan, single)
+        add_apply_patch_tool_for_turn_context(
+            single_plan,
+            single,
+            apply_patch_tool_type=ApplyPatchToolType.FREEFORM,
+        )
+        add_view_image_tool_for_turn_context(single_plan, single)
+        single_specs, single_registry = build_model_visible_specs_and_registry(single_plan)
+        single_by_name = {spec["name"]: spec for spec in single_specs}
+        self.assertNotIn("environment_id", single_by_name["exec_command"]["parameters"]["properties"])
+        self.assertNotIn("Environment ID", single_by_name["apply_patch"]["format"]["definition"])
+        self.assertNotIn("environment_id", single_by_name["view_image"]["parameters"]["properties"])
+        self.assertEqual(
+            set(single_registry.tool_names()),
+            {
+                ToolName.plain("exec_command"),
+                ToolName.plain("write_stdin"),
+                ToolName.plain("apply_patch"),
+                ToolName.plain("view_image"),
+            },
+        )
+
+        multiple_plan = PlannedTools()
+        add_unified_exec_tools_for_turn_context(multiple_plan, multiple)
+        add_apply_patch_tool_for_turn_context(
+            multiple_plan,
+            multiple,
+            apply_patch_tool_type=ApplyPatchToolType.FREEFORM,
+        )
+        add_view_image_tool_for_turn_context(multiple_plan, multiple)
+        multiple_specs, _multiple_registry = build_model_visible_specs_and_registry(multiple_plan)
+        multiple_by_name = {spec["name"]: spec for spec in multiple_specs}
+        self.assertIn("environment_id", multiple_by_name["exec_command"]["parameters"]["properties"])
+        self.assertIn("Environment ID", multiple_by_name["apply_patch"]["format"]["definition"])
+        self.assertIn("environment_id", multiple_by_name["view_image"]["parameters"]["properties"])
+
+    def test_build_environment_tool_router_from_turn_context_uses_environment_mode(self) -> None:
+        turn_context = SimpleNamespace(
+            environments=(
+                TurnEnvironmentSelection("local", Path("C:/repo")),
+                TurnEnvironmentSelection("remote", Path("C:/remote")),
+            )
+        )
+
+        router = build_environment_tool_router_from_turn_context(
+            turn_context,
+            apply_patch_tool_type=ApplyPatchToolType.FREEFORM,
+        )
+
+        specs_by_name = {spec["name"]: spec for spec in router.model_visible_specs()}
+        self.assertIn("environment_id", specs_by_name["exec_command"]["parameters"]["properties"])
+        self.assertIn("Environment ID", specs_by_name["apply_patch"]["format"]["definition"])
+        self.assertIn("environment_id", specs_by_name["view_image"]["parameters"]["properties"])
+
+    def test_add_request_permissions_tool_follows_feature_gate_like_rust(self) -> None:
+        disabled = PlannedTools()
+        add_request_permissions_tool(disabled, request_permissions_tool_enabled=False)
+        disabled_specs, disabled_registry = build_model_visible_specs_and_registry(disabled)
+
+        self.assertEqual(disabled_specs, ())
+        self.assertEqual(disabled_registry.tool_names(), ())
+
+        enabled = PlannedTools()
+        add_request_permissions_tool(enabled, request_permissions_tool_enabled=True)
+        enabled_specs, enabled_registry = build_model_visible_specs_and_registry(enabled)
+
+        self.assertEqual(len(enabled_specs), 1)
+        self.assertEqual(enabled_specs[0]["name"], "request_permissions")
+        self.assertIsNotNone(enabled_registry.tool(ToolName.plain("request_permissions")))
+        self.assertTrue(
+            enabled_registry.matches_kind(
+                ToolName.plain("request_permissions"),
+                ToolPayload.function('{"permissions":{"network":{"enabled":true}}}'),
+            )
+        )
+
+        with self.assertRaises(TypeError):
+            add_request_permissions_tool(PlannedTools(), request_permissions_tool_enabled=1)  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":
