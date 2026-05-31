@@ -279,23 +279,33 @@ class ToolSandboxingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ToolError("future")
 
-    def test_sandbox_attempt_preserves_runtime_options_without_fake_transform(self) -> None:
+    def test_sandbox_attempt_preserves_runtime_options_and_uses_manager_transform(self) -> None:
+        class _Manager:
+            def __init__(self) -> None:
+                self.calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+            def transform(self, *args: Any, **kwargs: Any) -> dict[str, str]:
+                self.calls.append((args, kwargs))
+                return {"ok": "true"}
+
         attempt = SandboxAttempt(
             sandbox="linux-seccomp",
             permissions=PermissionProfile.workspace_write(),
             enforce_managed_network=True,
-            manager=object(),
+            manager=_Manager(),
             sandbox_cwd="/repo",
             codex_linux_sandbox_exe="/usr/bin/codex-linux-sandbox",
             use_legacy_landlock=True,
             windows_sandbox_level=WindowsSandboxLevel.DISABLED,
             windows_sandbox_private_desktop=False,
         )
+        result = attempt.env_for(["echo", "hi"])
 
         self.assertEqual(attempt.sandbox_cwd, Path("/repo"))
         self.assertEqual(attempt.codex_linux_sandbox_exe, Path("/usr/bin/codex-linux-sandbox"))
-        with self.assertRaises(NotImplementedError):
-            attempt.env_for(["echo", "hi"])
+        self.assertEqual(result, {"ok": "true"})
+        self.assertEqual(attempt.manager.calls, [( (["echo", "hi"], ), {})])
+
         with self.assertRaises(TypeError):
             SandboxAttempt(
                 sandbox="none",
@@ -304,6 +314,16 @@ class ToolSandboxingTests(unittest.TestCase):
                 manager=object(),
                 sandbox_cwd=Path("/repo"),
             )
+
+        attempt_without_transform = SandboxAttempt(
+            sandbox="linux-seccomp",
+            permissions=PermissionProfile.workspace_write(),
+            enforce_managed_network=True,
+            manager=object(),
+            sandbox_cwd="/repo",
+        )
+        with self.assertRaises(AttributeError):
+            attempt_without_transform.env_for(["echo", "hi"])
 
     def test_should_bypass_approval_matches_appovable_default(self) -> None:
         self.assertTrue(should_bypass_approval(AskForApproval.ON_REQUEST, True))

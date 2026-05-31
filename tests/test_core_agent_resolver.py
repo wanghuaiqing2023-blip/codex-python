@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from pycodex.core.agent_resolver import FunctionCallError, resolve_agent_target
-from pycodex.protocol import SessionSource, ThreadId
+from pycodex.protocol import CodexErr, SessionSource, ThreadId
 
 
 class DummyAgentControl:
@@ -61,6 +61,42 @@ async def test_resolve_agent_target_maps_resolution_errors_to_model_response():
 
 
 @pytest.mark.asyncio
+async def test_resolve_agent_target_maps_unsupported_operation_to_model_response_message_only():
+    class UnsupportedAgentControl(DummyAgentControl):
+        async def resolve_agent_reference(self, conversation_id, session_source, target):
+            raise CodexErr.unsupported_operation("unsupported agent reference")
+
+    session = SimpleNamespace(
+        conversation_id=ThreadId.new(),
+        services=SimpleNamespace(agent_control=UnsupportedAgentControl()),
+    )
+    turn = SimpleNamespace(session_source=SessionSource.cli())
+
+    with pytest.raises(FunctionCallError) as exc_info:
+        await resolve_agent_target(session, turn, "missing")
+
+    assert str(exc_info.value) == "unsupported agent reference"
+
+
+@pytest.mark.asyncio
+async def test_resolve_agent_target_rejects_invalid_resolution_type():
+    class InvalidReturnAgentControl(DummyAgentControl):
+        async def resolve_agent_reference(self, conversation_id, session_source, target):
+            return 123
+
+    session = SimpleNamespace(
+        conversation_id=ThreadId.new(),
+        services=SimpleNamespace(agent_control=InvalidReturnAgentControl()),
+    )
+    turn = SimpleNamespace(session_source=SessionSource.cli())
+
+    with pytest.raises(FunctionCallError) as exc_info:
+        await resolve_agent_target(session, turn, "worker")
+
+    assert str(exc_info.value) == "agent resolver must return a ThreadId"
+
+
+@pytest.mark.asyncio
 async def test_resolve_agent_target_reports_missing_agent_control():
     session = SimpleNamespace(conversation_id=ThreadId.new(), services=SimpleNamespace(agent_control=None))
     turn = SimpleNamespace(session_source=SessionSource.cli())
@@ -69,3 +105,27 @@ async def test_resolve_agent_target_reports_missing_agent_control():
         await resolve_agent_target(session, turn, "Euclid")
 
     assert str(exc_info.value) == "agent control is not available"
+
+
+@pytest.mark.asyncio
+async def test_resolve_agent_target_rejects_non_string_target():
+    agent_control = DummyAgentControl()
+    session = SimpleNamespace(conversation_id=ThreadId.new(), services=SimpleNamespace(agent_control=agent_control))
+    turn = SimpleNamespace(session_source=SessionSource.cli())
+
+    with pytest.raises(TypeError, match="target must be a string"):
+        await resolve_agent_target(session, turn, 12345)
+
+
+@pytest.mark.asyncio
+async def test_resolve_agent_target_defaults_turn_session_source_when_missing():
+    agent_control = DummyAgentControl()
+    session = SimpleNamespace(conversation_id=ThreadId.new(), services=SimpleNamespace(agent_control=agent_control))
+    turn = SimpleNamespace()
+
+    await resolve_agent_target(session, turn, "worker")
+
+    assert agent_control.registered == [(session.conversation_id, SessionSource.default())]
+    assert agent_control.resolved == [
+        (session.conversation_id, SessionSource.default(), "worker")
+    ]

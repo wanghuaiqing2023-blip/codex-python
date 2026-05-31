@@ -188,6 +188,19 @@ class PersonalityMigrationTests(unittest.TestCase):
                 'personality = "pragmatic"\n\n[profiles.work]\nmodel = "gpt-5"\n',
             )
 
+    def test_migration_is_idempotent_and_marked_subsequent_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            write_session_with_user_event(codex_home)
+
+            first = maybe_migrate_personality(codex_home, {})
+            second = maybe_migrate_personality(codex_home, {})
+
+            self.assertEqual(first, PersonalityMigrationStatus.APPLIED)
+            self.assertEqual(second, PersonalityMigrationStatus.SKIPPED_MARKER)
+            self.assertEqual(read_config_toml(codex_home)["personality"], "pragmatic")
+            self.assertEqual((codex_home / PERSONALITY_MIGRATION_FILENAME).read_text(encoding="utf-8"), "v1\n")
+
 
 if __name__ == "__main__":
     unittest.main()

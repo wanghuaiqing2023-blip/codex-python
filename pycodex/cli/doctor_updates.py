@@ -11,6 +11,7 @@ import json
 import locale
 import os
 import platform
+import socket
 from pathlib import Path
 import shutil
 import sqlite3
@@ -21,6 +22,15 @@ import tomllib
 from typing import Any, Callable, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from urllib.parse import urlparse
+from contextlib import suppress
+
+from pycodex.exec.session import UDS_WEBSOCKET_HANDSHAKE_URL
+from pycodex.core import OPENAI_BETA_HEADER, RESPONSES_WEBSOCKETS_V2_BETA_HEADER_VALUE
+from pycodex.exec.websocket import (
+    StdlibWebSocket,
+    websocket_frame_event,
+)
 
 from .update_action import UpdateAction, update_action_label
 from .update_versions import is_newer
@@ -42,6 +52,31 @@ PROXY_ENV_VARS = (
 )
 CA_ENV_VARS = ("CODEX_CA_CERTIFICATE", "SSL_CERT_FILE")
 U64_MAX = (1 << 64) - 1
+_DEFAULT_WEBSOCKET_ENDPOINT = "wss://api.openai.com/v1/responses"
+_DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS = 15_000
+_WEBSOCKET_IMMEDIATE_CLOSE_GRACE_SECONDS = 0.25
+_WS_REASONING_HEADER = "x-reasoning-included"
+_WS_MODELS_ETAG_HEADER = "x-models-etag"
+_WS_OPENAI_MODEL_HEADER = "openai-model"
+
+
+def _dns_address_family_details(host: str, port: int) -> tuple[str, ...]:
+    try:
+        addresses = socket.getaddrinfo(host, port)
+    except Exception as exc:
+        return (f"DNS: lookup failed ({exc})",)
+    ipv4_count = sum(1 for family, *_ in addresses if family == socket.AF_INET)
+    ipv6_count = sum(1 for family, *_ in addresses if family == socket.AF_INET6)
+    if addresses:
+        first_address = addresses[0][0]
+        first_family = (
+            "IPv4"
+            if first_address == socket.AF_INET
+            else "IPv6" if first_address == socket.AF_INET6 else "other"
+        )
+    else:
+        first_family = "none"
+    return (f"DNS: {ipv4_count} IPv4, {ipv6_count} IPv6, first {first_family}",)
 JsonGetter = Callable[[str], Any]
 CommandRunner = Callable[[str, tuple[str, ...]], str]
 GitCommandRunner = Callable[[Path, tuple[str, ...], Path], str | None]
@@ -992,22 +1027,98 @@ def doctor_websocket_check(
             summary="Responses WebSocket is not enabled for the active provider",
             details=tuple(details),
         )
-    if inputs.connect_timeout_ms is not None:
-        details.append(f"connect timeout: {inputs.connect_timeout_ms} ms")
+    timeout_ms = inputs.connect_timeout_ms if inputs.connect_timeout_ms is not None else _DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS
+    if timeout_ms <= 0:
+        timeout_ms = _DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS
+    details.append(f"connect timeout: {timeout_ms} ms")
     details.append(f"auth mode: {inputs.auth_mode or 'none'}")
-    if inputs.endpoint:
-        details.append(f"endpoint: {inputs.endpoint}")
+    endpoint = inputs.endpoint
+    if not endpoint:
+        endpoint = _DEFAULT_WEBSOCKET_ENDPOINT
+    parsed_endpoint = urlparse(endpoint)
+    if parsed_endpoint.scheme not in {"ws", "wss"} or not parsed_endpoint.hostname:
+        return _websocket_probe_warning(
+            "Responses WebSocket endpoint could not be built",
+            details,
+            "invalid websocket endpoint",
+        )
+    if endpoint:
+        details.append(f"endpoint: {endpoint}")
+        port = parsed_endpoint.port
+        if port is None:
+            port = 443 if parsed_endpoint.scheme == "wss" else 80
+        details.extend(_dns_address_family_details(parsed_endpoint.hostname, port))
     if inputs.probe_error:
         return _websocket_probe_warning(
             "Responses WebSocket failed; HTTPS fallback may still work",
             details,
             inputs.probe_error,
         )
-    return _websocket_probe_warning(
-        "Responses WebSocket probe not run; HTTPS fallback may still work",
-        details,
-        "handshake probe not implemented in Python port",
+    timeout_seconds = max(timeout_ms, 1) / 1000
+    auth_mode = inputs.auth_mode or "none"
+    auth_token = (
+        environment.get("OPENAI_API_KEY") or environment.get("CODEX_API_KEY")
+        if auth_mode == "api_key"
+        else None
     )
+    try:
+        websocket = StdlibWebSocket.connect(
+            endpoint,
+            auth_token=auth_token,
+            timeout=timeout_seconds,
+            extra_headers={OPENAI_BETA_HEADER: RESPONSES_WEBSOCKETS_V2_BETA_HEADER_VALUE},
+        )
+    except (socket.timeout, TimeoutError):
+        return _websocket_probe_warning(
+            "Responses WebSocket timed out; HTTPS fallback may still work",
+            details,
+            "handshake timed out",
+        )
+    except Exception as exc:  # pragma: no cover - cross-platform socket/protocol exceptions.
+        return _websocket_probe_warning(
+            "Responses WebSocket failed; HTTPS fallback may still work",
+            details,
+            str(exc),
+        )
+    try:
+        response = websocket.handshake_response
+        if response is None:
+            return _websocket_probe_warning(
+                "Responses WebSocket failed; HTTPS fallback may still work",
+                details,
+                "missing websocket handshake response",
+            )
+        details.extend(
+            [
+                f"handshake result: HTTP {response.status_code}",
+                f"reasoning header: {_bool_text(response.header(_WS_REASONING_HEADER) is not None)}",
+                f"models etag present: {_bool_text(response.header(_WS_MODELS_ETAG_HEADER) is not None)}",
+                f"server model present: {_bool_text(response.header(_WS_OPENAI_MODEL_HEADER) is not None)}",
+            ]
+        )
+        immediate_close = _probe_websocket_immediate_close(websocket)
+        if immediate_close is not None:
+            code, reason = immediate_close
+            details.extend(
+                [
+                    f"immediate close code: {code}",
+                    f"immediate close reason: {reason}",
+                ]
+            )
+            return DoctorUpdateCheck(
+                status="warn",
+                summary="Responses WebSocket closed immediately after handshake",
+                details=tuple(details),
+                remediation="Check proxy, VPN, firewall, DNS, custom CA, and WebSocket policy support.",
+            )
+        return DoctorUpdateCheck(
+            status="ok",
+            summary="Responses WebSocket handshake succeeded",
+            details=tuple(details),
+        )
+    finally:
+        with suppress(Exception):
+            websocket.close()
 
 
 def provider_auth_reachability_mode_from_auth(
@@ -1709,7 +1820,89 @@ def _background_server_mode(state_dir: Path) -> str:
 
 
 def _default_app_server_version_probe(_socket_path: Path) -> str:
-    raise RuntimeError("version probe not implemented in Python port")
+    websocket = StdlibWebSocket.connect_unix_socket(
+        _socket_path,
+        websocket_url=UDS_WEBSOCKET_HANDSHAKE_URL,
+        timeout=10.0,
+    )
+    try:
+        websocket.send_text(
+            json.dumps(
+                {
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {"clientInfo": {"name": "codex", "title": "Codex Python", "version": "0.0.0"}},
+                }
+            )
+        )
+        frames = 0
+        while True:
+            if frames > 32:
+                raise RuntimeError("timed out waiting for app-server initialize response")
+            frames += 1
+            response = websocket.recv_text(expect_masked=False)
+            message = json.loads(response)
+            if not isinstance(message, dict):
+                raise RuntimeError(f"invalid initialize response: {type(message).__name__}")
+            if "id" in message and message["id"] != 1:
+                continue
+            if "error" in message:
+                error = message["error"]
+                if isinstance(error, Mapping) and "message" in error:
+                    raise RuntimeError(f"initialize failed: {error['message']}")
+                raise RuntimeError(f"initialize failed: {error}")
+            if "result" not in message:
+                raise RuntimeError(f"invalid initialize response: {message!r}")
+            result = message["result"]
+            if not isinstance(result, Mapping):
+                raise RuntimeError(f"invalid initialize result: {type(result).__name__}")
+            user_agent = _extract_user_agent(result)
+            if not user_agent:
+                raise RuntimeError("initialize response missing user-agent")
+            version = _parse_version_from_user_agent(user_agent)
+            if not version:
+                raise RuntimeError(f"invalid app-server user-agent: {user_agent}")
+            return version
+    finally:
+        with suppress(Exception):
+            websocket.close()
+
+
+def _extract_user_agent(result: Mapping[str, Any]) -> str | None:
+    value = result.get("userAgent")
+    if value is None:
+        value = result.get("user_agent")
+    if isinstance(value, str):
+        return value
+    return None
+
+
+def _parse_version_from_user_agent(user_agent: str) -> str:
+    parts = user_agent.split("/", 1)
+    if len(parts) != 2:
+        raise RuntimeError(f"invalid app-server user-agent: {user_agent}")
+    _, rest = parts
+    version = rest.split()[0].strip()
+    if not version:
+        raise RuntimeError(f"invalid app-server user-agent: {user_agent}")
+    return version
+
+
+def _probe_websocket_immediate_close(websocket: StdlibWebSocket) -> tuple[int, str] | None:
+    sock = getattr(websocket, "_sock", None)
+    if sock is None or not hasattr(sock, "settimeout"):
+        return None
+    sock.settimeout(_WEBSOCKET_IMMEDIATE_CLOSE_GRACE_SECONDS)
+    try:
+        frame = websocket.recv_frame(expect_masked=False)
+    except (socket.timeout, TimeoutError, EOFError):
+        return None
+    event = websocket_frame_event(frame)
+    if event.kind != "close":
+        return None
+    if event.close_code is None:
+        return None
+    return event.close_code, event.close_reason or "connection closed"
 
 
 def _concise_probe_error(exc: BaseException, socket_path: Path) -> str:

@@ -12,6 +12,7 @@ Windows sandbox setup refresh in pure Python.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+import sys
 from pathlib import Path
 from typing import TypeAlias
 
@@ -35,6 +36,8 @@ def run_setup_refresh_with_extra_read_roots(
     codex_home: Path,
     extra_read_roots: Sequence[Path],
 ) -> object:
+    if sys.platform != "win32":
+        return None
     raise NotImplementedError("windows sandbox setup refresh is not implemented in the stdlib port")
 
 

@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from enum import Enum
 from datetime import timedelta
 from pathlib import Path
+import inspect
+import json
+import struct
 import array
 import os
 import socket
@@ -65,6 +68,8 @@ ESCALATE_SOCKET_ENV_VAR = "CODEX_ESCALATE_SOCKET"
 EXEC_WRAPPER_ENV_VAR = "EXEC_WRAPPER"
 SHELL_ESCALATE_HANDSHAKE_MESSAGE = b"\x00"
 SHELL_SOCKET_MAX_FDS_PER_MESSAGE = 16
+SHELL_SOCKET_LENGTH_PREFIX_SIZE = 4
+SHELL_SOCKET_STREAM_MAX_PAYLOAD = 8192
 
 
 class ShellRuntimeBackend(str, Enum):
@@ -540,6 +545,181 @@ def shell_socket_sendmsg_with_fds(
     return written
 
 
+def shell_socket_recvmsg_with_fds(
+    sock: Any,
+    buffer_size: int,
+    *,
+    max_fds: int = SHELL_SOCKET_MAX_FDS_PER_MESSAGE,
+    recvmsg: Any | None = None,
+) -> tuple[bytes, tuple[int, ...]]:
+    if isinstance(buffer_size, bool) or not isinstance(buffer_size, int):
+        raise TypeError("buffer_size must be an integer")
+    if buffer_size < 1:
+        raise ValueError("buffer_size must be positive")
+    if isinstance(max_fds, bool) or not isinstance(max_fds, int):
+        raise TypeError("max_fds must be an integer")
+    if max_fds < 0:
+        raise ValueError("max_fds must be non-negative")
+    if recvmsg is None:
+        recvmsg = sock.recvmsg
+    item_size = array.array("i").itemsize
+    ancbuf_size = socket.CMSG_SPACE(max_fds * item_size)
+    data, ancillary, flags, _address = recvmsg(buffer_size, ancbuf_size)
+    if flags & getattr(socket, "MSG_CTRUNC", 0):
+        raise OSError("ancillary data truncated while receiving fds")
+    received_fds: list[int] = []
+    for level, kind, cmsg_data in ancillary:
+        if level != socket.SOL_SOCKET or kind != socket.SCM_RIGHTS:
+            continue
+        fd_array = array.array("i")
+        usable_length = len(cmsg_data) - (len(cmsg_data) % item_size)
+        fd_array.frombytes(cmsg_data[:usable_length])
+        received_fds.extend(fd_array)
+    return bytes(data), shell_socket_validate_fds_for_message(received_fds, max_fds=max_fds)
+
+
+def shell_socket_send_stream_frame_with_fds(
+    sock: Any,
+    payload: bytes,
+    fds: Iterable[int] = (),
+    *,
+    sendmsg: Any | None = None,
+    send: Any | None = None,
+) -> int:
+    if not isinstance(payload, bytes):
+        raise TypeError("payload must be bytes")
+    fd_tuple = shell_socket_validate_fds_for_message(fds)
+    if sendmsg is None and send is None:
+        sendmsg = getattr(sock, "sendmsg", None)
+        send = getattr(sock, "send", None)
+    if sendmsg is None and send is None:
+        raise TypeError("must provide sendmsg/send or object with sendmsg/send")
+    if send is None and not callable(sendmsg):
+        raise TypeError("send callback must be callable")
+    if sendmsg is not None and not callable(sendmsg):
+        raise TypeError("sendmsg callback must be callable")
+    if send is not None and not callable(send):
+        raise TypeError("send callback must be callable")
+
+    frame = shell_socket_build_length_prefixed_payload(payload)
+    offset = 0
+    payload_len = len(frame)
+    first_chunk = True
+    while offset < payload_len:
+        chunk = frame[offset : offset + SHELL_SOCKET_STREAM_MAX_PAYLOAD]
+        current_fds = fd_tuple if first_chunk else ()
+        if sendmsg is not None:
+            ancillary: list[Any] = []
+            if current_fds:
+                ancillary.append((socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", current_fds)))
+            sent = sendmsg([chunk], ancillary)
+        else:
+            if current_fds:
+                try:
+                    sent = send(chunk, current_fds)  # type: ignore[call-arg]
+                except TypeError:
+                    sent = send(chunk)
+            else:
+                sent = send(chunk)
+        if sent is None:
+            sent = len(chunk)
+        elif not isinstance(sent, int):
+            raise TypeError("send callback must return int or None")
+        if sent == 0:
+            raise OSError("socket closed while sending frame payload")
+        if sent < 0:
+            raise OSError("socket closed while sending frame payload")
+        offset += sent
+        first_chunk = False
+    return offset
+
+
+def shell_socket_recv_stream_frame_with_fds(
+    sock: Any,
+    *,
+    max_fds: int = SHELL_SOCKET_MAX_FDS_PER_MESSAGE,
+    recvmsg: Any | None = None,
+    recv: Any | None = None,
+) -> tuple[bytes, tuple[int, ...]]:
+    if isinstance(max_fds, bool) or not isinstance(max_fds, int):
+        raise TypeError("max_fds must be an integer")
+    if max_fds < 0:
+        raise ValueError("max_fds must be non-negative")
+    if recvmsg is None:
+        recvmsg = getattr(sock, "recvmsg", None)
+    if recv is None:
+        recv = getattr(sock, "recv", None)
+    if recvmsg is None and recv is None:
+        raise TypeError("sock must provide recvmsg/recv or explicit recvmsg/recv must be provided")
+    if recvmsg is not None and not callable(recvmsg):
+        raise TypeError("recvmsg must be callable")
+    if recv is not None and not callable(recv):
+        raise TypeError("recv must be callable")
+
+    item_size = array.array("i").itemsize
+    ancbuf_size = socket.CMSG_SPACE(max_fds * item_size)
+    header = bytearray()
+    transferred_fds: tuple[int, ...] = ()
+    captured_control = False
+    if recv is None and recvmsg is None:
+        raise TypeError("sock must provide recvmsg/recv or explicit recvmsg/recv must be provided")
+
+    def _recv_any(size: int) -> bytes:
+        if recv is not None:
+            return recv(size)
+        data, _ancillary, _flags, _address = recvmsg(size, 0)  # type: ignore[operator]
+        return data
+
+    while len(header) < SHELL_SOCKET_LENGTH_PREFIX_SIZE:
+        remaining = SHELL_SOCKET_LENGTH_PREFIX_SIZE - len(header)
+        if not captured_control and recvmsg is not None:
+            data, ancillary, flags, _address = recvmsg(remaining, ancbuf_size)
+            captured_control = True
+            if flags & getattr(socket, "MSG_CTRUNC", 0):
+                raise OSError("ancillary data truncated while receiving fds")
+            received_fds: list[int] = []
+            for level, kind, cmsg_data in ancillary:
+                if level != socket.SOL_SOCKET or kind != socket.SCM_RIGHTS:
+                    continue
+                fd_array = array.array("i")
+                usable_length = len(cmsg_data) - (len(cmsg_data) % item_size)
+                fd_array.frombytes(cmsg_data[:usable_length])
+                received_fds.extend(fd_array)
+            transferred_fds = shell_socket_validate_fds_for_message(received_fds, max_fds=max_fds)
+        else:
+            data = _recv_any(SHELL_SOCKET_STREAM_MAX_PAYLOAD)
+        if not data:
+            raise OSError("socket closed while receiving frame header")
+        header.extend(data[:remaining])
+        if len(data) > remaining:
+            raise OSError("frame header overflow while receiving frame body")
+
+    payload_len = struct.unpack("<I", bytes(header[:SHELL_SOCKET_LENGTH_PREFIX_SIZE]))[0]
+    payload = bytearray()
+    while len(payload) < payload_len:
+        chunk = _recv_any(min(SHELL_SOCKET_STREAM_MAX_PAYLOAD, payload_len - len(payload)))
+        if not chunk:
+            raise OSError("socket closed while receiving frame payload")
+        payload.extend(chunk)
+    return bytes(payload), transferred_fds
+
+
+def shell_socket_build_length_prefixed_payload(payload: bytes) -> bytes:
+    if len(payload) > 0xFFFFFFFF:
+        raise ValueError("message too large")
+    return struct.pack("<I", len(payload)) + payload
+
+
+def shell_socket_extract_length_prefixed_payload(data: bytes | bytearray | memoryview) -> bytes:
+    raw = bytes(data)
+    if len(raw) < SHELL_SOCKET_LENGTH_PREFIX_SIZE:
+        return raw
+    payload_len = struct.unpack("<I", raw[:SHELL_SOCKET_LENGTH_PREFIX_SIZE])[0]
+    if payload_len == len(raw) - SHELL_SOCKET_LENGTH_PREFIX_SIZE:
+        return raw[SHELL_SOCKET_LENGTH_PREFIX_SIZE:]
+    return raw
+
+
 def shell_escalate_client_wrapper_plan(
     *,
     env: Mapping[str, str] | None = None,
@@ -811,7 +991,11 @@ def shell_escalate_client_plan_run(
                 receive_result=super_exec_receive_result,
                 client=super_exec_client,
             )
-        raise NotImplementedError("super-exec socket handoff is not implemented")
+        if super_exec_send_with_fds is not None or super_exec_receive_result is not None:
+            raise TypeError(
+                "super_exec_send_with_fds and super_exec_receive_result must be both provided"
+            )
+        raise TypeError("super-exec execution requires super_exec or split super_exec callbacks")
     if plan.action.type == "deny":
         stderr.write(f"{plan.action.message}\n")
         return plan.action.exit_code
@@ -1170,15 +1354,112 @@ def shell_super_exec_send_receive_exit_code(
     if not isinstance(message, ShellSuperExecMessage):
         message = ShellSuperExecMessage.from_mapping(message)
     transferred = tuple(transferred_fds)
+    payload = json.dumps(message.to_mapping()).encode("utf-8")
+
+    def _send(message_payload: bytes) -> None:
+        if client is None:
+            try:
+                send_with_fds(message_payload, transferred)
+                return
+            except TypeError:
+                send_with_fds(message_payload)  # type: ignore[call-arg]
+                return
+        try:
+            send_with_fds(client, message_payload, transferred)
+        except TypeError:
+            send_with_fds(client, message_payload)  # type: ignore[call-arg]
+
+    frame_sent = False
+    send_error: Exception | None = None
     try:
         if client is None:
-            send_with_fds(message, transferred)
+            shell_socket_send_stream_frame_with_fds(
+                object(),
+                payload,
+                transferred,
+                send=_send,
+            )
         else:
-            send_with_fds(client, message, transferred)
+            shell_socket_send_stream_frame_with_fds(
+                client,
+                payload,
+                transferred,
+                send=_send,
+            )
+        frame_sent = True
+    except TypeError:
+        pass
     except Exception as exc:
-        raise RuntimeError("failed to send SuperExecMessage") from exc
-    result = receive_result() if client is None else receive_result(client)
-    return shell_super_exec_exit_code_from_result(result)
+        send_error = exc
+
+    if send_error is None and not frame_sent:
+        positional_args = None
+        try:
+            signature = inspect.signature(send_with_fds)
+            positional_args = 0
+            for parameter in signature.parameters.values():
+                if parameter.kind in (parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD):
+                    positional_args += 1
+                elif parameter.kind == parameter.VAR_POSITIONAL:
+                    positional_args = None
+                    break
+                elif parameter.kind in (parameter.KEYWORD_ONLY, parameter.VAR_KEYWORD):
+                    continue
+        except (TypeError, ValueError):
+            positional_args = None
+
+        if client is not None:
+            if positional_args in (2, 3):
+                attempts = [
+                    (client, payload, transferred),
+                    (client, shell_socket_build_length_prefixed_payload(payload), transferred),
+                    (client, message, transferred),
+                ]
+            else:
+                attempts = [
+                    (client, message, transferred),
+                    (client, payload, transferred),
+                    (client, shell_socket_build_length_prefixed_payload(payload), transferred),
+                ]
+        else:
+            if positional_args in (2, 3):
+                attempts = [
+                    (message, transferred),
+                    (payload, transferred),
+                    (shell_socket_build_length_prefixed_payload(payload), transferred),
+                ]
+            else:
+                attempts = [
+                    (payload, transferred),
+                    (shell_socket_build_length_prefixed_payload(payload), transferred),
+                    (message, transferred),
+                ]
+
+        for attempt in attempts:
+            try:
+                send_with_fds(*attempt)
+                send_error = None
+                break
+            except Exception as exc:  # noqa: BLE001
+                send_error = exc
+                if not isinstance(exc, TypeError):
+                    break
+                continue
+    if send_error is not None:
+        raise RuntimeError("failed to send SuperExecMessage") from send_error
+
+    return shell_super_exec_exit_code_from_result(
+        _parse_shell_super_exec_result(receive_result() if client is None else receive_result(client))
+    )
+
+
+def _parse_shell_super_exec_result(result: object) -> object:
+    if isinstance(result, tuple) and len(result) == 2 and isinstance(result[0], (bytes, bytearray, memoryview)):
+        payload_bytes = shell_socket_extract_length_prefixed_payload(result[0])
+        return json.loads(payload_bytes.decode("utf-8"))
+    if isinstance(result, (bytes, bytearray, memoryview)):
+        return json.loads(bytes(result).decode("utf-8"))
+    return result
 
 
 def shell_super_exec_fd_pairs(
@@ -2598,6 +2879,9 @@ __all__ = [
     "shell_escalation_decision_for_approved_review",
     "shell_escalation_decision_for_policy_decision",
     "shell_single_quote",
+    "shell_socket_recvmsg_with_fds",
+    "shell_socket_recv_stream_frame_with_fds",
+    "shell_socket_send_stream_frame_with_fds",
     "shell_socket_sendmsg_with_fds",
     "shell_socket_validate_fds_for_message",
     "shell_approval_keys",

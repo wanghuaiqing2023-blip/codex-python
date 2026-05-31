@@ -8,13 +8,28 @@ headers, sub-agent identity headers, and incremental websocket request deltas.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass, field
+from inspect import isawaitable
 from enum import Enum
 from typing import Any, Callable, Mapping, MutableMapping, Sequence
 
+from pycodex.core.attestation import (
+    AttestationContext,
+    generate_attestation_header_for_request,
+    normalize_attestation_header_value,
+    X_OAI_ATTESTATION_HEADER,
+)
 from pycodex.core.client_common import Prompt
-from pycodex.protocol import InternalSessionSource, ResponseItem, ServiceTier, SessionSource, SubAgentSource
+from pycodex.protocol import (
+    InternalSessionSource,
+    ResponseItem,
+    ServiceTier,
+    SessionSource,
+    SubAgentSource,
+    ThreadId,
+)
 
 
 OPENAI_BETA_HEADER = "OpenAI-Beta"
@@ -36,6 +51,41 @@ COMPACT_REQUEST_TIMEOUT_IDLE_MULTIPLIER = 4
 MEMORIES_SUMMARIZE_ENDPOINT = "/memories/trace_summarize"
 RESPONSE_STREAM_CHANNEL_CAPACITY = 1600
 STREAM_DROPPED_REASON = "response stream dropped before provider terminal event"
+
+
+def auth_headers_from_value(auth: Any) -> dict[str, str]:
+    if auth is None:
+        return {}
+    if isinstance(auth, str):
+        return {"Authorization": f"Bearer {auth}"}
+    if isinstance(auth, Mapping):
+        if "headers" in auth:
+            headers = auth.get("headers")
+            if isinstance(headers, Mapping):
+                return {str(key): str(value) for key, value in headers.items()}
+        if "api_key" in auth:
+            return {"Authorization": f"Bearer {auth['api_key']}"}
+        if "bearer_token" in auth:
+            return {"Authorization": f"Bearer {auth['bearer_token']}"}
+        return {str(key): str(value) for key, value in auth.items()}
+    to_auth_headers = getattr(auth, "to_auth_headers", None)
+    if callable(to_auth_headers):
+        return {str(key): str(value) for key, value in dict(to_auth_headers() or {}).items()}
+    add_auth_headers = getattr(auth, "add_auth_headers", None)
+    if callable(add_auth_headers):
+        headers: dict[str, str] = {}
+        add_auth_headers(headers)
+        return {str(key): str(value) for key, value in headers.items()}
+    api_key = getattr(auth, "api_key", None) or getattr(auth, "openai_api_key", None)
+    if isinstance(api_key, str) and api_key:
+        return {"Authorization": f"Bearer {api_key}"}
+    bearer_token = getattr(auth, "bearer_token", None) or getattr(auth, "access_token", None)
+    if isinstance(bearer_token, str) and bearer_token:
+        return {"Authorization": f"Bearer {bearer_token}"}
+    headers = getattr(auth, "headers", None)
+    if headers is not None:
+        return {str(key): str(value) for key, value in dict(headers or {}).items()}
+    return {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -302,7 +352,7 @@ class ModelClient:
         )
         return payload
 
-    def build_websocket_headers(
+    def _build_websocket_headers_base(
         self,
         turn_state: TurnState | None = None,
         turn_metadata_header: str | None = None,
@@ -318,6 +368,230 @@ class ModelClient:
         insert_header_if_valid(headers, OPENAI_BETA_HEADER, RESPONSES_WEBSOCKETS_V2_BETA_HEADER_VALUE)
         if self.state.include_timing_metrics:
             insert_header_if_valid(headers, X_RESPONSESAPI_INCLUDE_TIMING_METRICS_HEADER, "true")
+        return headers
+
+    def _build_compact_headers_base(
+        self,
+        turn_state: TurnState | None = None,
+        turn_metadata_header: str | None = None,
+    ) -> dict[str, str]:
+        headers = build_responses_headers(
+            self.state.beta_features_header,
+            turn_state,
+            parse_turn_metadata_header(turn_metadata_header),
+        )
+        insert_header_if_valid(headers, X_CODEX_INSTALLATION_ID_HEADER, str(self.state.installation_id))
+        headers.update(build_session_headers(str(self.state.session_id), str(self.state.thread_id)))
+        headers.update(self.build_responses_identity_headers())
+        return headers
+
+    def build_auth_headers(self, auth: Any | None = None) -> dict[str, str]:
+        provider_auth = getattr(self.state.provider, "auth", None)
+        return auth_headers_from_value(auth if auth is not None else provider_auth)
+
+    async def build_compact_request_headers_async(
+        self,
+        turn_state: TurnState | None = None,
+        turn_metadata_header: str | None = None,
+        auth: Any | None = None,
+    ) -> dict[str, str]:
+        headers = self._build_compact_headers_base(turn_state, turn_metadata_header)
+        headers.update(self.build_auth_headers(auth=auth))
+        thread_id = self._coerce_thread_id_for_attestation(self.state.thread_id)
+        if thread_id is None:
+            return headers
+
+        attestation_header = await generate_attestation_header_for_request(
+            include_attestation=self.state.include_attestation,
+            attestation_provider=self.state.attestation_provider,
+            thread_id=thread_id,
+        )
+        insert_header_if_valid(headers, X_OAI_ATTESTATION_HEADER, attestation_header)
+        return headers
+
+    def build_compact_request_headers(
+        self,
+        turn_state: TurnState | None = None,
+        turn_metadata_header: str | None = None,
+        auth: Any | None = None,
+    ) -> dict[str, str]:
+        if self.state.attestation_provider is not None and self.state.include_attestation:
+            header_for_request = getattr(self.state.attestation_provider, "header_for_request", None)
+            if callable(header_for_request):
+                try:
+                    loop_running = asyncio.get_running_loop()
+                except RuntimeError:
+                    loop_running = None
+                if loop_running is None:
+                    return asyncio.run(
+                        self.build_compact_request_headers_async(
+                            turn_state=turn_state,
+                            turn_metadata_header=turn_metadata_header,
+                            auth=auth,
+                        )
+                    )
+                thread_id = self._coerce_thread_id_for_attestation(self.state.thread_id)
+                if thread_id is None:
+                    headers = self._build_compact_headers_base(turn_state, turn_metadata_header)
+                    headers.update(self.build_auth_headers(auth=auth))
+                    return headers
+                result = header_for_request(AttestationContext(thread_id=thread_id))
+                if isawaitable(result):
+                    headers = self._build_compact_headers_base(turn_state, turn_metadata_header)
+                    headers.update(self.build_auth_headers(auth=auth))
+                    return headers
+                headers = self._build_compact_headers_base(turn_state, turn_metadata_header)
+                headers.update(self.build_auth_headers(auth=auth))
+                insert_header_if_valid(
+                    headers,
+                    X_OAI_ATTESTATION_HEADER,
+                    normalize_attestation_header_value(result),
+                )
+                return headers
+        headers = self._build_compact_headers_base(turn_state, turn_metadata_header)
+        headers.update(self.build_auth_headers(auth=auth))
+        return headers
+
+    @staticmethod
+    def _coerce_thread_id_for_attestation(thread_id: Any) -> ThreadId | None:
+        if isinstance(thread_id, ThreadId):
+            return thread_id
+        if isinstance(thread_id, str):
+            try:
+                return ThreadId.from_string(thread_id)
+            except Exception:
+                return None
+        return None
+
+    async def build_websocket_headers_async(
+        self,
+        turn_state: TurnState | None = None,
+        turn_metadata_header: str | None = None,
+    ) -> dict[str, str]:
+        headers = self._build_websocket_headers_base(turn_state, turn_metadata_header)
+        thread_id = self._coerce_thread_id_for_attestation(self.state.thread_id)
+        if thread_id is None:
+            return headers
+
+        attestation_header = await generate_attestation_header_for_request(
+            include_attestation=self.state.include_attestation,
+            attestation_provider=self.state.attestation_provider,
+            thread_id=thread_id,
+        )
+        insert_header_if_valid(headers, X_OAI_ATTESTATION_HEADER, attestation_header)
+        return headers
+
+    def build_websocket_headers(
+        self,
+        turn_state: TurnState | None = None,
+        turn_metadata_header: str | None = None,
+    ) -> dict[str, str]:
+        if self.state.attestation_provider is not None and self.state.include_attestation:
+            header_for_request = getattr(self.state.attestation_provider, "header_for_request", None)
+            if callable(header_for_request):
+                try:
+                    loop_running = asyncio.get_running_loop()
+                except RuntimeError:
+                    loop_running = None
+                if loop_running is None:
+                    return asyncio.run(
+                        self.build_websocket_headers_async(
+                            turn_state=turn_state,
+                            turn_metadata_header=turn_metadata_header,
+                        )
+                    )
+                thread_id = self._coerce_thread_id_for_attestation(self.state.thread_id)
+                if thread_id is None:
+                    return self._build_websocket_headers_base(turn_state, turn_metadata_header)
+                result = header_for_request(AttestationContext(thread_id=thread_id))
+                if isawaitable(result):
+                    # Can't block here from an active loop; keep behavior safe by omitting attestation.
+                    return self._build_websocket_headers_base(turn_state, turn_metadata_header)
+                headers = self._build_websocket_headers_base(turn_state, turn_metadata_header)
+                insert_header_if_valid(
+                    headers,
+                    X_OAI_ATTESTATION_HEADER,
+                    normalize_attestation_header_value(result),
+                )
+                return headers
+        return self._build_websocket_headers_base(turn_state, turn_metadata_header)
+
+    async def build_realtime_call_headers_async(
+        self,
+        turn_state: TurnState | None = None,
+        turn_metadata_header: str | None = None,
+        auth: Any | None = None,
+    ) -> dict[str, str]:
+        headers = self._build_websocket_headers_base(turn_state, turn_metadata_header)
+        headers.update(self.build_auth_headers(auth=auth))
+        thread_id = self._coerce_thread_id_for_attestation(self.state.thread_id)
+        if thread_id is None:
+            return headers
+
+        attestation_header = await generate_attestation_header_for_request(
+            include_attestation=self.state.include_attestation,
+            attestation_provider=self.state.attestation_provider,
+            thread_id=thread_id,
+        )
+        insert_header_if_valid(headers, X_OAI_ATTESTATION_HEADER, attestation_header)
+        return headers
+
+    def build_realtime_call_headers(
+        self,
+        turn_state: TurnState | None = None,
+        turn_metadata_header: str | None = None,
+        auth: Any | None = None,
+    ) -> dict[str, str]:
+        if self.state.attestation_provider is not None and self.state.include_attestation:
+            header_for_request = getattr(self.state.attestation_provider, "header_for_request", None)
+            if callable(header_for_request):
+                try:
+                    loop_running = asyncio.get_running_loop()
+                except RuntimeError:
+                    loop_running = None
+                if loop_running is None:
+                    return asyncio.run(
+                        self.build_realtime_call_headers_async(
+                            turn_state=turn_state,
+                            turn_metadata_header=turn_metadata_header,
+                            auth=auth,
+                        )
+                    )
+                thread_id = self._coerce_thread_id_for_attestation(self.state.thread_id)
+                if thread_id is None:
+                    headers = self._build_websocket_headers_base(turn_state, turn_metadata_header)
+                    headers.update(self.build_auth_headers(auth=auth))
+                    return headers
+                result = header_for_request(AttestationContext(thread_id=thread_id))
+                if isawaitable(result):
+                    headers = self._build_websocket_headers_base(turn_state, turn_metadata_header)
+                    headers.update(self.build_auth_headers(auth=auth))
+                    return headers
+                headers = self._build_websocket_headers_base(turn_state, turn_metadata_header)
+                headers.update(self.build_auth_headers(auth=auth))
+                insert_header_if_valid(
+                    headers,
+                    X_OAI_ATTESTATION_HEADER,
+                    normalize_attestation_header_value(result),
+                )
+                return headers
+        headers = self._build_websocket_headers_base(turn_state, turn_metadata_header)
+        headers.update(self.build_auth_headers(auth=auth))
+        return headers
+
+    def build_realtime_call_sideband_headers(
+        self,
+        api_auth: Any,
+        *,
+        turn_state: TurnState | None = None,
+        turn_metadata_header: str | None = None,
+    ) -> dict[str, str]:
+        headers = self.build_realtime_call_headers(
+            turn_state=turn_state,
+            turn_metadata_header=turn_metadata_header,
+            auth=api_auth,
+        )
+        headers.update(sideband_websocket_auth_headers(api_auth))
         return headers
 
     def build_responses_request(
@@ -631,11 +905,7 @@ def parent_thread_id_header_value(session_source: SessionSource) -> str | None:
 
 
 def sideband_websocket_auth_headers(api_auth: Any) -> dict[str, str]:
-    headers: dict[str, str] = {}
-    add_auth_headers = getattr(api_auth, "add_auth_headers", None)
-    if callable(add_auth_headers):
-        add_auth_headers(headers)
-    return headers
+    return auth_headers_from_value(api_auth)
 
 
 def build_reasoning(model_info: Any, effort: Any, summary: Any) -> dict[str, Any] | None:
@@ -2603,6 +2873,7 @@ __all__ = [
     "X_CODEX_WS_STREAM_REQUEST_START_MS_CLIENT_METADATA_KEY",
     "X_OPENAI_MEMGEN_REQUEST_HEADER",
     "X_OPENAI_SUBAGENT_HEADER",
+    "auth_headers_from_value",
     "X_RESPONSESAPI_INCLUDE_TIMING_METRICS_HEADER",
     "WS_REQUEST_HEADER_TRACEPARENT_CLIENT_METADATA_KEY",
     "WS_REQUEST_HEADER_TRACESTATE_CLIENT_METADATA_KEY",

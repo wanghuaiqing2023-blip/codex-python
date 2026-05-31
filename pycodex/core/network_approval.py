@@ -113,6 +113,8 @@ class HostApprovalKey:
 def protocol_key_label(protocol: NetworkApprovalProtocol | str) -> str:
     if isinstance(protocol, str):
         protocol = NetworkApprovalProtocol.parse(protocol)
+    elif not isinstance(protocol, NetworkApprovalProtocol):
+        raise TypeError("protocol must be a NetworkApprovalProtocol or string")
     if protocol is NetworkApprovalProtocol.HTTP:
         return "http"
     if protocol is NetworkApprovalProtocol.HTTPS:
@@ -237,12 +239,16 @@ def network_approval_outcome_to_result(outcome: NetworkApprovalOutcome | None) -
 
 
 def allows_network_approval_flow(policy: AskForApproval | str) -> bool:
+    if not isinstance(policy, (AskForApproval, str)):
+        raise TypeError("approval_policy must be an AskForApproval or string")
     return AskForApproval(policy) is not AskForApproval.NEVER
 
 
 def permission_profile_allows_network_approval_flow(
     permission_profile: PermissionProfile,
 ) -> bool:
+    if not isinstance(permission_profile, PermissionProfile):
+        raise TypeError("permission_profile must be a PermissionProfile")
     return permission_profile.type == "managed"
 
 
@@ -420,6 +426,14 @@ class NetworkApprovalService:
         command: str,
         cancellation_token: CancellationToken | None = None,
     ) -> CancellationToken:
+        if not isinstance(registration_id, str):
+            raise TypeError("registration_id must be a string")
+        if not isinstance(turn_id, str):
+            raise TypeError("turn_id must be a string")
+        if not isinstance(command, str):
+            raise TypeError("command must be a string")
+        if cancellation_token is not None and not isinstance(cancellation_token, CancellationToken):
+            raise TypeError("cancellation_token must be a CancellationToken")
         token = cancellation_token or CancellationToken()
         self.active_calls[registration_id] = ActiveNetworkApprovalCall(
             registration_id=registration_id,
@@ -595,6 +609,8 @@ def plan_inline_network_policy_request(
 def _request_value(request: Mapping[str, JsonValue] | object, key: str) -> JsonValue:
     if isinstance(request, Mapping):
         return request[key]
+    if not hasattr(request, "__dict__") and not hasattr(request, key):
+        raise TypeError("request must be a mapping or object with host and port attributes")
     return getattr(request, key)
 
 
@@ -621,6 +637,8 @@ class NetworkReviewDecisionResolution:
 def resolve_network_review_decision(review_decision: JsonValue) -> NetworkReviewDecisionResolution:
     from pycodex.protocol.approvals import NetworkPolicyRuleAction, ReviewDecision
 
+    if not isinstance(review_decision, (Mapping, ReviewDecision, str)):
+        raise TypeError("review decision must be a mapping, review decision, or string")
     decision = ReviewDecision.from_mapping(review_decision)
     if decision.type in {"approved", "approved_execpolicy_amendment"}:
         return NetworkReviewDecisionResolution(PendingApprovalDecision.ALLOW_ONCE)

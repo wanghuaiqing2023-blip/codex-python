@@ -6,7 +6,7 @@ import inspect
 from typing import Any
 
 from pycodex.core.function_tool import FunctionCallError
-from pycodex.protocol import SessionSource, ThreadId
+from pycodex.protocol import CodexErr, SessionSource, ThreadId
 
 
 async def resolve_agent_target(session: Any, turn: Any, target: str) -> ThreadId:
@@ -26,13 +26,20 @@ async def resolve_agent_target(session: Any, turn: Any, target: str) -> ThreadId
         raise FunctionCallError.respond_to_model("agent control is not available")
 
     try:
-        return await _maybe_await(
+        resolved = await _maybe_await(
             resolver(
                 getattr(session, "conversation_id", None),
                 getattr(turn, "session_source", SessionSource.default()),
                 target,
             )
         )
+        if not isinstance(resolved, ThreadId):
+            raise TypeError("agent resolver must return a ThreadId")
+        return resolved
+    except CodexErr as exc:
+        if exc.kind == "unsupported_operation":
+            message = exc.message
+            raise FunctionCallError.respond_to_model(message or str(exc)) from exc
     except Exception as exc:
         raise FunctionCallError.respond_to_model(str(exc)) from exc
 

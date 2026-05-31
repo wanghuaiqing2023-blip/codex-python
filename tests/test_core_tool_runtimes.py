@@ -1,7 +1,9 @@
+import array
 import socket
 import tempfile
 import subprocess
 import unittest
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -130,7 +132,11 @@ from pycodex.core import (
     shell_request_escalation_execution,
     shell_permission_request_payload,
     shell_single_quote,
+    shell_socket_recvmsg_with_fds,
+    shell_socket_extract_length_prefixed_payload,
+    shell_socket_recv_stream_frame_with_fds,
     shell_socket_sendmsg_with_fds,
+    shell_socket_send_stream_frame_with_fds,
     shell_socket_validate_fds_for_message,
     unified_exec_approval_keys,
     unified_exec_network_approval_spec,
@@ -272,6 +278,196 @@ class ToolRuntimesTests(unittest.TestCase):
         self.assertEqual(calls[0][1][0][2].tolist(), [3])
         with self.assertRaisesRegex(OSError, "short datagram write: wrote 1 bytes out of 2"):
             shell_socket_sendmsg_with_fds(object(), b"hi", [], sendmsg=lambda _buffers, _ancillary: 1)
+
+    def test_shell_socket_send_stream_frame_with_fds(self) -> None:
+        calls: list[tuple[bytes, list[Any]]] = []
+        payload = b"hello"
+        framed_payload = len(payload).to_bytes(4, "little") + payload
+
+        def fake_sendmsg(buffers: list[bytes], ancillary: list[Any]) -> int:
+            chunk = bytes(buffers[0])
+            calls.append((chunk, ancillary))
+            if len(calls) == 1:
+                return len(chunk) - 1
+            return len(chunk)
+
+        self.assertEqual(
+            shell_socket_send_stream_frame_with_fds(
+                object(),
+                payload,
+                (10, 11),
+                sendmsg=fake_sendmsg,
+            ),
+            len(framed_payload),
+        )
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][0], framed_payload[:-1])
+        self.assertEqual(calls[0][1][0][2].tolist(), [10, 11])
+        self.assertEqual(calls[1][0], framed_payload[-1:])
+        self.assertEqual(calls[1][1], [])
+
+    def test_shell_socket_send_stream_frame_with_fds_raises_when_peer_closes_before_payload(
+        self,
+    ) -> None:
+        self.assertRaisesRegex(
+            OSError,
+            "socket closed while sending frame payload",
+            lambda: shell_socket_send_stream_frame_with_fds(
+                object(),
+                b"payload",
+                (10, 11),
+                sendmsg=lambda _buffers, _ancillary: 0,
+            ),
+        )
+
+    def test_shell_socket_send_stream_frame_with_fds_send_callback_falls_back_to_send_without_fds(
+        self,
+    ) -> None:
+        calls: list[tuple[bytes, ...]] = []
+
+        def fake_send(data: bytes) -> int:
+            calls.append((data,))
+            return len(data)
+
+        self.assertEqual(
+            shell_socket_send_stream_frame_with_fds(
+                object(),
+                b"payload",
+                (10,),
+                send=fake_send,
+            ),
+            len(b"payload") + 4,
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], b"\x07\0\0\0payload")
+
+    def test_shell_socket_send_stream_frame_with_fds_send_callback_with_fds_only_on_first_chunk(self) -> None:
+        calls: list[tuple[bytes, tuple[int, ...] | None]] = []
+
+        def fake_send(data: bytes, fds: tuple[int, ...] | None = None) -> int:
+            calls.append((data, fds))
+            if len(calls) == 1:
+                return len(data) - 1
+            return len(data)
+
+        payload = b"f" * (SHELL_SOCKET_STREAM_MAX_PAYLOAD + 1)
+        self.assertEqual(
+            shell_socket_send_stream_frame_with_fds(
+                object(),
+                payload,
+                (10,),
+                send=fake_send,
+            ),
+            len(shell_socket_build_length_prefixed_payload(payload)),
+        )
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][1], (10,))
+        self.assertEqual(len(calls[0][0]), SHELL_SOCKET_STREAM_MAX_PAYLOAD)
+        self.assertEqual(len(calls[1][0]), 5)
+        self.assertEqual(calls[1][1], ())
+
+    def test_shell_socket_recvmsg_with_fds_matches_datagram_receive_boundary(self) -> None:
+        received = array.array("i", [7, 8])
+        calls: list[Any] = []
+
+        def fake_recvmsg(buffer_size: int, ancbuf_size: int) -> tuple[bytes, list[Any], int, None]:
+            calls.append((buffer_size, ancbuf_size))
+            return (
+                b"ok",
+                [
+                    (socket.SOL_SOCKET, socket.SCM_RIGHTS, received.tobytes()),
+                    (999, 999, b"ignored"),
+                ],
+                0,
+                None,
+            )
+
+        self.assertEqual(
+            shell_socket_recvmsg_with_fds(object(), 4096, recvmsg=fake_recvmsg),
+            (b"ok", (7, 8)),
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], 4096)
+        self.assertGreaterEqual(calls[0][1], socket.CMSG_SPACE(2 * received.itemsize))
+        self.assertEqual(
+            shell_socket_recvmsg_with_fds(
+                object(),
+                4096,
+                recvmsg=lambda _buffer_size, _ancbuf_size: (b"plain", [], 0, None),
+            ),
+            (b"plain", ()),
+        )
+        with self.assertRaisesRegex(OSError, "ancillary data truncated"):
+            shell_socket_recvmsg_with_fds(
+                object(),
+                4096,
+                recvmsg=lambda _buffer_size, _ancbuf_size: (b"", [], socket.MSG_CTRUNC, None),
+            )
+        with self.assertRaisesRegex(ValueError, "buffer_size must be positive"):
+            shell_socket_recvmsg_with_fds(object(), 0, recvmsg=fake_recvmsg)
+
+    def test_shell_socket_recv_stream_frame_with_fds(self) -> None:
+        calls: list[tuple[Any, ...]] = []
+
+        def fake_recvmsg(
+            buffer_size: int,
+            ancbuf_size: int,
+        ) -> tuple[bytes, list[Any], int, None]:
+            calls.append(("recvmsg", buffer_size, ancbuf_size))
+            header = b"\x05\x00"
+            control = array.array("i", [22]).tobytes()
+            return (header, [(socket.SOL_SOCKET, socket.SCM_RIGHTS, control)], 0, None)
+
+        recv_calls = 0
+
+        def fake_recv(size: int) -> bytes:
+            nonlocal recv_calls
+            recv_calls += 1
+            if recv_calls == 1:
+                return b"\x00\x00"
+            if recv_calls == 2:
+                return b"world"
+            return b""
+
+        payload, transferred_fds = shell_socket_recv_stream_frame_with_fds(
+            object(),
+            max_fds=4,
+            recvmsg=fake_recvmsg,
+            recv=fake_recv,
+        )
+        self.assertEqual(payload, b"world")
+        self.assertEqual(transferred_fds, (22,))
+        self.assertEqual(
+            calls,
+            [("recvmsg", 2, socket.CMSG_SPACE(4 * array.array("i").itemsize))],
+        )
+
+    def test_shell_socket_recv_stream_frame_with_fds_raises_when_peer_closes_before_header(self) -> None:
+        self.assertRaisesRegex(
+            OSError,
+            "socket closed while receiving frame header",
+            lambda: shell_socket_recv_stream_frame_with_fds(
+                object(),
+                recvmsg=lambda _buffer_size, _ancbuf_size: (b"", [], 0, None),
+                recv=lambda _size: b"",
+            ),
+        )
+
+    def test_shell_socket_recv_stream_frame_with_fds_raises_when_peer_closes_before_payload(self) -> None:
+        self.assertRaisesRegex(
+            OSError,
+            "socket closed while receiving frame payload",
+            lambda: shell_socket_recv_stream_frame_with_fds(
+                object(),
+                recvmsg=lambda _buffer_size, _ancbuf_size: (
+                    b"\x04\x00\x00\x00",
+                    [],
+                    0,
+                    None,
+                ),
+                recv=lambda _size: b"",
+            ),
+        )
 
     def test_shell_escalate_client_wrapper_plan_keeps_client_socket_and_handshake_shape(self) -> None:
         class FakeSocket:
@@ -833,8 +1029,20 @@ class ToolRuntimesTests(unittest.TestCase):
         response = ShellEscalateResponse(ShellEscalateAction.deny("blocked"))
         self.assertEqual(response.to_mapping(), {"action": {"type": "deny", "reason": "blocked"}})
         self.assertEqual(ShellEscalateResponse.from_mapping(response.to_mapping()), response)
+        self.assertEqual(
+            ShellEscalateResponse.from_mapping({"action": {"type": "run"}}),
+            ShellEscalateResponse(ShellEscalateAction.run()),
+        )
+        with self.assertRaisesRegex(TypeError, "shell escalate action must be a mapping"):
+            ShellEscalateResponse.from_mapping({"action": "run"})
+        with self.assertRaisesRegex(TypeError, "shell escalate action must be a mapping"):
+            ShellEscalateResponse.from_mapping({})
         with self.assertRaises(ValueError):
             shell_escalate_action_from_decision(ShellEscalationDecision.prompt())
+        with self.assertRaisesRegex(ValueError, "unknown shell escalate action type"):
+            ShellEscalateAction.from_mapping({"type": "maybe"})
+        with self.assertRaisesRegex(TypeError, "shell escalate action must be a mapping"):
+            ShellEscalateAction.from_mapping(object())
 
     def test_shell_escalate_request_matches_rust_wire_shape(self) -> None:
         request = ShellEscalateRequest("/bin/sh", ["/bin/sh", "-lc", "echo ok"], "/work", {"A": "B"})
@@ -1255,6 +1463,8 @@ class ToolRuntimesTests(unittest.TestCase):
             ShellEscalateClientAction("run", exit_code=1)
         with self.assertRaises(TypeError):
             ShellEscalateClientAction.deny(123)
+        with self.assertRaisesRegex(TypeError, "shell escalate response must be a mapping"):
+            shell_escalate_client_action_from_response(object())
 
     def test_shell_local_execv_plan_matches_client_run_branch_boundaries(self) -> None:
         plan = shell_local_execv_plan("/bin/sh", ["/bin/sh", "-lc", "echo ok"])
@@ -1320,6 +1530,15 @@ class ToolRuntimesTests(unittest.TestCase):
         self.assertEqual(deny_plan, ShellEscalateClientPlan(ShellEscalateClientAction.deny("blocked")))
         with self.assertRaisesRegex(ValueError, "NUL in file"):
             shell_escalate_client_plan_from_response(ShellEscalateResponse(ShellEscalateAction.run()), "bad\0file", [])
+        with self.assertRaisesRegex(TypeError, "shell escalate response must be a mapping"):
+            shell_escalate_client_plan_from_response(object(), "/bin/sh", ["/bin/sh"])
+        with self.assertRaisesRegex(TypeError, "fds must be an integer file descriptor"):
+            shell_escalate_client_plan_from_response(
+                {"action": {"type": "escalate"}},
+                "/bin/sh",
+                ["/bin/sh"],
+                destination_fds=("bad",),
+            )
         with self.assertRaises(TypeError):
             ShellEscalateClientPlan(ShellEscalateClientAction.run())
         with self.assertRaises(ValueError):
@@ -1441,8 +1660,26 @@ class ToolRuntimesTests(unittest.TestCase):
                 ("super_exec_receive", client),
             ],
         )
-        with self.assertRaises(NotImplementedError):
+        with self.assertRaisesRegex(
+            TypeError, "super-exec execution requires super-exec or split super_exec callbacks"
+        ):
             shell_escalate_client_plan_run(escalate_plan)
+        with self.assertRaisesRegex(
+            TypeError,
+            "super_exec_send_with_fds and super_exec_receive_result must be both provided",
+        ):
+            shell_escalate_client_plan_run(
+                escalate_plan,
+                super_exec_send_with_fds=lambda *_args: None,
+            )
+        with self.assertRaisesRegex(
+            TypeError,
+            "super_exec_send_with_fds and super_exec_receive_result must be both provided",
+        ):
+            shell_escalate_client_plan_run(
+                escalate_plan,
+                super_exec_receive_result=lambda: ShellSuperExecResult(44),
+            )
         with self.assertRaises(TypeError):
             shell_escalate_client_plan_run(object())
 
@@ -1613,6 +1850,43 @@ class ToolRuntimesTests(unittest.TestCase):
             ShellEscalateResponse(ShellEscalateAction.run()),
         )
         self.assertEqual(calls, [("send", client, request), ("receive", client)])
+
+    def test_shell_escalate_client_request_run_sends_split_request_response_with_client(self) -> None:
+        calls: list[Any] = []
+        client = object()
+
+        def fake_send_request(value_client: object, request: ShellEscalateRequest) -> ShellEscalateResponse:
+            calls.append(("request", value_client, request))
+            return ShellEscalateResponse(ShellEscalateAction.run())
+
+        def fake_receive_response(value_client: object) -> ShellEscalateResponse:
+            calls.append(("receive", value_client))
+            return ShellEscalateResponse(ShellEscalateAction.run())
+
+        def fake_execv(file: str, argv: tuple[str, ...]) -> str:
+            calls.append(("execv", file, argv))
+            return "execv-called"
+
+        self.assertEqual(
+            shell_escalate_client_request_run(
+                "bin/tool",
+                ["tool"],
+                workdir="/work",
+                send_request=fake_send_request,
+                receive_response=fake_receive_response,
+                client=client,
+                execv=fake_execv,
+            ),
+            "execv-called",
+        )
+        self.assertEqual(
+            calls,
+            [
+                ("request", client, ShellEscalateRequest("bin/tool", ("tool",), Path("/work"), {})),
+                ("receive", client),
+                ("execv", "bin/tool", ("tool",)),
+            ],
+        )
 
     def test_shell_escalate_client_wrapper_run_sends_handshake_before_request(self) -> None:
         calls: list[Any] = []
@@ -1845,6 +2119,65 @@ class ToolRuntimesTests(unittest.TestCase):
         )
         self.assertEqual(stderr.text, "Execution denied: blocked\n")
 
+    def test_shell_escalate_client_wrapper_plan_run_supports_split_super_exec_exchange(self) -> None:
+        calls: list[Any] = []
+        client = object()
+        plan = ShellEscalateClientWrapperPlan(
+            ShellEscalateClientSocketPair(object(), client, 17, 18),
+            ShellEscalateClientHandshakePlan(42, b"\x00", (17,)),
+        )
+
+        def fake_send_with_fds(handshake_client_fd: int, message: bytes, fds: tuple[int, ...]) -> None:
+            calls.append(("handshake", handshake_client_fd, message, fds))
+
+        def fake_send_request(request: ShellEscalateRequest) -> ShellEscalateResponse:
+            calls.append(("request", request))
+            return ShellEscalateResponse(ShellEscalateAction.escalate())
+
+        def fake_super_exec_send_with_fds(
+            value_client: object,
+            value_payload: bytes,
+            value_transferred_fds: tuple[int, ...],
+        ) -> None:
+            calls.append(("super_exec_send", value_client, value_payload, value_transferred_fds))
+
+        def fake_super_exec_receive_result(value_client: object) -> bytes:
+            calls.append(("super_exec_receive", value_client))
+            message = json.dumps({"exit_code": 77}).encode("utf-8")
+            return len(message).to_bytes(4, "little") + message
+
+        def fake_dup(fd: int) -> int:
+            return fd + 30
+
+        expected_payload = json.dumps({"fds": [7, 8, 9]}).encode("utf-8")
+        expected_framed = len(expected_payload).to_bytes(4, "little") + expected_payload
+
+        self.assertEqual(
+            shell_escalate_client_wrapper_plan_run(
+                plan,
+                "/bin/sh",
+                ["/bin/sh"],
+                send_with_fds=fake_send_with_fds,
+                send_request=fake_send_request,
+                workdir="/work",
+                destination_fds=(7, 8, 9),
+                super_exec_send_with_fds=fake_super_exec_send_with_fds,
+                super_exec_receive_result=fake_super_exec_receive_result,
+                stdio=(0, 1, 2),
+                dup=fake_dup,
+            ),
+            77,
+        )
+        self.assertEqual(
+            calls,
+            [
+                ("handshake", 42, b"\x00", (17,)),
+                ("request", ShellEscalateRequest("/bin/sh", ("/bin/sh",), Path("/work"), {})),
+                ("super_exec_send", client, expected_framed, (30, 31, 32)),
+                ("super_exec_receive", client),
+            ],
+        )
+
     def test_shell_escalate_client_wrapper_run_with_socket_pair_creates_pair_before_handshake(self) -> None:
         calls: list[Any] = []
 
@@ -1932,6 +2265,18 @@ class ToolRuntimesTests(unittest.TestCase):
         self.assertIsNone(shell_super_exec_message_for_escalate_action(ShellEscalateAction.deny("blocked")))
         self.assertEqual(shell_super_exec_exit_code_from_result(ShellSuperExecResult(13)), 13)
         self.assertEqual(shell_super_exec_exit_code_from_result({"exit_code": 14}), 14)
+        with self.assertRaisesRegex(TypeError, "shell escalate action must be a mapping"):
+            shell_super_exec_message_for_escalate_action(object())
+
+    def test_shell_super_exec_exit_code_from_result_rejects_missing_or_invalid_exit_code(self) -> None:
+        with self.assertRaisesRegex(TypeError, "shell super exec result must be a mapping"):
+            shell_super_exec_exit_code_from_result(None)
+
+        with self.assertRaisesRegex(TypeError, "exit_code must be an integer"):
+            shell_super_exec_exit_code_from_result({})
+
+        with self.assertRaisesRegex(TypeError, "exit_code must be an integer"):
+            shell_super_exec_exit_code_from_result({"exit_code": None})
 
     def test_shell_super_exec_exchange_exit_code_matches_send_receive_boundary(self) -> None:
         calls: list[tuple[ShellSuperExecMessage, tuple[int, ...]]] = []
@@ -1950,11 +2295,92 @@ class ToolRuntimesTests(unittest.TestCase):
         )
         self.assertEqual(calls, [(ShellSuperExecMessage((0, 1, 2)), (10, 11, 12))])
 
-    def test_shell_super_exec_send_receive_exit_code_matches_split_socket_boundary(self) -> None:
-        calls: list[tuple[ShellSuperExecMessage, tuple[int, ...]] | tuple[str]] = []
+    def test_shell_super_exec_exchange_exit_code_rejects_invalid_result_type(self) -> None:
+        def fake_exchange(_message: ShellSuperExecMessage, _transferred_fds: tuple[int, ...]) -> str:
+            return "bad-result"
 
-        def fake_send_with_fds(message: ShellSuperExecMessage, transferred_fds: tuple[int, ...]) -> None:
-            calls.append((message, transferred_fds))
+        with self.assertRaisesRegex(TypeError, "shell super exec result must be a mapping"):
+            shell_super_exec_exchange_exit_code(
+                {"fds": [0, 1, 2]},
+                (),
+                exchange=fake_exchange,
+            )
+
+    def test_shell_super_exec_exchange_exit_code_rejects_invalid_exit_code_shape(self) -> None:
+        def fake_exchange(_message: ShellSuperExecMessage, _transferred_fds: tuple[int, ...]) -> dict[str, str]:
+            return {"exit_code": "oops"}
+
+        with self.assertRaisesRegex(TypeError, "exit_code must be an integer"):
+            shell_super_exec_exchange_exit_code(
+                ShellSuperExecMessage((0, 1, 2)),
+                (3, 4),
+                exchange=fake_exchange,
+            )
+
+    def test_shell_super_exec_exchange_exit_code_propagates_exchange_failure(self) -> None:
+        def fake_exchange(_message: ShellSuperExecMessage, _transferred_fds: tuple[int, ...]) -> dict[str, int]:
+            raise OSError("exchange failed")
+
+        with self.assertRaisesRegex(OSError, "exchange failed"):
+            shell_super_exec_exchange_exit_code(
+                {"fds": [0, 1, 2]},
+                (10,),
+                exchange=fake_exchange,
+            )
+
+    def test_shell_escalate_client_plan_run_split_super_exec_with_client_forwards_client_and_payload(self) -> None:
+        plan = ShellEscalateClientPlan(
+            ShellEscalateClientAction.escalate(),
+            super_exec=ShellSuperExecMessage((7, 8, 9)),
+        )
+        client = object()
+        calls: list[tuple[str, object, bytes, tuple[int, ...]] | tuple[str, object]] = []
+        payload = json.dumps({"fds": [7, 8, 9]}).encode("utf-8")
+        framed_payload = len(payload).to_bytes(4, "little") + payload
+
+        def fake_send_with_fds(
+            value_client: object,
+            message: bytes | ShellSuperExecMessage,
+            transferred_fds: tuple[int, ...],
+        ) -> None:
+            calls.append(("send", value_client, bytes(message), transferred_fds))
+
+        def fake_receive_result(value_client: object) -> dict[str, int]:
+            calls.append(("receive", value_client))
+            return {"exit_code": 77}
+
+        self.assertEqual(
+            shell_escalate_client_plan_run(
+                plan,
+                super_exec_send_with_fds=fake_send_with_fds,
+                super_exec_receive_result=fake_receive_result,
+                super_exec_client=client,
+                stdio=(0, 1, 2),
+                dup=lambda fd: fd,
+            ),
+            77,
+        )
+        self.assertEqual(calls, [("send", client, framed_payload, (0, 1, 2)), ("receive", client)])
+
+    def test_shell_escalate_client_plan_run_escalate_exchange_propagates_invalid_result(self) -> None:
+        plan = ShellEscalateClientPlan(
+            ShellEscalateClientAction.escalate(),
+            super_exec=ShellSuperExecMessage((7, 8, 9)),
+        )
+
+        with self.assertRaisesRegex(TypeError, "shell super exec result must be a mapping"):
+            shell_escalate_client_plan_run(
+                plan,
+                super_exec=lambda _message, _fds: "bad-result",
+            )
+
+    def test_shell_super_exec_send_receive_exit_code_matches_split_socket_boundary(self) -> None:
+        payload = json.dumps({"fds": [0, 1, 2]}).encode("utf-8")
+        framed_payload = len(payload).to_bytes(4, "little") + payload
+        calls: list[tuple[ShellSuperExecMessage | bytes, tuple[int, ...]] | tuple[str]] = []
+
+        def fake_send_with_fds(message: bytes | ShellSuperExecMessage, transferred_fds: tuple[int, ...]) -> None:
+            calls.append((bytes(message), transferred_fds))
 
         def fake_receive_result() -> dict[str, int]:
             calls.append(("receive",))
@@ -1969,7 +2395,13 @@ class ToolRuntimesTests(unittest.TestCase):
             ),
             44,
         )
-        self.assertEqual(calls, [(ShellSuperExecMessage((0, 1, 2)), (10, 11, 12)), ("receive",)])
+        self.assertEqual(
+            calls,
+            [
+                (framed_payload, (10, 11, 12)),
+                ("receive",),
+            ],
+        )
         with self.assertRaisesRegex(RuntimeError, "failed to send SuperExecMessage"):
             shell_super_exec_send_receive_exit_code(
                 ShellSuperExecMessage((0,)),
@@ -1983,10 +2415,10 @@ class ToolRuntimesTests(unittest.TestCase):
 
         def fake_client_send_with_fds(
             value_client: object,
-            message: ShellSuperExecMessage,
+            message: bytes | ShellSuperExecMessage,
             transferred_fds: tuple[int, ...],
         ) -> None:
-            client_calls.append(("send", value_client, message, transferred_fds))
+            client_calls.append(("send", value_client, bytes(message), transferred_fds))
 
         def fake_client_receive_result(value_client: object) -> ShellSuperExecResult:
             client_calls.append(("receive", value_client))
@@ -2004,8 +2436,201 @@ class ToolRuntimesTests(unittest.TestCase):
         )
         self.assertEqual(
             client_calls,
-            [("send", client, ShellSuperExecMessage((0,)), (10,)), ("receive", client)],
+            [("send", client, framed_payload, (10,)), ("receive", client)],
         )
+
+    def test_shell_super_exec_send_receive_exit_code_parses_socket_result_payload(self) -> None:
+        client = object()
+        calls: list[tuple[str, object] | tuple[str, object, bytes, tuple[int, ...]] | tuple[str, object]] = []
+        result_payload = json.dumps({"exit_code": 77}).encode("utf-8")
+        payload = json.dumps({"fds": [0, 1, 2]}).encode("utf-8")
+        framed_payload = len(payload).to_bytes(4, "little") + payload
+
+        def send_with_fds(value_client: object, payload: bytes, transferred_fds: tuple[int, ...]) -> None:
+            if not isinstance(payload, (bytes, bytearray, memoryview)):
+                raise TypeError("data must be bytes")
+            calls.append(("send", value_client, bytes(payload), transferred_fds))
+            data = json.loads(shell_socket_extract_length_prefixed_payload(bytes(payload)).decode("utf-8"))
+            self.assertEqual(data, {"fds": [0, 1, 2]})
+
+        def receive_result(value_client: object) -> tuple[bytes, tuple[int, ...]]:
+            calls.append(("receive", value_client))
+            return result_payload, (123,)
+
+        self.assertEqual(
+            shell_super_exec_send_receive_exit_code(
+                {"fds": [0, 1, 2]},
+                (10, 11, 12),
+                send_with_fds=send_with_fds,
+                receive_result=receive_result,
+                client=client,
+            ),
+            77,
+        )
+        self.assertEqual(
+            calls,
+            [
+                ("send", client, framed_payload, (10, 11, 12)),
+                ("receive", client),
+            ],
+        )
+
+    def test_shell_super_exec_send_receive_exit_code_parses_length_prefixed_socket_payload(self) -> None:
+        client = object()
+        calls: list[tuple[str, object] | tuple[str, object, bytes, tuple[int, ...]] | tuple[str, object]] = []
+        payload = json.dumps({"exit_code": 79}).encode("utf-8")
+        framed_payload = len(payload).to_bytes(4, "little") + payload
+
+        def send_with_fds(value_client: object, message: bytes, transferred_fds: tuple[int, ...]) -> None:
+            calls.append(("send", value_client, bytes(message), transferred_fds))
+            data = json.loads(shell_socket_extract_length_prefixed_payload(bytes(message)).decode("utf-8"))
+            self.assertEqual(data, {"fds": [0, 1, 2]})
+
+        def receive_result(value_client: object) -> tuple[bytes, tuple[int, ...]]:
+            calls.append(("receive", value_client))
+            return framed_payload, (123,)
+
+        self.assertEqual(
+            shell_super_exec_send_receive_exit_code(
+                {"fds": [0, 1, 2]},
+                (10, 11, 12),
+                send_with_fds=send_with_fds,
+                receive_result=receive_result,
+                client=client,
+            ),
+            79,
+        )
+        self.assertEqual(
+            calls,
+            [
+                ("send", client, framed_payload, (10, 11, 12)),
+                ("receive", client),
+            ],
+        )
+
+    def test_shell_super_exec_send_receive_exit_code_falls_back_on_type_signature_mismatch(self) -> None:
+        client = object()
+        calls: list[tuple[str, object] | tuple[str, object, bytes, tuple[int, ...]] | tuple[str, object]] = []
+        payload = json.dumps({"fds": [0, 1, 2]}).encode("utf-8")
+        framed_payload = len(payload).to_bytes(4, "little") + payload
+
+        def send_with_fds(
+            value_client: object,
+            payload: object,
+            transferred_fds: tuple[int, ...],
+        ) -> None:
+            if isinstance(payload, (bytes, bytearray, memoryview)):
+                calls.append(("send-reject", value_client, bytes(payload), transferred_fds))
+                raise TypeError("custom arg type mismatch")
+            calls.append(("send-ok", value_client, payload, transferred_fds))
+
+        def receive_result(value_client: object) -> dict[str, int]:
+            calls.append(("receive", value_client))
+            return {"exit_code": 78}
+
+        self.assertEqual(
+            shell_super_exec_send_receive_exit_code(
+                {"fds": [0, 1, 2]},
+                (10, 11, 12),
+                send_with_fds=send_with_fds,
+                receive_result=receive_result,
+                client=client,
+            ),
+            78,
+        )
+        self.assertEqual(
+            calls,
+            [
+                (
+                    "send-reject",
+                    client,
+                    json.dumps({"fds": [0, 1, 2]}).encode("utf-8"),
+                    (10, 11, 12),
+                ),
+                (
+                    "send-reject",
+                    client,
+                    framed_payload,
+                    (10, 11, 12),
+                ),
+                (
+                    "send-ok",
+                    client,
+                    ShellSuperExecMessage((0, 1, 2)),
+                    (10, 11, 12),
+                ),
+                ("receive", client),
+            ],
+        )
+
+    def test_shell_super_exec_send_receive_exit_code_rejects_invalid_json_result_payload(self) -> None:
+        calls: list[str] = []
+
+        def send_with_fds(message: bytes | ShellSuperExecMessage, transferred_fds: tuple[int, ...]) -> None:
+            calls.append("send")
+
+        def receive_result() -> bytes:
+            return b"not-json"
+
+        with self.assertRaises(ValueError):
+            shell_super_exec_send_receive_exit_code(
+                {"fds": [0, 1, 2]},
+                (),
+                send_with_fds=send_with_fds,
+                receive_result=receive_result,
+            )
+        self.assertEqual(calls, ["send"])
+
+    def test_shell_super_exec_send_receive_exit_code_rejects_tuple_with_invalid_json_length_prefixed_payload(
+        self,
+    ) -> None:
+        payload = json.dumps({"fds": [0, 1, 2]}).encode("utf-8")
+
+        def send_with_fds(message: bytes | ShellSuperExecMessage, transferred_fds: tuple[int, ...]) -> None:
+            return None
+
+        def receive_result() -> tuple[bytes, tuple[int, ...]]:
+            return payload, (7,)
+
+        with self.assertRaisesRegex(TypeError, "exit_code must be an integer"):
+            shell_super_exec_send_receive_exit_code(
+                {"fds": [0, 1, 2]},
+                (),
+                send_with_fds=send_with_fds,
+                receive_result=receive_result,
+            )
+
+    def test_shell_super_exec_send_receive_exit_code_rejects_non_mapping_result(self) -> None:
+        def send_with_fds(message: bytes | ShellSuperExecMessage, transferred_fds: tuple[int, ...]) -> None:
+            return None
+
+        def receive_result() -> tuple[str, tuple[int, ...]]:
+            return "exit", ()
+
+        with self.assertRaisesRegex(
+            TypeError, "shell super exec result must be a mapping"
+        ):
+            shell_super_exec_send_receive_exit_code(
+                {"fds": [0, 1, 2]},
+                (),
+                send_with_fds=send_with_fds,
+                receive_result=receive_result,
+            )
+
+    def test_shell_super_exec_send_receive_exit_code_propagates_receive_result_failure(self) -> None:
+        def send_with_fds(message: bytes | ShellSuperExecMessage, transferred_fds: tuple[int, ...]) -> None:
+            return None
+
+        def receive_result() -> dict[str, int]:
+            raise OSError("receive failed")
+
+        with self.assertRaisesRegex(OSError, "receive failed"):
+            shell_super_exec_send_receive_exit_code(
+                {"fds": [0, 1, 2]},
+                (),
+                send_with_fds=send_with_fds,
+                receive_result=receive_result,
+            )
 
     def test_shell_super_exec_duplicate_fd_for_transfer_matches_client_boundary(self) -> None:
         seen: list[int] = []

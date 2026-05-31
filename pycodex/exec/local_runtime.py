@@ -127,6 +127,7 @@ class LocalHttpShellInvocation:
     max_output_tokens: int | None = None
     sandbox_permissions: str | None = None
     additional_permissions: Mapping[str, Any] | None = None
+    additional_permissions_is_invalid: bool = False
     justification: str | None = None
     prefix_rule: tuple[str, ...] | None = None
 
@@ -755,14 +756,21 @@ def local_http_exec_enabled(env: Any = None) -> bool:
     """Return true when the experimental local HTTP exec path is enabled."""
 
     source = os.environ if env is None else env
-    return str(source.get(LOCAL_HTTP_EXEC_ENV, "")).strip().lower() in {
+    explicit_state = str(source.get(LOCAL_HTTP_EXEC_ENV, "")).strip().lower()
+    if explicit_state in {
         "1",
         "true",
         "yes",
         "on",
         "enable",
         "enabled",
-    }
+    }:
+        return True
+    if explicit_state in {"0", "false", "no", "off", "disable", "disabled"}:
+        return False
+    return bool(str(source.get("OPENAI_API_KEY", "")).strip()) or bool(
+        str(source.get("CODEX_API_KEY", "")).strip()
+    )
 
 
 def local_http_exec_shell_tools_enabled(env: Any = None) -> bool:
@@ -838,7 +846,7 @@ def default_local_http_exec_auth(
             return provider_api_key
     auth_api_key = getattr(auth, "openai_api_key", None) or getattr(auth, "api_key", None)
     if isinstance(auth_api_key, str) and auth_api_key:
-        return auth
+        return auth_api_key
     if isinstance(auth, str) and auth:
         return auth
     return None
@@ -2158,6 +2166,12 @@ def local_http_shell_tool_sandbox_permissions_error(invocation: LocalHttpShellIn
 def local_http_shell_tool_permission_request_error(invocation: LocalHttpShellInvocation) -> str | None:
     """Return a Rust-style model-facing error for unsupported local permission requests."""
 
+    if invocation.additional_permissions_is_invalid:
+        return (
+            "exit_code: permission_request_invalid\n"
+            "stderr:\n"
+            "`additional_permissions` must be an object mapping permissions"
+        )
     if invocation.additional_permissions is not None:
         if invocation.sandbox_permissions != "with_additional_permissions":
             return (
@@ -2174,7 +2188,11 @@ def local_http_shell_tool_permission_request_error(invocation: LocalHttpShellInv
                     "`additional_permissions` must include at least one requested permission in `network` or `file_system`"
                 )
         except (KeyError, TypeError, ValueError):
-            pass
+            return (
+                "exit_code: permission_request_invalid\n"
+                "stderr:\n"
+                "invalid `additional_permissions`; expected a permission object with `network` and/or `file_system`"
+            )
         return (
             "exit_code: permission_request_unsupported\n"
             "stderr:\n"
@@ -2257,6 +2275,15 @@ def _shell_invocation_from_arguments(
         return None
     if not isinstance(arguments, Mapping):
         return LocalHttpShellInvocation(command, timeout=default_timeout)
+    raw_additional_permissions = arguments.get("additional_permissions")
+    additional_permissions_is_invalid = False
+    if "additional_permissions" in arguments and raw_additional_permissions is not None and not isinstance(
+        raw_additional_permissions, Mapping
+    ):
+        additional_permissions_is_invalid = True
+        additional_permissions_value: Mapping[str, Any] | None = None
+    else:
+        additional_permissions_value = _optional_mapping_argument(arguments, "additional_permissions")
     return LocalHttpShellInvocation(
         command,
         workdir=_shell_workdir_from_arguments(arguments, default_cwd=default_cwd),
@@ -2267,7 +2294,8 @@ def _shell_invocation_from_arguments(
         yield_time_ms=_shell_yield_time_from_arguments(arguments, default_ms=DEFAULT_LOCAL_HTTP_EXEC_YIELD_TIME_MS),
         max_output_tokens=_shell_max_output_tokens_from_arguments(arguments),
         sandbox_permissions=_optional_str_argument(arguments, "sandbox_permissions"),
-        additional_permissions=_optional_mapping_argument(arguments, "additional_permissions"),
+        additional_permissions=additional_permissions_value,
+        additional_permissions_is_invalid=additional_permissions_is_invalid,
         justification=_optional_str_argument(arguments, "justification"),
         prefix_rule=_shell_prefix_rule_from_arguments(arguments),
     )
@@ -2330,7 +2358,11 @@ def _optional_str_argument(arguments: Mapping[str, Any], key: str) -> str | None
 
 def _optional_mapping_argument(arguments: Mapping[str, Any], key: str) -> Mapping[str, Any] | None:
     value = arguments.get(key)
-    return value if isinstance(value, Mapping) and value else None
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        return None
+    return value
 
 
 def _shell_yield_time_from_arguments(

@@ -1,15 +1,19 @@
 from types import SimpleNamespace
+import asyncio
 
 import pytest
 
 from pycodex.core import (
     OPENAI_BETA_HEADER,
     RESPONSES_WEBSOCKETS_V2_BETA_HEADER_VALUE,
+    X_OAI_ATTESTATION_HEADER,
+    X_CODEX_INSTALLATION_ID_HEADER,
     X_CODEX_PARENT_THREAD_ID_HEADER,
     X_CODEX_TURN_METADATA_HEADER,
     X_CODEX_TURN_STATE_HEADER,
     X_CODEX_WINDOW_ID_HEADER,
     X_OPENAI_SUBAGENT_HEADER,
+    X_RESPONSESAPI_INCLUDE_TIMING_METRICS_HEADER,
     WS_REQUEST_HEADER_TRACEPARENT_CLIENT_METADATA_KEY,
     WS_REQUEST_HEADER_TRACESTATE_CLIENT_METADATA_KEY,
     LastResponse,
@@ -181,6 +185,94 @@ def test_build_websocket_headers_include_identity_and_beta():
     assert headers[OPENAI_BETA_HEADER] == RESPONSES_WEBSOCKETS_V2_BETA_HEADER_VALUE
 
 
+def test_build_websocket_headers_includes_attestation_for_valid_provider():
+    class AttestationProvider:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def header_for_request(self, _context: object) -> str:
+            self.calls += 1
+            return "attestation-value"
+
+    provider = AttestationProvider()
+    model = SimpleNamespace(info=lambda: SimpleNamespace(supports_websockets=True), supports_attestation=lambda: True)
+    client = ModelClient(
+        session_id="session",
+        thread_id=ThreadId.new(),
+        installation_id="install",
+        provider=model,
+        attestation_provider=provider,
+    )
+
+    headers = client.build_websocket_headers()
+
+    assert headers[X_OAI_ATTESTATION_HEADER] == "attestation-value"
+    assert provider.calls == 1
+
+
+def test_build_websocket_headers_skips_attestation_if_provider_missing():
+    model = SimpleNamespace(info=lambda: SimpleNamespace(supports_websockets=True), supports_attestation=lambda: True)
+    client = ModelClient(
+        session_id="session",
+        thread_id=ThreadId.new(),
+        installation_id="install",
+        provider=model,
+        attestation_provider=None,
+    )
+
+    headers = client.build_websocket_headers()
+
+    assert X_OAI_ATTESTATION_HEADER not in headers
+
+
+def test_build_websocket_headers_async_supports_awaitable_provider():
+    async def header_for_request(_context: object) -> str:
+        return "async-attestation"
+
+    class AsyncAttestationProvider:
+        def header_for_request(self, _context: object) -> object:
+            return header_for_request(_context)
+
+    model = SimpleNamespace(info=lambda: SimpleNamespace(supports_websockets=True), supports_attestation=lambda: True)
+    client = ModelClient(
+        session_id="session",
+        thread_id=ThreadId.new(),
+        installation_id="install",
+        provider=model,
+        attestation_provider=AsyncAttestationProvider(),
+    )
+
+    headers = asyncio.run(client.build_websocket_headers_async())
+
+    assert headers[X_OAI_ATTESTATION_HEADER] == "async-attestation"
+
+
+def test_build_websocket_headers_in_running_event_loop_omits_awaitable_attestation():
+    async def header_for_request(_context: object) -> str:
+        return "async-attestation"
+
+    class AsyncAttestationProvider:
+        def header_for_request(self, _context: object) -> object:
+            return header_for_request(_context)
+
+    async def _call_in_loop() -> dict[str, str]:
+        model = SimpleNamespace(
+            info=lambda: SimpleNamespace(supports_websockets=True),
+            supports_attestation=lambda: True,
+        )
+        client = ModelClient(
+            session_id="session",
+            thread_id=ThreadId.new(),
+            installation_id="install",
+            provider=model,
+            attestation_provider=AsyncAttestationProvider(),
+        )
+        return client.build_websocket_headers()
+
+    headers = asyncio.run(_call_in_loop())
+    assert X_OAI_ATTESTATION_HEADER not in headers
+
+
 
 
 def test_build_websocket_headers_skip_invalid_identity_values():
@@ -192,6 +284,62 @@ def test_build_websocket_headers_skip_invalid_identity_values():
     assert "thread-id" not in headers
     assert headers["session-id"] == "session"
     assert headers[X_CODEX_TURN_METADATA_HEADER] == "ok"
+
+
+def test_build_compact_request_headers_include_identity_and_beta():
+    client = ModelClient(
+        session_id="session",
+        thread_id="thread",
+        installation_id="install",
+        include_timing_metrics=True,
+    )
+
+    headers = client.build_compact_request_headers(turn_metadata_header="turn")
+
+    assert headers[X_CODEX_INSTALLATION_ID_HEADER] == "install"
+    assert headers["session-id"] == "session"
+    assert headers["thread-id"] == "thread"
+    assert headers[X_CODEX_WINDOW_ID_HEADER] == "thread:0"
+    assert headers[X_CODEX_TURN_METADATA_HEADER] == "turn"
+
+
+def test_build_compact_request_headers_includes_auth():
+    client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+
+    headers = client.build_compact_request_headers(auth="sk-test")
+
+    assert headers["Authorization"] == "Bearer sk-test"
+
+
+def test_build_realtime_call_headers_include_websocket_components():
+    client = ModelClient(session_id="session", thread_id="thread", installation_id="install", include_timing_metrics=True)
+
+    headers = client.build_realtime_call_headers()
+
+    assert headers[X_CODEX_WINDOW_ID_HEADER] == "thread:0"
+    assert headers[X_CODEX_INSTALLATION_ID_HEADER] == "install"
+    assert headers[OPENAI_BETA_HEADER] == RESPONSES_WEBSOCKETS_V2_BETA_HEADER_VALUE
+    assert headers[X_RESPONSESAPI_INCLUDE_TIMING_METRICS_HEADER] == "true"
+
+
+def test_build_realtime_call_headers_includes_auth():
+    client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+
+    headers = client.build_realtime_call_headers(auth="sk-test")
+
+    assert headers["Authorization"] == "Bearer sk-test"
+
+
+def test_build_realtime_call_sideband_headers_adds_api_auth():
+    class Auth:
+        def add_auth_headers(self, headers: dict[str, str]) -> None:
+            headers["Authorization"] = "Bearer test"
+
+    client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+
+    headers = client.build_realtime_call_sideband_headers(api_auth=Auth())
+
+    assert headers["Authorization"] == "Bearer test"
 
 def test_model_client_session_incremental_items_use_last_response_baseline():
     client = ModelClient(session_id="session", thread_id="thread", installation_id="install")

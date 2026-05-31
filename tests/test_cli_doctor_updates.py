@@ -1,10 +1,14 @@
 import json
 from pathlib import Path
+import socket
 import sqlite3
 import tempfile
 import unittest
+import types
+from pycodex.core import RESPONSES_WEBSOCKETS_V2_BETA_HEADER_VALUE
 
 import pycodex.cli.doctor_updates as doctor_updates
+from pycodex.exec.websocket import WebSocketFrame, WebSocketHandshakeResponse
 from pycodex.cli import (
     GITHUB_LATEST_RELEASE_URL,
     HOMEBREW_CASK_API_URL,
@@ -361,6 +365,66 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
         self.assertIn("status: running", check.details)
         self.assertIn("app-server version: 1.2.3", check.details)
         self.assertIn("mode: persistent", check.details)
+
+    def test_doctor_background_server_check_uses_default_probe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            codex_home = Path(tmp)
+            state_dir = codex_home / "app-server-daemon"
+            state_dir.mkdir()
+            (state_dir / "settings.json").write_text("{}", encoding="utf-8")
+            socket_path = codex_home / "app-server-control" / "app-server-control.sock"
+            socket_path.parent.mkdir()
+            socket_path.write_text("", encoding="utf-8")
+
+            class FakeWebSocket:
+                def __init__(self) -> None:
+                    self.sent_text: list[str] = []
+                    self.closed = False
+
+                def send_text(self, text: str) -> None:
+                    self.sent_text.append(text)
+
+                def recv_text(self, expect_masked: bool | None = False) -> str:
+                    return json.dumps(
+                        {
+                            "id": 1,
+                            "result": {"userAgent": "codex_app_server_daemon/1.2.3 (Linux)"},
+                        }
+                    )
+
+                def close(self) -> None:
+                    self.closed = True
+
+            fake_websocket = FakeWebSocket()
+            original_connect = doctor_updates.StdlibWebSocket.connect_unix_socket
+
+            def fake_connect_unix_socket(
+                path: Path,
+                websocket_url: str = "",
+                timeout: float = 10.0,
+            ) -> object:
+                self.assertEqual(path, socket_path)
+                self.assertTrue(websocket_url.startswith("ws://localhost"))
+                self.assertEqual(timeout, 10.0)
+                return fake_websocket
+
+            doctor_updates.StdlibWebSocket.connect_unix_socket = fake_connect_unix_socket  # type: ignore[method-assign]
+
+            try:
+                check = doctor_background_server_check(codex_home=codex_home)
+            finally:
+                doctor_updates.StdlibWebSocket.connect_unix_socket = original_connect
+
+        self.assertEqual(check.status, "ok")
+        self.assertEqual(check.summary, "background server is running")
+        self.assertIn("status: running", check.details)
+        self.assertIn("app-server version: 1.2.3", check.details)
+        self.assertIn("mode: persistent", check.details)
+        self.assertEqual(len(fake_websocket.sent_text), 1)
+        request = json.loads(fake_websocket.sent_text[0])
+        self.assertEqual(request["id"], 1)
+        self.assertEqual(request["method"], "initialize")
+        self.assertEqual(request["params"]["clientInfo"]["name"], "codex")
 
     def test_doctor_background_server_check_warns_for_stale_socket(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -818,31 +882,239 @@ class DoctorUpdateDetailsTests(unittest.TestCase):
         self.assertIn("supports websockets: false", check.details)
         self.assertIn("proxy env vars: none", check.details)
 
-    def test_doctor_websocket_check_reports_static_supported_provider_without_probe(self) -> None:
-        check = doctor_websocket_check(
-            inputs=WebsocketCheckInputs(
-                model_provider_id="openai",
-                provider_name="OpenAI",
-                wire_api="responses",
-                supports_websockets=True,
-                connect_timeout_ms=30000,
-                auth_mode="api_key",
-                endpoint="wss://api.openai.com/v1/responses",
-                env={"HTTPS_PROXY": "http://proxy.example"},
-            )
-        )
+    def test_doctor_websocket_check_reports_static_supported_provider_with_handshake(self) -> None:
+        class FakeWebSocket:
+            def __init__(self) -> None:
+                self._sock = types.SimpleNamespace(settimeout=lambda _value: None)
+                self.handshake_response = WebSocketHandshakeResponse(
+                    status_code=101,
+                    reason="Switching Protocols",
+                    headers={
+                        "x-reasoning-included": "true",
+                        "x-models-etag": "abc123",
+                        "openai-model": "gpt-test",
+                    },
+                )
+                self.closed = False
 
-        self.assertEqual(check.status, "warn")
-        self.assertEqual(check.summary, "Responses WebSocket probe not run; HTTPS fallback may still work")
+            def recv_frame(self, expect_masked: bool | None = False) -> WebSocketFrame:
+                raise TimeoutError()
+
+            def close(self) -> None:
+                self.closed = True
+
+        connect_state: dict[str, object] = {}
+
+        def fake_connect(
+            websocket_url: str,
+            *,
+            auth_token: str | None = None,
+            timeout: float = 10.0,
+            extra_headers: dict[str, str] | None = None,
+            **kwargs: object,
+        ) -> object:
+            connect_state["websocket_url"] = websocket_url
+            connect_state["auth_token"] = auth_token
+            connect_state["timeout"] = timeout
+            connect_state["headers"] = extra_headers
+            return FakeWebSocket()
+
+        original_connect = doctor_updates.StdlibWebSocket.connect
+        doctor_updates.StdlibWebSocket.connect = fake_connect  # type: ignore[method-assign]
+        try:
+            check = doctor_websocket_check(
+                inputs=WebsocketCheckInputs(
+                    model_provider_id="openai",
+                    provider_name="OpenAI",
+                    wire_api="responses",
+                    supports_websockets=True,
+                    connect_timeout_ms=30000,
+                    auth_mode="api_key",
+                    endpoint="wss://api.openai.com/v1/responses",
+                    env={"HTTPS_PROXY": "http://proxy.example", "OPENAI_API_KEY": "k"},
+                )
+            )
+        finally:
+            doctor_updates.StdlibWebSocket.connect = original_connect
+
+        self.assertEqual(check.status, "ok")
+        self.assertEqual(check.summary, "Responses WebSocket handshake succeeded")
         self.assertIn("connect timeout: 30000 ms", check.details)
         self.assertIn("auth mode: api_key", check.details)
         self.assertIn("endpoint: wss://api.openai.com/v1/responses", check.details)
         self.assertIn("proxy env vars present: HTTPS_PROXY", check.details)
-        self.assertIn("handshake probe not implemented in Python port", check.details)
-        self.assertEqual(
-            check.remediation,
-            "Check proxy, VPN, firewall, DNS, custom CA, and WebSocket policy support.",
+        self.assertIn("handshake result: HTTP 101", check.details)
+        self.assertIn("reasoning header: true", check.details)
+        self.assertIn("models etag present: true", check.details)
+        self.assertIn("server model present: true", check.details)
+        self.assertEqual(connect_state["websocket_url"], "wss://api.openai.com/v1/responses")
+        self.assertEqual(connect_state["auth_token"], "k")
+        self.assertEqual(connect_state["timeout"], 30.0)
+        headers = connect_state["headers"]
+        self.assertIsInstance(headers, dict)
+        self.assertIn("OpenAI-Beta", headers)
+        self.assertEqual(headers["OpenAI-Beta"], RESPONSES_WEBSOCKETS_V2_BETA_HEADER_VALUE)
+
+    def test_doctor_websocket_check_reports_dns_family_details(self) -> None:
+        class FakeWebSocket:
+            def __init__(self) -> None:
+                self._sock = types.SimpleNamespace(settimeout=lambda _value: None)
+                self.handshake_response = WebSocketHandshakeResponse(
+                    status_code=101,
+                    reason="Switching Protocols",
+                    headers={},
+                )
+                self.closed = False
+
+            def recv_frame(self, expect_masked: bool | None = False) -> WebSocketFrame:
+                raise TimeoutError()
+
+            def close(self) -> None:
+                self.closed = True
+
+        original_connect = doctor_updates.StdlibWebSocket.connect
+        original_getaddrinfo = socket.getaddrinfo
+        doctor_updates.StdlibWebSocket.connect = lambda *args, **kwargs: FakeWebSocket()  # type: ignore[method-assign]
+        socket.getaddrinfo = lambda _host, _port: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", 443, 0, 0)),
+        ]
+        try:
+            check = doctor_websocket_check(
+                inputs=WebsocketCheckInputs(
+                    model_provider_id="openai",
+                    provider_name="OpenAI",
+                    wire_api="responses",
+                    supports_websockets=True,
+                    auth_mode="none",
+                    endpoint="wss://api.openai.com/v1/responses",
+                )
+            )
+        finally:
+            doctor_updates.StdlibWebSocket.connect = original_connect
+            socket.getaddrinfo = original_getaddrinfo
+
+        self.assertEqual(check.status, "ok")
+        self.assertIn("DNS: 1 IPv4, 1 IPv6, first IPv4", check.details)
+
+    def test_doctor_websocket_check_uses_default_connect_timeout_when_unset(self) -> None:
+        class FakeWebSocket:
+            def __init__(self) -> None:
+                self._sock = types.SimpleNamespace(settimeout=lambda _value: None)
+                self.handshake_response = WebSocketHandshakeResponse(
+                    status_code=101,
+                    reason="Switching Protocols",
+                    headers={},
+                )
+                self.closed = False
+                self.timeout = None
+
+            def recv_frame(self, expect_masked: bool | None = False) -> WebSocketFrame:
+                raise TimeoutError()
+
+            def close(self) -> None:
+                self.closed = True
+
+        original_connect = doctor_updates.StdlibWebSocket.connect
+        connect_state: dict[str, object] = {}
+
+        def fake_connect(
+            websocket_url: str,
+            *,
+            auth_token: str | None = None,
+            timeout: float = 10.0,
+            **kwargs: object,
+        ) -> object:
+            del websocket_url, auth_token
+            connect_state["timeout"] = timeout
+            fake_ws = FakeWebSocket()
+            fake_ws.timeout = timeout
+            return fake_ws
+
+        doctor_updates.StdlibWebSocket.connect = fake_connect  # type: ignore[method-assign]
+        try:
+            check = doctor_websocket_check(
+                inputs=WebsocketCheckInputs(
+                    model_provider_id="openai",
+                    provider_name="OpenAI",
+                    wire_api="responses",
+                    supports_websockets=True,
+                    auth_mode="none",
+                    connect_timeout_ms=None,
+                    endpoint="wss://api.openai.com/v1/responses",
+                )
+            )
+        finally:
+            doctor_updates.StdlibWebSocket.connect = original_connect
+
+        self.assertEqual(check.status, "ok")
+        self.assertIn("connect timeout: 15000 ms", check.details)
+        self.assertIn("timeout", connect_state)
+        self.assertEqual(connect_state["timeout"], 15.0)
+
+    def test_doctor_websocket_check_reports_static_supported_provider_with_immediate_close(self) -> None:
+        class FakeWebSocket:
+            def __init__(self) -> None:
+                self._sock = types.SimpleNamespace(settimeout=lambda _value: None)
+                self.handshake_response = WebSocketHandshakeResponse(
+                    status_code=101,
+                    reason="Switching Protocols",
+                    headers={"openai-model": "gpt-test"},
+                )
+                self.closed = False
+
+            def recv_frame(self, expect_masked: bool | None = False) -> WebSocketFrame:
+                return WebSocketFrame(
+                    fin=True,
+                    opcode=8,
+                    payload=(1008).to_bytes(2, "big") + b"policy disallowed",
+                )
+
+            def close(self) -> None:
+                self.closed = True
+
+        original_connect = doctor_updates.StdlibWebSocket.connect
+        doctor_updates.StdlibWebSocket.connect = lambda *args, **kwargs: FakeWebSocket()  # type: ignore[method-assign]
+        try:
+            check = doctor_websocket_check(
+                inputs=WebsocketCheckInputs(
+                    model_provider_id="openai",
+                    provider_name="OpenAI",
+                    wire_api="responses",
+                    supports_websockets=True,
+                    auth_mode="none",
+                )
+            )
+        finally:
+            doctor_updates.StdlibWebSocket.connect = original_connect
+
+        self.assertEqual(check.status, "warn")
+        self.assertEqual(check.summary, "Responses WebSocket closed immediately after handshake")
+        self.assertIn("immediate close code: 1008", check.details)
+        self.assertIn("immediate close reason: policy disallowed", check.details)
+        self.assertIn("endpoint: wss://api.openai.com/v1/responses", check.details)
+
+    def test_doctor_websocket_check_reports_timeout(self) -> None:
+        original_connect = doctor_updates.StdlibWebSocket.connect
+        doctor_updates.StdlibWebSocket.connect = (
+            lambda *args, **kwargs: (_ for _ in ()).throw(socket.timeout("timed out"))  # type: ignore[method-assign]
         )
+        try:
+            check = doctor_websocket_check(
+                inputs=WebsocketCheckInputs(
+                    model_provider_id="openai",
+                    provider_name="OpenAI",
+                    wire_api="responses",
+                    supports_websockets=True,
+                    connect_timeout_ms=1,
+                    auth_mode="none",
+                )
+            )
+        finally:
+            doctor_updates.StdlibWebSocket.connect = original_connect
+
+        self.assertEqual(check.status, "warn")
+        self.assertEqual(check.summary, "Responses WebSocket timed out; HTTPS fallback may still work")
 
     def test_doctor_terminal_title_check_reports_default_project_name(self) -> None:
         check = doctor_terminal_title_check(

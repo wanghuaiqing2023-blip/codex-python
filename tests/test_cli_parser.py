@@ -35,6 +35,7 @@ from pycodex.cli.parser import (
 from pycodex.cli import DoctorUpdateCheck, NpmRootCheck, UpdateAction
 from pycodex.cli.login import AuthDotJson
 from pycodex.core import Feature, Features
+from pycodex.core.rollout import SessionMeta, materialize_session_rollout
 from pycodex.protocol import AskForApproval, ProfileV2Name, ResponseItem, SandboxMode
 
 
@@ -6217,6 +6218,206 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertIn("provider: openai", stderr.getvalue())
         self.assertIn("completed local HTTP non-interactive exec execution", stderr.getvalue())
         self.assertEqual(stdout.getvalue(), "done\n")
+
+    def test_main_exec_local_http_smoke_posts_expected_request(self) -> None:
+        previous_enabled = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP")
+        previous_key = os.environ.get("OPENAI_API_KEY")
+        os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = "1"
+        os.environ["OPENAI_API_KEY"] = "sk-smoke"
+
+        seen = {}
+
+        class FakeResponse:
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "output": [
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "smoke"}],
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        def opener(request):
+            seen["url"] = request.full_url
+            seen["headers"] = dict(request.header_items())
+            seen["body"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse()
+
+        try:
+            with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                    stdout = io.StringIO()
+                    stderr = io.StringIO()
+                    code = main(["exec", "prompt"], stdout=stdout, stderr=stderr)
+        finally:
+            if previous_enabled is None:
+                os.environ.pop("PYCODEX_EXEC_LOCAL_HTTP", None)
+            else:
+                os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = previous_enabled
+            if previous_key is None:
+                os.environ.pop("OPENAI_API_KEY", None)
+            else:
+                os.environ["OPENAI_API_KEY"] = previous_key
+
+        self.assertEqual(code, 0)
+        self.assertEqual(seen["url"], "https://api.openai.com/v1/responses")
+        headers = {key.lower(): value for key, value in seen["headers"].items()}
+        self.assertEqual(headers["authorization"], "Bearer sk-smoke")
+        self.assertEqual(headers["x-codex-installation-id"], "pycodex-local-exec")
+        self.assertIn("x-codex-window-id", headers)
+        self.assertEqual(headers.get("content-type"), "application/json")
+        self.assertIn("input", seen["body"])
+        self.assertEqual(seen["body"]["model"], "gpt-5")
+        self.assertIn("client_metadata", seen["body"])
+        self.assertEqual(
+            seen["body"]["client_metadata"]["x-codex-installation-id"],
+            "pycodex-local-exec",
+        )
+        self.assertEqual(stdout.getvalue(), "smoke\n")
+
+    def test_main_exec_local_http_smoke_uses_openai_base_url(self) -> None:
+        previous_enabled = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP")
+        previous_key = os.environ.get("OPENAI_API_KEY")
+        previous_base_url = os.environ.get("OPENAI_BASE_URL")
+        os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = "1"
+        os.environ["OPENAI_API_KEY"] = "sk-smoke"
+        os.environ["OPENAI_BASE_URL"] = "https://proxy.example/v1"
+
+        seen = {}
+
+        class FakeResponse:
+            def read(self) -> bytes:
+                return json.dumps({"output": []}).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        def opener(request):
+            seen["url"] = request.full_url
+            return FakeResponse()
+
+        try:
+            with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                    stdout = io.StringIO()
+                    stderr = io.StringIO()
+                    code = main(["exec", "prompt"], stdout=stdout, stderr=stderr)
+        finally:
+            if previous_enabled is None:
+                os.environ.pop("PYCODEX_EXEC_LOCAL_HTTP", None)
+            else:
+                os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = previous_enabled
+            if previous_key is None:
+                os.environ.pop("OPENAI_API_KEY", None)
+            else:
+                os.environ["OPENAI_API_KEY"] = previous_key
+            if previous_base_url is None:
+                os.environ.pop("OPENAI_BASE_URL", None)
+            else:
+                os.environ["OPENAI_BASE_URL"] = previous_base_url
+
+        self.assertEqual(code, 0)
+        self.assertEqual(seen["url"], "https://proxy.example/v1/responses")
+
+    def test_main_exec_resume_local_http_smoke_posts_expected_request(self) -> None:
+        previous_enabled = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP")
+        previous_key = os.environ.get("OPENAI_API_KEY")
+        os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = "1"
+        os.environ["OPENAI_API_KEY"] = "sk-smoke"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            thread_id = "aaaaaaaa-1111-2222-3333-444444444444"
+            rollout_path = materialize_session_rollout(
+                codex_home,
+                SessionMeta(
+                    id=thread_id,
+                    timestamp="2025-01-02T03:04:05Z",
+                    cwd="C:/work/resume",
+                    originator="codex_exec",
+                    cli_version="test-version",
+                    source="cli",
+                    model_provider="openai",
+                ),
+            )
+            self.assertIsNotNone(rollout_path)
+            assert rollout_path is not None
+            with rollout_path.open("a", encoding="utf-8", newline="\n") as file:
+                file.write(
+                    json.dumps(
+                        {
+                            "timestamp": "2025-01-02T03:04:05Z",
+                            "type": "response_item",
+                            "payload": {
+                                "type": "message",
+                                "role": "user",
+                                "content": [{"type": "input_text", "text": "before smoke"}],
+                            },
+                        }
+                    )
+                    + "\n"
+                )
+
+            seen = {}
+
+            class FakeResponse:
+                def read(self) -> bytes:
+                    return json.dumps({"output": []}).encode("utf-8")
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, _exc_type, _exc, _tb) -> None:
+                    return None
+
+            def opener(request):
+                seen["url"] = request.full_url
+                seen["headers"] = dict(request.header_items())
+                seen["body"] = json.loads(request.data.decode("utf-8"))
+                return FakeResponse()
+
+            try:
+                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                    with patch.dict(os.environ, {"CODEX_HOME": tmpdir}):
+                        with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                            stdout = io.StringIO()
+                            stderr = io.StringIO()
+                            code = main(["exec", "resume", thread_id, "hello"], stdout=stdout, stderr=stderr)
+            finally:
+                if previous_enabled is None:
+                    os.environ.pop("PYCODEX_EXEC_LOCAL_HTTP", None)
+                else:
+                    os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = previous_enabled
+                if previous_key is None:
+                    os.environ.pop("OPENAI_API_KEY", None)
+                else:
+                    os.environ["OPENAI_API_KEY"] = previous_key
+
+            self.assertEqual(code, 0)
+            self.assertEqual(seen["url"], "https://api.openai.com/v1/responses")
+            headers = {key.lower(): value for key, value in seen["headers"].items()}
+            self.assertEqual(headers["authorization"], "Bearer sk-smoke")
+            self.assertEqual(headers["x-codex-installation-id"], "pycodex-local-exec")
+            self.assertIn("x-codex-window-id", headers)
+            self.assertIn("client_metadata", seen["body"])
+            self.assertEqual(
+                seen["body"]["client_metadata"]["x-codex-installation-id"],
+                "pycodex-local-exec",
+            )
+            self.assertEqual(seen["body"]["input"][-1]["content"][0]["text"], "hello")
+            self.assertIn("input", seen["body"])
 
     def test_main_exec_local_http_json_outputs_thread_and_turn_events(self):
         previous_enabled = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP")

@@ -17,12 +17,16 @@ from typing import Any
 from pycodex.core.client import ModelClient
 from pycodex.core.codex_thread import SessionSettingsUpdate
 from pycodex.core.features import Feature
+from pycodex.core.string_utils import truncate_middle_with_token_budget
 from pycodex.core.original_image_detail import can_request_original_image_detail
 from pycodex.core.spec_plan import build_environment_tool_router_from_turn_context
 from pycodex.core.tool_parallel import ToolCallRuntime
 from pycodex.core.tool_router import ToolRouter
 from pycodex.core.turn_request import TurnResponsesRequestPlan, build_turn_responses_request
 from pycodex.protocol import BaseInstructions, ContentItem, Op, ResponseInputItem, ResponseItem, ThreadSettingsOverrides, UserInput
+
+
+MAX_ADDITIONAL_CONTEXT_TOKENS = 1000
 
 
 BuiltToolsFn = Callable[[Any, Any], Any | Awaitable[Any]]
@@ -454,9 +458,19 @@ def _additional_context_response_items(sess: Any, value: Mapping[str, Any] | Non
         if previous.get(key) == (kind, context_value):
             continue
         if kind == "untrusted":
-            items.append(ResponseItem.message("user", (ContentItem.input_text(f"<external_{key}>{context_value}</external_{key}>"),)))
+            items.append(
+                ResponseItem.message(
+                    "user",
+                    (ContentItem.input_text(f"<external_{key}>{context_value}</external_{key}>"),),
+                )
+            )
         elif kind == "application":
-            items.append(ResponseItem.message("developer", (ContentItem.input_text(f"<{key}>{context_value}</{key}>"),)))
+            items.append(
+                ResponseItem.message(
+                    "developer",
+                    (ContentItem.input_text(f"<{key}>{context_value}</{key}>"),),
+                )
+            )
         else:
             raise ValueError(f"unknown additional_context kind: {kind}")
     try:
@@ -479,6 +493,7 @@ def _normalize_additional_context(value: Mapping[str, Any]) -> dict[str, tuple[s
             raise TypeError("additional_context entry kind must be a string")
         if not isinstance(context_value, str):
             raise TypeError("additional_context entry value must be a string")
+        context_value = truncate_middle_with_token_budget(context_value, MAX_ADDITIONAL_CONTEXT_TOKENS)[0]
         normalized[key] = (kind, context_value)
     return normalized
 

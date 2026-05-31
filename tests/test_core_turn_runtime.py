@@ -348,6 +348,122 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.recorded[1][0].content[0].text, "hello")
         self.assertIn("<external_a_note>untrusted context</external_a_note>", plan.request["input"][1].content[0].text)
 
+    async def test_build_user_input_op_request_truncates_large_additional_context_values(self) -> None:
+        session = Session()
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        max_expected_context_text_bytes = 5 * 1024
+        long_browser_value = f"browser-head-{'x' * 40_000}-browser-tail"
+        long_app_value = f"app-head-{'y' * 40_000}-app-tail"
+
+        plan = await build_user_input_op_responses_request_from_session(
+            session,
+            Op.user_input(
+                (UserInput.text_input("hello"),),
+                additional_context={
+                    "browser_info": {"kind": "untrusted", "value": long_browser_value},
+                    "app": {"kind": "application", "value": long_app_value},
+                },
+            ),
+            client,
+            provider,
+            model_info,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        developer_text = session.recorded[0][0].content[0].text
+        user_text = session.recorded[0][1].content[0].text
+        user_request_input = plan.request["input"]
+
+        self.assertIn("tokens truncated", developer_text)
+        self.assertIn("tokens truncated", user_text)
+        self.assertLess(len(developer_text), len(long_app_value) + len("<app></app>"))
+        self.assertLess(len(user_text), len(long_browser_value) + len("<external_browser_info></external_browser_info>"))
+        self.assertIn("<app>", developer_text)
+        self.assertIn("</app>", developer_text)
+        self.assertIn("<external_browser_info>", user_text)
+        self.assertIn("</external_browser_info>", user_text)
+        request_app_text = None
+        request_browser_text = None
+        for item in user_request_input:
+            text = item.content[0].text
+            if "tokens truncated" in text and "<app>" in text:
+                request_app_text = text
+            if "tokens truncated" in text and "<external_browser_info>" in text:
+                request_browser_text = text
+        self.assertIsNotNone(request_app_text)
+        self.assertIsNotNone(request_browser_text)
+        self.assertIn("<app>", request_app_text)
+        self.assertIn("</app>", request_app_text)
+        self.assertIn("tokens truncated", request_app_text)
+        self.assertIn("<external_browser_info>", request_browser_text)
+        self.assertIn("</external_browser_info>", request_browser_text)
+        self.assertIn("tokens truncated", request_browser_text)
+        self.assertLessEqual(len(request_app_text), max_expected_context_text_bytes)
+        self.assertLessEqual(len(request_browser_text), max_expected_context_text_bytes)
+        self.assertIn(f"<app>app-head-{\"y\" * 1024}", request_app_text)
+        self.assertIn(f"<external_browser_info>browser-head-{\"x\" * 1024}", request_browser_text)
+        self.assertTrue(request_app_text.endswith("app-tail</app>"))
+        self.assertTrue(request_browser_text.endswith("browser-tail</external_browser_info>"))
+        self.assertTrue(
+            any(item.role == "user" and item.content[0].text == "hello" for item in user_request_input),
+            "user input should still appear in request input sequence",
+        )
+
+    async def test_build_user_input_op_request_rejects_unknown_additional_context_kind(self) -> None:
+        session = Session()
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+
+        with self.assertRaises(ValueError):
+            await build_user_input_op_responses_request_from_session(
+                session,
+                Op.user_input(
+                    (UserInput.text_input("hello"),),
+                    additional_context={"app": {"kind": "internal", "value": "bad"}},
+                ),
+                client,
+                provider,
+                model_info,
+                built_tools=lambda _sess, _turn: Router(),
+            )
+
+    async def test_build_user_input_op_request_rejects_non_string_additional_context_value(self) -> None:
+        session = Session()
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+
+        with self.assertRaises(TypeError):
+            await build_user_input_op_responses_request_from_session(
+                session,
+                Op.user_input(
+                    (UserInput.text_input("hello"),),
+                    additional_context={"app": {"kind": "application", "value": 123}},
+                ),
+                client,
+                provider,
+                model_info,
+                built_tools=lambda _sess, _turn: Router(),
+            )
+
     async def test_build_user_input_op_request_applies_turn_environments_before_turn_creation(self) -> None:
         session = Session()
         client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
@@ -488,6 +604,160 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.recorded[0][0].content[0].text, "<app>context v1</app>")
         self.assertEqual(session.recorded[1][0].content[0].text, "<app>context v2</app>")
 
+    async def test_additional_context_removes_one_value_while_adding_another(self) -> None:
+        session = Session()
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        first = Op.user_input(
+            (UserInput.text_input("first turn"),),
+            additional_context={
+                "automation_info": {"kind": "untrusted", "value": "run one"},
+                "browser_info": {"kind": "untrusted", "value": "tab one"},
+            },
+        )
+        second = Op.user_input(
+            (UserInput.text_input("second turn"),),
+            additional_context={
+                "automation_info": {"kind": "untrusted", "value": "run one"},
+                "terminal_info": {"kind": "untrusted", "value": "pty one"},
+            },
+        )
+        third = Op.user_input(
+            (UserInput.text_input("third turn"),),
+            additional_context={
+                "automation_info": {"kind": "untrusted", "value": "run one"},
+                "browser_info": {"kind": "untrusted", "value": "tab one"},
+                "terminal_info": {"kind": "untrusted", "value": "pty one"},
+            },
+        )
+
+        first_plan = await build_user_input_op_responses_request_from_session(
+            session,
+            first,
+            client,
+            provider,
+            model_info,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+        second_plan = await build_user_input_op_responses_request_from_session(
+            session,
+            second,
+            client,
+            provider,
+            model_info,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+        third_plan = await build_user_input_op_responses_request_from_session(
+            session,
+            third,
+            client,
+            provider,
+            model_info,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        def user_texts(plan):
+            return [item.content[0].text for item in plan.request["input"] if item.role == "user"]
+
+        self.assertEqual(
+            user_texts(first_plan),
+            [
+                "<external_automation_info>run one</external_automation_info>",
+                "<external_browser_info>tab one</external_browser_info>",
+                "first turn",
+            ],
+        )
+        self.assertEqual(
+            user_texts(second_plan),
+            [
+                "<external_automation_info>run one</external_automation_info>",
+                "<external_browser_info>tab one</external_browser_info>",
+                "first turn",
+                "<external_terminal_info>pty one</external_terminal_info>",
+                "second turn",
+            ],
+        )
+        self.assertEqual(
+            user_texts(third_plan),
+            [
+                "<external_automation_info>run one</external_automation_info>",
+                "<external_browser_info>tab one</external_browser_info>",
+                "first turn",
+                "<external_terminal_info>pty one</external_terminal_info>",
+                "second turn",
+                "<external_browser_info>tab one</external_browser_info>",
+                "third turn",
+            ],
+        )
+
+    async def test_additional_context_empty_map_clears_then_readds_values(self) -> None:
+        session = Session()
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        with_context = Op.user_input(
+            (UserInput.text_input("first"),),
+            additional_context={"app": {"kind": "application", "value": "context"}},
+        )
+        cleared = Op.user_input((UserInput.text_input("cleared"),), additional_context={})
+        restored = Op.user_input(
+            (UserInput.text_input("restored"),),
+            additional_context={"app": {"kind": "application", "value": "context"}},
+        )
+
+        first_plan = await build_user_input_op_responses_request_from_session(
+            session,
+            with_context,
+            client,
+            provider,
+            model_info,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+        cleared_plan = await build_user_input_op_responses_request_from_session(
+            session,
+            cleared,
+            client,
+            provider,
+            model_info,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+        restored_plan = await build_user_input_op_responses_request_from_session(
+            session,
+            restored,
+            client,
+            provider,
+            model_info,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        first_user_texts = [item.content[0].text for item in first_plan.request["input"] if item.role == "user"]
+        cleared_user_texts = [item.content[0].text for item in cleared_plan.request["input"] if item.role == "user"]
+        restored_user_texts = [item.content[0].text for item in restored_plan.request["input"] if item.role == "user"]
+
+        self.assertEqual(first_user_texts, ["first"])
+        self.assertEqual(cleared_user_texts, ["first", "cleared"])
+        self.assertEqual(restored_user_texts, ["first", "cleared", "restored"])
+
+        self.assertIn("<app>context</app>", [item.content[0].text for item in first_plan.request["input"] if item.role == "developer"])
+        self.assertTrue(any(item.role == "user" and item.content[0].text == "cleared" for item in cleared_plan.request["input"]))
+        self.assertFalse(any(
+            item.role == "developer" and item.content[0].text == "<app>context</app>"
+            for item in cleared_plan.request["input"]
+        ))
+        self.assertIn("<app>context</app>", [item.content[0].text for item in restored_plan.request["input"] if item.role == "developer"])
+        self.assertTrue(any(item.role == "user" and item.content[0].text == "restored" for item in restored_plan.request["input"]))
+
     async def test_build_user_input_op_request_clears_additional_context_when_absent(self) -> None:
         session = Session()
         client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
@@ -511,7 +781,23 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
             model_info,
             built_tools=lambda _sess, _turn: Router(),
         )
-        await build_user_input_op_responses_request_from_session(
+        first_plan = await build_user_input_op_responses_request_from_session(
+            session,
+            with_context,
+            client,
+            provider,
+            model_info,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+        second_plan = await build_user_input_op_responses_request_from_session(
+            session,
+            Op.user_input((UserInput.text_input("hello"),)),
+            client,
+            provider,
+            model_info,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+        third_plan = await build_user_input_op_responses_request_from_session(
             session,
             Op.user_input(()),
             client,
@@ -519,7 +805,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
             model_info,
             built_tools=lambda _sess, _turn: Router(),
         )
-        await build_user_input_op_responses_request_from_session(
+        fourth_plan = await build_user_input_op_responses_request_from_session(
             session,
             with_context,
             client,
@@ -528,6 +814,13 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
             built_tools=lambda _sess, _turn: Router(),
         )
 
+        def user_texts(plan):
+            return [item.content[0].text for item in plan.request["input"] if item.role == "user"]
+
+        self.assertEqual(user_texts(first_plan), [])
+        self.assertEqual(user_texts(second_plan), ["hello"])
+        self.assertEqual(user_texts(third_plan), ["hello"])
+        self.assertEqual(user_texts(fourth_plan), ["hello"])
         self.assertEqual(len(session.recorded), 2)
         self.assertEqual(session.recorded[0][0].content[0].text, "<app>context</app>")
         self.assertEqual(session.recorded[1][0].content[0].text, "<app>context</app>")

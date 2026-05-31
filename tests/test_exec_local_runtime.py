@@ -484,6 +484,80 @@ class FakeToolCallWithEmptyAdditionalPermissionsResponse:
         return None
 
 
+class FakeToolCallWithEmptyObjectAdditionalPermissionsResponse:
+    def read(self) -> bytes:
+        return json.dumps(
+            {
+                "output": [
+                    {
+                        "type": "function_call",
+                        "name": "shell",
+                        "arguments": "{\"command\":\"pwd\",\"sandbox_permissions\":\"with_additional_permissions\",\"additional_permissions\":{}}",
+                        "call_id": "call-1",
+                    }
+                ]
+            }
+        ).encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb) -> None:
+        return None
+
+
+class FakeToolCallWithNullAdditionalPermissionsResponse:
+    def read(self) -> bytes:
+        return json.dumps(
+            {
+                "output": [
+                    {
+                        "type": "function_call",
+                        "name": "shell",
+                        "arguments": (
+                            "{\"command\":\"pwd\","
+                            "\"sandbox_permissions\":\"with_additional_permissions\","
+                            "\"additional_permissions\":null}"
+                        ),
+                        "call_id": "call-1",
+                    }
+                ]
+            }
+        ).encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb) -> None:
+        return None
+
+
+class FakeToolCallWithInvalidAdditionalPermissionsResponse:
+    def read(self) -> bytes:
+        return json.dumps(
+            {
+                "output": [
+                    {
+                        "type": "function_call",
+                        "name": "shell",
+                        "arguments": (
+                            "{\"command\":\"pwd\","
+                            "\"sandbox_permissions\":\"with_additional_permissions\","
+                            "\"additional_permissions\":[]}"
+                        ),
+                        "call_id": "call-1",
+                    }
+                ]
+            }
+        ).encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb) -> None:
+        return None
+
+
 class FakeToolCallWithRequireEscalatedResponse:
     def read(self) -> bytes:
         return json.dumps(
@@ -970,10 +1044,15 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen["url"], "https://api.example.test/v1/responses")
         self.assertEqual(seen["headers"]["Authorization"], "Bearer sk-env")
         headers = {key.lower(): value for key, value in seen["headers"].items()}
+        self.assertEqual(headers["x-codex-installation-id"], "pycodex-local-exec")
+        self.assertIn("x-codex-window-id", headers)
         self.assertTrue(headers["X-codex-window-id".lower()].endswith(":0"))
         self.assertEqual(seen["body"]["client_metadata"]["x-codex-installation-id"], "pycodex-local-exec")
         self.assertEqual(seen["body"]["model"], "gpt-env")
         self.assertEqual(final_text_from_response_items(result.response_items), "done")
+        self.assertTrue(local_http_exec_enabled({"OPENAI_API_KEY": "sk-env"}))
+        self.assertTrue(local_http_exec_enabled({"CODEX_API_KEY": "sk-codex"}))
+        self.assertFalse(local_http_exec_enabled({"PYCODEX_EXEC_LOCAL_HTTP": "0", "OPENAI_API_KEY": "sk-env"}))
 
         stdout = io.StringIO()
         emit_local_http_exec_result(
@@ -2180,6 +2259,23 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(empty_profile[0]["success"])
         self.assertIn("permission_request_invalid", empty_profile[0]["output"])
         self.assertIn("must include at least one requested permission", empty_profile[0]["output"])
+
+        empty_profile_object = await run_with(lambda _request: FakeToolCallWithEmptyObjectAdditionalPermissionsResponse())
+        self.assertFalse(empty_profile_object[0]["success"])
+        self.assertIn("permission_request_invalid", empty_profile_object[0]["output"])
+        self.assertIn("must include at least one requested permission", empty_profile_object[0]["output"])
+
+        null_profile = await run_with(lambda _request: FakeToolCallWithNullAdditionalPermissionsResponse())
+        self.assertFalse(null_profile[0]["success"])
+        self.assertIn("permission_request_invalid", null_profile[0]["output"])
+        self.assertIn("missing `additional_permissions`", null_profile[0]["output"])
+
+        invalid_profile_type = await run_with(
+            lambda _request: FakeToolCallWithInvalidAdditionalPermissionsResponse()
+        )
+        self.assertFalse(invalid_profile_type[0]["success"])
+        self.assertIn("permission_request_invalid", invalid_profile_type[0]["output"])
+        self.assertIn("additional_permissions` must be an object mapping permissions", invalid_profile_type[0]["output"])
 
     async def test_local_http_exec_shell_tool_approval_output_preserves_prefix_rule(self) -> None:
         def rejecting_runner(_command, **_kwargs):
@@ -3429,6 +3525,13 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         resolved = default_local_http_exec_auth(auth=auth, env={"OPENAI_API_KEY": "sk-env"})
 
         self.assertEqual(resolved, "sk-env")
+
+    def test_default_local_http_auth_uses_auth_openai_api_key_value(self) -> None:
+        auth = type("Auth", (), {"openai_api_key": "sk-auth-json"})()
+
+        resolved = default_local_http_exec_auth(auth=auth)
+
+        self.assertEqual(resolved, "sk-auth-json")
 
     def test_default_local_http_auth_uses_codex_api_key_env_var(self) -> None:
         resolved = default_local_http_exec_auth(env={"CODEX_API_KEY": "sk-codex"})

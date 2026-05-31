@@ -445,6 +445,7 @@ class StdlibWebSocket:
     def __init__(self, sock: socket.socket, *, max_message_size: int = DEFAULT_MAX_WEBSOCKET_MESSAGE_SIZE) -> None:
         self._sock = sock
         self._max_message_size = max_message_size
+        self.handshake_response: WebSocketHandshakeResponse | None = None
 
     @classmethod
     def connect(
@@ -452,6 +453,7 @@ class StdlibWebSocket:
         websocket_url: str,
         *,
         auth_token: str | None = None,
+        extra_headers: dict[str, str] | None = None,
         timeout: float = 10.0,
         max_message_size: int = DEFAULT_MAX_WEBSOCKET_MESSAGE_SIZE,
     ) -> "StdlibWebSocket":
@@ -466,6 +468,7 @@ class StdlibWebSocket:
                 sock,
                 websocket_url,
                 auth_token=auth_token,
+                extra_headers=extra_headers,
                 max_message_size=max_message_size,
             )
         except Exception:
@@ -479,13 +482,23 @@ class StdlibWebSocket:
         websocket_url: str,
         *,
         auth_token: str | None = None,
+        extra_headers: dict[str, str] | None = None,
         max_message_size: int = DEFAULT_MAX_WEBSOCKET_MESSAGE_SIZE,
     ) -> "StdlibWebSocket":
         try:
             key = generate_websocket_key()
-            sock.sendall(build_websocket_handshake_request(websocket_url, key, auth_token=auth_token))
-            validate_websocket_handshake_response(read_http_headers(sock), key)
-            return cls(sock, max_message_size=max_message_size)
+            sock.sendall(
+                build_websocket_handshake_request(
+                    websocket_url,
+                    key,
+                    auth_token=auth_token,
+                    extra_headers=extra_headers,
+                )
+            )
+            handshake_response = validate_websocket_handshake_response(read_http_headers(sock), key)
+            websocket = cls(sock, max_message_size=max_message_size)
+            websocket.handshake_response = handshake_response
+            return websocket
         except Exception:
             sock.close()
             raise

@@ -244,10 +244,7 @@ class SandboxAttempt:
             raise TypeError("network_denial_cancellation_token must be CancellationToken or None")
 
     def env_for(self, *_args: Any, **_kwargs: Any) -> Any:
-        transform = getattr(self.manager, "transform", None)
-        if transform is None:
-            raise NotImplementedError("SandboxAttempt.env_for requires a manager with transform()")
-        return transform(*_args, **_kwargs)
+        return self.manager.transform(*_args, **_kwargs)
 
 
 def default_exec_approval_requirement(

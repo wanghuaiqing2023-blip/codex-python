@@ -65,6 +65,21 @@ The graph was generated for `codex/` only. Do not assume it describes `pycodex/`
 
 When deciding what to implement next, use the upstream knowledge graph dependency relationships as the first planning input, not just the most visible local gap.
 
+### Prompt to use for task planning
+
+Before choosing any new task, answer:
+
+> "Based on the upstream Rust dependency graph, which upstream module/function changes unblock the largest part of the `exec -> context -> model request -> stream handling -> tool dispatch -> final answer` path with the smallest safe slice, and what is the minimal Python-only implementation to preserve user-visible behavior?"
+
+Then apply this filter:
+
+1. Start from current user-facing blockers on the common runtime path.
+2. Use `codex/.understand-anything/knowledge-graph.json` to locate required Rust nodes and their `calls`/`imports`/`exports`.
+3. Rank by fan-in/fan-out on that path and unblock-depth.
+4. Implement only the highest-rank core slice if it is directly reachable from the graph path.
+5. Record any skipped peripherals as follow-up debt rather than parallel parity work.
+6. Confirm each claim against Rust source, not just Rust graph metadata.
+
 Priority workflow:
 
 - Start from core user-facing entrypoints such as `exec`, interactive task execution, request/response streaming, tool dispatch, and final answer generation.

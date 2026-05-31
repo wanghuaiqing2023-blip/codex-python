@@ -12,7 +12,14 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from urllib.parse import urljoin
 
-from pycodex.core.client import ModelClient, ModelClientSession, RESPONSES_ENDPOINT, build_responses_headers, build_session_headers, insert_header_if_valid
+from pycodex.core.client import (
+    ModelClient,
+    ModelClientSession,
+    RESPONSES_ENDPOINT,
+    build_responses_headers,
+    build_session_headers,
+    insert_header_if_valid,
+)
 from pycodex.core.turn_sampler import PreparedSamplingRequest, PreparedSamplingResult
 from pycodex.core.turn_sampler import sample_with_model_client_session
 from pycodex.core.turn_runtime import BuiltToolsFn, SamplerFn, UserTurnSamplingResult
@@ -45,18 +52,24 @@ def http_transport_config_from_provider(
     """Build HTTP transport config from provider/auth/model-client state."""
 
     resolved_endpoint = endpoint or _provider_responses_endpoint(provider)
-    headers = build_responses_headers(
-        model_client.state.beta_features_header,
-        None,
-        turn_metadata_header,
+    resolved_auth = auth if auth is not None else getattr(provider, "auth", None)
+    headers = model_client.build_compact_request_headers(
+        turn_metadata_header=turn_metadata_header,
+        auth=resolved_auth,
     )
-    insert_header_if_valid(headers, "x-codex-installation-id", str(model_client.state.installation_id))
-    insert_header_if_valid(headers, "x-client-request-id", str(model_client.state.thread_id))
-    headers.update(build_session_headers(str(model_client.state.session_id), str(model_client.state.thread_id)))
-    headers.update(model_client.build_responses_identity_headers())
+    headers.update(
+        {
+            key: value
+            for key, value in build_responses_headers(
+                model_client.state.beta_features_header,
+                None,
+                turn_metadata_header,
+            ).items()
+            if key not in headers
+        }
+    )
     if model_client.state.include_timing_metrics:
         insert_header_if_valid(headers, "x-responsesapi-include-timing-metrics", "true")
-    headers.update(_auth_headers_from_value(auth if auth is not None else getattr(provider, "auth", None)))
     insert_header_if_valid(headers, "Originator", exec_originator_header_value())
     return HttpTransportConfig(resolved_endpoint, headers=headers, timeout=timeout)
 
@@ -155,39 +168,6 @@ def _provider_responses_endpoint(provider: Any) -> str:
     if not isinstance(base_url, str) or not base_url:
         raise ValueError("provider must define responses_endpoint, responses_url, endpoint, or base_url")
     return urljoin(base_url.rstrip("/") + "/", RESPONSES_ENDPOINT.lstrip("/"))
-
-
-def _auth_headers_from_value(auth: Any) -> dict[str, str]:
-    if auth is None:
-        return {}
-    if isinstance(auth, str):
-        return {"Authorization": f"Bearer {auth}"}
-    if isinstance(auth, Mapping):
-        if "headers" in auth:
-            return {str(key): str(value) for key, value in dict(auth.get("headers") or {}).items()}
-        if "api_key" in auth:
-            return {"Authorization": f"Bearer {auth['api_key']}"}
-        if "bearer_token" in auth:
-            return {"Authorization": f"Bearer {auth['bearer_token']}"}
-        return {str(key): str(value) for key, value in auth.items()}
-    to_auth_headers = getattr(auth, "to_auth_headers", None)
-    if callable(to_auth_headers):
-        return {str(key): str(value) for key, value in dict(to_auth_headers() or {}).items()}
-    add_auth_headers = getattr(auth, "add_auth_headers", None)
-    if callable(add_auth_headers):
-        headers: dict[str, str] = {}
-        add_auth_headers(headers)
-        return {str(key): str(value) for key, value in headers.items()}
-    api_key = getattr(auth, "api_key", None) or getattr(auth, "openai_api_key", None)
-    if isinstance(api_key, str) and api_key:
-        return {"Authorization": f"Bearer {api_key}"}
-    bearer_token = getattr(auth, "bearer_token", None) or getattr(auth, "access_token", None)
-    if isinstance(bearer_token, str) and bearer_token:
-        return {"Authorization": f"Bearer {bearer_token}"}
-    headers = getattr(auth, "headers", None)
-    if headers is not None:
-        return {str(key): str(value) for key, value in dict(headers or {}).items()}
-    return {}
 
 
 def exec_originator_header_value(env: Mapping[str, str] | None = None) -> str:
