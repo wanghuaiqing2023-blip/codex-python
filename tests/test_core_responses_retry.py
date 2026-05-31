@@ -117,6 +117,8 @@ class ResponsesRetryTests(unittest.TestCase):
     def test_retry_delay_rejects_bad_inputs(self) -> None:
         with self.assertRaisesRegex(TypeError, "err must be a CodexErr"):
             retry_delay_for_error(ValueError("x"), 1)  # type: ignore[arg-type]
+        with self.assertRaisesRegex(ValueError, "positive"):
+            retry_delay_for_error(CodexErr.stream("disconnect"), 0)
         with self.assertRaisesRegex(TypeError, "retry-after delay"):
             retry_delay_for_error(CodexErr.stream("disconnect", "later"), 1)
         with self.assertRaisesRegex(ValueError, "non-negative"):

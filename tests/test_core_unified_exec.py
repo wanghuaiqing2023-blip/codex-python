@@ -3,12 +3,16 @@ import unittest
 from pycodex.core import (
     DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS,
     DEFAULT_MAX_OUTPUT_TOKENS,
+    EARLY_EXIT_GRACE_PERIOD_MS,
     HeadTailBuffer,
+    MAX_EXEC_OUTPUT_DELTAS_PER_CALL,
     MAX_UNIFIED_EXEC_PROCESSES,
     MAX_YIELD_TIME_MS,
     MIN_EMPTY_YIELD_TIME_MS,
     MIN_YIELD_TIME_MS,
     ProcessState,
+    TRAILING_OUTPUT_GRACE_MS,
+    UNIFIED_EXEC_OUTPUT_DELTA_MAX_BYTES,
     UNIFIED_EXEC_OUTPUT_MAX_BYTES,
     UNIFIED_EXEC_OUTPUT_MAX_TOKENS,
     UNIFIED_EXEC_ENV,
@@ -16,10 +20,21 @@ from pycodex.core import (
     apply_unified_exec_env,
     clamp_yield_time,
     env_overlay_for_exec_server,
+    exec_server_after_seq,
     exec_server_process_id,
+    exec_server_write_status_accepted,
+    exec_server_write_status_marks_exited,
     generate_chunk_id,
     process_id_to_prune_from_meta,
+    resolve_aggregated_output,
+    resolve_failed_aggregated_output,
     resolve_max_tokens,
+    resolve_write_stdin_yield_time,
+    should_emit_exec_output_delta,
+    should_emit_terminal_interaction,
+    split_valid_utf8_prefix,
+    split_valid_utf8_prefix_with_max,
+    terminal_interaction_process_id,
 )
 from pycodex.protocol import ExecToolCallOutput, StreamOutput
 
@@ -103,13 +118,81 @@ class CoreUnifiedExecHeadTailBufferTests(unittest.TestCase):
         self.assertEqual(MAX_YIELD_TIME_MS, 30_000)
         self.assertEqual(DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS, 300_000)
         self.assertEqual(DEFAULT_MAX_OUTPUT_TOKENS, 10_000)
+        self.assertEqual(EARLY_EXIT_GRACE_PERIOD_MS, 150)
+        self.assertEqual(TRAILING_OUTPUT_GRACE_MS, 100)
+        self.assertEqual(UNIFIED_EXEC_OUTPUT_DELTA_MAX_BYTES, 8192)
+        self.assertEqual(MAX_EXEC_OUTPUT_DELTAS_PER_CALL, 10_000)
         self.assertEqual(MAX_UNIFIED_EXEC_PROCESSES, 64)
+
+    def test_should_emit_exec_output_delta_uses_upstream_count_cap(self) -> None:
+        self.assertTrue(should_emit_exec_output_delta(0))
+        self.assertTrue(should_emit_exec_output_delta(MAX_EXEC_OUTPUT_DELTAS_PER_CALL - 1))
+        self.assertFalse(should_emit_exec_output_delta(MAX_EXEC_OUTPUT_DELTAS_PER_CALL))
+        with self.assertRaises(TypeError):
+            should_emit_exec_output_delta(True)  # type: ignore[arg-type]
+
+    def test_resolve_aggregated_output_uses_fallback_only_when_buffer_empty(self) -> None:
+        buffer = HeadTailBuffer.new(20)
+
+        self.assertEqual(resolve_aggregated_output(buffer, "fallback"), "fallback")
+
+        buffer.push_chunk(b"real output")
+        self.assertEqual(resolve_aggregated_output(buffer, "fallback"), "real output")
+
+    def test_resolve_aggregated_output_decodes_lossy_utf8_like_rust(self) -> None:
+        buffer = HeadTailBuffer.new(20)
+        buffer.push_chunk(b"ok\xffdone")
+
+        self.assertEqual(resolve_aggregated_output(buffer, "fallback"), "ok\ufffddone")
+
+    def test_resolve_failed_aggregated_output_matches_watcher_failure_join(self) -> None:
+        self.assertEqual(resolve_failed_aggregated_output("", "failed"), "failed")
+        self.assertEqual(resolve_failed_aggregated_output("stdout", "failed"), "stdout\nfailed")
+        with self.assertRaises(TypeError):
+            resolve_failed_aggregated_output(b"stdout", "failed")  # type: ignore[arg-type]
+
+    def test_terminal_interaction_helpers_match_write_stdin_event_boundary(self) -> None:
+        self.assertTrue(should_emit_terminal_interaction("input\n", None))
+        self.assertTrue(should_emit_terminal_interaction("", 45))
+        self.assertFalse(should_emit_terminal_interaction("", None))
+        self.assertEqual(terminal_interaction_process_id(None, 45), 45)
+        self.assertEqual(terminal_interaction_process_id(46, 45), 46)
+        with self.assertRaises(TypeError):
+            should_emit_terminal_interaction(b"input", None)  # type: ignore[arg-type]
+
+    def test_split_valid_utf8_prefix_caps_delta_and_drains_buffer(self) -> None:
+        buffer = bytearray("abc甲乙".encode("utf-8"))
+
+        prefix = split_valid_utf8_prefix_with_max(buffer, 5)
+
+        self.assertEqual(prefix, b"abc")
+        self.assertEqual(buffer.decode("utf-8"), "甲乙")
+
+    def test_split_valid_utf8_prefix_makes_progress_for_incomplete_multibyte(self) -> None:
+        buffer = bytearray("甲".encode("utf-8")[:2])
+
+        prefix = split_valid_utf8_prefix(buffer)
+
+        self.assertEqual(prefix, b"\xe7")
+        self.assertEqual(buffer, bytearray(b"\x94"))
+
+    def test_split_valid_utf8_prefix_returns_none_for_empty_buffer(self) -> None:
+        self.assertIsNone(split_valid_utf8_prefix(bytearray()))
 
     def test_clamp_yield_time_uses_upstream_bounds(self) -> None:
         self.assertEqual(clamp_yield_time(0), MIN_YIELD_TIME_MS)
         self.assertEqual(clamp_yield_time(MIN_YIELD_TIME_MS - 1), MIN_YIELD_TIME_MS)
         self.assertEqual(clamp_yield_time(2_500), 2_500)
         self.assertEqual(clamp_yield_time(MAX_YIELD_TIME_MS + 1), MAX_YIELD_TIME_MS)
+
+    def test_resolve_write_stdin_yield_time_uses_empty_poll_bounds(self) -> None:
+        self.assertEqual(resolve_write_stdin_yield_time("input", 0), MIN_YIELD_TIME_MS)
+        self.assertEqual(resolve_write_stdin_yield_time("input", 2_500), 2_500)
+        self.assertEqual(resolve_write_stdin_yield_time("", 0), MIN_EMPTY_YIELD_TIME_MS)
+        self.assertEqual(
+            resolve_write_stdin_yield_time("", DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS + 1),
+            DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS,
+        )
 
     def test_resolve_max_tokens_uses_default_only_when_missing(self) -> None:
         self.assertEqual(resolve_max_tokens(None), DEFAULT_MAX_OUTPUT_TOKENS)
@@ -209,6 +292,26 @@ class CoreUnifiedExecHeadTailBufferTests(unittest.TestCase):
 
     def test_exec_server_process_id_matches_unified_exec_process_id(self) -> None:
         self.assertEqual(exec_server_process_id(4321), "4321")
+
+    def test_exec_server_after_seq_matches_checked_sub_boundary(self) -> None:
+        self.assertIsNone(exec_server_after_seq(None))
+        self.assertIsNone(exec_server_after_seq(0))
+        self.assertEqual(exec_server_after_seq(1), 0)
+        self.assertEqual(exec_server_after_seq(42), 41)
+        with self.assertRaises(TypeError):
+            exec_server_after_seq(True)  # type: ignore[arg-type]
+
+    def test_exec_server_write_status_helpers_match_rust_boundaries(self) -> None:
+        self.assertTrue(exec_server_write_status_accepted("Accepted"))
+        self.assertFalse(exec_server_write_status_accepted("Starting"))
+        self.assertFalse(exec_server_write_status_accepted("UnknownProcess"))
+        self.assertFalse(exec_server_write_status_accepted("StdinClosed"))
+        self.assertFalse(exec_server_write_status_marks_exited("Accepted"))
+        self.assertFalse(exec_server_write_status_marks_exited("Starting"))
+        self.assertTrue(exec_server_write_status_marks_exited("UnknownProcess"))
+        self.assertTrue(exec_server_write_status_marks_exited("StdinClosed"))
+        with self.assertRaises(TypeError):
+            exec_server_write_status_accepted(None)  # type: ignore[arg-type]
 
     def test_process_pruning_prefers_exited_processes_outside_recently_used(self) -> None:
         meta = [

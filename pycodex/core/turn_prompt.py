@@ -39,7 +39,9 @@ def build_turn_prompt(
     return Prompt(
         input=input_items,
         tools=list(tools),
+        parallel_tool_calls=_supports_parallel_tool_calls(turn_context),
         base_instructions=base_instructions,
+        personality=getattr(turn_context, "personality", None),
         output_schema=output_schema,
         output_schema_strict=output_schema_strict,
     )
@@ -68,6 +70,11 @@ def render_turn_user_instructions(turn_context: Any) -> ResponseItem | None:
         return None
     directory = str(getattr(turn_context, "cwd", ""))
     return UserInstructions(directory=directory, text=text).into_response_item()
+
+
+def _supports_parallel_tool_calls(turn_context: Any) -> bool:
+    model_info = getattr(turn_context, "model_info", None)
+    return bool(getattr(model_info, "supports_parallel_tool_calls", False))
 
 
 __all__ = [

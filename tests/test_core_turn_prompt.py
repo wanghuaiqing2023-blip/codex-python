@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 
 from pycodex.core.turn_prompt import build_turn_prompt, input_with_user_instructions, render_turn_user_instructions
-from pycodex.protocol import BaseInstructions, ContentItem, ResponseItem
+from pycodex.protocol import BaseInstructions, ContentItem, Personality, ResponseItem
 
 
 class Router:
@@ -45,6 +45,20 @@ class TurnPromptTests(unittest.TestCase):
         self.assertEqual(prompt.input, [item])
         self.assertEqual(prompt.tools, [{"name": "tool"}])
         self.assertEqual(prompt.base_instructions, base)
+
+    def test_build_turn_prompt_carries_model_parallel_tools_and_personality(self) -> None:
+        context = SimpleNamespace(
+            user_instructions=None,
+            cwd="C:/work/project",
+            model_info=SimpleNamespace(supports_parallel_tool_calls=True),
+            personality=Personality.FRIENDLY,
+        )
+        item = ResponseItem.message("user", (ContentItem.input_text("hello"),))
+
+        prompt = build_turn_prompt([item], Router(), context, BaseInstructions("base"))
+
+        self.assertTrue(prompt.parallel_tool_calls)
+        self.assertEqual(prompt.personality, Personality.FRIENDLY)
 
 
 if __name__ == "__main__":

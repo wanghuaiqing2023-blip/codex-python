@@ -47,6 +47,9 @@ class CoreToolRuntime:
     def tool_name(self) -> ToolName:
         raise NotImplementedError("CoreToolRuntime subclasses must implement tool_name()")
 
+    def handle(self, invocation: "ToolInvocation") -> Any:
+        raise NotImplementedError("CoreToolRuntime subclasses must implement handle()")
+
     def spec(self) -> JsonValue:
         return None
 
@@ -58,6 +61,9 @@ class CoreToolRuntime:
 
     def waits_for_runtime_cancellation(self) -> bool:
         return False
+
+    def telemetry_tags(self, invocation: "ToolInvocation") -> tuple[tuple[str, str], ...]:
+        return ()
 
     def search_info(self) -> Any:
         return None
@@ -72,6 +78,9 @@ class CoreToolRuntime:
 
     def post_tool_use_payload(self, invocation: "ToolInvocation", result: Any) -> "PostToolUsePayload | None":
         return post_tool_use_payload(invocation, result)
+
+    def with_updated_hook_input(self, invocation: "ToolInvocation", updated_input: JsonValue) -> "ToolInvocation":
+        return with_updated_hook_input(invocation, updated_input)
 
     def create_diff_consumer(self) -> Any:
         return None
@@ -170,6 +179,9 @@ class ExposureOverride(CoreToolRuntime):
     def tool_name(self) -> ToolName:
         return _runtime_tool_name(self.handler)
 
+    def handle(self, invocation: "ToolInvocation") -> Any:
+        return _runtime_handle(self.handler, invocation)
+
     def spec(self) -> JsonValue:
         return _runtime_spec(self.handler)
 
@@ -182,6 +194,9 @@ class ExposureOverride(CoreToolRuntime):
     def waits_for_runtime_cancellation(self) -> bool:
         return _runtime_waits_for_runtime_cancellation(self.handler)
 
+    def telemetry_tags(self, invocation: "ToolInvocation") -> Any:
+        return _runtime_telemetry_tags(self.handler, invocation)
+
     def matches_kind(self, payload: ToolPayload) -> bool:
         return _runtime_matches_kind(self.handler, payload)
 
@@ -190,6 +205,9 @@ class ExposureOverride(CoreToolRuntime):
 
     def post_tool_use_payload(self, invocation: "ToolInvocation", result: Any) -> "PostToolUsePayload | None":
         return _runtime_post_tool_use_payload(self.handler, invocation, result)
+
+    def with_updated_hook_input(self, invocation: "ToolInvocation", updated_input: JsonValue) -> "ToolInvocation":
+        return _runtime_with_updated_hook_input(self.handler, invocation, updated_input)
 
     def search_info(self) -> Any:
         return _runtime_search_info(self.handler)
@@ -528,6 +546,15 @@ def _runtime_tool_name(handler: Any) -> ToolName:
         raise TypeError("registered tool must expose a ToolName via tool_name() or name") from err
 
 
+def _runtime_handle(handler: Any, invocation: ToolInvocation) -> Any:
+    if not isinstance(invocation, ToolInvocation):
+        raise TypeError("invocation must be ToolInvocation")
+    method = getattr(handler, "handle", None)
+    if method is None:
+        raise TypeError("registered tool must expose handle(invocation)")
+    return method(invocation)
+
+
 def _runtime_spec(handler: Any) -> JsonValue:
     return _call_or_get(handler, "spec", None)
 
@@ -548,6 +575,15 @@ def _runtime_waits_for_runtime_cancellation(handler: Any) -> bool:
     if not isinstance(value, bool):
         raise TypeError("waits_for_runtime_cancellation must return a bool")
     return value
+
+
+def _runtime_telemetry_tags(handler: Any, invocation: ToolInvocation) -> Any:
+    if not isinstance(invocation, ToolInvocation):
+        raise TypeError("invocation must be ToolInvocation")
+    method = getattr(handler, "telemetry_tags", None)
+    if method is None:
+        return ()
+    return method(invocation)
 
 
 def _runtime_matches_kind(handler: Any, payload: ToolPayload) -> bool:
@@ -587,6 +623,22 @@ def _runtime_post_tool_use_payload(
     value = method(invocation, result)
     if value is not None and not isinstance(value, PostToolUsePayload):
         raise TypeError("post_tool_use_payload must return PostToolUsePayload or None")
+    return value
+
+
+def _runtime_with_updated_hook_input(
+    handler: Any,
+    invocation: ToolInvocation,
+    updated_input: JsonValue,
+) -> ToolInvocation:
+    if not isinstance(invocation, ToolInvocation):
+        raise TypeError("invocation must be ToolInvocation")
+    method = getattr(handler, "with_updated_hook_input", None)
+    if method is None:
+        return with_updated_hook_input(invocation, updated_input)
+    value = method(invocation, updated_input)
+    if not isinstance(value, ToolInvocation):
+        raise TypeError("with_updated_hook_input must return ToolInvocation")
     return value
 
 

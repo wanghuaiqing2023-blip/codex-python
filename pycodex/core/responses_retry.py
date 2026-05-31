@@ -116,8 +116,8 @@ def retry_delay_for_error(err: CodexErr, retry_count: int) -> timedelta:
         raise TypeError("err must be a CodexErr")
     if isinstance(retry_count, bool) or not isinstance(retry_count, int):
         raise TypeError("retry_count must be an integer")
-    if retry_count < 0:
-        raise ValueError("retry_count must be non-negative")
+    if retry_count <= 0:
+        raise ValueError("retry_count must be positive")
     if err.kind == "stream":
         requested_delay = _requested_delay(err.payload)
         if requested_delay is not None:

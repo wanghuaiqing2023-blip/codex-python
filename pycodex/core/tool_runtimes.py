@@ -6,8 +6,13 @@ from dataclasses import dataclass
 from enum import Enum
 from datetime import timedelta
 from pathlib import Path
+import array
+import os
+import socket
+import subprocess
 import sys
-from typing import Any, Mapping
+import time
+from typing import Any, Iterable, Mapping
 
 from pycodex.core.exec import (
     CancellationToken,
@@ -20,6 +25,7 @@ from pycodex.core.sandbox_tags import SandboxType
 from pycodex.core.shell import Shell, ShellType
 from pycodex.core.hook_names import HookToolName
 from pycodex.core.tool_sandboxing import ExecApprovalRequirement, PermissionRequestPayload, SandboxAttempt, ToolError
+from pycodex.shell_command import parse_shell_lc_plain_commands, parse_shell_lc_single_command_prefix
 from pycodex.protocol import (
     AdditionalPermissionProfile,
     AskForApproval,
@@ -32,7 +38,9 @@ from pycodex.protocol import (
     FileSystemSandboxPolicy,
     GranularApprovalConfig,
     NetworkSandboxPolicy,
+    NetworkPolicyRuleAction,
     PermissionProfile,
+    ReviewDecision,
     SandboxPermissions,
     StreamOutput,
     ToolName,
@@ -53,6 +61,10 @@ PROXY_ENV_KEYS = (
 )
 PROXY_GIT_SSH_COMMAND_ENV_KEY = "GIT_SSH_COMMAND"
 CODEX_PROXY_GIT_SSH_COMMAND_MARKER = "codex-proxy-git-ssh"
+ESCALATE_SOCKET_ENV_VAR = "CODEX_ESCALATE_SOCKET"
+EXEC_WRAPPER_ENV_VAR = "EXEC_WRAPPER"
+SHELL_ESCALATE_HANDSHAKE_MESSAGE = b"\x00"
+SHELL_SOCKET_MAX_FDS_PER_MESSAGE = 16
 
 
 class ShellRuntimeBackend(str, Enum):
@@ -165,6 +177,1262 @@ class ParsedShellCommand:
             raise TypeError("script must be a string")
         if not isinstance(self.login, bool):
             raise TypeError("login must be a bool")
+
+
+@dataclass(frozen=True)
+class CandidateCommands:
+    commands: tuple[tuple[str, ...], ...]
+    used_complex_parsing: bool = False
+
+    def __post_init__(self) -> None:
+        commands = tuple(tuple(command) for command in self.commands)
+        if not all(all(isinstance(part, str) for part in command) for command in commands):
+            raise TypeError("commands must contain strings")
+        object.__setattr__(self, "commands", commands)
+        if not isinstance(self.used_complex_parsing, bool):
+            raise TypeError("used_complex_parsing must be a bool")
+
+
+@dataclass(frozen=True)
+class ShellEscalationExecution:
+    type: str
+    permission_profile: PermissionProfile | None = None
+
+    def __post_init__(self) -> None:
+        if self.type not in {"turn_default", "unsandboxed", "permissions"}:
+            raise ValueError(f"unknown shell escalation execution type: {self.type}")
+        if self.type == "permissions":
+            if not isinstance(self.permission_profile, PermissionProfile):
+                raise TypeError("permissions escalation requires a PermissionProfile")
+        elif self.permission_profile is not None:
+            raise ValueError(f"{self.type} escalation must not include a permission profile")
+
+    @classmethod
+    def turn_default(cls) -> "ShellEscalationExecution":
+        return cls("turn_default")
+
+    @classmethod
+    def unsandboxed(cls) -> "ShellEscalationExecution":
+        return cls("unsandboxed")
+
+    @classmethod
+    def permissions(cls, permission_profile: PermissionProfile) -> "ShellEscalationExecution":
+        return cls("permissions", permission_profile)
+
+
+@dataclass(frozen=True)
+class ShellEscalationDecision:
+    type: str
+    execution: ShellEscalationExecution | None = None
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.type not in {"run", "escalate", "deny", "prompt"}:
+            raise ValueError(f"unknown shell escalation decision type: {self.type}")
+        if self.type == "escalate":
+            if not isinstance(self.execution, ShellEscalationExecution):
+                raise TypeError("escalate decision requires ShellEscalationExecution")
+            if self.reason is not None:
+                raise ValueError("escalate decision must not include reason")
+        elif self.type == "prompt":
+            if self.execution is not None:
+                raise ValueError("prompt decision must not include execution")
+            if self.reason is not None and not isinstance(self.reason, str):
+                raise TypeError("reason must be a string or None")
+        elif self.type == "deny":
+            if self.execution is not None:
+                raise ValueError("deny decision must not include execution")
+            if self.reason is not None and not isinstance(self.reason, str):
+                raise TypeError("reason must be a string or None")
+        elif self.execution is not None or self.reason is not None:
+            raise ValueError("run decision must not include execution or reason")
+
+    @classmethod
+    def run(cls) -> "ShellEscalationDecision":
+        return cls("run")
+
+    @classmethod
+    def escalate(cls, execution: ShellEscalationExecution) -> "ShellEscalationDecision":
+        return cls("escalate", execution=execution)
+
+    @classmethod
+    def prompt(cls, reason: str | None = None) -> "ShellEscalationDecision":
+        return cls("prompt", reason=reason)
+
+    @classmethod
+    def deny(cls, reason: str | None = None) -> "ShellEscalationDecision":
+        return cls("deny", reason=reason)
+
+
+@dataclass(frozen=True)
+class ShellEscalateAction:
+    type: str
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.type not in {"run", "escalate", "deny"}:
+            raise ValueError(f"unknown shell escalate action type: {self.type}")
+        if self.type == "deny":
+            if self.reason is not None and not isinstance(self.reason, str):
+                raise TypeError("reason must be a string or None")
+        elif self.reason is not None:
+            raise ValueError(f"{self.type} action must not include reason")
+
+    @classmethod
+    def run(cls) -> "ShellEscalateAction":
+        return cls("run")
+
+    @classmethod
+    def escalate(cls) -> "ShellEscalateAction":
+        return cls("escalate")
+
+    @classmethod
+    def deny(cls, reason: str | None = None) -> "ShellEscalateAction":
+        return cls("deny", reason)
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "ShellEscalateAction":
+        if not isinstance(value, Mapping):
+            raise TypeError("shell escalate action must be a mapping")
+        action_type = value.get("type")
+        if action_type == "run":
+            return cls.run()
+        if action_type == "escalate":
+            return cls.escalate()
+        if action_type == "deny":
+            return cls.deny(value.get("reason"))
+        raise ValueError(f"unknown shell escalate action type: {action_type!r}")
+
+    def to_mapping(self) -> dict[str, str | None]:
+        if self.type == "deny":
+            return {"type": "deny", "reason": self.reason}
+        return {"type": self.type}
+
+
+@dataclass(frozen=True)
+class ShellEscalateRequest:
+    file: Path
+    argv: tuple[str, ...]
+    workdir: Path
+    env: dict[str, str]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.file, Path):
+            object.__setattr__(self, "file", Path(self.file))
+        if not isinstance(self.argv, tuple):
+            object.__setattr__(self, "argv", tuple(self.argv))
+        for arg in self.argv:
+            if not isinstance(arg, str):
+                raise TypeError("escalate request argv entries must be strings")
+        if not isinstance(self.workdir, Path):
+            object.__setattr__(self, "workdir", Path(self.workdir))
+        if not isinstance(self.env, dict):
+            object.__setattr__(self, "env", dict(self.env))
+        for key, value in self.env.items():
+            if not isinstance(key, str) or not isinstance(value, str):
+                raise TypeError("escalate request env must map strings to strings")
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "ShellEscalateRequest":
+        if not isinstance(value, Mapping):
+            raise TypeError("shell escalate request must be a mapping")
+        return cls(
+            value.get("file"),  # type: ignore[arg-type]
+            tuple(value.get("argv", ())),
+            value.get("workdir"),  # type: ignore[arg-type]
+            dict(value.get("env", {})),
+        )
+
+    def to_mapping(self) -> dict[str, Any]:
+        return {
+            "file": str(self.file),
+            "argv": list(self.argv),
+            "workdir": str(self.workdir),
+            "env": dict(self.env),
+        }
+
+
+@dataclass(frozen=True)
+class ShellEscalateClientHandshakePlan:
+    handshake_client_fd: int
+    message: bytes
+    fds: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        if isinstance(self.handshake_client_fd, bool) or not isinstance(self.handshake_client_fd, int):
+            raise TypeError("handshake_client_fd must be an integer")
+        if self.handshake_client_fd < 0:
+            raise ValueError(f"{ESCALATE_SOCKET_ENV_VAR} is not a valid file descriptor: {self.handshake_client_fd}")
+        if not isinstance(self.message, bytes):
+            raise TypeError("message must be bytes")
+        if not isinstance(self.fds, tuple):
+            object.__setattr__(self, "fds", tuple(self.fds))
+        for fd in self.fds:
+            if isinstance(fd, bool) or not isinstance(fd, int):
+                raise TypeError("fds must contain integer file descriptors")
+            if fd < 0:
+                raise ValueError(f"attached fd is not a valid file descriptor: {fd}")
+
+
+@dataclass(frozen=True)
+class ShellEscalateClientSocketPair:
+    server: Any
+    client: Any
+    server_fd: int
+    client_fd: int
+
+    def __post_init__(self) -> None:
+        for name, fd in (("server_fd", self.server_fd), ("client_fd", self.client_fd)):
+            if isinstance(fd, bool) or not isinstance(fd, int):
+                raise TypeError(f"{name} must be an integer")
+            if fd < 0:
+                raise ValueError(f"{name} is not a valid file descriptor: {fd}")
+
+
+@dataclass(frozen=True)
+class ShellEscalateClientWrapperPlan:
+    socket_pair: ShellEscalateClientSocketPair
+    handshake: ShellEscalateClientHandshakePlan
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.socket_pair, ShellEscalateClientSocketPair):
+            raise TypeError("socket_pair must be ShellEscalateClientSocketPair")
+        if not isinstance(self.handshake, ShellEscalateClientHandshakePlan):
+            raise TypeError("handshake must be ShellEscalateClientHandshakePlan")
+
+
+@dataclass(frozen=True)
+class ShellEscalatePolicyInput:
+    program: Path
+    argv: tuple[str, ...]
+    workdir: Path
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.program, Path):
+            object.__setattr__(self, "program", Path(self.program))
+        if not isinstance(self.argv, tuple):
+            object.__setattr__(self, "argv", tuple(self.argv))
+        for arg in self.argv:
+            if not isinstance(arg, str):
+                raise TypeError("escalate policy argv entries must be strings")
+        if not isinstance(self.workdir, Path):
+            object.__setattr__(self, "workdir", Path(self.workdir))
+
+
+def shell_escalate_policy_input_from_request(
+    request: ShellEscalateRequest | Mapping[str, Any],
+) -> ShellEscalatePolicyInput:
+    if not isinstance(request, ShellEscalateRequest):
+        request = ShellEscalateRequest.from_mapping(request)
+    program = request.file if request.file.is_absolute() else request.workdir / request.file
+    return ShellEscalatePolicyInput(program, request.argv, request.workdir)
+
+
+def shell_escalate_decision_for_request(
+    request: ShellEscalateRequest | Mapping[str, Any],
+    determine_action: Any,
+) -> ShellEscalationDecision:
+    policy_input = shell_escalate_policy_input_from_request(request)
+    decision = determine_action(policy_input.program, policy_input.argv, policy_input.workdir)
+    if not isinstance(decision, ShellEscalationDecision):
+        raise TypeError("determine_action must return ShellEscalationDecision")
+    return decision
+
+
+def shell_escalation_session_env(client_socket_fd: int, execve_wrapper: str | Path) -> dict[str, str]:
+    if isinstance(client_socket_fd, bool) or not isinstance(client_socket_fd, int):
+        raise TypeError("client_socket_fd must be an integer")
+    return {
+        ESCALATE_SOCKET_ENV_VAR: str(client_socket_fd),
+        EXEC_WRAPPER_ENV_VAR: str(execve_wrapper),
+    }
+
+
+def shell_escalation_request_env(env: Mapping[str, str]) -> dict[str, str]:
+    if not isinstance(env, Mapping):
+        raise TypeError("env must be a mapping")
+    result: dict[str, str] = {}
+    for key, value in env.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            raise TypeError("env keys and values must be strings")
+        if key in {ESCALATE_SOCKET_ENV_VAR, EXEC_WRAPPER_ENV_VAR}:
+            continue
+        result[key] = value
+    return result
+
+
+def shell_escalation_socket_fd_from_env(env: Mapping[str, str] | None = None) -> int:
+    if env is None:
+        env = os.environ
+    if not isinstance(env, Mapping):
+        raise TypeError("env must be a mapping")
+    raw_fd = env[ESCALATE_SOCKET_ENV_VAR]
+    if not isinstance(raw_fd, str):
+        raise TypeError(f"{ESCALATE_SOCKET_ENV_VAR} must be a string")
+    client_fd = int(raw_fd)
+    if client_fd < 0:
+        raise ValueError(f"{ESCALATE_SOCKET_ENV_VAR} is not a valid file descriptor: {client_fd}")
+    return client_fd
+
+
+def shell_escalate_client_handshake_payload(
+    server_socket_fd: int,
+    message: bytes = SHELL_ESCALATE_HANDSHAKE_MESSAGE,
+) -> tuple[bytes, tuple[int, ...]]:
+    if not isinstance(message, bytes):
+        raise TypeError("handshake message must be bytes")
+    if isinstance(server_socket_fd, bool) or not isinstance(server_socket_fd, int):
+        raise TypeError("server_socket_fd must be an integer")
+    if server_socket_fd < 0:
+        raise ValueError(f"server_socket_fd is not a valid file descriptor: {server_socket_fd}")
+    return message, (server_socket_fd,)
+
+
+def shell_escalate_client_socket_pair(
+    *,
+    pair_factory: Any = socket.socketpair,
+) -> ShellEscalateClientSocketPair:
+    pair = pair_factory()
+    if not isinstance(pair, tuple) or len(pair) != 2:
+        raise TypeError("pair_factory must return a pair")
+    server, client = pair
+    server_fileno = getattr(server, "fileno", None)
+    client_fileno = getattr(client, "fileno", None)
+    if not callable(server_fileno) or not callable(client_fileno):
+        raise TypeError("socket pair entries must expose fileno()")
+    return ShellEscalateClientSocketPair(server, client, server_fileno(), client_fileno())
+
+
+def shell_socket_validate_fds_for_message(
+    fds: Iterable[int],
+    *,
+    max_fds: int = SHELL_SOCKET_MAX_FDS_PER_MESSAGE,
+) -> tuple[int, ...]:
+    result = tuple(fds)
+    if len(result) > max_fds:
+        raise ValueError(f"too many fds: {len(result)}")
+    for fd in result:
+        if isinstance(fd, bool) or not isinstance(fd, int):
+            raise TypeError("fds must contain integer file descriptors")
+        if fd < 0:
+            raise ValueError(f"fd is not a valid file descriptor: {fd}")
+    return result
+
+
+def shell_socket_sendmsg_with_fds(
+    sock: Any,
+    data: bytes,
+    fds: Iterable[int] = (),
+    *,
+    sendmsg: Any | None = None,
+) -> int:
+    if not isinstance(data, bytes):
+        raise TypeError("data must be bytes")
+    fd_tuple = shell_socket_validate_fds_for_message(fds)
+    if sendmsg is None:
+        sendmsg = sock.sendmsg
+    ancillary = []
+    if fd_tuple:
+        ancillary = [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", fd_tuple))]
+    written = sendmsg([data], ancillary)
+    if written != len(data):
+        raise OSError(f"short datagram write: wrote {written} bytes out of {len(data)}")
+    return written
+
+
+def shell_escalate_client_wrapper_plan(
+    *,
+    env: Mapping[str, str] | None = None,
+    pair_factory: Any = socket.socketpair,
+    message: bytes = SHELL_ESCALATE_HANDSHAKE_MESSAGE,
+) -> ShellEscalateClientWrapperPlan:
+    socket_pair = shell_escalate_client_socket_pair(pair_factory=pair_factory)
+    handshake = shell_escalate_client_handshake_plan(socket_pair.server_fd, env=env, message=message)
+    return ShellEscalateClientWrapperPlan(socket_pair, handshake)
+
+
+def shell_escalate_client_send_handshake(
+    server_socket_fd: int,
+    *,
+    send_with_fds: Any,
+    message: bytes = SHELL_ESCALATE_HANDSHAKE_MESSAGE,
+) -> Any:
+    payload, fds = shell_escalate_client_handshake_payload(server_socket_fd, message)
+    try:
+        return send_with_fds(payload, fds)
+    except Exception as exc:
+        raise RuntimeError("failed to send handshake datagram") from exc
+
+
+def shell_escalate_client_handshake_plan(
+    server_socket_fd: int,
+    *,
+    env: Mapping[str, str] | None = None,
+    message: bytes = SHELL_ESCALATE_HANDSHAKE_MESSAGE,
+) -> ShellEscalateClientHandshakePlan:
+    handshake_client_fd = shell_escalation_socket_fd_from_env(env)
+    payload, fds = shell_escalate_client_handshake_payload(server_socket_fd, message)
+    return ShellEscalateClientHandshakePlan(handshake_client_fd, payload, fds)
+
+
+def shell_escalate_client_handshake_plan_send(
+    plan: ShellEscalateClientHandshakePlan,
+    *,
+    send_with_fds: Any,
+) -> Any:
+    if not isinstance(plan, ShellEscalateClientHandshakePlan):
+        raise TypeError("plan must be ShellEscalateClientHandshakePlan")
+    try:
+        return send_with_fds(plan.handshake_client_fd, plan.message, plan.fds)
+    except Exception as exc:
+        raise RuntimeError("failed to send handshake datagram") from exc
+
+
+def shell_escalate_client_handshake_run(
+    server_socket_fd: int,
+    *,
+    send_with_fds: Any,
+    env: Mapping[str, str] | None = None,
+    message: bytes = SHELL_ESCALATE_HANDSHAKE_MESSAGE,
+) -> Any:
+    plan = shell_escalate_client_handshake_plan(server_socket_fd, env=env, message=message)
+    return shell_escalate_client_handshake_plan_send(plan, send_with_fds=send_with_fds)
+
+
+def shell_escalate_request_from_client(
+    file: str | Path,
+    argv: Iterable[str],
+    *,
+    workdir: str | Path | None = None,
+    env: Mapping[str, str] | None = None,
+) -> ShellEscalateRequest:
+    if workdir is None:
+        workdir = Path.cwd()
+    if env is None:
+        env = os.environ
+    return ShellEscalateRequest(
+        file,
+        tuple(argv),
+        workdir,
+        shell_escalation_request_env(env),
+    )
+
+
+def shell_escalate_client_request_exchange(
+    request: ShellEscalateRequest | Mapping[str, Any],
+    *,
+    send_request: Any,
+    receive_response: Any | None = None,
+    client: Any | None = None,
+) -> ShellEscalateResponse:
+    if not isinstance(request, ShellEscalateRequest):
+        request = ShellEscalateRequest.from_mapping(request)
+    try:
+        if client is None:
+            sent_response = send_request(request)
+        else:
+            sent_response = send_request(client, request)
+    except Exception as exc:
+        raise RuntimeError("failed to send EscalateRequest") from exc
+    if receive_response is None:
+        response = sent_response
+    else:
+        try:
+            response = receive_response() if client is None else receive_response(client)
+        except Exception as exc:
+            raise RuntimeError("failed to receive EscalateResponse") from exc
+    if not isinstance(response, ShellEscalateResponse):
+        response = ShellEscalateResponse.from_mapping(response)
+    return response
+
+
+@dataclass(frozen=True)
+class ShellEscalateResponse:
+    action: ShellEscalateAction
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.action, ShellEscalateAction):
+            object.__setattr__(self, "action", ShellEscalateAction.from_mapping(self.action))  # type: ignore[arg-type]
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "ShellEscalateResponse":
+        if not isinstance(value, Mapping):
+            raise TypeError("shell escalate response must be a mapping")
+        return cls(ShellEscalateAction.from_mapping(value.get("action")))  # type: ignore[arg-type]
+
+    def to_mapping(self) -> dict[str, dict[str, str | None]]:
+        return {"action": self.action.to_mapping()}
+
+
+@dataclass(frozen=True)
+class ShellEscalateClientAction:
+    type: str
+    exit_code: int | None = None
+    message: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.type not in {"run", "escalate", "deny"}:
+            raise ValueError(f"unknown shell escalate client action type: {self.type}")
+        if self.type == "deny":
+            if isinstance(self.exit_code, bool) or not isinstance(self.exit_code, int):
+                raise TypeError("deny client action exit_code must be an integer")
+            if self.message is not None and not isinstance(self.message, str):
+                raise TypeError("deny client action message must be a string or None")
+        elif self.exit_code is not None or self.message is not None:
+            raise ValueError(f"{self.type} client action must not include exit_code or message")
+
+    @classmethod
+    def run(cls) -> "ShellEscalateClientAction":
+        return cls("run")
+
+    @classmethod
+    def escalate(cls) -> "ShellEscalateClientAction":
+        return cls("escalate")
+
+    @classmethod
+    def deny(cls, reason: str | None = None) -> "ShellEscalateClientAction":
+        if reason is not None and not isinstance(reason, str):
+            raise TypeError("deny reason must be a string or None")
+        message = f"Execution denied: {reason}" if reason is not None else "Execution denied"
+        return cls("deny", exit_code=1, message=message)
+
+
+def shell_escalate_client_action_from_response(
+    response: ShellEscalateResponse | Mapping[str, Any],
+) -> ShellEscalateClientAction:
+    if not isinstance(response, ShellEscalateResponse):
+        response = ShellEscalateResponse.from_mapping(response)
+    if response.action.type == "run":
+        return ShellEscalateClientAction.run()
+    if response.action.type == "escalate":
+        return ShellEscalateClientAction.escalate()
+    if response.action.type == "deny":
+        return ShellEscalateClientAction.deny(response.action.reason)
+    raise ValueError(f"unknown shell escalate action type: {response.action.type}")
+
+
+@dataclass(frozen=True)
+class ShellLocalExecvPlan:
+    file: str
+    argv: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.file, str):
+            raise TypeError("execv file must be a string")
+        if "\0" in self.file:
+            raise ValueError("NUL in file")
+        if not isinstance(self.argv, tuple):
+            object.__setattr__(self, "argv", tuple(self.argv))
+        for arg in self.argv:
+            if not isinstance(arg, str):
+                raise TypeError("execv argv entries must be strings")
+            if "\0" in arg:
+                raise ValueError("NUL in argv")
+
+
+def shell_local_execv_plan(file: str, argv: Iterable[str]) -> ShellLocalExecvPlan:
+    return ShellLocalExecvPlan(file, tuple(argv))
+
+
+def shell_local_execv_run(plan: ShellLocalExecvPlan, *, execv: Any = os.execv) -> Any:
+    if not isinstance(plan, ShellLocalExecvPlan):
+        raise TypeError("plan must be ShellLocalExecvPlan")
+    return execv(plan.file, plan.argv)
+
+
+@dataclass(frozen=True)
+class ShellEscalateClientPlan:
+    action: ShellEscalateClientAction
+    local_execv: ShellLocalExecvPlan | None = None
+    super_exec: ShellSuperExecMessage | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.action, ShellEscalateClientAction):
+            raise TypeError("action must be ShellEscalateClientAction")
+        if self.action.type == "run":
+            if not isinstance(self.local_execv, ShellLocalExecvPlan):
+                raise TypeError("run client plan must include local_execv")
+            if self.super_exec is not None:
+                raise ValueError("run client plan must not include super_exec")
+        elif self.action.type == "escalate":
+            if not isinstance(self.super_exec, ShellSuperExecMessage):
+                raise TypeError("escalate client plan must include super_exec")
+            if self.local_execv is not None:
+                raise ValueError("escalate client plan must not include local_execv")
+        elif self.action.type == "deny":
+            if self.local_execv is not None or self.super_exec is not None:
+                raise ValueError("deny client plan must not include exec plans")
+
+
+def shell_escalate_client_plan_from_response(
+    response: ShellEscalateResponse | Mapping[str, Any],
+    file: str,
+    argv: Iterable[str],
+    destination_fds: Iterable[int] | None = None,
+) -> ShellEscalateClientPlan:
+    action = shell_escalate_client_action_from_response(response)
+    if action.type == "run":
+        return ShellEscalateClientPlan(action, local_execv=shell_local_execv_plan(file, argv))
+    if action.type == "escalate":
+        if destination_fds is None:
+            destination_fds = SHELL_SUPER_EXEC_STDIO_DESTINATION_FDS
+        return ShellEscalateClientPlan(
+            action,
+            super_exec=ShellSuperExecMessage(tuple(destination_fds)),
+        )
+    return ShellEscalateClientPlan(action)
+
+
+def shell_escalate_client_plan_run(
+    plan: ShellEscalateClientPlan,
+    *,
+    execv: Any = os.execv,
+    super_exec: Any | None = None,
+    super_exec_send_with_fds: Any | None = None,
+    super_exec_receive_result: Any | None = None,
+    super_exec_client: Any | None = None,
+    stdio: Iterable[Any] | None = None,
+    dup: Any = os.dup,
+    stderr: Any = sys.stderr,
+) -> Any:
+    if not isinstance(plan, ShellEscalateClientPlan):
+        raise TypeError("plan must be ShellEscalateClientPlan")
+    if plan.action.type == "run":
+        return shell_local_execv_run(plan.local_execv, execv=execv)  # type: ignore[arg-type]
+    if plan.action.type == "escalate":
+        transferred_fds = shell_super_exec_stdio_transfer_fds(stdio, dup=dup)
+        if super_exec is not None:
+            return shell_super_exec_exchange_exit_code(plan.super_exec, transferred_fds, exchange=super_exec)
+        if super_exec_send_with_fds is not None and super_exec_receive_result is not None:
+            return shell_super_exec_send_receive_exit_code(
+                plan.super_exec,
+                transferred_fds,
+                send_with_fds=super_exec_send_with_fds,
+                receive_result=super_exec_receive_result,
+                client=super_exec_client,
+            )
+        raise NotImplementedError("super-exec socket handoff is not implemented")
+    if plan.action.type == "deny":
+        stderr.write(f"{plan.action.message}\n")
+        return plan.action.exit_code
+    raise ValueError(f"unknown shell escalate client action type: {plan.action.type}")
+
+
+def shell_escalate_client_response_run(
+    response: ShellEscalateResponse | Mapping[str, Any],
+    file: str,
+    argv: Iterable[str],
+    *,
+    destination_fds: Iterable[int] | None = None,
+    execv: Any = os.execv,
+    super_exec: Any | None = None,
+    super_exec_send_with_fds: Any | None = None,
+    super_exec_receive_result: Any | None = None,
+    super_exec_client: Any | None = None,
+    stdio: Iterable[Any] | None = None,
+    dup: Any = os.dup,
+    stderr: Any = sys.stderr,
+) -> Any:
+    plan = shell_escalate_client_plan_from_response(
+        response,
+        file,
+        argv,
+        destination_fds=destination_fds,
+    )
+    return shell_escalate_client_plan_run(
+        plan,
+        execv=execv,
+        super_exec=super_exec,
+        super_exec_send_with_fds=super_exec_send_with_fds,
+        super_exec_receive_result=super_exec_receive_result,
+        super_exec_client=super_exec_client,
+        stdio=stdio,
+        dup=dup,
+        stderr=stderr,
+    )
+
+
+def shell_escalate_client_request_run(
+    file: str | Path,
+    argv: Iterable[str],
+    *,
+    send_request: Any,
+    receive_response: Any | None = None,
+    client: Any | None = None,
+    workdir: str | Path | None = None,
+    env: Mapping[str, str] | None = None,
+    destination_fds: Iterable[int] | None = None,
+    execv: Any = os.execv,
+    super_exec: Any | None = None,
+    super_exec_send_with_fds: Any | None = None,
+    super_exec_receive_result: Any | None = None,
+    super_exec_client: Any | None = None,
+    stdio: Iterable[Any] | None = None,
+    dup: Any = os.dup,
+    stderr: Any = sys.stderr,
+) -> Any:
+    request = shell_escalate_request_from_client(file, argv, workdir=workdir, env=env)
+    response = shell_escalate_client_request_exchange(
+        request,
+        send_request=send_request,
+        receive_response=receive_response,
+        client=client,
+    )
+    return shell_escalate_client_response_run(
+        response,
+        str(request.file),
+        request.argv,
+        destination_fds=destination_fds,
+        execv=execv,
+        super_exec=super_exec,
+        super_exec_send_with_fds=super_exec_send_with_fds,
+        super_exec_receive_result=super_exec_receive_result,
+        super_exec_client=super_exec_client,
+        stdio=stdio,
+        dup=dup,
+        stderr=stderr,
+    )
+
+
+def shell_escalate_client_wrapper_run(
+    file: str | Path,
+    argv: Iterable[str],
+    *,
+    server_socket_fd: int,
+    send_with_fds: Any,
+    send_request: Any,
+    receive_response: Any | None = None,
+    workdir: str | Path | None = None,
+    env: Mapping[str, str] | None = None,
+    destination_fds: Iterable[int] | None = None,
+    execv: Any = os.execv,
+    super_exec: Any | None = None,
+    super_exec_send_with_fds: Any | None = None,
+    super_exec_receive_result: Any | None = None,
+    super_exec_client: Any | None = None,
+    stdio: Iterable[Any] | None = None,
+    dup: Any = os.dup,
+    stderr: Any = sys.stderr,
+) -> Any:
+    shell_escalate_client_handshake_run(server_socket_fd, send_with_fds=send_with_fds, env=env)
+    return shell_escalate_client_request_run(
+        file,
+        argv,
+        send_request=send_request,
+        receive_response=receive_response,
+        workdir=workdir,
+        env=env,
+        destination_fds=destination_fds,
+        execv=execv,
+        super_exec=super_exec,
+        super_exec_send_with_fds=super_exec_send_with_fds,
+        super_exec_receive_result=super_exec_receive_result,
+        super_exec_client=super_exec_client,
+        stdio=stdio,
+        dup=dup,
+        stderr=stderr,
+    )
+
+
+def shell_escalate_client_wrapper_plan_run(
+    plan: ShellEscalateClientWrapperPlan,
+    file: str | Path,
+    argv: Iterable[str],
+    *,
+    send_with_fds: Any,
+    send_request: Any,
+    receive_response: Any | None = None,
+    request_client: Any | None = None,
+    workdir: str | Path | None = None,
+    env: Mapping[str, str] | None = None,
+    destination_fds: Iterable[int] | None = None,
+    execv: Any = os.execv,
+    super_exec: Any | None = None,
+    super_exec_send_with_fds: Any | None = None,
+    super_exec_receive_result: Any | None = None,
+    super_exec_client: Any | None = None,
+    stdio: Iterable[Any] | None = None,
+    dup: Any = os.dup,
+    stderr: Any = sys.stderr,
+) -> Any:
+    if not isinstance(plan, ShellEscalateClientWrapperPlan):
+        raise TypeError("plan must be ShellEscalateClientWrapperPlan")
+    shell_escalate_client_wrapper_plan_send_handshake(plan, send_with_fds=send_with_fds)
+    exchange_client = request_client
+    if exchange_client is None and receive_response is not None:
+        exchange_client = plan.socket_pair.client
+    exchange_super_exec_client = super_exec_client
+    if (
+        exchange_super_exec_client is None
+        and super_exec is None
+        and super_exec_send_with_fds is not None
+        and super_exec_receive_result is not None
+    ):
+        exchange_super_exec_client = plan.socket_pair.client
+    return shell_escalate_client_request_run(
+        file,
+        argv,
+        send_request=send_request,
+        receive_response=receive_response,
+        client=exchange_client,
+        workdir=workdir,
+        env=env,
+        destination_fds=destination_fds,
+        execv=execv,
+        super_exec=super_exec,
+        super_exec_send_with_fds=super_exec_send_with_fds,
+        super_exec_receive_result=super_exec_receive_result,
+        super_exec_client=exchange_super_exec_client,
+        stdio=stdio,
+        dup=dup,
+        stderr=stderr,
+    )
+
+
+def shell_escalate_client_wrapper_plan_send_handshake(
+    plan: ShellEscalateClientWrapperPlan,
+    *,
+    send_with_fds: Any,
+) -> Any:
+    if not isinstance(plan, ShellEscalateClientWrapperPlan):
+        raise TypeError("plan must be ShellEscalateClientWrapperPlan")
+    shell_escalate_client_handshake_plan_send(plan.handshake, send_with_fds=send_with_fds)
+    return plan.socket_pair.client
+
+
+def shell_escalate_client_wrapper_run_with_socket_pair(
+    file: str | Path,
+    argv: Iterable[str],
+    *,
+    send_with_fds: Any,
+    send_request: Any,
+    pair_factory: Any = socket.socketpair,
+    receive_response: Any | None = None,
+    request_client: Any | None = None,
+    workdir: str | Path | None = None,
+    env: Mapping[str, str] | None = None,
+    destination_fds: Iterable[int] | None = None,
+    execv: Any = os.execv,
+    super_exec: Any | None = None,
+    super_exec_send_with_fds: Any | None = None,
+    super_exec_receive_result: Any | None = None,
+    super_exec_client: Any | None = None,
+    stdio: Iterable[Any] | None = None,
+    dup: Any = os.dup,
+    stderr: Any = sys.stderr,
+) -> Any:
+    plan = shell_escalate_client_wrapper_plan(env=env, pair_factory=pair_factory)
+    return shell_escalate_client_wrapper_plan_run(
+        plan,
+        file,
+        argv,
+        send_with_fds=send_with_fds,
+        send_request=send_request,
+        receive_response=receive_response,
+        request_client=request_client,
+        workdir=workdir,
+        env=env,
+        destination_fds=destination_fds,
+        execv=execv,
+        super_exec=super_exec,
+        super_exec_send_with_fds=super_exec_send_with_fds,
+        super_exec_receive_result=super_exec_receive_result,
+        super_exec_client=super_exec_client,
+        stdio=stdio,
+        dup=dup,
+        stderr=stderr,
+    )
+
+
+@dataclass(frozen=True)
+class ShellSuperExecMessage:
+    fds: tuple[int, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.fds, tuple):
+            object.__setattr__(self, "fds", tuple(self.fds))
+        for fd in self.fds:
+            if isinstance(fd, bool) or not isinstance(fd, int):
+                raise TypeError("fds must contain integer file descriptors")
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "ShellSuperExecMessage":
+        if not isinstance(value, Mapping):
+            raise TypeError("shell super exec message must be a mapping")
+        fds = value.get("fds", ())
+        if isinstance(fds, (str, bytes)) or not isinstance(fds, Iterable):
+            raise TypeError("fds must be an iterable of integer file descriptors")
+        return cls(tuple(fds))
+
+    def to_mapping(self) -> dict[str, list[int]]:
+        return {"fds": list(self.fds)}
+
+
+@dataclass(frozen=True)
+class ShellSuperExecResult:
+    exit_code: int
+
+    def __post_init__(self) -> None:
+        if isinstance(self.exit_code, bool) or not isinstance(self.exit_code, int):
+            raise TypeError("exit_code must be an integer")
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "ShellSuperExecResult":
+        if not isinstance(value, Mapping):
+            raise TypeError("shell super exec result must be a mapping")
+        return cls(value.get("exit_code"))  # type: ignore[arg-type]
+
+    def to_mapping(self) -> dict[str, int]:
+        return {"exit_code": self.exit_code}
+
+
+SHELL_SUPER_EXEC_STDIO_DESTINATION_FDS: tuple[int, int, int] = (0, 1, 2)
+
+
+def shell_super_exec_duplicate_fd_for_transfer(
+    fd: Any,
+    name: str,
+    *,
+    dup: Any = os.dup,
+) -> int:
+    if not isinstance(name, str):
+        raise TypeError("name must be a string")
+    source_fd = fd
+    if not isinstance(source_fd, int):
+        fileno = getattr(source_fd, "fileno", None)
+        if not callable(fileno):
+            raise TypeError("fd must be an integer file descriptor or expose fileno()")
+        source_fd = fileno()
+    if isinstance(source_fd, bool) or not isinstance(source_fd, int):
+        raise TypeError("fd must be an integer file descriptor or expose fileno()")
+    try:
+        return dup(source_fd)
+    except OSError as exc:
+        raise OSError(f"failed to duplicate {name} for escalation transfer") from exc
+
+
+def shell_super_exec_stdio_transfer_fds(
+    stdio: Iterable[Any] | None = None,
+    *,
+    names: Iterable[str] = ("stdin", "stdout", "stderr"),
+    dup: Any = os.dup,
+) -> tuple[int, ...]:
+    if stdio is None:
+        stdio = (sys.stdin, sys.stdout, sys.stderr)
+    streams = tuple(stdio)
+    labels = tuple(names)
+    if len(streams) != len(labels):
+        raise ValueError("stdio and names must contain the same number of entries")
+    return tuple(
+        shell_super_exec_duplicate_fd_for_transfer(stream, name, dup=dup)
+        for stream, name in zip(streams, labels)
+    )
+
+
+def shell_super_exec_message_for_escalate_action(
+    action: ShellEscalateAction | Mapping[str, Any],
+    destination_fds: Iterable[int] = SHELL_SUPER_EXEC_STDIO_DESTINATION_FDS,
+) -> ShellSuperExecMessage | None:
+    if not isinstance(action, ShellEscalateAction):
+        action = ShellEscalateAction.from_mapping(action)
+    if action.type == "escalate":
+        return ShellSuperExecMessage(tuple(destination_fds))
+    return None
+
+
+def shell_super_exec_exit_code_from_result(result: ShellSuperExecResult | Mapping[str, Any]) -> int:
+    if not isinstance(result, ShellSuperExecResult):
+        result = ShellSuperExecResult.from_mapping(result)
+    return result.exit_code
+
+
+def shell_super_exec_exchange_exit_code(
+    message: ShellSuperExecMessage | Mapping[str, Any],
+    transferred_fds: Iterable[int],
+    *,
+    exchange: Any,
+) -> int:
+    if not isinstance(message, ShellSuperExecMessage):
+        message = ShellSuperExecMessage.from_mapping(message)
+    transferred = tuple(transferred_fds)
+    result = exchange(message, transferred)
+    return shell_super_exec_exit_code_from_result(result)
+
+
+def shell_super_exec_send_receive_exit_code(
+    message: ShellSuperExecMessage | Mapping[str, Any],
+    transferred_fds: Iterable[int],
+    *,
+    send_with_fds: Any,
+    receive_result: Any,
+    client: Any | None = None,
+) -> int:
+    if not isinstance(message, ShellSuperExecMessage):
+        message = ShellSuperExecMessage.from_mapping(message)
+    transferred = tuple(transferred_fds)
+    try:
+        if client is None:
+            send_with_fds(message, transferred)
+        else:
+            send_with_fds(client, message, transferred)
+    except Exception as exc:
+        raise RuntimeError("failed to send SuperExecMessage") from exc
+    result = receive_result() if client is None else receive_result(client)
+    return shell_super_exec_exit_code_from_result(result)
+
+
+def shell_super_exec_fd_pairs(
+    message: ShellSuperExecMessage | Mapping[str, Any],
+    transferred_fds: Iterable[int],
+) -> tuple[tuple[int, int], ...]:
+    if not isinstance(message, ShellSuperExecMessage):
+        message = ShellSuperExecMessage.from_mapping(message)
+    transferred = tuple(transferred_fds)
+    if len(transferred) != len(message.fds):
+        raise ValueError(
+            "mismatched number of fds in SuperExecMessage: "
+            f"{len(message.fds)} in the message, {len(transferred)} from the control message"
+        )
+    return tuple(zip(message.fds, transferred))
+
+
+def shell_super_exec_result_from_exit_status(exit_code: int | None) -> ShellSuperExecResult:
+    if exit_code is None:
+        return ShellSuperExecResult(127)
+    return ShellSuperExecResult(exit_code)
+
+
+@dataclass(frozen=True)
+class ShellPreparedExec:
+    command: tuple[str, ...]
+    cwd: Path
+    env: dict[str, str]
+    arg0: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.command, tuple):
+            object.__setattr__(self, "command", tuple(self.command))
+        for part in self.command:
+            if not isinstance(part, str):
+                raise TypeError("prepared exec command entries must be strings")
+        if not isinstance(self.cwd, Path):
+            object.__setattr__(self, "cwd", Path(self.cwd))
+        if not isinstance(self.env, dict):
+            object.__setattr__(self, "env", dict(self.env))
+        for key, value in self.env.items():
+            if not isinstance(key, str) or not isinstance(value, str):
+                raise TypeError("prepared exec env must map strings to strings")
+        if self.arg0 is not None and not isinstance(self.arg0, str):
+            raise TypeError("prepared exec arg0 must be a string or None")
+
+
+def shell_prepared_exec_program_and_args(prepared: ShellPreparedExec) -> tuple[str, tuple[str, ...]]:
+    if not isinstance(prepared, ShellPreparedExec):
+        raise TypeError("prepared must be ShellPreparedExec")
+    if not prepared.command:
+        raise ValueError("prepared escalated command must not be empty")
+    return prepared.command[0], prepared.command[1:]
+
+
+def shell_prepared_exec_effective_arg0(program: str, arg0: str | None) -> str:
+    if not isinstance(program, str):
+        raise TypeError("program must be a string")
+    if arg0 is not None and not isinstance(arg0, str):
+        raise TypeError("arg0 must be a string or None")
+    return arg0 if arg0 is not None else program
+
+
+@dataclass(frozen=True)
+class ShellSuperExecSpawnPlan:
+    program: str
+    args: tuple[str, ...]
+    arg0: str
+    cwd: Path
+    env: dict[str, str]
+    fd_pairs: tuple[tuple[int, int], ...]
+    stdio_null: bool = True
+    kill_on_drop: bool = True
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.program, str):
+            raise TypeError("program must be a string")
+        if not isinstance(self.args, tuple):
+            object.__setattr__(self, "args", tuple(self.args))
+        for arg in self.args:
+            if not isinstance(arg, str):
+                raise TypeError("spawn plan args must be strings")
+        if not isinstance(self.arg0, str):
+            raise TypeError("arg0 must be a string")
+        if not isinstance(self.cwd, Path):
+            object.__setattr__(self, "cwd", Path(self.cwd))
+        if not isinstance(self.env, dict):
+            object.__setattr__(self, "env", dict(self.env))
+        for key, value in self.env.items():
+            if not isinstance(key, str) or not isinstance(value, str):
+                raise TypeError("spawn plan env must map strings to strings")
+        if not isinstance(self.fd_pairs, tuple):
+            object.__setattr__(self, "fd_pairs", tuple(self.fd_pairs))
+        for dst_fd, src_fd in self.fd_pairs:
+            if isinstance(dst_fd, bool) or not isinstance(dst_fd, int):
+                raise TypeError("spawn plan destination fds must be integers")
+            if isinstance(src_fd, bool) or not isinstance(src_fd, int):
+                raise TypeError("spawn plan source fds must be integers")
+        if not isinstance(self.stdio_null, bool):
+            raise TypeError("stdio_null must be a bool")
+        if not isinstance(self.kill_on_drop, bool):
+            raise TypeError("kill_on_drop must be a bool")
+
+
+def shell_super_exec_spawn_plan(
+    prepared: ShellPreparedExec,
+    message: ShellSuperExecMessage | Mapping[str, Any],
+    transferred_fds: Iterable[int],
+) -> ShellSuperExecSpawnPlan:
+    program, args = shell_prepared_exec_program_and_args(prepared)
+    return ShellSuperExecSpawnPlan(
+        program=program,
+        args=args,
+        arg0=shell_prepared_exec_effective_arg0(program, prepared.arg0),
+        cwd=prepared.cwd,
+        env=dict(prepared.env),
+        fd_pairs=shell_super_exec_fd_pairs(message, transferred_fds),
+    )
+
+
+@dataclass(frozen=True)
+class ShellSuperExecSubprocessSpec:
+    executable: str
+    argv: tuple[str, ...]
+    cwd: Path
+    env: dict[str, str]
+    fd_pairs: tuple[tuple[int, int], ...]
+    stdio_null: bool = True
+    kill_on_cancel: bool = True
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.executable, str):
+            raise TypeError("executable must be a string")
+        if not isinstance(self.argv, tuple):
+            object.__setattr__(self, "argv", tuple(self.argv))
+        if not self.argv:
+            raise ValueError("subprocess argv must not be empty")
+        for arg in self.argv:
+            if not isinstance(arg, str):
+                raise TypeError("subprocess argv entries must be strings")
+        if not isinstance(self.cwd, Path):
+            object.__setattr__(self, "cwd", Path(self.cwd))
+        if not isinstance(self.env, dict):
+            object.__setattr__(self, "env", dict(self.env))
+        for key, value in self.env.items():
+            if not isinstance(key, str) or not isinstance(value, str):
+                raise TypeError("subprocess env must map strings to strings")
+        if not isinstance(self.fd_pairs, tuple):
+            object.__setattr__(self, "fd_pairs", tuple(self.fd_pairs))
+        for dst_fd, src_fd in self.fd_pairs:
+            if isinstance(dst_fd, bool) or not isinstance(dst_fd, int):
+                raise TypeError("subprocess destination fds must be integers")
+            if isinstance(src_fd, bool) or not isinstance(src_fd, int):
+                raise TypeError("subprocess source fds must be integers")
+        if not isinstance(self.stdio_null, bool):
+            raise TypeError("stdio_null must be a bool")
+        if not isinstance(self.kill_on_cancel, bool):
+            raise TypeError("kill_on_cancel must be a bool")
+
+
+def shell_super_exec_subprocess_spec(plan: ShellSuperExecSpawnPlan) -> ShellSuperExecSubprocessSpec:
+    if not isinstance(plan, ShellSuperExecSpawnPlan):
+        raise TypeError("plan must be ShellSuperExecSpawnPlan")
+    return ShellSuperExecSubprocessSpec(
+        executable=plan.program,
+        argv=(plan.arg0, *plan.args),
+        cwd=plan.cwd,
+        env=dict(plan.env),
+        fd_pairs=plan.fd_pairs,
+        stdio_null=plan.stdio_null,
+        kill_on_cancel=plan.kill_on_drop,
+    )
+
+
+def shell_super_exec_dup2_preexec_fn(fd_pairs: Iterable[tuple[int, int]]):
+    pairs = tuple(fd_pairs)
+    for dst_fd, src_fd in pairs:
+        if isinstance(dst_fd, bool) or not isinstance(dst_fd, int):
+            raise TypeError("preexec destination fds must be integers")
+        if isinstance(src_fd, bool) or not isinstance(src_fd, int):
+            raise TypeError("preexec source fds must be integers")
+
+    def preexec() -> None:
+        for dst_fd, src_fd in pairs:
+            os.dup2(src_fd, dst_fd)
+
+    return preexec
+
+
+def shell_super_exec_popen_kwargs(spec: ShellSuperExecSubprocessSpec) -> dict[str, Any]:
+    if not isinstance(spec, ShellSuperExecSubprocessSpec):
+        raise TypeError("spec must be ShellSuperExecSubprocessSpec")
+    kwargs: dict[str, Any] = {
+        "args": spec.argv,
+        "executable": spec.executable,
+        "cwd": spec.cwd,
+        "env": dict(spec.env),
+        "preexec_fn": shell_super_exec_dup2_preexec_fn(spec.fd_pairs),
+    }
+    if spec.stdio_null:
+        kwargs["stdin"] = subprocess.DEVNULL
+        kwargs["stdout"] = subprocess.DEVNULL
+        kwargs["stderr"] = subprocess.DEVNULL
+    return kwargs
+
+
+def shell_super_exec_run_subprocess(
+    spec: ShellSuperExecSubprocessSpec,
+    *,
+    cancellation_tokens: Iterable[CancellationToken] = (),
+    popen_factory: Any = subprocess.Popen,
+    poll_interval: float = 0.05,
+) -> ShellSuperExecResult:
+    if not isinstance(spec, ShellSuperExecSubprocessSpec):
+        raise TypeError("spec must be ShellSuperExecSubprocessSpec")
+    tokens = tuple(cancellation_tokens)
+    for token in tokens:
+        if not isinstance(token, CancellationToken):
+            raise TypeError("cancellation_tokens must contain CancellationToken instances")
+    if not isinstance(poll_interval, (int, float)) or isinstance(poll_interval, bool) or poll_interval < 0:
+        raise TypeError("poll_interval must be a non-negative number")
+
+    child = popen_factory(**shell_super_exec_popen_kwargs(spec))
+    killed = False
+    while True:
+        if spec.kill_on_cancel and any(token.is_cancelled() for token in tokens):
+            if not killed:
+                child.kill()
+                killed = True
+            return shell_super_exec_result_from_exit_status(child.wait())
+        exit_code = child.poll()
+        if exit_code is not None:
+            return shell_super_exec_result_from_exit_status(exit_code)
+        if poll_interval:
+            time.sleep(poll_interval)
+
+
+def shell_super_exec_run_prepared(
+    prepared: ShellPreparedExec,
+    message: ShellSuperExecMessage | Mapping[str, Any],
+    transferred_fds: Iterable[int],
+    *,
+    cancellation_tokens: Iterable[CancellationToken] = (),
+    popen_factory: Any = subprocess.Popen,
+    poll_interval: float = 0.05,
+) -> ShellSuperExecResult:
+    plan = shell_super_exec_spawn_plan(prepared, message, transferred_fds)
+    spec = shell_super_exec_subprocess_spec(plan)
+    return shell_super_exec_run_subprocess(
+        spec,
+        cancellation_tokens=cancellation_tokens,
+        popen_factory=popen_factory,
+        poll_interval=poll_interval,
+    )
 
 
 @dataclass(frozen=True)
@@ -571,6 +1839,234 @@ def approval_sandbox_permissions(
     return sandbox_permissions
 
 
+def shell_request_escalation_execution(
+    sandbox_permissions: SandboxPermissions,
+    permission_profile: PermissionProfile,
+    additional_permissions: AdditionalPermissionProfile | None,
+) -> ShellEscalationExecution:
+    sandbox_permissions = SandboxPermissions(sandbox_permissions)
+    if not isinstance(permission_profile, PermissionProfile):
+        raise TypeError("permission_profile must be PermissionProfile")
+    if additional_permissions is not None and not isinstance(additional_permissions, AdditionalPermissionProfile):
+        raise TypeError("additional_permissions must be AdditionalPermissionProfile or None")
+    if sandbox_permissions is SandboxPermissions.REQUIRE_ESCALATED:
+        return ShellEscalationExecution.unsandboxed()
+    if sandbox_permissions is SandboxPermissions.WITH_ADDITIONAL_PERMISSIONS and additional_permissions is not None:
+        return ShellEscalationExecution.permissions(permission_profile)
+    return ShellEscalationExecution.turn_default()
+
+
+def shell_escalation_decision_for_approved_review(
+    needs_escalation: bool,
+    escalation_execution: ShellEscalationExecution,
+) -> ShellEscalationDecision:
+    if not isinstance(needs_escalation, bool):
+        raise TypeError("needs_escalation must be a bool")
+    if not isinstance(escalation_execution, ShellEscalationExecution):
+        raise TypeError("escalation_execution must be ShellEscalationExecution")
+    if needs_escalation:
+        return ShellEscalationDecision.escalate(escalation_execution)
+    return ShellEscalationDecision.run()
+
+
+def shell_escalation_decision_for_policy_decision(
+    decision: Any,
+    needs_escalation: bool,
+    escalation_execution: ShellEscalationExecution,
+    *,
+    prompt_rejection_reason: str | None = None,
+) -> ShellEscalationDecision:
+    decision_value = getattr(decision, "value", decision)
+    if decision_value == "forbidden":
+        return ShellEscalationDecision.deny("Execution forbidden by policy")
+    if decision_value == "allow":
+        return shell_escalation_decision_for_approved_review(needs_escalation, escalation_execution)
+    if decision_value == "prompt":
+        if prompt_rejection_reason is not None:
+            return ShellEscalationDecision.deny("Execution forbidden by policy")
+        return ShellEscalationDecision.prompt()
+    raise ValueError(f"unknown policy decision: {decision!r}")
+
+
+def shell_escalate_action_from_decision(decision: ShellEscalationDecision) -> ShellEscalateAction:
+    if not isinstance(decision, ShellEscalationDecision):
+        raise TypeError("decision must be ShellEscalationDecision")
+    if decision.type == "run":
+        return ShellEscalateAction.run()
+    if decision.type == "escalate":
+        return ShellEscalateAction.escalate()
+    if decision.type == "deny":
+        return ShellEscalateAction.deny(decision.reason)
+    raise ValueError("prompt decisions must be resolved before producing an escalation action")
+
+
+def shell_escalate_response_from_decision(decision: ShellEscalationDecision) -> ShellEscalateResponse:
+    return ShellEscalateResponse(shell_escalate_action_from_decision(decision))
+
+
+@dataclass(frozen=True)
+class ShellEscalateServerPlan:
+    response: ShellEscalateResponse
+    execution: ShellEscalationExecution | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.response, ShellEscalateResponse):
+            object.__setattr__(self, "response", ShellEscalateResponse.from_mapping(self.response))  # type: ignore[arg-type]
+        action_type = self.response.action.type
+        if action_type == "escalate":
+            if not isinstance(self.execution, ShellEscalationExecution):
+                raise TypeError("escalate server plan must include execution")
+        elif self.execution is not None:
+            raise ValueError(f"{action_type} server plan must not include execution")
+
+
+def shell_escalate_server_plan_from_decision(decision: ShellEscalationDecision) -> ShellEscalateServerPlan:
+    if not isinstance(decision, ShellEscalationDecision):
+        raise TypeError("decision must be ShellEscalationDecision")
+    response = shell_escalate_response_from_decision(decision)
+    if decision.type == "escalate":
+        return ShellEscalateServerPlan(response, execution=decision.execution)
+    return ShellEscalateServerPlan(response)
+
+
+def shell_escalate_server_plan_send_response(
+    plan: ShellEscalateServerPlan,
+    send_response: Any,
+) -> ShellEscalationExecution | None:
+    if not isinstance(plan, ShellEscalateServerPlan):
+        raise TypeError("plan must be ShellEscalateServerPlan")
+    send_response(plan.response)
+    return plan.execution
+
+
+def shell_escalate_server_decision_send_response(
+    decision: ShellEscalationDecision,
+    send_response: Any,
+) -> ShellEscalationExecution | None:
+    plan = shell_escalate_server_plan_from_decision(decision)
+    return shell_escalate_server_plan_send_response(plan, send_response)
+
+
+def shell_escalate_server_continue_after_response(
+    execution: ShellEscalationExecution | None,
+    *,
+    receive_super_exec: Any,
+    prepare_exec: Any,
+    send_result: Any,
+    cancellation_tokens: Iterable[CancellationToken] = (),
+    popen_factory: Any = subprocess.Popen,
+    poll_interval: float = 0.05,
+) -> ShellSuperExecResult | None:
+    if execution is None:
+        return None
+    if not isinstance(execution, ShellEscalationExecution):
+        raise TypeError("execution must be ShellEscalationExecution or None")
+    message, transferred_fds = receive_super_exec()
+    prepared = prepare_exec(execution)
+    result = shell_super_exec_run_prepared(
+        prepared,
+        message,
+        transferred_fds,
+        cancellation_tokens=cancellation_tokens,
+        popen_factory=popen_factory,
+        poll_interval=poll_interval,
+    )
+    send_result(result)
+    return result
+
+
+def shell_escalate_server_decision_run(
+    decision: ShellEscalationDecision,
+    *,
+    send_response: Any,
+    receive_super_exec: Any,
+    prepare_exec: Any,
+    send_result: Any,
+    cancellation_tokens: Iterable[CancellationToken] = (),
+    popen_factory: Any = subprocess.Popen,
+    poll_interval: float = 0.05,
+) -> ShellSuperExecResult | None:
+    execution = shell_escalate_server_decision_send_response(decision, send_response)
+    return shell_escalate_server_continue_after_response(
+        execution,
+        receive_super_exec=receive_super_exec,
+        prepare_exec=prepare_exec,
+        send_result=send_result,
+        cancellation_tokens=cancellation_tokens,
+        popen_factory=popen_factory,
+        poll_interval=poll_interval,
+    )
+
+
+def shell_escalate_server_request_run(
+    request: ShellEscalateRequest | Mapping[str, Any],
+    *,
+    determine_action: Any,
+    send_response: Any,
+    receive_super_exec: Any,
+    prepare_exec: Any,
+    send_result: Any,
+    cancellation_tokens: Iterable[CancellationToken] = (),
+    popen_factory: Any = subprocess.Popen,
+    poll_interval: float = 0.05,
+) -> ShellSuperExecResult | None:
+    if not isinstance(request, ShellEscalateRequest):
+        request = ShellEscalateRequest.from_mapping(request)
+    policy_input = shell_escalate_policy_input_from_request(request)
+    decision = shell_escalate_decision_for_request(request, determine_action)
+
+    def prepare_with_request(execution: ShellEscalationExecution) -> ShellPreparedExec:
+        prepared = prepare_exec(
+            policy_input.program,
+            policy_input.argv,
+            policy_input.workdir,
+            dict(request.env),
+            execution,
+        )
+        if not isinstance(prepared, ShellPreparedExec):
+            raise TypeError("prepare_exec must return ShellPreparedExec")
+        return prepared
+
+    return shell_escalate_server_decision_run(
+        decision,
+        send_response=send_response,
+        receive_super_exec=receive_super_exec,
+        prepare_exec=prepare_with_request,
+        send_result=send_result,
+        cancellation_tokens=cancellation_tokens,
+        popen_factory=popen_factory,
+        poll_interval=poll_interval,
+    )
+
+
+def shell_escalation_decision_after_review(
+    review_decision: ReviewDecision | str,
+    needs_escalation: bool,
+    escalation_execution: ShellEscalationExecution,
+    *,
+    rejection_message: str | None = None,
+    guardian_rejection_message: str | None = None,
+    guardian_timeout_message: str = "Timed out waiting for approval.",
+) -> ShellEscalationDecision:
+    review_decision = ReviewDecision.from_mapping(review_decision)
+    if review_decision.type in {"approved", "approved_for_session", "approved_execpolicy_amendment"}:
+        return shell_escalation_decision_for_approved_review(needs_escalation, escalation_execution)
+    if review_decision.type == "network_policy_amendment":
+        amendment = review_decision.network_policy_amendment
+        if amendment is not None and amendment.action is NetworkPolicyRuleAction.ALLOW:
+            return shell_escalation_decision_for_approved_review(needs_escalation, escalation_execution)
+        return ShellEscalationDecision.deny("User denied execution")
+    if review_decision.type == "denied":
+        return ShellEscalationDecision.deny(
+            rejection_message or guardian_rejection_message or "User denied execution"
+        )
+    if review_decision.type == "timed_out":
+        return ShellEscalationDecision.deny(guardian_timeout_message)
+    if review_decision.type == "abort":
+        return ShellEscalationDecision.deny("User cancelled execution")
+    raise ValueError(f"unknown review decision type: {review_decision.type}")
+
+
 def execve_prompt_is_rejected_by_policy(
     approval_policy: AskForApproval | GranularApprovalConfig | str,
     decision_source: DecisionSource,
@@ -605,6 +2101,23 @@ def extract_shell_script(command: tuple[str, ...] | list[str]) -> ParsedShellCom
 def join_program_and_argv(program: str | Path, argv: tuple[str, ...] | list[str]) -> tuple[str, ...]:
     argv_tuple = _string_tuple(argv, "argv")
     return (str(program), *argv_tuple[1:])
+
+
+def commands_for_intercepted_exec_policy(
+    program: str | Path,
+    argv: tuple[str, ...] | list[str],
+) -> CandidateCommands:
+    argv_tuple = _string_tuple(argv, "argv")
+    if len(argv_tuple) == 3:
+        _, flag, script = argv_tuple
+        shell_command = (str(program), flag, script)
+        commands = parse_shell_lc_plain_commands(shell_command)
+        if commands is not None:
+            return CandidateCommands(tuple(tuple(command) for command in commands), False)
+        single_command = parse_shell_lc_single_command_prefix(shell_command)
+        if single_command is not None:
+            return CandidateCommands((tuple(single_command),), True)
+    return CandidateCommands((join_program_and_argv(program, argv_tuple),), False)
 
 
 def map_exec_result(sandbox: SandboxType, result: ExecResult) -> ExecToolCallOutput:
@@ -962,7 +2475,10 @@ __all__ = [
     "ApplyPatchFileSystemSandboxContext",
     "ApplyPatchRequest",
     "ApplyPatchRuntimeOutput",
+    "CandidateCommands",
     "DecisionSource",
+    "ESCALATE_SOCKET_ENV_VAR",
+    "EXEC_WRAPPER_ENV_VAR",
     "ExecResult",
     "GuardianNetworkAccessTrigger",
     "NetworkApprovalMode",
@@ -971,8 +2487,29 @@ __all__ = [
     "ParsedShellCommand",
     "REJECT_RULES_APPROVAL_REASON",
     "REJECT_SANDBOX_APPROVAL_REASON",
+    "SHELL_ESCALATE_HANDSHAKE_MESSAGE",
+    "SHELL_SOCKET_MAX_FDS_PER_MESSAGE",
+    "SHELL_SUPER_EXEC_STDIO_DESTINATION_FDS",
     "SandboxCommand",
     "ShellApprovalKey",
+    "ShellEscalateAction",
+    "ShellEscalateClientHandshakePlan",
+    "ShellEscalateClientSocketPair",
+    "ShellEscalateClientWrapperPlan",
+    "ShellEscalateClientAction",
+    "ShellEscalateClientPlan",
+    "ShellEscalatePolicyInput",
+    "ShellEscalateRequest",
+    "ShellEscalateResponse",
+    "ShellEscalationDecision",
+    "ShellEscalationExecution",
+    "ShellEscalateServerPlan",
+    "ShellLocalExecvPlan",
+    "ShellPreparedExec",
+    "ShellSuperExecMessage",
+    "ShellSuperExecResult",
+    "ShellSuperExecSpawnPlan",
+    "ShellSuperExecSubprocessSpec",
     "ShellRequest",
     "ShellRuntimeBackend",
     "ToolRuntimeError",
@@ -991,6 +2528,7 @@ __all__ = [
     "build_sandbox_command",
     "build_unified_exec_sandbox_command",
     "canonicalize_command_for_approval",
+    "commands_for_intercepted_exec_policy",
     "disable_powershell_profile_for_elevated_windows_sandbox",
     "exec_env_for_sandbox_permissions",
     "execve_prompt_is_rejected_by_policy",
@@ -1006,7 +2544,62 @@ __all__ = [
     "map_exec_result",
     "maybe_wrap_shell_lc_with_snapshot",
     "managed_network_for_runtime",
+    "shell_prepared_exec_effective_arg0",
+    "shell_prepared_exec_program_and_args",
+    "shell_escalate_action_from_decision",
+    "shell_escalate_client_action_from_response",
+    "shell_escalate_client_handshake_payload",
+    "shell_escalate_client_handshake_plan",
+    "shell_escalate_client_handshake_plan_send",
+    "shell_escalate_client_handshake_run",
+    "shell_escalate_client_plan_from_response",
+    "shell_escalate_client_plan_run",
+    "shell_escalate_client_request_run",
+    "shell_escalate_client_request_exchange",
+    "shell_escalate_client_response_run",
+    "shell_escalate_client_send_handshake",
+    "shell_escalate_client_socket_pair",
+    "shell_escalate_client_wrapper_plan",
+    "shell_escalate_client_wrapper_plan_run",
+    "shell_escalate_client_wrapper_plan_send_handshake",
+    "shell_escalate_client_wrapper_run",
+    "shell_escalate_client_wrapper_run_with_socket_pair",
+    "shell_escalate_decision_for_request",
+    "shell_escalate_policy_input_from_request",
+    "shell_escalate_request_from_client",
+    "shell_escalate_response_from_decision",
+    "shell_escalate_server_continue_after_response",
+    "shell_escalate_server_decision_send_response",
+    "shell_escalate_server_decision_run",
+    "shell_escalate_server_plan_from_decision",
+    "shell_escalate_server_plan_send_response",
+    "shell_escalate_server_request_run",
+    "shell_escalation_request_env",
+    "shell_escalation_session_env",
+    "shell_escalation_socket_fd_from_env",
+    "shell_local_execv_plan",
+    "shell_local_execv_run",
+    "shell_super_exec_duplicate_fd_for_transfer",
+    "shell_super_exec_exchange_exit_code",
+    "shell_super_exec_exit_code_from_result",
+    "shell_super_exec_fd_pairs",
+    "shell_super_exec_message_for_escalate_action",
+    "shell_super_exec_result_from_exit_status",
+    "shell_super_exec_send_receive_exit_code",
+    "shell_super_exec_spawn_plan",
+    "shell_super_exec_stdio_transfer_fds",
+    "shell_super_exec_subprocess_spec",
+    "shell_super_exec_dup2_preexec_fn",
+    "shell_super_exec_popen_kwargs",
+    "shell_super_exec_run_prepared",
+    "shell_super_exec_run_subprocess",
+    "shell_request_escalation_execution",
+    "shell_escalation_decision_after_review",
+    "shell_escalation_decision_for_approved_review",
+    "shell_escalation_decision_for_policy_decision",
     "shell_single_quote",
+    "shell_socket_sendmsg_with_fds",
+    "shell_socket_validate_fds_for_message",
     "shell_approval_keys",
     "shell_network_approval_spec",
     "shell_permission_request_payload",

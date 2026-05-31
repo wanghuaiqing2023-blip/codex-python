@@ -11,9 +11,14 @@ from pycodex.core import (
     ExecPolicyCommands,
     UnmatchedCommandContext,
     commands_for_exec_policy,
+    commands_for_intercepted_exec_policy,
+    exec_approval_requirement_for_decision,
     profile_is_managed_read_only,
     prompt_is_rejected_by_policy,
     render_decision_for_unmatched_command,
+    render_decisions_for_intercepted_exec_policy,
+    render_intercepted_exec_policy_decision,
+    strongest_decision,
 )
 from pycodex.protocol import (
     AskForApproval,
@@ -80,6 +85,64 @@ class CoreExecPolicyTests(unittest.TestCase):
             commands_for_exec_policy(command),
             ExecPolicyCommands((("python3",),), True, ExecPolicyCommandOrigin.GENERIC),
         )
+
+    def test_commands_for_intercepted_exec_policy_honors_shell_wrapper_parsing_flag(self):
+        argv = ["not-bash", "-lc", "git status && pwd"]
+
+        self.assertEqual(
+            commands_for_intercepted_exec_policy(
+                "/bin/bash",
+                argv,
+                enable_shell_wrapper_parsing=True,
+            ),
+            ExecPolicyCommands((("git", "status"), ("pwd",)), False, ExecPolicyCommandOrigin.GENERIC),
+        )
+        self.assertEqual(
+            commands_for_intercepted_exec_policy(
+                "/bin/bash",
+                argv,
+                enable_shell_wrapper_parsing=False,
+            ),
+            ExecPolicyCommands((("/bin/bash", "-lc", "git status && pwd"),), False, ExecPolicyCommandOrigin.GENERIC),
+        )
+
+    def test_intercepted_exec_policy_fallback_renders_each_candidate_command(self):
+        self.assertEqual(
+            render_decisions_for_intercepted_exec_policy(
+                "/bin/bash",
+                ["not-bash", "-lc", "ls && rm -rf /important/data"],
+                _context(approval_policy=AskForApproval.ON_REQUEST),
+                enable_shell_wrapper_parsing=True,
+            ),
+            (Decision.ALLOW, Decision.PROMPT),
+        )
+
+    def test_intercepted_exec_policy_fallback_uses_strongest_decision(self):
+        self.assertIs(strongest_decision((Decision.ALLOW, Decision.PROMPT)), Decision.PROMPT)
+        self.assertIs(strongest_decision(("allow", "forbidden", "prompt")), Decision.FORBIDDEN)
+        with self.assertRaises(ValueError):
+            strongest_decision(())
+
+        self.assertIs(
+            render_intercepted_exec_policy_decision(
+                "/bin/bash",
+                ["not-bash", "-lc", "ls && rm -rf /important/data"],
+                _context(approval_policy=AskForApproval.ON_REQUEST),
+                enable_shell_wrapper_parsing=True,
+            ),
+            Decision.PROMPT,
+        )
+
+    def test_exec_approval_requirement_for_decision_maps_policy_result(self):
+        allowed = exec_approval_requirement_for_decision(Decision.ALLOW, forbidden_reason="blocked")
+        prompt = exec_approval_requirement_for_decision("prompt", forbidden_reason="blocked", prompt_reason="needs review")
+        forbidden = exec_approval_requirement_for_decision(Decision.FORBIDDEN, forbidden_reason="blocked")
+
+        self.assertEqual(allowed.type, "skip")
+        self.assertEqual(prompt.type, "needs_approval")
+        self.assertEqual(prompt.reason, "needs review")
+        self.assertEqual(forbidden.type, "forbidden")
+        self.assertEqual(forbidden.reason, "blocked")
 
     @unittest.skipUnless(os.name == "nt", "PowerShell exec-policy parsing is Windows-specific upstream")
     def test_commands_for_exec_policy_parses_powershell_wrapper_on_windows(self):

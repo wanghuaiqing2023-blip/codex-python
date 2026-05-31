@@ -4,6 +4,7 @@ from pycodex.core import (
     MULTI_AGENT_V1_NAMESPACE,
     FunctionToolOutput,
     HookToolName,
+    McpToolOutput,
     PostToolUsePayload,
     PreToolUsePayload,
     RegisteredTool,
@@ -21,7 +22,7 @@ from pycodex.core import (
     unsupported_tool_call_message,
     with_updated_hook_input,
 )
-from pycodex.protocol import ToolName
+from pycodex.protocol import CallToolResult, FunctionCallOutputContentItem, ToolName, TruncationPolicyConfig
 
 
 class ToolRegistryRegistrationTests(unittest.TestCase):
@@ -77,6 +78,23 @@ class ToolRegistryRegistrationTests(unittest.TestCase):
         registry = ToolRegistry.from_tools([StringNamedTool()])
 
         self.assertEqual(registry.tool_names(), (ToolName.plain("echo"),))
+
+    def test_registry_test_helpers_match_sorted_upstream_names(self) -> None:
+        registry = ToolRegistry.from_tools(
+            [
+                RegisteredTool.plain("zeta"),
+                RegisteredTool.plain("alpha"),
+            ]
+        )
+
+        self.assertEqual(
+            registry.tool_names_for_test(),
+            (ToolName.plain("alpha"), ToolName.plain("zeta")),
+        )
+        self.assertEqual(
+            ToolRegistry.with_handler_for_test(RegisteredTool.plain("solo")).tool_names_for_test(),
+            (ToolName.plain("solo"),),
+        )
 
     def test_registry_reports_exposure_parallel_support_and_kind_matching(self) -> None:
         shell = RegisteredTool.plain(
@@ -159,6 +177,9 @@ class ToolRegistryRegistrationTests(unittest.TestCase):
         )
 
         class CustomHookTool(RegisteredTool):
+            def handle(self, _invocation):
+                return "handled"
+
             def pre_tool_use_payload(self, _invocation):
                 return PreToolUsePayload(
                     tool_name=HookToolName.new("custom_pre"),
@@ -172,6 +193,16 @@ class ToolRegistryRegistrationTests(unittest.TestCase):
                     tool_input={"post": True},
                     tool_response={"ok": True},
                 )
+
+            def with_updated_hook_input(self, invocation, updated_input):
+                return ToolInvocation(
+                    call_id=invocation.call_id,
+                    tool_name=invocation.tool_name,
+                    payload=ToolPayload.function(f'{{"custom":{str(bool(updated_input)).lower()}}}'),
+                )
+
+            def telemetry_tags(self, _invocation):
+                return (("custom_tag", "custom-value"),)
 
         overridden = override_tool_exposure(
             CustomHookTool(name=ToolName.plain("echo")),
@@ -194,6 +225,15 @@ class ToolRegistryRegistrationTests(unittest.TestCase):
                 tool_response={"ok": True},
             ),
         )
+        self.assertEqual(
+            overridden.with_updated_hook_input(invocation, {"custom": True}).payload,
+            ToolPayload.function('{"custom":true}'),
+        )
+        self.assertEqual(
+            overridden.telemetry_tags(invocation),
+            (("custom_tag", "custom-value"),),
+        )
+        self.assertEqual(overridden.handle(invocation), "handled")
 
         class BadParallelTool(RegisteredTool):
             def supports_parallel_tool_calls(self):
@@ -237,6 +277,20 @@ class ToolRegistryRegistrationTests(unittest.TestCase):
                 ToolName.plain("shell_command"),
             ),
             "unsupported call: shell_command",
+        )
+        self.assertEqual(
+            unsupported_tool_call_message(
+                ToolPayload.custom("raw"),
+                ToolName.namespaced("mcp__server__", "lookup"),
+            ),
+            "unsupported custom tool call: mcp__server__lookup",
+        )
+        self.assertEqual(
+            unsupported_tool_call_message(
+                ToolPayload.function("{}"),
+                ToolName.namespaced("functions.", "echo"),
+            ),
+            "unsupported call: functions.echo",
         )
         with self.assertRaises(TypeError):
             unsupported_tool_call_message(object(), ToolName.plain("shell_command"))
@@ -296,13 +350,28 @@ class ToolRegistryHookTests(unittest.TestCase):
             pre_tool_use_payload(invocation),
             PreToolUsePayload(tool_name=HookToolName.new("echo"), tool_input={}),
         )
+        self.assertEqual(
+            post_tool_use_payload(invocation, FunctionToolOutput.from_text("ok", True)).tool_input,
+            {},
+        )
         with self.assertRaises(TypeError):
             function_hook_tool_input(1)
 
     def test_function_hook_input_falls_back_to_string_for_invalid_json(self) -> None:
+        invocation = ToolInvocation(
+            call_id="call-1",
+            tool_name=ToolName.plain("echo"),
+            payload=ToolPayload.function("{not json"),
+        )
+
         self.assertEqual(function_hook_tool_input("{not json"), "{not json")
+        self.assertEqual(
+            post_tool_use_payload(invocation, FunctionToolOutput.from_text("ok", True)).tool_input,
+            "{not json",
+        )
 
     def test_spawn_agent_function_tools_use_agent_matcher_alias(self) -> None:
+        output = FunctionToolOutput.from_text("accepted", True)
         hook_payloads = [
             pre_tool_use_payload(
                 ToolInvocation(
@@ -310,6 +379,20 @@ class ToolRegistryHookTests(unittest.TestCase):
                     tool_name=tool_name,
                     payload=ToolPayload.function('{"message":"inspect this repo"}'),
                 )
+            )
+            for tool_name in (
+                ToolName.plain("spawn_agent"),
+                ToolName.namespaced(MULTI_AGENT_V1_NAMESPACE, "spawn_agent"),
+            )
+        ]
+        post_hook_payloads = [
+            post_tool_use_payload(
+                ToolInvocation(
+                    call_id="call-1",
+                    tool_name=tool_name,
+                    payload=ToolPayload.function('{"message":"inspect this repo"}'),
+                ),
+                output,
             )
             for tool_name in (
                 ToolName.plain("spawn_agent"),
@@ -329,6 +412,14 @@ class ToolRegistryHookTests(unittest.TestCase):
                     tool_input={"message": "inspect this repo"},
                 ),
             ],
+        )
+        self.assertEqual(
+            [payload.tool_name for payload in post_hook_payloads],
+            [HookToolName.spawn_agent(), HookToolName.spawn_agent()],
+        )
+        self.assertEqual(
+            [payload.tool_response for payload in post_hook_payloads],
+            ["accepted", "accepted"],
         )
 
     def test_non_function_payloads_do_not_expose_default_hook_payloads(self) -> None:
@@ -370,6 +461,70 @@ class ToolRegistryHookTests(unittest.TestCase):
                 tool_response="stable hook response",
             ),
         )
+
+    def test_post_tool_use_payload_preserves_json_output_response(self) -> None:
+        invocation = ToolInvocation(
+            call_id="call-json",
+            tool_name=ToolName.plain("json_echo"),
+            payload=ToolPayload.function('{"message":"hello"}'),
+        )
+        output = JsonToolOutput.new({"ok": True, "items": [1, 2]})
+
+        self.assertEqual(
+            post_tool_use_payload(invocation, output),
+            PostToolUsePayload(
+                tool_name=HookToolName.new("json_echo"),
+                tool_use_id="call-json",
+                tool_input={"message": "hello"},
+                tool_response={"ok": True, "items": [1, 2]},
+            ),
+        )
+
+    def test_post_tool_use_payload_preserves_function_content_items_response(self) -> None:
+        invocation = ToolInvocation(
+            call_id="call-content",
+            tool_name=ToolName.plain("render"),
+            payload=ToolPayload.function('{"path":"image.png"}'),
+        )
+        output = FunctionToolOutput.from_content(
+            (
+                FunctionCallOutputContentItem.input_text("rendered"),
+                {"type": "image", "image_url": "file:///tmp/image.png"},
+            ),
+            True,
+        )
+
+        payload = post_tool_use_payload(invocation, output)
+
+        self.assertEqual(payload.tool_input, {"path": "image.png"})
+        self.assertEqual(payload.tool_response[0], {"type": "input_text", "text": "rendered"})
+        self.assertEqual(payload.tool_response[1], {"type": "image", "image_url": "file:///tmp/image.png"})
+
+    def test_post_tool_use_payload_preserves_mcp_input_and_result(self) -> None:
+        invocation = ToolInvocation(
+            call_id="call-mcp",
+            tool_name=ToolName.namespaced("mcp__sample__", "lookup"),
+            payload=ToolPayload.function('{"query":"hello"}'),
+        )
+        output = McpToolOutput(
+            result=CallToolResult(
+                content=({"type": "text", "text": "ok"},),
+                structured_content={"answer": 42},
+                is_error=False,
+            ),
+            tool_input={"query": "hello", "cursor": None},
+            wall_time_seconds=0.25,
+            original_image_detail_supported=False,
+            truncation_policy=TruncationPolicyConfig.bytes(1024),
+        )
+
+        payload = post_tool_use_payload(invocation, output)
+
+        self.assertEqual(payload.tool_name, HookToolName.new("mcp__sample__lookup"))
+        self.assertEqual(payload.tool_use_id, "call-mcp")
+        self.assertEqual(payload.tool_input, {"query": "hello", "cursor": None})
+        self.assertEqual(payload.tool_response["structuredContent"], {"answer": 42})
+        self.assertFalse(payload.tool_response["isError"])
 
     def test_tool_invocation_and_sources_reject_non_rust_shapes(self) -> None:
         with self.assertRaises(ValueError):

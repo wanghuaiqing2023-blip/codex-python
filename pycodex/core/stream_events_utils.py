@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import binascii
 import inspect
+from collections.abc import Sequence
 from dataclasses import dataclass
 from dataclasses import replace
 from pathlib import Path
@@ -259,8 +260,8 @@ def last_assistant_message_from_item(
     return stripped
 
 
-def get_last_assistant_message_from_turn(responses: list[ResponseItem] | tuple[ResponseItem, ...]) -> str | None:
-    if isinstance(responses, ResponseItem) or not isinstance(responses, (list, tuple)):
+def get_last_assistant_message_from_turn(responses: Sequence[ResponseItem]) -> str | None:
+    if isinstance(responses, (str, bytes, ResponseItem)) or not isinstance(responses, Sequence):
         raise TypeError("responses must be a sequence of ResponseItem")
     if not all(isinstance(item, ResponseItem) for item in responses):
         raise TypeError("responses must contain ResponseItem values")

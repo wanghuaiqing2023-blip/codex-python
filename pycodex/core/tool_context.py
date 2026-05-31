@@ -308,8 +308,12 @@ class McpToolOutput:
                 self.original_image_detail_supported,
                 items,
             )
-            return FunctionCallOutputPayload.from_content_items(
+            items = truncate_function_output_items_with_policy(
                 (FunctionCallOutputContentItem.input_text(header), *items),
+                _scaled_truncation_policy(self.truncation_policy, 1.2),
+            )
+            return FunctionCallOutputPayload.from_content_items(
+                items,
                 payload.success,
             )
 

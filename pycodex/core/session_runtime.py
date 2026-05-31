@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass, field, fields, is_dataclass
+from datetime import datetime, timezone as utc_timezone
 from enum import Enum
 from collections.abc import Mapping
 from pathlib import Path
@@ -245,6 +246,7 @@ class InMemoryCodexSession:
         reasoning_effort = self.reasoning_effort
         if reasoning_effort is None:
             reasoning_effort = _collaboration_mode_reasoning_effort(collaboration_mode)
+        current_date, timezone = _turn_local_time_context(self.current_date, self.timezone)
         return InMemoryTurnContext(
             cwd=turn_cwd,
             turn_id=self.turn_id,
@@ -274,8 +276,8 @@ class InMemoryCodexSession:
             reasoning_effort=reasoning_effort,
             reasoning_summary=self.reasoning_summary,
             service_tier=self.service_tier,
-            current_date=self.current_date,
-            timezone=self.timezone,
+            current_date=current_date,
+            timezone=timezone,
             network=self.network,
             environments=environments,
             final_output_json_schema=final_output_json_schema,
@@ -691,6 +693,30 @@ def _default_turn_environments(value: Any, cwd: Path | str) -> Any:
     if primary.cwd == cwd_path:
         return environments
     return (TurnEnvironmentSelection(primary.environment_id, cwd_path), *environments[1:])
+
+
+def _turn_local_time_context(
+    current_date: str | None,
+    timezone_name: str | None,
+) -> tuple[str, str]:
+    resolved_date, resolved_timezone = _local_time_context()
+    return (
+        current_date if current_date is not None else resolved_date,
+        timezone_name if timezone_name is not None else resolved_timezone,
+    )
+
+
+def _local_time_context() -> tuple[str, str]:
+    try:
+        local_now = datetime.now().astimezone()
+        tzinfo = local_now.tzinfo
+        timezone_name = getattr(tzinfo, "key", None) or getattr(tzinfo, "zone", None) or local_now.tzname()
+        if not timezone_name:
+            raise ValueError("local timezone name is unavailable")
+        return local_now.strftime("%Y-%m-%d"), str(timezone_name)
+    except Exception:
+        utc_now = datetime.now(utc_timezone.utc)
+        return utc_now.strftime("%Y-%m-%d"), "Etc/UTC"
 
 
 def _turn_cwd(environments: Any, fallback: Path | str) -> Path:

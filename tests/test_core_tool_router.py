@@ -227,6 +227,33 @@ class ToolRouterTests(unittest.TestCase):
             ],
         )
 
+    def test_dispatch_tool_call_emits_tool_read_metric_from_mapping_session(self) -> None:
+        telemetry = CounterTelemetry()
+        session = {
+            "session_telemetry": telemetry,
+            "user_shell": lambda: Shell(ShellType.BASH, "/bin/bash"),
+        }
+        invocation = ToolInvocation(
+            call_id="call-memory",
+            tool_name=ToolName.plain("shell_command"),
+            payload=ToolPayload.function(json.dumps({"command": "cat /home/me/memories/MEMORY.md"})),
+            session=session,
+        )
+
+        result = asyncio.run(dispatch_tool_call(ToolRegistry.from_tools([EchoHandler("shell_command")]), invocation))
+
+        self.assertEqual(result.to_response_item().output.to_text(), "ok")
+        self.assertEqual(
+            telemetry.calls,
+            [
+                (
+                    MEMORIES_USAGE_METRIC,
+                    1,
+                    (("kind", "memory_md"), ("tool", "shell_command"), ("success", "true")),
+                )
+            ],
+        )
+
     def test_tool_call_function_arguments_rejects_incompatible_payloads(self) -> None:
         call = ToolCall(
             tool_name=ToolName.plain("tool_search"),
@@ -783,7 +810,7 @@ class ToolRouterTests(unittest.TestCase):
 
         self.assertFalse(telemetry_events[0]["success"])
         self.assertIsInstance(telemetry_events[0]["error"], FunctionCallError)
-        self.assertIn("incompatible payload", telemetry_events[0]["error_message"])
+        self.assertEqual(telemetry_events[0]["error_message"], "tool telemetry_custom_only invoked with incompatible payload")
         self.assertEqual(telemetry_events[0]["extra_trace_fields"][0], ("mcp_server", "codex-apps"))
 
     def test_dispatch_tool_call_skips_memory_metric_for_incompatible_payload(self) -> None:
@@ -838,6 +865,29 @@ class ToolRouterTests(unittest.TestCase):
             [message.content[0].text for message in session.recorded],
             ["context from high-level router"],
         )
+
+    def test_router_dispatch_records_post_hook_contexts_from_mapping_session(self) -> None:
+        recorded = []
+        router = ToolRouter.from_parts(ToolRegistry.from_tools([JsonEchoHandler("json_echo")]), ())
+        call = ToolCall(
+            tool_name=ToolName.plain("json_echo"),
+            call_id="call-1",
+            payload=ToolPayload.function("{}"),
+        )
+
+        result = asyncio.run(
+            router.dispatch_tool_call_with_terminal_outcome(
+                call,
+                session={"record_additional_context_messages": recorded.extend},
+                post_tool_use_hook=lambda _payload, _result: PostToolUseHookOutcome(
+                    feedback_message="post hook feedback",
+                    additional_contexts=("context from mapping session",),
+                ),
+            )
+        )
+
+        self.assertEqual(result.to_response_item().output.to_text(), "post hook feedback")
+        self.assertEqual([message.content[0].text for message in recorded], ["context from mapping session"])
 
     def test_dispatch_tool_call_applies_tool_completed_goal_runtime_after_finish(self) -> None:
         class GoalSession:
@@ -899,6 +949,22 @@ class ToolRouterTests(unittest.TestCase):
 
         self.assertEqual(result.to_response_item().output.to_text(), "ok")
         self.assertEqual(session.events, [])
+
+    def test_dispatch_tool_call_applies_goal_runtime_from_mapping_session(self) -> None:
+        events = []
+        turn = SimpleNamespace(turn_id="turn-1")
+        invocation = ToolInvocation(
+            call_id="call-1",
+            tool_name=ToolName.plain("echo"),
+            payload=ToolPayload.function("{}"),
+            session={"goal_runtime_apply": events.append},
+            turn=turn,
+        )
+
+        result = asyncio.run(dispatch_tool_call(ToolRegistry.from_tools([EchoHandler()]), invocation))
+
+        self.assertEqual(result.to_response_item().output.to_text(), "ok")
+        self.assertEqual(events, [{"type": "tool_completed", "turn_context": turn, "tool_name": "echo"}])
 
     def test_environment_tool_router_dispatches_exec_command(self) -> None:
         if sys.platform == "win32":
@@ -1195,6 +1261,7 @@ class ToolRouterTests(unittest.TestCase):
         self.assertEqual(result.code_mode_result(), {"ok": True})
 
     def test_dispatch_post_tool_use_hook_uses_default_stop_feedback(self) -> None:
+        recorder = LifecycleRecorder()
         invocation = ToolInvocation(
             call_id="call-1",
             tool_name=ToolName.plain("json_echo"),
@@ -1205,12 +1272,14 @@ class ToolRouterTests(unittest.TestCase):
             dispatch_tool_call(
                 ToolRegistry.from_tools([JsonEchoHandler("json_echo")]),
                 invocation,
+                lifecycle_contributors=[recorder],
                 post_tool_use_hook=lambda _payload, _result: PostToolUseHookOutcome(should_stop=True),
             )
         )
 
         self.assertEqual(result.to_response_item().output.to_text(), "PostToolUse hook stopped execution")
         self.assertEqual(result.code_mode_result(), {"ok": True})
+        self.assertEqual(recorder.finished[0].outcome, ToolCallOutcome.completed(True))
 
     def test_dispatch_post_tool_use_hook_receives_matcher_aliases(self) -> None:
         observed = []

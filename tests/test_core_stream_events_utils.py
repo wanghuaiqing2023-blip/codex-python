@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -120,6 +121,17 @@ def assistant_output_text(text: str, phase: MessagePhase | None = None) -> Respo
     )
 
 
+class ResponseSequence(Sequence):
+    def __init__(self, items):
+        self._items = tuple(items)
+
+    def __getitem__(self, index):
+        return self._items[index]
+
+    def __len__(self):
+        return len(self._items)
+
+
 class CoreStreamEventsUtilsTests(unittest.TestCase):
     def test_external_context_pollution_items_include_web_search_and_tool_search(self) -> None:
         polluting_items = (
@@ -224,6 +236,17 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
                 )
             )
         )
+
+    def test_get_last_assistant_message_from_turn_accepts_sequence_like_rust_slice(self) -> None:
+        responses = ResponseSequence(
+            (
+                assistant_output_text("earlier"),
+                ResponseItem.function_call("shell", "{}", "call-1"),
+                assistant_output_text("latest"),
+            )
+        )
+
+        self.assertEqual(get_last_assistant_message_from_turn(responses), "latest")
 
     def test_completed_item_defers_mailbox_delivery_for_unknown_phase_messages(self) -> None:
         self.assertTrue(

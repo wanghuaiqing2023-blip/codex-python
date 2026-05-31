@@ -61,6 +61,34 @@ Recommended workflow when comparing or porting Rust behavior:
 
 The graph was generated for `codex/` only. Do not assume it describes `pycodex/`, tests, or project files outside `codex/` unless a separate graph is generated for those areas.
 
+## Dependency-graph-driven priorities
+
+When deciding what to implement next, use the upstream knowledge graph dependency relationships as the first planning input, not just the most visible local gap.
+
+Priority workflow:
+
+- Start from core user-facing entrypoints such as `exec`, interactive task execution, request/response streaming, tool dispatch, and final answer generation.
+- Follow graph `calls`, `imports`, `exports`, and containing file relationships to identify the Rust modules and functions on the common runtime path.
+- Prefer high-impact nodes that unblock many downstream behaviors, especially high fan-in/fan-out modules on the CLI/core agent loop path.
+- Rank work by whether it helps complete an end-to-end common Codex flow before expanding peripheral parity details.
+- Filter out MCP/plugin/marketplace/cloud/TUI branches unless the dependency path shows they are required for the core runtime slice being implemented.
+- After identifying the Rust dependency slice, map it to the corresponding `pycodex/` modules and implement the smallest coherent Python slice that advances the common runtime path.
+- Use targeted Rust source reads to confirm behavior after the graph identifies likely files; the graph determines navigation and priority, while Rust source determines final behavior.
+
+## Mainline-first parity work
+
+Local parity fixes and boundary coverage are necessary, but they should serve the graph-selected core runtime path instead of becoming an open-ended default task.
+
+Use this balance when choosing work:
+
+- Prefer mainline progress when the core `exec`/agent-loop/tool-dispatch/final-answer flow is not yet usable.
+- Do local parity and boundary coverage primarily inside modules that the knowledge graph shows are on the current core dependency slice.
+- Avoid spending long sequences of turns on adjacent edge cases unless they unblock or protect the current end-to-end slice.
+- When a local parity issue is discovered outside the active dependency slice, document it as a follow-up unless it is a clear regression or a small compatibility shim needed by the core path.
+- Treat an end-to-end runnable slice as more valuable than many isolated helper modules that are individually precise but not connected.
+- A healthy default split is roughly 60-70% graph-driven core-path implementation, 20-30% parity and boundary coverage on that path, and 10% documentation/status cleanup.
+- Before continuing local edge-case work, ask whether the same effort would more directly advance `exec -> context -> model request -> stream handling -> tool dispatch -> final answer`.
+
 ## Porting discipline
 
 When implementing functionality:

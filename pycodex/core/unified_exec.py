@@ -16,8 +16,12 @@ MIN_EMPTY_YIELD_TIME_MS = 5_000
 MAX_YIELD_TIME_MS = 30_000
 DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS = 300_000
 DEFAULT_MAX_OUTPUT_TOKENS = 10_000
+EARLY_EXIT_GRACE_PERIOD_MS = 150
+TRAILING_OUTPUT_GRACE_MS = 100
 UNIFIED_EXEC_OUTPUT_MAX_BYTES = 1024 * 1024
 UNIFIED_EXEC_OUTPUT_MAX_TOKENS = UNIFIED_EXEC_OUTPUT_MAX_BYTES // 4
+UNIFIED_EXEC_OUTPUT_DELTA_MAX_BYTES = 8192
+MAX_EXEC_OUTPUT_DELTAS_PER_CALL = 10_000
 MAX_UNIFIED_EXEC_PROCESSES = 64
 UNIFIED_EXEC_ENV = (
     ("NO_COLOR", "1"),
@@ -36,6 +40,108 @@ _T = TypeVar("_T")
 
 def clamp_yield_time(yield_time_ms: int) -> int:
     return min(max(yield_time_ms, MIN_YIELD_TIME_MS), MAX_YIELD_TIME_MS)
+
+
+def resolve_write_stdin_yield_time(chars: str, yield_time_ms: int) -> int:
+    if chars == "":
+        return min(
+            max(yield_time_ms, MIN_EMPTY_YIELD_TIME_MS),
+            DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS,
+        )
+    return clamp_yield_time(yield_time_ms)
+
+
+def split_valid_utf8_prefix(buffer: bytearray) -> bytes | None:
+    return split_valid_utf8_prefix_with_max(buffer, UNIFIED_EXEC_OUTPUT_DELTA_MAX_BYTES)
+
+
+def split_valid_utf8_prefix_with_max(buffer: bytearray, max_bytes: int) -> bytes | None:
+    if not isinstance(buffer, bytearray):
+        raise TypeError("buffer must be a bytearray")
+    if not buffer:
+        return None
+
+    max_len = min(len(buffer), max(0, int(max_bytes)))
+    split = max_len
+    while split > 0:
+        try:
+            bytes(buffer[:split]).decode("utf-8", errors="strict")
+        except UnicodeDecodeError:
+            if max_len - split > 4:
+                break
+            split -= 1
+            continue
+        prefix = bytes(buffer[:split])
+        del buffer[:split]
+        return prefix
+
+    prefix = bytes(buffer[:1])
+    del buffer[:1]
+    return prefix
+
+
+def should_emit_exec_output_delta(emitted_deltas: int) -> bool:
+    if isinstance(emitted_deltas, bool) or not isinstance(emitted_deltas, int):
+        raise TypeError("emitted_deltas must be an integer")
+    return emitted_deltas < MAX_EXEC_OUTPUT_DELTAS_PER_CALL
+
+
+def resolve_aggregated_output(buffer: "HeadTailBuffer", fallback: str) -> str:
+    if not isinstance(buffer, HeadTailBuffer):
+        raise TypeError("buffer must be HeadTailBuffer")
+    if not isinstance(fallback, str):
+        raise TypeError("fallback must be a string")
+    if buffer.retained_bytes() == 0:
+        return fallback
+    return buffer.to_bytes().decode("utf-8", errors="replace")
+
+
+def resolve_failed_aggregated_output(stdout: str, message: str) -> str:
+    if not isinstance(stdout, str):
+        raise TypeError("stdout must be a string")
+    if not isinstance(message, str):
+        raise TypeError("message must be a string")
+    if stdout == "":
+        return message
+    return f"{stdout}\n{message}"
+
+
+def should_emit_terminal_interaction(stdin: str, response_process_id: int | None) -> bool:
+    if not isinstance(stdin, str):
+        raise TypeError("stdin must be a string")
+    if response_process_id is not None and (isinstance(response_process_id, bool) or not isinstance(response_process_id, int)):
+        raise TypeError("response_process_id must be an integer or None")
+    return stdin != "" or response_process_id is not None
+
+
+def terminal_interaction_process_id(response_process_id: int | None, request_process_id: int) -> int:
+    if response_process_id is not None and (isinstance(response_process_id, bool) or not isinstance(response_process_id, int)):
+        raise TypeError("response_process_id must be an integer or None")
+    if isinstance(request_process_id, bool) or not isinstance(request_process_id, int):
+        raise TypeError("request_process_id must be an integer")
+    return request_process_id if response_process_id is None else response_process_id
+
+
+def exec_server_after_seq(next_seq: int | None) -> int | None:
+    if next_seq is None:
+        return None
+    if isinstance(next_seq, bool) or not isinstance(next_seq, int):
+        raise TypeError("next_seq must be an integer or None")
+    if next_seq <= 0:
+        return None
+    return next_seq - 1
+
+
+def exec_server_write_status_accepted(status: str) -> bool:
+    if not isinstance(status, str):
+        raise TypeError("status must be a string")
+    return status == "Accepted"
+
+
+def exec_server_write_status_marks_exited(status: str) -> bool:
+    if not isinstance(status, str):
+        raise TypeError("status must be a string")
+    return status in {"UnknownProcess", "StdinClosed"}
 
 
 def resolve_max_tokens(max_tokens: int | None) -> int:
@@ -280,21 +386,36 @@ class HeadTailBuffer:
 __all__ = [
     "DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS",
     "DEFAULT_MAX_OUTPUT_TOKENS",
+    "EARLY_EXIT_GRACE_PERIOD_MS",
     "HeadTailBuffer",
+    "MAX_EXEC_OUTPUT_DELTAS_PER_CALL",
     "MAX_UNIFIED_EXEC_PROCESSES",
     "MAX_YIELD_TIME_MS",
     "MIN_EMPTY_YIELD_TIME_MS",
     "MIN_YIELD_TIME_MS",
     "ProcessState",
+    "UNIFIED_EXEC_OUTPUT_DELTA_MAX_BYTES",
     "UNIFIED_EXEC_OUTPUT_MAX_BYTES",
     "UNIFIED_EXEC_OUTPUT_MAX_TOKENS",
     "UNIFIED_EXEC_ENV",
+    "TRAILING_OUTPUT_GRACE_MS",
     "UnifiedExecError",
     "apply_unified_exec_env",
     "clamp_yield_time",
     "env_overlay_for_exec_server",
+    "exec_server_after_seq",
     "exec_server_process_id",
+    "exec_server_write_status_accepted",
+    "exec_server_write_status_marks_exited",
     "generate_chunk_id",
     "process_id_to_prune_from_meta",
+    "resolve_aggregated_output",
+    "resolve_failed_aggregated_output",
     "resolve_max_tokens",
+    "resolve_write_stdin_yield_time",
+    "should_emit_exec_output_delta",
+    "should_emit_terminal_interaction",
+    "split_valid_utf8_prefix",
+    "split_valid_utf8_prefix_with_max",
+    "terminal_interaction_process_id",
 ]

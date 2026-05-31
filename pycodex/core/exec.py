@@ -110,6 +110,14 @@ class ExecExpiration:
     timeout: timedelta | None = None
     cancellation: CancellationToken | None = None
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, ExecExpirationKind):
+            object.__setattr__(self, "kind", ExecExpirationKind(self.kind))
+        if self.timeout is not None:
+            _validate_non_negative_timeout(self.timeout)
+        if self.cancellation is not None and not isinstance(self.cancellation, CancellationToken):
+            raise TypeError("cancellation must be a CancellationToken")
+
     @classmethod
     def from_timeout_ms(cls, timeout_ms: int | None) -> "ExecExpiration":
         if timeout_ms is None:
@@ -120,8 +128,7 @@ class ExecExpiration:
 
     @classmethod
     def timeout_after(cls, timeout: timedelta) -> "ExecExpiration":
-        if not isinstance(timeout, timedelta):
-            raise TypeError("timeout must be a timedelta")
+        _validate_non_negative_timeout(timeout)
         return cls(ExecExpirationKind.TIMEOUT, timeout=timeout)
 
     @classmethod
@@ -140,8 +147,7 @@ class ExecExpiration:
         timeout: timedelta,
         cancellation: CancellationToken,
     ) -> "ExecExpiration":
-        if not isinstance(timeout, timedelta):
-            raise TypeError("timeout must be a timedelta")
+        _validate_non_negative_timeout(timeout)
         if not isinstance(cancellation, CancellationToken):
             raise TypeError("cancellation must be a CancellationToken")
         return cls(ExecExpirationKind.TIMEOUT_OR_CANCELLATION, timeout=timeout, cancellation=cancellation)
@@ -365,6 +371,28 @@ def is_likely_sandbox_denied(sandbox_type: str, exec_output: ExecToolCallOutput)
     return False
 
 
+def unified_exec_sandbox_denial_message(
+    sandbox_type: str,
+    has_exited: bool,
+    exit_code: int | None,
+    text: str,
+) -> str | None:
+    """Return the Rust unified-exec sandbox denial message, if detected."""
+    if not isinstance(text, str):
+        raise TypeError("text must be a string")
+    if str(sandbox_type).lower() in {"none", "sandbox_type.none"} or not has_exited:
+        return None
+    resolved_exit_code = -1 if exit_code is None else exit_code
+    exec_output = ExecToolCallOutput(
+        exit_code=resolved_exit_code,
+        stderr=StreamOutput.new(text),
+        aggregated_output=StreamOutput.new(text),
+    )
+    if not is_likely_sandbox_denied(sandbox_type, exec_output):
+        return None
+    return text if text else f"Process exited with code {resolved_exit_code}"
+
+
 def apply_network_to_env(env: Mapping[str, str], network: Any) -> dict[str, str]:
     merged: MutableMapping[str, str] = dict(env)
     apply_to_env = getattr(network, "apply_to_env", None)
@@ -380,7 +408,15 @@ def _required_cancellation(expiration: ExecExpiration) -> CancellationToken:
 
 
 def _timedelta_to_millis(value: timedelta) -> int:
+    _validate_non_negative_timeout(value)
     return int(value.total_seconds() * 1000)
+
+
+def _validate_non_negative_timeout(value: timedelta) -> None:
+    if not isinstance(value, timedelta):
+        raise TypeError("timeout must be a timedelta")
+    if value.total_seconds() < 0:
+        raise ValueError("timeout must be non-negative")
 
 
 def _path_tuple(paths: Sequence[Path | str]) -> tuple[Path, ...]:
@@ -427,4 +463,5 @@ __all__ = [
     "cancel_when_either",
     "finalize_exec_result",
     "is_likely_sandbox_denied",
+    "unified_exec_sandbox_denial_message",
 ]

@@ -360,6 +360,36 @@ class ToolContextTests(unittest.TestCase):
             ),
         )
 
+    def test_mcp_tool_output_truncates_content_items_after_header(self) -> None:
+        image = FunctionCallOutputContentItem.input_image("data:image/png;base64,AAA", DEFAULT_IMAGE_DETAIL)
+        output = McpToolOutput(
+            result=CallToolResult(
+                content=(
+                    {"type": "text", "text": "x" * 240},
+                    {
+                        "type": "image",
+                        "mimeType": "image/png",
+                        "data": "AAA",
+                    },
+                ),
+                structured_content=None,
+                is_error=False,
+            ),
+            tool_input={},
+            wall_time_seconds=0.5,
+            original_image_detail_supported=False,
+            truncation_policy=TruncationPolicyConfig.bytes(80),
+        )
+
+        response = output.to_response_item("mcp-call-truncated-items", ToolPayload.function("{}"))
+        content_items = response.output.content_items or ()
+        text_items = tuple(item for item in content_items if item.type == "input_text")
+
+        self.assertEqual(text_items[0].text, "Wall time: 0.5000 seconds\nOutput:")
+        self.assertTrue(any("chars truncated" in (item.text or "") for item in text_items[1:]))
+        self.assertNotIn("x" * 100, response.output.to_text() or "")
+        self.assertIn(image, content_items)
+
     def test_mcp_tool_output_keeps_original_image_detail_when_supported(self) -> None:
         output = McpToolOutput(
             result=CallToolResult(

@@ -120,6 +120,7 @@ class ToolLifecycleTests(unittest.TestCase):
             call_id="call-1",
             tool_name=ToolName.plain("lookup"),
             payload=ToolPayload.function("{}"),
+            source=ToolCallSource.code_mode("cell-1", "runtime-1"),
         )
 
         asyncio.run(notify_tool_start([contributor], invocation, turn_id="turn-1"))
@@ -127,8 +128,20 @@ class ToolLifecycleTests(unittest.TestCase):
         asyncio.run(notify_tool_aborted([contributor], invocation, turn_id="turn-1"))
 
         self.assertEqual(contributor.started[0].turn_id, "turn-1")
+        self.assertEqual(
+            contributor.started[0].source,
+            ExtensionToolCallSource.code_mode("cell-1", "runtime-1"),
+        )
         self.assertEqual(contributor.finished[0].outcome, ToolCallOutcome.blocked())
+        self.assertEqual(
+            contributor.finished[0].source,
+            ExtensionToolCallSource.code_mode("cell-1", "runtime-1"),
+        )
         self.assertEqual(contributor.finished[1].outcome, ToolCallOutcome.aborted())
+        self.assertEqual(
+            contributor.finished[1].source,
+            ExtensionToolCallSource.code_mode("cell-1", "runtime-1"),
+        )
 
     def test_notify_helpers_ignore_missing_contributors_and_callbacks(self) -> None:
         invocation = ToolInvocation(
@@ -167,6 +180,7 @@ class ToolLifecycleTests(unittest.TestCase):
         self.assertEqual(contributor.finished[0].call_id, "call-2")
         self.assertEqual(contributor.finished[0].outcome, ToolCallOutcome.completed(True))
         self.assertEqual(contributor.finished[1].call_id, "call-3")
+        self.assertEqual(contributor.finished[1].outcome, ToolCallOutcome.aborted())
         self.assertEqual(
             contributor.finished[1].source,
             ExtensionToolCallSource.code_mode("cell-1", "runtime-1"),

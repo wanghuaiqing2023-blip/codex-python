@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+from pycodex.core.tool_sandboxing import ExecApprovalRequirement
 from pycodex.protocol import (
     AskForApproval,
     FileSystemSandboxKind,
@@ -39,6 +40,13 @@ class Decision(str, Enum):
     ALLOW = "allow"
     PROMPT = "prompt"
     FORBIDDEN = "forbidden"
+
+
+_DECISION_RANK = {
+    Decision.ALLOW: 0,
+    Decision.PROMPT: 1,
+    Decision.FORBIDDEN: 2,
+}
 
 
 class ExecPolicyCommandOrigin(str, Enum):
@@ -100,6 +108,83 @@ def commands_for_exec_policy(command: Sequence[str]) -> ExecPolicyCommands:
         return ExecPolicyCommands((tuple(single_command),), True, ExecPolicyCommandOrigin.GENERIC)
 
     return ExecPolicyCommands((argv,), False, ExecPolicyCommandOrigin.GENERIC)
+
+
+def commands_for_intercepted_exec_policy(
+    program: str | Path,
+    argv: Sequence[str],
+    *,
+    enable_shell_wrapper_parsing: bool,
+) -> ExecPolicyCommands:
+    if enable_shell_wrapper_parsing:
+        from pycodex.core.tool_runtimes import commands_for_intercepted_exec_policy as runtime_candidates
+
+        candidate = runtime_candidates(program, tuple(str(item) for item in argv))
+        return ExecPolicyCommands(candidate.commands, candidate.used_complex_parsing, ExecPolicyCommandOrigin.GENERIC)
+    joined = (str(program), *tuple(str(item) for item in argv)[1:])
+    return ExecPolicyCommands((joined,), False, ExecPolicyCommandOrigin.GENERIC)
+
+
+def render_decisions_for_intercepted_exec_policy(
+    program: str | Path,
+    argv: Sequence[str],
+    context: UnmatchedCommandContext,
+    *,
+    enable_shell_wrapper_parsing: bool,
+) -> tuple[Decision, ...]:
+    commands = commands_for_intercepted_exec_policy(
+        program,
+        argv,
+        enable_shell_wrapper_parsing=enable_shell_wrapper_parsing,
+    )
+    fallback_context = UnmatchedCommandContext(
+        approval_policy=context.approval_policy,
+        permission_profile=context.permission_profile,
+        file_system_sandbox_policy=context.file_system_sandbox_policy,
+        sandbox_cwd=context.sandbox_cwd,
+        sandbox_permissions=context.sandbox_permissions,
+        used_complex_parsing=commands.used_complex_parsing,
+        command_origin=ExecPolicyCommandOrigin.GENERIC,
+    )
+    return tuple(render_decision_for_unmatched_command(command, fallback_context) for command in commands.commands)
+
+
+def strongest_decision(decisions: Sequence[Decision | str]) -> Decision:
+    normalized = tuple(Decision(decision) for decision in decisions)
+    if not normalized:
+        raise ValueError("decisions must not be empty")
+    return max(normalized, key=lambda decision: _DECISION_RANK[decision])
+
+
+def render_intercepted_exec_policy_decision(
+    program: str | Path,
+    argv: Sequence[str],
+    context: UnmatchedCommandContext,
+    *,
+    enable_shell_wrapper_parsing: bool,
+) -> Decision:
+    return strongest_decision(
+        render_decisions_for_intercepted_exec_policy(
+            program,
+            argv,
+            context,
+            enable_shell_wrapper_parsing=enable_shell_wrapper_parsing,
+        )
+    )
+
+
+def exec_approval_requirement_for_decision(
+    decision: Decision | str,
+    *,
+    forbidden_reason: str,
+    prompt_reason: str | None = None,
+) -> ExecApprovalRequirement:
+    decision = Decision(decision)
+    if decision is Decision.FORBIDDEN:
+        return ExecApprovalRequirement.forbidden(forbidden_reason)
+    if decision is Decision.PROMPT:
+        return ExecApprovalRequirement.needs_approval(reason=prompt_reason)
+    return ExecApprovalRequirement.skip()
 
 
 def render_decision_for_unmatched_command(
@@ -185,7 +270,12 @@ __all__ = [
     "REJECT_SANDBOX_APPROVAL_REASON",
     "UnmatchedCommandContext",
     "commands_for_exec_policy",
+    "commands_for_intercepted_exec_policy",
+    "exec_approval_requirement_for_decision",
     "profile_is_managed_read_only",
     "prompt_is_rejected_by_policy",
     "render_decision_for_unmatched_command",
+    "render_decisions_for_intercepted_exec_policy",
+    "render_intercepted_exec_policy_decision",
+    "strongest_decision",
 ]

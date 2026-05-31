@@ -36,11 +36,13 @@ from pycodex.exec.local_runtime import (
     LocalHttpHeadTailBuffer,
     LocalHttpExecSessionManager,
     LOCAL_HTTP_EXEC_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS,
+    LOCAL_HTTP_EXEC_EARLY_EXIT_GRACE_PERIOD_MS,
     LOCAL_HTTP_EXEC_MAX_YIELD_TIME_MS,
     LOCAL_HTTP_EXEC_MIN_EMPTY_STDIN_YIELD_TIME_MS,
     LOCAL_HTTP_EXEC_MIN_YIELD_TIME_MS,
     LOCAL_HTTP_EXEC_OUTPUT_MAX_BYTES,
     LOCAL_HTTP_EXEC_OUTPUT_MAX_TOKENS,
+    LOCAL_HTTP_EXEC_TRAILING_OUTPUT_GRACE_MS,
     LOCAL_HTTP_EXEC_TIMEOUT_EXIT_CODE,
     LOCAL_HTTP_MAX_UNIFIED_EXEC_PROCESSES,
     align_local_http_exec_resume_model_client,
@@ -733,6 +735,9 @@ class LocalHttpShellToolSpecTests(unittest.TestCase):
 
     def test_local_http_exec_output_hard_cap_constant_matches_rust(self) -> None:
         self.assertEqual(LOCAL_HTTP_EXEC_OUTPUT_MAX_BYTES, 1024 * 1024)
+        self.assertEqual(LOCAL_HTTP_EXEC_OUTPUT_MAX_TOKENS, LOCAL_HTTP_EXEC_OUTPUT_MAX_BYTES // 4)
+        self.assertEqual(LOCAL_HTTP_EXEC_EARLY_EXIT_GRACE_PERIOD_MS, 150)
+        self.assertEqual(LOCAL_HTTP_EXEC_TRAILING_OUTPUT_GRACE_MS, 100)
 
     def test_local_http_head_tail_buffer_fills_head_then_tail_across_chunks(self) -> None:
         buffer = LocalHttpHeadTailBuffer(10)
@@ -762,6 +767,12 @@ class LocalHttpShellToolSpecTests(unittest.TestCase):
         self.assertEqual(buffer.omitted_bytes(), 3)
         self.assertEqual(buffer.to_bytes(), b"")
         self.assertEqual(buffer.snapshot_chunks(), [])
+
+    def test_local_http_head_tail_buffer_drain_text_replaces_invalid_utf8(self) -> None:
+        buffer = LocalHttpHeadTailBuffer(10)
+        buffer.push_chunk(b"ok\xffdone")
+
+        self.assertEqual(buffer.drain_text(), "ok\ufffddone")
 
     def test_local_http_head_tail_buffer_large_chunk_replaces_tail_end(self) -> None:
         buffer = LocalHttpHeadTailBuffer(10)

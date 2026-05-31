@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import inspect
 import threading
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -112,6 +113,7 @@ class ToolCallRuntime:
             raise TypeError("router must be ToolRouter")
         self.router = router
         self.lifecycle_contributors = lifecycle_contributors
+        self._parallel_execution = _AsyncToolExecutionGate()
 
     def create_diff_consumer(self, tool_name: Any) -> Any:
         method = getattr(self.router, "create_diff_consumer", None)
@@ -157,7 +159,7 @@ class ToolCallRuntime:
             raise TypeError("cancellation_token must be a CancellationToken")
         if not cancellation_token.is_cancelled():
             return None
-        result = aborted_tool_result(call, elapsed_seconds)
+        result = aborted_tool_result(call, _runtime_abort_elapsed_seconds(elapsed_seconds))
         await self.notify_aborted(call, source=source, **stores)
         return result
 
@@ -168,37 +170,48 @@ class ToolCallRuntime:
         *,
         source: ToolCallSource | None = None,
         cancellation_token: CancellationToken | None = None,
-        elapsed_seconds: float = 0.1,
+        elapsed_seconds: float | None = None,
+        terminal_outcome_reached: TerminalOutcomeFlag | None = None,
         **stores: Any,
     ) -> ToolCallResult:
         token = cancellation_token or CancellationToken()
+        terminal_outcome = terminal_outcome_reached or TerminalOutcomeFlag()
         pre_cancelled = await self.handle_pre_cancelled_tool_call(
             call,
             token,
-            elapsed_seconds=elapsed_seconds,
+            elapsed_seconds=elapsed_seconds if elapsed_seconds is not None else 0.1,
             source=source,
             **stores,
         )
         if pre_cancelled is not None:
             return pre_cancelled
-        result = dispatch(call, source or ToolCallSource.direct(), token)
-        if inspect.isawaitable(result):
-            task = _ensure_task(result)
-            cancel_task = _ensure_task(token.cancelled())
-            done, pending = await asyncio_wait_first(task, cancel_task)
-            if task in done:
-                cancel_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await cancel_task
-                result = await task
-            else:
-                result = await self._handle_inflight_cancellation(
-                    call,
-                    task,
-                    elapsed_seconds=elapsed_seconds,
-                    source=source,
-                    **stores,
-                )
+        supports_parallel = self.router.tool_supports_parallel(call)
+        started = time.monotonic()
+
+        async def run_dispatch() -> ToolCallResult:
+            async with self._parallel_execution.acquire(supports_parallel):
+                result = dispatch(call, source or ToolCallSource.direct(), token)
+                if inspect.isawaitable(result):
+                    result = await result
+                return result
+
+        task = _ensure_task(run_dispatch())
+        cancel_task = _ensure_task(token.cancelled())
+        done, pending = await asyncio_wait_first(task, cancel_task)
+        if task in done:
+            cancel_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await cancel_task
+            result = await task
+        else:
+            result = await self._handle_inflight_cancellation(
+                call,
+                task,
+                elapsed_seconds=_runtime_elapsed_seconds(started, elapsed_seconds),
+                source=source,
+                terminal_outcome_reached=terminal_outcome,
+                **stores,
+            )
         if not isinstance(result, ToolCallResult):
             raise TypeError("dispatch must return ToolCallResult")
         return result
@@ -210,11 +223,19 @@ class ToolCallRuntime:
         *,
         elapsed_seconds: float,
         source: ToolCallSource | None,
+        terminal_outcome_reached: TerminalOutcomeFlag,
         **stores: Any,
     ) -> ToolCallResult:
+        if should_return_completed_after_cancellation(
+            terminal_outcome_reached,
+            handle_finished=task.done(),
+        ):
+            return await task
         decision = self.decision_for_call(call)
         if decision.waits_for_runtime_cancellation:
-            with contextlib.suppress(asyncio.CancelledError):
+            if terminal_outcome_reached.swap(True):
+                return await task
+            with contextlib.suppress(asyncio.CancelledError, FunctionCallError):
                 await task
         else:
             task.cancel()
@@ -222,7 +243,7 @@ class ToolCallRuntime:
                 result = await task
                 if isinstance(result, ToolCallResult):
                     return result
-        result = aborted_tool_result(call, elapsed_seconds)
+        result = aborted_tool_result(call, _runtime_abort_elapsed_seconds(elapsed_seconds))
         await self.notify_aborted(call, source=source, **stores)
         return result
 
@@ -232,17 +253,19 @@ class ToolCallRuntime:
         cancellation_token: CancellationToken | None = None,
         *,
         source: ToolCallSource | None = None,
-        elapsed_seconds: float = 0.1,
+        elapsed_seconds: float | None = None,
         **stores: Any,
     ) -> ResponseInputItem:
         if not isinstance(call, ToolCall):
             raise TypeError("call must be ToolCall")
+        terminal_outcome_reached = TerminalOutcomeFlag()
 
         async def dispatch(received_call: ToolCall, received_source: ToolCallSource, token: CancellationToken) -> ToolCallResult:
             result = await self._dispatch_router_tool_call(
                 received_call,
                 received_source,
                 token,
+                terminal_outcome_reached=terminal_outcome_reached,
                 **stores,
             )
             return _coerce_tool_call_result(received_call, result)
@@ -254,6 +277,7 @@ class ToolCallRuntime:
                 source=source,
                 cancellation_token=cancellation_token,
                 elapsed_seconds=elapsed_seconds,
+                terminal_outcome_reached=terminal_outcome_reached,
                 **stores,
             )
         except FunctionCallError as err:
@@ -267,12 +291,22 @@ class ToolCallRuntime:
         call: ToolCall,
         source: ToolCallSource,
         cancellation_token: CancellationToken,
+        terminal_outcome_reached: TerminalOutcomeFlag | None = None,
         **stores: Any,
     ) -> Any:
         dispatch = getattr(self.router, "dispatch_tool_call_with_terminal_outcome", None)
         if not callable(dispatch):
             raise FunctionCallError.respond_to_model(f"unsupported tool call: {call.tool_name}")
-        result = dispatch(call, source=source, cancellation_token=cancellation_token, **stores)
+        dispatch_stores = dict(stores)
+        dispatch_stores.pop("lifecycle_contributors", None)
+        result = dispatch(
+            call,
+            source=source,
+            cancellation_token=cancellation_token,
+            lifecycle_contributors=self.lifecycle_contributors,
+            terminal_outcome_reached=terminal_outcome_reached,
+            **dispatch_stores,
+        )
         if inspect.isawaitable(result):
             result = await result
         return result
@@ -312,10 +346,20 @@ def aborted_tool_result(call: ToolCall, elapsed_seconds: float) -> ToolCallResul
 def abort_message(call: ToolCall, elapsed_seconds: float) -> str:
     if not isinstance(call, ToolCall):
         raise TypeError("call must be ToolCall")
-    seconds = max(float(elapsed_seconds), 0.1)
+    seconds = float(elapsed_seconds)
     if call.tool_name.namespace is None and call.tool_name.name in {"shell_command", "unified_exec"}:
         return f"Wall time: {seconds:.1f} seconds\naborted by user"
     return f"aborted by user after {seconds:.1f}s"
+
+
+def _runtime_abort_elapsed_seconds(elapsed_seconds: float) -> float:
+    return max(float(elapsed_seconds), 0.1)
+
+
+def _runtime_elapsed_seconds(started: float, explicit_elapsed_seconds: float | None) -> float:
+    if explicit_elapsed_seconds is not None:
+        return float(explicit_elapsed_seconds)
+    return time.monotonic() - started
 
 
 def failure_response(call: ToolCall, err: FunctionCallError | Exception | str) -> ResponseInputItem:
@@ -363,6 +407,61 @@ class _ResponseInputItemToolOutput:
 
     def to_response_item(self, call_id: str, payload: ToolPayload) -> ResponseInputItem:
         return self.response
+
+
+class _AsyncToolExecutionGate:
+    """Small async read/write gate for Rust-style parallel tool scheduling."""
+
+    def __init__(self) -> None:
+        self._condition = asyncio.Condition()
+        self._readers = 0
+        self._writer = False
+        self._waiting_writers = 0
+
+    @contextlib.asynccontextmanager
+    async def acquire(self, supports_parallel: bool) -> Any:
+        if not isinstance(supports_parallel, bool):
+            raise TypeError("supports_parallel must be a bool")
+        if supports_parallel:
+            await self._acquire_parallel()
+            try:
+                yield
+            finally:
+                await self._release_parallel()
+        else:
+            await self._acquire_exclusive()
+            try:
+                yield
+            finally:
+                await self._release_exclusive()
+
+    async def _acquire_parallel(self) -> None:
+        async with self._condition:
+            while self._writer or self._waiting_writers:
+                await self._condition.wait()
+            self._readers += 1
+
+    async def _release_parallel(self) -> None:
+        async with self._condition:
+            self._readers -= 1
+            if self._readers == 0:
+                self._condition.notify_all()
+
+    async def _acquire_exclusive(self) -> None:
+        async with self._condition:
+            self._waiting_writers += 1
+            try:
+                while self._writer or self._readers:
+                    await self._condition.wait()
+                self._writer = True
+            finally:
+                self._waiting_writers -= 1
+                self._condition.notify_all()
+
+    async def _release_exclusive(self) -> None:
+        async with self._condition:
+            self._writer = False
+            self._condition.notify_all()
 
 
 __all__ = [

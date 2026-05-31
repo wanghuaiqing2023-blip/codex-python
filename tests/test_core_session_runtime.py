@@ -349,6 +349,19 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(f"<cwd>{Path('C:/work/remote')}</cwd>", context_text)
         self.assertIn("<current_date>2026-05-30</current_date>", context_text)
 
+    async def test_in_memory_session_default_turn_supplies_local_time_context(self) -> None:
+        session = InMemoryCodexSession(cwd="C:/work/project")
+
+        turn = await session.new_default_turn()
+        await session.record_context_updates_and_set_reference_context_item(turn)
+
+        self.assertRegex(turn.current_date, r"^\d{4}-\d{2}-\d{2}$")
+        self.assertIsInstance(turn.timezone, str)
+        self.assertTrue(turn.timezone)
+        context_text = session.recorded_batches[0][1].content[0].text
+        self.assertIn("<current_date>", context_text)
+        self.assertIn("<timezone>", context_text)
+
     async def test_in_memory_session_update_settings_applies_final_output_json_schema(self) -> None:
         session = InMemoryCodexSession(cwd="C:/work/project")
         schema = {"type": "object", "properties": {"answer": {"type": "string"}}}

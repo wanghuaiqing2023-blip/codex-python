@@ -162,6 +162,13 @@ class ProtocolErrorTests(unittest.TestCase):
         )
         self.assertEqual(get_error_message_ui(CodexErr.sandbox(SandboxDenied(output))), "stderr detail\nstdout detail")
 
+        output = ExecToolCallOutput(
+            exit_code=9,
+            stdout=StreamOutput.new(" stdout detail\n"),
+            stderr=StreamOutput.new(" stderr detail\n"),
+        )
+        self.assertEqual(get_error_message_ui(CodexErr.sandbox(SandboxDenied(output))), "stderr detail\nstdout detail")
+
         output = ExecToolCallOutput(exit_code=11, stdout=StreamOutput.new("stdout only"))
         self.assertEqual(get_error_message_ui(CodexErr.sandbox(SandboxDenied(output))), "stdout only")
 

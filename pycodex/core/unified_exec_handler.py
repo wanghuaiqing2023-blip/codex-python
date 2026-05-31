@@ -18,6 +18,16 @@ from pathlib import Path
 from typing import Any
 
 from pycodex.core.exec import DEFAULT_EXEC_COMMAND_TIMEOUT_MS
+from pycodex.core.unified_exec import (
+    DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS,
+    MAX_YIELD_TIME_MS,
+    MIN_EMPTY_YIELD_TIME_MS,
+    MIN_YIELD_TIME_MS,
+    clamp_yield_time,
+    resolve_write_stdin_yield_time,
+    should_emit_terminal_interaction,
+    terminal_interaction_process_id,
+)
 from pycodex.core.apply_patch import (
     apply_patch_action_to_disk,
     maybe_parse_apply_patch_verified,
@@ -34,7 +44,14 @@ from pycodex.core.shell_spec import (
 from pycodex.core.tool_context import ToolPayload
 from pycodex.core.tool_router import FunctionCallError
 from pycodex.core.tool_registry import PostToolUsePayload, PreToolUsePayload, ToolInvocation
-from pycodex.protocol import AdditionalPermissionProfile, SandboxPermissions, ToolName, TruncationPolicyConfig
+from pycodex.protocol import (
+    AdditionalPermissionProfile,
+    EventMsg,
+    SandboxPermissions,
+    TerminalInteractionEvent,
+    ToolName,
+    TruncationPolicyConfig,
+)
 
 JsonValue = Any
 
@@ -560,7 +577,7 @@ class WriteStdinHandler:
         request = WriteStdinRequest(
             process_id=args.session_id,
             input=args.chars,
-            yield_time_ms=args.yield_time_ms,
+            yield_time_ms=resolve_write_stdin_yield_time(args.chars, args.yield_time_ms),
             max_output_tokens=args.max_output_tokens,
             truncation_policy=_invocation_truncation_policy(invocation),
         )
@@ -568,6 +585,7 @@ class WriteStdinHandler:
             result = write_stdin(request)
             if inspect.isawaitable(result):
                 result = await result
+            await _send_write_stdin_terminal_interaction(invocation, args, result)
             return result
         except Exception as error:
             raise FunctionCallError.respond_to_model(f"write_stdin failed: {error}") from error
@@ -646,13 +664,43 @@ def _invocation_unified_exec_manager(invocation: ToolInvocation) -> Any:
     return manager
 
 
+async def _send_write_stdin_terminal_interaction(
+    invocation: ToolInvocation,
+    args: WriteStdinArgs,
+    result: JsonValue,
+) -> None:
+    process_id = getattr(result, "process_id", None)
+    if not should_emit_terminal_interaction(args.chars, process_id):
+        return
+    session = getattr(invocation, "session", None)
+    send_event = getattr(session, "send_event", None)
+    if not callable(send_event):
+        return
+    event_call_id = getattr(result, "event_call_id", invocation.call_id)
+    event = EventMsg.with_payload(
+        "terminal_interaction",
+        TerminalInteractionEvent(
+            call_id=str(event_call_id),
+            process_id=str(terminal_interaction_process_id(process_id, args.session_id)),
+            stdin=args.chars,
+        ),
+    )
+    sent = send_event(getattr(invocation, "turn", None), event)
+    if inspect.isawaitable(sent):
+        await sent
+
+
 __all__ = [
     "DEFAULT_EXEC_YIELD_TIME_MS",
+    "DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS",
     "DEFAULT_WRITE_STDIN_YIELD_TIME_MS",
     "ExecCommandArgs",
     "ExecCommandEnvironmentArgs",
     "ExecCommandHandler",
     "ExecCommandHandlerOptions",
+    "MAX_YIELD_TIME_MS",
+    "MIN_EMPTY_YIELD_TIME_MS",
+    "MIN_YIELD_TIME_MS",
     "ResolvedExecCommandInvocation",
     "ResolvedCommand",
     "UnifiedExecShellMode",
@@ -660,9 +708,11 @@ __all__ = [
     "WriteStdinHandler",
     "WriteStdinRequest",
     "ZshForkConfig",
+    "clamp_yield_time",
     "get_command",
     "intercept_exec_apply_patch",
     "post_unified_exec_tool_use_payload",
     "resolve_exec_command_invocation",
+    "resolve_write_stdin_yield_time",
     "updated_hook_command",
 ]

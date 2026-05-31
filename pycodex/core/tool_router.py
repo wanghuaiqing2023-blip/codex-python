@@ -420,13 +420,37 @@ async def dispatch_tool_call_with_terminal_outcome(
         **stores,
     )
     await _emit_metric_for_tool_read(invocation, output_success, **stores)
-    result = ToolCallResult(
-        call_id=invocation.call_id,
-        payload=invocation.payload,
-        result=output,
-        post_tool_use_payload=_tool_post_tool_use_payload(tool, invocation, output) if output_success else None,
-    )
-    result = await _apply_post_tool_use_hook(result, post_tool_use_hook, invocation=invocation, **stores)
+    try:
+        result = ToolCallResult(
+            call_id=invocation.call_id,
+            payload=invocation.payload,
+            result=output,
+            post_tool_use_payload=_tool_post_tool_use_payload(tool, invocation, output) if output_success else None,
+        )
+        result = await _apply_post_tool_use_hook(result, post_tool_use_hook, invocation=invocation, **stores)
+    except FunctionCallError as err:
+        finished = await notify_tool_finish_if_unclaimed(
+            lifecycle_contributors,
+            invocation,
+            terminal_outcome_reached,
+            ToolCallOutcome.failed(True),
+            **stores,
+        )
+        await _apply_tool_completed_goal_runtime(invocation, finished, **stores)
+        dispatch_trace.record_failed(err)
+        raise
+    except Exception as err:
+        fatal = FunctionCallError.fatal(str(err))
+        finished = await notify_tool_finish_if_unclaimed(
+            lifecycle_contributors,
+            invocation,
+            terminal_outcome_reached,
+            ToolCallOutcome.failed(True),
+            **stores,
+        )
+        await _apply_tool_completed_goal_runtime(invocation, finished, **stores)
+        dispatch_trace.record_failed(fatal)
+        raise fatal from err
     finished = await notify_tool_finish_if_unclaimed(
         lifecycle_contributors,
         invocation,
@@ -454,10 +478,54 @@ async def _apply_pre_tool_use_hook(
     hook_payload = _tool_pre_tool_use_payload(tool, invocation)
     if hook_payload is None:
         return invocation
-    raw_result = pre_tool_use_hook(hook_payload, invocation)
-    if inspect.isawaitable(raw_result):
-        raw_result = await raw_result
-    result = _coerce_pre_tool_use_result(raw_result)
+    try:
+        raw_result = pre_tool_use_hook(hook_payload, invocation)
+        if inspect.isawaitable(raw_result):
+            raw_result = await raw_result
+    except FunctionCallError as err:
+        dispatch_trace.record_failed(err)
+        await notify_tool_finish_if_unclaimed(
+            lifecycle_contributors,
+            invocation,
+            terminal_outcome_reached,
+            ToolCallOutcome.failed(False),
+            **stores,
+        )
+        raise
+    except Exception as err:
+        fatal = FunctionCallError.fatal(str(err))
+        dispatch_trace.record_failed(fatal)
+        await notify_tool_finish_if_unclaimed(
+            lifecycle_contributors,
+            invocation,
+            terminal_outcome_reached,
+            ToolCallOutcome.failed(False),
+            **stores,
+        )
+        raise fatal from err
+    try:
+        result = _coerce_pre_tool_use_result(raw_result)
+    except FunctionCallError as err:
+        dispatch_trace.record_failed(err)
+        await notify_tool_finish_if_unclaimed(
+            lifecycle_contributors,
+            invocation,
+            terminal_outcome_reached,
+            ToolCallOutcome.failed(False),
+            **stores,
+        )
+        raise
+    except Exception as err:
+        fatal = FunctionCallError.fatal(str(err))
+        dispatch_trace.record_failed(fatal)
+        await notify_tool_finish_if_unclaimed(
+            lifecycle_contributors,
+            invocation,
+            terminal_outcome_reached,
+            ToolCallOutcome.failed(False),
+            **stores,
+        )
+        raise fatal from err
     if result.type == "blocked":
         err = FunctionCallError.respond_to_model(result.message or "")
         dispatch_trace.record_failed(err)
@@ -539,7 +607,7 @@ async def _record_post_tool_use_additional_contexts(
             "record_additional_context_messages",
             "add_additional_context_messages",
         ):
-            method = getattr(target, method_name, None)
+            method = _field_or_attr(target, method_name)
             if method is not None:
                 await _call_additional_context_recorder(method, messages)
                 return
@@ -563,7 +631,7 @@ async def _apply_tool_completed_goal_runtime(
     session = invocation.session if invocation.session is not None else stores.get("session")
     if session is None:
         return
-    apply = getattr(session, "goal_runtime_apply", None)
+    apply = _field_or_attr(session, "goal_runtime_apply")
     if apply is None:
         return
     if not callable(apply):
@@ -667,7 +735,7 @@ async def _record_tool_result_telemetry(
         "extra_trace_fields": extra_trace_fields,
         "output": output,
         "error": error,
-        "error_message": None if error is None else str(error),
+        "error_message": _error_message_for_telemetry(error),
     }
     result = recorder(event)
     if inspect.isawaitable(result):
@@ -725,6 +793,13 @@ def _log_preview_for_telemetry(output: Any) -> str | None:
     if not isinstance(preview, str):
         raise TypeError("log_preview must return a string")
     return preview
+
+
+def _error_message_for_telemetry(error: Any) -> str | None:
+    if error is None:
+        return None
+    message = getattr(error, "message", None)
+    return message if isinstance(message, str) else str(error)
 
 
 def _tool_result_base_tags(invocation: ToolInvocation, **stores: Any) -> tuple[tuple[str, str], ...]:
@@ -855,11 +930,20 @@ def _coerce_post_tool_use_outcome(value: Any) -> PostToolUseHookOutcome:
     if isinstance(value, PostToolUseHookOutcome):
         return value
     if isinstance(value, dict):
+        should_stop = value.get("should_stop", False)
+        if not isinstance(should_stop, bool):
+            raise TypeError("should_stop must be a bool")
+        additional_contexts = value.get("additional_contexts", ())
+        if isinstance(additional_contexts, (str, bytes)) or not isinstance(additional_contexts, (tuple, list)):
+            raise TypeError("additional_contexts must be a tuple or list of strings")
+        additional_contexts = tuple(additional_contexts)
+        if not all(isinstance(item, str) for item in additional_contexts):
+            raise TypeError("additional_contexts must contain only strings")
         return PostToolUseHookOutcome(
-            should_stop=bool(value.get("should_stop", False)),
+            should_stop=should_stop,
             feedback_message=value.get("feedback_message"),
             stop_reason=value.get("stop_reason"),
-            additional_contexts=tuple(value.get("additional_contexts", ())),
+            additional_contexts=additional_contexts,
         )
     raise TypeError("post_tool_use_hook must return PostToolUseHookOutcome")
 

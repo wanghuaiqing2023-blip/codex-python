@@ -13,6 +13,7 @@ from pycodex.core.tool_context import ExecCommandToolOutput, ToolPayload
 from pycodex.core.tool_router import FunctionCallError
 from pycodex.core.tool_registry import ToolInvocation
 from pycodex.core.unified_exec_handler import (
+    DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS,
     DEFAULT_EXEC_YIELD_TIME_MS,
     DEFAULT_WRITE_STDIN_YIELD_TIME_MS,
     ExecCommandArgs,
@@ -24,11 +25,13 @@ from pycodex.core.unified_exec_handler import (
     WriteStdinHandler,
     WriteStdinRequest,
     ZshForkConfig,
+    clamp_yield_time,
     get_command,
     intercept_exec_apply_patch,
     resolve_exec_command_invocation,
+    resolve_write_stdin_yield_time,
 )
-from pycodex.protocol import SandboxPermissions, ToolName, TruncationPolicyConfig
+from pycodex.protocol import SandboxPermissions, TerminalInteractionEvent, ToolName, TruncationPolicyConfig
 
 
 class CoreUnifiedExecHandlerTests(unittest.TestCase):
@@ -50,6 +53,17 @@ class CoreUnifiedExecHandlerTests(unittest.TestCase):
         self.assertEqual(args.session_id, 45)
         self.assertEqual(args.chars, "")
         self.assertEqual(args.yield_time_ms, DEFAULT_WRITE_STDIN_YIELD_TIME_MS)
+
+    def test_unified_exec_yield_time_clamps_match_rust_manager(self) -> None:
+        self.assertEqual(clamp_yield_time(1), 250)
+        self.assertEqual(clamp_yield_time(500), 500)
+        self.assertEqual(clamp_yield_time(60_000), 30_000)
+        self.assertEqual(resolve_write_stdin_yield_time("input", 1), 250)
+        self.assertEqual(resolve_write_stdin_yield_time("", 1), 5_000)
+        self.assertEqual(
+            resolve_write_stdin_yield_time("", 600_000),
+            DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS,
+        )
 
     def test_unified_exec_numeric_bounds_match_rust_deserialization(self) -> None:
         with self.assertRaisesRegex(ValueError, "yield_time_ms must fit in u64"):
@@ -90,7 +104,7 @@ class CoreUnifiedExecHandlerTests(unittest.TestCase):
                     {
                         "session_id": 45,
                         "chars": "hello\n",
-                        "yield_time_ms": 300,
+                        "yield_time_ms": 1,
                         "max_output_tokens": 12,
                     }
                 )
@@ -107,9 +121,127 @@ class CoreUnifiedExecHandlerTests(unittest.TestCase):
         self.assertIsNotNone(manager.request)
         self.assertEqual(manager.request.process_id, 45)
         self.assertEqual(manager.request.input, "hello\n")
-        self.assertEqual(manager.request.yield_time_ms, 300)
+        self.assertEqual(manager.request.yield_time_ms, 250)
         self.assertEqual(manager.request.max_output_tokens, 12)
         self.assertEqual(manager.request.truncation_policy, TruncationPolicyConfig.tokens(123))
+
+    def test_write_stdin_handler_emits_terminal_interaction_for_visible_input(self) -> None:
+        class Manager:
+            async def write_stdin(self, request: WriteStdinRequest) -> ExecCommandToolOutput:
+                return ExecCommandToolOutput(
+                    event_call_id="exec-call-45",
+                    chunk_id="chunk-stdin",
+                    wall_time_seconds=0.1,
+                    raw_output=b"",
+                    truncation_policy=request.truncation_policy,
+                    process_id=None,
+                    exit_code=0,
+                    hook_command="python child.py",
+                )
+
+        class Session:
+            def __init__(self) -> None:
+                self.services = SimpleNamespace(unified_exec_manager=Manager())
+                self.events = []
+
+            async def send_event(self, turn: object, event: object) -> None:
+                self.events.append((turn, event))
+
+        turn = SimpleNamespace(truncation_policy=TruncationPolicyConfig.tokens(123))
+        session = Session()
+        invocation = ToolInvocation(
+            call_id="write-call",
+            tool_name="write_stdin",
+            payload=ToolPayload.function(
+                json.dumps({"session_id": 45, "chars": "hello\n", "yield_time_ms": 250})
+            ),
+            session=session,
+            turn=turn,
+        )
+
+        asyncio.run(WriteStdinHandler().handle(invocation))
+
+        self.assertEqual(len(session.events), 1)
+        self.assertIs(session.events[0][0], turn)
+        event = session.events[0][1]
+        self.assertEqual(event.type, "terminal_interaction")
+        self.assertIsInstance(event.payload, TerminalInteractionEvent)
+        self.assertEqual(event.payload.call_id, "exec-call-45")
+        self.assertEqual(event.payload.process_id, "45")
+        self.assertEqual(event.payload.stdin, "hello\n")
+
+    def test_write_stdin_handler_skips_completed_empty_poll_terminal_interaction(self) -> None:
+        class Manager:
+            async def write_stdin(self, request: WriteStdinRequest) -> ExecCommandToolOutput:
+                return ExecCommandToolOutput(
+                    event_call_id="exec-call-45",
+                    chunk_id="chunk-stdin",
+                    wall_time_seconds=0.1,
+                    raw_output=b"done\n",
+                    truncation_policy=request.truncation_policy,
+                    process_id=None,
+                    exit_code=0,
+                    hook_command="python child.py",
+                )
+
+        class Session:
+            def __init__(self) -> None:
+                self.services = SimpleNamespace(unified_exec_manager=Manager())
+                self.events = []
+
+            async def send_event(self, turn: object, event: object) -> None:
+                self.events.append((turn, event))
+
+        invocation = ToolInvocation(
+            call_id="write-call",
+            tool_name="write_stdin",
+            payload=ToolPayload.function(json.dumps({"session_id": 45, "chars": ""})),
+            session=Session(),
+            turn=SimpleNamespace(truncation_policy=TruncationPolicyConfig.tokens(123)),
+        )
+
+        asyncio.run(WriteStdinHandler().handle(invocation))
+
+        self.assertEqual(invocation.session.events, [])
+
+    def test_write_stdin_handler_emits_terminal_interaction_for_live_empty_poll(self) -> None:
+        class Manager:
+            async def write_stdin(self, request: WriteStdinRequest) -> ExecCommandToolOutput:
+                return ExecCommandToolOutput(
+                    event_call_id="exec-call-46",
+                    chunk_id="chunk-stdin",
+                    wall_time_seconds=0.1,
+                    raw_output=b"still running\n",
+                    truncation_policy=request.truncation_policy,
+                    process_id=46,
+                    hook_command="python child.py",
+                )
+
+        class Session:
+            def __init__(self) -> None:
+                self.services = SimpleNamespace(unified_exec_manager=Manager())
+                self.events = []
+
+            async def send_event(self, turn: object, event: object) -> None:
+                self.events.append((turn, event))
+
+        invocation = ToolInvocation(
+            call_id="write-call",
+            tool_name="write_stdin",
+            payload=ToolPayload.function(json.dumps({"session_id": 45, "chars": ""})),
+            session=Session(),
+            turn=SimpleNamespace(truncation_policy=TruncationPolicyConfig.tokens(123)),
+        )
+
+        asyncio.run(WriteStdinHandler().handle(invocation))
+
+        self.assertEqual(len(invocation.session.events), 1)
+        event = invocation.session.events[0][1]
+        self.assertEqual(event.type, "terminal_interaction")
+        self.assertIsInstance(event.payload, TerminalInteractionEvent)
+        self.assertEqual(event.payload.call_id, "exec-call-46")
+        self.assertEqual(event.payload.process_id, "46")
+        self.assertEqual(event.payload.stdin, "")
 
     def test_write_stdin_handler_wraps_manager_errors(self) -> None:
         class Manager:

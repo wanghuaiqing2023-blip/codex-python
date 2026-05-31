@@ -3,6 +3,7 @@ from datetime import timedelta
 
 import pytest
 
+from pycodex import core as core_exports
 from pycodex.core.exec import (
     DEFAULT_EXEC_COMMAND_TIMEOUT_MS,
     EXEC_OUTPUT_MAX_BYTES,
@@ -10,6 +11,7 @@ from pycodex.core.exec import (
     CancellationToken,
     ExecCapturePolicy,
     ExecExpiration,
+    ExecExpirationKind,
     ExecExpirationOutcome,
     ExecSandboxDenied,
     ExecSandboxSignal,
@@ -20,6 +22,7 @@ from pycodex.core.exec import (
     cancel_when_either,
     finalize_exec_result,
     is_likely_sandbox_denied,
+    unified_exec_sandbox_denial_message,
 )
 from pycodex.protocol import ExecToolCallOutput, StreamOutput
 
@@ -34,6 +37,17 @@ def test_capture_policy_matches_shell_tool_defaults():
 def test_exec_expiration_from_optional_timeout():
     assert ExecExpiration.from_timeout_ms(None).timeout_ms() == DEFAULT_EXEC_COMMAND_TIMEOUT_MS
     assert ExecExpiration.from_timeout_ms(250).timeout_ms() == 250
+
+
+def test_exec_expiration_rejects_negative_timeout_durations():
+    with pytest.raises(ValueError, match="timeout must be non-negative"):
+        ExecExpiration.timeout_after(timedelta(milliseconds=-1))
+
+    with pytest.raises(ValueError, match="timeout must be non-negative"):
+        ExecExpiration.timeout_or_cancellation(timedelta(milliseconds=-1), CancellationToken())
+
+    with pytest.raises(ValueError, match="timeout must be non-negative"):
+        ExecExpiration(ExecExpiration.kind if False else ExecExpirationKind.TIMEOUT, timeout=timedelta(milliseconds=-1))
 
 
 def test_cancel_when_either_is_lazy_and_observes_either_parent():
@@ -133,3 +147,28 @@ def test_finalize_exec_result_raises_denied_for_sandbox_keyword():
 
     with pytest.raises(ExecSandboxDenied):
         finalize_exec_result(raw, "linux_seccomp", timedelta())
+
+
+def test_unified_exec_sandbox_denial_message_matches_process_boundary():
+    assert unified_exec_sandbox_denial_message("none", True, 1, "permission denied") is None
+    assert unified_exec_sandbox_denial_message("linux_seccomp", False, 1, "permission denied") is None
+    assert unified_exec_sandbox_denial_message("linux_seccomp", True, 127, "not found") is None
+    assert (
+        unified_exec_sandbox_denial_message("linux_seccomp", True, 1, "permission denied")
+        == "permission denied"
+    )
+    assert (
+        unified_exec_sandbox_denial_message("linux_seccomp", True, None, "operation not permitted")
+        == "operation not permitted"
+    )
+
+
+def test_unified_exec_sandbox_denial_message_falls_back_to_exit_code_when_empty():
+    assert (
+        unified_exec_sandbox_denial_message("linux_seccomp", True, EXIT_CODE_SIGNAL_BASE + 31, "")
+        == "Process exited with code 159"
+    )
+
+
+def test_unified_exec_sandbox_denial_message_is_exported_from_core():
+    assert core_exports.unified_exec_sandbox_denial_message is unified_exec_sandbox_denial_message

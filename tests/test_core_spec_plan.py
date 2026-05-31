@@ -86,6 +86,19 @@ class SpecPlanTests(unittest.TestCase):
         )
         self.assertEqual(merged[2]["description"], "Tools in the empty__ namespace.")
 
+    def test_merge_into_namespaces_accepts_tuple_tools_like_rust_vec_append(self) -> None:
+        first = namespace_spec("mcp__calendar__", "list_events")
+        first["tools"] = tuple(first["tools"])
+        second = namespace_spec("mcp__calendar__", "create_event")
+        second["tools"] = tuple(second["tools"])
+
+        merged = merge_into_namespaces((first, second))
+
+        self.assertEqual(
+            [tool["name"] for tool in merged[0]["tools"]],
+            ["create_event", "list_events"],
+        )
+
     def test_model_visible_specs_follow_tool_exposure(self) -> None:
         class StringNamedRuntime:
             def tool_name(self):

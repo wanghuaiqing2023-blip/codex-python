@@ -456,9 +456,12 @@ def merge_into_namespaces(specs: Iterable[JsonValue]) -> tuple[JsonValue, ...]:
             new_description = str(namespace.get("description", ""))
             if existing_description.strip() == "" and new_description.strip() != "":
                 existing["description"] = namespace.get("description")
-            existing.setdefault("tools", []).extend(namespace.get("tools", ()))
+            existing_tools = list(existing.get("tools", ()))
+            existing_tools.extend(namespace.get("tools", ()))
+            existing["tools"] = existing_tools
             continue
 
+        namespace["tools"] = list(namespace.get("tools", ()))
         namespace_indices[name] = len(merged_specs)
         merged_specs.append(namespace)
 

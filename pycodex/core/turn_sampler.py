@@ -8,7 +8,7 @@ the already-ported ``ModelClientSession`` request-preparation boundary.
 from __future__ import annotations
 
 import inspect
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -78,7 +78,7 @@ def response_items_from_transport_result(value: Any) -> tuple[ResponseItem, ...]
         return (raw_items,)
     if isinstance(raw_items, dict):
         return (ResponseItem.from_mapping(raw_items),)
-    if isinstance(raw_items, (str, bytes)) or not isinstance(raw_items, (list, tuple)):
+    if isinstance(raw_items, (str, bytes)) or not isinstance(raw_items, Sequence):
         raise TypeError("transport result must be a ResponseItem, mapping, sequence, or expose response_items")
     items: list[ResponseItem] = []
     for item in raw_items:
