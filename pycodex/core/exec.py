@@ -133,7 +133,7 @@ class ExecExpiration:
 
     @classmethod
     def default_timeout(cls) -> "ExecExpiration":
-        return cls(ExecExpirationKind.DEFAULT_TIMEOUT)
+        return cls(ExecExpirationKind.DEFAULT_TIMEOUT, cancellation=None)
 
     @classmethod
     def cancellation(cls, cancellation: CancellationToken) -> "ExecExpiration":

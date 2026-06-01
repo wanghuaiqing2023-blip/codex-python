@@ -349,6 +349,7 @@ class SamplingOutputItemAddedPlan:
     seeded_item_id: str | None = None
     seeded_visible_text: str | None = None
     seeded_parsed: object | None = None
+    seeded_raw_text: str | None = None
 
     def __post_init__(self) -> None:
         if self.active_tool_argument_diff_consumer is not None:
@@ -370,6 +371,8 @@ class SamplingOutputItemAddedPlan:
             raise TypeError("seeded_item_id must be a string or None")
         if self.seeded_visible_text is not None and not isinstance(self.seeded_visible_text, str):
             raise TypeError("seeded_visible_text must be a string or None")
+        if self.seeded_raw_text is not None and not isinstance(self.seeded_raw_text, str):
+            raise TypeError("seeded_raw_text must be a string or None")
 
 
 @dataclass(frozen=True)
@@ -416,6 +419,8 @@ class SamplingOutputTextDeltaPlan:
     delta: str
     parsed: object | None = None
     raw_content_delta: str | None = None
+    thread_id: str = ""
+    turn_id: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.item_id, str):
@@ -424,6 +429,8 @@ class SamplingOutputTextDeltaPlan:
             raise TypeError("delta must be a string")
         if self.raw_content_delta is not None and not isinstance(self.raw_content_delta, str):
             raise TypeError("raw_content_delta must be a string or None")
+        _ensure_str(self.thread_id, "thread_id")
+        _ensure_str(self.turn_id, "turn_id")
 
 
 @dataclass(frozen=True)
@@ -455,6 +462,8 @@ class SamplingStreamedAssistantTextDeltaPlan:
     plan_segments_plan: object | None = None
     citations: tuple[str, ...] = ()
     ignored_citations: bool = False
+    thread_id: str = ""
+    turn_id: str = ""
 
     def __post_init__(self) -> None:
         _ensure_str(self.item_id, "item_id")
@@ -465,6 +474,8 @@ class SamplingStreamedAssistantTextDeltaPlan:
         for citation in self.citations:
             _ensure_str(citation, "citations item")
         _ensure_bool(self.ignored_citations, "ignored_citations")
+        _ensure_str(self.thread_id, "thread_id")
+        _ensure_str(self.turn_id, "turn_id")
 
 
 @dataclass(frozen=True)
@@ -472,6 +483,8 @@ class SamplingOutputTextDeltaApplyPlan:
     item_id: str
     streamed_assistant_text_plan: SamplingStreamedAssistantTextDeltaPlan | None = None
     raw_content_delta: str | None = None
+    thread_id: str = ""
+    turn_id: str = ""
 
     def __post_init__(self) -> None:
         _ensure_str(self.item_id, "item_id")
@@ -482,6 +495,8 @@ class SamplingOutputTextDeltaApplyPlan:
             raise TypeError("streamed_assistant_text_plan must be SamplingStreamedAssistantTextDeltaPlan or None")
         if self.raw_content_delta is not None:
             _ensure_str(self.raw_content_delta, "raw_content_delta")
+        _ensure_str(self.thread_id, "thread_id")
+        _ensure_str(self.turn_id, "turn_id")
 
 
 @dataclass(frozen=True)
@@ -492,6 +507,8 @@ class SamplingOutputItemDoneTransitionPlan:
     active_item_is_streaming_to_client_after: bool = False
     finished_tool_input_event: object | None = None
     assistant_text_flush_plan: SamplingAssistantTextFlushPlan | None = None
+    thread_id: str = ""
+    turn_id: str = ""
 
     def __post_init__(self) -> None:
         if self.previously_active_item is not None and not isinstance(self.previously_active_item, TurnItem):
@@ -507,6 +524,8 @@ class SamplingOutputItemDoneTransitionPlan:
             SamplingAssistantTextFlushPlan,
         ):
             raise TypeError("assistant_text_flush_plan must be a SamplingAssistantTextFlushPlan or None")
+        _ensure_str(self.thread_id, "thread_id")
+        _ensure_str(self.turn_id, "turn_id")
 
 
 @dataclass(frozen=True)
@@ -619,6 +638,8 @@ class SamplingCompletedEventPlan:
     should_record_token_usage: bool = True
     should_emit_token_count: bool = True
     should_emit_turn_diff: bool = True
+    thread_id: str = ""
+    turn_id: str = ""
 
     def __post_init__(self) -> None:
         _ensure_str(self.response_id, "response_id")
@@ -634,6 +655,8 @@ class SamplingCompletedEventPlan:
             "should_emit_turn_diff",
         ):
             _ensure_bool(getattr(self, field_name), field_name)
+        _ensure_str(self.thread_id, "thread_id")
+        _ensure_str(self.turn_id, "turn_id")
 
 
 @dataclass(frozen=True)
@@ -647,6 +670,8 @@ class SamplingCompletedEventApplyPlan:
     completed_response_id_after: str | None = None
     result_needs_follow_up: bool = False
     result_last_agent_message: str | None = None
+    thread_id: str = ""
+    turn_id: str = ""
 
     def __post_init__(self) -> None:
         _ensure_str(self.response_id, "response_id")
@@ -661,6 +686,8 @@ class SamplingCompletedEventApplyPlan:
         if self.completed_response_id_after is not None:
             _ensure_str(self.completed_response_id_after, "completed_response_id_after")
         _ensure_bool(self.result_needs_follow_up, "result_needs_follow_up")
+        _ensure_str(self.thread_id, "thread_id")
+        _ensure_str(self.turn_id, "turn_id")
         if self.result_last_agent_message is not None:
             _ensure_str(self.result_last_agent_message, "result_last_agent_message")
 
@@ -1016,6 +1043,8 @@ class SamplingReasoningDeltaPlan:
     delta: str | None = None
     summary_index: int | None = None
     content_index: int | None = None
+    thread_id: str = ""
+    turn_id: str = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.event_type, str):
@@ -1028,6 +1057,8 @@ class SamplingReasoningDeltaPlan:
             _ensure_non_negative_int(self.summary_index, "summary_index")
         if self.content_index is not None:
             _ensure_non_negative_int(self.content_index, "content_index")
+        _ensure_str(self.thread_id, "thread_id")
+        _ensure_str(self.turn_id, "turn_id")
 
 
 @dataclass(frozen=True)
@@ -1395,6 +1426,7 @@ def sampling_output_item_added_plan(
     plan_mode: bool,
     defer_streamed_turn_items_for_contributors: bool = False,
     tool_runtime: object | None = None,
+    assistant_message_stream_parsers: object | None = None,
 ) -> SamplingOutputItemAddedPlan:
     _ensure_response_item(item)
     _ensure_bool(plan_mode, "plan_mode")
@@ -1414,13 +1446,24 @@ def sampling_output_item_added_plan(
     seeded_item_id: str | None = None
     seeded_visible_text: str | None = None
     seeded_parsed: object | None = None
+    seeded_raw_text: str | None = None
     if stream_item_to_client and turn_item is not None and turn_item.type == "AgentMessage":
         raw_text = raw_assistant_output_text_from_item(item)
         if raw_text is not None:
             seeded_item_id = turn_item.id()
-            seeded_visible_text = strip_hidden_assistant_markup(raw_text, plan_mode)
+            seeded_raw_text = raw_text
+            seed_item_text = getattr(assistant_message_stream_parsers, "seed_item_text", None)
+            if callable(seed_item_text):
+                seeded_parsed = seed_item_text(seeded_item_id, raw_text)
+                seeded_visible_text = _parsed_field(seeded_parsed, "visible_text", "")
+                if seeded_visible_text is None:
+                    seeded_visible_text = ""
+                _ensure_str(seeded_visible_text, "seeded_visible_text")
+            else:
+                seeded_visible_text = strip_hidden_assistant_markup(raw_text, plan_mode)
             if plan_mode:
-                seeded_parsed = {"visible_text": seeded_visible_text}
+                if seeded_parsed is None:
+                    seeded_parsed = {"visible_text": seeded_visible_text}
                 turn_item = _agent_message_turn_item_with_text(turn_item, "")
             else:
                 turn_item = _agent_message_turn_item_with_text(turn_item, seeded_visible_text)
@@ -1433,6 +1476,7 @@ def sampling_output_item_added_plan(
         seeded_item_id=seeded_item_id,
         seeded_visible_text=seeded_visible_text,
         seeded_parsed=seeded_parsed,
+        seeded_raw_text=seeded_raw_text,
     )
 
 
@@ -1440,6 +1484,7 @@ def sampling_output_item_added_apply_plan(
     added_plan: SamplingOutputItemAddedPlan,
     *,
     plan_mode: bool,
+    assistant_message_stream_parsers: object | None = None,
     started_agent_message_item_ids: object = (),
     leading_whitespace_by_item: object | None = None,
     plan_item_started: bool = False,
@@ -1459,10 +1504,15 @@ def sampling_output_item_added_apply_plan(
             turn_item_started_to_emit = added_plan.turn_item_to_emit
 
     seeded_streamed_assistant_text_plan = None
-    if plan_mode and added_plan.seeded_item_id is not None and added_plan.seeded_parsed is not None:
+    seeded_parsed = added_plan.seeded_parsed
+    if added_plan.seeded_item_id is not None and added_plan.seeded_raw_text is not None:
+        seed_item_text = getattr(assistant_message_stream_parsers, "seed_item_text", None)
+        if callable(seed_item_text):
+            seeded_parsed = seed_item_text(added_plan.seeded_item_id, added_plan.seeded_raw_text)
+    if plan_mode and added_plan.seeded_item_id is not None and seeded_parsed is not None:
         seeded_streamed_assistant_text_plan = sampling_streamed_assistant_text_delta_plan(
             added_plan.seeded_item_id,
-            added_plan.seeded_parsed,
+            seeded_parsed,
             plan_mode=True,
             started_agent_message_item_ids=started_agent_message_item_ids,
             leading_whitespace_by_item=leading_whitespace_by_item,
@@ -1488,6 +1538,9 @@ def sampling_output_text_delta_plan(
     *,
     active_item_is_streaming_to_client: bool,
     plan_mode: bool,
+    thread_id: str = "",
+    turn_id: str = "",
+    assistant_message_stream_parsers: object | None = None,
 ) -> SamplingOutputTextDeltaPlan | None:
     if active_item is not None and not isinstance(active_item, TurnItem):
         raise TypeError("active_item must be a TurnItem or None")
@@ -1498,16 +1551,25 @@ def sampling_output_text_delta_plan(
         return None
     item_id = active_item.id()
     if active_item.type == "AgentMessage":
-        visible_text = strip_hidden_assistant_markup(delta, plan_mode)
+        parse_delta = getattr(assistant_message_stream_parsers, "parse_delta", None)
+        if callable(parse_delta):
+            parsed = parse_delta(item_id, delta)
+        else:
+            visible_text = strip_hidden_assistant_markup(delta, plan_mode)
+            parsed = {"visible_text": visible_text}
         return SamplingOutputTextDeltaPlan(
             item_id=item_id,
             delta=delta,
-            parsed={"visible_text": visible_text},
+            parsed=parsed,
+            thread_id=thread_id,
+            turn_id=turn_id,
         )
     return SamplingOutputTextDeltaPlan(
         item_id=item_id,
         delta=delta,
         raw_content_delta=delta,
+        thread_id=thread_id,
+        turn_id=turn_id,
     )
 
 
@@ -1515,6 +1577,7 @@ def sampling_output_text_delta_apply_plan(
     text_delta_plan: SamplingOutputTextDeltaPlan | None,
     *,
     plan_mode: bool,
+    assistant_message_stream_parsers: object | None = None,
     started_agent_message_item_ids: object = (),
     leading_whitespace_by_item: object | None = None,
     plan_item_started: bool = False,
@@ -1527,25 +1590,39 @@ def sampling_output_text_delta_apply_plan(
         raise TypeError("text_delta_plan must be a SamplingOutputTextDeltaPlan or None")
     _ensure_bool(plan_mode, "plan_mode")
     if text_delta_plan.parsed is not None:
+        parsed = text_delta_plan.parsed
+        parse_delta = getattr(assistant_message_stream_parsers, "parse_delta", None)
+        if callable(parse_delta):
+            parsed = parse_delta(text_delta_plan.item_id, text_delta_plan.delta)
         return SamplingOutputTextDeltaApplyPlan(
             item_id=text_delta_plan.item_id,
             streamed_assistant_text_plan=sampling_streamed_assistant_text_delta_plan(
                 text_delta_plan.item_id,
-                text_delta_plan.parsed,
+                parsed,
                 plan_mode=plan_mode,
+                thread_id=text_delta_plan.thread_id,
+                turn_id=text_delta_plan.turn_id,
                 started_agent_message_item_ids=started_agent_message_item_ids,
                 leading_whitespace_by_item=leading_whitespace_by_item,
                 plan_item_started=plan_item_started,
                 plan_item_completed=plan_item_completed,
                 plan_item_id=plan_item_id,
             ),
+            thread_id=text_delta_plan.thread_id,
+            turn_id=text_delta_plan.turn_id,
         )
     if text_delta_plan.raw_content_delta is not None:
         return SamplingOutputTextDeltaApplyPlan(
             item_id=text_delta_plan.item_id,
             raw_content_delta=text_delta_plan.raw_content_delta,
+            thread_id=text_delta_plan.thread_id,
+            turn_id=text_delta_plan.turn_id,
         )
-    return SamplingOutputTextDeltaApplyPlan(item_id=text_delta_plan.item_id)
+    return SamplingOutputTextDeltaApplyPlan(
+        item_id=text_delta_plan.item_id,
+        thread_id=text_delta_plan.thread_id,
+        turn_id=text_delta_plan.turn_id,
+    )
 
 
 def sampling_tool_call_input_delta_plan(
@@ -1601,6 +1678,8 @@ def sampling_reasoning_summary_delta_plan(
     delta: str,
     summary_index: int,
     active_item_is_streaming_to_client: bool,
+    thread_id: str = "",
+    turn_id: str = "",
 ) -> SamplingReasoningDeltaPlan | None:
     active_item = _streaming_active_item_or_none(active_item, active_item_is_streaming_to_client)
     if active_item is None:
@@ -1612,6 +1691,8 @@ def sampling_reasoning_summary_delta_plan(
         item_id=active_item.id(),
         delta=delta,
         summary_index=summary_index,
+        thread_id=thread_id,
+        turn_id=turn_id,
     )
 
 
@@ -1620,6 +1701,8 @@ def sampling_reasoning_summary_part_added_plan(
     *,
     summary_index: int,
     active_item_is_streaming_to_client: bool,
+    thread_id: str = "",
+    turn_id: str = "",
 ) -> SamplingReasoningDeltaPlan | None:
     active_item = _streaming_active_item_or_none(active_item, active_item_is_streaming_to_client)
     if active_item is None:
@@ -1629,6 +1712,8 @@ def sampling_reasoning_summary_part_added_plan(
         event_type="agent_reasoning_section_break",
         item_id=active_item.id(),
         summary_index=summary_index,
+        thread_id=thread_id,
+        turn_id=turn_id,
     )
 
 
@@ -1638,6 +1723,8 @@ def sampling_reasoning_content_delta_plan(
     delta: str,
     content_index: int,
     active_item_is_streaming_to_client: bool,
+    thread_id: str = "",
+    turn_id: str = "",
 ) -> SamplingReasoningDeltaPlan | None:
     active_item = _streaming_active_item_or_none(active_item, active_item_is_streaming_to_client)
     if active_item is None:
@@ -1649,6 +1736,8 @@ def sampling_reasoning_content_delta_plan(
         item_id=active_item.id(),
         delta=delta,
         content_index=content_index,
+        thread_id=thread_id,
+        turn_id=turn_id,
     )
 
 
@@ -1665,6 +1754,8 @@ def sampling_reasoning_delta_apply_plan(
             raise TypeError("reasoning_content_delta requires delta and summary_index")
         event_to_emit = {
             "type": event_type,
+            "thread_id": reasoning_delta_plan.thread_id,
+            "turn_id": reasoning_delta_plan.turn_id,
             "item_id": reasoning_delta_plan.item_id,
             "delta": reasoning_delta_plan.delta,
             "summary_index": reasoning_delta_plan.summary_index,
@@ -1682,6 +1773,8 @@ def sampling_reasoning_delta_apply_plan(
             raise TypeError("reasoning_raw_content_delta requires delta and content_index")
         event_to_emit = {
             "type": event_type,
+            "thread_id": reasoning_delta_plan.thread_id,
+            "turn_id": reasoning_delta_plan.turn_id,
             "item_id": reasoning_delta_plan.item_id,
             "delta": reasoning_delta_plan.delta,
             "content_index": reasoning_delta_plan.content_index,
@@ -1733,6 +1826,8 @@ def sampling_streamed_assistant_text_delta_plan(
     parsed: object,
     *,
     plan_mode: bool,
+    thread_id: str = "",
+    turn_id: str = "",
     started_agent_message_item_ids: object = (),
     leading_whitespace_by_item: object | None = None,
     plan_item_started: bool = False,
@@ -1769,6 +1864,8 @@ def sampling_streamed_assistant_text_delta_plan(
             plan_segments_plan=plan_segments_plan,
             citations=citations,
             ignored_citations=ignored_citations,
+            thread_id=thread_id,
+            turn_id=turn_id,
         )
     if visible_text == "":
         return None
@@ -1777,6 +1874,8 @@ def sampling_streamed_assistant_text_delta_plan(
         visible_text_delta=visible_text,
         citations=citations,
         ignored_citations=ignored_citations,
+        thread_id=thread_id,
+        turn_id=turn_id,
     )
 
 
@@ -1786,6 +1885,8 @@ def sampling_output_item_done_transition_plan(
     active_item_is_streaming_to_client: bool,
     active_tool_argument_diff_consumer: tuple[str, object] | None = None,
     assistant_message_stream_parsers: object | None = None,
+    thread_id: str = "",
+    turn_id: str = "",
 ) -> SamplingOutputItemDoneTransitionPlan:
     if active_item is not None and not isinstance(active_item, TurnItem):
         raise TypeError("active_item must be a TurnItem or None")
@@ -1808,6 +1909,8 @@ def sampling_output_item_done_transition_plan(
         active_item_is_streaming_to_client_after=False,
         finished_tool_input_event=finished_tool_input_event,
         assistant_text_flush_plan=assistant_text_flush_plan,
+        thread_id=thread_id,
+        turn_id=turn_id,
     )
 
 
@@ -1908,6 +2011,8 @@ def sampling_completed_event_plan(
     token_usage: object | None,
     end_turn: bool | None,
     state: SamplingOutputState,
+    thread_id: str = "",
+    turn_id: str = "",
 ) -> SamplingCompletedEventPlan:
     _ensure_str(response_id, "response_id")
     if end_turn is not None:
@@ -1920,6 +2025,8 @@ def sampling_completed_event_plan(
         needs_follow_up=state.needs_follow_up or end_turn is False,
         last_agent_message=state.last_agent_message,
         completed_response_id=response_id,
+        thread_id=thread_id,
+        turn_id=turn_id,
     )
 
 
@@ -1947,6 +2054,8 @@ def sampling_completed_event_apply_plan(
         completed_response_id_after=completed_plan.completed_response_id,
         result_needs_follow_up=completed_plan.needs_follow_up,
         result_last_agent_message=completed_plan.last_agent_message,
+        thread_id=completed_plan.thread_id,
+        turn_id=completed_plan.turn_id,
     )
 
 
@@ -1964,6 +2073,9 @@ def sampling_stream_event_dispatch_plan(
     tool_runtime: object | None = None,
     call_id: str | None = None,
     delta: str | None = None,
+    turn_context: object | None = None,
+    thread_id: str = "",
+    turn_id: str = "",
     summary_index: int | None = None,
     content_index: int | None = None,
     response_id: str | None = None,
@@ -1973,6 +2085,7 @@ def sampling_stream_event_dispatch_plan(
     model_verification_emitted: bool = False,
 ) -> SamplingStreamEventDispatchPlan:
     _ensure_str(event_type, "event_type")
+    event_type = _normalized_sampling_stream_event_type(event_type)
     _ensure_bool(active_item_is_streaming_to_client, "active_item_is_streaming_to_client")
     _ensure_bool(plan_mode, "plan_mode")
     _ensure_bool(defer_streamed_turn_items_for_contributors, "defer_streamed_turn_items_for_contributors")
@@ -1995,6 +2108,8 @@ def sampling_stream_event_dispatch_plan(
                 active_item_is_streaming_to_client=active_item_is_streaming_to_client,
                 active_tool_argument_diff_consumer=active_tool_argument_diff_consumer,
                 assistant_message_stream_parsers=assistant_message_stream_parsers,
+                thread_id=thread_id,
+                turn_id=turn_id,
             ),
         )
     if event_type == "output_item_added":
@@ -2007,6 +2122,7 @@ def sampling_stream_event_dispatch_plan(
                 plan_mode=plan_mode,
                 defer_streamed_turn_items_for_contributors=defer_streamed_turn_items_for_contributors,
                 tool_runtime=tool_runtime,
+                assistant_message_stream_parsers=assistant_message_stream_parsers,
             ),
         )
     if event_type == "output_text_delta":
@@ -2018,20 +2134,30 @@ def sampling_stream_event_dispatch_plan(
                 effective_delta,
                 active_item_is_streaming_to_client=active_item_is_streaming_to_client,
                 plan_mode=plan_mode,
+                thread_id=thread_id,
+                turn_id=turn_id,
+                assistant_message_stream_parsers=assistant_message_stream_parsers,
             ),
         )
     if event_type == "tool_call_input_delta":
         effective_delta = _coalesce_delta(delta, payload)
+        if call_id is None:
+            maybe_call_id = _payload_field(payload, "call_id")
+            call_id = maybe_call_id if isinstance(maybe_call_id, str) else None
         return SamplingStreamEventDispatchPlan(
             event_type=event_type,
             tool_call_input_delta_plan=sampling_tool_call_input_delta_plan(
                 active_tool_argument_diff_consumer,
                 call_id=call_id,
                 delta=effective_delta,
+                turn_context=turn_context,
             ),
         )
     if event_type == "reasoning_summary_delta":
         effective_delta = _coalesce_delta(delta, payload)
+        if summary_index is None:
+            maybe_summary_index = _payload_field(payload, "summary_index")
+            summary_index = maybe_summary_index if isinstance(maybe_summary_index, int) else None
         if summary_index is None:
             raise TypeError("summary_index is required for reasoning_summary_delta")
         return SamplingStreamEventDispatchPlan(
@@ -2041,9 +2167,14 @@ def sampling_stream_event_dispatch_plan(
                 delta=effective_delta,
                 summary_index=summary_index,
                 active_item_is_streaming_to_client=active_item_is_streaming_to_client,
+                thread_id=thread_id,
+                turn_id=turn_id,
             ),
         )
     if event_type == "reasoning_summary_part_added":
+        if summary_index is None:
+            maybe_summary_index = _payload_field(payload, "summary_index")
+            summary_index = maybe_summary_index if isinstance(maybe_summary_index, int) else None
         if summary_index is None:
             raise TypeError("summary_index is required for reasoning_summary_part_added")
         return SamplingStreamEventDispatchPlan(
@@ -2052,10 +2183,15 @@ def sampling_stream_event_dispatch_plan(
                 active_item,
                 summary_index=summary_index,
                 active_item_is_streaming_to_client=active_item_is_streaming_to_client,
+                thread_id=thread_id,
+                turn_id=turn_id,
             ),
         )
     if event_type == "reasoning_content_delta":
         effective_delta = _coalesce_delta(delta, payload)
+        if content_index is None:
+            maybe_content_index = _payload_field(payload, "content_index")
+            content_index = maybe_content_index if isinstance(maybe_content_index, int) else None
         if content_index is None:
             raise TypeError("content_index is required for reasoning_content_delta")
         return SamplingStreamEventDispatchPlan(
@@ -2065,6 +2201,8 @@ def sampling_stream_event_dispatch_plan(
                 delta=effective_delta,
                 content_index=content_index,
                 active_item_is_streaming_to_client=active_item_is_streaming_to_client,
+                thread_id=thread_id,
+                turn_id=turn_id,
             ),
         )
     if event_type == "completed":
@@ -2086,6 +2224,8 @@ def sampling_stream_event_dispatch_plan(
                 token_usage=token_usage,
                 end_turn=end_turn,
                 state=state,
+                thread_id=thread_id,
+                turn_id=turn_id,
             ),
         )
     if event_type in {
@@ -2160,6 +2300,7 @@ def sampling_stream_event_apply_plan(
             output_item_added_apply_plan=sampling_output_item_added_apply_plan(
                 dispatch_plan.output_item_added_plan,
                 plan_mode=plan_mode,
+                assistant_message_stream_parsers=assistant_message_stream_parsers,
                 started_agent_message_item_ids=started_agent_message_item_ids,
                 leading_whitespace_by_item=leading_whitespace_by_item,
                 plan_item_started=plan_item_started,
@@ -2173,6 +2314,7 @@ def sampling_stream_event_apply_plan(
             output_text_delta_apply_plan=sampling_output_text_delta_apply_plan(
                 dispatch_plan.output_text_delta_plan,
                 plan_mode=plan_mode,
+                assistant_message_stream_parsers=assistant_message_stream_parsers,
                 started_agent_message_item_ids=started_agent_message_item_ids,
                 leading_whitespace_by_item=leading_whitespace_by_item,
                 plan_item_started=plan_item_started,
@@ -2305,6 +2447,8 @@ def sampling_output_item_done_apply_plan(
             transition_plan.assistant_text_flush_plan.item_id,
             transition_plan.assistant_text_flush_plan.parsed,
             plan_mode=plan_mode,
+            thread_id=transition_plan.thread_id,
+            turn_id=transition_plan.turn_id,
             started_agent_message_item_ids=started_agent_message_item_ids,
             leading_whitespace_by_item=leading_whitespace_by_item,
             plan_item_started=plan_item_started,
@@ -2624,6 +2768,23 @@ def _payload_field(payload: object, name: str) -> object | None:
     return getattr(payload, name, None)
 
 
+_SAMPLING_STREAM_EVENT_TYPE_ALIASES = {
+    "response.created": "created",
+    "response.output_item.done": "output_item_done",
+    "response.output_item.added": "output_item_added",
+    "response.output_text.delta": "output_text_delta",
+    "response.custom_tool_call_input.delta": "tool_call_input_delta",
+    "response.reasoning_summary_text.delta": "reasoning_summary_delta",
+    "response.reasoning_summary_part.added": "reasoning_summary_part_added",
+    "response.reasoning_text.delta": "reasoning_content_delta",
+    "response.completed": "completed",
+}
+
+
+def _normalized_sampling_stream_event_type(event_type: str) -> str:
+    return _SAMPLING_STREAM_EVENT_TYPE_ALIASES.get(event_type, event_type)
+
+
 def _coalesce_delta(delta: str | None, payload: object) -> str:
     if delta is None:
         delta = _payload_field(payload, "delta")
@@ -2631,10 +2792,245 @@ def _coalesce_delta(delta: str | None, payload: object) -> str:
     return delta
 
 
+class AssistantMessageStreamParsers:
+    """Per-item assistant text parsers for citation and proposed-plan markup."""
+
+    def __init__(self, plan_mode: bool = False) -> None:
+        _ensure_bool(plan_mode, "plan_mode")
+        self._plan_mode = plan_mode
+        self._parsers_by_item: dict[str, _AssistantTextStreamParser] = {}
+
+    def _parser(self, item_id: str) -> "_AssistantTextStreamParser":
+        _ensure_str(item_id, "item_id")
+        parser = self._parsers_by_item.get(item_id)
+        if parser is None:
+            parser = _AssistantTextStreamParser(self._plan_mode)
+            self._parsers_by_item[item_id] = parser
+        return parser
+
+    def seed_item_text(self, item_id: str, text: str) -> dict[str, object]:
+        _ensure_str(text, "text")
+        if text == "":
+            return _empty_assistant_text_chunk()
+        return self._parser(item_id).push_str(text)
+
+    def parse_delta(self, item_id: str, delta: str) -> dict[str, object]:
+        _ensure_str(delta, "delta")
+        return self._parser(item_id).push_str(delta)
+
+    def finish_item(self, item_id: str) -> dict[str, object]:
+        _ensure_str(item_id, "item_id")
+        parser = self._parsers_by_item.pop(item_id, None)
+        if parser is None:
+            return _empty_assistant_text_chunk()
+        return parser.finish()
+
+    def drain_finished(self) -> tuple[tuple[str, dict[str, object]], ...]:
+        parsers = self._parsers_by_item
+        self._parsers_by_item = {}
+        return tuple((item_id, parser.finish()) for item_id, parser in parsers.items())
+
+
+class _AssistantTextStreamParser:
+    def __init__(self, plan_mode: bool) -> None:
+        self._plan_mode = plan_mode
+        self._citations = _CitationStreamParser()
+        self._plan = _ProposedPlanStreamParser()
+
+    def push_str(self, chunk: str) -> dict[str, object]:
+        citation_chunk = self._citations.push_str(chunk)
+        parsed = self._parse_visible_text(citation_chunk["visible_text"])
+        parsed["citations"] = citation_chunk["citations"]
+        return parsed
+
+    def finish(self) -> dict[str, object]:
+        citation_chunk = self._citations.finish()
+        parsed = self._parse_visible_text(citation_chunk["visible_text"])
+        if self._plan_mode:
+            tail = self._plan.finish()
+            parsed["visible_text"] += tail["visible_text"]
+            parsed["plan_segments"] = tuple(parsed["plan_segments"]) + tuple(tail["plan_segments"])
+        parsed["citations"] = citation_chunk["citations"]
+        return parsed
+
+    def _parse_visible_text(self, visible_text: str) -> dict[str, object]:
+        if not self._plan_mode:
+            return {"visible_text": visible_text, "citations": (), "plan_segments": ()}
+        plan_chunk = self._plan.push_str(visible_text)
+        return {
+            "visible_text": plan_chunk["visible_text"],
+            "citations": (),
+            "plan_segments": plan_chunk["plan_segments"],
+        }
+
+
+class _CitationStreamParser:
+    def __init__(self) -> None:
+        self._pending = ""
+        self._inside = False
+        self._content = ""
+
+    def push_str(self, chunk: str) -> dict[str, object]:
+        text = self._pending + chunk
+        self._pending = ""
+        visible: list[str] = []
+        citations: list[str] = []
+        position = 0
+        while position < len(text):
+            if self._inside:
+                end = text.find(CITATION_CLOSE, position)
+                if end == -1:
+                    suffix_start = _hidden_tag_suffix_start(text, position, CITATION_CLOSE)
+                    self._content += text[position:suffix_start]
+                    self._pending = text[suffix_start:]
+                    return _assistant_citation_chunk("".join(visible), citations)
+                self._content += text[position:end]
+                citations.append(self._content)
+                self._content = ""
+                self._inside = False
+                position = end + len(CITATION_CLOSE)
+                continue
+
+            start = text.find(CITATION_OPEN, position)
+            if start != -1:
+                visible.append(text[position:start])
+                self._inside = True
+                position = start + len(CITATION_OPEN)
+                continue
+
+            suffix_start = _hidden_tag_suffix_start(text, position, CITATION_OPEN)
+            visible.append(text[position:suffix_start])
+            self._pending = text[suffix_start:]
+            break
+        return _assistant_citation_chunk("".join(visible), citations)
+
+    def finish(self) -> dict[str, object]:
+        if self._inside:
+            citation = self._content
+            if self._pending:
+                citation += self._pending
+            self._pending = ""
+            self._content = ""
+            self._inside = False
+            return _assistant_citation_chunk("", [citation])
+        pending = self._pending
+        self._pending = ""
+        return _assistant_citation_chunk(pending, [])
+
+
+class _ProposedPlanStreamParser:
+    def __init__(self) -> None:
+        self._pending = ""
+        self._inside = False
+
+    def push_str(self, chunk: str) -> dict[str, object]:
+        self._pending += chunk
+        visible: list[str] = []
+        segments: list[tuple[str, str]] = []
+        while self._pending:
+            line_end = self._line_end_index(self._pending)
+            if line_end is None:
+                if self._pending_still_possible_tag():
+                    break
+                self._emit_text(self._pending, visible, segments)
+                self._pending = ""
+                break
+            line = self._pending[:line_end]
+            self._pending = self._pending[line_end:]
+            self._process_line(line, visible, segments)
+        return {"visible_text": "".join(visible), "plan_segments": tuple(segments)}
+
+    def finish(self) -> dict[str, object]:
+        visible: list[str] = []
+        segments: list[tuple[str, str]] = []
+        if self._pending:
+            if self._inside and _line_without_newline_matches_tag(self._pending, PROPOSED_PLAN_CLOSE):
+                segments.append(("proposed_plan_end", ""))
+                self._inside = False
+            elif not self._inside and _line_without_newline_matches_tag(self._pending, PROPOSED_PLAN_OPEN):
+                segments.append(("proposed_plan_start", ""))
+                segments.append(("proposed_plan_end", ""))
+            else:
+                self._emit_text(self._pending, visible, segments)
+            self._pending = ""
+        if self._inside:
+            segments.append(("proposed_plan_end", ""))
+            self._inside = False
+        return {"visible_text": "".join(visible), "plan_segments": tuple(segments)}
+
+    @staticmethod
+    def _line_end_index(text: str) -> int | None:
+        newline = text.find("\n")
+        if newline == -1:
+            return None
+        return newline + 1
+
+    def _pending_still_possible_tag(self) -> bool:
+        if self._inside:
+            return PROPOSED_PLAN_CLOSE.startswith(self._pending)
+        return PROPOSED_PLAN_OPEN.startswith(self._pending) or self._pending == PROPOSED_PLAN_OPEN
+
+    def _process_line(
+        self,
+        line: str,
+        visible: list[str],
+        segments: list[tuple[str, str]],
+    ) -> None:
+        if self._inside:
+            if _line_matches_tag(line, PROPOSED_PLAN_CLOSE):
+                segments.append(("proposed_plan_end", ""))
+                self._inside = False
+            else:
+                segments.append(("proposed_plan_delta", line))
+            return
+        if _line_matches_tag(line, PROPOSED_PLAN_OPEN):
+            segments.append(("proposed_plan_start", ""))
+            self._inside = True
+            return
+        self._emit_text(line, visible, segments)
+
+    def _emit_text(
+        self,
+        text: str,
+        visible: list[str],
+        segments: list[tuple[str, str]],
+    ) -> None:
+        if self._inside:
+            segments.append(("proposed_plan_delta", text))
+        else:
+            visible.append(text)
+            segments.append(("normal", text))
+
+
+def _hidden_tag_suffix_start(text: str, start: int, tag_open: str) -> int:
+    max_len = min(len(tag_open) - 1, len(text) - start)
+    for length in range(max_len, 0, -1):
+        suffix = text[len(text) - length :]
+        if tag_open.startswith(suffix):
+            return len(text) - length
+    return len(text)
+
+
+def _line_matches_tag(line: str, tag: str) -> bool:
+    return line in {f"{tag}\n", f"{tag}\r\n"}
+
+
+def _line_without_newline_matches_tag(line: str, tag: str) -> bool:
+    return line == tag or line == f"{tag}\r"
+
+
+def _assistant_citation_chunk(visible_text: str, citations: Sequence[str]) -> dict[str, object]:
+    return {"visible_text": visible_text, "citations": tuple(citations)}
+
+
+def _empty_assistant_text_chunk() -> dict[str, object]:
+    return {"visible_text": "", "citations": (), "plan_segments": ()}
+
+
 class _NoopAssistantMessageStreamParsers:
     def finish_item(self, item_id: str) -> object:
         _ensure_str(item_id, "item_id")
-        return {"visible_text": "", "citations": (), "plan_segments": ()}
+        return _empty_assistant_text_chunk()
 
 
 def _parsed_str_sequence_field(parsed: object, name: str) -> tuple[str, ...]:
@@ -3077,6 +3473,7 @@ async def _maybe_await(value: object) -> object:
 
 
 __all__ = [
+    "AssistantMessageStreamParsers",
     "CompletedResponseItemRecordingPlan",
     "FinalizedTurnItem",
     "FinalizedTurnItemFacts",

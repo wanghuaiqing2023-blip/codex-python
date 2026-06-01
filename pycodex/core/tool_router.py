@@ -93,6 +93,22 @@ class ToolCall:
         )
 
 
+def _model_visible_specs_from_registry(registry: ToolRegistry) -> tuple[JsonValue, ...]:
+    specs: list[JsonValue] = []
+    for name in registry.tool_names():
+        exposure = registry.tool_exposure(name)
+        if exposure is None or not exposure.is_direct():
+            continue
+        tool = registry.tool(name)
+        if tool is None:
+            continue
+        spec_getter = getattr(tool, "spec", None)
+        spec = spec_getter() if callable(spec_getter) else getattr(tool, "tool_spec", None)
+        if spec is not None:
+            specs.append(spec)
+    return tuple(specs)
+
+
 class ToolRouter:
     def __init__(
         self,
@@ -113,6 +129,8 @@ class ToolRouter:
         model_visible_specs: tuple[JsonValue, ...] | list[JsonValue] | None = None,
     ) -> "ToolRouter":
         if model_visible_specs is None:
+            if isinstance(registry_or_specs, ToolRegistry):
+                return cls(_model_visible_specs_from_registry(registry_or_specs), registry_or_specs)
             if not isinstance(registry_or_specs, (list, tuple)):
                 raise TypeError("ToolRouter.from_parts(specs) requires a list or tuple")
             return cls(tuple(registry_or_specs))  # type: ignore[arg-type]
@@ -438,6 +456,8 @@ async def dispatch_tool_call_with_terminal_outcome(
         )
         await _apply_tool_completed_goal_runtime(invocation, finished, **stores)
         dispatch_trace.record_failed(err)
+        raise
+    except TypeError:
         raise
     except Exception as err:
         fatal = FunctionCallError.fatal(str(err))

@@ -5,6 +5,7 @@ import subprocess
 import unittest
 import json
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 from pycodex.core import (
@@ -26,6 +27,7 @@ from pycodex.core import (
     REJECT_SANDBOX_APPROVAL_REASON,
     SHELL_ESCALATE_HANDSHAKE_MESSAGE,
     SHELL_SOCKET_MAX_FDS_PER_MESSAGE,
+    SHELL_SOCKET_STREAM_MAX_PAYLOAD,
     SHELL_SUPER_EXEC_STDIO_DESTINATION_FDS,
     ShellRequest,
     Shell,
@@ -132,6 +134,7 @@ from pycodex.core import (
     shell_request_escalation_execution,
     shell_permission_request_payload,
     shell_single_quote,
+    shell_socket_build_length_prefixed_payload,
     shell_socket_recvmsg_with_fds,
     shell_socket_extract_length_prefixed_payload,
     shell_socket_recv_stream_frame_with_fds,
@@ -301,7 +304,7 @@ class ToolRuntimesTests(unittest.TestCase):
             len(framed_payload),
         )
         self.assertEqual(len(calls), 2)
-        self.assertEqual(calls[0][0], framed_payload[:-1])
+        self.assertEqual(calls[0][0], framed_payload)
         self.assertEqual(calls[0][1][0][2].tolist(), [10, 11])
         self.assertEqual(calls[1][0], framed_payload[-1:])
         self.assertEqual(calls[1][1], [])
@@ -363,7 +366,7 @@ class ToolRuntimesTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertEqual(calls[0][1], (10,))
         self.assertEqual(len(calls[0][0]), SHELL_SOCKET_STREAM_MAX_PAYLOAD)
-        self.assertEqual(len(calls[1][0]), 5)
+        self.assertEqual(len(calls[1][0]), 6)
         self.assertEqual(calls[1][1], ())
 
     def test_shell_socket_recvmsg_with_fds_matches_datagram_receive_boundary(self) -> None:
@@ -439,7 +442,7 @@ class ToolRuntimesTests(unittest.TestCase):
         self.assertEqual(transferred_fds, (22,))
         self.assertEqual(
             calls,
-            [("recvmsg", 2, socket.CMSG_SPACE(4 * array.array("i").itemsize))],
+            [("recvmsg", 4, socket.CMSG_SPACE(4 * array.array("i").itemsize))],
         )
 
     def test_shell_socket_recv_stream_frame_with_fds_raises_when_peer_closes_before_header(self) -> None:
@@ -1635,6 +1638,18 @@ class ToolRuntimesTests(unittest.TestCase):
         def fake_dup(fd: int) -> int:
             return fd + 40
 
+        client = object()
+        plan = ShellEscalateClientWrapperPlan(
+            ShellEscalateClientSocketPair(object(), client, 41, 42),
+            ShellEscalateClientHandshakePlan(42, b"\0", (17,)),
+        )
+
+        def fake_send_with_fds(_fd: int, _message: bytes, _fds: tuple[int, ...]) -> None:
+            return None
+
+        payload = json.dumps({"fds": [7, 8, 9]}).encode("utf-8")
+        framed_payload = len(payload).to_bytes(4, "little") + payload
+
         self.assertEqual(
             shell_escalate_client_wrapper_plan_run(
                 plan,
@@ -1656,12 +1671,12 @@ class ToolRuntimesTests(unittest.TestCase):
             super_exec_split_calls,
             [
                 ("request", ShellEscalateRequest("/bin/sh", ("/bin/sh",), Path("/work"), {})),
-                ("super_exec_send", client, ShellSuperExecMessage((7, 8, 9)), (40, 41, 42)),
+                ("super_exec_send", client, framed_payload, (40, 41, 42)),
                 ("super_exec_receive", client),
             ],
         )
         with self.assertRaisesRegex(
-            TypeError, "super-exec execution requires super-exec or split super_exec callbacks"
+            TypeError, "super-exec execution requires super_exec or split super_exec callbacks"
         ):
             shell_escalate_client_plan_run(escalate_plan)
         with self.assertRaisesRegex(
@@ -2436,7 +2451,15 @@ class ToolRuntimesTests(unittest.TestCase):
         )
         self.assertEqual(
             client_calls,
-            [("send", client, framed_payload, (10,)), ("receive", client)],
+            [
+                (
+                    "send",
+                    client,
+                    ShellSuperExecMessage((0,)).to_framed_payload(),
+                    (10,),
+                ),
+                ("receive", client),
+            ],
         )
 
     def test_shell_super_exec_send_receive_exit_code_parses_socket_result_payload(self) -> None:
@@ -2470,7 +2493,12 @@ class ToolRuntimesTests(unittest.TestCase):
         self.assertEqual(
             calls,
             [
-                ("send", client, framed_payload, (10, 11, 12)),
+                (
+                    "send",
+                    client,
+                    ShellSuperExecMessage((0, 1, 2)).to_framed_payload(),
+                    (10, 11, 12),
+                ),
                 ("receive", client),
             ],
         )
@@ -2503,7 +2531,12 @@ class ToolRuntimesTests(unittest.TestCase):
         self.assertEqual(
             calls,
             [
-                ("send", client, framed_payload, (10, 11, 12)),
+                (
+                    "send",
+                    client,
+                    ShellSuperExecMessage((0, 1, 2)).to_framed_payload(),
+                    (10, 11, 12),
+                ),
                 ("receive", client),
             ],
         )

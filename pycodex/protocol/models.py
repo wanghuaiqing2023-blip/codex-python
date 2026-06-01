@@ -903,6 +903,32 @@ class ResponseItem:
         return cls(type="message", id=id, role=role, content=tuple(content), phase=phase)
 
     @classmethod
+    def reasoning(
+        cls,
+        id: str,
+        summary: tuple[ReasoningItemReasoningSummary | str, ...] | list[ReasoningItemReasoningSummary | str] = (),
+        content: tuple[ReasoningItemContent | str, ...] | list[ReasoningItemContent | str] | None = None,
+        encrypted_content: str | None = None,
+    ) -> "ResponseItem":
+        return cls(
+            type="reasoning",
+            id=id,
+            summary=tuple(
+                item if isinstance(item, ReasoningItemReasoningSummary) else ReasoningItemReasoningSummary.summary_text(item)
+                for item in summary
+            ),
+            reasoning_content=(
+                None
+                if content is None
+                else tuple(
+                    item if isinstance(item, ReasoningItemContent) else ReasoningItemContent.text_content(item)
+                    for item in content
+                )
+            ),
+            encrypted_content=encrypted_content,
+        )
+
+    @classmethod
     def function_call(
         cls,
         name: str,
@@ -1907,9 +1933,16 @@ class FileSystemPermissions:
     @classmethod
     def from_read_write_roots(
         cls,
-        read: tuple[Path | str, ...] | list[Path | str] | None,
-        write: tuple[Path | str, ...] | list[Path | str] | None,
+        read: tuple[Path | str, ...] | list[Path | str] | None = None,
+        write: tuple[Path | str, ...] | list[Path | str] | None = None,
+        *,
+        read_roots: tuple[Path | str, ...] | list[Path | str] | None = None,
+        write_roots: tuple[Path | str, ...] | list[Path | str] | None = None,
     ) -> "FileSystemPermissions":
+        if read_roots is not None:
+            read = read_roots
+        if write_roots is not None:
+            write = write_roots
         entries: list[FileSystemSandboxEntry] = []
         for path in read or ():
             entries.append(FileSystemSandboxEntry(FileSystemPath.explicit_path(path), FileSystemAccessMode.READ))

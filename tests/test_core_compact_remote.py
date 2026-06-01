@@ -4,18 +4,33 @@ from pathlib import Path
 
 from pycodex.core.compact import InitialContextInjection, SUMMARY_PREFIX
 from pycodex.core.compact_remote import (
+    IMAGE_CONTENT_OMITTED_PLACEHOLDER,
     apply_remote_compaction_install_plan,
     build_compact_request_log_data,
     build_remote_compaction_install_plan,
     build_remote_compaction_success_plan,
+    ensure_call_outputs_present,
     estimate_response_item_model_visible_bytes,
     is_codex_generated_item,
+    normalize_call_outputs,
+    normalize_history_for_prompt,
     process_compacted_history,
+    remove_orphan_outputs,
     should_keep_compacted_history_item,
+    strip_images_when_unsupported,
     trim_function_call_history_to_fit_context_window,
 )
 from pycodex.core.session_runtime import InMemoryCodexSession
-from pycodex.protocol import AskForApproval, ContentItem, ResponseItem, SandboxPolicy, TurnContextItem
+from pycodex.protocol import (
+    AskForApproval,
+    ContentItem,
+    FunctionCallOutputContentItem,
+    FunctionCallOutputPayload,
+    ImageDetail,
+    ResponseItem,
+    SandboxPolicy,
+    TurnContextItem,
+)
 
 
 def user_message(text: str) -> ResponseItem:
@@ -28,6 +43,26 @@ def developer_message(text: str) -> ResponseItem:
 
 def assistant_message(text: str) -> ResponseItem:
     return ResponseItem.message("assistant", (ContentItem.output_text(text),))
+
+
+def function_call_output(call_id: str, output: str) -> ResponseItem:
+    return ResponseItem.from_mapping({"type": "function_call_output", "call_id": call_id, "output": output})
+
+
+def custom_tool_call_output(call_id: str, output: str) -> ResponseItem:
+    return ResponseItem.from_mapping({"type": "custom_tool_call_output", "call_id": call_id, "output": output})
+
+
+def tool_search_output(call_id: str | None, *, execution: str = "client") -> ResponseItem:
+    return ResponseItem.from_mapping(
+        {
+            "type": "tool_search_output",
+            "call_id": call_id,
+            "status": "completed",
+            "execution": execution,
+            "tools": [],
+        }
+    )
 
 
 def reference_context_item() -> TurnContextItem:
@@ -93,6 +128,209 @@ class CompactRemoteTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(processed, [kept])
+
+    def test_ensure_call_outputs_present_inserts_synthetic_outputs_after_calls(self) -> None:
+        function_call = ResponseItem.function_call("shell", "{}", "call-1")
+        tool_search_call = ResponseItem.tool_search_call("{}", call_id="search-1")
+        custom_tool_call = ResponseItem.custom_tool_call("custom", "input", "custom-1")
+        local_shell_call = ResponseItem.from_mapping(
+            {
+                "type": "local_shell_call",
+                "call_id": "shell-1",
+                "status": "completed",
+                "action": {"type": "exec", "command": ["echo", "hi"]},
+            }
+        )
+        existing_output = function_call_output("done-1", "ok")
+        existing_call = ResponseItem.function_call("already", "{}", "done-1")
+
+        normalized = ensure_call_outputs_present(
+            (
+                user_message("start"),
+                function_call,
+                tool_search_call,
+                custom_tool_call,
+                local_shell_call,
+                existing_call,
+                existing_output,
+            )
+        )
+
+        self.assertEqual(
+            [item.type for item in normalized],
+            [
+                "message",
+                "function_call",
+                "function_call_output",
+                "tool_search_call",
+                "tool_search_output",
+                "custom_tool_call",
+                "custom_tool_call_output",
+                "local_shell_call",
+                "function_call_output",
+                "function_call",
+                "function_call_output",
+            ],
+        )
+        self.assertEqual(normalized[2].call_id, "call-1")
+        self.assertEqual(normalized[2].output.to_text(), "aborted")
+        self.assertEqual(normalized[4].call_id, "search-1")
+        self.assertEqual(normalized[4].status, "completed")
+        self.assertEqual(normalized[4].execution, "client")
+        self.assertEqual(normalized[6].call_id, "custom-1")
+        self.assertEqual(normalized[6].output.to_text(), "aborted")
+        self.assertEqual(normalized[8].call_id, "shell-1")
+        self.assertEqual(normalized[8].output.to_text(), "aborted")
+        self.assertIs(normalized[-1], existing_output)
+
+    def test_remove_orphan_outputs_keeps_only_outputs_with_matching_calls(self) -> None:
+        function_call = ResponseItem.function_call("tool", "{}", "call-1")
+        function_output = function_call_output("call-1", "ok")
+        local_shell_call = ResponseItem.from_mapping(
+            {
+                "type": "local_shell_call",
+                "call_id": "shell-1",
+                "status": "completed",
+                "action": {"type": "exec", "command": ["pwd"]},
+            }
+        )
+        local_shell_output = function_call_output("shell-1", "ok")
+        tool_search_call = ResponseItem.tool_search_call("{}", call_id="search-1")
+        paired_search_output = tool_search_output("search-1")
+        server_search_output = tool_search_output("server-1", execution="server")
+        unpaired_search_output = tool_search_output(None)
+        custom_tool_call = ResponseItem.custom_tool_call("custom", "input", "custom-1")
+        custom_tool_output = custom_tool_call_output("custom-1", "ok")
+
+        retained = remove_orphan_outputs(
+            (
+                function_call,
+                function_output,
+                function_call_output("orphan-function", "drop"),
+                local_shell_call,
+                local_shell_output,
+                tool_search_call,
+                paired_search_output,
+                server_search_output,
+                unpaired_search_output,
+                tool_search_output("orphan-search"),
+                custom_tool_call,
+                custom_tool_output,
+                custom_tool_call_output("orphan-custom", "drop"),
+            )
+        )
+
+        self.assertEqual(
+            retained,
+            (
+                function_call,
+                function_output,
+                local_shell_call,
+                local_shell_output,
+                tool_search_call,
+                paired_search_output,
+                server_search_output,
+                unpaired_search_output,
+                custom_tool_call,
+                custom_tool_output,
+            ),
+        )
+
+    def test_remove_orphan_outputs_keeps_empty_function_output_for_model_visible_tool_error(self) -> None:
+        error_output = function_call_output("", "failed to parse tool_search arguments")
+
+        retained = remove_orphan_outputs((error_output,))
+
+        self.assertEqual(retained, (error_output,))
+
+    def test_normalize_call_outputs_inserts_missing_outputs_then_removes_orphans(self) -> None:
+        function_call = ResponseItem.function_call("tool", "{}", "call-1")
+        orphan = function_call_output("orphan", "drop")
+
+        normalized = normalize_call_outputs((function_call, orphan))
+
+        self.assertEqual([item.type for item in normalized], ["function_call", "function_call_output"])
+        self.assertEqual(normalized[1].call_id, "call-1")
+        self.assertEqual(normalized[1].output.to_text(), "aborted")
+
+    def test_strip_images_when_unsupported_replaces_images_and_clears_image_generation_result(self) -> None:
+        message = ResponseItem.message(
+            "user",
+            (
+                ContentItem.input_text("look"),
+                ContentItem.input_image("data:image/png;base64,AAA", detail=ImageDetail.HIGH),
+            ),
+        )
+        function_output = ResponseItem(
+            type="function_call_output",
+            call_id="call-1",
+            output=FunctionCallOutputPayload.from_content_items(
+                (
+                    FunctionCallOutputContentItem.input_text("before"),
+                    FunctionCallOutputContentItem.input_image("data:image/png;base64,BBB", detail=ImageDetail.HIGH),
+                )
+            ),
+        )
+        custom_output = ResponseItem(
+            type="custom_tool_call_output",
+            call_id="custom-1",
+            output=FunctionCallOutputPayload.from_content_items(
+                (FunctionCallOutputContentItem.input_image("data:image/png;base64,CCC", detail=ImageDetail.HIGH),),
+                success=True,
+            ),
+        )
+        image_generation = ResponseItem.image_generation_call("img-1", "completed", "base64-result")
+
+        normalized = strip_images_when_unsupported(
+            ("text",),
+            (message, function_output, custom_output, image_generation),
+        )
+
+        self.assertEqual(
+            normalized[0].content,
+            (
+                ContentItem.input_text("look"),
+                ContentItem.input_text(IMAGE_CONTENT_OMITTED_PLACEHOLDER),
+            ),
+        )
+        self.assertEqual(
+            normalized[1].output.content_items,
+            (
+                FunctionCallOutputContentItem.input_text("before"),
+                FunctionCallOutputContentItem.input_text(IMAGE_CONTENT_OMITTED_PLACEHOLDER),
+            ),
+        )
+        self.assertEqual(
+            normalized[2].output.content_items,
+            (FunctionCallOutputContentItem.input_text(IMAGE_CONTENT_OMITTED_PLACEHOLDER),),
+        )
+        self.assertTrue(normalized[2].output.success)
+        self.assertEqual(normalized[3].result, "")
+
+    def test_strip_images_when_supported_preserves_history(self) -> None:
+        message = ResponseItem.message(
+            "user",
+            (ContentItem.input_image("data:image/png;base64,AAA", detail=ImageDetail.HIGH),),
+        )
+
+        self.assertEqual(strip_images_when_unsupported(("text", "image"), (message,)), (message,))
+
+    def test_normalize_history_for_prompt_matches_context_manager_order(self) -> None:
+        function_call = ResponseItem.function_call("tool", "{}", "call-1")
+        orphan = function_call_output("orphan", "drop")
+        image_message = ResponseItem.message(
+            "user",
+            (ContentItem.input_image("data:image/png;base64,AAA", detail=ImageDetail.HIGH),),
+        )
+
+        normalized = normalize_history_for_prompt((function_call, orphan, image_message), ("text",))
+
+        self.assertEqual(
+            [item.type for item in normalized],
+            ["function_call", "function_call_output", "message"],
+        )
+        self.assertEqual(normalized[1].call_id, "call-1")
+        self.assertEqual(normalized[2].content, (ContentItem.input_text(IMAGE_CONTENT_OMITTED_PLACEHOLDER),))
 
     def test_remote_compaction_success_plan_filters_injects_and_builds_install_plan(self) -> None:
         reference_context = reference_context_item()

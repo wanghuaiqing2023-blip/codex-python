@@ -7,12 +7,18 @@ from pycodex.core import (
     REJECT_RULES_APPROVAL_REASON,
     REJECT_SANDBOX_APPROVAL_REASON,
     Decision,
+    ExecApprovalRequest,
     ExecPolicyCommandOrigin,
     ExecPolicyCommands,
     UnmatchedCommandContext,
     commands_for_exec_policy,
     commands_for_intercepted_exec_policy,
+    create_exec_approval_requirement_for_command,
+    derive_forbidden_reason,
+    derive_prompt_reason,
+    derive_requested_execpolicy_amendment_from_prefix_rule,
     exec_approval_requirement_for_decision,
+    prefix_rule_would_approve_all_commands,
     profile_is_managed_read_only,
     prompt_is_rejected_by_policy,
     render_decision_for_unmatched_command,
@@ -22,6 +28,7 @@ from pycodex.core import (
 )
 from pycodex.protocol import (
     AskForApproval,
+    ExecPolicyAmendment,
     FileSystemSandboxPolicy,
     GranularApprovalConfig,
     NetworkSandboxPolicy,
@@ -143,6 +150,198 @@ class CoreExecPolicyTests(unittest.TestCase):
         self.assertEqual(prompt.reason, "needs review")
         self.assertEqual(forbidden.type, "forbidden")
         self.assertEqual(forbidden.reason, "blocked")
+
+    def test_derive_requested_execpolicy_amendment_filters_empty_and_banned_prefix_rules(self):
+        self.assertIsNone(derive_requested_execpolicy_amendment_from_prefix_rule(None))
+        self.assertIsNone(derive_requested_execpolicy_amendment_from_prefix_rule(()))
+
+        for prefix_rule in (
+            ("python", "-c"),
+            ("py",),
+            ("py", "-3"),
+            ("pythonw",),
+            ("pyw",),
+            ("pypy",),
+            ("pypy3",),
+            ("bash", "-lc"),
+            ("sh", "-c"),
+            ("sh", "-lc"),
+            ("zsh", "-lc"),
+            ("/bin/bash", "-lc"),
+            ("/bin/zsh", "-lc"),
+            ("pwsh",),
+            ("pwsh", "-Command"),
+            ("pwsh", "-c"),
+            ("powershell",),
+            ("powershell", "-Command"),
+            ("powershell", "-c"),
+            ("powershell.exe",),
+            ("powershell.exe", "-Command"),
+            ("powershell.exe", "-c"),
+        ):
+            with self.subTest(prefix_rule=prefix_rule):
+                self.assertIsNone(derive_requested_execpolicy_amendment_from_prefix_rule(prefix_rule))
+
+    def test_derive_requested_execpolicy_amendment_allows_non_exact_banned_match(self):
+        prefix_rule = ("python", "-c", "print('hi')")
+
+        self.assertEqual(
+            derive_requested_execpolicy_amendment_from_prefix_rule(prefix_rule),
+            ExecPolicyAmendment.new(list(prefix_rule)),
+        )
+
+    def test_derive_requested_execpolicy_amendment_skips_policy_matches_and_partial_prefixes(self):
+        prefix_rule = ("cargo", "install")
+
+        self.assertIsNone(
+            derive_requested_execpolicy_amendment_from_prefix_rule(
+                prefix_rule,
+                matched_rules=({"prefixRuleMatch": {"matchedPrefix": ["cargo"], "decision": "prompt"}},),
+            )
+        )
+        self.assertIsNone(
+            derive_requested_execpolicy_amendment_from_prefix_rule(
+                prefix_rule,
+                commands=(("cargo", "install", "ripgrep"), ("git", "status")),
+            )
+        )
+        self.assertEqual(
+            derive_requested_execpolicy_amendment_from_prefix_rule(
+                prefix_rule,
+                commands=(("cargo", "install", "ripgrep"),),
+            ),
+            ExecPolicyAmendment.new(["cargo", "install"]),
+        )
+        self.assertTrue(prefix_rule_would_approve_all_commands(prefix_rule, (("cargo", "install", "ripgrep"),)))
+        self.assertFalse(prefix_rule_would_approve_all_commands(prefix_rule, (("cargo", "build"),)))
+
+    def test_create_exec_approval_requirement_for_command_proposes_requested_prefix_rule(self):
+        requirement = create_exec_approval_requirement_for_command(
+            ExecApprovalRequest(
+                command=("bash", "-lc", "cargo install ripgrep"),
+                approval_policy=AskForApproval.ON_REQUEST,
+                permission_profile=PermissionProfile.read_only(),
+                file_system_sandbox_policy=FileSystemSandboxPolicy.default(),
+                sandbox_cwd=Path("/repo"),
+                prefix_rule=("cargo", "install"),
+            )
+        )
+
+        self.assertEqual(requirement.type, "needs_approval")
+        self.assertEqual(
+            requirement.proposed_execpolicy_amendment,
+            ExecPolicyAmendment.new(["cargo", "install"]),
+        )
+
+    def test_create_exec_approval_requirement_for_command_honors_prompt_rule_reason(self):
+        matched_rules = (
+            {
+                "prefixRuleMatch": {
+                    "matchedPrefix": ["cargo"],
+                    "decision": "prompt",
+                    "justification": "review toolchain changes",
+                }
+            },
+            {
+                "prefixRuleMatch": {
+                    "matchedPrefix": ["cargo", "install"],
+                    "decision": "prompt",
+                }
+            },
+        )
+
+        requirement = create_exec_approval_requirement_for_command(
+            ExecApprovalRequest(
+                command=("bash", "-lc", "cargo install ripgrep"),
+                approval_policy=AskForApproval.ON_REQUEST,
+                permission_profile=PermissionProfile.workspace_write(),
+                file_system_sandbox_policy=FileSystemSandboxPolicy.workspace_write(()),
+                sandbox_cwd=Path("/repo"),
+                matched_rules=matched_rules,
+            )
+        )
+
+        self.assertEqual(requirement.type, "needs_approval")
+        self.assertEqual(requirement.reason, "`bash -lc cargo install ripgrep` requires approval by policy")
+        self.assertIsNone(requirement.proposed_execpolicy_amendment)
+        self.assertEqual(
+            derive_prompt_reason(("bash", "-lc", "cargo install ripgrep"), matched_rules),
+            "`bash -lc cargo install ripgrep` requires approval by policy",
+        )
+
+    def test_create_exec_approval_requirement_for_command_honors_forbidden_rule_reason(self):
+        matched_rules = (
+            {
+                "prefixRuleMatch": {
+                    "matchedPrefix": ["rm"],
+                    "decision": "forbidden",
+                    "justification": "destructive cleanup is blocked",
+                }
+            },
+        )
+
+        requirement = create_exec_approval_requirement_for_command(
+            ExecApprovalRequest(
+                command=("bash", "-lc", "rm -rf /important/data"),
+                approval_policy=AskForApproval.ON_REQUEST,
+                permission_profile=PermissionProfile.workspace_write(),
+                file_system_sandbox_policy=FileSystemSandboxPolicy.workspace_write(()),
+                sandbox_cwd=Path("/repo"),
+                matched_rules=matched_rules,
+            )
+        )
+
+        self.assertEqual(requirement.type, "forbidden")
+        self.assertEqual(requirement.reason, "`bash -lc rm -rf /important/data` rejected: destructive cleanup is blocked")
+        self.assertEqual(
+            derive_forbidden_reason(("bash", "-lc", "rm -rf /important/data"), matched_rules),
+            "`bash -lc rm -rf /important/data` rejected: destructive cleanup is blocked",
+        )
+
+    def test_create_exec_approval_requirement_for_command_filters_banned_requested_prefix_and_heredoc(self):
+        banned = create_exec_approval_requirement_for_command(
+            ExecApprovalRequest(
+                command=("python", "-c", "print(1)"),
+                approval_policy=AskForApproval.ON_REQUEST,
+                permission_profile=PermissionProfile.read_only(),
+                file_system_sandbox_policy=FileSystemSandboxPolicy.default(),
+                sandbox_cwd=Path("/repo"),
+                prefix_rule=("python", "-c"),
+            )
+        )
+        heredoc = create_exec_approval_requirement_for_command(
+            ExecApprovalRequest(
+                command=("zsh", "-lc", "python3 <<'PY'\nprint('hello')\nPY"),
+                approval_policy=AskForApproval.ON_REQUEST,
+                permission_profile=PermissionProfile.read_only(),
+                file_system_sandbox_policy=FileSystemSandboxPolicy.default(),
+                sandbox_cwd=Path("/repo"),
+                prefix_rule=("python3", "script.py"),
+            )
+        )
+
+        self.assertEqual(banned.type, "needs_approval")
+        self.assertEqual(
+            banned.proposed_execpolicy_amendment,
+            ExecPolicyAmendment.new(["python", "-c", "print(1)"]),
+        )
+        self.assertEqual(heredoc.type, "needs_approval")
+        self.assertIsNone(heredoc.proposed_execpolicy_amendment)
+
+    def test_create_exec_approval_requirement_for_command_honors_prompt_policy_rejection(self):
+        requirement = create_exec_approval_requirement_for_command(
+            {
+                "command": ("rm", "-rf", "/important/data"),
+                "approval_policy": AskForApproval.NEVER,
+                "permission_profile": PermissionProfile.read_only(),
+                "file_system_sandbox_policy": FileSystemSandboxPolicy.default(),
+                "sandbox_cwd": Path("/repo"),
+                "prefix_rule": ("rm",),
+            }
+        )
+
+        self.assertEqual(requirement.type, "forbidden")
+        self.assertEqual(requirement.reason, "`rm -rf /important/data` rejected: blocked by policy")
 
     @unittest.skipUnless(os.name == "nt", "PowerShell exec-policy parsing is Windows-specific upstream")
     def test_commands_for_exec_policy_parses_powershell_wrapper_on_windows(self):

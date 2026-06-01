@@ -129,12 +129,25 @@ class ToolEventFailure:
         return cls("rejected", message=message, applied_patch_delta=applied_patch_delta)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class ToolEventStage:
     type: str
     output: ExecToolCallOutput | None = None
     applied_patch_delta: AppliedPatchDelta | None = None
     failure: ToolEventFailure | None = None
+
+    def __init__(
+        self,
+        type: str,
+        output: ExecToolCallOutput | None = None,
+        applied_patch_delta: AppliedPatchDelta | None = None,
+        failure: ToolEventFailure | None = None,
+    ) -> None:
+        object.__setattr__(self, "type", type)
+        object.__setattr__(self, "output", output)
+        object.__setattr__(self, "applied_patch_delta", applied_patch_delta)
+        object.__setattr__(self, "failure", failure)
+        self.__post_init__()
 
     def __post_init__(self) -> None:
         if self.type == "begin":

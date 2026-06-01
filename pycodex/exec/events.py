@@ -233,7 +233,7 @@ def collab_tool_call_item(
 def file_change_item(id: str, item: FileChangeItem) -> ExecThreadItem:
     changes = [
         {
-            "path": str(path),
+            "path": path.as_posix(),
             "kind": _patch_kind(change),
         }
         for path, change in item.changes.items()
@@ -246,7 +246,6 @@ def web_search_item(id: str, item: WebSearchItem) -> ExecThreadItem:
         id,
         "web_search",
         {
-            "id": item.id,
             "query": item.query,
             "action": _web_search_action(item.action),
         },
@@ -489,9 +488,9 @@ def _to_json(value: JsonValue) -> JsonValue:
     if isinstance(value, Enum):
         return value.value
     if isinstance(value, Path):
-        return str(value)
+        return value.as_posix()
     if isinstance(value, Mapping):
-        return {str(key): _to_json(item) for key, item in value.items() if item is not None}
+        return {str(key): _to_json(item) for key, item in value.items()}
     if isinstance(value, tuple | list):
         return [_to_json(item) for item in value]
     return value

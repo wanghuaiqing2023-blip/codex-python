@@ -9,7 +9,7 @@ can be layered on later without changing the request/sampling path.
 from __future__ import annotations
 
 import inspect
-from dataclasses import dataclass, field, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from datetime import datetime, timezone as utc_timezone
 from enum import Enum
 from collections.abc import Mapping
@@ -23,6 +23,7 @@ from pycodex.core.context import (
     EnvironmentContextEnvironment,
     NetworkContext,
     PersonalitySpecInstructions,
+    UserInstructions,
 )
 from pycodex.core.context_updates import (
     build_initial_realtime_item,
@@ -45,30 +46,46 @@ from pycodex.core.codex_thread import (
     SessionSettingsUpdate,
     ThreadConfigSnapshot,
 )
+from pycodex.core.compact_remote import normalize_history_for_prompt
 from pycodex.protocol import (
     AdditionalPermissionProfile,
     ApprovalsReviewer,
     AskForApproval,
     BaseInstructions,
+    CodexErrorInfo,
     CollaborationMode,
     CompactedItem,
     FileSystemSandboxPolicy,
+    FunctionCallOutputContentItem,
+    FunctionCallOutputPayload,
     ModeKind,
     PermissionProfile,
     RequestPermissionProfile,
     RequestPermissionsArgs,
     RequestPermissionsResponse,
     ResponseItem,
+    EventMsg,
+    ModelRerouteEvent,
+    ModelRerouteReason,
+    ModelVerificationEvent,
+    RateLimitSnapshot,
     SandboxPolicy,
     SERVICE_TIER_DEFAULT_REQUEST_VALUE,
     ServiceTier,
     Settings,
+    TokenCountEvent,
+    TokenUsage,
+    TokenUsageInfo,
     TurnContextItem,
     TurnContextNetworkItem,
     TurnEnvironmentSelection,
+    UserInput,
+    WarningEvent,
 )
 
 _SETTING_UNSET = SETTINGS_UNSET
+CYBER_VERIFY_URL = "https://chatgpt.com/cyber"
+CYBER_SAFETY_URL = "https://developers.openai.com/codex/concepts/cyber-safety"
 
 
 @dataclass(frozen=True)
@@ -97,6 +114,8 @@ class InMemoryTurnContext:
     network: Any = None
     environments: Any = None
     final_output_json_schema: Any = None
+    server_model_warning_emitted: bool = False
+    model_verification_emitted: bool = False
 
 
 @dataclass
@@ -105,8 +124,38 @@ class InMemoryHistory:
 
     items: list[ResponseItem] = field(default_factory=list)
 
-    def for_prompt(self, _modalities: object = None) -> list[ResponseItem]:
-        return list(self.items)
+    def for_prompt(self, modalities: object = None) -> list[ResponseItem]:
+        return list(normalize_history_for_prompt(self.items, modalities))
+
+
+@dataclass
+class InMemoryActiveTurnState:
+    tool_calls: int = 0
+
+
+@dataclass
+class InMemoryActiveTurn:
+    turn_state: InMemoryActiveTurnState = field(default_factory=InMemoryActiveTurnState)
+
+
+@dataclass
+class InMemoryInputQueue:
+    """Turn-local pending input queue for the in-memory session runtime."""
+
+    items: list[Any] = field(default_factory=list)
+
+    async def extend_pending_input(self, items: Any) -> None:
+        if isinstance(items, (str, bytes)) or not isinstance(items, (list, tuple)):
+            raise TypeError("pending input must be a list or tuple")
+        self.items.extend(items)
+
+    async def get_pending_input(self, _active_turn: Any = None) -> tuple[Any, ...]:
+        items = tuple(self.items)
+        self.items.clear()
+        return items
+
+    async def has_pending_input(self, _active_turn: Any = None) -> bool:
+        return bool(self.items)
 
 
 @dataclass(frozen=True)
@@ -167,6 +216,18 @@ class InMemoryCodexSession:
     strict_auto_review_enabled: bool = False
     flush_rollout_count: int = 0
     compacted_items: list[CompactedItem] = field(default_factory=list)
+    token_usage_info: TokenUsageInfo | None = None
+    latest_rate_limits: RateLimitSnapshot | None = None
+    server_reasoning_included: bool = False
+    models_etag: str | None = None
+    emitted_events: list[EventMsg] = field(default_factory=list)
+    input_queue: InMemoryInputQueue = field(default_factory=InMemoryInputQueue)
+    active_turn: InMemoryActiveTurn = field(default_factory=InMemoryActiveTurn)
+    response_processed_ids: list[str] = field(default_factory=list)
+    drain_in_flight_count: int = 0
+    unified_diff: str | None = None
+    loop_tail_calls: list[Any] = field(default_factory=list)
+    turn_error_lifecycle: list[Any] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.cwd = Path(self.cwd)
@@ -228,6 +289,18 @@ class InMemoryCodexSession:
         self.compacted_items = list(self.compacted_items)
         if any(not isinstance(item, CompactedItem) for item in self.compacted_items):
             raise TypeError("compacted_items entries must be CompactedItem")
+        self.emitted_events = list(self.emitted_events)
+        if not isinstance(self.input_queue, InMemoryInputQueue):
+            raise TypeError("input_queue must be InMemoryInputQueue")
+        if not isinstance(self.active_turn, InMemoryActiveTurn):
+            raise TypeError("active_turn must be InMemoryActiveTurn")
+        self.response_processed_ids = list(self.response_processed_ids)
+        if not isinstance(self.drain_in_flight_count, int):
+            raise TypeError("drain_in_flight_count must be an int")
+        if self.unified_diff is not None and not isinstance(self.unified_diff, str):
+            raise TypeError("unified_diff must be a string or None")
+        self.loop_tail_calls = list(self.loop_tail_calls)
+        self.turn_error_lifecycle = list(self.turn_error_lifecycle)
 
     async def new_default_turn(self) -> InMemoryTurnContext:
         self._granted_turn_permissions = None
@@ -478,6 +551,11 @@ class InMemoryCodexSession:
             tuple(_response_item(item) for item in items),
         )
 
+    async def inject_if_running(self, items: list[Any] | tuple[Any, ...]) -> None:
+        if isinstance(items, (str, bytes)) or not isinstance(items, (list, tuple)):
+            raise TypeError("items must be a list or tuple")
+        await self.input_queue.extend_pending_input(tuple(_pending_input_item(item) for item in items))
+
     async def flush_rollout(self) -> None:
         self.flush_rollout_count += 1
 
@@ -513,8 +591,140 @@ class InMemoryCodexSession:
     async def clone_history(self) -> InMemoryHistory:
         return InMemoryHistory(list(self.history))
 
+    async def replace_last_turn_images(self, placeholder: str) -> bool:
+        if not isinstance(placeholder, str):
+            raise TypeError("placeholder must be a string")
+        for index in range(len(self.history) - 1, -1, -1):
+            item = self.history[index]
+            if item.type == "function_call_output":
+                replaced = _function_output_item_with_replaced_images(item, placeholder)
+                if replaced is None:
+                    return False
+                self.history[index] = replaced
+                return True
+            if _is_user_turn_boundary(item):
+                return False
+        return False
+
     async def get_base_instructions(self) -> BaseInstructions:
         return self.base_instructions
+
+    async def send_event(self, _turn_context: InMemoryTurnContext, event: EventMsg | dict[str, Any]) -> None:
+        if isinstance(event, EventMsg):
+            self.emitted_events.append(event)
+        else:
+            self.emitted_events.append(EventMsg.from_mapping(event))
+        if self.emitted_events[-1].type == "turn_diff":
+            self.loop_tail_calls.append(("turn_diff", self.emitted_events[-1].payload.unified_diff))
+
+    async def send_response_processed(self, response_id: str) -> None:
+        if not isinstance(response_id, str):
+            raise TypeError("response_id must be a string")
+        self.response_processed_ids.append(response_id)
+        self.loop_tail_calls.append(("response_processed", response_id))
+
+    async def drain_in_flight(self) -> None:
+        self.drain_in_flight_count += 1
+        self.loop_tail_calls.append(("drain_in_flight",))
+
+    async def get_unified_diff(self) -> str | None:
+        return self.unified_diff
+
+    async def emit_turn_error_lifecycle(
+        self,
+        turn_context: InMemoryTurnContext,
+        codex_error_info: CodexErrorInfo | str | dict[str, Any],
+    ) -> None:
+        if not isinstance(codex_error_info, CodexErrorInfo):
+            codex_error_info = CodexErrorInfo.from_mapping(codex_error_info)
+        self.turn_error_lifecycle.append((turn_context, codex_error_info))
+
+    async def send_token_count_event(self, turn_context: InMemoryTurnContext) -> None:
+        self.loop_tail_calls.append(("token_count", turn_context))
+        await self.send_event(
+            turn_context,
+            EventMsg.with_payload(
+                "token_count",
+                TokenCountEvent(info=self.token_usage_info, rate_limits=self.latest_rate_limits),
+            ),
+        )
+
+    async def record_token_usage_info(self, turn_context: InMemoryTurnContext, token_usage: TokenUsage | None) -> None:
+        model_context_window = _turn_model_context_window(turn_context)
+        self.token_usage_info = TokenUsageInfo.new_or_append(
+            self.token_usage_info,
+            token_usage,
+            model_context_window,
+        )
+
+    async def set_total_tokens_full(self, turn_context: InMemoryTurnContext) -> None:
+        context_window = _turn_model_context_window(turn_context)
+        if context_window is not None:
+            if self.token_usage_info is None:
+                self.token_usage_info = TokenUsageInfo.full_context_window(context_window)
+            else:
+                self.token_usage_info = self.token_usage_info.fill_to_context_window(context_window)
+        await self.send_token_count_event(turn_context)
+
+    async def record_rate_limits_info(self, new_rate_limits: RateLimitSnapshot) -> None:
+        if not isinstance(new_rate_limits, RateLimitSnapshot):
+            raise TypeError("new_rate_limits must be RateLimitSnapshot")
+        self.latest_rate_limits = _merge_rate_limit_fields(self.latest_rate_limits, new_rate_limits)
+
+    async def update_rate_limits(
+        self,
+        turn_context: InMemoryTurnContext,
+        new_rate_limits: RateLimitSnapshot,
+    ) -> None:
+        await self.record_rate_limits_info(new_rate_limits)
+        await self.send_token_count_event(turn_context)
+
+    async def maybe_warn_on_server_model_mismatch(
+        self,
+        turn_context: InMemoryTurnContext,
+        server_model: str,
+    ) -> bool:
+        requested_model = _model_slug(turn_context.model_info)
+        if server_model.lower() == requested_model.lower():
+            return False
+        message = (
+            "Your account was flagged for potentially high-risk cyber activity and this request was routed to "
+            f"gpt-5.2 as a fallback. To regain access to gpt-5.3-codex, apply for trusted access: "
+            f"{CYBER_VERIFY_URL} or learn more: {CYBER_SAFETY_URL}"
+        )
+        await self.send_event(
+            turn_context,
+            EventMsg.with_payload(
+                "model_reroute",
+                ModelRerouteEvent(
+                    from_model=requested_model,
+                    to_model=server_model,
+                    reason=ModelRerouteReason.HIGH_RISK_CYBER_ACTIVITY,
+                ),
+            ),
+        )
+        await self.send_event(turn_context, EventMsg.with_payload("warning", WarningEvent(message)))
+        return True
+
+    async def set_server_reasoning_included(self, included: bool) -> None:
+        if not isinstance(included, bool):
+            raise TypeError("included must be bool")
+        self.server_reasoning_included = included
+
+    async def refresh_models_etag(self, etag: str) -> None:
+        if not isinstance(etag, str):
+            raise TypeError("etag must be str")
+        self.models_etag = etag
+
+    async def emit_model_verification(
+        self,
+        turn_context: InMemoryTurnContext,
+        verifications: Any,
+    ) -> None:
+        await self.send_event(
+            turn_context,
+            EventMsg.with_payload("model_verification", ModelVerificationEvent(tuple(verifications))),
+        )
 
     async def granted_session_permissions(self) -> AdditionalPermissionProfile | None:
         return self._granted_session_permissions
@@ -570,8 +780,11 @@ class InMemoryCodexSession:
 
 
 __all__ = [
+    "InMemoryActiveTurn",
+    "InMemoryActiveTurnState",
     "InMemoryCodexSession",
     "InMemoryHistory",
+    "InMemoryInputQueue",
     "InMemoryTurnContext",
 ]
 
@@ -602,6 +815,34 @@ def _approval_policy_cell(value: Any) -> _ApprovalCell:
 
 def _session_shell(shell: Any) -> Any:
     return shell if shell is not None else SimpleNamespace(name=lambda: "")
+
+
+def _is_user_turn_boundary(item: ResponseItem) -> bool:
+    return item.type == "message" and item.role == "user"
+
+
+def _function_output_item_with_replaced_images(item: ResponseItem, placeholder: str) -> ResponseItem | None:
+    output = item.output
+    try:
+        payload = output if isinstance(output, FunctionCallOutputPayload) else FunctionCallOutputPayload.from_value(output)
+    except (TypeError, ValueError):
+        return None
+    if payload.body.type != "content_items":
+        return None
+    content_items = []
+    replaced = False
+    for content_item in payload.body.content_items:
+        if content_item.type == "input_image":
+            content_items.append(FunctionCallOutputContentItem.input_text(placeholder))
+            replaced = True
+        else:
+            content_items.append(content_item)
+    if not replaced:
+        return None
+    return replace(
+        item,
+        output=FunctionCallOutputPayload.from_content_items(tuple(content_items), success=payload.success),
+    )
 
 
 def _model_slug(model_info: Any) -> str:
@@ -728,6 +969,41 @@ def _turn_cwd(environments: Any, fallback: Path | str) -> Path:
     return Path(fallback)
 
 
+def _turn_model_context_window(turn_context: Any) -> int | None:
+    model_info = getattr(turn_context, "model_info", None)
+    if model_info is None:
+        return None
+    resolved_method = getattr(model_info, "resolved_context_window", None)
+    if callable(resolved_method):
+        resolved = resolved_method()
+    else:
+        resolved = getattr(model_info, "context_window", None)
+        if resolved is None:
+            resolved = getattr(model_info, "max_context_window", None)
+    if isinstance(resolved, bool) or not isinstance(resolved, int) or resolved < 0:
+        return None
+    percent = getattr(model_info, "effective_context_window_percent", 95)
+    if isinstance(percent, bool) or not isinstance(percent, int):
+        percent = 95
+    return max((resolved * max(percent, 0)) // 100, 0)
+
+
+def _merge_rate_limit_fields(
+    previous: RateLimitSnapshot | None,
+    snapshot: RateLimitSnapshot,
+) -> RateLimitSnapshot:
+    limit_id = snapshot.limit_id or "codex"
+    credits = snapshot.credits
+    if credits is None and previous is not None:
+        credits = previous.credits
+    plan_type = snapshot.plan_type
+    if plan_type is None and previous is not None:
+        plan_type = previous.plan_type
+    if limit_id == snapshot.limit_id and credits is snapshot.credits and plan_type is snapshot.plan_type:
+        return snapshot
+    return replace(snapshot, limit_id=limit_id, credits=credits, plan_type=plan_type)
+
+
 def _retarget_workspace_roots(roots: tuple[Path, ...], old_cwd: Path, new_cwd: Path) -> tuple[Path, ...]:
     if old_cwd not in roots:
         return roots
@@ -842,6 +1118,13 @@ def _build_initial_context_items(
                 developer_sections.append(PersonalitySpecInstructions.new(personality_message).render())
 
     contextual_user_sections: list[str] = []
+    if turn_context.user_instructions:
+        contextual_user_sections.append(
+            UserInstructions(
+                directory=str(turn_context.cwd),
+                text=str(turn_context.user_instructions),
+            ).render()
+        )
     if getattr(config, "include_environment_context", False):
         contextual_user_sections.append(
             EnvironmentContext.new(
@@ -868,6 +1151,17 @@ def _response_item(value: ResponseItem | dict[str, Any]) -> ResponseItem:
     if isinstance(value, dict):
         return ResponseItem.from_mapping(value)
     raise TypeError("items entries must be ResponseItem or mapping")
+
+
+def _pending_input_item(value: Any) -> Any:
+    if isinstance(value, (ResponseItem, UserInput)):
+        return value
+    if isinstance(value, Mapping):
+        value_type = value.get("type")
+        if value_type in {"text", "image", "local_image", "skill", "mention"}:
+            return UserInput.from_mapping(value)
+        return ResponseItem.from_mapping(value)
+    return value
 
 
 def _compacted_item(value: CompactedItem | dict[str, Any]) -> CompactedItem:

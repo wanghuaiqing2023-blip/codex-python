@@ -324,7 +324,7 @@ def _parse_review_args(tokens: list[str], state: _ExecState) -> ReviewArgs:
             index += consumed
             continue
 
-        if token.startswith("-"):
+        if token != "-" and token.startswith("-"):
             raise ExecCliParseError(f"Unknown review option: {token}")
         review.positionals.append(token)
         index += 1

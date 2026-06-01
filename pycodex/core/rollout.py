@@ -17,7 +17,9 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from pycodex.protocol.models import ResponseItem
-from pycodex.protocol.protocol import USER_MESSAGE_BEGIN
+from pycodex.protocol.protocol import USER_MESSAGE_BEGIN, CompactedItem, EventMsg, ThreadRolledBackEvent
+
+from .thread_rollout_truncation import is_user_turn_boundary
 
 SESSIONS_SUBDIR = "sessions"
 ARCHIVED_SESSIONS_SUBDIR = "archived_sessions"
@@ -418,6 +420,22 @@ def append_response_item_to_rollout(path: Path, payload: Mapping[str, Any], *, t
         file.write("\n")
 
 
+def append_event_msg_to_rollout(path: Path, event: EventMsg | Mapping[str, Any], *, timestamp: str | None = None) -> None:
+    """Append one persisted protocol event payload to an existing rollout JSONL."""
+
+    event_payload = event.to_mapping() if isinstance(event, EventMsg) else dict(event)
+    rollout_path = Path(path)
+    rollout_path.parent.mkdir(parents=True, exist_ok=True)
+    line = {
+        "timestamp": timestamp or _format_rfc3339(datetime.now(timezone.utc)),
+        "type": "event_msg",
+        "payload": event_payload,
+    }
+    with rollout_path.open("a", encoding="utf-8", newline="\n") as file:
+        file.write(json.dumps(line, separators=(",", ":"), ensure_ascii=False))
+        file.write("\n")
+
+
 def append_turn_context_to_rollout(path: Path, cwd: Path | str, *, timestamp: str | None = None) -> None:
     """Append a turn context item that records the cwd for the next resumed turn."""
 
@@ -489,7 +507,7 @@ def append_turn_to_latest_thread_rollout(
     page = get_threads(
         codex_home,
         page_size=1,
-        sort_key=ThreadSortKey.UPDATED_AT,
+        sort_key=ThreadSortKey.CREATED_AT,
         cwd_filters=None if include_all or current_cwd is None else (Path(current_cwd),),
         allowed_sources=("cli",),
     )
@@ -586,6 +604,139 @@ def read_response_items_from_rollout(path: Path, *, max_items: int | None = None
     except UnicodeDecodeError:
         return ()
     return tuple(items)
+
+
+def read_event_msgs_from_rollout(path: Path, *, max_items: int | None = None) -> tuple[EventMsg, ...]:
+    """Read persisted protocol events from a rollout JSONL in prompt order."""
+
+    if max_items is not None and max_items <= 0:
+        return ()
+    events: list[EventMsg] = []
+    try:
+        file = Path(path).open("r", encoding="utf-8")
+    except OSError:
+        return ()
+    try:
+        with file:
+            for line in file:
+                trimmed = line.strip()
+                if not trimmed:
+                    continue
+                try:
+                    rollout_line = json.loads(trimmed)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(rollout_line, dict) or rollout_line.get("type") != "event_msg":
+                    continue
+                payload = rollout_line.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                try:
+                    event = EventMsg.from_mapping(payload)
+                except (KeyError, TypeError, ValueError):
+                    continue
+                events.append(event)
+                if max_items is not None and len(events) >= max_items:
+                    break
+    except UnicodeDecodeError:
+        return ()
+    return tuple(events)
+
+
+def read_model_history_from_rollout(path: Path) -> tuple[ResponseItem, ...]:
+    """Reconstruct model-visible history from a rollout JSONL for resume."""
+
+    history: list[ResponseItem] = []
+    try:
+        file = Path(path).open("r", encoding="utf-8")
+    except OSError:
+        return ()
+    try:
+        with file:
+            for line in file:
+                trimmed = line.strip()
+                if not trimmed:
+                    continue
+                try:
+                    rollout_line = json.loads(trimmed)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(rollout_line, dict):
+                    continue
+                payload = rollout_line.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                item_type = rollout_line.get("type")
+                if item_type == "response_item":
+                    item = _response_item_from_rollout_payload(payload)
+                    if item is not None:
+                        history.append(item)
+                elif item_type == "compacted":
+                    replacement = _compacted_replacement_history(payload)
+                    if replacement is not None:
+                        history = list(replacement)
+                elif item_type == "event_msg":
+                    rollback_turns = _thread_rollback_turn_count(payload)
+                    if rollback_turns is not None:
+                        _drop_last_user_turns_from_history(history, rollback_turns)
+    except UnicodeDecodeError:
+        return ()
+    return tuple(history)
+
+
+def _response_item_from_rollout_payload(payload: Mapping[str, Any]) -> ResponseItem | None:
+    try:
+        return ResponseItem.from_mapping(payload)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _compacted_replacement_history(payload: Mapping[str, Any]) -> tuple[ResponseItem, ...] | None:
+    try:
+        compacted = CompactedItem.from_mapping(payload)
+    except (KeyError, TypeError, ValueError):
+        return None
+    if compacted.replacement_history is None:
+        return None
+    items: list[ResponseItem] = []
+    for raw_item in compacted.replacement_history:
+        if not isinstance(raw_item, Mapping):
+            continue
+        item = _response_item_from_rollout_payload(raw_item)
+        if item is not None:
+            items.append(item)
+    return tuple(items)
+
+
+def _thread_rollback_turn_count(payload: Mapping[str, Any]) -> int | None:
+    try:
+        event = EventMsg.from_mapping(payload)
+    except (KeyError, TypeError, ValueError):
+        return None
+    if event.type != "thread_rolled_back":
+        return None
+    rollback = event.payload
+    if isinstance(rollback, ThreadRolledBackEvent):
+        return rollback.num_turns
+    if isinstance(rollback, Mapping):
+        try:
+            return int(rollback["num_turns"])
+        except (KeyError, TypeError, ValueError):
+            return None
+    return None
+
+
+def _drop_last_user_turns_from_history(history: list[ResponseItem], num_turns: int) -> None:
+    if num_turns <= 0:
+        return
+    user_positions = [index for index, item in enumerate(history) if is_user_turn_boundary(item)]
+    if not user_positions:
+        return
+    if num_turns >= len(user_positions):
+        cut_index = user_positions[0]
+    else:
+        cut_index = user_positions[len(user_positions) - num_turns]
+    del history[cut_index:]
 
 
 def materialize_session_rollout(
@@ -957,6 +1108,13 @@ def _read_head_summary(path: Path, head_limit: int) -> _HeadSummary:
             elif item_type == "response_item":
                 if summary.created_at is None and isinstance(timestamp, str):
                     summary.created_at = timestamp
+                preview, is_user_message = _response_item_preview(payload)
+                if preview is None:
+                    continue
+                if summary.preview is None:
+                    summary.preview = preview
+                if is_user_message and summary.first_user_message is None:
+                    summary.first_user_message = preview
             elif item_type == "turn_context":
                 cwd = _turn_context_cwd(payload)
                 if cwd is not None:
@@ -1033,6 +1191,41 @@ def _event_msg_preview(payload: Any) -> tuple[str | None, bool]:
             if isinstance(objective, str) and objective.strip():
                 return objective.strip(), False
     return None, False
+
+
+def _response_item_preview(payload: Any) -> tuple[str | None, bool]:
+    if not isinstance(payload, dict):
+        return None, False
+    if payload.get("type") != "message":
+        return None, False
+    role = payload.get("role")
+    is_user_message = role == "user"
+    text = _response_item_content_text(payload.get("content"))
+    if text:
+        return text, is_user_message
+    if is_user_message and _response_item_content_has_image(payload.get("content")):
+        return "[Image]", True
+    return None, is_user_message
+
+
+def _response_item_content_text(content: Any) -> str | None:
+    if not isinstance(content, Sequence) or isinstance(content, (str, bytes, bytearray)):
+        return None
+    parts: list[str] = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        text = item.get("text")
+        if isinstance(text, str) and text:
+            parts.append(text)
+    joined = "".join(parts).strip()
+    return joined or None
+
+
+def _response_item_content_has_image(content: Any) -> bool:
+    if not isinstance(content, Sequence) or isinstance(content, (str, bytes, bytearray)):
+        return False
+    return any(isinstance(item, dict) and item.get("type") == "input_image" for item in content)
 
 
 def _normalize_event_type(value: Any) -> str:

@@ -272,8 +272,12 @@ def _file_change_from_mapping(value: JsonValue) -> FileChange:
     raise ValueError(f"unknown file change type: {change_type}")
 
 
+def _path_to_protocol(value: Path) -> str:
+    return value.as_posix()
+
+
 def _changes_to_mapping(changes: Mapping[Path, FileChange]) -> dict[str, JsonValue]:
-    return {str(path): _file_change_to_mapping(change) for path, change in changes.items()}
+    return {_path_to_protocol(path): _file_change_to_mapping(change) for path, change in changes.items()}
 
 
 def _changes_from_mapping(value: JsonValue) -> dict[Path, FileChange]:
@@ -353,7 +357,7 @@ def _file_change_diff(change: FileChange) -> str:
 def _file_changes_to_app_server_entries(changes: Mapping[Path, FileChange]) -> list[dict[str, JsonValue]]:
     entries = [
         {
-            "path": str(path),
+            "path": _path_to_protocol(path),
             "kind": _patch_change_kind_to_app_server(change),
             "diff": _file_change_diff(change),
         }
@@ -434,12 +438,12 @@ def _user_input_to_app_server(item: UserInput) -> dict[str, JsonValue]:
             data["detail"] = item.detail.value
         return data
     if item.type == "local_image":
-        data = {"type": "localImage", "path": str(item.path)}
+        data = {"type": "localImage", "path": _path_to_protocol(Path(item.path))}
         if item.detail is not None:
             data["detail"] = item.detail.value
         return data
     if item.type == "skill":
-        return {"type": "skill", "name": item.name, "path": str(item.path)}
+        return {"type": "skill", "name": item.name, "path": _path_to_protocol(Path(item.path))}
     if item.type == "mention":
         return {"type": "mention", "name": item.name, "path": item.path}
     raise ValueError(f"unknown user input type: {item.type}")
@@ -743,6 +747,17 @@ class AgentMessageItem:
         if self.memory_citation is not None and not isinstance(self.memory_citation, MemoryCitation):
             raise TypeError("memory_citation must be a MemoryCitation or None")
 
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, AgentMessageItem):
+            return NotImplemented
+        return (
+            self.id == other.id
+            and "".join(content.text for content in self.content)
+            == "".join(content.text for content in other.content)
+            and self.phase == other.phase
+            and self.memory_citation == other.memory_citation
+        )
+
     @classmethod
     def new(cls, content: tuple[AgentMessageContent, ...] | list[AgentMessageContent]) -> "AgentMessageItem":
         return cls(str(uuid.uuid4()), tuple(content))
@@ -827,7 +842,10 @@ class WebSearchItem:
         if not isinstance(self.query, str):
             raise TypeError("query must be a string")
         if isinstance(self.action, Mapping):
-            object.__setattr__(self, "action", WebSearchAction.from_mapping(self.action))
+            if not self.action:
+                object.__setattr__(self, "action", WebSearchAction.other())
+            else:
+                object.__setattr__(self, "action", WebSearchAction.from_mapping(self.action))
         if not isinstance(self.action, WebSearchAction):
             raise TypeError("action must be a WebSearchAction or mapping")
 
@@ -1195,7 +1213,7 @@ class CommandExecutionItem:
         return {
             "id": self.id,
             "command": self.command,
-            "cwd": str(self.cwd),
+            "cwd": _path_to_protocol(self.cwd),
             "processId": self.process_id,
             "source": self.source,
             "status": self.status,
@@ -1412,8 +1430,11 @@ class TurnItem:
     @classmethod
     def from_mapping(cls, value: JsonValue) -> "TurnItem":
         data = _mapping(value, "turn item")
-        item_type = _turn_item_type(_required_str(data, "type"))
+        raw_item_type = _required_str(data, "type")
+        item_type = _turn_item_type(raw_item_type)
         payload = {key: item for key, item in data.items() if key != "type"}
+        if raw_item_type == "webSearch" and "action" not in payload:
+            payload["action"] = None
         parser = _TURN_ITEM_PARSERS.get(item_type)
         if parser is None:
             raise ValueError(f"unknown turn item type: {item_type}")
@@ -1436,8 +1457,15 @@ class TurnItem:
         return cls("Plan", item)
 
     @classmethod
-    def reasoning(cls, item: ReasoningItem) -> "TurnItem":
-        return cls("Reasoning", item)
+    def reasoning(
+        cls,
+        item: ReasoningItem | str,
+        summary_text: tuple[str, ...] | list[str] = (),
+        raw_content: tuple[str, ...] | list[str] = (),
+    ) -> "TurnItem":
+        if isinstance(item, ReasoningItem):
+            return cls("Reasoning", item)
+        return cls("Reasoning", ReasoningItem(item, tuple(summary_text), tuple(raw_content)))
 
     @classmethod
     def web_search(cls, item: WebSearchItem) -> "TurnItem":
@@ -1709,7 +1737,7 @@ def _reasoning_item(data: Mapping[str, JsonValue]) -> ReasoningItem:
 
 
 def _web_search_item(data: Mapping[str, JsonValue]) -> WebSearchItem:
-    action = data.get("action", WebSearchAction.other())
+    action = _required_value(data, "action")
     if action is None:
         action = WebSearchAction.other()
     if isinstance(action, Mapping) and action.get("type") in {"openPage", "findInPage"}:

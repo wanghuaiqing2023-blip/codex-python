@@ -22,8 +22,10 @@ from urllib.parse import urlparse
 
 from pycodex.protocol import (
     ActivePermissionProfile,
+    AdditionalPermissionProfile,
     ApprovalsReviewer,
     AskForApproval,
+    EventMsg,
     PermissionProfile,
     ReviewRequest,
     ReviewTarget,
@@ -339,6 +341,10 @@ class ExecSessionConfig:
     active_permission_profile: ActivePermissionProfile | None = None
     ephemeral: bool = False
     reasoning_effort: JsonValue | None = None
+    hide_agent_reasoning: bool = False
+    show_raw_agent_reasoning: bool = False
+    request_permissions_callback: Any = None
+    granted_session_permissions: AdditionalPermissionProfile | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.cwd, Path):
@@ -346,6 +352,13 @@ class ExecSessionConfig:
         object.__setattr__(self, "workspace_roots", tuple(Path(root) for root in self.workspace_roots))
         object.__setattr__(self, "instruction_sources", tuple(Path(path) for path in self.instruction_sources))
         object.__setattr__(self, "startup_warnings", tuple(str(warning) for warning in self.startup_warnings))
+        if self.request_permissions_callback is not None and not callable(self.request_permissions_callback):
+            raise TypeError("request_permissions_callback must be callable or None")
+        if self.granted_session_permissions is not None and not isinstance(
+            self.granted_session_permissions,
+            AdditionalPermissionProfile,
+        ):
+            raise TypeError("granted_session_permissions must be AdditionalPermissionProfile or None")
 
 
 @dataclass(frozen=True)
@@ -486,6 +499,9 @@ class ReviewStartParams:
     target: ReviewTarget
     delivery: str | None = None
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "target", _clean_review_target_for_start(self.target))
+
     def to_mapping(self) -> dict[str, JsonValue]:
         return _drop_none(
             {
@@ -494,6 +510,30 @@ class ReviewStartParams:
                 "delivery": self.delivery,
             }
         )
+
+
+def _clean_review_target_for_start(target: ReviewTarget) -> ReviewTarget:
+    if target.type == "uncommittedChanges":
+        return ReviewTarget.uncommitted_changes()
+    if target.type == "baseBranch":
+        branch = (target.branch or "").strip()
+        if branch == "":
+            raise ValueError("branch must not be empty")
+        return ReviewTarget.base_branch(branch)
+    if target.type == "commit":
+        sha = (target.sha or "").strip()
+        if sha == "":
+            raise ValueError("sha must not be empty")
+        title = None if target.title is None else target.title.strip()
+        if title == "":
+            title = None
+        return ReviewTarget.commit(sha, title)
+    if target.type == "custom":
+        instructions = (target.instructions or "").strip()
+        if instructions == "":
+            raise ValueError("instructions must not be empty")
+        return ReviewTarget.custom(instructions)
+    raise ValueError(f"unknown review target type: {target.type}")
 
 
 @dataclass(frozen=True)
@@ -989,6 +1029,8 @@ def exec_session_config_mapping(config: ExecSessionConfig) -> dict[str, JsonValu
             "activePermissionProfile": _to_json(config.active_permission_profile),
             "ephemeral": config.ephemeral,
             "reasoningEffort": _to_json(config.reasoning_effort),
+            "hideAgentReasoning": config.hide_agent_reasoning,
+            "showRawAgentReasoning": config.show_raw_agent_reasoning,
         }
     )
 
@@ -2692,7 +2734,7 @@ def approvals_reviewer_override_from_config(config: ExecSessionConfig) -> Approv
     return config.approvals_reviewer
 
 
-def _session_instruction_config(config: ExecSessionConfig) -> dict[str, JsonValue] | None:
+def _session_instruction_config(config: ExecSessionConfig, *, include_empty: bool = False) -> dict[str, JsonValue] | None:
     instruction_config = {}
     if config.user_instructions is not None:
         instruction_config["userInstructions"] = config.user_instructions
@@ -2700,6 +2742,9 @@ def _session_instruction_config(config: ExecSessionConfig) -> dict[str, JsonValu
         instruction_config["instructionSources"] = [str(path) for path in config.instruction_sources]
     if config.startup_warnings:
         instruction_config["startupWarnings"] = list(config.startup_warnings)
+    if include_empty:
+        instruction_config.setdefault("instructionSources", [])
+        instruction_config.setdefault("startupWarnings", [])
     if not instruction_config:
         return None
     return instruction_config
@@ -2736,7 +2781,7 @@ def thread_resume_params_from_config(config: ExecSessionConfig, thread_id: str) 
         approvals_reviewer=approvals_reviewer_override_from_config(config),
         sandbox=sandbox,
         permissions=permissions,
-        config=_session_instruction_config(config),
+        config=_session_instruction_config(config, include_empty=True),
     )
 
 
@@ -2848,7 +2893,7 @@ def next_initial_operation_request(
 def initial_operation_result_from_response(method: str, response: JsonValue) -> InitialOperationResult:
     turn = _required_field(response, "turn")
     task_id = str(_required_field(turn, "id"))
-    if method == "turn/start":
+    if method in {"turn/start", "thread/turn/start"}:
         return InitialOperationResult(task_id=task_id)
     if method == "review/start":
         review_thread_id = str(_required_field(response, "reviewThreadId", "review_thread_id"))
@@ -3945,6 +3990,12 @@ def exec_loop_step(
         request_id = request_ids.next() if request_ids is not None else 0
         shutdown_request = exec_loop_shutdown_request(request_id, state.thread_id, processor_status)
         should_break = shutdown_request is not None
+    elif (
+        notification_to_process is not None
+        and decision.event_indicates_error
+        and _notification_method(notification_to_process) == "error"
+    ):
+        should_break = True
 
     return ExecLoopStepResult(
         state=next_state,
@@ -4286,9 +4337,15 @@ def turn_items_for_thread(thread: JsonValue, turn_id: str) -> JsonValue | None:
         if _field(turn, "id") == turn_id:
             items = _field(turn, "items")
             if isinstance(items, list | tuple):
-                return [_to_json_preserve_none(item) for item in items]
+                return [_thread_turn_item_for_backfill(item) for item in items]
             return items
     return None
+
+
+def _thread_turn_item_for_backfill(item: JsonValue) -> JsonValue:
+    if isinstance(item, TurnItem):
+        return item
+    return _to_json_preserve_none(item)
 
 
 def _session_configured_from_thread_response(
@@ -4326,10 +4383,18 @@ def _session_configured_from_thread_response(
         active_permission_profile=active_permission_profile,
         cwd=Path(str(_required_field(response, "cwd"))),
         reasoning_effort=_field(response, "reasoningEffort", "reasoning_effort"),
-        initial_messages=None,
+        initial_messages=_parse_initial_messages(_field(response, "initialMessages", "initial_messages")),
         network_proxy=None,
         rollout_path=_optional_path(_field(thread, "path")),
     )
+
+
+def _parse_initial_messages(value: JsonValue) -> tuple[EventMsg, ...] | None:
+    if value is None:
+        return None
+    if isinstance(value, str) or not isinstance(value, list | tuple):
+        raise TypeError("initial_messages must be a list")
+    return tuple(EventMsg.from_mapping(item) for item in value)
 
 
 def _enum(value: JsonValue) -> JsonValue:
@@ -4382,10 +4447,7 @@ def _turn_item_to_app_server_json(value: JsonValue) -> JsonValue:
     if isinstance(value, TurnItem):
         return value.to_app_server_mapping()
     if isinstance(value, Mapping):
-        try:
-            return TurnItem.from_mapping(value).to_app_server_mapping()
-        except (KeyError, TypeError, ValueError):
-            return _to_json_preserve_none(value)
+        return _to_json_preserve_none(value)
     return _to_json_preserve_none(value)
 
 

@@ -33,10 +33,11 @@ class Shell:
         return self.shell_type.value
 
     def derive_exec_args(self, command: str, use_login_shell: bool = False) -> list[str]:
-        shell_path = str(self.shell_path)
         if self.shell_type in {ShellType.ZSH, ShellType.BASH, ShellType.SH}:
+            shell_path = _posix_shell_path_for_exec(self.shell_path)
             arg = "-lc" if use_login_shell else "-c"
             return [shell_path, arg, command]
+        shell_path = str(self.shell_path)
         if self.shell_type is ShellType.POWERSHELL:
             args = [shell_path]
             if not use_login_shell:
@@ -44,6 +45,13 @@ class Shell:
             args.extend(("-Command", command))
             return args
         return [shell_path, "/c", command]
+
+
+def _posix_shell_path_for_exec(path: Path) -> str:
+    value = str(path)
+    if "\\" in value:
+        return value.replace("\\", "/")
+    return value
 
 
 def empty_shell_snapshot_receiver() -> None:

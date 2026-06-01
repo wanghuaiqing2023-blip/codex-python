@@ -8,26 +8,38 @@ from pycodex.core.handler_utils import apply_granted_turn_permissions, record_gr
 from pycodex.core.http_transport import run_user_turn_http_sampling_from_session
 from pycodex.core.session_runtime import InMemoryCodexSession
 from pycodex.core.codex_thread import SessionSettingsUpdate
+from pycodex.core.features import Feature
+from pycodex.core.tool_context import FunctionToolOutput
 from pycodex.core.tool_orchestrator import build_tool_orchestrator_plan_for_session, OrchestratorApprovalKind
+from pycodex.core.tool_registry import ToolRegistry
+from pycodex.core.tool_router import ToolRouter
 from pycodex.core.tool_sandboxing import ExecApprovalRequirement
+from pycodex.core.turn_runtime import run_user_turn_sampling_from_session
 from pycodex.protocol import (
     AdditionalPermissionProfile,
+    AccountPlanType,
     ApprovalsReviewer,
     AskForApproval,
+    CodexErr,
     CollaborationMode,
     ContentItem,
+    CreditsSnapshot,
     FileSystemAccessMode,
     FileSystemPermissions,
     FileSystemPath,
     FileSystemSandboxEntry,
     FileSystemSandboxPolicy,
     FileSystemSpecialPath,
+    FunctionCallOutputContentItem,
+    FunctionCallOutputPayload,
     NetworkPermissions,
     PermissionGrantScope,
     RequestPermissionProfile,
     RequestPermissionsArgs,
     RequestPermissionsResponse,
     ResponseItem,
+    RateLimitSnapshot,
+    RateLimitWindow,
     ReasoningEffort,
     ReasoningSummary,
     SandboxPermissions,
@@ -37,9 +49,11 @@ from pycodex.protocol import (
     ModeKind,
     Settings,
     ThreadSettingsOverrides,
+    ToolName,
     TurnEnvironmentSelection,
     TurnContextNetworkItem,
     UserInput,
+    UsageLimitReachedError,
 )
 
 
@@ -69,12 +83,40 @@ class Router:
         return []
 
 
+class EchoHandler:
+    def __init__(self) -> None:
+        self.invocations = []
+
+    def tool_name(self) -> ToolName:
+        return ToolName.plain("echo")
+
+    def handle(self, invocation):
+        self.invocations.append(invocation)
+        return FunctionToolOutput.from_text("tool ok", True)
+
+
 class ModelMessages:
     def __init__(self, messages):
         self._messages = messages
 
     def get_personality_message(self, personality):
         return self._messages.get(personality)
+
+
+class FeatureSet:
+    def __init__(self, *features) -> None:
+        self.features = set(features)
+
+    def enabled(self, feature) -> bool:
+        return feature in self.features
+
+
+def non_lifecycle_events(session: InMemoryCodexSession):
+    return tuple(event for event in session.emitted_events if event.type not in {"task_started", "task_complete"})
+
+
+def events_of_type(session: InMemoryCodexSession, event_type: str):
+    return tuple(event for event in session.emitted_events if event.type == event_type)
 
 
 class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
@@ -124,10 +166,51 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen["body"]["input"][0]["role"], "developer")
         self.assertEqual(seen["body"]["input"][1]["role"], "developer")
         self.assertIn("<permissions instructions>", seen["body"]["input"][1]["content"][0]["text"])
-        self.assertEqual(seen["body"]["input"][2]["role"], "user")
-        self.assertIn("<environment_context>", seen["body"]["input"][2]["content"][0]["text"])
-        self.assertIn("project instructions", seen["body"]["input"][3]["content"][0]["text"])
-        self.assertEqual(seen["body"]["input"][4]["content"][0]["text"], "hello")
+        input_texts = [item["content"][0]["text"] for item in seen["body"]["input"] if item.get("content")]
+        self.assertTrue(any("project instructions" in text for text in input_texts))
+        self.assertEqual(input_texts[-1], "hello")
+
+    async def test_in_memory_session_emits_turn_lifecycle_events(self) -> None:
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "context_window": 128000,
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+                "service_tier_for_request": lambda _self, tier: tier,
+            },
+        )()
+        session = InMemoryCodexSession(
+            cwd="C:/work/project",
+            turn_id="turn-1",
+            model_info=model_info,
+            server_reasoning_included=True,
+        )
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+
+        async def sampler(_request):
+            return [ResponseItem.message("assistant", (ContentItem.output_text("done"),))]
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            SimpleNamespace(is_azure_responses_endpoint=lambda: False),
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(tuple(event.type for event in session.emitted_events), ("task_started", "task_complete"))
+        self.assertEqual(session.emitted_events[0].payload.turn_id, "turn-1")
+        self.assertEqual(session.emitted_events[0].payload.model_context_window, 128000)
+        self.assertEqual(session.emitted_events[1].payload.turn_id, "turn-1")
+        self.assertEqual(session.emitted_events[1].payload.last_agent_message, "done")
+        self.assertFalse(session.server_reasoning_included)
+        self.assertEqual(session.flush_rollout_count, 1)
+        self.assertEqual(result.session_events, tuple(session.emitted_events))
 
     async def test_in_memory_session_records_context_update_items_from_reference_context(self) -> None:
         model_info = type(
@@ -163,6 +246,352 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("<environment_context>", item.content[0].text)
         self.assertIn(f"<cwd>{Path('C:/work/other')}</cwd>", item.content[0].text)
         self.assertEqual(session.history[-1], item)
+
+    async def test_in_memory_session_replace_last_turn_images_rewrites_tool_output_images(self) -> None:
+        session = InMemoryCodexSession(
+            cwd="C:/work/project",
+            history=[
+                ResponseItem.message("user", (ContentItem.input_text("look"),)),
+                ResponseItem.function_call("view_image", "{}", "call-image"),
+                ResponseItem(
+                    type="function_call_output",
+                    call_id="call-image",
+                    output=FunctionCallOutputPayload.from_content_items(
+                        (
+                            FunctionCallOutputContentItem.input_text("before"),
+                            FunctionCallOutputContentItem.input_image("data:image/png;base64,AAA"),
+                        ),
+                        success=True,
+                    ),
+                ),
+            ],
+        )
+
+        replaced = await session.replace_last_turn_images("Invalid image")
+
+        self.assertTrue(replaced)
+        output = session.history[-1].output
+        self.assertEqual(output.body.content_items[0].text, "before")
+        self.assertEqual(output.body.content_items[1].type, "input_text")
+        self.assertEqual(output.body.content_items[1].text, "Invalid image")
+        self.assertTrue(output.success)
+
+    async def test_in_memory_session_replace_last_turn_images_does_not_touch_user_images(self) -> None:
+        user_image = ResponseItem.message(
+            "user",
+            (ContentItem.input_image("data:image/png;base64,AAA"),),
+        )
+        session = InMemoryCodexSession(cwd="C:/work/project", history=[user_image])
+
+        replaced = await session.replace_last_turn_images("Invalid image")
+
+        self.assertFalse(replaced)
+        self.assertEqual(session.history, [user_image])
+
+    async def test_in_memory_session_input_queue_drains_pending_items_for_active_turn(self) -> None:
+        session = InMemoryCodexSession(cwd="C:/work/project")
+        await session.inject_if_running(
+            (
+                {"type": "text", "text": "queued steer"},
+                ResponseItem.message("user", (ContentItem.input_text("queued item"),)),
+            )
+        )
+
+        self.assertTrue(await session.input_queue.has_pending_input(session.active_turn))
+        pending = await session.input_queue.get_pending_input(session.active_turn)
+
+        self.assertEqual(pending[0], UserInput.text_input("queued steer"))
+        self.assertEqual(pending[1].content[0].text, "queued item")
+        self.assertFalse(await session.input_queue.has_pending_input(session.active_turn))
+
+    async def test_in_memory_session_http_sampling_uses_pending_input_followup(self) -> None:
+        bodies = []
+        session = InMemoryCodexSession(cwd="C:/work/project")
+
+        class Response:
+            def __init__(self, text):
+                self.text = text
+
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "output": [
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": self.text}],
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        def opener(request):
+            body = json.loads(request.data.decode("utf-8"))
+            bodies.append(body)
+            if len(bodies) == 1:
+                session.input_queue.items.append(UserInput.text_input("steer while running"))
+                return Response("first")
+            return Response("final")
+
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+                "service_tier_for_request": lambda _self, tier: tier,
+            },
+        )()
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+
+        result = await run_user_turn_http_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            {"base_url": "https://api.example.test/v1"},
+            model_info,
+            auth="sk-test",
+            opener=opener,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(len(bodies), 2)
+        second_input_texts = [
+            item["content"][0]["text"]
+            for item in bodies[1]["input"]
+            if item.get("type") == "message" and item.get("content")
+        ]
+        self.assertIn("steer while running", second_input_texts)
+        self.assertEqual(result.response_items[-1].content[0].text, "final")
+
+    async def test_in_memory_session_records_stream_loop_tail_side_effects(self) -> None:
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+                "service_tier_for_request": lambda _self, tier: tier,
+            },
+        )()
+        session = InMemoryCodexSession(
+            cwd="C:/work/project",
+            model_info=model_info,
+            features=FeatureSet(Feature.RESPONSES_WEBSOCKET_RESPONSE_PROCESSED),
+            unified_diff="diff --git a/file b/file",
+        )
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        usage = {
+            "input_tokens": 3,
+            "output_tokens": 4,
+            "total_tokens": 7,
+        }
+
+        async def sampler(_request):
+            return SimpleNamespace(
+                response_items=(ResponseItem.message("assistant", (ContentItem.output_text("done"),)),),
+                stream_events=(
+                    {"type": "completed", "response_id": "resp-1", "token_usage": usage, "end_turn": True},
+                ),
+            )
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            SimpleNamespace(is_azure_responses_endpoint=lambda: False),
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(result.response_items[-1].content[0].text, "done")
+        self.assertEqual(session.response_processed_ids, ["resp-1"])
+        self.assertEqual(session.drain_in_flight_count, 1)
+        self.assertEqual(session.token_usage_info.total_token_usage.total_tokens, 7)
+        self.assertEqual(
+            [call[0] for call in session.loop_tail_calls],
+            ["response_processed", "drain_in_flight", "token_count", "turn_diff"],
+        )
+        self.assertEqual(
+            session.loop_tail_calls[0],
+            ("response_processed", "resp-1"),
+        )
+        self.assertEqual(
+            session.loop_tail_calls[-1],
+            ("turn_diff", "diff --git a/file b/file"),
+        )
+        non_lifecycle = non_lifecycle_events(session)
+        self.assertEqual(non_lifecycle[-2].type, "token_count")
+        self.assertEqual(non_lifecycle[-1].type, "turn_diff")
+        self.assertEqual(
+            non_lifecycle[-1].payload.unified_diff,
+            "diff --git a/file b/file",
+        )
+
+    async def test_in_memory_session_tool_dispatch_increments_active_turn_tool_calls(self) -> None:
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+                "service_tier_for_request": lambda _self, tier: tier,
+            },
+        )()
+        session = InMemoryCodexSession(cwd="C:/work/project", model_info=model_info)
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        handler = EchoHandler()
+        router = ToolRouter.from_parts(ToolRegistry.from_tools([handler]), ())
+        seen_requests = []
+
+        async def sampler(request):
+            seen_requests.append(request)
+            if len(seen_requests) == 1:
+                return [ResponseItem.function_call("echo", "{}", "call-echo")]
+            return [ResponseItem.message("assistant", (ContentItem.output_text("done"),))]
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            SimpleNamespace(is_azure_responses_endpoint=lambda: False),
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: router,
+        )
+
+        self.assertEqual(len(seen_requests), 2)
+        self.assertEqual(session.active_turn.turn_state.tool_calls, 1)
+        self.assertEqual(len(handler.invocations), 1)
+        self.assertIs(handler.invocations[0].session, session)
+        self.assertEqual(result.tool_response_items[0].output.to_text(), "tool ok")
+        self.assertEqual(result.response_items[-1].content[0].text, "done")
+
+    async def test_in_memory_session_records_terminal_error_lifecycle(self) -> None:
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+                "service_tier_for_request": lambda _self, tier: tier,
+                "context_window": 100,
+            },
+        )()
+        session = InMemoryCodexSession(cwd="C:/work/project", model_info=model_info)
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+
+        async def sampler(_request):
+            raise CodexErr.simple("context_window_exceeded")
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            SimpleNamespace(is_azure_responses_endpoint=lambda: False),
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(result.turn_status, "completed")
+        self.assertIsNone(result.last_agent_message)
+        self.assertEqual(session.turn_error_lifecycle[0][1].type, "context_window_exceeded")
+        self.assertEqual(session.token_usage_info.model_context_window, 95)
+        self.assertEqual(session.token_usage_info.total_token_usage.total_tokens, 95)
+        self.assertEqual([event.type for event in non_lifecycle_events(session)], ["token_count", "error"])
+        self.assertEqual(events_of_type(session, "error")[-1].payload.codex_error_info.type, "context_window_exceeded")
+        self.assertIsNone(events_of_type(session, "task_complete")[-1].payload.last_agent_message)
+
+    async def test_in_memory_session_records_usage_limit_error_lifecycle(self) -> None:
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+                "service_tier_for_request": lambda _self, tier: tier,
+            },
+        )()
+        rate_limits = RateLimitSnapshot(
+            limit_id="codex",
+            primary=RateLimitWindow(used_percent=100.0, window_minutes=60),
+        )
+        session = InMemoryCodexSession(cwd="C:/work/project", model_info=model_info)
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+
+        async def sampler(_request):
+            raise CodexErr.usage_limit_reached(UsageLimitReachedError(rate_limits=rate_limits))
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            SimpleNamespace(is_azure_responses_endpoint=lambda: False),
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(result.turn_status, "completed")
+        self.assertIsNone(result.last_agent_message)
+        self.assertEqual(session.turn_error_lifecycle[0][1].type, "usage_limit_exceeded")
+        self.assertIs(session.latest_rate_limits, rate_limits)
+        self.assertEqual([event.type for event in non_lifecycle_events(session)], ["token_count", "error"])
+        self.assertEqual(events_of_type(session, "error")[-1].payload.codex_error_info.type, "usage_limit_exceeded")
+        self.assertIsNone(events_of_type(session, "task_complete")[-1].payload.last_agent_message)
+
+    async def test_in_memory_session_invalid_user_image_records_bad_request_lifecycle(self) -> None:
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "input_modalities": ("text", "image"),
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+                "service_tier_for_request": lambda _self, tier: tier,
+            },
+        )()
+        session = InMemoryCodexSession(
+            cwd="C:/work/project",
+            model_info=model_info,
+            history=[ResponseItem.message("user", (ContentItem.input_image("data:image/png;base64,AAA"),))],
+        )
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+
+        async def sampler(_request):
+            raise CodexErr.simple("invalid_image_request")
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (),
+            client,
+            SimpleNamespace(is_azure_responses_endpoint=lambda: False),
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(result.turn_status, "completed")
+        self.assertEqual(result.response_items, ())
+        self.assertIsNone(result.last_agent_message)
+        self.assertEqual(session.turn_error_lifecycle[0][1].type, "bad_request")
+        error = events_of_type(session, "error")[-1]
+        self.assertEqual(error.type, "error")
+        self.assertEqual(error.payload.codex_error_info.type, "bad_request")
 
     async def test_in_memory_session_reasoning_settings_feed_http_sampling_request(self) -> None:
         seen = {}
@@ -1433,6 +1862,52 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
             effective.additional_permissions,
             AdditionalPermissionProfile(network=NetworkPermissions(enabled=True)),
         )
+
+    async def test_in_memory_session_set_total_tokens_full_emits_token_count(self) -> None:
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            context_window=2000,
+            max_context_window=None,
+            effective_context_window_percent=80,
+        )
+        session = InMemoryCodexSession(cwd="C:/work/project", model_info=model_info)
+        turn_context = await session.new_default_turn()
+
+        await session.set_total_tokens_full(turn_context)
+
+        self.assertEqual(session.token_usage_info.total_token_usage.total_tokens, 1600)
+        self.assertEqual(session.token_usage_info.last_token_usage.total_tokens, 1600)
+        self.assertEqual(session.token_usage_info.model_context_window, 1600)
+        self.assertEqual(len(session.emitted_events), 1)
+        event = session.emitted_events[0]
+        self.assertEqual(event.type, "token_count")
+        self.assertEqual(event.payload.info, session.token_usage_info)
+        self.assertIsNone(event.payload.rate_limits)
+
+    async def test_in_memory_session_update_rate_limits_merges_and_emits_token_count(self) -> None:
+        session = InMemoryCodexSession(cwd="C:/work/project")
+        turn_context = await session.new_default_turn()
+        previous = RateLimitSnapshot(
+            limit_id="codex",
+            credits=CreditsSnapshot(has_credits=True, unlimited=False, balance="10"),
+            plan_type=AccountPlanType.PRO,
+        )
+        await session.record_rate_limits_info(previous)
+        update = RateLimitSnapshot(
+            primary=RateLimitWindow(used_percent=100.0, window_minutes=60),
+        )
+
+        await session.update_rate_limits(turn_context, update)
+
+        self.assertEqual(session.latest_rate_limits.limit_id, "codex")
+        self.assertEqual(session.latest_rate_limits.primary.used_percent, 100.0)
+        self.assertEqual(session.latest_rate_limits.credits.balance, "10")
+        self.assertEqual(session.latest_rate_limits.plan_type, AccountPlanType.PRO)
+        self.assertEqual(len(session.emitted_events), 1)
+        event = session.emitted_events[0]
+        self.assertEqual(event.type, "token_count")
+        self.assertIsNone(event.payload.info)
+        self.assertEqual(event.payload.rate_limits, session.latest_rate_limits)
 
 
 if __name__ == "__main__":

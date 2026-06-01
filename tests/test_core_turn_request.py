@@ -40,8 +40,8 @@ class TurnRequestTests(unittest.TestCase):
         self.assertEqual(plan.request["instructions"], "base")
         self.assertEqual(plan.request["tools"], [{"type": "function", "name": "tool"}])
         self.assertEqual(plan.request["service_tier"], "auto")
-        self.assertIn("project instructions", plan.request["input"][0].content[0].text)
-        self.assertEqual(plan.request["input"][1], user)
+        self.assertEqual(plan.request["input"][0], user)
+        self.assertNotIn("project instructions", plan.request["input"][0].content[0].text)
 
     def test_build_turn_responses_request_carries_parallel_tool_calls(self) -> None:
         client = ModelClient(session_id="session", thread_id="thread", installation_id="install")

@@ -9,6 +9,7 @@ from pycodex.core import (
     Cursor,
     SessionIndexEntry,
     SessionMeta,
+    append_event_msg_to_rollout,
     append_response_item_to_rollout,
     append_session_index_entry,
     append_thread_name,
@@ -29,7 +30,9 @@ from pycodex.core import (
     materialize_session_rollout,
     parse_cursor,
     parse_timestamp_uuid_from_filename,
+    read_event_msgs_from_rollout,
     read_head_for_summary,
+    read_model_history_from_rollout,
     read_response_items_from_rollout,
     read_session_meta_line,
     read_thread_item_from_rollout,
@@ -37,6 +40,7 @@ from pycodex.core import (
     session_index_path,
     ThreadSortKey,
 )
+from pycodex.protocol import EventMsg, TurnAbortReason, TurnAbortedEvent
 
 
 def workspace_tempdir():
@@ -217,6 +221,52 @@ class CoreRolloutTests(unittest.TestCase):
         self.assertEqual(count_session_rollout_files(root), 1)
         self.assertIn(marker, path.read_text(encoding="utf-8"))
 
+    def test_append_event_msg_to_rollout_persists_turn_aborted_event(self):
+        root = workspace_tempdir()
+        thread_id = str(uuid.uuid4())
+        path = root / SESSIONS_SUBDIR / "2025" / "01" / "02" / f"rollout-2025-01-02T00-00-00-{thread_id}.jsonl"
+        write_rollout(path, thread_id)
+
+        append_event_msg_to_rollout(
+            path,
+            EventMsg.with_payload(
+                "turn_aborted",
+                TurnAbortedEvent(
+                    turn_id="turn-1",
+                    reason=TurnAbortReason.INTERRUPTED,
+                ),
+            ),
+            timestamp="2025-01-02T00:00:01Z",
+        )
+
+        line = json.loads(path.read_text(encoding="utf-8").splitlines()[-1])
+        self.assertEqual(line["type"], "event_msg")
+        self.assertEqual(line["payload"]["type"], "turn_aborted")
+        self.assertEqual(line["payload"]["turn_id"], "turn-1")
+        self.assertEqual(line["payload"]["reason"], "interrupted")
+        events = read_event_msgs_from_rollout(path)
+        self.assertEqual(events[-1].type, "turn_aborted")
+        self.assertEqual(events[-1].payload.turn_id, "turn-1")
+        self.assertEqual(events[-1].payload.reason, TurnAbortReason.INTERRUPTED)
+
+    def test_read_event_msgs_from_rollout_skips_invalid_lines_and_respects_max_items(self):
+        root = workspace_tempdir()
+        thread_id = str(uuid.uuid4())
+        path = root / SESSIONS_SUBDIR / "2025" / "01" / "02" / f"rollout-2025-01-02T00-00-00-{thread_id}.jsonl"
+        write_rollout(path, thread_id)
+        with path.open("a", encoding="utf-8", newline="\n") as file:
+            file.write("not json\n")
+            file.write(json.dumps({"timestamp": "x", "type": "event_msg", "payload": "bad"}) + "\n")
+            file.write(json.dumps({"timestamp": "x", "type": "response_item", "payload": {"type": "unknown"}}) + "\n")
+            file.write(json.dumps({"timestamp": "x", "type": "event_msg", "payload": {"type": "user_message", "message": "one", "kind": "plain"}}) + "\n")
+            file.write(json.dumps({"timestamp": "x", "type": "event_msg", "payload": {"type": "user_message", "message": "two", "kind": "plain"}}) + "\n")
+
+        self.assertEqual(read_event_msgs_from_rollout(path, max_items=0), ())
+        events = read_event_msgs_from_rollout(path, max_items=1)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].type, "user_message")
+        self.assertEqual(events[0].payload.message, "one")
+
     def test_last_user_image_count_in_rollout_matches_resume_suite_scan(self):
         root = workspace_tempdir()
         thread_id = str(uuid.uuid4())
@@ -303,6 +353,114 @@ class CoreRolloutTests(unittest.TestCase):
         self.assertEqual(items[1].content[0].text, "second")
         self.assertEqual(len(read_response_items_from_rollout(path, max_items=1)), 1)
         self.assertEqual(read_response_items_from_rollout(root / "missing.jsonl"), ())
+
+    def test_read_model_history_from_rollout_applies_compacted_replacement_history(self):
+        root = workspace_tempdir()
+        thread_id = str(uuid.uuid4())
+        path = root / SESSIONS_SUBDIR / "2025" / "01" / "02" / f"rollout-2025-01-02T00-00-00-{thread_id}.jsonl"
+        write_rollout(
+            path,
+            thread_id,
+            [
+                {
+                    "timestamp": "2025-01-02T00:00:00Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "pre compact"}],
+                    },
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:01Z",
+                    "type": "compacted",
+                    "payload": {
+                        "message": "summary",
+                        "replacement_history": [
+                            {
+                                "type": "message",
+                                "role": "user",
+                                "content": [{"type": "input_text", "text": "summary user"}],
+                            },
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "summary assistant"}],
+                            },
+                        ],
+                    },
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:02Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "after compact"}],
+                    },
+                },
+            ],
+        )
+
+        items = read_model_history_from_rollout(path)
+
+        self.assertEqual([item.content[0].text for item in items], ["summary user", "summary assistant", "after compact"])
+
+    def test_read_model_history_from_rollout_applies_thread_rollback_events(self):
+        root = workspace_tempdir()
+        thread_id = str(uuid.uuid4())
+        path = root / SESSIONS_SUBDIR / "2025" / "01" / "02" / f"rollout-2025-01-02T00-00-00-{thread_id}.jsonl"
+        write_rollout(
+            path,
+            thread_id,
+            [
+                {
+                    "timestamp": "2025-01-02T00:00:00Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "keep user"}],
+                    },
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:01Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "keep assistant"}],
+                    },
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:02Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "drop user"}],
+                    },
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:03Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "drop assistant"}],
+                    },
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:04Z",
+                    "type": "event_msg",
+                    "payload": {"type": "thread_rolled_back", "num_turns": 1},
+                },
+            ],
+        )
+
+        items = read_model_history_from_rollout(path)
+
+        self.assertEqual([item.content[0].text for item in items], ["keep user", "keep assistant"])
 
     def test_append_turn_to_rollout_supports_resume_append_file_and_image_evidence(self):
         root = workspace_tempdir()

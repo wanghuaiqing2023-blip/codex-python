@@ -23,12 +23,15 @@ from pycodex.core.attestation import (
 )
 from pycodex.core.client_common import Prompt
 from pycodex.protocol import (
+    AgentMessageItem,
     InternalSessionSource,
+    PlanItem,
     ResponseItem,
     ServiceTier,
     SessionSource,
     SubAgentSource,
     ThreadId,
+    TurnItem,
 )
 
 
@@ -1316,6 +1319,13 @@ class SamplingRuntimeEventApplicationState:
     active_item: Any = None
     active_item_is_streaming_to_client: bool = False
     pending_agent_message_item: Any = None
+    pending_agent_message_items: tuple[Any, ...] = ()
+    started_agent_message_item_ids: tuple[str, ...] = ()
+    leading_whitespace_by_item: tuple[tuple[str, str], ...] = ()
+    plan_item_id: str = "plan"
+    plan_item_started: bool = False
+    plan_item_completed: bool = False
+    plan_events: tuple[dict[str, Any], ...] = ()
     turn_item_started_to_emit: Any = None
     assistant_text_deltas: tuple[dict[str, Any], ...] = ()
     raw_content_deltas: tuple[dict[str, Any], ...] = ()
@@ -1383,6 +1393,29 @@ class SamplingRuntimeEventApplicationState:
             raise TypeError("should_reset_tool_argument_diff_consumer must be a bool")
         if not isinstance(self.active_item_is_streaming_to_client, bool):
             raise TypeError("active_item_is_streaming_to_client must be a bool")
+        if not isinstance(self.pending_agent_message_items, tuple):
+            self.pending_agent_message_items = tuple(self.pending_agent_message_items)
+        if not isinstance(self.started_agent_message_item_ids, tuple):
+            self.started_agent_message_item_ids = tuple(self.started_agent_message_item_ids)
+        for item_id in self.started_agent_message_item_ids:
+            if not isinstance(item_id, str):
+                raise TypeError("started_agent_message_item_ids must contain strings")
+        if not isinstance(self.leading_whitespace_by_item, tuple):
+            self.leading_whitespace_by_item = tuple(self.leading_whitespace_by_item)
+        for item_id, whitespace in self.leading_whitespace_by_item:
+            if not isinstance(item_id, str) or not isinstance(whitespace, str):
+                raise TypeError("leading_whitespace_by_item must contain string pairs")
+        if not isinstance(self.plan_item_id, str):
+            raise TypeError("plan_item_id must be a string")
+        if not isinstance(self.plan_item_started, bool):
+            raise TypeError("plan_item_started must be a bool")
+        if not isinstance(self.plan_item_completed, bool):
+            raise TypeError("plan_item_completed must be a bool")
+        if not isinstance(self.plan_events, tuple):
+            self.plan_events = tuple(self.plan_events)
+        for event in self.plan_events:
+            if not isinstance(event, dict):
+                raise TypeError("plan_events must contain dict values")
         if not isinstance(self.assistant_text_deltas, tuple):
             self.assistant_text_deltas = tuple(self.assistant_text_deltas)
         for delta in self.assistant_text_deltas:
@@ -1433,6 +1466,13 @@ class SamplingRuntimeEventApplicationState:
             "active_item": self.active_item,
             "active_item_is_streaming_to_client": self.active_item_is_streaming_to_client,
             "pending_agent_message_item": self.pending_agent_message_item,
+            "pending_agent_message_items": self.pending_agent_message_items,
+            "started_agent_message_item_ids": self.started_agent_message_item_ids,
+            "leading_whitespace_by_item": self.leading_whitespace_by_item,
+            "plan_item_id": self.plan_item_id,
+            "plan_item_started": self.plan_item_started,
+            "plan_item_completed": self.plan_item_completed,
+            "plan_events": self.plan_events,
             "turn_item_started_to_emit": self.turn_item_started_to_emit,
             "assistant_text_deltas": self.assistant_text_deltas,
             "raw_content_deltas": self.raw_content_deltas,
@@ -1677,6 +1717,16 @@ def _apply_sampling_event_plan_to_state(
         state.should_emit_turn_diff = state.should_emit_turn_diff or getattr(completed, "should_emit_turn_diff", False)
         if getattr(completed, "should_record_token_usage", False):
             state.token_usage_to_record = getattr(completed, "token_usage_to_record", None)
+        flush_all = getattr(completed, "flush_all_plan", None)
+        for item_plan in tuple(getattr(flush_all, "item_plans", ()) or ()):
+            streamed = _streamed_assistant_text_plan_from_flush_item(
+                item_plan,
+                thread_id=getattr(completed, "thread_id", ""),
+                turn_id=getattr(completed, "turn_id", ""),
+            )
+            if streamed is None:
+                continue
+            _apply_streamed_assistant_text_plan_to_state(streamed, state)
 
     metadata = getattr(plan, "metadata_event_apply_plan", None)
     if metadata is not None:
@@ -1745,6 +1795,10 @@ def _apply_sampling_event_plan_to_state(
         pending_agent_message_item = getattr(output_added, "pending_agent_message_item", None)
         if pending_agent_message_item is not None:
             state.pending_agent_message_item = pending_agent_message_item
+            state.pending_agent_message_items = _replace_pending_turn_item(
+                state.pending_agent_message_items,
+                pending_agent_message_item,
+            )
         turn_item_started_to_emit = getattr(output_added, "turn_item_started_to_emit", None)
         if turn_item_started_to_emit is not None:
             state.turn_item_started_to_emit = turn_item_started_to_emit
@@ -1758,9 +1812,7 @@ def _apply_sampling_event_plan_to_state(
         )
         seeded = getattr(output_added, "seeded_streamed_assistant_text_plan", None)
         if seeded is not None:
-            state.assistant_text_deltas = state.assistant_text_deltas + (
-                _streamed_assistant_text_delta_record(seeded),
-            )
+            _apply_streamed_assistant_text_plan_to_state(seeded, state)
 
     output_text = getattr(plan, "output_text_delta_apply_plan", None)
     if output_text is not None:
@@ -1772,17 +1824,22 @@ def _apply_sampling_event_plan_to_state(
         state.output_text_delta_events = state.output_text_delta_events + (output_text_record,)
         streamed = getattr(output_text, "streamed_assistant_text_plan", None)
         if streamed is not None:
-            state.assistant_text_deltas = state.assistant_text_deltas + (
-                _streamed_assistant_text_delta_record(streamed),
-            )
+            _apply_streamed_assistant_text_plan_to_state(streamed, state)
         raw_content_delta = getattr(output_text, "raw_content_delta", None)
         if raw_content_delta is not None:
-            state.raw_content_deltas = state.raw_content_deltas + (
-                {
+            record = {
+                "item_id": getattr(output_text, "item_id", None),
+                "raw_content_delta": raw_content_delta,
+                "event_to_emit": {
+                    "type": "agent_message_content_delta",
+                    "thread_id": getattr(output_text, "thread_id", ""),
+                    "turn_id": getattr(output_text, "turn_id", ""),
                     "item_id": getattr(output_text, "item_id", None),
-                    "raw_content_delta": raw_content_delta,
+                    "delta": raw_content_delta,
                 },
-            )
+            }
+            state.raw_content_deltas = state.raw_content_deltas + (record,)
+            state.emitted_stream_events = state.emitted_stream_events + (record["event_to_emit"],)
 
     tool_delta = getattr(plan, "tool_call_input_delta_apply_plan", None)
     if tool_delta is not None:
@@ -1827,6 +1884,18 @@ def _apply_sampling_event_plan_to_state(
             state.preempt_for_mailbox_mail or getattr(output_done, "preempt_for_mailbox_mail", False)
         )
         output_result = getattr(output_done, "output_result", None)
+        streamed = getattr(output_done, "streamed_assistant_text_plan", None)
+        if streamed is not None:
+            _apply_streamed_assistant_text_plan_to_state(streamed, state)
+        plan_done = getattr(output_done, "plan_mode_assistant_done_plan", None)
+        if plan_done is not None:
+            transition = getattr(output_done, "transition_plan", None)
+            _apply_plan_mode_assistant_done_plan_to_state(
+                plan_done,
+                state,
+                thread_id=getattr(transition, "thread_id", ""),
+                turn_id=getattr(transition, "turn_id", ""),
+            )
         if output_result is not None:
             state.output_result = output_result
             state.result_needs_follow_up = getattr(output_result, "needs_follow_up", state.result_needs_follow_up)
@@ -1865,13 +1934,308 @@ def _apply_sampling_event_plan_to_state(
 
 
 def _streamed_assistant_text_delta_record(plan: Any) -> dict[str, Any]:
-    return {
+    record = {
         "item_id": getattr(plan, "item_id", None),
         "visible_text_delta": getattr(plan, "visible_text_delta", None),
         "has_plan_segments_plan": getattr(plan, "plan_segments_plan", None) is not None,
         "citations": getattr(plan, "citations", ()),
         "ignored_citations": getattr(plan, "ignored_citations", False),
     }
+    visible_text_delta = getattr(plan, "visible_text_delta", None)
+    if isinstance(visible_text_delta, str) and visible_text_delta:
+        record["event_to_emit"] = {
+            "type": "agent_message_content_delta",
+            "thread_id": getattr(plan, "thread_id", ""),
+            "turn_id": getattr(plan, "turn_id", ""),
+            "item_id": getattr(plan, "item_id", None),
+            "delta": visible_text_delta,
+        }
+    return record
+
+
+def _apply_streamed_assistant_text_plan_to_state(
+    plan: Any,
+    state: SamplingRuntimeEventApplicationState,
+) -> None:
+    record = _streamed_assistant_text_delta_record(plan)
+    state.assistant_text_deltas = state.assistant_text_deltas + (record,)
+    event_to_emit = record.get("event_to_emit")
+    if event_to_emit is not None:
+        state.emitted_stream_events = state.emitted_stream_events + (event_to_emit,)
+    segments_plan = getattr(plan, "plan_segments_plan", None)
+    if segments_plan is not None:
+        _apply_plan_segments_plan_to_state(
+            segments_plan,
+            state,
+            thread_id=getattr(plan, "thread_id", ""),
+            turn_id=getattr(plan, "turn_id", ""),
+        )
+
+
+def _apply_plan_segments_plan_to_state(
+    segments_plan: Any,
+    state: SamplingRuntimeEventApplicationState,
+    *,
+    thread_id: str,
+    turn_id: str,
+) -> None:
+    for action in tuple(getattr(segments_plan, "actions", ()) or ()):
+        action_type = getattr(action, "action_type", None)
+        item_id = getattr(action, "item_id", None)
+        delta = getattr(action, "delta", None)
+        if action_type == "emit_pending_agent_message_start":
+            turn_item = _pop_pending_turn_item(state, item_id)
+            if turn_item is not None:
+                _append_stream_event(state, _item_lifecycle_event("item_started", thread_id, turn_id, turn_item))
+                state.started_agent_message_item_ids = _sorted_str_tuple(
+                    (*state.started_agent_message_item_ids, item_id)
+                )
+        elif action_type == "agent_message_delta":
+            if isinstance(item_id, str) and isinstance(delta, str) and delta:
+                _append_stream_event(
+                    state,
+                    {
+                        "type": "agent_message_content_delta",
+                        "thread_id": thread_id,
+                        "turn_id": turn_id,
+                        "item_id": item_id,
+                        "delta": delta,
+                    },
+                )
+        elif action_type == "start_plan_item":
+            if isinstance(item_id, str):
+                state.plan_item_id = item_id
+                state.plan_item_started = True
+                _append_stream_event(
+                    state,
+                    _item_lifecycle_event(
+                        "item_started",
+                        thread_id,
+                        turn_id,
+                        TurnItem.plan(PlanItem(id=item_id, text="")),
+                    ),
+                )
+        elif action_type == "plan_delta":
+            if isinstance(item_id, str) and isinstance(delta, str) and delta:
+                _append_stream_event(
+                    state,
+                    {
+                        "type": "plan_delta",
+                        "thread_id": thread_id,
+                        "turn_id": turn_id,
+                        "item_id": item_id,
+                        "delta": delta,
+                    },
+                )
+    leading = getattr(segments_plan, "leading_whitespace_by_item_after", ())
+    state.leading_whitespace_by_item = tuple(leading or ())
+    state.plan_item_started = getattr(segments_plan, "plan_item_started_after", state.plan_item_started)
+    state.plan_item_completed = getattr(segments_plan, "plan_item_completed_after", state.plan_item_completed)
+
+
+def _apply_plan_mode_assistant_done_plan_to_state(
+    plan: Any,
+    state: SamplingRuntimeEventApplicationState,
+    *,
+    thread_id: str = "",
+    turn_id: str = "",
+) -> None:
+    completion = getattr(plan, "proposed_plan_completion_plan", None)
+    if not thread_id:
+        thread_id = _event_thread_id_from_state(state)
+    if not turn_id:
+        turn_id = _event_turn_id_from_state(state)
+    if completion is not None:
+        item_id = getattr(completion, "plan_item_id", state.plan_item_id)
+        plan_text = getattr(completion, "plan_text", "")
+        if getattr(completion, "should_start_plan_item", False):
+            _append_stream_event(
+                state,
+                _item_lifecycle_event(
+                    "item_started",
+                    thread_id,
+                    turn_id,
+                    TurnItem.plan(PlanItem(id=item_id, text="")),
+                ),
+            )
+        if getattr(completion, "should_complete_plan_item", False):
+            _append_stream_event(
+                state,
+                _item_lifecycle_event(
+                    "item_completed",
+                    thread_id,
+                    turn_id,
+                    TurnItem.plan(PlanItem(id=item_id, text=plan_text)),
+                ),
+            )
+        state.plan_item_id = item_id
+        state.plan_item_started = getattr(completion, "plan_item_started_after", state.plan_item_started)
+        state.plan_item_completed = getattr(completion, "plan_item_completed_after", state.plan_item_completed)
+
+    turn_item_emit = getattr(plan, "turn_item_emit_plan", None)
+    if turn_item_emit is not None:
+        _apply_plan_mode_turn_item_emit_plan_to_state(turn_item_emit, state, thread_id=thread_id, turn_id=turn_id)
+    if getattr(plan, "should_update_last_agent_message", False):
+        state.result_last_agent_message = getattr(plan, "last_agent_message", state.result_last_agent_message)
+
+
+def _apply_plan_mode_turn_item_emit_plan_to_state(
+    plan: Any,
+    state: SamplingRuntimeEventApplicationState,
+    *,
+    thread_id: str,
+    turn_id: str,
+) -> None:
+    turn_item = getattr(plan, "turn_item", None)
+    agent_plan = getattr(plan, "agent_message_plan", None)
+    if agent_plan is not None:
+        if getattr(agent_plan, "should_drop_empty_agent_message", False):
+            _remove_pending_turn_item(state, getattr(agent_plan, "item_id", None))
+            state.started_agent_message_item_ids = tuple(
+                item_id
+                for item_id in state.started_agent_message_item_ids
+                if item_id != getattr(agent_plan, "item_id", None)
+            )
+            return
+        pending_start = getattr(agent_plan, "pending_start_plan", None)
+        if pending_start is not None:
+            start_item = getattr(pending_start, "turn_item_to_start", None)
+            if isinstance(start_item, TurnItem):
+                _append_stream_event(state, _item_lifecycle_event("item_started", thread_id, turn_id, start_item))
+                _remove_pending_turn_item(state, getattr(pending_start, "item_id", None))
+        fallback = getattr(agent_plan, "fallback_start_item", None)
+        if isinstance(fallback, TurnItem):
+            _append_stream_event(state, _item_lifecycle_event("item_started", thread_id, turn_id, fallback))
+        if getattr(agent_plan, "should_emit_completed", False) and isinstance(turn_item, TurnItem):
+            _append_stream_event(state, _item_lifecycle_event("item_completed", thread_id, turn_id, turn_item))
+        state.started_agent_message_item_ids = tuple(getattr(agent_plan, "started_agent_message_item_ids_after", ()))
+        remaining = set(getattr(agent_plan, "pending_agent_message_item_ids_after", ()))
+        state.pending_agent_message_items = tuple(
+            item for item in state.pending_agent_message_items if _turn_item_id(item) in remaining
+        )
+        return
+    if isinstance(turn_item, TurnItem):
+        if getattr(plan, "should_emit_started", False):
+            _append_stream_event(state, _item_lifecycle_event("item_started", thread_id, turn_id, turn_item))
+        if getattr(plan, "should_emit_completed", False):
+            _append_stream_event(state, _item_lifecycle_event("item_completed", thread_id, turn_id, turn_item))
+
+
+def _append_stream_event(state: SamplingRuntimeEventApplicationState, event: dict[str, Any]) -> None:
+    state.emitted_stream_events = state.emitted_stream_events + (event,)
+    if event.get("type") in {"plan_delta", "item_started", "item_completed"}:
+        state.plan_events = state.plan_events + (event,)
+
+
+def _item_lifecycle_event(event_type: str, thread_id: str, turn_id: str, item: TurnItem) -> dict[str, Any]:
+    return {
+        "type": event_type,
+        "thread_id": thread_id,
+        "turn_id": turn_id,
+        "item": item.to_mapping(),
+        "started_at_ms": 0,
+        "completed_at_ms": 0,
+    }
+
+
+def _replace_pending_turn_item(pending_items: Sequence[Any], item: Any) -> tuple[Any, ...]:
+    item_id = _turn_item_id(item)
+    if item_id is None:
+        return tuple(pending_items)
+    kept = tuple(candidate for candidate in pending_items if _turn_item_id(candidate) != item_id)
+    return kept + (item,)
+
+
+def _remove_pending_turn_item(state: SamplingRuntimeEventApplicationState, item_id: Any) -> None:
+    if not isinstance(item_id, str):
+        return
+    state.pending_agent_message_items = tuple(
+        item for item in state.pending_agent_message_items if _turn_item_id(item) != item_id
+    )
+    current = state.pending_agent_message_item
+    if _turn_item_id(current) == item_id:
+        state.pending_agent_message_item = None
+
+
+def _pop_pending_turn_item(state: SamplingRuntimeEventApplicationState, item_id: Any) -> TurnItem | None:
+    if not isinstance(item_id, str):
+        return None
+    for item in state.pending_agent_message_items:
+        if _turn_item_id(item) == item_id and isinstance(item, TurnItem):
+            _remove_pending_turn_item(state, item_id)
+            return item
+    current = state.pending_agent_message_item
+    if _turn_item_id(current) == item_id and isinstance(current, TurnItem):
+        _remove_pending_turn_item(state, item_id)
+        return current
+    return None
+
+
+def _turn_item_id(item: Any) -> str | None:
+    if isinstance(item, TurnItem):
+        return item.id()
+    item_id = getattr(item, "id", None)
+    return item_id if isinstance(item_id, str) else None
+
+
+def _sorted_str_tuple(values: Sequence[Any]) -> tuple[str, ...]:
+    return tuple(sorted({value for value in values if isinstance(value, str)}))
+
+
+def _event_thread_id_from_state(state: SamplingRuntimeEventApplicationState) -> str:
+    for event in reversed(state.emitted_stream_events):
+        if isinstance(event, Mapping) and isinstance(event.get("thread_id"), str):
+            return event["thread_id"]
+    return ""
+
+
+def _event_turn_id_from_state(state: SamplingRuntimeEventApplicationState) -> str:
+    for event in reversed(state.emitted_stream_events):
+        if isinstance(event, Mapping) and isinstance(event.get("turn_id"), str):
+            return event["turn_id"]
+    return ""
+
+
+def _streamed_assistant_text_plan_from_flush_item(
+    item_plan: Any,
+    *,
+    thread_id: str = "",
+    turn_id: str = "",
+) -> Any:
+    parsed = getattr(item_plan, "parsed", None)
+    visible_text = _parsed_field_for_client(parsed, "visible_text", "")
+    if visible_text is None:
+        visible_text = ""
+    citations = _parsed_str_sequence_field_for_client(parsed, "citations")
+    if not isinstance(visible_text, str) or (visible_text == "" and not citations):
+        return None
+    from pycodex.core.stream_events_utils import SamplingStreamedAssistantTextDeltaPlan
+
+    return SamplingStreamedAssistantTextDeltaPlan(
+        item_id=getattr(item_plan, "item_id", ""),
+        visible_text_delta=visible_text if visible_text else None,
+        citations=citations,
+        ignored_citations=bool(citations),
+        thread_id=thread_id,
+        turn_id=turn_id,
+    )
+
+
+def _parsed_field_for_client(parsed: Any, name: str, default: Any) -> Any:
+    if isinstance(parsed, Mapping):
+        return parsed.get(name, default)
+    return getattr(parsed, name, default)
+
+
+def _parsed_str_sequence_field_for_client(parsed: Any, name: str) -> tuple[str, ...]:
+    value = _parsed_field_for_client(parsed, name, ())
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        return tuple(str(item) for item in value)
+    return ()
 
 
 def _sampling_result_from_event_application_state(

@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from pycodex.exec import (
     DEFAULT_ANALYTICS_ENABLED,
@@ -207,6 +208,17 @@ class ExecConfigPlanTests(unittest.TestCase):
             SandboxMode.WORKSPACE_WRITE.value,
         )
         self.assertTrue(config.ephemeral)
+        self.assertFalse(config.show_raw_agent_reasoning)
+
+    def test_exec_session_config_projects_oss_raw_reasoning_override(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cli = parse_exec_args(["--oss", "--local-provider", "lmstudio", "prompt"])
+            plan = build_exec_config_bootstrap_plan(cli, current_dir=root)
+
+        config = exec_session_config_from_bootstrap_plan(plan)
+
+        self.assertTrue(config.show_raw_agent_reasoning)
 
     def test_exec_session_config_preserves_multiple_add_dir_workspace_roots(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -288,14 +300,18 @@ class ExecConfigPlanTests(unittest.TestCase):
             project = root / "project"
             project.mkdir()
 
-            blocked = exec_trusted_directory_check(parse_exec_args(["-C", "project", "prompt"]), project)
-            skipped = exec_trusted_directory_check(parse_exec_args(["--skip-git-repo-check", "-C", "project", "prompt"]), project)
-            yolo = exec_trusted_directory_check(
-                parse_exec_args(["--dangerously-bypass-approvals-and-sandbox", "-C", "project", "prompt"]),
+            with patch("pycodex.exec.config_plan.get_git_repo_root", return_value=None):
+                blocked = exec_trusted_directory_check(parse_exec_args(["-C", "project", "prompt"]), project)
+                skipped = exec_trusted_directory_check(parse_exec_args(["--skip-git-repo-check", "-C", "project", "prompt"]), project)
+                yolo = exec_trusted_directory_check(
+                    parse_exec_args(["--dangerously-bypass-approvals-and-sandbox", "-C", "project", "prompt"]),
+                    project,
+                )
+            allowed = exec_trusted_directory_check(
+                parse_exec_args(["-C", "project", "prompt"]),
                 project,
+                git_repo_root=project,
             )
-            (project / ".git").mkdir()
-            allowed = exec_trusted_directory_check(parse_exec_args(["-C", "project", "prompt"]), project)
 
         self.assertFalse(blocked.allowed)
         self.assertEqual(blocked.message, EXEC_UNTRUSTED_DIRECTORY_MESSAGE)
@@ -310,7 +326,8 @@ class ExecConfigPlanTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             project = Path(tmpdir) / "project"
             project.mkdir()
-            blocked = exec_trusted_directory_check(parse_exec_args(["-C", "project", "prompt"]), project)
+            with patch("pycodex.exec.config_plan.get_git_repo_root", return_value=None):
+                blocked = exec_trusted_directory_check(parse_exec_args(["-C", "project", "prompt"]), project)
 
         with self.assertRaisesRegex(ExecConfigPlanError, "--skip-git-repo-check"):
             ensure_exec_trusted_directory(blocked)
@@ -491,12 +508,13 @@ class ExecConfigPlanTests(unittest.TestCase):
             root = Path(tmpdir)
             project = root / "project"
             project.mkdir()
-            blocked = build_exec_runtime_request_sequence(
-                parse_exec_args(["-C", "project", "Summarize"]),
-                config_toml={"model": "gpt-config", "model_provider": "openai"},
-                current_dir=root,
-                stdin_is_terminal=True,
-            )
+            with patch("pycodex.exec.config_plan.get_git_repo_root", return_value=None):
+                blocked = build_exec_runtime_request_sequence(
+                    parse_exec_args(["-C", "project", "Summarize"]),
+                    config_toml={"model": "gpt-config", "model_provider": "openai"},
+                    current_dir=root,
+                    stdin_is_terminal=True,
+                )
             allowed = build_exec_runtime_request_sequence(
                 parse_exec_args(["--skip-git-repo-check", "-C", "project", "Summarize"]),
                 config_toml={"model": "gpt-config", "model_provider": "openai"},

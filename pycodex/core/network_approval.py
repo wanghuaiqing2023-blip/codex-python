@@ -17,10 +17,6 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
-from pycodex.core.network_policy_decision import (
-    BlockedRequest,
-    denied_network_policy_message,
-)
 from pycodex.protocol import (
     AskForApproval,
     NetworkApprovalProtocol,
@@ -318,6 +314,16 @@ class CancellationToken:
     def is_cancelled(self) -> bool:
         return self._event.is_set()
 
+    async def cancelled(self) -> None:
+        while not self._event.is_set():
+            await _sleep_cancel_poll()
+
+
+async def _sleep_cancel_poll() -> None:
+    import asyncio
+
+    await asyncio.sleep(0.05)
+
 
 class PendingHostApproval:
     def __init__(self) -> None:
@@ -485,8 +491,10 @@ class NetworkApprovalService:
 
     def record_blocked_request(
         self,
-        blocked: BlockedRequest | Mapping[str, JsonValue],
+        blocked: Any | Mapping[str, JsonValue],
     ) -> None:
+        from pycodex.core.network_policy_decision import denied_network_policy_message
+
         message = denied_network_policy_message(blocked)
         if message is not None:
             self.record_outcome_for_single_active_call(

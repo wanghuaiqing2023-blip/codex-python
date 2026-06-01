@@ -1380,6 +1380,7 @@ def exec_session_config_from_bootstrap_plan(plan: ExecConfigBootstrapPlan) -> Ex
             (cwd, *harness.additional_writable_roots),
         ),
         ephemeral=bool(harness.ephemeral),
+        show_raw_agent_reasoning=bool(harness.show_raw_agent_reasoning),
     )
 
 
@@ -1599,6 +1600,8 @@ def _exec_session_config_to_mapping(config: ExecSessionConfig) -> dict[str, Json
         "approvalPolicy": _enum_value(config.approval_policy),
         "permissionProfile": config.permission_profile.to_mapping(),
         "ephemeral": config.ephemeral,
+        "hideAgentReasoning": config.hide_agent_reasoning,
+        "showRawAgentReasoning": config.show_raw_agent_reasoning,
     }
 
 

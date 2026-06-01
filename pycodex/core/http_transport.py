@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import json
+import math
 import os
+import re
+import inspect
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -22,13 +26,24 @@ from pycodex.core.client import (
 )
 from pycodex.core.turn_sampler import PreparedSamplingRequest, PreparedSamplingResult
 from pycodex.core.turn_sampler import sample_with_model_client_session
+from pycodex.core.turn_sampler import sample_with_model_client_session_retries
 from pycodex.core.turn_runtime import BuiltToolsFn, SamplerFn, UserTurnSamplingResult
 from pycodex.core.turn_runtime import run_user_turn_sampling_from_session
-from pycodex.protocol import UserInput
+from pycodex.protocol import AuthPlanType, CodexErr, CodexErrorInfo, ConnectionFailedError, ContentItem, CreditsSnapshot
+from pycodex.protocol import EventMsg, StreamErrorEvent, WarningEvent
+from pycodex.protocol import ModelVerification
+from pycodex.protocol import RateLimitReachedType, RateLimitSnapshot, RateLimitWindow
+from pycodex.protocol import ResponseStreamFailed, RetryLimitReachedError
+from pycodex.protocol import UnexpectedResponseError, UsageLimitReachedError, UserInput
 from pycodex.protocol import ResponseItem
 
 CODEX_EXEC_ORIGINATOR = "codex_exec"
 CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR = "CODEX_INTERNAL_ORIGINATOR_OVERRIDE"
+OPENAI_MODEL_HEADER = "openai-model"
+X_REASONING_INCLUDED_HEADER = "x-reasoning-included"
+X_MODELS_ETAG_HEADER = "x-models-etag"
+DEFAULT_STREAM_MAX_RETRIES = 5
+MAX_STREAM_MAX_RETRIES = 100
 
 
 @dataclass(frozen=True)
@@ -90,20 +105,418 @@ def send_prepared_http_sampling_request(
     try:
         response = open_fn(request, timeout=config.timeout) if config.timeout is not None else open_fn(request)
     except HTTPError as exc:
-        raise RuntimeError(_http_error_message(exc)) from exc
+        raise _codex_err_from_http_error(exc) from exc
+    except TimeoutError as exc:
+        raise CodexErr.simple("request_timeout") from exc
     except URLError as exc:
-        reason = getattr(exc, "reason", exc)
-        raise RuntimeError(f"Responses API request failed: {reason}") from exc
+        raise _codex_err_from_url_error(exc) from exc
+    headers = _response_headers(response)
     with response:
-        payload = response.read()
-    decoded = json.loads(payload.decode("utf-8"))
+        try:
+            payload = response.read()
+        except OSError as exc:
+            raise CodexErr.response_stream_failed(ResponseStreamFailed(str(exc))) from exc
+    try:
+        decoded = json.loads(payload.decode("utf-8"))
+    except UnicodeDecodeError as exc:
+        raise CodexErr.response_stream_failed(ResponseStreamFailed(str(exc))) from exc
+    except json.JSONDecodeError:
+        return _prepared_sampling_result_from_sse(prepared, payload, headers=headers)
+    payload_error = _codex_err_from_responses_payload(decoded)
+    if payload_error is not None:
+        raise payload_error
     response_items = response_items_from_responses_payload(decoded)
     return PreparedSamplingResult(
         prepared_request=prepared.prepared_request,
         response_items=response_items,
         raw_result=decoded,
         mode=prepared.mode,
+        rate_limits=_parse_all_rate_limits(headers),
+        server_model=_non_empty_header(headers, OPENAI_MODEL_HEADER),
+        server_models=tuple(_single_optional(_non_empty_header(headers, OPENAI_MODEL_HEADER))),
+        server_reasoning_included=_server_reasoning_included(headers),
+        models_etag=_non_empty_header(headers, X_MODELS_ETAG_HEADER),
+        end_turn=decoded.get("end_turn") if isinstance(decoded.get("end_turn"), bool) else None,
+        stream_events=(),
     )
+
+
+def _prepared_sampling_result_from_sse(
+    prepared: PreparedSamplingRequest,
+    payload: bytes,
+    *,
+    headers: Any = None,
+) -> PreparedSamplingResult:
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise CodexErr.response_stream_failed(ResponseStreamFailed(str(exc))) from exc
+    parsed = _parse_responses_sse_stream(text)
+    return PreparedSamplingResult(
+        prepared_request=prepared.prepared_request,
+        response_items=parsed["response_items"],
+        raw_result=parsed["raw_result"],
+        mode=prepared.mode,
+        rate_limits=_parse_all_rate_limits(headers),
+        server_model=parsed.get("server_model") or _non_empty_header(headers, OPENAI_MODEL_HEADER),
+        server_models=tuple(parsed.get("server_models") or _single_optional(_non_empty_header(headers, OPENAI_MODEL_HEADER))),
+        server_reasoning_included=_server_reasoning_included(headers),
+        models_etag=_non_empty_header(headers, X_MODELS_ETAG_HEADER),
+        model_verifications=tuple(parsed.get("model_verifications") or ()),
+        end_turn=parsed.get("end_turn") if isinstance(parsed.get("end_turn"), bool) else None,
+        stream_events=tuple(parsed.get("stream_events") or ()),
+    )
+
+
+def _parse_responses_sse_stream(text: str) -> dict[str, Any]:
+    events = tuple(_iter_sse_json_events(text))
+    if not events:
+        raise CodexErr.response_stream_failed(ResponseStreamFailed("stream closed before response.completed"))
+
+    response_items: list[ResponseItem] = []
+    completed_response: Mapping[str, Any] | None = None
+    completed_event: Mapping[str, Any] | None = None
+    server_models: list[str] = []
+    model_verifications: list[ModelVerification] = []
+    stream_events: list[dict[str, Any]] = []
+    active_delta_message: dict[str, Any] | None = None
+    active_delta_index: int | None = None
+    for event in events:
+        response_event = _response_event_from_sse_event(event)
+        if response_event is not None:
+            stream_events.append(response_event)
+        server_model = _sse_response_model(event)
+        if server_model is not None and (not server_models or server_models[-1] != server_model):
+            server_models.append(server_model)
+        for verification in _sse_model_verifications(event):
+            if verification not in model_verifications:
+                model_verifications.append(verification)
+        event_type = event.get("type")
+        if event_type == "response.output_item.done":
+            item = event.get("item") or event.get("output_item")
+            if isinstance(item, Mapping):
+                done_item = _sse_response_item_or_none(item)
+                if done_item is None:
+                    continue
+                if (
+                    active_delta_message is not None
+                    and active_delta_index is not None
+                    and _sse_done_replaces_active_delta(done_item, active_delta_message)
+                ):
+                    response_items[active_delta_index] = done_item
+                else:
+                    response_items.append(done_item)
+                active_delta_message = None
+                active_delta_index = None
+        elif event_type == "response.output_item.added":
+            item = event.get("item") or event.get("output_item")
+            active_delta_index = None
+            added_item = _sse_response_item_or_none(item)
+            active_delta_message = _sse_delta_message_seed(item) if added_item is not None else None
+            if added_item is not None and active_delta_message is not None:
+                response_items.append(
+                    ResponseItem.message(
+                        str(active_delta_message.get("role") or "assistant"),
+                        (ContentItem.output_text(str(active_delta_message.get("text") or "")),),
+                        id=active_delta_message.get("id") if isinstance(active_delta_message.get("id"), str) else None,
+                    )
+                )
+                active_delta_index = len(response_items) - 1
+        elif event_type == "response.output_text.delta":
+            delta = event.get("delta")
+            if isinstance(delta, str) and active_delta_message is not None and active_delta_index is not None:
+                active_delta_message["text"] = str(active_delta_message.get("text") or "") + delta
+                response_items[active_delta_index] = ResponseItem.message(
+                    str(active_delta_message.get("role") or "assistant"),
+                    (ContentItem.output_text(str(active_delta_message.get("text") or "")),),
+                    id=active_delta_message.get("id") if isinstance(active_delta_message.get("id"), str) else None,
+                )
+        elif event_type == "response.completed":
+            response = event.get("response")
+            if isinstance(response, Mapping):
+                _validate_sse_completed_response(response)
+                completed_event = event
+                completed_response = response
+        elif event_type == "response.incomplete":
+            raise CodexErr.stream(_sse_incomplete_message(event))
+        elif event_type == "response.failed":
+            mapped = _codex_err_from_responses_payload(event)
+            if mapped is None:
+                response = event.get("response")
+                mapped = _codex_err_from_responses_payload(response) if isinstance(response, Mapping) else None
+            if mapped is not None:
+                raise mapped
+            raise CodexErr.stream(_sse_failed_message(event))
+        elif event_type in {"error", "response.error"}:
+            mapped = _codex_err_from_responses_payload(event)
+            if mapped is not None:
+                raise mapped
+            raise CodexErr.response_stream_failed(ResponseStreamFailed(_sse_error_message(event)))
+
+    if completed_response is None:
+        raise CodexErr.response_stream_failed(ResponseStreamFailed("stream closed before response.completed"))
+
+    if not response_items:
+        try:
+            response_items = list(response_items_from_responses_payload(completed_response))
+        except (KeyError, TypeError, ValueError):
+            response_items = []
+
+    raw_result = dict(completed_response)
+    if _responses_output_is_empty(raw_result.get("output")):
+        raw_result["output"] = [item.to_mapping() for item in response_items]
+    if completed_event is not None and "type" not in raw_result:
+        raw_result["type"] = completed_event.get("type")
+    return {
+        "response_items": tuple(response_items),
+        "raw_result": raw_result,
+        "server_model": server_models[-1] if server_models else None,
+        "server_models": tuple(server_models),
+        "model_verifications": tuple(model_verifications),
+        "end_turn": completed_response.get("end_turn") if isinstance(completed_response.get("end_turn"), bool) else None,
+        "stream_events": tuple(stream_events),
+    }
+
+
+def _response_event_from_sse_event(event: Mapping[str, Any]) -> dict[str, Any] | None:
+    event_type = event.get("type")
+    if event_type == "response.output_item.done":
+        item = event.get("item") or event.get("output_item")
+        done_item = _sse_response_item_or_none(item)
+        if done_item is not None:
+            return {"type": "output_item_done", "item": done_item}
+    if event_type == "response.output_item.added":
+        item = event.get("item") or event.get("output_item")
+        added_item = _sse_response_item_or_none(item)
+        if added_item is not None:
+            return {"type": "output_item_added", "item": added_item}
+    if event_type == "response.output_text.delta":
+        delta = event.get("delta")
+        if isinstance(delta, str):
+            return {"type": "output_text_delta", "delta": delta}
+    if event_type == "response.custom_tool_call_input.delta":
+        delta = event.get("delta")
+        item_id = event.get("item_id") or event.get("call_id")
+        if isinstance(delta, str) and isinstance(item_id, str):
+            result: dict[str, Any] = {"type": "tool_call_input_delta", "item_id": item_id, "delta": delta}
+            if isinstance(event.get("call_id"), str):
+                result["call_id"] = event["call_id"]
+            return result
+    if event_type == "response.reasoning_summary_text.delta":
+        delta = event.get("delta")
+        summary_index = event.get("summary_index")
+        if isinstance(delta, str) and isinstance(summary_index, int) and not isinstance(summary_index, bool):
+            return {"type": "reasoning_summary_delta", "delta": delta, "summary_index": summary_index}
+    if event_type == "response.reasoning_text.delta":
+        delta = event.get("delta")
+        content_index = event.get("content_index")
+        if isinstance(delta, str) and isinstance(content_index, int) and not isinstance(content_index, bool):
+            return {"type": "reasoning_content_delta", "delta": delta, "content_index": content_index}
+    if event_type == "response.reasoning_summary_part.added":
+        summary_index = event.get("summary_index")
+        if isinstance(summary_index, int) and not isinstance(summary_index, bool):
+            return {"type": "reasoning_summary_part_added", "summary_index": summary_index}
+    if event_type == "response.created" and isinstance(event.get("response"), Mapping):
+        return {"type": "created"}
+    if event_type == "response.completed":
+        response = event.get("response")
+        if isinstance(response, Mapping):
+            _validate_sse_completed_response(response)
+            return {
+                "type": "completed",
+                "response_id": response["id"],
+                "token_usage": response.get("usage"),
+                "end_turn": response.get("end_turn") if isinstance(response.get("end_turn"), bool) else None,
+            }
+    return None
+
+
+def _iter_sse_json_events(text: str) -> tuple[Mapping[str, Any], ...]:
+    events: list[Mapping[str, Any]] = []
+    data_lines: list[str] = []
+    event_name: str | None = None
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip("\r")
+        if not line:
+            _append_sse_event(events, data_lines, event_name)
+            data_lines = []
+            event_name = None
+            continue
+        if line.startswith(":"):
+            continue
+        if line.startswith("event:"):
+            event_name = line[6:].strip() or None
+        if line.startswith("data:"):
+            data_lines.append(line[5:].lstrip(" "))
+    _append_sse_event(events, data_lines, event_name)
+    return tuple(events)
+
+
+def _append_sse_event(events: list[Mapping[str, Any]], data_lines: list[str], event_name: str | None = None) -> None:
+    if not data_lines:
+        return
+    data = "\n".join(data_lines).strip()
+    if not data or data == "[DONE]":
+        return
+    try:
+        parsed = json.loads(data)
+    except json.JSONDecodeError:
+        return
+    if not isinstance(parsed, Mapping):
+        return
+    if event_name and "type" not in parsed:
+        parsed = {"type": event_name, **dict(parsed)}
+    events.append(parsed)
+
+
+def _sse_response_model(event: Mapping[str, Any]) -> str | None:
+    response = event.get("response")
+    if isinstance(response, Mapping):
+        model = _openai_model_from_json_headers(response.get("headers"))
+        if model is not None:
+            return model
+    return _openai_model_from_json_headers(event.get("headers"))
+
+
+def _sse_delta_message_seed(item: Any) -> dict[str, Any] | None:
+    if not isinstance(item, Mapping):
+        return None
+    if item.get("type") != "message":
+        return None
+    role = item.get("role")
+    if role is not None and role != "assistant":
+        return None
+    text_parts: list[str] = []
+    content = item.get("content")
+    if isinstance(content, list):
+        for part in content:
+            if isinstance(part, Mapping) and part.get("type") == "output_text" and isinstance(part.get("text"), str):
+                text_parts.append(str(part.get("text")))
+    return {
+        "id": item.get("id"),
+        "role": role or "assistant",
+        "text": "".join(text_parts),
+    }
+
+
+def _sse_response_item_or_none(item: Any) -> ResponseItem | None:
+    if not isinstance(item, Mapping):
+        return None
+    try:
+        return ResponseItem.from_mapping(item)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _sse_done_replaces_active_delta(done_item: ResponseItem, active_delta_message: Mapping[str, Any]) -> bool:
+    active_id = active_delta_message.get("id")
+    if isinstance(active_id, str):
+        return done_item.id == active_id
+    return done_item.id is None and done_item.type == "message" and done_item.role == active_delta_message.get("role")
+
+
+def _responses_output_is_empty(output: Any) -> bool:
+    if output is None:
+        return True
+    if isinstance(output, (list, tuple)):
+        return not any(isinstance(item, Mapping) for item in output)
+    return False
+
+
+def _openai_model_from_json_headers(value: Any) -> str | None:
+    if not isinstance(value, Mapping):
+        return None
+    for name, item in value.items():
+        if not isinstance(name, str):
+            continue
+        if name.lower() not in {"openai-model", "x-openai-model"}:
+            continue
+        model = _json_value_as_string(item)
+        if model:
+            return model
+    return None
+
+
+def _json_value_as_string(value: Any) -> str | None:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list) and value:
+        return _json_value_as_string(value[0])
+    return None
+
+
+def _sse_model_verifications(event: Mapping[str, Any]) -> tuple[ModelVerification, ...]:
+    if event.get("type") != "response.metadata":
+        return ()
+    metadata = event.get("metadata")
+    if not isinstance(metadata, Mapping):
+        return ()
+    raw = metadata.get("openai_verification_recommendation")
+    if not isinstance(raw, list):
+        return ()
+    verifications: list[ModelVerification] = []
+    for item in raw:
+        if item == "trusted_access_for_cyber" and ModelVerification.TRUSTED_ACCESS_FOR_CYBER not in verifications:
+            verifications.append(ModelVerification.TRUSTED_ACCESS_FOR_CYBER)
+    return tuple(verifications)
+
+
+def _single_optional(value: Any) -> tuple[Any, ...]:
+    return () if value is None else (value,)
+
+
+def _sse_error_message(event: Mapping[str, Any]) -> str:
+    error = _error_mapping(event)
+    message = _error_message(error)
+    if message:
+        return message
+    response = event.get("response")
+    if isinstance(response, Mapping):
+        message = _error_message(_error_mapping(response))
+        if message:
+            return message
+    message_value = event.get("message")
+    if isinstance(message_value, str) and message_value.strip():
+        return message_value.strip()
+    event_type = event.get("type")
+    return event_type if isinstance(event_type, str) and event_type else "response stream failed"
+
+
+def _sse_incomplete_message(event: Mapping[str, Any]) -> str:
+    reason = None
+    response = event.get("response")
+    if isinstance(response, Mapping):
+        details = response.get("incomplete_details")
+        if isinstance(details, Mapping):
+            value = details.get("reason")
+            if isinstance(value, str) and value:
+                reason = value
+    return f"Incomplete response returned, reason: {reason or 'unknown'}"
+
+
+def _sse_failed_message(event: Mapping[str, Any]) -> str:
+    response = event.get("response")
+    if isinstance(response, Mapping):
+        message = _error_message(_error_mapping(response))
+        if message:
+            return message
+    message = _error_message(_error_mapping(event))
+    if message:
+        return message
+    return "response.failed event received"
+
+
+def _validate_sse_completed_response(response: Mapping[str, Any]) -> None:
+    if not isinstance(response.get("id"), str):
+        raise CodexErr.stream("failed to parse ResponseCompleted: missing response id")
+    usage = response.get("usage")
+    if usage is not None and not isinstance(usage, Mapping):
+        raise CodexErr.stream("failed to parse ResponseCompleted: invalid usage")
+    if isinstance(usage, Mapping):
+        for key in ("input_tokens", "output_tokens", "total_tokens"):
+            value = usage.get(key)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise CodexErr.stream(f"failed to parse ResponseCompleted: missing or invalid usage.{key}")
 
 
 def _to_json_compatible(value: Any) -> Any:
@@ -131,6 +544,388 @@ def _http_error_message(exc: HTTPError) -> str:
     if reason:
         return f"Responses API request failed with HTTP {exc.code}: {reason}"
     return f"Responses API request failed with HTTP {exc.code}"
+
+
+def _codex_err_from_http_error(exc: HTTPError) -> CodexErr:
+    body = ""
+    try:
+        body = exc.read().decode("utf-8", errors="replace")
+    except OSError:
+        body = ""
+    mapped = _codex_err_from_http_status_body(
+        exc.code,
+        body,
+        headers=exc.headers,
+    )
+    if mapped is not None:
+        return mapped
+    return CodexErr.unexpected_status(
+        UnexpectedResponseError(
+            status=exc.code,
+            body=body,
+            url=getattr(exc, "url", None),
+            cf_ray=_header_value(exc.headers, "cf-ray"),
+            request_id=_request_id(exc.headers),
+            identity_authorization_error=_header_value(exc.headers, "x-openai-authorization-error"),
+            identity_error_code=_x_error_json_code(exc.headers),
+        )
+    )
+
+
+def _codex_err_from_url_error(exc: URLError) -> CodexErr:
+    reason = getattr(exc, "reason", exc)
+    if isinstance(reason, TimeoutError):
+        return CodexErr.simple("request_timeout")
+    return CodexErr.connection_failed(ConnectionFailedError(str(reason)))
+
+
+def _response_headers(response: Any) -> Any:
+    headers = getattr(response, "headers", None)
+    if headers is not None:
+        return headers
+    info = getattr(response, "info", None)
+    if callable(info):
+        return info()
+    return None
+
+
+def _header_value(headers: Any, name: str) -> str | None:
+    if headers is None:
+        return None
+    getter = getattr(headers, "get", None)
+    if callable(getter):
+        value = getter(name)
+        if value is None:
+            value = getter(name.lower())
+        if value is None:
+            value = getter(name.upper())
+        if isinstance(value, str) and value:
+            return value
+    items = getattr(headers, "items", None)
+    if callable(items):
+        name_lower = name.lower()
+        for key, value in items():
+            if isinstance(key, str) and key.lower() == name_lower and isinstance(value, str) and value:
+                return value
+    return None
+
+
+def _header_names(headers: Any) -> tuple[str, ...]:
+    if headers is None:
+        return ()
+    keys = getattr(headers, "keys", None)
+    if callable(keys):
+        return tuple(key for key in keys() if isinstance(key, str))
+    items = getattr(headers, "items", None)
+    if callable(items):
+        return tuple(key for key, _value in items() if isinstance(key, str))
+    return ()
+
+
+def _header_present(headers: Any, name: str) -> bool:
+    name_lower = name.lower()
+    return any(header.lower() == name_lower for header in _header_names(headers))
+
+
+def _codex_err_from_http_status_body(
+    status: int,
+    body: str,
+    *,
+    headers: Any = None,
+) -> CodexErr | None:
+    parsed = _json_mapping(body)
+    error = _error_mapping(parsed)
+    if status == 503 and _error_code(error) in {"server_is_overloaded", "slow_down"}:
+        return CodexErr.simple("server_overloaded")
+    if status == 400:
+        if _error_code(error) == "cyber_policy":
+            return CodexErr.cyber_policy(
+                _error_message(error) or "This request has been flagged for possible cybersecurity risk."
+            )
+        if "The image data you provided does not represent a valid image" in body:
+            return CodexErr.simple("invalid_image_request")
+        return CodexErr.invalid_request(body)
+    if status == 500:
+        return CodexErr.simple("internal_server_error")
+    if status == 429:
+        if _error_type(error) == "usage_limit_reached":
+            return CodexErr.usage_limit_reached(
+                UsageLimitReachedError(
+                    plan_type=_auth_plan_type(error.get("plan_type") if error is not None else None),
+                    resets_at=_utc_timestamp(error.get("resets_at") if error is not None else None),
+                    rate_limits=_parse_rate_limit_for_limit(headers, _header_value(headers, "x-codex-active-limit")),
+                    promo_message=_non_empty_header(headers, "x-codex-promo-message"),
+                    rate_limit_reached_type=_rate_limit_reached_type(headers),
+                )
+            )
+        if _error_type(error) == "usage_not_included":
+            return CodexErr.simple("usage_not_included")
+        return CodexErr.retry_limit(RetryLimitReachedError(status, _request_tracking_id(headers)))
+    return None
+
+
+def _codex_err_from_responses_payload(payload: Any) -> CodexErr | None:
+    if not isinstance(payload, Mapping):
+        return None
+    error = _error_mapping(payload)
+    if error is None:
+        response = payload.get("response")
+        error = _error_mapping(response) if isinstance(response, Mapping) else None
+    if error is None:
+        return None
+    code = _error_code(error)
+    if code == "context_length_exceeded":
+        return CodexErr.simple("context_window_exceeded")
+    if code == "insufficient_quota":
+        return CodexErr.simple("quota_exceeded")
+    if code == "usage_not_included":
+        return CodexErr.simple("usage_not_included")
+    if code == "cyber_policy":
+        return CodexErr.cyber_policy(
+            _error_message(error) or "This request has been flagged for possible cybersecurity risk."
+        )
+    if code == "invalid_prompt":
+        return CodexErr.invalid_request(_error_message(error) or "Invalid request.")
+    if code in {"server_is_overloaded", "slow_down"}:
+        return CodexErr.simple("server_overloaded")
+    if code == "rate_limit_exceeded":
+        message = _error_message(error) or ""
+        return CodexErr.stream(message, retry_after=_retry_after_seconds_from_error(error))
+    return None
+
+
+def _json_mapping(body: str) -> Mapping[str, Any] | None:
+    if not body:
+        return None
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, Mapping) else None
+
+
+def _error_mapping(payload: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+    if payload is None:
+        return None
+    error = payload.get("error")
+    return error if isinstance(error, Mapping) else None
+
+
+def _error_code(error: Mapping[str, Any] | None) -> str | None:
+    value = error.get("code") if error is not None else None
+    return value if isinstance(value, str) else None
+
+
+def _error_type(error: Mapping[str, Any] | None) -> str | None:
+    value = error.get("type") if error is not None else None
+    return value if isinstance(value, str) else None
+
+
+def _error_message(error: Mapping[str, Any] | None) -> str | None:
+    value = error.get("message") if error is not None else None
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _retry_after_seconds_from_error(error: Mapping[str, Any] | None) -> float | None:
+    message = _error_message(error)
+    if message is None:
+        return None
+    match = re.search(r"try again in\s*(\d+(?:\.\d+)?)\s*(s|ms|seconds?)", message, flags=re.IGNORECASE)
+    if match is None:
+        return None
+    value = float(match.group(1))
+    unit = match.group(2).lower()
+    if unit == "ms":
+        return int(value) / 1000.0
+    return value
+
+
+def _request_id(headers: Any) -> str | None:
+    return _header_value(headers, "x-request-id") or _header_value(headers, "x-oai-request-id")
+
+
+def _request_tracking_id(headers: Any) -> str | None:
+    return _request_id(headers) or _header_value(headers, "cf-ray")
+
+
+def _non_empty_header(headers: Any, name: str) -> str | None:
+    value = _header_value(headers, name)
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _x_error_json_code(headers: Any) -> str | None:
+    encoded = _header_value(headers, "x-error-json")
+    if not encoded:
+        return None
+    try:
+        import base64
+
+        decoded = base64.b64decode(encoded)
+        parsed = json.loads(decoded.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(parsed, Mapping):
+        return None
+    error = _error_mapping(parsed)
+    return _error_code(error)
+
+
+def _auth_plan_type(value: Any) -> AuthPlanType | None:
+    if isinstance(value, str):
+        return AuthPlanType.from_raw_value(value)
+    return None
+
+
+def _utc_timestamp(value: Any) -> datetime | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        return datetime.fromtimestamp(value, tz=timezone.utc)
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
+def _rate_limit_reached_type(headers: Any) -> RateLimitReachedType | None:
+    value = _non_empty_header(headers, "x-codex-rate-limit-reached-type")
+    if value is None:
+        return None
+    try:
+        return RateLimitReachedType.parse(value)
+    except ValueError:
+        return None
+
+
+def _parse_rate_limit_for_limit(headers: Any, limit_id: str | None) -> RateLimitSnapshot | None:
+    normalized = (limit_id or "codex").strip().lower().replace("_", "-")
+    if not normalized:
+        normalized = "codex"
+    prefix = f"x-{normalized}"
+    snapshot = RateLimitSnapshot(
+        limit_id=normalized.replace("-", "_"),
+        limit_name=_non_empty_header(headers, f"{prefix}-limit-name"),
+        primary=_parse_rate_limit_window(
+            headers,
+            f"{prefix}-primary-used-percent",
+            f"{prefix}-primary-window-minutes",
+            f"{prefix}-primary-reset-at",
+        ),
+        secondary=_parse_rate_limit_window(
+            headers,
+            f"{prefix}-secondary-used-percent",
+            f"{prefix}-secondary-window-minutes",
+            f"{prefix}-secondary-reset-at",
+        ),
+        credits=_parse_credits_snapshot(headers),
+    )
+    return snapshot
+
+
+def _parse_all_rate_limits(headers: Any) -> tuple[RateLimitSnapshot, ...]:
+    if headers is None:
+        return ()
+    snapshots: list[RateLimitSnapshot] = []
+    default_snapshot = _parse_rate_limit_for_limit(headers, None)
+    if default_snapshot is not None:
+        snapshots.append(default_snapshot)
+    limit_ids = sorted(
+        {
+            limit_id
+            for name in _header_names(headers)
+            for limit_id in (_rate_limit_header_name_to_limit_id(name),)
+            if limit_id is not None and limit_id != "codex"
+        }
+    )
+    for limit_id in limit_ids:
+        snapshot = _parse_rate_limit_for_limit(headers, limit_id)
+        if snapshot is not None and _rate_limit_snapshot_has_data(snapshot):
+            snapshots.append(snapshot)
+    return tuple(snapshots)
+
+
+def _rate_limit_header_name_to_limit_id(name: str) -> str | None:
+    normalized = name.strip().lower()
+    suffix = "-primary-used-percent"
+    if not normalized.endswith(suffix):
+        return None
+    prefix = normalized[: -len(suffix)]
+    if not prefix.startswith("x-"):
+        return None
+    limit = prefix[2:].strip()
+    return limit.replace("-", "_") if limit else None
+
+
+def _rate_limit_snapshot_has_data(snapshot: RateLimitSnapshot) -> bool:
+    return snapshot.primary is not None or snapshot.secondary is not None or snapshot.credits is not None
+
+
+def _parse_rate_limit_window(
+    headers: Any,
+    used_percent_header: str,
+    window_minutes_header: str,
+    resets_at_header: str,
+) -> RateLimitWindow | None:
+    used_percent = _header_float(headers, used_percent_header)
+    if used_percent is None:
+        return None
+    window_minutes = _header_int(headers, window_minutes_header)
+    resets_at = _header_int(headers, resets_at_header)
+    if used_percent == 0.0 and (window_minutes is None or window_minutes == 0) and resets_at is None:
+        return None
+    return RateLimitWindow(used_percent=used_percent, window_minutes=window_minutes, resets_at=resets_at)
+
+
+def _parse_credits_snapshot(headers: Any) -> CreditsSnapshot | None:
+    has_credits = _header_bool(headers, "x-codex-credits-has-credits")
+    unlimited = _header_bool(headers, "x-codex-credits-unlimited")
+    if has_credits is None or unlimited is None:
+        return None
+    return CreditsSnapshot(
+        has_credits=has_credits,
+        unlimited=unlimited,
+        balance=_non_empty_header(headers, "x-codex-credits-balance"),
+    )
+
+
+def _server_reasoning_included(headers: Any) -> bool | None:
+    return True if _header_present(headers, X_REASONING_INCLUDED_HEADER) else None
+
+
+def _header_float(headers: Any, name: str) -> float | None:
+    value = _non_empty_header(headers, name)
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except ValueError:
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _header_int(headers: Any, name: str) -> int | None:
+    value = _non_empty_header(headers, name)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _header_bool(headers: Any, name: str) -> bool | None:
+    value = _non_empty_header(headers, name)
+    if value is None:
+        return None
+    if value.lower() == "true" or value == "1":
+        return True
+    if value.lower() == "false" or value == "0":
+        return False
+    return None
 
 
 def _error_message_from_payload(body: str) -> str:
@@ -181,17 +976,119 @@ def model_client_http_sampler(
     config: HttpTransportConfig,
     *,
     opener: Any = None,
+    max_retries: int | None = None,
+    sleep: Any = None,
+    on_retry_decision: Any = None,
 ) -> SamplerFn:
     """Create a sampler using ``ModelClientSession`` plus stdlib HTTP."""
 
     async def sampler(sampling_request):
-        return await sample_with_model_client_session(
+        transport = lambda prepared: send_prepared_http_sampling_request(prepared, config, opener=opener)
+        if max_retries is None:
+            return await sample_with_model_client_session(sampling_request, model_session, transport)
+        retry_decision_callback = _http_sampling_retry_decision_callback(
+            getattr(sampling_request, "session", None),
+            getattr(sampling_request, "turn_context", None),
+            on_retry_decision,
+        )
+        return await sample_with_model_client_session_retries(
             sampling_request,
             model_session,
-            lambda prepared: send_prepared_http_sampling_request(prepared, config, opener=opener),
+            transport,
+            max_retries=max_retries,
+            sleep=sleep,
+            on_retry_decision=retry_decision_callback,
         )
 
     return sampler
+
+
+def http_sampling_stream_max_retries(provider: Any) -> int:
+    """Return the Rust-shaped effective stream retry count for a provider."""
+
+    configured = _provider_stream_max_retries(provider)
+    if configured is None:
+        return DEFAULT_STREAM_MAX_RETRIES
+    if isinstance(configured, bool) or not isinstance(configured, int):
+        raise TypeError("stream_max_retries must be an integer")
+    if configured < 0:
+        raise ValueError("stream_max_retries must be non-negative")
+    return min(configured, MAX_STREAM_MAX_RETRIES)
+
+
+def _provider_stream_max_retries(provider: Any) -> Any:
+    info = _provider_info(provider)
+    for source in (info, provider):
+        if source is None:
+            continue
+        value = _stream_max_retries_value(source)
+        if value is not None:
+            return value
+    return None
+
+
+def _provider_info(provider: Any) -> Any:
+    if isinstance(provider, Mapping):
+        value = provider.get("info")
+        return value() if callable(value) else value
+    value = getattr(provider, "info", None)
+    return value() if callable(value) else value
+
+
+def _stream_max_retries_value(source: Any) -> Any:
+    if isinstance(source, Mapping):
+        value = source.get("stream_max_retries")
+        return value() if callable(value) else value
+    value = getattr(source, "stream_max_retries", None)
+    return value() if callable(value) else value
+
+
+def _http_sampling_retry_decision_callback(sess: Any, turn_context: Any, callback: Any):
+    async def on_decision(decision: Any) -> None:
+        await _emit_http_sampling_retry_decision(sess, turn_context, decision)
+        if callback is not None:
+            await _maybe_await(callback(decision))
+
+    return on_decision
+
+
+async def _emit_http_sampling_retry_decision(sess: Any, turn_context: Any, decision: Any) -> None:
+    if sess is None or turn_context is None:
+        return
+    warning_message = getattr(decision, "warning_message", None)
+    if isinstance(warning_message, str) and warning_message:
+        await _send_session_event(sess, turn_context, EventMsg.with_payload("warning", WarningEvent(warning_message)))
+    notify_message = getattr(decision, "notify_message", None)
+    error = getattr(decision, "error", None)
+    if isinstance(notify_message, str) and notify_message and isinstance(error, CodexErr):
+        notifier = getattr(sess, "notify_stream_error", None)
+        if callable(notifier):
+            await _maybe_await(notifier(turn_context, notify_message, error))
+            return
+        await _send_session_event(
+            sess,
+            turn_context,
+            EventMsg.with_payload(
+                "stream_error",
+                StreamErrorEvent(
+                    message=notify_message,
+                    codex_error_info=CodexErrorInfo.response_stream_disconnected(error.http_status_code_value()),
+                    additional_details=str(error),
+                ),
+            ),
+        )
+
+
+async def _send_session_event(sess: Any, turn_context: Any, event: EventMsg) -> None:
+    sender = getattr(sess, "send_event", None)
+    if callable(sender):
+        await _maybe_await(sender(turn_context, event))
+
+
+async def _maybe_await(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
 async def run_user_turn_http_sampling_from_session(
@@ -216,7 +1113,10 @@ async def run_user_turn_http_sampling_from_session(
     turn_metadata_header: str | None = None,
     output_schema: Any = None,
     output_schema_strict: bool = True,
-    max_tool_followups: int = 8,
+    max_tool_followups: int | None = None,
+    sampling_max_retries: int | None = None,
+    retry_sleep: Any = None,
+    on_retry_decision: Any = None,
 ) -> UserTurnSamplingResult:
     """Run a user turn through the stdlib HTTP sampler path."""
 
@@ -228,7 +1128,16 @@ async def run_user_turn_http_sampling_from_session(
         timeout=timeout,
         turn_metadata_header=turn_metadata_header,
     )
-    sampler = model_client_http_sampler(model_client.new_session(), config, opener=opener)
+    if sampling_max_retries is None:
+        sampling_max_retries = http_sampling_stream_max_retries(provider)
+    sampler = model_client_http_sampler(
+        model_client.new_session(),
+        config,
+        opener=opener,
+        max_retries=sampling_max_retries,
+        sleep=retry_sleep,
+        on_retry_decision=on_retry_decision,
+    )
     return await run_user_turn_sampling_from_session(
         sess,
         input,
@@ -272,6 +1181,7 @@ __all__ = [
     "CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR",
     "HttpTransportConfig",
     "exec_originator_header_value",
+    "http_sampling_stream_max_retries",
     "http_transport_config_from_provider",
     "model_client_http_sampler",
     "response_items_from_responses_payload",

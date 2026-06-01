@@ -58,6 +58,10 @@ class CodexStatus(str, Enum):
     RUNNING = "running"
     INITIATE_SHUTDOWN = "initiate_shutdown"
 
+    @property
+    def status(self) -> "CodexStatus":
+        return self
+
 
 @dataclass(frozen=True)
 class CollectedThreadEvents:
@@ -229,7 +233,7 @@ class JsonEventProcessor:
         method = notification_method(notification)
         params = notification_params(notification)
 
-        if method == "configWarning":
+        if method in {"configWarning", "warning"}:
             return self.collect_warning(_message_with_details(_warning_summary(params), _field(params, "details")))
 
         if method == "error":
@@ -425,6 +429,17 @@ class HumanEventProcessor:
         self.last_usage: Usage | None = None
         self.show_agent_reasoning = True
         self.show_raw_agent_reasoning = False
+
+    def configure_from_config(self, config: JsonValue) -> "HumanEventProcessor":
+        """Apply upstream human-output reasoning visibility flags from config."""
+
+        hide_agent_reasoning = _field(config, "hide_agent_reasoning", "hideAgentReasoning")
+        if hide_agent_reasoning is not None:
+            self.show_agent_reasoning = not bool(hide_agent_reasoning)
+        show_raw_agent_reasoning = _field(config, "show_raw_agent_reasoning", "showRawAgentReasoning")
+        if show_raw_agent_reasoning is not None:
+            self.show_raw_agent_reasoning = bool(show_raw_agent_reasoning)
+        return self
 
     def print_config_summary(
         self,
@@ -879,6 +894,17 @@ def exec_item_from_app_server_item(item: JsonValue, make_id: Any) -> ExecThreadI
                 agents_states=_field(item, "agentsStates", "agents_states") or {},
                 status=_field(item, "status"),
             )
+        if item_type == "mcp_tool_call":
+            payload = {
+                "server": _field(item, "server") or "",
+                "tool": _field(item, "tool") or "",
+                "arguments": _field(item, "arguments"),
+                "result": _mcp_result_mapping(_field(item, "result")),
+                "status": _mcp_status_text(_field(item, "status")),
+            }
+            if "error" in item:
+                payload["error"] = _mcp_error_mapping(_field(item, "error"))
+            return ExecThreadItem(make_id(), "mcp_tool_call", payload)
 
     turn_item = _turn_item_from_value(item)
     if turn_item is not None:
@@ -917,17 +943,19 @@ def exec_item_from_app_server_item(item: JsonValue, make_id: Any) -> ExecThreadI
 
     if item_type == "mcp_tool_call":
         error = _mcp_error_mapping(_field(item, "error"))
+        payload = {
+            "server": _field(item, "server") or "",
+            "tool": _field(item, "tool") or "",
+            "arguments": _field(item, "arguments"),
+            "result": _mcp_result_mapping(_field(item, "result")),
+            "status": _mcp_status_text(_field(item, "status")),
+        }
+        if not isinstance(item, Mapping) or "error" in item:
+            payload["error"] = error
         return ExecThreadItem(
             make_id(),
             "mcp_tool_call",
-            {
-                "server": _field(item, "server") or "",
-                "tool": _field(item, "tool") or "",
-                "arguments": _field(item, "arguments"),
-                "result": _mcp_result_mapping(_field(item, "result")),
-                "error": error,
-                "status": _mcp_status_text(_field(item, "status")),
-            },
+            payload,
         )
 
     if item_type == "collab_agent_tool_call":
@@ -1035,6 +1063,16 @@ def human_item_completed_lines(
     show_raw_agent_reasoning: bool = False,
 ) -> tuple[str, ...]:
     turn_item = _turn_item_from_value(item)
+    if turn_item is not None and turn_item.type == "CommandExecution":
+        command_item = turn_item.item
+        status = _normalized_status(getattr(command_item, "status", None))
+        if status == "failed":
+            output = str(getattr(command_item, "aggregated_output", "") or "")
+            exit_code = _optional_int(getattr(command_item, "exit_code", None)) or 1
+            lines = [f"exec: failed (exit {exit_code})"]
+            if output.strip():
+                lines.append(output)
+            return tuple(lines)
     if turn_item is not None:
         item = _turn_item_to_app_server_like_mapping(turn_item)
 
@@ -1090,7 +1128,7 @@ def human_notification_lines(notification: JsonValue) -> tuple[str, ...]:
     method = notification_method(notification)
     params = notification_params(notification)
 
-    if method == "configWarning":
+    if method in {"configWarning", "warning"}:
         return (f"warning: {_message_with_details(_warning_summary(params), _field(params, 'details'))}",)
 
     if method == "error":
@@ -1367,14 +1405,17 @@ def _file_change_entries(changes: JsonValue) -> list[dict[str, str]]:
     if isinstance(changes, Mapping):
         return [
             {
-                "path": str(path),
+                "path": Path(str(path)).as_posix(),
                 "kind": _patch_kind_text(_patch_kind_value(change)),
             }
             for path, change in changes.items()
         ]
     if isinstance(changes, list | tuple):
         return [
-            {"path": str(_field(change, "path") or ""), "kind": _patch_kind_text(_patch_kind_value(_field(change, "kind")))}
+            {
+                "path": Path(str(_field(change, "path") or "")).as_posix(),
+                "kind": _patch_kind_text(_patch_kind_value(_field(change, "kind"))),
+            }
             for change in changes
         ]
     return []

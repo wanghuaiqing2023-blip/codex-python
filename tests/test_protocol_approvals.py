@@ -26,6 +26,7 @@ from pycodex.protocol import (
     NetworkPolicyRuleAction,
     PermissionGrantScope,
     PermissionProfile,
+    ParsedCommand,
     RequestPermissionProfile,
     RequestPermissionsArgs,
     RequestPermissionsEvent,
@@ -195,6 +196,55 @@ class ProtocolApprovalsTests(unittest.TestCase):
         )
 
         self.assertEqual(event.effective_available_decisions(), (ReviewDecision.denied(),))
+
+    def test_exec_approval_request_event_round_trips_rust_json_shape(self):
+        amendment = ExecPolicyAmendment.new(["cargo", "install"])
+        network_allow = NetworkPolicyAmendment("api.example.com", NetworkPolicyRuleAction.ALLOW)
+        permissions = AdditionalPermissionProfile(network=NetworkPermissions(enabled=True))
+        event = ExecApprovalRequestEvent(
+            call_id="call-1",
+            approval_id="approval-1",
+            turn_id="turn-1",
+            started_at_ms=123,
+            command=("cargo", "install", "ripgrep"),
+            cwd=Path("C:/work/project"),
+            parsed_cmd=(ParsedCommand.unknown("cargo install ripgrep"),),
+            reason="`cargo install ripgrep` requires approval by policy",
+            network_approval_context=NetworkApprovalContext("api.example.com", NetworkApprovalProtocol.HTTPS),
+            proposed_execpolicy_amendment=amendment,
+            proposed_network_policy_amendments=(network_allow,),
+            additional_permissions=permissions,
+            available_decisions=(ReviewDecision.approved(), ReviewDecision.approved_execpolicy_amendment(amendment)),
+        )
+
+        payload = event.to_mapping()
+
+        self.assertEqual(
+            payload,
+            {
+                "call_id": "call-1",
+                "turn_id": "turn-1",
+                "started_at_ms": 123,
+                "command": ["cargo", "install", "ripgrep"],
+                "cwd": "C:\\work\\project",
+                "parsed_cmd": [{"type": "unknown", "cmd": "cargo install ripgrep"}],
+                "approval_id": "approval-1",
+                "reason": "`cargo install ripgrep` requires approval by policy",
+                "network_approval_context": {"host": "api.example.com", "protocol": "https"},
+                "proposed_execpolicy_amendment": {"command": ["cargo", "install"]},
+                "proposed_network_policy_amendments": [{"host": "api.example.com", "action": "allow"}],
+                "additional_permissions": {"network": {"enabled": True}},
+                "available_decisions": [
+                    "approved",
+                    {
+                        "approved_execpolicy_amendment": {
+                            "proposed_execpolicy_amendment": {"command": ["cargo", "install"]}
+                        }
+                    },
+                ],
+            },
+        )
+        self.assertEqual(ExecApprovalRequestEvent.from_mapping(payload), event)
 
     def test_default_available_decisions_for_network_context(self):
         allow = NetworkPolicyAmendment("api.example.com", NetworkPolicyRuleAction.ALLOW)

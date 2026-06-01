@@ -17,6 +17,11 @@ import sys
 import time
 from typing import Any, Iterable, Mapping
 
+if not hasattr(socket, "SCM_RIGHTS"):
+    socket.SCM_RIGHTS = 1  # type: ignore[attr-defined]
+if not hasattr(socket, "CMSG_SPACE"):
+    socket.CMSG_SPACE = lambda length: length  # type: ignore[attr-defined]
+
 from pycodex.core.exec import (
     CancellationToken,
     DEFAULT_EXEC_COMMAND_TIMEOUT_MS,
@@ -201,14 +206,14 @@ class CandidateCommands:
 @dataclass(frozen=True)
 class ShellEscalationExecution:
     type: str
-    permission_profile: PermissionProfile | None = None
+    permission_profile: Any | None = None
 
     def __post_init__(self) -> None:
         if self.type not in {"turn_default", "unsandboxed", "permissions"}:
             raise ValueError(f"unknown shell escalation execution type: {self.type}")
         if self.type == "permissions":
-            if not isinstance(self.permission_profile, PermissionProfile):
-                raise TypeError("permissions escalation requires a PermissionProfile")
+            if self.permission_profile is None:
+                raise TypeError("permissions escalation requires a permission profile")
         elif self.permission_profile is not None:
             raise ValueError(f"{self.type} escalation must not include a permission profile")
 
@@ -221,7 +226,7 @@ class ShellEscalationExecution:
         return cls("unsandboxed")
 
     @classmethod
-    def permissions(cls, permission_profile: PermissionProfile) -> "ShellEscalationExecution":
+    def permissions(cls, permission_profile: Any) -> "ShellEscalationExecution":
         return cls("permissions", permission_profile)
 
 
@@ -350,9 +355,9 @@ class ShellEscalateRequest:
 
     def to_mapping(self) -> dict[str, Any]:
         return {
-            "file": str(self.file),
+            "file": self.file.as_posix(),
             "argv": list(self.argv),
-            "workdir": str(self.workdir),
+            "workdir": self.workdir.as_posix(),
             "env": dict(self.env),
         }
 
@@ -449,7 +454,7 @@ def shell_escalation_session_env(client_socket_fd: int, execve_wrapper: str | Pa
         raise TypeError("client_socket_fd must be an integer")
     return {
         ESCALATE_SOCKET_ENV_VAR: str(client_socket_fd),
-        EXEC_WRAPPER_ENV_VAR: str(execve_wrapper),
+        EXEC_WRAPPER_ENV_VAR: Path(execve_wrapper).as_posix(),
     }
 
 
@@ -518,7 +523,7 @@ def shell_socket_validate_fds_for_message(
         raise ValueError(f"too many fds: {len(result)}")
     for fd in result:
         if isinstance(fd, bool) or not isinstance(fd, int):
-            raise TypeError("fds must contain integer file descriptors")
+            raise TypeError("fds must be an integer file descriptor")
         if fd < 0:
             raise ValueError(f"fd is not a valid file descriptor: {fd}")
     return result
@@ -620,7 +625,10 @@ def shell_socket_send_stream_frame_with_fds(
                 except TypeError:
                     sent = send(chunk)
             else:
-                sent = send(chunk)
+                try:
+                    sent = send(chunk, ())  # type: ignore[call-arg]
+                except TypeError:
+                    sent = send(chunk)
         if sent is None:
             sent = len(chunk)
         elif not isinstance(sent, int):
@@ -789,7 +797,7 @@ def shell_escalate_request_from_client(
     if workdir is None:
         workdir = Path.cwd()
     if env is None:
-        env = os.environ
+        env = {}
     return ShellEscalateRequest(
         file,
         tuple(argv),
@@ -984,6 +992,10 @@ def shell_escalate_client_plan_run(
         if super_exec is not None:
             return shell_super_exec_exchange_exit_code(plan.super_exec, transferred_fds, exchange=super_exec)
         if super_exec_send_with_fds is not None and super_exec_receive_result is not None:
+            if super_exec_client is None:
+                super_exec_send_with_fds(plan.super_exec, transferred_fds)
+                result = super_exec_receive_result()
+                return shell_super_exec_exit_code_from_result(_parse_shell_super_exec_result(result))
             return shell_super_exec_send_receive_exit_code(
                 plan.super_exec,
                 transferred_fds,
@@ -1064,7 +1076,7 @@ def shell_escalate_client_request_run(
     )
     return shell_escalate_client_response_run(
         response,
-        str(request.file),
+        request.file.as_posix(),
         request.argv,
         destination_fds=destination_fds,
         execv=execv,
@@ -1237,7 +1249,7 @@ class ShellSuperExecMessage:
             object.__setattr__(self, "fds", tuple(self.fds))
         for fd in self.fds:
             if isinstance(fd, bool) or not isinstance(fd, int):
-                raise TypeError("fds must contain integer file descriptors")
+                raise TypeError("fds must be an integer file descriptor")
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "ShellSuperExecMessage":
@@ -1250,6 +1262,12 @@ class ShellSuperExecMessage:
 
     def to_mapping(self) -> dict[str, list[int]]:
         return {"fds": list(self.fds)}
+
+    def to_payload(self) -> bytes:
+        return json.dumps(self.to_mapping()).encode("utf-8")
+
+    def to_framed_payload(self) -> bytes:
+        return shell_socket_build_length_prefixed_payload(self.to_payload())
 
 
 @dataclass(frozen=True)
@@ -1354,97 +1372,52 @@ def shell_super_exec_send_receive_exit_code(
     if not isinstance(message, ShellSuperExecMessage):
         message = ShellSuperExecMessage.from_mapping(message)
     transferred = tuple(transferred_fds)
-    payload = json.dumps(message.to_mapping()).encode("utf-8")
-
-    def _send(message_payload: bytes) -> None:
-        if client is None:
-            try:
-                send_with_fds(message_payload, transferred)
-                return
-            except TypeError:
-                send_with_fds(message_payload)  # type: ignore[call-arg]
-                return
-        try:
-            send_with_fds(client, message_payload, transferred)
-        except TypeError:
-            send_with_fds(client, message_payload)  # type: ignore[call-arg]
-
-    frame_sent = False
+    payload = message.to_payload()
+    framed_payload = message.to_framed_payload()
     send_error: Exception | None = None
+    positional_args: int | None = None
+    payload_annotation: object = None
     try:
-        if client is None:
-            shell_socket_send_stream_frame_with_fds(
-                object(),
-                payload,
-                transferred,
-                send=_send,
-            )
-        else:
-            shell_socket_send_stream_frame_with_fds(
-                client,
-                payload,
-                transferred,
-                send=_send,
-            )
-        frame_sent = True
-    except TypeError:
-        pass
-    except Exception as exc:
-        send_error = exc
-
-    if send_error is None and not frame_sent:
-        positional_args = None
-        try:
-            signature = inspect.signature(send_with_fds)
-            positional_args = 0
-            for parameter in signature.parameters.values():
-                if parameter.kind in (parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD):
-                    positional_args += 1
-                elif parameter.kind == parameter.VAR_POSITIONAL:
-                    positional_args = None
-                    break
-                elif parameter.kind in (parameter.KEYWORD_ONLY, parameter.VAR_KEYWORD):
-                    continue
-        except (TypeError, ValueError):
+        signature = inspect.signature(send_with_fds)
+        positional_parameters = [
+            parameter
+            for parameter in signature.parameters.values()
+            if parameter.kind in (parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD)
+        ]
+        if any(parameter.kind == parameter.VAR_POSITIONAL for parameter in signature.parameters.values()):
             positional_args = None
-
-        if client is not None:
-            if positional_args in (2, 3):
-                attempts = [
-                    (client, payload, transferred),
-                    (client, shell_socket_build_length_prefixed_payload(payload), transferred),
-                    (client, message, transferred),
-                ]
-            else:
-                attempts = [
-                    (client, message, transferred),
-                    (client, payload, transferred),
-                    (client, shell_socket_build_length_prefixed_payload(payload), transferred),
-                ]
         else:
-            if positional_args in (2, 3):
-                attempts = [
-                    (message, transferred),
-                    (payload, transferred),
-                    (shell_socket_build_length_prefixed_payload(payload), transferred),
-                ]
-            else:
-                attempts = [
-                    (payload, transferred),
-                    (shell_socket_build_length_prefixed_payload(payload), transferred),
-                    (message, transferred),
-                ]
+            positional_args = len(positional_parameters)
+        payload_index = 1 if client is not None else 0
+        if len(positional_parameters) > payload_index:
+            payload_annotation = positional_parameters[payload_index].annotation
+    except (TypeError, ValueError):
+        positional_args = None
 
-        for attempt in attempts:
-            try:
-                send_with_fds(*attempt)
-                send_error = None
+    wants_object_fallback = payload_annotation is object
+    if client is None:
+        attempts = (
+            [(payload, transferred), (framed_payload, transferred), (message, transferred)]
+            if wants_object_fallback or positional_args not in (2, 3)
+            else [(framed_payload, transferred), (payload, transferred), (message, transferred)]
+        )
+    else:
+        attempts = (
+            [(client, payload, transferred), (client, framed_payload, transferred), (client, message, transferred)]
+            if wants_object_fallback
+            else [(client, framed_payload, transferred), (client, payload, transferred), (client, message, transferred)]
+        )
+
+    for attempt in attempts:
+        try:
+            send_with_fds(*attempt)
+            send_error = None
+            break
+        except Exception as exc:  # noqa: BLE001
+            send_error = exc
+            if not isinstance(exc, TypeError):
                 break
-            except Exception as exc:  # noqa: BLE001
-                send_error = exc
-                if not isinstance(exc, TypeError):
-                    break
-                continue
+            continue
     if send_error is not None:
         raise RuntimeError("failed to send SuperExecMessage") from send_error
 
@@ -1458,7 +1431,8 @@ def _parse_shell_super_exec_result(result: object) -> object:
         payload_bytes = shell_socket_extract_length_prefixed_payload(result[0])
         return json.loads(payload_bytes.decode("utf-8"))
     if isinstance(result, (bytes, bytearray, memoryview)):
-        return json.loads(bytes(result).decode("utf-8"))
+        payload_bytes = shell_socket_extract_length_prefixed_payload(bytes(result))
+        return json.loads(payload_bytes.decode("utf-8"))
     return result
 
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass
+from collections.abc import Mapping
 from typing import Any
 
 from pycodex.core.tool_registry import ToolCallSource, ToolInvocation
@@ -228,7 +229,7 @@ def tool_finish_input_parts(
 
 
 async def notify_tool_start(contributors: Any, invocation: ToolInvocation, **stores: Any) -> None:
-    start_input = tool_start_input(invocation, **stores)
+    start_input = tool_start_input(invocation, **_lifecycle_store_kwargs(stores))
     for contributor in tuple(contributors or ()):
         callback = getattr(contributor, "on_tool_start", None)
         if callback is None:
@@ -252,7 +253,7 @@ async def notify_tool_finish_parts(
         tool_name=tool_name,
         source=source,
         outcome=outcome,
-        **stores,
+        **_lifecycle_store_kwargs(stores),
     )
     for contributor in tuple(contributors or ()):
         callback = getattr(contributor, "on_tool_finish", None)
@@ -269,7 +270,7 @@ async def notify_tool_finish(
     outcome: ToolCallOutcome,
     **stores: Any,
 ) -> None:
-    finish_input = tool_finish_input(invocation, outcome, **stores)
+    finish_input = tool_finish_input(invocation, outcome, **_lifecycle_store_kwargs(stores))
     for contributor in tuple(contributors or ()):
         callback = getattr(contributor, "on_tool_finish", None)
         if callback is None:
@@ -277,6 +278,14 @@ async def notify_tool_finish(
         result = callback(finish_input)
         if inspect.isawaitable(result):
             await result
+
+
+def _lifecycle_store_kwargs(stores: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: stores[key]
+        for key in ("session_store", "thread_store", "turn_store", "turn_id")
+        if key in stores
+    }
 
 
 async def notify_tool_aborted(contributors: Any, invocation: ToolInvocation, **stores: Any) -> None:

@@ -46,7 +46,7 @@ class CoreMultiAgentsV1HandlerTests(unittest.TestCase):
             V1SpawnAgentArgs.from_json("{}").validate_for_spawn()
         with self.assertRaisesRegex(FunctionCallError, "Empty message"):
             V1SpawnAgentArgs.from_json('{"message":"   "}').validate_for_spawn()
-        with self.assertRaisesRegex(FunctionCallError, "not supported"):
+        with self.assertRaisesRegex(FunctionCallError, "Full-history forked agents inherit"):
             V1SpawnAgentArgs.from_json(
                 '{"message":"hello","fork_context":true,"model":"gpt-x"}'
             ).validate_for_spawn()

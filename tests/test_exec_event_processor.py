@@ -1318,6 +1318,27 @@ class ExecEventProcessorTests(unittest.TestCase):
         )
         self.assertEqual(human_item_completed_lines(item, show_agent_reasoning=False), ())
 
+    def test_human_processor_configures_reasoning_visibility_from_exec_config(self):
+        item = TurnItem.reasoning(ReasoningItem("reason-1", ("summary",), ("raw",)))
+        processor = HumanEventProcessor().configure_from_config(
+            ExecSessionConfig(
+                model=None,
+                model_provider_id=None,
+                cwd=Path("C:/work/project"),
+                show_raw_agent_reasoning=True,
+            )
+        )
+        stderr = io.StringIO()
+
+        processor.collect_item_completed(item, stderr=stderr)
+
+        self.assertEqual(stderr.getvalue(), "raw\n")
+
+        hidden = HumanEventProcessor().configure_from_config({"hideAgentReasoning": True})
+        hidden_stderr = io.StringIO()
+        hidden.collect_item_completed(item, stderr=hidden_stderr)
+        self.assertEqual(hidden_stderr.getvalue(), "")
+
     def test_human_item_completed_lines_uses_turn_item_app_server_mapping(self):
         item = TurnItem.file_change(
             FileChangeItem("patch-1", {Path("a.txt"): FileChange.add("after")}, status=PatchApplyStatus.COMPLETED)
@@ -1747,6 +1768,7 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(dict(entries)["reasoning effort"], "high")
         self.assertEqual(dict(entries)["reasoning summaries"], "none")
         self.assertEqual(dict(entries)["session id"], "session-1")
+        self.assertNotIn("thread_id", dict(entries))
 
     def test_config_summary_lines_match_human_output_shape(self):
         config = {
@@ -1996,6 +2018,7 @@ class ExecEventProcessorTests(unittest.TestCase):
 
     def test_exec_turn_notifications_use_protocol_v2_envelopes(self):
         processor = JsonEventProcessor()
+        output = io.StringIO()
         agent_item = TurnItem.agent_message(
             AgentMessageItem("msg-1", (AgentMessageContent.text_content("final answer"),))
         )
@@ -2007,9 +2030,8 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(completed["method"], "turn/completed")
         self.assertEqual(completed["params"]["turn"]["items"], [agent_item.to_app_server_mapping()])
 
-        self.assertEqual(processor.process_server_notification(started).status, CodexStatus.RUNNING)
-        self.assertEqual(processor.process_server_notification(completed).status, CodexStatus.INITIATE_SHUTDOWN)
-        self.assertEqual(stderr.getvalue(), "")
+        self.assertEqual(processor.process_server_notification(started, output=output).status, CodexStatus.RUNNING)
+        self.assertEqual(processor.process_server_notification(completed, output=output).status, CodexStatus.INITIATE_SHUTDOWN)
 
     def test_blended_total_matches_exec_human_output_total(self):
         self.assertEqual(

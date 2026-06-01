@@ -22,7 +22,7 @@ class TurnPromptTests(unittest.TestCase):
         self.assertIn("# AGENTS.md instructions for C:/work/project", item.content[0].text)
         self.assertIn("<INSTRUCTIONS>\nproject instructions", item.content[0].text)
 
-    def test_input_with_user_instructions_inserts_before_current_user_input(self) -> None:
+    def test_input_with_user_instructions_preserves_prompt_input_order(self) -> None:
         context = SimpleNamespace(user_instructions="project instructions", cwd="C:/work/project")
         history = [
             ResponseItem.message("developer", (ContentItem.input_text("context"),)),
@@ -31,9 +31,18 @@ class TurnPromptTests(unittest.TestCase):
 
         result = input_with_user_instructions(history, context, has_current_user_input=True)
 
-        self.assertEqual(result[0], history[0])
-        self.assertIn("project instructions", result[1].content[0].text)
-        self.assertEqual(result[2], history[1])
+        self.assertEqual(result, history)
+
+    def test_build_turn_prompt_preserves_prompt_input_order_with_user_instructions_on_context(self) -> None:
+        context = SimpleNamespace(user_instructions="project instructions", cwd="C:/work/project")
+        history = [
+            ResponseItem.message("developer", (ContentItem.input_text("context"),)),
+            ResponseItem.message("user", (ContentItem.input_text("hello"),)),
+        ]
+
+        prompt = build_turn_prompt(history, Router(), context, BaseInstructions("base"), has_current_user_input=True)
+
+        self.assertEqual(prompt.input, history)
 
     def test_build_turn_prompt_carries_tools_and_base_instructions(self) -> None:
         context = SimpleNamespace(user_instructions=None, cwd="C:/work/project")

@@ -17,7 +17,6 @@ from typing import Any, Protocol
 from pycodex.core.shell import Shell, default_user_shell
 from pycodex.core.shell_handler import ShellCommandToolCallParams
 from pycodex.core.tool_registry import ToolInvocation, flat_tool_name
-from pycodex.core.unified_exec_handler import ExecCommandArgs, UnifiedExecShellMode, get_command
 
 JsonValue = Any
 MEMORIES_USAGE_METRIC = "codex.memories.usage"
@@ -60,7 +59,7 @@ def emit_metric_for_tool_read(
     *,
     session_shell: Shell | None = None,
     allow_login_shell: bool = False,
-    unified_exec_shell_mode: UnifiedExecShellMode | None = None,
+    unified_exec_shell_mode: Any = None,
     resolve_path: Callable[[str | None], Path] | None = None,
 ) -> tuple[MemoriesUsageKind, ...]:
     if not isinstance(success, bool):
@@ -98,7 +97,7 @@ def shell_command_for_invocation(
     *,
     session_shell: Shell | None = None,
     allow_login_shell: bool = False,
-    unified_exec_shell_mode: UnifiedExecShellMode | None = None,
+    unified_exec_shell_mode: Any = None,
     resolve_path: Callable[[str | None], Path] | None = None,
 ) -> ShellCommandForInvocation | None:
     if not isinstance(invocation, ToolInvocation):
@@ -112,6 +111,8 @@ def shell_command_for_invocation(
         session_shell = default_user_shell()
     if not isinstance(session_shell, Shell):
         raise TypeError("session_shell must be Shell")
+    from pycodex.core.unified_exec_handler import UnifiedExecShellMode, get_command
+
     if unified_exec_shell_mode is None:
         unified_exec_shell_mode = UnifiedExecShellMode.direct()
     if not isinstance(unified_exec_shell_mode, UnifiedExecShellMode):
@@ -176,8 +177,10 @@ def _parse_shell_command(arguments: str) -> ShellCommandToolCallParams | None:
         return None
 
 
-def _parse_exec_command(arguments: str) -> ExecCommandArgs | None:
+def _parse_exec_command(arguments: str) -> Any:
     try:
+        from pycodex.core.unified_exec_handler import ExecCommandArgs
+
         return ExecCommandArgs.from_json(arguments)
     except (TypeError, ValueError, json.JSONDecodeError):
         return None

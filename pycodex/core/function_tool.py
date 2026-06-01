@@ -17,7 +17,7 @@ class FunctionCallErrorKind(str, Enum):
     FATAL = "fatal"
 
 
-@dataclass(frozen=True)
+@dataclass
 class FunctionCallError(Exception):
     kind: FunctionCallErrorKind
     message: str
@@ -35,11 +35,11 @@ class FunctionCallError(Exception):
             if not isinstance(self.kind, str):
                 raise TypeError("kind must be a FunctionCallErrorKind or string")
             try:
-                object.__setattr__(self, "kind", FunctionCallErrorKind(self.kind))
+                self.kind = FunctionCallErrorKind(self.kind)
             except ValueError as exc:
                 raise ValueError(f"unknown FunctionCallError kind: {self.kind}") from exc
-        object.__setattr__(self, "message", _ensure_str(self.message, "message"))
-        object.__setattr__(self, "args", (str(self),))
+        self.message = _ensure_str(self.message, "message")
+        self.args = (str(self),)
 
     @property
     def is_model_response(self) -> bool:

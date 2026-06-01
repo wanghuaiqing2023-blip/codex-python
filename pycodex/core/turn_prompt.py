@@ -28,16 +28,14 @@ def build_turn_prompt(
 ) -> Prompt:
     """Build a model ``Prompt`` from turn context and visible history.
 
-    The Rust runtime renders ``turn_context.user_instructions`` as a contextual
-    user fragment before other per-turn user content. Keeping that behavior in
-    one helper lets prompt-debug and the future main agent loop share the same
-    ordering and rendering rules.
+    The Rust runtime expects contextual user fragments, including AGENTS.md
+    instructions, to already be present in ``prompt_input`` after session
+    context recording. Prompt construction itself should preserve input order.
     """
 
-    input_items = input_with_user_instructions(prompt_input, turn_context, has_current_user_input)
     tools = router.model_visible_specs() if hasattr(router, "model_visible_specs") else []
     return Prompt(
-        input=input_items,
+        input=list(prompt_input),
         tools=list(tools),
         parallel_tool_calls=_supports_parallel_tool_calls(turn_context),
         base_instructions=base_instructions,
@@ -52,13 +50,7 @@ def input_with_user_instructions(
     turn_context: Any,
     has_current_user_input: bool,
 ) -> list[ResponseItem]:
-    rendered = render_turn_user_instructions(turn_context)
-    items = list(prompt_input)
-    if rendered is None:
-        return items
-    insert_at = max(len(items) - 1, 0) if has_current_user_input else len(items)
-    items.insert(insert_at, rendered)
-    return items
+    return list(prompt_input)
 
 
 def render_turn_user_instructions(turn_context: Any) -> ResponseItem | None:

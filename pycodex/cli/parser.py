@@ -68,6 +68,7 @@ from pycodex.exec.local_runtime import (
     local_http_exec_shell_tools_enabled,
     local_http_exec_tool_output_max_chars,
     local_http_exec_config_summary,
+    local_http_exec_initial_messages_from_rollout,
     persist_local_http_exec_rollout,
     run_exec_resume_user_turn_http_sampling,
     run_exec_user_turn_http_sampling,
@@ -7914,6 +7915,7 @@ def _build_exec_session_config(bootstrap: ExecConfigBootstrapPlan) -> ExecSessio
         startup_warnings=bootstrap.startup_warnings,
         approval_policy=bootstrap.harness_overrides.approval_policy or AskForApproval.NEVER,
         ephemeral=bool(bootstrap.harness_overrides.ephemeral),
+        show_raw_agent_reasoning=bool(bootstrap.harness_overrides.show_raw_agent_reasoning),
     )
 
 
@@ -8093,6 +8095,8 @@ def _run_noninteractive_exec(
         processor = _build_noninteractive_exec_event_processor(exec_cli)
         try:
             session_config = _build_exec_session_config(bootstrap_plan)
+            if isinstance(processor, HumanEventProcessor):
+                processor.configure_from_config(session_config)
             auth_json = read_auth_json()
             model_client, provider, model_info, resolved_auth = build_default_local_http_exec_runtime(
                 session_config,
@@ -8130,6 +8134,12 @@ def _run_noninteractive_exec(
                 provider_id=session_config.model_provider_id or "openai",
                 session_id=str(model_client.state.session_id),
                 thread_id=str(model_client.state.thread_id),
+                initial_messages=(
+                    local_http_exec_initial_messages_from_rollout(resolved_resume_rollout_path)
+                    if resolved_resume_rollout_path is not None
+                    else None
+                ),
+                rollout_path=resolved_resume_rollout_path,
             )
             if isinstance(processor, JsonEventProcessor):
                 processor.print_config_summary(summary_config, plan.prompt_summary, summary_session, output=out)
@@ -8199,6 +8209,7 @@ def _run_noninteractive_exec(
         emit_local_http_exec_result(
             processor,
             local_result,
+            config=session_config,
             stdout=out,
             stderr=stderr,
         )
@@ -8220,6 +8231,8 @@ def _run_noninteractive_exec(
         session_config = _build_exec_session_config(bootstrap_plan)
         resume_args, resolved_thread_id = _build_resume_args(exec_cli)
         processor = _build_noninteractive_exec_event_processor(exec_cli)
+        if isinstance(processor, HumanEventProcessor):
+            processor.configure_from_config(session_config)
         result = remote_exec_session_connect_and_run(
             connect_args,
             session_config,

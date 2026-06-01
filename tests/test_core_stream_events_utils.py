@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from pycodex.core import (
+    AssistantMessageStreamParsers,
     CompletedResponseItemRecordingPlan,
     FinalizedTurnItemFacts,
     GENERATED_IMAGE_ARTIFACTS_DIR,
@@ -98,6 +99,7 @@ from pycodex.core import (
     tool_call_lifecycle_plan,
     unexpected_tool_output_plan,
 )
+from pycodex.core.client import SamplingRequestRuntimeHookAdapter, SamplingRuntimeEventApplicationState
 from pycodex.core.tool_router import ToolRouter
 from pycodex.core.function_tool import FunctionCallError
 from pycodex.protocol import (
@@ -165,6 +167,50 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
         )
 
         self.assertEqual(last_assistant_message_from_item(item, plan_mode=True), "before\nafter")
+
+    def test_assistant_message_stream_parsers_parse_citations_across_boundaries(self) -> None:
+        parsers = AssistantMessageStreamParsers(plan_mode=False)
+
+        seeded = parsers.seed_item_text("msg-1", "hello <oai-mem-")
+        parsed = parsers.parse_delta("msg-1", "citation>doc</oai-mem-citation> world")
+        tail = parsers.finish_item("msg-1")
+
+        self.assertEqual(seeded, {"visible_text": "hello ", "citations": (), "plan_segments": ()})
+        self.assertEqual(parsed, {"visible_text": " world", "citations": ("doc",), "plan_segments": ()})
+        self.assertEqual(tail, {"visible_text": "", "citations": (), "plan_segments": ()})
+
+    def test_assistant_message_stream_parsers_flush_partial_open_tag_at_finish(self) -> None:
+        parsers = AssistantMessageStreamParsers(plan_mode=False)
+
+        seeded = parsers.seed_item_text("msg-1", "hello <oai-mem-")
+        tail = parsers.finish_item("msg-1")
+
+        self.assertEqual(seeded, {"visible_text": "hello ", "citations": (), "plan_segments": ()})
+        self.assertEqual(tail, {"visible_text": "<oai-mem-", "citations": (), "plan_segments": ()})
+
+    def test_assistant_message_stream_parsers_parse_plan_across_boundaries(self) -> None:
+        parsers = AssistantMessageStreamParsers(plan_mode=True)
+
+        seeded = parsers.seed_item_text("msg-1", "Intro\n<proposed")
+        parsed = parsers.parse_delta("msg-1", "_plan>\n- step\n</proposed_plan>\nOutro")
+        tail = parsers.finish_item("msg-1")
+
+        self.assertEqual(
+            seeded,
+            {"visible_text": "Intro\n", "citations": (), "plan_segments": (("normal", "Intro\n"),)},
+        )
+        self.assertEqual(parsed["visible_text"], "Outro")
+        self.assertEqual(parsed["citations"], ())
+        self.assertEqual(
+            parsed["plan_segments"],
+            (
+                ("proposed_plan_start", ""),
+                ("proposed_plan_delta", "- step\n"),
+                ("proposed_plan_end", ""),
+                ("normal", "Outro"),
+            ),
+        )
+        self.assertEqual(tail, {"visible_text": "", "citations": (), "plan_segments": ()})
 
     def test_memory_citation_from_response_item_parses_rust_citation_markup(self) -> None:
         item = assistant_output_text(
@@ -1108,11 +1154,33 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
                 item_id="rs-1",
                 event_to_emit={
                     "type": "reasoning_content_delta",
+                    "thread_id": "",
+                    "turn_id": "",
                     "item_id": "rs-1",
                     "delta": "summary",
                     "summary_index": 2,
                 },
             ),
+        )
+        self.assertEqual(
+            sampling_reasoning_delta_apply_plan(
+                SamplingReasoningDeltaPlan(
+                    event_type="reasoning_content_delta",
+                    item_id="rs-1",
+                    delta="summary",
+                    summary_index=2,
+                    thread_id="thread-1",
+                    turn_id="turn-1",
+                )
+            ).event_to_emit,
+            {
+                "type": "reasoning_content_delta",
+                "thread_id": "thread-1",
+                "turn_id": "turn-1",
+                "item_id": "rs-1",
+                "delta": "summary",
+                "summary_index": 2,
+            },
         )
         self.assertEqual(
             sampling_reasoning_delta_apply_plan(
@@ -1146,6 +1214,8 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
                 item_id="rs-1",
                 event_to_emit={
                     "type": "reasoning_raw_content_delta",
+                    "thread_id": "",
+                    "turn_id": "",
                     "item_id": "rs-1",
                     "delta": "raw",
                     "content_index": 1,
@@ -1582,6 +1652,8 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
             active_item=reasoning,
             active_item_is_streaming_to_client=True,
             summary_index=0,
+            thread_id="thread-1",
+            turn_id="turn-1",
         )
         self.assertEqual(
             reasoning_delta.reasoning_delta_plan,
@@ -1590,6 +1662,58 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
                 item_id="rs-1",
                 delta="summary",
                 summary_index=0,
+                thread_id="thread-1",
+                turn_id="turn-1",
+            ),
+        )
+
+        class ToolInputConsumer:
+            def consume_diff(self, turn_context, call_id, delta):
+                return {"type": "tool_call_input_delta", "call_id": call_id, "delta": delta}
+
+        tool_delta = sampling_stream_event_dispatch_plan(
+            "response.custom_tool_call_input.delta",
+            {"call_id": "call-1", "delta": "*** Begin Patch"},
+            active_tool_argument_diff_consumer=("call-1", ToolInputConsumer()),
+        )
+        self.assertEqual(tool_delta.event_type, "tool_call_input_delta")
+        self.assertEqual(
+            tool_delta.tool_call_input_delta_plan,
+            SamplingToolCallInputDeltaPlan(
+                call_id="call-1",
+                delta="*** Begin Patch",
+                event={"type": "tool_call_input_delta", "call_id": "call-1", "delta": "*** Begin Patch"},
+            ),
+        )
+
+        tool_delta_without_call_id = sampling_stream_event_dispatch_plan(
+            "response.custom_tool_call_input.delta",
+            {"item_id": "item-1", "delta": " tail"},
+            active_tool_argument_diff_consumer=("call-1", ToolInputConsumer()),
+        )
+        self.assertEqual(
+            tool_delta_without_call_id.tool_call_input_delta_plan.call_id,
+            "call-1",
+        )
+
+        response_named_reasoning_delta = sampling_stream_event_dispatch_plan(
+            "response.reasoning_text.delta",
+            {"delta": "raw", "content_index": 1},
+            active_item=reasoning,
+            active_item_is_streaming_to_client=True,
+            thread_id="thread-1",
+            turn_id="turn-1",
+        )
+        self.assertEqual(response_named_reasoning_delta.event_type, "reasoning_content_delta")
+        self.assertEqual(
+            response_named_reasoning_delta.reasoning_delta_plan,
+            SamplingReasoningDeltaPlan(
+                event_type="reasoning_raw_content_delta",
+                item_id="rs-1",
+                delta="raw",
+                content_index=1,
+                thread_id="thread-1",
+                turn_id="turn-1",
             ),
         )
 
@@ -1899,6 +2023,85 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
                 completed_response_id_after="resp-1",
                 result_needs_follow_up=True,
                 result_last_agent_message="assistant tail",
+            ),
+        )
+
+    def test_sampling_event_state_emits_output_done_flush_delta(self) -> None:
+        active = TurnItem.agent_message(
+            AgentMessageItem(id="msg-1", content=(AgentMessageContent.text_content(""),))
+        )
+        transition = SamplingOutputItemDoneTransitionPlan(
+            previously_active_item=active,
+            previously_streamed_item=active,
+            assistant_text_flush_plan=SamplingAssistantTextFlushPlan(
+                item_id="msg-1",
+                parsed={"visible_text": "tail"},
+            ),
+            thread_id="thread-1",
+            turn_id="turn-1",
+        )
+        apply_plan = SamplingStreamEventApplyPlan(
+            event_type="output_item_done",
+            output_item_done_apply_plan=sampling_output_item_done_apply_plan(
+                assistant_output_text("done"),
+                transition,
+                plan_mode=False,
+                state=SamplingOutputState(),
+                output_result=OutputItemResult(),
+            ),
+        )
+        state = SamplingRuntimeEventApplicationState()
+
+        SamplingRequestRuntimeHookAdapter(event_application_state=state).apply_event_plan(
+            {"type": "apply_event_plan", "plan": apply_plan}
+        )
+
+        self.assertEqual(
+            state.emitted_stream_events,
+            (
+                {
+                    "type": "agent_message_content_delta",
+                    "thread_id": "thread-1",
+                    "turn_id": "turn-1",
+                    "item_id": "msg-1",
+                    "delta": "tail",
+                },
+            ),
+        )
+
+    def test_sampling_event_state_emits_completed_flush_all_deltas(self) -> None:
+        completed = SamplingCompletedEventApplyPlan(
+            response_id="resp-1",
+            flush_all_plan=SamplingAssistantTextFlushAllPlan(
+                (
+                    SamplingAssistantTextFlushPlan("msg-1", {"visible_text": "tail"}),
+                    SamplingAssistantTextFlushPlan("msg-2", {"visible_text": ""}),
+                )
+            ),
+            completed_response_id_after="resp-1",
+            thread_id="thread-1",
+            turn_id="turn-1",
+        )
+        apply_plan = SamplingStreamEventApplyPlan(
+            event_type="completed",
+            completed_event_apply_plan=completed,
+        )
+        state = SamplingRuntimeEventApplicationState()
+
+        SamplingRequestRuntimeHookAdapter(event_application_state=state).apply_event_plan(
+            {"type": "apply_event_plan", "plan": apply_plan}
+        )
+
+        self.assertEqual(
+            state.emitted_stream_events,
+            (
+                {
+                    "type": "agent_message_content_delta",
+                    "thread_id": "thread-1",
+                    "turn_id": "turn-1",
+                    "item_id": "msg-1",
+                    "delta": "tail",
+                },
             ),
         )
 
@@ -2393,7 +2596,7 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
         )
 
         plan = completed_response_item_recording_plan(
-            assistant_output_text("analysis", MessagePhase.POST_COMPACT),
+            assistant_output_text("analysis", MessagePhase.COMMENTARY),
             plan_mode=False,
             finalized_facts=facts,
         )

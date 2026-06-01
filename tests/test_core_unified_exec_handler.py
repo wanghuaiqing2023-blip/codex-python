@@ -281,7 +281,7 @@ class CoreUnifiedExecHandlerTests(unittest.TestCase):
     def test_get_command_uses_session_shell_when_unspecified(self) -> None:
         args = ExecCommandArgs.from_json('{"cmd":"echo hello"}')
         resolved = get_command(args, Shell(ShellType.BASH, "/bin/bash"), allow_login_shell=True)
-        self.assertEqual(resolved.command, (str(Path("/bin/bash")), "-lc", "echo hello"))
+        self.assertEqual(resolved.command, ("/bin/bash", "-lc", "echo hello"))
         self.assertEqual(resolved.shell_type, ShellType.BASH)
 
     def test_get_command_rejects_explicit_login_when_disallowed(self) -> None:
@@ -347,7 +347,7 @@ class CoreUnifiedExecHandlerTests(unittest.TestCase):
         self.assertEqual(resolved.cwd, Path("/remote/project"))
         self.assertEqual(resolved.environment_args.environment_id, "remote")
         self.assertEqual(resolved.args.cmd, "pwd")
-        self.assertEqual(resolved.resolved_command.command, (str(Path("/bin/bash")), "-c", "pwd"))
+        self.assertEqual(resolved.resolved_command.command, ("/bin/bash", "-c", "pwd"))
 
     def test_resolve_exec_command_invocation_defaults_to_primary_environment(self) -> None:
         primary = SimpleNamespace(environment_id="local", cwd=Path("/local"))

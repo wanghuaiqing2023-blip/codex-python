@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from pycodex.core.client import ModelClient
 from pycodex.core.codex_thread import SETTINGS_UNSET, SessionSettingsUpdate
+from pycodex.core.compact_remote import IMAGE_CONTENT_OMITTED_PLACEHOLDER
 from pycodex.core.features import Feature
 from pycodex.core.turn_sampler import sample_with_model_client_session
 from pycodex.core.turn_runtime import (
@@ -12,19 +13,29 @@ from pycodex.core.turn_runtime import (
     run_user_turn_sampling_from_session,
 )
 from pycodex.core.tool_context import FunctionToolOutput
+from pycodex.core.tool_router import FunctionCallError
 from pycodex.core.tool_registry import ToolRegistry
 from pycodex.core.tool_router import ToolRouter
 from pycodex.protocol import (
     ApplyPatchToolType,
     BaseInstructions,
+    CodexErr,
     ContentItem,
+    EventMsg,
+    FunctionCallOutputContentItem,
+    FunctionCallOutputPayload,
+    HookPromptFragment,
     Op,
+    RateLimitSnapshot,
+    RateLimitWindow,
     ReasoningEffort,
     ResponseItem,
     ThreadSettingsOverrides,
+    TokenUsage,
     TurnEnvironmentSelection,
     UserInput,
     ToolName,
+    UsageLimitReachedError,
 )
 
 
@@ -53,6 +64,43 @@ class EchoHandler:
         return FunctionToolOutput.from_text("tool ok", True)
 
 
+class FatalHandler:
+    def tool_name(self) -> ToolName:
+        return ToolName.plain("fatal_tool")
+
+    def handle(self, _invocation):
+        raise FunctionCallError.fatal("tool exploded")
+
+
+class DiffConsumer:
+    def __init__(self) -> None:
+        self.deltas = []
+
+    def consume_diff(self, turn_context, call_id, delta):
+        self.deltas.append((turn_context, call_id, delta))
+        return {"type": "tool_call_input_delta", "call_id": call_id, "delta": delta}
+
+    def finish(self):
+        return {"type": "tool_call_input_done"}
+
+
+class CustomDiffHandler:
+    def __init__(self, consumer: DiffConsumer) -> None:
+        self.consumer = consumer
+
+    def tool_name(self) -> ToolName:
+        return ToolName.plain("apply_patch")
+
+    def matches_kind(self, payload) -> bool:
+        return payload.type == "custom"
+
+    def handle(self, _invocation):
+        return FunctionToolOutput.from_text("patched", True)
+
+    def create_diff_consumer(self):
+        return self.consumer
+
+
 class FeatureSet:
     def __init__(self, *features) -> None:
         self.features = set(features)
@@ -61,6 +109,28 @@ class FeatureSet:
         if not isinstance(feature, Feature):
             raise TypeError("feature must be Feature")
         return feature in self.features
+
+
+class CancellationToken:
+    def __init__(self, cancelled: bool = False) -> None:
+        self.cancelled = cancelled
+
+    def is_cancelled(self) -> bool:
+        return self.cancelled
+
+
+class PendingInputQueue:
+    def __init__(self) -> None:
+        self.items = []
+        self.calls = 0
+        self.active_turns = []
+
+    async def get_pending_input(self, _active_turn=None):
+        self.calls += 1
+        self.active_turns.append(_active_turn)
+        items = tuple(self.items)
+        self.items.clear()
+        return items
 
 
 class TurnMetadataState:
@@ -87,6 +157,21 @@ class Session:
         self.environments = None
         self._pending_environments = None
         self.final_output_json_schema = None
+        self.total_tokens_full_turn_context = None
+        self.updated_rate_limits = []
+        self.recorded_rate_limits = []
+        self.recorded_token_usage = []
+        self.turn_error_lifecycle = []
+        self.token_count_turn_contexts = []
+        self.goal_runtime_events = []
+        self.server_reasoning_included = None
+        self.models_etags = []
+        self.emitted_events = []
+        self.features = FeatureSet()
+        self.tail_calls = []
+        self.unified_diff = None
+        self.input_queue = None
+        self.active_turn = object()
 
     async def new_default_turn(self) -> object:
         environments = self.environments
@@ -131,6 +216,59 @@ class Session:
     async def get_base_instructions(self) -> BaseInstructions:
         return BaseInstructions("base")
 
+    async def set_total_tokens_full(self, turn_context: object) -> None:
+        self.total_tokens_full_turn_context = turn_context
+
+    async def update_rate_limits(self, turn_context: object, rate_limits: RateLimitSnapshot) -> None:
+        self.updated_rate_limits.append((turn_context, rate_limits))
+
+    async def goal_runtime_apply(self, event: object) -> None:
+        self.goal_runtime_events.append(event)
+
+    async def emit_turn_error_lifecycle(self, turn_context: object, codex_error_info: object) -> None:
+        self.turn_error_lifecycle.append((turn_context, codex_error_info))
+
+    async def record_rate_limits_info(self, rate_limits: object) -> None:
+        self.recorded_rate_limits.append(rate_limits)
+
+    async def record_token_usage_info(self, turn_context: object, usage: TokenUsage) -> None:
+        self.recorded_token_usage.append((turn_context, usage))
+
+    async def send_token_count_event(self, turn_context: object) -> None:
+        self.token_count_turn_contexts.append(turn_context)
+        self.tail_calls.append(("token_count", turn_context))
+
+    async def set_server_reasoning_included(self, included: bool) -> None:
+        self.server_reasoning_included = included
+
+    async def refresh_models_etag(self, etag: str) -> None:
+        self.models_etags.append(etag)
+
+    async def send_response_processed(self, response_id: str) -> None:
+        self.tail_calls.append(("response_processed", response_id))
+
+    async def drain_in_flight(self) -> None:
+        self.tail_calls.append(("drain_in_flight",))
+
+    async def get_unified_diff(self) -> str | None:
+        return self.unified_diff
+
+    async def send_event(self, _turn_context: object, event: EventMsg | dict) -> None:
+        if isinstance(event, EventMsg):
+            self.emitted_events.append(event)
+        else:
+            self.emitted_events.append(EventMsg.from_mapping(event))
+        if self.emitted_events[-1].type == "turn_diff":
+            self.tail_calls.append(("turn_diff", self.emitted_events[-1].payload.unified_diff))
+
+
+def non_lifecycle_events(session: Session) -> tuple[EventMsg, ...]:
+    return tuple(event for event in session.emitted_events if event.type not in {"task_started", "task_complete"})
+
+
+def events_of_type(session: Session, event_type: str) -> tuple[EventMsg, ...]:
+    return tuple(event for event in session.emitted_events if event.type == event_type)
+
 
 class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_build_user_turn_responses_request_records_turn_and_builds_request(self) -> None:
@@ -161,8 +299,86 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plan.request["tools"], [{"type": "function", "name": "tool"}])
         self.assertEqual(plan.request["service_tier"], "auto")
         self.assertEqual(plan.request["input"][0].role, "developer")
-        self.assertIn("project instructions", plan.request["input"][1].content[0].text)
-        self.assertEqual(plan.request["input"][2].content[0].text, "hello")
+        self.assertEqual(plan.request["input"][1].content[0].text, "hello")
+
+    async def test_build_user_turn_request_normalizes_history_call_outputs_for_prompt(self) -> None:
+        session = Session()
+        function_call = ResponseItem.function_call("tool", "{}", "call-1")
+        orphan_output = ResponseItem.from_mapping(
+            {
+                "type": "function_call_output",
+                "call_id": "orphan",
+                "output": "drop",
+            }
+        )
+        session.history.extend((function_call, orphan_output))
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            input_modalities=("text",),
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+
+        plan = await build_user_turn_responses_request_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        input_items = plan.request["input"]
+        self.assertEqual(
+            [item.type for item in input_items],
+            ["message", "function_call", "function_call_output", "message"],
+        )
+        self.assertIs(input_items[1], function_call)
+        self.assertEqual(input_items[2].call_id, "call-1")
+        self.assertEqual(input_items[2].output.to_text(), "aborted")
+        self.assertNotIn(orphan_output, input_items)
+
+    async def test_build_user_turn_request_strips_unsupported_images_for_prompt(self) -> None:
+        session = Session()
+        image_message = ResponseItem.message(
+            "user",
+            (
+                ContentItem.input_text("look"),
+                ContentItem.input_image("data:image/png;base64,AAA"),
+            ),
+        )
+        session.history.append(image_message)
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            input_modalities=("text",),
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+
+        plan = await build_user_turn_responses_request_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        input_items = plan.request["input"]
+        self.assertEqual(
+            input_items[1].content,
+            (
+                ContentItem.input_text("look"),
+                ContentItem.input_text(IMAGE_CONTENT_OMITTED_PLACEHOLDER),
+            ),
+        )
+        self.assertEqual(session.history[-2], image_message)
 
     async def test_build_user_turn_request_uses_turn_config_reasoning_and_service_tier_defaults(self) -> None:
         session = Session()
@@ -407,8 +623,8 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("tokens truncated", request_browser_text)
         self.assertLessEqual(len(request_app_text), max_expected_context_text_bytes)
         self.assertLessEqual(len(request_browser_text), max_expected_context_text_bytes)
-        self.assertIn(f"<app>app-head-{\"y\" * 1024}", request_app_text)
-        self.assertIn(f"<external_browser_info>browser-head-{\"x\" * 1024}", request_browser_text)
+        self.assertIn("<app>app-head-" + ("y" * 1024), request_app_text)
+        self.assertIn("<external_browser_info>browser-head-" + ("x" * 1024), request_browser_text)
         self.assertTrue(request_app_text.endswith("app-tail</app>"))
         self.assertTrue(request_browser_text.endswith("browser-tail</external_browser_info>"))
         self.assertTrue(
@@ -696,7 +912,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
-    async def test_additional_context_empty_map_clears_then_readds_values(self) -> None:
+    async def test_additional_context_empty_map_clears_store_then_readds_values(self) -> None:
         session = Session()
         client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
@@ -751,7 +967,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("<app>context</app>", [item.content[0].text for item in first_plan.request["input"] if item.role == "developer"])
         self.assertTrue(any(item.role == "user" and item.content[0].text == "cleared" for item in cleared_plan.request["input"]))
-        self.assertFalse(any(
+        self.assertTrue(any(
             item.role == "developer" and item.content[0].text == "<app>context</app>"
             for item in cleared_plan.request["input"]
         ))
@@ -821,9 +1037,12 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(user_texts(second_plan), ["hello"])
         self.assertEqual(user_texts(third_plan), ["hello"])
         self.assertEqual(user_texts(fourth_plan), ["hello"])
-        self.assertEqual(len(session.recorded), 2)
-        self.assertEqual(session.recorded[0][0].content[0].text, "<app>context</app>")
-        self.assertEqual(session.recorded[1][0].content[0].text, "<app>context</app>")
+        additional_context_batches = [
+            batch
+            for batch in session.recorded
+            if batch and batch[0].role == "developer" and batch[0].content[0].text == "<app>context</app>"
+        ]
+        self.assertEqual(len(additional_context_batches), 2)
 
     async def test_build_user_turn_request_uses_turn_context_model_info(self) -> None:
         session = Session()
@@ -872,7 +1091,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         result = await run_user_turn_sampling_from_session(
             session,
-            (UserInput.text_input("hello"),),
+            (),
             client,
             provider,
             model_info,
@@ -886,6 +1105,1000 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.response_items[0].role, "assistant")
         self.assertEqual(session.recorded[-1], result.response_items)
         self.assertEqual(session.history[-1].content[0].text, "done")
+        self.assertEqual(result.last_agent_message, "done")
+
+    async def test_run_user_turn_sampling_emits_turn_lifecycle_events(self) -> None:
+        session = Session()
+        session.turn_context.turn_id = "turn-1"
+        session.turn_context.trace_id = "trace-1"
+        session.turn_context.started_at = 10
+        session.turn_context.completed_at = 12
+        session.turn_context.duration_ms = 2000
+        session.turn_context.time_to_first_token_ms = 250
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            context_window=128000,
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        session.turn_context.model_info = model_info
+
+        async def sampler(_request):
+            return [ResponseItem.message("assistant", (ContentItem.output_text("done"),))]
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(tuple(event.type for event in session.emitted_events), ("task_started", "task_complete"))
+        started = session.emitted_events[0].payload
+        completed = session.emitted_events[1].payload
+        self.assertEqual(started.turn_id, "turn-1")
+        self.assertEqual(started.trace_id, "trace-1")
+        self.assertEqual(started.started_at, 10)
+        self.assertEqual(started.model_context_window, 128000)
+        self.assertEqual(completed.turn_id, "turn-1")
+        self.assertEqual(completed.last_agent_message, "done")
+        self.assertEqual(completed.completed_at, 12)
+        self.assertEqual(completed.duration_ms, 2000)
+        self.assertEqual(completed.time_to_first_token_ms, 250)
+        self.assertFalse(session.server_reasoning_included)
+        self.assertEqual(result.session_events, tuple(session.emitted_events))
+
+    async def test_run_user_turn_sampling_after_agent_abort_emits_error_and_clears_last_message(self) -> None:
+        session = Session()
+        session.turn_context.turn_id = "turn-1"
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        after_agent_calls = []
+
+        async def after_agent_hook(_turn_context, input_messages, last_agent_message):
+            after_agent_calls.append((input_messages, last_agent_message))
+            return {
+                "hook_name": "lint-after-agent",
+                "should_abort": True,
+                "error": "final answer missing required note",
+            }
+
+        session.run_legacy_after_agent_hook = after_agent_hook
+
+        async def sampler(_request):
+            return [ResponseItem.message("assistant", (ContentItem.output_text("done"),))]
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(after_agent_calls, [(("hello",), "done")])
+        self.assertEqual(result.response_items[-1].content[0].text, "done")
+        self.assertIsNone(result.last_agent_message)
+        self.assertEqual(
+            tuple(event.type for event in session.emitted_events),
+            ("task_started", "error", "task_complete"),
+        )
+        self.assertIn("lint-after-agent", session.emitted_events[1].payload.message)
+        self.assertIn("final answer missing required note", session.emitted_events[1].payload.message)
+        self.assertIsNone(session.emitted_events[2].payload.last_agent_message)
+
+    async def test_run_user_turn_sampling_returns_streamed_last_agent_message(self) -> None:
+        session = Session()
+        session.turn_context.turn_id = "turn-1"
+        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        assistant = ResponseItem.message("assistant", (ContentItem.output_text("streamed final"),), id="msg-1")
+
+        async def sampler(_request):
+            return SimpleNamespace(
+                response_items=(),
+                stream_events=(
+                    {"type": "output_item_added", "item": ResponseItem.message("assistant", (), id="msg-1")},
+                    {"type": "output_text_delta", "delta": "streamed final"},
+                    {"type": "output_item_done", "item": assistant},
+                    {"type": "completed", "response_id": "resp-1", "end_turn": True},
+                ),
+            )
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(result.response_items, ())
+        self.assertEqual(result.last_agent_message, "streamed final")
+
+    async def test_run_user_turn_sampling_stop_hook_continuation_prompts_followup(self) -> None:
+        session = Session()
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        stop_hook_calls = []
+        stop_hook_outcomes = [
+            SimpleNamespace(
+                should_block=True,
+                continuation_fragments=(HookPromptFragment.from_single_hook("Revise with tests.", "hook-run-1"),),
+            ),
+            SimpleNamespace(should_block=False, should_stop=True),
+        ]
+
+        async def stop_hook(_turn_context, stop_hook_active, last_agent_message):
+            stop_hook_calls.append((stop_hook_active, last_agent_message))
+            return stop_hook_outcomes.pop(0)
+
+        session.run_turn_stop_hook = stop_hook
+        seen_requests = []
+
+        async def sampler(request):
+            seen_requests.append(request)
+            if len(seen_requests) == 1:
+                return [ResponseItem.message("assistant", (ContentItem.output_text("draft"),))]
+            return [ResponseItem.message("assistant", (ContentItem.output_text("final"),))]
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(len(seen_requests), 2)
+        self.assertEqual(stop_hook_calls, [(False, "draft"), (True, "final")])
+        self.assertEqual(result.last_agent_message, "final")
+        hook_prompt = seen_requests[1].request_plan.request["input"][-1]
+        self.assertEqual(hook_prompt.role, "user")
+        self.assertIn("Revise with tests.", hook_prompt.content[0].text)
+        self.assertIn("hook-run-1", hook_prompt.content[0].text)
+        self.assertEqual(session.history[-1].content[0].text, "final")
+
+    async def test_run_user_turn_sampling_stop_hook_block_without_prompt_warns_and_finishes(self) -> None:
+        session = Session()
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+
+        async def stop_hook(_turn_context, _stop_hook_active, _last_agent_message):
+            return SimpleNamespace(should_block=True, continuation_fragments=())
+
+        session.run_turn_stop_hook = stop_hook
+        seen_requests = []
+
+        async def sampler(request):
+            seen_requests.append(request)
+            return [ResponseItem.message("assistant", (ContentItem.output_text("done"),))]
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(len(seen_requests), 1)
+        self.assertEqual(result.last_agent_message, "done")
+        warning = events_of_type(session, "warning")[-1]
+        self.assertEqual(warning.type, "warning")
+        self.assertEqual(
+            warning.payload.message,
+            "Stop hook requested continuation without a prompt; ignoring the block.",
+        )
+
+    async def test_run_user_turn_sampling_projects_sampler_stream_events(self) -> None:
+        session = Session()
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        consumer = DiffConsumer()
+        router = ToolRouter.from_parts(ToolRegistry.from_tools([CustomDiffHandler(consumer)]), ())
+        custom_call = ResponseItem.custom_tool_call(
+            "apply_patch",
+            "*** Begin Patch",
+            "call-1",
+            id="custom-1",
+        )
+
+        async def sampler(_request):
+            return SimpleNamespace(
+                response_items=(ResponseItem.message("assistant", (ContentItem.output_text("done"),)),),
+                stream_events=(
+                    {"type": "output_item_added", "item": custom_call},
+                    {
+                        "type": "tool_call_input_delta",
+                        "item_id": "custom-1",
+                        "call_id": "call-1",
+                        "delta": "*** Begin Patch",
+                    },
+                    {"type": "output_item_done", "item": custom_call},
+                    {"type": "completed", "response_id": "resp-1", "end_turn": True},
+                ),
+            )
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: router,
+        )
+
+        self.assertEqual(tuple(event["type"] for event in result.stream_events), (
+            "output_item_added",
+            "tool_call_input_delta",
+            "output_item_done",
+            "completed",
+        ))
+        self.assertEqual(
+            tuple(plan.event_type for plan in result.stream_event_dispatch_plans),
+            (
+                "output_item_added",
+                "tool_call_input_delta",
+                "output_item_done",
+                "completed",
+            ),
+        )
+        self.assertEqual(
+            tuple(plan.event_type for plan in result.stream_event_apply_plans),
+            (
+                "output_item_added",
+                "tool_call_input_delta",
+                "output_item_done",
+                "completed",
+            ),
+        )
+        self.assertIsNotNone(result.stream_event_dispatch_plans[0].output_item_added_plan)
+        self.assertEqual(
+            result.stream_event_dispatch_plans[1].tool_call_input_delta_plan.event,
+            {"type": "tool_call_input_delta", "call_id": "call-1", "delta": "*** Begin Patch"},
+        )
+        self.assertEqual(result.stream_runtime_state_summary["applied_event_types"], (
+            "output_item_added",
+            "tool_call_input_delta",
+            "output_item_done",
+            "completed",
+        ))
+        self.assertEqual(result.stream_runtime_state_summary["completed_response_id"], "resp-1")
+        self.assertTrue(result.stream_runtime_state_summary["result_needs_follow_up"])
+        self.assertEqual(
+            result.stream_runtime_state_summary["tool_call_input_delta_events"],
+            (
+                {
+                    "call_id": "call-1",
+                    "delta": "*** Begin Patch",
+                    "should_send_event": True,
+                    "has_event_to_emit": True,
+                },
+            ),
+        )
+        self.assertEqual(consumer.deltas, [(session.turn_context, "call-1", "*** Begin Patch")])
+        self.assertEqual(tuple(event.type for event in non_lifecycle_events(session)), ("tool_call_input_delta",))
+        self.assertEqual(result.session_events, tuple(session.emitted_events))
+
+    async def test_run_user_turn_sampling_projects_reasoning_stream_events_with_protocol_ids(self) -> None:
+        session = Session()
+        session.turn_context.turn_id = "turn-1"
+        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        reasoning = ResponseItem.reasoning(id="reason-1")
+
+        async def sampler(_request):
+            return SimpleNamespace(
+                response_items=(ResponseItem.message("assistant", (ContentItem.output_text("done"),)),),
+                stream_events=(
+                    {"type": "output_item_added", "item": reasoning},
+                    {"type": "reasoning_summary_delta", "delta": "summary", "summary_index": 0},
+                    {"type": "reasoning_content_delta", "delta": "raw", "content_index": 1},
+                    {"type": "reasoning_summary_part_added", "summary_index": 2},
+                    {"type": "output_item_done", "item": reasoning},
+                    {"type": "completed", "response_id": "resp-1", "end_turn": True},
+                ),
+            )
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        emitted = result.stream_runtime_state_summary["emitted_stream_events"]
+        self.assertEqual(
+            emitted,
+            (
+                {
+                    "type": "reasoning_content_delta",
+                    "thread_id": "thread-1",
+                    "turn_id": "turn-1",
+                    "item_id": "reason-1",
+                    "delta": "summary",
+                    "summary_index": 0,
+                },
+                {
+                    "type": "reasoning_raw_content_delta",
+                    "thread_id": "thread-1",
+                    "turn_id": "turn-1",
+                    "item_id": "reason-1",
+                    "delta": "raw",
+                    "content_index": 1,
+                },
+                {
+                    "type": "agent_reasoning_section_break",
+                    "item_id": "reason-1",
+                    "summary_index": 2,
+                },
+            ),
+        )
+        self.assertEqual(EventMsg.from_mapping(emitted[0]).payload.thread_id, "thread-1")
+        self.assertEqual(EventMsg.from_mapping(emitted[1]).payload.turn_id, "turn-1")
+        self.assertEqual(EventMsg.from_mapping(emitted[2]).payload.summary_index, 2)
+        self.assertEqual(
+            tuple(event.type for event in non_lifecycle_events(session)),
+            (
+                "reasoning_content_delta",
+                "reasoning_raw_content_delta",
+                "agent_reasoning_section_break",
+            ),
+        )
+        reasoning_events = non_lifecycle_events(session)
+        self.assertEqual(reasoning_events[0].payload.thread_id, "thread-1")
+        self.assertEqual(reasoning_events[1].payload.turn_id, "turn-1")
+        self.assertEqual(reasoning_events[2].payload.summary_index, 2)
+        self.assertEqual(result.session_events, tuple(session.emitted_events))
+
+    async def test_run_user_turn_sampling_applies_stream_completed_usage_to_session(self) -> None:
+        session = Session()
+        session.turn_context.turn_id = "turn-1"
+        session.features = FeatureSet(Feature.RESPONSES_WEBSOCKET_RESPONSE_PROCESSED)
+        session.unified_diff = "diff --git a/file b/file"
+        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        usage = {
+            "input_tokens": 5,
+            "input_tokens_details": {"cached_tokens": 1},
+            "output_tokens": 7,
+            "output_tokens_details": {"reasoning_tokens": 2},
+            "total_tokens": 12,
+        }
+
+        async def sampler(_request):
+            return SimpleNamespace(
+                response_items=(ResponseItem.message("assistant", (ContentItem.output_text("done"),)),),
+                stream_events=(
+                    {"type": "completed", "response_id": "resp-1", "token_usage": usage, "end_turn": True},
+                ),
+            )
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(len(session.recorded_token_usage), 1)
+        self.assertIs(session.recorded_token_usage[0][0], session.turn_context)
+        self.assertEqual(session.recorded_token_usage[0][1].input_tokens, 5)
+        self.assertEqual(session.recorded_token_usage[0][1].cached_input_tokens, 1)
+        self.assertEqual(session.recorded_token_usage[0][1].output_tokens, 7)
+        self.assertEqual(session.recorded_token_usage[0][1].reasoning_output_tokens, 2)
+        self.assertEqual(session.recorded_token_usage[0][1].total_tokens, 12)
+        self.assertEqual(session.token_count_turn_contexts, [session.turn_context])
+        self.assertEqual(
+            session.tail_calls,
+            [
+                ("response_processed", "resp-1"),
+                ("drain_in_flight",),
+                ("token_count", session.turn_context),
+                ("turn_diff", "diff --git a/file b/file"),
+            ],
+        )
+        self.assertIsNone(result.stream_runtime_state_summary["token_usage_to_record"])
+
+    async def test_run_user_turn_sampling_applies_stream_metadata_to_session(self) -> None:
+        session = Session()
+        session.turn_context.turn_id = "turn-1"
+        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        rate_limits = {"remaining": 10}
+
+        async def sampler(_request):
+            return SimpleNamespace(
+                response_items=(ResponseItem.message("assistant", (ContentItem.output_text("done"),)),),
+                stream_events=(
+                    {"type": "server_reasoning_included", "server_reasoning_included": True},
+                    {"type": "models_etag", "models_etag": "etag-1"},
+                    {"type": "rate_limits", "rate_limits": rate_limits},
+                    {"type": "completed", "response_id": "resp-1", "end_turn": True},
+                ),
+            )
+
+        await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertTrue(session.server_reasoning_included)
+        self.assertEqual(session.models_etags, ["etag-1"])
+        self.assertEqual(session.recorded_rate_limits, [rate_limits])
+        self.assertEqual(
+            session.tail_calls,
+            [
+                ("drain_in_flight",),
+                ("token_count", session.turn_context),
+            ],
+        )
+
+    async def test_run_user_turn_sampling_turn_aborted_after_stream_tail_returns_partial_result(self) -> None:
+        session = Session()
+        session.features = FeatureSet(Feature.RESPONSES_WEBSOCKET_RESPONSE_PROCESSED)
+        session.unified_diff = "diff --git a/file b/file"
+        session.turn_context.cancellation_token = CancellationToken(cancelled=True)
+        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        assistant = ResponseItem.message("assistant", (ContentItem.output_text("partial"),))
+
+        async def sampler(_request):
+            return SimpleNamespace(
+                response_items=(assistant,),
+                stream_events=(
+                    {
+                        "type": "completed",
+                        "response_id": "resp-1",
+                        "token_usage": {"input_tokens": 5, "output_tokens": 2, "total_tokens": 7},
+                        "end_turn": True,
+                    },
+                ),
+            )
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(result.response_items, (assistant,))
+        self.assertEqual(result.turn_status, "interrupted")
+        self.assertEqual(
+            session.tail_calls,
+            [
+                ("response_processed", "resp-1"),
+                ("drain_in_flight",),
+                ("token_count", session.turn_context),
+            ],
+        )
+        self.assertEqual([event.type for event in session.emitted_events], ["task_started"])
+        self.assertEqual(session.recorded_token_usage[0][1].total_tokens, 7)
+
+    async def test_run_user_turn_sampling_turn_aborted_before_sampling_result_returns_interrupted(self) -> None:
+        session = Session()
+        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+
+        async def sampler(_request):
+            raise CodexErr.simple("turn_aborted")
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(result.turn_status, "interrupted")
+        self.assertEqual(result.response_items, ())
+        self.assertEqual(result.raw_results, ())
+        self.assertIsNone(result.raw_result)
+        self.assertEqual([event.type for event in session.emitted_events], ["task_started"])
+
+    async def test_run_user_turn_sampling_turn_aborted_during_followup_returns_accumulated_interrupted(self) -> None:
+        session = Session()
+        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        seen_requests = []
+        first = ResponseItem.message("assistant", (ContentItem.output_text("partial"),), id="msg-1")
+
+        async def sampler(request):
+            seen_requests.append(request)
+            if len(seen_requests) == 1:
+                return SimpleNamespace(
+                    response_items=(first,),
+                    stream_events=(
+                        {"type": "completed", "response_id": "resp-1", "end_turn": False},
+                    ),
+                )
+            raise CodexErr.simple("turn_aborted")
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(len(seen_requests), 2)
+        self.assertEqual(result.turn_status, "interrupted")
+        self.assertEqual(result.response_items, (first,))
+        self.assertEqual(len(result.request_plans), 2)
+        self.assertEqual(len(result.raw_results), 1)
+        self.assertEqual([event.type for event in session.emitted_events], ["task_started"])
+
+    async def test_run_user_turn_sampling_emits_assistant_text_stream_deltas(self) -> None:
+        session = Session()
+        session.turn_context.turn_id = "turn-1"
+        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        assistant = ResponseItem.message(
+            "assistant",
+            (ContentItem.output_text("hello"),),
+            id="msg-1",
+        )
+
+        async def sampler(_request):
+            return SimpleNamespace(
+                response_items=(assistant,),
+                stream_events=(
+                    {"type": "output_item_added", "item": ResponseItem.message("assistant", (), id="msg-1")},
+                    {"type": "output_text_delta", "delta": "hello"},
+                    {"type": "output_item_done", "item": assistant},
+                    {"type": "completed", "response_id": "resp-1", "end_turn": True},
+                ),
+            )
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(
+            result.stream_runtime_state_summary["assistant_text_deltas"],
+            (
+                {
+                    "item_id": "msg-1",
+                    "visible_text_delta": "hello",
+                    "has_plan_segments_plan": False,
+                    "citations": (),
+                    "ignored_citations": False,
+                    "event_to_emit": {
+                        "type": "agent_message_content_delta",
+                        "thread_id": "thread-1",
+                        "turn_id": "turn-1",
+                        "item_id": "msg-1",
+                        "delta": "hello",
+                    },
+                },
+            ),
+        )
+        delta_events = events_of_type(session, "agent_message_content_delta")
+        self.assertEqual(tuple(event.type for event in delta_events), ("agent_message_content_delta",))
+        self.assertEqual(delta_events[0].payload.thread_id, "thread-1")
+        self.assertEqual(delta_events[0].payload.turn_id, "turn-1")
+        self.assertEqual(delta_events[0].payload.delta, "hello")
+
+    async def test_run_user_turn_sampling_parses_streamed_citations_across_boundaries(self) -> None:
+        session = Session()
+        session.turn_context.turn_id = "turn-1"
+        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        assistant = ResponseItem.message(
+            "assistant",
+            (ContentItem.output_text("hello <oai-mem-citation>doc</oai-mem-citation> world"),),
+            id="msg-1",
+        )
+
+        async def sampler(_request):
+            return SimpleNamespace(
+                response_items=(assistant,),
+                stream_events=(
+                    {
+                        "type": "output_item_added",
+                        "item": ResponseItem.message(
+                            "assistant",
+                            (ContentItem.output_text("hello <oai-mem-"),),
+                            id="msg-1",
+                        ),
+                    },
+                    {"type": "output_text_delta", "delta": "citation>doc</oai-mem-citation> world"},
+                    {"type": "output_item_done", "item": assistant},
+                    {"type": "completed", "response_id": "resp-1", "end_turn": True},
+                ),
+            )
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(tuple(event.payload.delta for event in events_of_type(session, "agent_message_content_delta")), (" world",))
+        self.assertEqual(result.stream_runtime_state_summary["assistant_text_deltas"][0]["citations"], ("doc",))
+
+    async def test_run_user_turn_sampling_routes_plan_mode_segments_to_plan_events(self) -> None:
+        session = Session()
+        session.turn_context.turn_id = "turn-1"
+        session.turn_context.collaboration_mode = SimpleNamespace(mode="plan")
+        client = ModelClient(
+            session_id="session",
+            thread_id="019e7f56-8d12-7a72-bc3a-50921c618fe7",
+            installation_id="install",
+        )
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        assistant = ResponseItem.message(
+            "assistant",
+            (ContentItem.output_text("<proposed_plan>\n- step\n</proposed_plan>\n"),),
+            id="msg-1",
+        )
+
+        async def sampler(_request):
+            return SimpleNamespace(
+                response_items=(assistant,),
+                stream_events=(
+                    {"type": "output_item_added", "item": ResponseItem.message("assistant", (), id="msg-1")},
+                    {"type": "output_text_delta", "delta": "<proposed_plan>\n"},
+                    {"type": "output_text_delta", "delta": "- step\n"},
+                    {"type": "output_text_delta", "delta": "</proposed_plan>\n"},
+                    {"type": "output_item_done", "item": assistant},
+                    {"type": "completed", "response_id": "resp-1", "end_turn": True},
+                ),
+            )
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(
+            tuple(event.type for event in non_lifecycle_events(session)),
+            ("item_started", "plan_delta", "item_completed"),
+        )
+        plan_events = non_lifecycle_events(session)
+        self.assertEqual(plan_events[0].payload.item.id(), "turn-1-plan")
+        self.assertEqual(plan_events[1].payload.delta, "- step\n")
+        self.assertEqual(plan_events[2].payload.item.item.text, "\n- step\n")
+        self.assertTrue(result.stream_runtime_state_summary["plan_item_completed"])
+
+    async def test_run_user_turn_sampling_completes_plan_mode_item_without_plan_deltas(self) -> None:
+        session = Session()
+        session.turn_context.turn_id = "turn-1"
+        session.turn_context.collaboration_mode = SimpleNamespace(mode="plan")
+        thread_id = "019e7f56-8d12-7a72-bc3a-50921c618fe7"
+        client = ModelClient(session_id="session", thread_id=thread_id, installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        assistant = ResponseItem.message(
+            "assistant",
+            (ContentItem.output_text("<proposed_plan>\n- final\n</proposed_plan>\n"),),
+            id="msg-1",
+        )
+
+        async def sampler(_request):
+            return SimpleNamespace(
+                response_items=(assistant,),
+                stream_events=(
+                    {"type": "output_item_added", "item": ResponseItem.message("assistant", (), id="msg-1")},
+                    {"type": "output_item_done", "item": assistant},
+                    {"type": "completed", "response_id": "resp-1", "end_turn": True},
+                ),
+            )
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        plan_events = non_lifecycle_events(session)
+        self.assertEqual(tuple(event.type for event in plan_events), ("item_started", "item_completed"))
+        self.assertEqual(str(plan_events[0].payload.thread_id), thread_id)
+        self.assertEqual(plan_events[0].payload.turn_id, "turn-1")
+        self.assertEqual(plan_events[0].payload.item.id(), "turn-1-plan")
+        self.assertEqual(plan_events[1].payload.item.item.text, "\n- final\n")
+        self.assertTrue(result.stream_runtime_state_summary["plan_item_completed"])
+
+    async def test_run_user_turn_sampling_emits_non_agent_output_text_deltas(self) -> None:
+        session = Session()
+        session.turn_context.turn_id = "turn-1"
+        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        reasoning = ResponseItem.reasoning(id="reason-1")
+
+        async def sampler(_request):
+            return SimpleNamespace(
+                response_items=(reasoning, ResponseItem.message("assistant", (ContentItem.output_text("done"),))),
+                stream_events=(
+                    {"type": "output_item_added", "item": reasoning},
+                    {"type": "output_text_delta", "delta": "thinking"},
+                    {"type": "output_item_done", "item": reasoning},
+                    {"type": "completed", "response_id": "resp-1", "end_turn": True},
+                ),
+            )
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(
+            result.stream_runtime_state_summary["raw_content_deltas"],
+            (
+                {
+                    "item_id": "reason-1",
+                    "raw_content_delta": "thinking",
+                    "event_to_emit": {
+                        "type": "agent_message_content_delta",
+                        "thread_id": "thread-1",
+                        "turn_id": "turn-1",
+                        "item_id": "reason-1",
+                        "delta": "thinking",
+                    },
+                },
+            ),
+        )
+        delta_events = events_of_type(session, "agent_message_content_delta")
+        self.assertEqual(tuple(event.type for event in delta_events), ("agent_message_content_delta",))
+        self.assertEqual(delta_events[0].payload.item_id, "reason-1")
+        self.assertEqual(delta_events[0].payload.delta, "thinking")
+
+    async def test_run_user_turn_sampling_marks_context_window_full_on_terminal_error(self) -> None:
+        session = Session()
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+
+        async def sampler(_request):
+            raise CodexErr.simple("context_window_exceeded")
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(result.turn_status, "completed")
+        self.assertIsNone(result.last_agent_message)
+        self.assertIs(session.total_tokens_full_turn_context, session.turn_context)
+        self.assertEqual(tuple(event.type for event in session.emitted_events), ("task_started", "error", "task_complete"))
+        self.assertEqual(events_of_type(session, "error")[-1].payload.codex_error_info.type, "context_window_exceeded")
+        self.assertIsNone(events_of_type(session, "task_complete")[-1].payload.last_agent_message)
+
+    async def test_run_user_turn_sampling_records_usage_limit_rate_limits_on_terminal_error(self) -> None:
+        session = Session()
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        rate_limits = RateLimitSnapshot(
+            limit_id="codex",
+            primary=RateLimitWindow(used_percent=100.0, window_minutes=60),
+        )
+
+        async def sampler(_request):
+            raise CodexErr.usage_limit_reached(UsageLimitReachedError(rate_limits=rate_limits))
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(result.turn_status, "completed")
+        self.assertIsNone(result.last_agent_message)
+        self.assertEqual(session.updated_rate_limits, [(session.turn_context, rate_limits)])
+        self.assertIn({"type": "usage_limit_reached", "turn_context": session.turn_context}, session.goal_runtime_events)
+        self.assertEqual(tuple(event.type for event in session.emitted_events), ("task_started", "error", "task_complete"))
+        self.assertEqual(events_of_type(session, "error")[-1].payload.codex_error_info.type, "usage_limit_exceeded")
+        self.assertIsNone(events_of_type(session, "task_complete")[-1].payload.last_agent_message)
+
+    async def test_run_user_turn_sampling_goal_runtime_usage_limit_errors_are_best_effort(self) -> None:
+        session = Session()
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+
+        async def goal_runtime_apply(_event):
+            raise RuntimeError("goal runtime unavailable")
+
+        session.goal_runtime_apply = goal_runtime_apply
+
+        async def sampler(_request):
+            raise CodexErr.simple("quota_exceeded")
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(result.turn_status, "completed")
+        self.assertIsNone(result.last_agent_message)
+        self.assertEqual(tuple(event.type for event in session.emitted_events), ("task_started", "error", "task_complete"))
+        self.assertEqual(events_of_type(session, "error")[-1].payload.codex_error_info.type, "usage_limit_exceeded")
 
     async def test_run_user_turn_sampling_dispatches_and_records_tool_outputs(self) -> None:
         session = Session()
@@ -935,6 +2148,283 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.history[-1].content[0].text, "done after tool")
         self.assertEqual(len(result.request_plans), 2)
 
+    async def test_run_user_turn_sampling_runs_pre_sampling_auto_compact_before_recording_input(self) -> None:
+        session = Session()
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        compact_calls = []
+
+        async def auto_compact_token_status(_turn_context):
+            return {"token_limit_reached": True}
+
+        async def run_auto_compact(turn_context, *, initial_context_injection, reason, phase):
+            compact_calls.append(
+                (
+                    turn_context,
+                    initial_context_injection,
+                    reason,
+                    phase,
+                    session.context_recorded,
+                    tuple(item.type for item in session.history),
+                )
+            )
+
+        session.auto_compact_token_status = auto_compact_token_status
+        session.run_auto_compact = run_auto_compact
+
+        async def sampler(_request):
+            return [ResponseItem.message("assistant", (ContentItem.output_text("done"),))]
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(result.response_items[-1].content[0].text, "done")
+        self.assertEqual(
+            compact_calls,
+            [
+                (
+                    session.turn_context,
+                    "do_not_inject",
+                    "context_limit",
+                    "pre_turn",
+                    False,
+                    ("message",),
+                )
+            ],
+        )
+        self.assertTrue(session.context_recorded)
+
+    async def test_run_user_turn_sampling_pre_sampling_auto_compact_error_completes_before_input_recording(self) -> None:
+        session = Session()
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        sampler_calls = []
+
+        async def auto_compact_token_status(_turn_context):
+            return SimpleNamespace(token_limit_reached=True)
+
+        async def run_auto_compact(_turn_context, **_kwargs):
+            raise CodexErr.usage_limit_reached(UsageLimitReachedError())
+
+        async def sampler(request):
+            sampler_calls.append(request)
+            return [ResponseItem.message("assistant", (ContentItem.output_text("unreachable"),))]
+
+        session.auto_compact_token_status = auto_compact_token_status
+        session.run_auto_compact = run_auto_compact
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(result.turn_status, "completed")
+        self.assertIsNone(result.last_agent_message)
+        self.assertEqual(sampler_calls, [])
+        self.assertFalse(session.context_recorded)
+        self.assertEqual(tuple(item.type for item in session.history), ("message",))
+        self.assertEqual(session.turn_error_lifecycle[0][1].type, "usage_limit_exceeded")
+        self.assertIn({"type": "usage_limit_reached", "turn_context": session.turn_context}, session.goal_runtime_events)
+        self.assertEqual(tuple(event.type for event in session.emitted_events), ("task_started", "task_complete"))
+        self.assertEqual(result.request_plans, ())
+
+    async def test_run_user_turn_sampling_runs_mid_turn_auto_compact_before_followup(self) -> None:
+        session = Session()
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        handler = EchoHandler()
+        router = ToolRouter.from_parts(ToolRegistry.from_tools([handler]), ())
+        seen_requests = []
+        compact_calls = []
+        token_statuses = [
+            SimpleNamespace(token_limit_reached=False),
+            SimpleNamespace(token_limit_reached=True),
+            SimpleNamespace(token_limit_reached=False),
+        ]
+
+        async def auto_compact_token_status(_turn_context):
+            return token_statuses.pop(0)
+
+        async def run_auto_compact(turn_context, *, initial_context_injection, reason, phase):
+            compact_calls.append((turn_context, initial_context_injection, reason, phase))
+
+        session.auto_compact_token_status = auto_compact_token_status
+        session.run_auto_compact = run_auto_compact
+
+        async def sampler(request):
+            seen_requests.append(request)
+            if len(seen_requests) == 1:
+                return [ResponseItem.function_call("echo", "{}", "call-echo")]
+            return [ResponseItem.message("assistant", (ContentItem.output_text("done after compact"),))]
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: router,
+        )
+
+        self.assertEqual(result.response_items[-1].content[0].text, "done after compact")
+        self.assertEqual(len(seen_requests), 2)
+        self.assertEqual(
+            compact_calls,
+            [(session.turn_context, "before_last_user_message", "context_limit", "mid_turn")],
+        )
+
+    async def test_run_user_turn_sampling_mid_turn_auto_compact_usage_limit_completes_without_error_event(self) -> None:
+        session = Session()
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        handler = EchoHandler()
+        router = ToolRouter.from_parts(ToolRegistry.from_tools([handler]), ())
+        seen_requests = []
+
+        token_statuses = [{"token_limit_reached": False}, {"token_limit_reached": True}]
+
+        async def auto_compact_token_status(_turn_context):
+            return token_statuses.pop(0)
+
+        async def run_auto_compact(_turn_context, **_kwargs):
+            raise CodexErr.usage_limit_reached(UsageLimitReachedError())
+
+        session.auto_compact_token_status = auto_compact_token_status
+        session.run_auto_compact = run_auto_compact
+
+        async def sampler(request):
+            seen_requests.append(request)
+            return [ResponseItem.function_call("echo", "{}", "call-echo")]
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: router,
+        )
+
+        self.assertEqual(result.turn_status, "completed")
+        self.assertIsNone(result.last_agent_message)
+        self.assertEqual(len(seen_requests), 1)
+        self.assertEqual(session.turn_error_lifecycle[0][1].type, "usage_limit_exceeded")
+        self.assertIn({"type": "usage_limit_reached", "turn_context": session.turn_context}, session.goal_runtime_events)
+        self.assertEqual(tuple(event.type for event in session.emitted_events), ("task_started", "task_complete"))
+        self.assertIsNone(events_of_type(session, "task_complete")[-1].payload.last_agent_message)
+
+    async def test_run_user_turn_sampling_maps_fatal_tool_error_to_codex_err(self) -> None:
+        session = Session()
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        router = ToolRouter.from_parts(ToolRegistry.from_tools([FatalHandler()]), ())
+
+        async def sampler(_request):
+            return [ResponseItem.function_call("fatal_tool", "{}", "call-fatal")]
+
+        with self.assertRaises(CodexErr) as caught:
+            await run_user_turn_sampling_from_session(
+                session,
+                (UserInput.text_input("hello"),),
+                client,
+                provider,
+                model_info,
+                sampler,
+                built_tools=lambda _sess, _turn: router,
+            )
+
+        self.assertEqual(caught.exception.kind, "fatal")
+        self.assertIn("tool exploded", str(caught.exception))
+        self.assertEqual(session.history[-1].type, "function_call")
+
+    async def test_run_user_turn_sampling_responds_to_bad_tool_search_arguments(self) -> None:
+        session = Session()
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        router = ToolRouter.from_parts(ToolRegistry.from_tools([]), ())
+        seen_requests = []
+
+        async def sampler(request):
+            seen_requests.append(request)
+            if len(seen_requests) == 1:
+                return [
+                    ResponseItem.tool_search_call(
+                        {"limit": 3},
+                        call_id="search-bad",
+                        execution="client",
+                    )
+                ]
+            return [ResponseItem.message("assistant", (ContentItem.output_text("recovered"),))]
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: router,
+        )
+
+        self.assertEqual(len(seen_requests), 2)
+        self.assertEqual(result.response_items[-1].content[0].text, "recovered")
+        self.assertEqual(result.tool_response_items[0].type, "function_call_output")
+        self.assertEqual(result.tool_response_items[0].call_id, "")
+        self.assertIn("failed to parse tool_search arguments", result.tool_response_items[0].output.to_text())
+        self.assertEqual(session.recorded[-2], result.tool_response_items)
+        followup_input = seen_requests[1].request_plan.request["input"]
+        self.assertTrue(any(item.type == "function_call_output" and item.call_id == "" for item in followup_input))
+
     async def test_run_user_turn_sampling_can_limit_tool_followups(self) -> None:
         session = Session()
         client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
@@ -966,6 +2456,357 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result.request_plans), 1)
         self.assertEqual(result.response_items[0].type, "function_call")
         self.assertEqual(result.tool_response_items[0].type, "function_call_output")
+
+    async def test_run_user_turn_sampling_default_followups_continue_until_final_answer(self) -> None:
+        session = Session()
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        handler = EchoHandler()
+        router = ToolRouter.from_parts(ToolRegistry.from_tools([handler]), ())
+        seen_requests = []
+
+        async def sampler(request):
+            seen_requests.append(request)
+            if len(seen_requests) <= 10:
+                return [ResponseItem.function_call("echo", "{}", f"call-echo-{len(seen_requests)}")]
+            return [ResponseItem.message("assistant", (ContentItem.output_text("finally done"),))]
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: router,
+        )
+
+        self.assertEqual(len(seen_requests), 11)
+        self.assertEqual(len(handler.invocations), 10)
+        self.assertEqual(result.response_items[-1].content[0].text, "finally done")
+        self.assertEqual(len(result.tool_response_items), 10)
+        self.assertEqual(len(result.request_plans), 11)
+
+    async def test_run_user_turn_sampling_replaces_invalid_tool_output_image_and_retries(self) -> None:
+        session = Session()
+        tool_output = ResponseItem(
+            type="function_call_output",
+            call_id="call-image",
+            output=FunctionCallOutputPayload.from_content_items(
+                (
+                    FunctionCallOutputContentItem.input_image(
+                        "data:image/png;base64,AAA",
+                    ),
+                ),
+                success=True,
+            ),
+        )
+        session.history.extend(
+            (
+                ResponseItem.message("user", (ContentItem.input_text("see image"),)),
+                ResponseItem.function_call("view_image", "{}", "call-image"),
+                tool_output,
+            )
+        )
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            input_modalities=("text", "image"),
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        seen_requests = []
+
+        async def sampler(request):
+            seen_requests.append(request)
+            if len(seen_requests) == 1:
+                raise CodexErr.simple("invalid_image_request")
+            return [ResponseItem.message("assistant", (ContentItem.output_text("recovered"),))]
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(len(seen_requests), 2)
+        retry_input = result.request_plans[1].request["input"]
+        retry_output = next(item for item in retry_input if item.type == "function_call_output")
+        self.assertEqual(retry_output.output.body.content_items[0].type, "input_text")
+        self.assertEqual(retry_output.output.body.content_items[0].text, "Invalid image")
+        self.assertEqual(session.history[-2].output.body.content_items[0].text, "Invalid image")
+        self.assertEqual(result.response_items[-1].content[0].text, "recovered")
+
+    async def test_run_user_turn_sampling_invalid_user_image_emits_bad_request_and_completes(self) -> None:
+        session = Session()
+        session.history.append(
+            ResponseItem.message(
+                "user",
+                (ContentItem.input_image("data:image/png;base64,AAA"),),
+            )
+        )
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            input_modalities=("text", "image"),
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+
+        async def sampler(_request):
+            raise CodexErr.simple("invalid_image_request")
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(result.turn_status, "completed")
+        self.assertEqual(result.response_items, ())
+        self.assertIsNone(result.last_agent_message)
+        self.assertEqual(session.history[-1].content[0].type, "input_image")
+        error = events_of_type(session, "error")[-1]
+        self.assertEqual(error.type, "error")
+        self.assertEqual(error.payload.codex_error_info.type, "bad_request")
+
+    async def test_run_user_turn_sampling_followup_invalid_user_image_preserves_accumulated_result(self) -> None:
+        session = Session()
+        session.history.append(
+            ResponseItem.message(
+                "user",
+                (ContentItem.input_image("data:image/png;base64,AAA"),),
+            )
+        )
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            input_modalities=("text", "image"),
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        first_response = ResponseItem.message("assistant", (ContentItem.output_text("partial"),))
+        seen_requests = []
+
+        async def sampler(request):
+            seen_requests.append(request)
+            if len(seen_requests) == 1:
+                return SimpleNamespace(response_items=(first_response,), end_turn=False)
+            raise CodexErr.simple("invalid_image_request")
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(len(seen_requests), 2)
+        self.assertEqual(result.turn_status, "completed")
+        self.assertEqual(result.response_items, (first_response,))
+        self.assertEqual(result.last_agent_message, "partial")
+        error = events_of_type(session, "error")[-1]
+        self.assertEqual(error.type, "error")
+        self.assertEqual(error.payload.codex_error_info.type, "bad_request")
+
+    async def test_run_user_turn_sampling_drains_pending_input_before_followup(self) -> None:
+        session = Session()
+        session.input_queue = PendingInputQueue()
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        seen_requests = []
+
+        async def sampler(request):
+            seen_requests.append(request)
+            if len(seen_requests) == 1:
+                session.input_queue.items.append(UserInput.text_input("steer while running"))
+                return [ResponseItem.message("assistant", (ContentItem.output_text("first answer"),))]
+            return [ResponseItem.message("assistant", (ContentItem.output_text("final answer"),))]
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(len(seen_requests), 2)
+        self.assertEqual(len(result.request_plans), 2)
+        followup_input = result.request_plans[1].request["input"]
+        followup_texts = [
+            item.content[0].text
+            for item in followup_input
+            if getattr(item, "type", None) == "message" and getattr(item, "content", None)
+        ]
+        self.assertIn("steer while running", followup_texts)
+        self.assertEqual(result.response_items[-1].content[0].text, "final answer")
+        self.assertEqual(session.input_queue.calls, 2)
+        self.assertEqual(session.input_queue.active_turns, [session.active_turn, session.active_turn])
+
+    async def test_run_user_turn_sampling_pending_input_bypasses_tool_followup_limit(self) -> None:
+        session = Session()
+        session.input_queue = PendingInputQueue()
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        seen_requests = []
+
+        async def sampler(request):
+            seen_requests.append(request)
+            if len(seen_requests) == 1:
+                session.input_queue.items.append(UserInput.text_input("pending steer"))
+                return [ResponseItem.message("assistant", (ContentItem.output_text("first"),))]
+            return [ResponseItem.message("assistant", (ContentItem.output_text("second"),))]
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+            max_tool_followups=0,
+        )
+
+        self.assertEqual(len(seen_requests), 2)
+        followup_input = result.request_plans[1].request["input"]
+        followup_texts = [
+            item.content[0].text
+            for item in followup_input
+            if getattr(item, "type", None) == "message" and getattr(item, "content", None)
+        ]
+        self.assertIn("pending steer", followup_texts)
+        self.assertEqual(result.response_items[-1].content[0].text, "second")
+
+    async def test_run_user_turn_sampling_follows_stream_completed_end_turn_false(self) -> None:
+        session = Session()
+        session.turn_context.turn_id = "turn-1"
+        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        seen_requests = []
+        final = ResponseItem.message("assistant", (ContentItem.output_text("done"),), id="msg-2")
+
+        async def sampler(request):
+            seen_requests.append(request)
+            if len(seen_requests) == 1:
+                return SimpleNamespace(
+                    response_items=(),
+                    stream_events=(
+                        {"type": "completed", "response_id": "resp-1", "end_turn": False},
+                    ),
+                )
+            return SimpleNamespace(
+                response_items=(final,),
+                stream_events=(
+                    {"type": "output_item_added", "item": ResponseItem.message("assistant", (), id="msg-2")},
+                    {"type": "output_text_delta", "delta": "done"},
+                    {"type": "output_item_done", "item": final},
+                    {"type": "completed", "response_id": "resp-2", "end_turn": True},
+                ),
+            )
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(len(seen_requests), 2)
+        self.assertEqual(len(result.request_plans), 2)
+        self.assertEqual(result.response_items, (final,))
+        self.assertEqual(result.stream_event_apply_plans[0].completed_event_apply_plan.result_needs_follow_up, True)
+
+    async def test_run_user_turn_sampling_model_followup_bypasses_tool_followup_limit(self) -> None:
+        session = Session()
+        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        seen_requests = []
+        final = ResponseItem.message("assistant", (ContentItem.output_text("done"),), id="msg-2")
+
+        async def sampler(request):
+            seen_requests.append(request)
+            if len(seen_requests) == 1:
+                return SimpleNamespace(
+                    response_items=(),
+                    stream_events=(
+                        {"type": "completed", "response_id": "resp-1", "end_turn": False},
+                    ),
+                )
+            return SimpleNamespace(
+                response_items=(final,),
+                stream_events=(
+                    {"type": "completed", "response_id": "resp-2", "end_turn": True},
+                ),
+            )
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+            max_tool_followups=0,
+        )
+
+        self.assertEqual(len(seen_requests), 2)
+        self.assertEqual(len(result.request_plans), 2)
+        self.assertEqual(result.response_items, (final,))
 
     async def test_run_user_input_op_sampling_records_sampler_response_items(self) -> None:
         session = Session()

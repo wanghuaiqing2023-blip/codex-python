@@ -11,7 +11,7 @@ import subprocess
 import threading
 import time
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from itertools import count
@@ -19,13 +19,33 @@ from pathlib import Path
 from typing import Any, TextIO
 from uuid import uuid4
 
-from pycodex.core.apply_patch import create_apply_patch_freeform_tool, parse_patch, verify_apply_patch_args
+from pycodex.core.apply_patch import (
+    apply_patch_action_to_disk,
+    convert_apply_patch_to_protocol,
+    create_apply_patch_freeform_tool,
+    parse_patch,
+    verify_apply_patch_args,
+)
 from pycodex.core.client import ModelClient
-from pycodex.core.handler_utils import normalize_additional_permissions
+from pycodex.core.context import TurnAborted
+from pycodex.core.exec_policy import (
+    ExecApprovalRequest,
+    ExecPolicyCommandOrigin,
+    commands_for_exec_policy,
+    create_exec_approval_requirement_for_command,
+)
+from pycodex.core.handler_utils import (
+    merge_permission_profiles,
+    normalize_additional_permissions,
+    permissions_are_preapproved,
+)
 from pycodex.core.http_transport import response_items_from_responses_payload, run_user_turn_http_sampling_from_session
+from pycodex.core.function_tool import FunctionCallError
+from pycodex.core.request_permissions_handler import RequestPermissionsHandler
 from pycodex.core.rollout import (
     SessionMeta,
     ThreadSortKey,
+    append_event_msg_to_rollout,
     append_turn_to_latest_thread_rollout,
     append_turn_to_thread_rollout,
     append_turn_to_rollout,
@@ -33,9 +53,10 @@ from pycodex.core.rollout import (
     find_thread_path_by_id_str,
     get_threads,
     materialize_session_rollout,
+    read_event_msgs_from_rollout,
+    read_model_history_from_rollout,
     read_thread_item_from_rollout,
     read_session_meta_line,
-    read_response_items_from_rollout,
 )
 from pycodex.core.session_runtime import InMemoryCodexSession
 from pycodex.core.shell_spec import create_request_permissions_tool, request_permissions_tool_description
@@ -54,11 +75,34 @@ from pycodex.core.unified_exec import (
     clamp_yield_time,
     resolve_write_stdin_yield_time,
 )
-from pycodex.protocol import AskForApproval, BaseInstructions, ResponseInputItem, ResponseItem
+from pycodex.core.tool_context import ToolPayload
+from pycodex.core.tool_sandboxing import ExecApprovalRequirement
+from pycodex.shell_command import command_might_be_dangerous, is_dangerous_powershell_words
+from pycodex.protocol import (
+    AskForApproval,
+    BaseInstructions,
+    CodexErr,
+    EventMsg,
+    FileChange,
+    FileChangeItem,
+    FileSystemAccessMode,
+    FileSystemPermissions,
+    FileSystemPath,
+    FileSystemSandboxEntry,
+    FileSystemSandboxPolicy,
+    PatchApplyStatus,
+    ResponseInputItem,
+    ResponseItem,
+    RequestPermissionProfile,
+    PermissionGrantScope,
+    RequestPermissionsResponse,
+    SandboxPermissions,
+)
+from pycodex.protocol import TurnAbortReason, TurnAbortedEvent, TurnItem
 from pycodex.protocol.models import AdditionalPermissionProfile, FunctionCallOutputPayload
 
 from .event_processor import HumanEventProcessor, JsonEventProcessor, exec_turn_completed_notification
-from .events import ExecThreadItem, ThreadErrorEvent, ThreadEvent, Usage, agent_message_item, reasoning_item
+from .events import ExecThreadItem, ThreadErrorEvent, ThreadEvent, Usage, agent_message_item, file_change_item, reasoning_item
 from .run import ExecRunPlan
 from .session import ExecSessionConfig, cwds_match
 
@@ -140,6 +184,14 @@ class LocalHttpWriteStdinInvocation:
     chars: str = ""
     yield_time: float | None = None
     max_output_tokens: int | None = None
+
+
+@dataclass(frozen=True)
+class LocalHttpOutputBudget:
+    """Model-output truncation budget for local HTTP exec tool output."""
+
+    kind: str
+    amount: int
 
 
 class LocalHttpHeadTailBuffer:
@@ -323,7 +375,7 @@ class LocalHttpExecSession:
             tty_requested=self.tty_requested,
             output_max_chars=output_max_chars,
         )
-        return body, not running and exit_code == 0
+        return body, not timed_out
 
     def _terminate_if_timed_out(self) -> bool:
         if self.timeout_at is None or self.process.poll() is not None:
@@ -846,7 +898,7 @@ def default_local_http_exec_auth(
             return provider_api_key
     auth_api_key = getattr(auth, "openai_api_key", None) or getattr(auth, "api_key", None)
     if isinstance(auth_api_key, str) and auth_api_key:
-        return auth_api_key
+        return auth
     if isinstance(auth, str) and auth:
         return auth
     return None
@@ -962,6 +1014,8 @@ def local_http_exec_config_summary(
     provider_id: str | None = None,
     session_id: str = "local-http",
     thread_id: str | None = None,
+    initial_messages: tuple[EventMsg, ...] | list[EventMsg] | tuple[Mapping[str, Any], ...] | list[Mapping[str, Any]] | None = None,
+    rollout_path: Path | str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Build config/session-configured mappings for exec config summaries."""
 
@@ -987,7 +1041,23 @@ def local_http_exec_config_summary(
         "approval_policy": approval,
         "permission_profile": permission_profile,
     }
+    if initial_messages is not None:
+        session_configured["initial_messages"] = [_event_msg_mapping(message) for message in initial_messages]
+    if rollout_path is not None:
+        session_configured["rollout_path"] = str(rollout_path)
     return config_mapping, session_configured
+
+
+def local_http_exec_initial_messages_from_rollout(path: Path | str) -> tuple[EventMsg, ...]:
+    """Read rollout protocol events for a resumed local HTTP session summary."""
+
+    return read_event_msgs_from_rollout(Path(path))
+
+
+def _event_msg_mapping(message: EventMsg | Mapping[str, Any]) -> dict[str, Any]:
+    if isinstance(message, EventMsg):
+        return message.to_mapping()
+    return dict(message)
 
 
 async def run_exec_user_turn_default_local_http_sampling(
@@ -1067,6 +1137,7 @@ def persist_local_http_exec_rollout(
         timestamp=timestamp,
         cwd=config.cwd,
     )
+    _append_local_http_interrupted_event_to_rollout(rollout_path, result, timestamp=timestamp)
     return rollout_path
 
 
@@ -1086,7 +1157,7 @@ def persist_local_http_exec_resume_rollout(
     input_payload = _local_http_input_rollout_payload(input_items)
     response_payloads = _local_http_response_rollout_payloads(result)
     if thread_id is not None:
-        return append_turn_to_thread_rollout(
+        path = append_turn_to_thread_rollout(
             codex_home,
             thread_id,
             input_payload,
@@ -1094,8 +1165,11 @@ def persist_local_http_exec_resume_rollout(
             timestamp=timestamp,
             cwd=config.cwd,
         )
+        if path is not None:
+            _append_local_http_interrupted_event_to_rollout(path, result, timestamp=timestamp)
+        return path
     if resume_last:
-        return append_turn_to_latest_thread_rollout(
+        path = append_turn_to_latest_thread_rollout(
             codex_home,
             input_payload,
             response_payloads,
@@ -1103,6 +1177,9 @@ def persist_local_http_exec_resume_rollout(
             include_all=include_all,
             timestamp=timestamp,
         )
+        if path is not None:
+            _append_local_http_interrupted_event_to_rollout(path, result, timestamp=timestamp)
+        return path
     return None
 
 
@@ -1214,7 +1291,7 @@ async def run_exec_resume_user_turn_http_sampling(
         _align_local_http_model_client_to_rollout_session(model_client, rollout_path)
     if rollout_path is None:
         raise ValueError("no local rollout found for resume")
-    history_items = read_response_items_from_rollout(rollout_path)
+    history_items = read_model_history_from_rollout(rollout_path)
     if use_shell_tools:
         result = await run_exec_user_turn_with_shell_tools_http_sampling(
             config,
@@ -1248,13 +1325,15 @@ async def run_exec_resume_user_turn_http_sampling(
         )
     operation = plan.initial_operation
     input_items = operation.items if operation.kind == "user_turn" else ()
+    timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     append_turn_to_rollout(
         rollout_path,
         _local_http_input_rollout_payload(input_items),
         _local_http_response_rollout_payloads(result),
-        timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        timestamp=timestamp,
         cwd=config.cwd,
     )
+    _append_local_http_interrupted_event_to_rollout(rollout_path, result, timestamp=timestamp)
     return result
 
 
@@ -1266,13 +1345,49 @@ def _local_http_input_rollout_payload(input_items: tuple[Any, ...] | list[Any]) 
 
 def _local_http_response_rollout_payloads(result: UserTurnSamplingResult) -> tuple[dict[str, Any], ...]:
     prompt_visible_items = _local_http_prompt_visible_rollout_items(result)
+    if _local_http_result_turn_status(result) == "interrupted":
+        prompt_visible_items = prompt_visible_items + (_local_http_interrupted_turn_marker_item(),)
     return tuple(_response_item_rollout_payload(item) for item in prompt_visible_items)
+
+
+def _local_http_interrupted_turn_marker_item() -> ResponseItem:
+    return TurnAborted(TurnAborted.INTERRUPTED_GUIDANCE).into_response_item()
+
+
+def _append_local_http_interrupted_event_to_rollout(
+    rollout_path: Path,
+    result: UserTurnSamplingResult,
+    *,
+    timestamp: str,
+) -> None:
+    if _local_http_result_turn_status(result) != "interrupted":
+        return
+    append_event_msg_to_rollout(
+        rollout_path,
+        EventMsg.with_payload(
+            "turn_aborted",
+            TurnAbortedEvent(
+                turn_id=None,
+                reason=TurnAbortReason.INTERRUPTED,
+            ),
+        ),
+        timestamp=timestamp,
+    )
 
 
 def _local_http_prompt_visible_rollout_items(result: UserTurnSamplingResult) -> tuple[ResponseItem, ...]:
     tool_response_items = tuple(getattr(result, "tool_response_items", ()) or ())
     raw_payloads = _raw_responses_payloads(result)
-    if len(raw_payloads) <= 1 or not tool_response_items:
+    if raw_payloads and not tool_response_items:
+        raw_items = []
+        for payload in raw_payloads:
+            try:
+                raw_items.extend(response_items_from_responses_payload(payload))
+            except (KeyError, TypeError, ValueError):
+                continue
+        if raw_items:
+            return tuple(raw_items)
+    if len(raw_payloads) <= 1:
         return tuple(result.response_items) + tool_response_items
 
     items: list[ResponseItem] = []
@@ -1298,7 +1413,18 @@ def _local_http_prompt_visible_rollout_items(result: UserTurnSamplingResult) -> 
 
 
 def _tool_call_count(items: tuple[ResponseItem, ...]) -> int:
-    return sum(1 for item in items if str(getattr(item, "type", "")) in {"function_call", "custom_tool_call"})
+    count = 0
+    for item in items:
+        item_type = str(getattr(item, "type", ""))
+        if item_type in {"function_call", "custom_tool_call"}:
+            count += 1
+        elif (
+            item_type == "tool_search_call"
+            and isinstance(getattr(item, "call_id", None), str)
+            and getattr(item, "execution", None) == "client"
+        ):
+            count += 1
+    return count
 
 
 def _response_item_rollout_payload(item: Any) -> dict[str, Any]:
@@ -1334,24 +1460,29 @@ async def run_exec_user_turn_http_sampling(
         model_info=model_info,
         user_instructions=config.user_instructions,
         base_instructions=_base_instructions_from_model_info(model_info),
+        request_permissions_callback=config.request_permissions_callback,
     )
     if history_items:
         turn_context = await session.new_default_turn()
         await session.record_conversation_items(turn_context, tuple(history_items))
-    return await run_user_turn_http_sampling_from_session(
-        session,
-        operation.items,
-        model_client,
-        provider,
-        model_info,
-        auth=auth,
-        endpoint=endpoint,
-        timeout=timeout,
-        opener=opener,
-        built_tools=built_tools,
-        effort=config.reasoning_effort,
-        output_schema=operation.output_schema,
-    )
+    try:
+        return await run_user_turn_http_sampling_from_session(
+            session,
+            operation.items,
+            model_client,
+            provider,
+            model_info,
+            auth=auth,
+            endpoint=endpoint,
+            timeout=timeout,
+            opener=opener,
+            built_tools=built_tools,
+            effort=config.reasoning_effort,
+            output_schema=operation.output_schema,
+        )
+    except CodexErr as exc:
+        _attach_local_http_session_events(exc, session)
+        raise
 
 
 async def run_exec_tool_output_http_sampling(
@@ -1367,6 +1498,7 @@ async def run_exec_tool_output_http_sampling(
     timeout: float | None = None,
     opener: Any = None,
     built_tools: Any = None,
+    output_schema: Any = None,
 ) -> Any:
     """Run a follow-up model turn with tool output items in history."""
 
@@ -1375,6 +1507,7 @@ async def run_exec_tool_output_http_sampling(
         model_info=model_info,
         user_instructions=config.user_instructions,
         base_instructions=_base_instructions_from_model_info(model_info),
+        request_permissions_callback=config.request_permissions_callback,
     )
     turn_context = await session.new_default_turn()
     if previous_result.response_items:
@@ -1385,19 +1518,24 @@ async def run_exec_tool_output_http_sampling(
     tool_response_items = response_items_from_local_http_tool_outputs(tool_outputs)
     if tool_response_items:
         await session.record_conversation_items(turn_context, tool_response_items)
-    return await run_user_turn_http_sampling_from_session(
-        session,
-        (),
-        model_client,
-        provider,
-        model_info,
-        auth=auth,
-        endpoint=endpoint,
-        timeout=timeout,
-        opener=opener,
-        built_tools=built_tools,
-        effort=config.reasoning_effort,
-    )
+    try:
+        return await run_user_turn_http_sampling_from_session(
+            session,
+            (),
+            model_client,
+            provider,
+            model_info,
+            auth=auth,
+            endpoint=endpoint,
+            timeout=timeout,
+            opener=opener,
+            built_tools=built_tools,
+            effort=config.reasoning_effort,
+            output_schema=output_schema,
+        )
+    except CodexErr as exc:
+        _attach_local_http_session_events(exc, session)
+        raise
 
 
 async def run_exec_user_turn_with_shell_tools_http_sampling(
@@ -1438,16 +1576,34 @@ async def run_exec_user_turn_with_shell_tools_http_sampling(
         built_tools=shell_built_tools,
         history_items=history_items,
     )
+    turn_granted_permissions: AdditionalPermissionProfile | None = None
     for _round in range(max_tool_rounds):
+        effective_granted_permissions = merge_permission_profiles(
+            config.granted_session_permissions,
+            turn_granted_permissions,
+        )
         tool_outputs = shell_tool_outputs_from_local_http_exec_result(
             result,
             config,
             runner=runner,
             timeout=tool_timeout,
             output_max_chars=tool_output_max_chars,
+            granted_permissions=effective_granted_permissions,
         )
         if not tool_outputs:
             return result
+        turn_granted_permissions = _merge_granted_permissions_from_tool_outputs(
+            turn_granted_permissions,
+            tool_outputs,
+            scope=PermissionGrantScope.TURN,
+        )
+        session_granted_permissions = _merge_granted_permissions_from_tool_outputs(
+            config.granted_session_permissions,
+            tool_outputs,
+            scope=PermissionGrantScope.SESSION,
+        )
+        if session_granted_permissions != config.granted_session_permissions:
+            object.__setattr__(config, "granted_session_permissions", session_granted_permissions)
         previous_result = result
         followup_result = await run_exec_tool_output_http_sampling(
             config,
@@ -1461,6 +1617,7 @@ async def run_exec_user_turn_with_shell_tools_http_sampling(
             timeout=timeout,
             opener=opener,
             built_tools=shell_built_tools,
+            output_schema=plan.initial_operation.output_schema,
         )
         result = _merge_local_http_sampling_result(previous_result, tool_outputs, followup_result)
     return result
@@ -1535,10 +1692,23 @@ def final_text_from_response_items(items: tuple[ResponseItem, ...] | list[Respon
     return last_text
 
 
+def final_text_from_local_http_exec_result(result: UserTurnSamplingResult) -> str:
+    """Return the final answer text for local HTTP exec rendering."""
+
+    if _local_http_result_turn_status(result) == "interrupted":
+        return ""
+    final_text = final_text_from_response_items(result.response_items)
+    if final_text:
+        return final_text
+    last_agent_message = getattr(result, "last_agent_message", None)
+    return last_agent_message if isinstance(last_agent_message, str) else ""
+
+
 def emit_local_http_exec_result(
     processor: HumanEventProcessor | JsonEventProcessor,
     result: UserTurnSamplingResult,
     *,
+    config: ExecSessionConfig | Mapping[str, Any] | None = None,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
     stdout_is_terminal: bool | None = None,
@@ -1546,10 +1716,15 @@ def emit_local_http_exec_result(
 ) -> str:
     """Render a local HTTP exec result through the normal exec processors."""
 
-    final_text = final_text_from_response_items(result.response_items)
+    turn_status = _local_http_result_turn_status(result)
+    final_text = final_text_from_local_http_exec_result(result)
     usage = usage_from_local_http_exec_result(result)
     if isinstance(processor, JsonEventProcessor):
-        events = [ThreadEvent.turn_started()]
+        processor.emit_json_lines((ThreadEvent.turn_started(),), stdout)
+        _replay_local_http_session_events(processor, result, stdout=stdout)
+        if _usage_is_zero(usage) and processor.last_usage is not None:
+            usage = processor.last_usage
+        events = []
         for reasoning_text in reasoning_texts_from_local_http_exec_result(result):
             events.append(ThreadEvent.item_completed(reasoning_item(processor.next_item_id(), reasoning_text)))
         for tool_item in tool_timeline_items_from_local_http_exec_result(result, processor):
@@ -1557,24 +1732,49 @@ def emit_local_http_exec_result(
         if final_text:
             processor.final_message = final_text
             events.append(ThreadEvent.item_completed(agent_message_item(processor.next_item_id(), final_text)))
-        processor.emit_final_message_on_shutdown = True
-        events.append(ThreadEvent.turn_completed(usage))
+        processor.emit_final_message_on_shutdown = turn_status == "completed"
+        if turn_status == "completed":
+            events.append(ThreadEvent.turn_completed(usage))
         processor.emit_json_lines(events, stdout)
+        if turn_status == "interrupted":
+            processor.process_server_notification(
+                exec_turn_completed_notification("", "", (), status="interrupted"),
+                output=stdout,
+            )
         processor.print_final_output(stderr=stderr)
         return final_text
 
     if final_text:
         processor.final_message = final_text
     processor.final_message_rendered = False
-    processor.emit_final_message_on_shutdown = True
+    processor.emit_final_message_on_shutdown = turn_status == "completed"
+    if config is not None:
+        processor.configure_from_config(config)
+    _replay_local_http_session_events(processor, result, stderr=stderr)
+    for item in reasoning_turn_items_from_local_http_exec_result(result):
+        processor.collect_item_completed(item, stderr=stderr)
+    if _usage_is_zero(usage) and processor.last_usage is not None:
+        usage = processor.last_usage
     processor.last_usage = usage
-    processor.print_final_output(
-        stdout=stdout,
-        stderr=stderr,
-        stdout_is_terminal=stdout_is_terminal,
-        stderr_is_terminal=stderr_is_terminal,
-    )
+    if turn_status == "interrupted":
+        processor.process_server_notification(
+            exec_turn_completed_notification("", "", (), status="interrupted"),
+            stderr=stderr,
+        )
+    else:
+        processor.print_final_output(
+            stdout=stdout,
+            stderr=stderr,
+            stdout_is_terminal=stdout_is_terminal,
+            stderr_is_terminal=stderr_is_terminal,
+        )
     return final_text
+
+
+def _local_http_result_turn_status(result: UserTurnSamplingResult) -> str:
+    status = getattr(result, "turn_status", "completed")
+    normalized = str(getattr(status, "value", status)).lower()
+    return "interrupted" if normalized == "interrupted" else "completed"
 
 
 def tool_call_items_from_local_http_exec_result(
@@ -1607,13 +1807,55 @@ def tool_output_items_from_local_http_exec_result(
             for item in _response_output_mappings(payload)
             if str(item.get("type") or "") in {"function_call_output", "custom_tool_call_output", "mcp_tool_call_output"}
         )
-    for response_item in getattr(result, "tool_response_items", ()) or ():
-        mapping = _response_item_mapping(response_item)
-        if mapping is not None:
-            output_items.append(mapping)
+    raw_tool_output_items = tuple(getattr(result, "raw_tool_output_items", ()) or ())
+    if raw_tool_output_items:
+        output_items.extend(item for item in raw_tool_output_items if isinstance(item, Mapping))
+    else:
+        for response_item in getattr(result, "tool_response_items", ()) or ():
+            mapping = _response_item_mapping(response_item)
+            if mapping is not None:
+                output_items.append(mapping)
     for item in output_items:
         items.append(_tool_output_exec_thread_item(item, processor))
     return tuple(items)
+
+
+def _merge_granted_permissions_from_tool_outputs(
+    current: AdditionalPermissionProfile | None,
+    tool_outputs: tuple[Mapping[str, Any], ...] | list[Mapping[str, Any]],
+    *,
+    scope: PermissionGrantScope,
+) -> AdditionalPermissionProfile | None:
+    granted = current
+    for output in tool_outputs:
+        if output.get("name") != "request_permissions" or output.get("success") is not True:
+            continue
+        response = _request_permissions_response_from_tool_output(output)
+        if response is None or response.scope is not scope:
+            continue
+        granted = merge_permission_profiles(
+            granted,
+            response.permissions.to_additional_permission_profile(),
+        )
+    return normalize_additional_permissions(granted) if granted is not None else None
+
+
+def _request_permissions_response_from_tool_output(output: Mapping[str, Any]) -> RequestPermissionsResponse | None:
+    internal_output = output.get("internal_output")
+    if isinstance(internal_output, Mapping):
+        response = internal_output.get("response")
+        if isinstance(response, RequestPermissionsResponse):
+            return response
+    response_output = output.get("output")
+    if isinstance(response_output, FunctionCallOutputPayload):
+        response_output = response_output.body
+    if not isinstance(response_output, str):
+        return None
+    try:
+        parsed = json.loads(response_output)
+        return RequestPermissionsResponse.from_mapping(parsed)
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        return None
 
 
 def tool_timeline_items_from_local_http_exec_result(
@@ -1631,10 +1873,14 @@ def tool_timeline_items_from_local_http_exec_result(
                 calls.append(item)
             elif item_type in {"function_call_output", "custom_tool_call_output", "mcp_tool_call_output"}:
                 output_items.append(item)
-    for response_item in getattr(result, "tool_response_items", ()) or ():
-        mapping = _response_item_mapping(response_item)
-        if mapping is not None:
-            output_items.append(mapping)
+    raw_tool_output_items = tuple(getattr(result, "raw_tool_output_items", ()) or ())
+    if raw_tool_output_items:
+        output_items.extend(item for item in raw_tool_output_items if isinstance(item, Mapping))
+    else:
+        for response_item in getattr(result, "tool_response_items", ()) or ():
+            mapping = _response_item_mapping(response_item)
+            if mapping is not None:
+                output_items.append(mapping)
 
     outputs_by_call_id: dict[str, list[Mapping[str, Any]]] = {}
     unkeyed_outputs: list[Mapping[str, Any]] = []
@@ -1646,10 +1892,26 @@ def tool_timeline_items_from_local_http_exec_result(
             unkeyed_outputs.append(output)
     timeline: list[ExecThreadItem] = []
     for call in calls:
-        timeline.append(_tool_call_exec_thread_item(call, processor))
+        is_apply_patch = _tool_name_from_item(call) == "apply_patch"
         call_id = str(call.get("call_id") or call.get("id") or "")
-        if call_id:
-            timeline.extend(_tool_output_exec_thread_item(output, processor) for output in outputs_by_call_id.pop(call_id, ()))
+        matching_outputs = outputs_by_call_id.pop(call_id, ()) if call_id else ()
+        timeline.append(
+            _apply_patch_file_change_exec_thread_item(
+                call,
+                None,
+                processor,
+                changes_output=matching_outputs[0] if is_apply_patch and matching_outputs else None,
+            )
+            if is_apply_patch
+            else _tool_call_exec_thread_item(call, processor)
+        )
+        if matching_outputs:
+            timeline.extend(
+                _apply_patch_file_change_exec_thread_item(call, output, processor)
+                if is_apply_patch
+                else _tool_output_exec_thread_item(output, processor)
+                for output in matching_outputs
+            )
     for remaining in outputs_by_call_id.values():
         timeline.extend(_tool_output_exec_thread_item(output, processor) for output in remaining)
     timeline.extend(_tool_output_exec_thread_item(output, processor) for output in unkeyed_outputs)
@@ -1672,6 +1934,71 @@ def _tool_call_exec_thread_item(item: Mapping[str, Any], processor: JsonEventPro
     )
 
 
+def _apply_patch_file_change_exec_thread_item(
+    call: Mapping[str, Any],
+    output: Mapping[str, Any] | None,
+    processor: JsonEventProcessor,
+    *,
+    changes_output: Mapping[str, Any] | None = None,
+) -> ExecThreadItem:
+    status = None if output is None else _patch_apply_status_from_tool_output(output)
+    changes = (
+        _apply_patch_protocol_changes_from_tool_output(changes_output or output)
+        if (changes_output is not None or output is not None)
+        else None
+    )
+    return file_change_item(
+        processor.next_item_id(),
+        FileChangeItem(
+            id=str(call.get("call_id") or call.get("id") or ""),
+            changes=changes or _apply_patch_protocol_changes_from_call(call),
+            status=status,
+        ),
+    )
+
+
+def _patch_apply_status_from_tool_output(item: Mapping[str, Any]) -> PatchApplyStatus:
+    return PatchApplyStatus.FAILED if _tool_output_status_from_item(item) == "failed" else PatchApplyStatus.COMPLETED
+
+
+def _apply_patch_protocol_changes_from_call(item: Mapping[str, Any]) -> dict[Path, FileChange]:
+    patch_text = _apply_patch_text_from_arguments(_tool_arguments_from_item(item))
+    if patch_text is None:
+        return {}
+    try:
+        parsed = parse_patch(patch_text)
+    except Exception:
+        return {}
+    changes: dict[Path, FileChange] = {}
+    for hunk in parsed.hunks:
+        hunk_type = getattr(hunk, "type", None)
+        path = Path(getattr(hunk, "path", ""))
+        if hunk_type == "add":
+            changes[path] = FileChange.add(getattr(hunk, "contents", None) or "")
+        elif hunk_type == "delete":
+            changes[path] = FileChange.delete(getattr(hunk, "contents", None) or "")
+        elif hunk_type == "update":
+            changes[path] = FileChange.update("", move_path=getattr(hunk, "move_path", None))
+    return changes
+
+
+def _apply_patch_protocol_changes_from_tool_output(item: Mapping[str, Any] | None) -> dict[Path, FileChange] | None:
+    if item is None:
+        return None
+    internal_output = item.get("internal_output")
+    if not isinstance(internal_output, Mapping):
+        return None
+    changes = internal_output.get("changes")
+    if not isinstance(changes, Mapping):
+        return None
+    protocol_changes: dict[Path, FileChange] = {}
+    for path, change in changes.items():
+        if not isinstance(path, (str, Path)) or not isinstance(change, FileChange):
+            return None
+        protocol_changes[Path(path)] = change
+    return protocol_changes
+
+
 def _tool_output_exec_thread_item(item: Mapping[str, Any], processor: JsonEventProcessor) -> ExecThreadItem:
     return ExecThreadItem(
         processor.next_item_id(),
@@ -1683,9 +2010,47 @@ def _tool_output_exec_thread_item(item: Mapping[str, Any], processor: JsonEventP
             "arguments": {},
             "result": _tool_output_from_item(item),
             "error": None,
-            "status": "completed",
+            "status": _tool_output_status_from_item(item),
         },
     )
+
+
+def _tool_output_status_from_item(item: Mapping[str, Any]) -> str:
+    success = item.get("success")
+    if success is False:
+        return "failed"
+    exit_code = _tool_output_exit_code_from_item(item)
+    if exit_code is not None and exit_code != 0:
+        return "failed"
+    return "completed"
+
+
+def _tool_output_exit_code_from_item(item: Mapping[str, Any]) -> int | None:
+    for key in ("structured_output", "internal_output"):
+        value = item.get(key)
+        if isinstance(value, Mapping):
+            exit_code = value.get("exit_code")
+            if isinstance(exit_code, bool):
+                continue
+            if isinstance(exit_code, int):
+                return exit_code
+    output = _tool_output_from_item(item)
+    if not isinstance(output, str):
+        return None
+    marker = "Process exited with code "
+    start = output.find(marker)
+    if start < 0:
+        return None
+    start += len(marker)
+    end = start
+    while end < len(output) and (output[end].isdigit() or (end == start and output[end] == "-")):
+        end += 1
+    if end == start or output[start:end] == "-":
+        return None
+    try:
+        return int(output[start:end])
+    except ValueError:
+        return None
 
 
 def shell_tool_outputs_from_local_http_exec_result(
@@ -1696,6 +2061,7 @@ def shell_tool_outputs_from_local_http_exec_result(
     session_manager: LocalHttpExecSessionManager | None = None,
     timeout: float | None = 30.0,
     output_max_chars: int | None = None,
+    granted_permissions: AdditionalPermissionProfile | None = None,
 ) -> tuple[dict[str, Any], ...]:
     """Execute shell function calls from a local HTTP Responses payload.
 
@@ -1726,13 +2092,25 @@ def shell_tool_outputs_from_local_http_exec_result(
         tool = _tool_name_from_item(item)
         call_id = item.get("call_id") or item.get("id") or ""
         if tool == "request_permissions":
+            request_permissions_callback = (
+                _local_http_request_permissions_empty_callback
+                if _local_http_request_permissions_auto_denied(config)
+                else config.request_permissions_callback
+            )
+            output_text, success, response = _local_http_request_permissions_output(
+                _tool_arguments_from_item(item),
+                str(call_id),
+                config.cwd,
+                request_permissions_callback,
+            )
             outputs.append(
                 {
                     "type": "function_call_output",
                     "call_id": str(call_id),
                     "name": "request_permissions",
-                    "output": local_http_request_permissions_unavailable_output(),
-                    "success": False,
+                    "output": output_text,
+                    **({"internal_output": {"response": response}} if response is not None else {}),
+                    "success": success,
                 }
             )
             continue
@@ -1740,24 +2118,29 @@ def shell_tool_outputs_from_local_http_exec_result(
             patch_text = _apply_patch_text_from_arguments(_tool_arguments_from_item(item))
             if patch_text is None:
                 continue
-            if not local_http_shell_tool_auto_execute_allowed(config):
+            changes = _local_http_apply_patch_protocol_changes(patch_text, config.cwd)
+            if not local_http_shell_tool_auto_execute_allowed(config) and not _local_http_apply_patch_preapproved(
+                changes,
+                config.cwd,
+                granted_permissions,
+            ):
                 outputs.append(
                     {
                         "type": "custom_tool_call_output" if item_type == "custom_tool_call" else "function_call_output",
                         "call_id": str(call_id),
-                        "name": "apply_patch",
                         "output": local_http_apply_patch_approval_required_output(config),
+                        "internal_output": {"changes": changes} if changes is not None else None,
                         "success": False,
                     }
                 )
                 continue
-            output_text, success = _apply_local_http_apply_patch(patch_text, config.cwd)
+            output_text, success, changes = _apply_local_http_apply_patch(patch_text, config.cwd)
             outputs.append(
                 {
                     "type": "custom_tool_call_output" if item_type == "custom_tool_call" else "function_call_output",
                     "call_id": str(call_id),
-                    "name": "apply_patch",
                     "output": output_text,
+                    "internal_output": {"changes": changes} if changes is not None else None,
                     "success": success,
                 }
             )
@@ -1839,17 +2222,19 @@ def shell_tool_outputs_from_local_http_exec_result(
                 }
             )
             continue
-        if not local_http_shell_tool_auto_execute_allowed(config):
-            outputs.append(
-                {
-                    "type": "function_call_output",
-                    "call_id": str(call_id),
-                    "output": local_http_shell_tool_approval_required_output(invocation, config),
-                    "success": False,
-                }
-            )
-            continue
-        permission_error = local_http_shell_tool_permission_request_error(invocation)
+        auto_execute_allowed = local_http_shell_tool_auto_execute_allowed(config)
+        permission_cwd = invocation.workdir or config.cwd
+        preapproved_permissions = _local_http_shell_tool_preapproved(
+            invocation,
+            granted_permissions=granted_permissions,
+            cwd=permission_cwd,
+        )
+        permission_error = local_http_shell_tool_permission_request_error(
+            invocation,
+            granted_permissions=granted_permissions,
+            cwd=permission_cwd,
+            allow_pending_approval=not auto_execute_allowed and not preapproved_permissions,
+        )
         if permission_error is not None:
             outputs.append(
                 {
@@ -1860,7 +2245,49 @@ def shell_tool_outputs_from_local_http_exec_result(
                 }
             )
             continue
-        effective_output_max_chars = _effective_shell_output_max_chars(output_max_chars, invocation.max_output_tokens)
+        approval_requirement = _local_http_shell_tool_exec_approval_requirement(
+            invocation,
+            config,
+            permissions_preapproved=preapproved_permissions,
+        )
+        if approval_requirement.type == "forbidden" and _local_http_shell_tool_forbidden_applies(invocation):
+            outputs.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": str(call_id),
+                    "output": local_http_shell_tool_forbidden_output(
+                        invocation,
+                        config,
+                        approval_requirement.reason or "command rejected by policy",
+                    ),
+                    "success": False,
+                }
+            )
+            continue
+        pending_permission_approval = _local_http_shell_tool_pending_permission_approval(
+            invocation,
+            config,
+            permissions_preapproved=preapproved_permissions,
+        )
+        if (
+            approval_requirement.type == "needs_approval" or pending_permission_approval
+        ) and not preapproved_permissions:
+            outputs.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": str(call_id),
+                    "output": local_http_shell_tool_approval_required_output(
+                        invocation,
+                        config,
+                        granted_permissions=granted_permissions,
+                        exec_approval_requirement=approval_requirement,
+                    ),
+                    "success": False,
+                }
+            )
+            continue
+        effective_output_budget = _effective_shell_output_budget(output_max_chars, invocation.max_output_tokens)
+        effective_output_max_chars = _output_budget_max_bytes(effective_output_budget)
         if runner is None and _should_start_local_http_exec_session(invocation):
             output_payload, success = sessions.start(
                 invocation.command,
@@ -1882,7 +2309,7 @@ def shell_tool_outputs_from_local_http_exec_result(
                 timeout=invocation.timeout,
                 login=invocation.login,
                 shell_binary=invocation.shell,
-                output_max_chars=effective_output_max_chars,
+                output_max_chars=effective_output_budget,
             )
             structured_output = None
             internal_output = None
@@ -1933,10 +2360,68 @@ def local_http_write_stdin_unknown_session_output(session_id: int) -> str:
 
 
 def local_http_request_permissions_unavailable_output() -> str:
-    return (
-        "request_permissions failed: request_permissions is declared for protocol parity, "
-        "but local HTTP exec mode does not support interactive permission grants."
-    )
+    return "request_permissions was cancelled before receiving a response"
+
+
+def _local_http_request_permissions_output(
+    arguments: Any,
+    call_id: str,
+    cwd: Path,
+    request_permissions_callback: Any = None,
+) -> tuple[str, bool, RequestPermissionsResponse | None]:
+    try:
+        output = RequestPermissionsHandler(
+            _local_http_request_permissions_callback(request_permissions_callback, cwd)
+        ).handle(
+            ToolPayload.function(_request_permissions_arguments_text(arguments)),
+            call_id=call_id,
+            cwd=cwd,
+        )
+    except FunctionCallError as exc:
+        return str(exc), False, None
+    if inspect.isawaitable(output):
+        return local_http_request_permissions_unavailable_output(), False, None
+    into_text = getattr(output, "into_text", None)
+    output_text = into_text() if callable(into_text) else str(output)
+    try:
+        response = RequestPermissionsResponse.from_mapping(json.loads(output_text))
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        response = None
+    return output_text, True, response
+
+
+def _local_http_request_permissions_auto_denied(config: ExecSessionConfig) -> bool:
+    approval_policy = config.approval_policy
+    if approval_policy is AskForApproval.NEVER or approval_policy == AskForApproval.NEVER:
+        return True
+    allows_request_permissions = getattr(approval_policy, "allows_request_permissions", None)
+    return callable(allows_request_permissions) and not allows_request_permissions()
+
+
+def _local_http_request_permissions_empty_callback(
+    _parent_ctx: Any,
+    _call_id: str,
+    _args: Any,
+    _cwd: Path,
+    _cancel_token: Any,
+) -> RequestPermissionsResponse:
+    return RequestPermissionsResponse(RequestPermissionProfile())
+
+
+def _request_permissions_arguments_text(arguments: Any) -> str:
+    if isinstance(arguments, str):
+        return arguments
+    return json.dumps(arguments, separators=(",", ":"))
+
+
+def _local_http_request_permissions_callback(callback: Any, cwd: Path) -> Any:
+    if callback is None:
+        return None
+
+    def call(call_id: str, args: Any) -> Any:
+        return callback(None, call_id, args, cwd, None)
+
+    return call
 
 
 def _write_stdin_invocation_from_arguments(arguments: Any) -> LocalHttpWriteStdinInvocation | None:
@@ -2011,7 +2496,7 @@ def _exec_session_output_payload(
     exit_code: int | None,
     timed_out: bool = False,
     tty_requested: bool = False,
-    output_max_chars: int | None,
+    output_max_chars: LocalHttpOutputBudget | int | None,
 ) -> dict[str, Any]:
     rendered_output = _truncate_shell_tool_output(output.rstrip(), output_max_chars)
     payload: dict[str, Any] = {
@@ -2099,47 +2584,95 @@ def _apply_patch_text_from_arguments(arguments: Any) -> str | None:
     return None
 
 
-def _apply_local_http_apply_patch(patch_text: str, cwd: Path) -> tuple[str, bool]:
+def _apply_local_http_apply_patch(patch_text: str, cwd: Path) -> tuple[str, bool, dict[Path, FileChange] | None]:
     try:
         verified = verify_apply_patch_args(parse_patch(patch_text), cwd)
     except Exception as exc:
-        return f"apply_patch failed: {exc}", False
+        return f"apply_patch failed: {exc}", False, None
     if verified.type != "body" or verified.body is None:
-        return f"apply_patch failed: {verified.error}", False
+        return f"apply_patch failed: {verified.error}", False, None
+    changes = _relative_apply_patch_protocol_changes(
+        convert_apply_patch_to_protocol(verified.body),
+        cwd,
+    )
     try:
-        changed_paths = _write_apply_patch_action(verified.body.changes)
+        return apply_patch_action_to_disk(verified.body), True, changes
     except OSError as exc:
-        return f"apply_patch failed: {exc}", False
-    changed = "\n".join(str(path) for path in changed_paths)
-    return ("apply_patch succeeded" if not changed else f"apply_patch succeeded\nchanged files:\n{changed}"), True
+        return f"apply_patch failed: {exc}", False, changes
 
 
-def _write_apply_patch_action(changes: Mapping[Path, Any]) -> tuple[Path, ...]:
-    changed: list[Path] = []
+def _local_http_apply_patch_protocol_changes(patch_text: str, cwd: Path) -> dict[Path, FileChange] | None:
+    try:
+        verified = verify_apply_patch_args(parse_patch(patch_text), cwd)
+    except Exception:
+        return None
+    if verified.type != "body" or verified.body is None:
+        return None
+    return _relative_apply_patch_protocol_changes(
+        convert_apply_patch_to_protocol(verified.body),
+        cwd,
+    )
+
+
+def _local_http_apply_patch_preapproved(
+    changes: Mapping[Path, FileChange] | None,
+    cwd: Path,
+    granted_permissions: AdditionalPermissionProfile | None,
+) -> bool:
+    if not changes or granted_permissions is None:
+        return False
+    granted = normalize_additional_permissions(granted_permissions)
+    file_system = granted.file_system
+    if file_system is None:
+        return False
+    policy = FileSystemSandboxPolicy.restricted(file_system.entries)
+    return all(
+        policy.resolve_access_with_cwd(path, cwd) is FileSystemAccessMode.WRITE
+        for path in _local_http_apply_patch_write_targets(changes, cwd)
+    )
+
+
+def _local_http_apply_patch_write_targets(
+    changes: Mapping[Path, FileChange],
+    cwd: Path,
+) -> tuple[Path, ...]:
+    targets: list[Path] = []
     for path, change in changes.items():
-        target = Path(path)
-        if change.type == "add":
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(change.content or change.new_content or "", encoding="utf-8")
-            changed.append(target)
-        elif change.type == "delete":
-            target.unlink()
-            changed.append(target)
-        elif change.type == "update":
-            new_content = change.new_content if change.new_content is not None else change.content
-            if new_content is None:
-                raise OSError(f"missing new content for {target}")
-            if change.move_path is not None:
-                move_target = Path(change.move_path)
-                move_target.parent.mkdir(parents=True, exist_ok=True)
-                move_target.write_text(new_content, encoding="utf-8")
-                target.unlink()
-                changed.append(move_target)
-            else:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(new_content, encoding="utf-8")
-                changed.append(target)
-    return tuple(changed)
+        targets.append(_resolve_local_http_apply_patch_target(path, cwd))
+        move_path = getattr(change, "move_path", None)
+        if move_path is not None:
+            targets.append(_resolve_local_http_apply_patch_target(move_path, cwd))
+    return tuple(dict.fromkeys(targets))
+
+
+def _resolve_local_http_apply_patch_target(path: Path | str, cwd: Path) -> Path:
+    path = Path(path)
+    return path if path.is_absolute() else Path(cwd) / path
+
+
+def _relative_apply_patch_protocol_changes(
+    changes: Mapping[Path, FileChange],
+    cwd: Path,
+) -> dict[Path, FileChange]:
+    cwd = Path(cwd)
+    return {
+        _path_relative_to(path, cwd): _file_change_relative_to(change, cwd)
+        for path, change in changes.items()
+    }
+
+
+def _file_change_relative_to(change: FileChange, cwd: Path) -> FileChange:
+    if change.type != "update" or change.move_path is None:
+        return change
+    return FileChange.update(change.unified_diff or "", move_path=_path_relative_to(change.move_path, cwd))
+
+
+def _path_relative_to(path: str | Path, cwd: Path) -> Path:
+    path = Path(path)
+    try:
+        return path.relative_to(cwd)
+    except ValueError:
+        return path
 
 
 def local_http_shell_tool_auto_execute_allowed(config: ExecSessionConfig) -> bool:
@@ -2163,7 +2696,13 @@ def local_http_shell_tool_sandbox_permissions_error(invocation: LocalHttpShellIn
     )
 
 
-def local_http_shell_tool_permission_request_error(invocation: LocalHttpShellInvocation) -> str | None:
+def local_http_shell_tool_permission_request_error(
+    invocation: LocalHttpShellInvocation,
+    *,
+    granted_permissions: AdditionalPermissionProfile | None = None,
+    cwd: Path | str | None = None,
+    allow_pending_approval: bool = False,
+) -> str | None:
     """Return a Rust-style model-facing error for unsupported local permission requests."""
 
     if invocation.additional_permissions_is_invalid:
@@ -2181,7 +2720,8 @@ def local_http_shell_tool_permission_request_error(invocation: LocalHttpShellInv
             )
         try:
             profile = AdditionalPermissionProfile.from_mapping(dict(invocation.additional_permissions))
-            if normalize_additional_permissions(profile).is_empty():
+            requested_profile = normalize_additional_permissions(profile)
+            if requested_profile.is_empty():
                 return (
                     "exit_code: permission_request_invalid\n"
                     "stderr:\n"
@@ -2193,6 +2733,14 @@ def local_http_shell_tool_permission_request_error(invocation: LocalHttpShellInv
                 "stderr:\n"
                 "invalid `additional_permissions`; expected a permission object with `network` and/or `file_system`"
             )
+        if granted_permissions is not None and permissions_are_preapproved(
+            requested_profile,
+            granted_permissions,
+            Path.cwd() if cwd is None else cwd,
+        ):
+            return None
+        if allow_pending_approval:
+            return None
         return (
             "exit_code: permission_request_unsupported\n"
             "stderr:\n"
@@ -2205,6 +2753,8 @@ def local_http_shell_tool_permission_request_error(invocation: LocalHttpShellInv
             "missing `additional_permissions`; provide at least one of `network` or `file_system` when using `with_additional_permissions`"
         )
     if invocation.sandbox_permissions == "require_escalated":
+        if allow_pending_approval:
+            return None
         return (
             "exit_code: permission_request_rejected\n"
             "stderr:\n"
@@ -2213,9 +2763,33 @@ def local_http_shell_tool_permission_request_error(invocation: LocalHttpShellInv
     return None
 
 
+def _local_http_shell_tool_preapproved(
+    invocation: LocalHttpShellInvocation,
+    *,
+    granted_permissions: AdditionalPermissionProfile | None,
+    cwd: Path | str,
+) -> bool:
+    if granted_permissions is None or invocation.additional_permissions is None:
+        return False
+    if invocation.additional_permissions_is_invalid or invocation.sandbox_permissions != "with_additional_permissions":
+        return False
+    try:
+        profile = normalize_additional_permissions(
+            AdditionalPermissionProfile.from_mapping(dict(invocation.additional_permissions))
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+    if profile.is_empty():
+        return False
+    return permissions_are_preapproved(profile, granted_permissions, cwd)
+
+
 def local_http_shell_tool_approval_required_output(
     invocation: LocalHttpShellInvocation | str,
     config: ExecSessionConfig,
+    *,
+    granted_permissions: AdditionalPermissionProfile | None = None,
+    exec_approval_requirement: ExecApprovalRequirement | None = None,
 ) -> str:
     """Build a tool output explaining that approval is required."""
 
@@ -2224,27 +2798,45 @@ def local_http_shell_tool_approval_required_output(
         command = invocation.command
         sandbox_permissions = invocation.sandbox_permissions
         additional_permissions = invocation.additional_permissions
+        permission_cwd = invocation.workdir or config.cwd
         justification = invocation.justification
         prefix_rule = invocation.prefix_rule
     else:
         command = invocation
         sandbox_permissions = None
         additional_permissions = None
+        permission_cwd = config.cwd
         justification = None
         prefix_rule = None
     metadata = ""
     if sandbox_permissions:
         metadata += f"sandbox_permissions: {sandbox_permissions}\n"
     if additional_permissions:
-        additional_permissions_mapping = _local_http_additional_permissions_output_mapping(additional_permissions)
+        additional_permissions_mapping = _local_http_additional_permissions_output_mapping(
+            additional_permissions,
+            cwd=permission_cwd,
+            granted_permissions=granted_permissions,
+        )
         metadata += (
             "additional_permissions: "
             f"{json.dumps(additional_permissions_mapping, ensure_ascii=False, separators=(',', ':'))}\n"
         )
+    if exec_approval_requirement is not None and exec_approval_requirement.reason:
+        metadata += f"reason: {exec_approval_requirement.reason}\n"
     if justification:
         metadata += f"justification: {justification}\n"
     if prefix_rule:
         metadata += f"prefix_rule: {json.dumps(list(prefix_rule), ensure_ascii=False, separators=(',', ':'))}\n"
+    proposed_amendment = _local_http_shell_tool_proposed_execpolicy_amendment(
+        invocation,
+        config,
+        exec_approval_requirement=exec_approval_requirement,
+    )
+    if proposed_amendment is not None:
+        metadata += (
+            "proposed_execpolicy_amendment: "
+            f"{json.dumps(proposed_amendment.to_mapping(), ensure_ascii=False, separators=(',', ':'))}\n"
+        )
     return (
         "exit_code: approval_required\n"
         f"approval_policy: {approval}\n"
@@ -2254,14 +2846,133 @@ def local_http_shell_tool_approval_required_output(
     )
 
 
-def _local_http_additional_permissions_output_mapping(additional_permissions: Mapping[str, Any]) -> Mapping[str, Any]:
+def _local_http_shell_tool_pending_permission_approval(
+    invocation: LocalHttpShellInvocation,
+    config: ExecSessionConfig,
+    *,
+    permissions_preapproved: bool,
+) -> bool:
+    if permissions_preapproved:
+        return False
+    if invocation.sandbox_permissions not in {"require_escalated", "with_additional_permissions"}:
+        return False
+    return config.approval_policy is AskForApproval.ON_REQUEST or config.approval_policy == AskForApproval.ON_REQUEST
+
+
+def _local_http_shell_tool_forbidden_applies(invocation: LocalHttpShellInvocation) -> bool:
+    parsed = commands_for_exec_policy(_local_http_shell_tool_exec_policy_command(invocation))
+    for command in parsed.commands:
+        if parsed.command_origin is ExecPolicyCommandOrigin.POWERSHELL:
+            if is_dangerous_powershell_words(command):
+                return True
+        elif command_might_be_dangerous(command):
+            return True
+    return False
+
+
+def local_http_shell_tool_forbidden_output(
+    invocation: LocalHttpShellInvocation | str,
+    config: ExecSessionConfig,
+    reason: str,
+) -> str:
+    approval = getattr(config.approval_policy, "value", str(config.approval_policy))
+    command = invocation.command if isinstance(invocation, LocalHttpShellInvocation) else invocation
+    return (
+        "exit_code: forbidden\n"
+        f"approval_policy: {approval}\n"
+        f"command:\n{command}\n"
+        f"stderr:\n{reason}"
+    )
+
+
+def _local_http_shell_tool_exec_approval_requirement(
+    invocation: LocalHttpShellInvocation,
+    config: ExecSessionConfig,
+    *,
+    permissions_preapproved: bool = False,
+) -> ExecApprovalRequirement:
+    sandbox_permissions = SandboxPermissions.USE_DEFAULT
+    if not permissions_preapproved and invocation.sandbox_permissions:
+        sandbox_permissions = SandboxPermissions(invocation.sandbox_permissions)
+    return create_exec_approval_requirement_for_command(
+        ExecApprovalRequest(
+            command=_local_http_shell_tool_exec_policy_command(invocation),
+            approval_policy=config.approval_policy,
+            permission_profile=config.permission_profile,
+            file_system_sandbox_policy=config.permission_profile.file_system_sandbox_policy(),
+            sandbox_cwd=invocation.workdir or config.cwd,
+            sandbox_permissions=sandbox_permissions,
+            prefix_rule=invocation.prefix_rule,
+        )
+    )
+
+
+def _local_http_shell_tool_proposed_execpolicy_amendment(
+    invocation: LocalHttpShellInvocation | str,
+    config: ExecSessionConfig,
+    *,
+    exec_approval_requirement: ExecApprovalRequirement | None = None,
+):
+    if not isinstance(invocation, LocalHttpShellInvocation):
+        return None
+    requirement = exec_approval_requirement
+    if requirement is None:
+        requirement = _local_http_shell_tool_exec_approval_requirement(invocation, config)
+    return requirement.proposed_amendment()
+
+
+def _local_http_shell_tool_exec_policy_command(invocation: LocalHttpShellInvocation) -> tuple[str, ...]:
+    shell = invocation.shell
+    if shell:
+        shell_name = Path(shell).name.lower()
+        if shell_name in {"pwsh", "pwsh.exe", "powershell", "powershell.exe"}:
+            return (shell, "-Command", invocation.command)
+        return (shell, "-lc", invocation.command)
+    return ("bash", "-lc", invocation.command)
+
+
+def _local_http_additional_permissions_output_mapping(
+    additional_permissions: Mapping[str, Any],
+    *,
+    cwd: Path | str | None = None,
+    granted_permissions: AdditionalPermissionProfile | None = None,
+) -> Mapping[str, Any]:
     """Return a normalized Rust-style additional permission profile mapping when possible."""
 
     try:
         profile = AdditionalPermissionProfile.from_mapping(dict(additional_permissions))
+        if cwd is not None:
+            profile = _materialize_local_http_additional_permissions(profile, Path(cwd))
+        profile = merge_permission_profiles(granted_permissions, profile) or AdditionalPermissionProfile()
         return normalize_additional_permissions(profile).to_mapping()
     except (KeyError, TypeError, ValueError):
         return dict(additional_permissions)
+
+
+def _materialize_local_http_additional_permissions(
+    profile: AdditionalPermissionProfile,
+    cwd: Path,
+) -> AdditionalPermissionProfile:
+    file_system = profile.file_system
+    if file_system is None:
+        return profile
+    entries = tuple(_materialize_local_http_permission_entry(entry, cwd) for entry in file_system.entries)
+    return AdditionalPermissionProfile(
+        network=profile.network,
+        file_system=FileSystemPermissions(
+            entries=entries,
+            glob_scan_max_depth=file_system.glob_scan_max_depth,
+        ),
+    )
+
+
+def _materialize_local_http_permission_entry(
+    entry: FileSystemSandboxEntry,
+    cwd: Path,
+) -> FileSystemSandboxEntry:
+    if entry.path.type != "path" or entry.path.path is None or entry.path.path.is_absolute():
+        return entry
+    return FileSystemSandboxEntry(FileSystemPath.explicit_path(cwd / entry.path.path), entry.access)
 
 
 def _shell_invocation_from_arguments(
@@ -2406,6 +3117,24 @@ def _effective_shell_output_max_chars(global_max_chars: int | None, max_output_t
     return min(global_max_chars, token_max_chars)
 
 
+def _effective_shell_output_budget(
+    global_max_chars: int | None,
+    max_output_tokens: int | None,
+) -> LocalHttpOutputBudget | None:
+    resolved_max_output_tokens = DEFAULT_LOCAL_HTTP_MAX_OUTPUT_TOKENS if max_output_tokens is None else max_output_tokens
+    if global_max_chars is not None:
+        return LocalHttpOutputBudget("chars", min(global_max_chars, _approx_bytes_for_tokens(resolved_max_output_tokens)))
+    return LocalHttpOutputBudget("tokens", resolved_max_output_tokens)
+
+
+def _output_budget_max_bytes(budget: LocalHttpOutputBudget | int | None) -> int | None:
+    if isinstance(budget, LocalHttpOutputBudget):
+        if budget.kind == "tokens":
+            return _approx_bytes_for_tokens(budget.amount)
+        return budget.amount
+    return budget
+
+
 def _shell_prefix_rule_from_arguments(arguments: Mapping[str, Any]) -> tuple[str, ...] | None:
     value = arguments.get("prefix_rule")
     if isinstance(value, str) or not isinstance(value, (list, tuple)):
@@ -2445,8 +3174,9 @@ def _run_shell_tool_command_result(
     timeout: float | None,
     login: bool | None = None,
     shell_binary: str | None = None,
-    output_max_chars: int | None = None,
+    output_max_chars: LocalHttpOutputBudget | int | None = None,
 ) -> tuple[str, bool]:
+    started_at = time.monotonic()
     try:
         kwargs = {
             "shell": True,
@@ -2461,26 +3191,62 @@ def _run_shell_tool_command_result(
             kwargs["login"] = login
         completed = runner(command, **kwargs)
     except subprocess.TimeoutExpired as exc:
+        duration = time.monotonic() - started_at
+        timeout_ms = int((timeout or duration) * 1000)
+        combined_output = (
+            f"command timed out after {timeout_ms} milliseconds\n"
+            f"{_combine_shell_output(exc.stdout, exc.stderr)}"
+        )
+        payload = _exec_session_output_payload(
+            combined_output,
+            wall_time_seconds=duration,
+            session_id=None,
+            exit_code=LOCAL_HTTP_EXEC_TIMEOUT_EXIT_CODE,
+            timed_out=True,
+            output_max_chars=output_max_chars,
+        )
         return (
-            _truncate_shell_tool_output(
-                f"exit_code: timeout\nstdout:\n{exc.stdout or ''}\nstderr:\n{exc.stderr or ''}".rstrip(),
-                output_max_chars,
-            ),
+            local_http_exec_output_text(payload),
             False,
         )
     stdout = getattr(completed, "stdout", "") or ""
     stderr = getattr(completed, "stderr", "") or ""
     returncode = getattr(completed, "returncode", 0)
+    duration = time.monotonic() - started_at
+    payload = _exec_session_output_payload(
+        _combine_shell_output(stdout, stderr),
+        wall_time_seconds=duration,
+        session_id=None,
+        exit_code=returncode,
+        output_max_chars=output_max_chars,
+    )
     return (
-        _truncate_shell_tool_output(
-            f"exit_code: {returncode}\nstdout:\n{stdout}\nstderr:\n{stderr}".rstrip(),
-            output_max_chars,
-        ),
-        returncode == 0,
+        local_http_exec_output_text(payload),
+        True,
     )
 
 
-def _truncate_shell_tool_output(output: str, max_chars: int | None) -> str:
+def _combine_shell_output(stdout: Any, stderr: Any) -> str:
+    stdout_text = _coerce_shell_output_text(stdout)
+    stderr_text = _coerce_shell_output_text(stderr)
+    if stdout_text and stderr_text and not stdout_text.endswith(("\n", "\r")) and not stderr_text.startswith(("\n", "\r")):
+        return f"{stdout_text}\n{stderr_text}"
+    return f"{stdout_text}{stderr_text}"
+
+
+def _coerce_shell_output_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _truncate_shell_tool_output(output: str, max_chars: LocalHttpOutputBudget | int | None) -> str:
+    if isinstance(max_chars, LocalHttpOutputBudget):
+        if max_chars.kind == "tokens":
+            return _truncate_shell_tool_output_tokens(output, max_chars.amount)
+        max_chars = max_chars.amount
     if max_chars is None or len(output.encode("utf-8")) <= max_chars:
         return output
     total_lines = len(output.splitlines())
@@ -2488,21 +3254,68 @@ def _truncate_shell_tool_output(output: str, max_chars: int | None) -> str:
     return f"Total output lines: {total_lines}\n\n{truncated}"
 
 
+def _truncate_shell_tool_output_tokens(output: str, max_tokens: int) -> str:
+    if max_tokens <= 0:
+        return _local_http_truncation_marker(_approx_token_count(output), unit="tokens")
+    if _approx_token_count(output) <= max_tokens:
+        return output
+    total_lines = len(output.splitlines())
+    max_bytes = _approx_bytes_for_tokens(max_tokens)
+    head_budget = max_bytes // 2
+    tail_budget = max_bytes - head_budget
+    head, tail, omitted_chars = _split_shell_output_for_truncation(output, head_budget, tail_budget)
+    omitted_bytes = max(0, len(output.encode("utf-8")) - len(head.encode("utf-8")) - len(tail.encode("utf-8")))
+    omitted_tokens = _approx_token_count("x" * omitted_bytes)
+    if omitted_tokens == 0 and omitted_chars > 0:
+        omitted_tokens = 1
+    truncated = f"{head}{_local_http_truncation_marker(omitted_tokens, unit='tokens')}{tail}"
+    return f"Total output lines: {total_lines}\n\n{truncated}"
+
+
 def _truncate_middle_shell_tool_output(output: str, max_bytes: int) -> str:
     if max_bytes <= 0:
-        return f"... {len(output)} chars truncated ..."
-    marker = f"... {len(output)} chars truncated ..."
-    marker_bytes = len(marker.encode("utf-8"))
-    available = max(max_bytes - marker_bytes, 0)
-    if available == 0:
-        return marker
+        return _local_http_truncation_marker(len(output))
+    head_budget = max_bytes // 2
+    tail_budget = max_bytes - head_budget
+    head, tail, omitted = _split_shell_output_for_truncation(output, head_budget, tail_budget)
+    return f"{head}{_local_http_truncation_marker(omitted)}{tail}"
+
+
+def _split_shell_output_for_truncation(output: str, head_bytes: int, tail_bytes: int) -> tuple[str, str, int]:
+    encoded_len = len(output.encode("utf-8"))
+    tail_start_target = max(encoded_len - tail_bytes, 0)
+    prefix_end = 0
+    suffix_start = len(output)
+    suffix_started = False
+    removed_chars = 0
+    for char_index, char in _iter_shell_output_char_byte_indices(output):
+        char_end = char_index + len(char.encode("utf-8"))
+        if char_end <= head_bytes:
+            prefix_end = char_end
+            continue
+        if char_index >= tail_start_target:
+            if not suffix_started:
+                suffix_start = char_index
+                suffix_started = True
+            continue
+        removed_chars += 1
+    if suffix_start < prefix_end:
+        suffix_start = prefix_end
     encoded = output.encode("utf-8")
-    head_bytes = available // 2
-    tail_bytes = available - head_bytes
-    head = encoded[:head_bytes].decode("utf-8", errors="ignore")
-    tail = encoded[-tail_bytes:].decode("utf-8", errors="ignore") if tail_bytes else ""
-    omitted = len(output) - len(head) - len(tail)
-    return f"{head}... {omitted} chars truncated ...{tail}"
+    head = encoded[:prefix_end].decode("utf-8", errors="ignore")
+    tail = encoded[suffix_start:].decode("utf-8", errors="ignore")
+    return head, tail, removed_chars
+
+
+def _iter_shell_output_char_byte_indices(output: str) -> Iterable[tuple[int, str]]:
+    byte_index = 0
+    for char in output:
+        yield byte_index, char
+        byte_index += len(char.encode("utf-8"))
+
+
+def _local_http_truncation_marker(removed_count: int, *, unit: str = "chars") -> str:
+    return f"\u2026{removed_count} {unit} truncated\u2026"
 
 
 def _tool_name_from_item(item: Mapping[str, Any]) -> str:
@@ -2536,38 +3349,72 @@ def _tool_output_from_item(item: Mapping[str, Any]) -> Any:
 def reasoning_texts_from_local_http_exec_result(result: UserTurnSamplingResult) -> tuple[str, ...]:
     """Extract reasoning summary text from a local HTTP Responses payload."""
 
-    texts: list[str] = []
+    return tuple(
+        "\n".join(item.item.summary_text)
+        for item in reasoning_turn_items_from_local_http_exec_result(result)
+        if item.item.summary_text
+    )
+
+
+def reasoning_turn_items_from_local_http_exec_result(result: UserTurnSamplingResult) -> tuple[TurnItem, ...]:
+    """Extract reasoning turn items from a local HTTP Responses payload."""
+
+    items: list[TurnItem] = []
     for payload in _raw_responses_payloads(result):
-        for item in _response_output_mappings(payload):
+        for index, item in enumerate(_response_output_mappings(payload)):
             item_type = str(item.get("type") or "")
             if item_type not in {"reasoning", "reasoning_summary"}:
                 continue
-            text = _reasoning_text_from_item(item)
-            if text:
-                texts.append(text)
-    return tuple(texts)
+            summary_text = _reasoning_summary_entries_from_item(item)
+            raw_content = _reasoning_raw_content_entries_from_item(item)
+            if summary_text or raw_content:
+                item_id = str(item.get("id") or f"reasoning_{index}")
+                items.append(TurnItem.reasoning(item_id, summary_text, raw_content))
+    return tuple(items)
 
 
-def _reasoning_text_from_item(item: Mapping[str, Any]) -> str:
-    direct = _text_from_value(item.get("text") or item.get("content"))
-    summary = _text_from_value(item.get("summary"))
-    combined = "\n".join(part for part in (direct, summary) if part)
-    return combined.strip()
+def _reasoning_summary_entries_from_item(item: Mapping[str, Any]) -> tuple[str, ...]:
+    entries = _text_entries_from_value(_first_present(item, "summary", "summary_text", "summaryText"))
+    if entries:
+        return entries
+    return _text_entries_from_value(_first_present(item, "text"))
+
+
+def _reasoning_raw_content_entries_from_item(item: Mapping[str, Any]) -> tuple[str, ...]:
+    return _text_entries_from_value(
+        _first_present(item, "content", "raw_content", "rawContent"),
+        include_reasoning_text=True,
+    )
+
+
+def _first_present(value: Mapping[str, Any], *names: str) -> Any:
+    for name in names:
+        if name in value:
+            return value.get(name)
+    return None
 
 
 def _text_from_value(value: Any) -> str:
+    return "\n".join(_text_entries_from_value(value))
+
+
+def _text_entries_from_value(value: Any, *, include_reasoning_text: bool = False) -> tuple[str, ...]:
     if isinstance(value, str):
-        return value
+        return (value,) if value else ()
     if isinstance(value, Mapping):
-        for name in ("text", "summary", "content"):
-            text = _text_from_value(value.get(name))
+        if value.get("type") == "reasoning_text" and not include_reasoning_text:
+            return ()
+        for name in ("text", "summary", "summary_text", "summaryText", "content", "raw_content", "rawContent"):
+            text = _text_entries_from_value(value.get(name), include_reasoning_text=include_reasoning_text)
             if text:
                 return text
-        return ""
+        return ()
     if isinstance(value, (list, tuple)):
-        parts = tuple(_text_from_value(item) for item in value)
-        return "\n".join(part for part in parts if part)
-    return ""
+        parts: list[str] = []
+        for item in value:
+            parts.extend(_text_entries_from_value(item, include_reasoning_text=include_reasoning_text))
+        return tuple(parts)
+    return ()
 
 
 def usage_from_local_http_exec_result(result: UserTurnSamplingResult) -> Usage:
@@ -2667,10 +3514,189 @@ def _merge_local_http_sampling_result(
             + tool_response_items
             + tuple(getattr(followup, "tool_response_items", ()) or ())
         ),
+        raw_tool_output_items=(
+            tuple(getattr(previous, "raw_tool_output_items", ()) or ())
+            + tuple(tool_outputs)
+            + tuple(getattr(followup, "raw_tool_output_items", ()) or ())
+        ),
         request_plans=previous_request_plans + followup_request_plans,
         raw_results=previous_raw_results + followup_raw_results,
         raw_result=followup.raw_result,
+        session_events=(
+            tuple(getattr(previous, "session_events", ()) or ())
+            + tuple(getattr(followup, "session_events", ()) or ())
+        ),
+        stream_events=(
+            tuple(getattr(previous, "stream_events", ()) or ())
+            + tuple(getattr(followup, "stream_events", ()) or ())
+        ),
+        stream_event_dispatch_plans=(
+            tuple(getattr(previous, "stream_event_dispatch_plans", ()) or ())
+            + tuple(getattr(followup, "stream_event_dispatch_plans", ()) or ())
+        ),
+        stream_event_apply_plans=(
+            tuple(getattr(previous, "stream_event_apply_plans", ()) or ())
+            + tuple(getattr(followup, "stream_event_apply_plans", ()) or ())
+        ),
+        stream_runtime_state_summary=(
+            getattr(followup, "stream_runtime_state_summary", None)
+            if getattr(followup, "stream_runtime_state_summary", None) is not None
+            else getattr(previous, "stream_runtime_state_summary", None)
+        ),
+        last_agent_message=(
+            getattr(followup, "last_agent_message", None)
+            if getattr(followup, "last_agent_message", None) is not None
+            else getattr(previous, "last_agent_message", None)
+        ),
+        turn_status=getattr(followup, "turn_status", getattr(previous, "turn_status", "completed")),
     )
+
+
+def _replay_local_http_session_events(
+    processor: HumanEventProcessor | JsonEventProcessor,
+    result: UserTurnSamplingResult,
+    *,
+    stdout: TextIO | None = None,
+    stderr: TextIO | None = None,
+) -> None:
+    for event in tuple(getattr(result, "session_events", ()) or ()):
+        notification = _local_http_session_event_notification(event)
+        if notification is None:
+            continue
+        if isinstance(processor, JsonEventProcessor):
+            processor.process_server_notification(notification, output=stdout)
+        else:
+            processor.process_server_notification(notification, stderr=stderr)
+
+
+def _local_http_session_event_notification(event: Any) -> Mapping[str, Any] | None:
+    event_type = getattr(event, "type", None)
+    payload = getattr(event, "payload", None)
+    if event_type == "warning":
+        message = getattr(payload, "message", None)
+        if not isinstance(message, str) or not message:
+            return None
+        return {"method": "warning", "params": {"message": message}}
+    if event_type == "stream_error":
+        message = getattr(payload, "message", None)
+        if not isinstance(message, str) or not message:
+            return None
+        return {
+            "method": "error",
+            "params": {
+                "error": {
+                    "message": message,
+                    "additionalDetails": getattr(payload, "additional_details", None),
+                    "codexErrorInfo": _local_http_codex_error_info(getattr(payload, "codex_error_info", None)),
+                },
+                "willRetry": True,
+            },
+        }
+    if event_type == "error":
+        message = getattr(payload, "message", None)
+        if not isinstance(message, str) or not message:
+            return None
+        return {
+            "method": "error",
+            "params": {
+                "error": {
+                    "message": message,
+                    "codexErrorInfo": _local_http_codex_error_info(getattr(payload, "codex_error_info", None)),
+                },
+            },
+        }
+    if event_type == "model_reroute":
+        from_model = getattr(payload, "from_model", None)
+        to_model = getattr(payload, "to_model", None)
+        reason = getattr(payload, "reason", None)
+        if not isinstance(from_model, str) or not isinstance(to_model, str):
+            return None
+        return {
+            "method": "model/rerouted",
+            "params": {
+                "from_model": from_model,
+                "to_model": to_model,
+                "reason": _local_http_enum_value(reason),
+            },
+        }
+    if event_type == "model_verification":
+        verifications = getattr(payload, "verifications", None)
+        if verifications is None:
+            return None
+        return {
+            "method": "model/verification",
+            "params": {
+                "verifications": [_local_http_enum_value(item) for item in tuple(verifications)],
+            },
+        }
+    if event_type == "token_count":
+        info = getattr(payload, "info", None)
+        if info is None:
+            return None
+        total = getattr(info, "total_token_usage", None)
+        if total is None:
+            return None
+        to_mapping = getattr(total, "to_mapping", None)
+        total_payload = to_mapping() if callable(to_mapping) else total
+        if not isinstance(total_payload, Mapping):
+            return None
+        return {
+            "method": "thread/tokenUsage/updated",
+            "params": {
+                "tokenUsage": {
+                    "total": dict(total_payload),
+                }
+            },
+        }
+    return None
+
+
+def _session_events_include_replayed_terminal_error(session_events: tuple[Any, ...]) -> bool:
+    for event in session_events:
+        if getattr(event, "type", None) != "error":
+            continue
+        if _local_http_session_event_notification(event) is not None:
+            return True
+    return False
+
+
+def _local_http_enum_value(value: Any) -> Any:
+    return getattr(value, "value", value)
+
+
+def _local_http_codex_error_info(value: Any) -> Mapping[str, Any] | None:
+    if value is None:
+        return None
+    to_mapping = getattr(value, "to_mapping", None)
+    if callable(to_mapping):
+        mapped = to_mapping()
+        return mapped if isinstance(mapped, Mapping) else None
+    if isinstance(value, Mapping):
+        return value
+    info_type = getattr(value, "type", None)
+    if not isinstance(info_type, str) or not info_type:
+        return None
+    mapped: dict[str, Any] = {"type": info_type}
+    http_status_code = getattr(value, "http_status_code", None)
+    if http_status_code is not None:
+        mapped["httpStatusCode"] = http_status_code
+    return mapped
+
+
+def _usage_is_zero(usage: Usage) -> bool:
+    return (
+        usage.input_tokens == 0
+        and usage.cached_input_tokens == 0
+        and usage.output_tokens == 0
+        and usage.reasoning_output_tokens == 0
+    )
+
+
+def _attach_local_http_session_events(error: CodexErr, session: InMemoryCodexSession) -> None:
+    try:
+        object.__setattr__(error, "session_events", tuple(session.emitted_events))
+    except Exception:
+        return
 
 
 def _mapping_field(value: Any, *names: str) -> Mapping[str, Any]:
@@ -2699,33 +3725,45 @@ def _int_field(value: Any, *names: str) -> int:
 
 def emit_local_http_exec_error(
     processor: HumanEventProcessor | JsonEventProcessor,
-    message: str,
+    message: str | BaseException,
     *,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
 ) -> None:
     """Render a local HTTP exec failure through the normal exec processors."""
 
+    error_message = str(message)
+    session_events = tuple(getattr(message, "session_events", ()) or ())
     if isinstance(processor, JsonEventProcessor):
+        processor.emit_json_lines((ThreadEvent.turn_started(),), stdout)
+        if session_events:
+            _replay_local_http_session_events(processor, _SessionEventsResult(session_events), stdout=stdout)
         processor.emit_json_lines(
             (
-                ThreadEvent.turn_started(),
-                ThreadEvent.turn_failed(ThreadErrorEvent(message)),
+                ThreadEvent.turn_failed(ThreadErrorEvent(error_message)),
             ),
             stdout,
         )
         return
 
+    if session_events:
+        _replay_local_http_session_events(processor, _SessionEventsResult(session_events), stderr=stderr)
+    turn_error = None if _session_events_include_replayed_terminal_error(session_events) else {"message": error_message}
     processor.process_server_notification(
         exec_turn_completed_notification(
             "",
             "",
             (),
             status="failed",
-            error={"message": message},
+            error=turn_error,
         ),
         stderr=stderr,
     )
+
+
+@dataclass(frozen=True)
+class _SessionEventsResult:
+    session_events: tuple[Any, ...]
 
 
 __all__ = [
@@ -2774,6 +3812,7 @@ __all__ = [
     "default_local_http_exec_model",
     "emit_local_http_exec_error",
     "emit_local_http_exec_result",
+    "final_text_from_local_http_exec_result",
     "final_text_from_response_items",
     "local_http_exec_enabled",
     "local_http_exec_max_tool_rounds",
@@ -2783,6 +3822,7 @@ __all__ = [
     "local_http_exec_shell_tools_enabled",
     "local_http_exec_tool_output_max_chars",
     "local_http_exec_config_summary",
+    "local_http_exec_initial_messages_from_rollout",
     "local_http_shell_tool_approval_required_output",
     "local_http_shell_tool_auto_execute_allowed",
     "persist_local_http_exec_rollout",

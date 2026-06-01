@@ -286,6 +286,42 @@ class ProcessState:
         )
 
 
+@dataclass(frozen=True)
+class ProcessOutputChunk:
+    transcript_chunk: bytes
+    delta_chunk: str | None
+
+
+def process_output_chunk(
+    pending: bytearray,
+    transcript: "HeadTailBuffer",
+    emitted_deltas: int,
+    chunk: bytes | bytearray | memoryview | Iterable[int],
+) -> tuple[list[ProcessOutputChunk], int]:
+    if not isinstance(pending, bytearray):
+        raise TypeError("pending must be a bytearray")
+    if not isinstance(transcript, HeadTailBuffer):
+        raise TypeError("transcript must be HeadTailBuffer")
+    if isinstance(emitted_deltas, bool) or not isinstance(emitted_deltas, int):
+        raise TypeError("emitted_deltas must be an integer")
+    if emitted_deltas < 0:
+        raise ValueError("emitted_deltas must be non-negative")
+
+    pending.extend(bytes(chunk))
+    processed: list[ProcessOutputChunk] = []
+    while True:
+        prefix = split_valid_utf8_prefix(pending)
+        if prefix is None:
+            break
+        transcript.push_chunk(prefix)
+        delta_chunk = None
+        if should_emit_exec_output_delta(emitted_deltas):
+            delta_chunk = prefix.decode("utf-8", errors="replace")
+            emitted_deltas += 1
+        processed.append(ProcessOutputChunk(prefix, delta_chunk))
+    return processed, emitted_deltas
+
+
 class HeadTailBuffer:
     """Capped byte buffer that keeps a stable prefix and suffix."""
 
@@ -394,6 +430,7 @@ __all__ = [
     "MIN_EMPTY_YIELD_TIME_MS",
     "MIN_YIELD_TIME_MS",
     "ProcessState",
+    "ProcessOutputChunk",
     "UNIFIED_EXEC_OUTPUT_DELTA_MAX_BYTES",
     "UNIFIED_EXEC_OUTPUT_MAX_BYTES",
     "UNIFIED_EXEC_OUTPUT_MAX_TOKENS",
@@ -409,6 +446,7 @@ __all__ = [
     "exec_server_write_status_marks_exited",
     "generate_chunk_id",
     "process_id_to_prune_from_meta",
+    "process_output_chunk",
     "resolve_aggregated_output",
     "resolve_failed_aggregated_output",
     "resolve_max_tokens",

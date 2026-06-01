@@ -365,6 +365,20 @@ class ExecSessionRequestBuilderTests(unittest.TestCase):
         self.assertEqual(mapped["instructionSources"], [str(source)])
         self.assertEqual(mapped["startupWarnings"], ["warning"])
 
+    def test_session_config_mapping_carries_reasoning_visibility(self) -> None:
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+            hide_agent_reasoning=True,
+            show_raw_agent_reasoning=True,
+        )
+
+        mapped = exec_session_config_mapping(config)
+
+        self.assertTrue(mapped["hideAgentReasoning"])
+        self.assertTrue(mapped["showRawAgentReasoning"])
+
     def test_sandbox_mode_from_permission_profile_matches_upstream_legacy_mapping(self) -> None:
         cwd = Path("C:/work/project")
         full_write_restricted_network = PermissionProfile.managed(
@@ -448,6 +462,26 @@ class ExecSessionRequestBuilderTests(unittest.TestCase):
                 },
             },
         )
+
+    def test_review_start_params_clean_and_validate_target_like_app_server(self) -> None:
+        base = ReviewStartParams("thread-1", ReviewTarget.base_branch("  main  "))
+        self.assertEqual(base.to_mapping()["target"], {"type": "baseBranch", "branch": "main"})
+
+        commit = ReviewStartParams("thread-1", ReviewTarget.commit("  abc123  ", "  Fix  "))
+        self.assertEqual(commit.to_mapping()["target"], {"type": "commit", "sha": "abc123", "title": "Fix"})
+
+        commit_without_title = ReviewStartParams("thread-1", ReviewTarget.commit("abc123", "   "))
+        self.assertEqual(commit_without_title.to_mapping()["target"], {"type": "commit", "sha": "abc123"})
+
+        custom = ReviewStartParams("thread-1", ReviewTarget.custom("  review this  "))
+        self.assertEqual(custom.to_mapping()["target"], {"type": "custom", "instructions": "review this"})
+
+        with self.assertRaisesRegex(ValueError, "branch must not be empty"):
+            ReviewStartParams("thread-1", ReviewTarget.base_branch("   "))
+        with self.assertRaisesRegex(ValueError, "sha must not be empty"):
+            ReviewStartParams("thread-1", ReviewTarget.commit("\t"))
+        with self.assertRaisesRegex(ValueError, "instructions must not be empty"):
+            ReviewStartParams("thread-1", ReviewTarget.custom("\n\n"))
 
     def test_initial_operation_request_from_plan_selects_turn_start_for_user_turn(self) -> None:
         plan = ExecRunPlan(
@@ -3337,7 +3371,7 @@ class ExecSessionRequestBuilderTests(unittest.TestCase):
         items = turn_items_for_thread(thread, "turn-1")
         assert isinstance(items, list)
         items.append({"type": "mutated"})
-        self.assertEqual(thread["turns"][0]["items"], [{"type": "AgentMessage"}])
+        self.assertEqual(thread["turns"][1]["items"], [{"type": "AgentMessage"}])
 
     def test_lagged_event_warning_message_matches_upstream_text(self) -> None:
         self.assertEqual(lagged_event_warning_message(12), "in-process app-server event stream lagged; dropped 12 events")
@@ -3799,6 +3833,10 @@ class ExecSessionRequestBuilderTests(unittest.TestCase):
             "active_permission_profile": None,
             "cwd": Path("C:/work/project"),
             "reasoning_effort": None,
+            "initial_messages": [
+                {"type": "user_message", "message": "previous prompt", "kind": "plain"},
+                {"type": "agent_message", "message": "previous answer"},
+            ],
         }
 
         configured = session_configured_from_thread_resume_response(response, config)
@@ -3810,6 +3848,8 @@ class ExecSessionRequestBuilderTests(unittest.TestCase):
         self.assertIsNone(configured.rollout_path)
         self.assertEqual(configured.approval_policy, AskForApproval.NEVER)
         self.assertEqual(configured.approvals_reviewer, ApprovalsReviewer.USER)
+        self.assertEqual([message.type for message in configured.initial_messages], ["user_message", "agent_message"])
+        self.assertEqual(configured.to_mapping()["initial_messages"][0]["message"], "previous prompt")
 
     def test_session_configured_from_thread_response_validates_ids(self) -> None:
         base = {

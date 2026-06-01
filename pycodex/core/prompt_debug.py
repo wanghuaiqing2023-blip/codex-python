@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from pycodex.core.client_common import Prompt
-from pycodex.core.turn_prompt import build_turn_prompt, input_with_user_instructions
+from pycodex.core.turn_prompt import build_turn_prompt
 from pycodex.protocol import BaseInstructions, ResponseInputItem, ResponseItem, UserInput
 
 
@@ -99,7 +99,7 @@ async def build_prompt_input_from_session(
         )
     else:
         prompt = build_prompt(
-            input_with_user_instructions(prompt_input, turn_context, bool(user_input)),
+            list(prompt_input),
             router,
             turn_context,
             base_instructions,

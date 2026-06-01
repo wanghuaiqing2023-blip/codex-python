@@ -3,25 +3,31 @@ import tempfile
 import io
 import os
 import re
+import subprocess
 import sys
 import asyncio
 import unittest
+from collections.abc import Mapping
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.error import HTTPError
 from pathlib import Path
 
 from pycodex.core import (
+    ExecApprovalRequirement,
     SessionMeta,
     append_thread_name,
     count_session_rollout_files,
     find_session_rollout_containing_response_marker,
     last_user_image_count_in_rollout,
     materialize_session_rollout,
+    read_event_msgs_from_rollout,
     read_response_items_from_rollout,
     read_thread_item_from_rollout,
 )
 from pycodex.core.client import ModelClient
+from pycodex.core.turn_runtime import UserTurnSamplingResult
 from pycodex.exec.event_processor import HumanEventProcessor, JsonEventProcessor
 from pycodex.exec.local_runtime import (
     build_default_local_http_exec_runtime,
@@ -32,9 +38,11 @@ from pycodex.exec.local_runtime import (
     LOCAL_HTTP_APPROX_BYTES_PER_TOKEN,
     emit_local_http_exec_error,
     emit_local_http_exec_result,
+    final_text_from_local_http_exec_result,
     final_text_from_response_items,
     LocalHttpHeadTailBuffer,
     LocalHttpExecSessionManager,
+    LocalHttpShellInvocation,
     LOCAL_HTTP_EXEC_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS,
     LOCAL_HTTP_EXEC_EARLY_EXIT_GRACE_PERIOD_MS,
     LOCAL_HTTP_EXEC_MAX_YIELD_TIME_MS,
@@ -56,11 +64,14 @@ from pycodex.exec.local_runtime import (
     local_http_exec_max_tool_rounds,
     local_http_request_permissions_tool_spec,
     local_http_write_stdin_tool_spec,
+    local_http_exec_initial_messages_from_rollout,
     local_http_shell_tool_auto_execute_allowed,
+    local_http_shell_tool_approval_required_output,
     local_http_shell_tool_spec,
     local_http_shell_tools_built_tools,
     local_http_exec_tool_output_max_chars,
     reasoning_texts_from_local_http_exec_result,
+    persist_local_http_exec_rollout,
     persist_local_http_exec_resume_rollout,
     response_items_from_local_http_tool_outputs,
     resolve_local_http_exec_resume_rollout_path,
@@ -74,13 +85,41 @@ from pycodex.exec.local_runtime import (
     tool_output_items_from_local_http_exec_result,
     tool_timeline_items_from_local_http_exec_result,
     usage_from_local_http_exec_result,
+    _merge_local_http_sampling_result,
+    _local_http_prompt_visible_rollout_items,
+    _local_http_response_rollout_payloads,
     _approx_bytes_for_tokens,
     _approx_token_count,
     _truncate_shell_tool_output,
 )
 from pycodex.exec.run import ExecRunPlan, InitialOperation
 from pycodex.exec.session import ExecSessionConfig
-from pycodex.protocol import AskForApproval, UserInput
+from pycodex.protocol import (
+    AdditionalPermissionProfile,
+    CodexErrorInfo,
+    ContentItem,
+    ErrorEvent,
+    EventMsg,
+    FileSystemAccessMode,
+    FileSystemPermissions,
+    FileSystemPath,
+    FileSystemSandboxEntry,
+    ModelRerouteEvent,
+    ModelRerouteReason,
+    ModelVerification,
+    ModelVerificationEvent,
+    NetworkPermissions,
+    PermissionGrantScope,
+    RequestPermissionProfile,
+    RequestPermissionsResponse,
+    ResponseItem,
+    StreamErrorEvent,
+    TokenCountEvent,
+    TokenUsage,
+    TokenUsageInfo,
+    WarningEvent,
+)
+from pycodex.protocol import AskForApproval, CodexErr, UserInput
 
 
 class FakeResponse:
@@ -107,6 +146,20 @@ class FakeResponse:
 class Router:
     def model_visible_specs(self) -> list[dict[str, str]]:
         return []
+
+
+def _message_texts(message_items: list[dict]) -> list[str]:
+    return [item["content"][0]["text"] for item in message_items if item.get("content")]
+
+
+def _assert_message_texts_in_order(testcase: unittest.TestCase, message_items: list[dict], expected: list[str]) -> None:
+    texts = _message_texts(message_items)
+    cursor = 0
+    for text in expected:
+        try:
+            cursor = texts.index(text, cursor) + 1
+        except ValueError:
+            testcase.fail(f"missing message text sequence {expected!r} in {texts!r}")
 
 
 class ExistingToolRouter:
@@ -276,6 +329,15 @@ class FakeWriteStdinToolCallResponse:
 
 
 class FakeRequestPermissionsToolCallResponse:
+    def __init__(self, arguments: str | Mapping[str, object] | None = None) -> None:
+        self.arguments = (
+            "{\"permissions\":{\"network\":{\"enabled\":true}}}"
+            if arguments is None
+            else json.dumps(arguments)
+            if isinstance(arguments, Mapping)
+            else arguments
+        )
+
     def read(self) -> bytes:
         return json.dumps(
             {
@@ -283,7 +345,7 @@ class FakeRequestPermissionsToolCallResponse:
                     {
                         "type": "function_call",
                         "name": "request_permissions",
-                        "arguments": "{\"permissions\":{\"network\":{\"enabled\":true}}}",
+                        "arguments": self.arguments,
                         "call_id": "permissions-1",
                     }
                 ]
@@ -343,6 +405,28 @@ class FakeSessionExecCommandToolCallResponse:
         return None
 
 
+class FakeDangerousToolCallResponse:
+    def read(self) -> bytes:
+        return json.dumps(
+            {
+                "output": [
+                    {
+                        "type": "function_call",
+                        "name": "shell",
+                        "arguments": "{\"command\":\"rm -rf /important/data\"}",
+                        "call_id": "call-1",
+                    }
+                ]
+            }
+        ).encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb) -> None:
+        return None
+
+
 class FakeToolCallWithWorkdirTimeoutResponse:
     def read(self) -> bytes:
         return json.dumps(
@@ -352,6 +436,35 @@ class FakeToolCallWithWorkdirTimeoutResponse:
                         "type": "function_call",
                         "name": "shell",
                         "arguments": "{\"command\":\"pwd\",\"workdir\":\"subdir\",\"timeout_ms\":2500}",
+                        "call_id": "call-1",
+                    }
+                ]
+            }
+        ).encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb) -> None:
+        return None
+
+
+class FakeToolCallWithRelativeAdditionalPermissionsWorkdirResponse:
+    def read(self) -> bytes:
+        return json.dumps(
+            {
+                "output": [
+                    {
+                        "type": "function_call",
+                        "name": "shell",
+                        "arguments": json.dumps(
+                            {
+                                "command": "pwd",
+                                "workdir": "nested",
+                                "sandbox_permissions": "with_additional_permissions",
+                                "additional_permissions": {"file_system": {"write": ["."]}},
+                            }
+                        ),
                         "call_id": "call-1",
                     }
                 ]
@@ -627,6 +740,34 @@ class FakeToolCallWithPrefixRuleResponse:
         return None
 
 
+class FakeToolCallWithHeredocPrefixRuleResponse:
+    def read(self) -> bytes:
+        return json.dumps(
+            {
+                "output": [
+                    {
+                        "type": "function_call",
+                        "name": "shell",
+                        "arguments": json.dumps(
+                            {
+                                "command": "python3 <<'PY'\nprint('hello')\nPY",
+                                "prefix_rule": ["python3", "script.py"],
+                            },
+                            separators=(",", ":"),
+                        ),
+                        "call_id": "call-1",
+                    }
+                ]
+            }
+        ).encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb) -> None:
+        return None
+
+
 class FakeApplyPatchToolCallResponse:
     def __init__(self, patch: str | None = None) -> None:
         self.patch = patch or "*** Begin Patch\n*** Add File: created.txt\n+hello\n*** End Patch\n"
@@ -864,7 +1005,15 @@ class LocalHttpShellToolSpecTests(unittest.TestCase):
 
         self.assertIn("Total output lines: 1", output)
         self.assertIn("chars truncated", output)
+        self.assertIn(chr(0x2026), output)
         self.assertNotEqual(output, "甲乙丙丁")
+
+    def test_local_http_shell_tool_truncation_marker_matches_rust_shape(self) -> None:
+        output = _truncate_shell_tool_output("abcdefghijklmnopqrstuvwxyz", 12)
+
+        self.assertRegex(output, rf"{chr(0x2026)}\d+ chars truncated{chr(0x2026)}")
+        self.assertIn(f"abcdef{chr(0x2026)}14 chars truncated{chr(0x2026)}uvwxyz", output)
+        self.assertNotIn("... ", output)
 
     def test_local_http_approx_token_count_uses_utf8_bytes(self) -> None:
         self.assertEqual(_approx_token_count("abcd"), 1)
@@ -1001,9 +1150,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             )
 
         message_items = [item for item in seen["body"]["input"] if item.get("type") == "message"]
-        self.assertEqual([item["role"] for item in message_items[-3:]], ["user", "assistant", "user"])
-        self.assertEqual(message_items[-3]["content"][0]["text"], "previous user")
-        self.assertEqual(message_items[-2]["content"][0]["text"], "previous assistant")
+        _assert_message_texts_in_order(self, message_items, ["previous user", "previous assistant", "current prompt"])
         self.assertEqual(message_items[-1]["content"][0]["text"], "current prompt")
 
     async def test_default_local_http_runtime_uses_env_provider_and_model(self) -> None:
@@ -1072,6 +1219,186 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json_lines[1]["item"]["type"], "agent_message")
         self.assertEqual(json_lines[1]["item"]["text"], "done")
 
+    def test_local_http_exec_result_uses_streamed_last_agent_message_without_response_items(self) -> None:
+        result = UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(),
+            last_agent_message="streamed answer",
+        )
+
+        self.assertEqual(final_text_from_response_items(result.response_items), "")
+        self.assertEqual(final_text_from_local_http_exec_result(result), "streamed answer")
+
+        stdout = io.StringIO()
+        emit_local_http_exec_result(
+            HumanEventProcessor(),
+            result,
+            stdout=stdout,
+            stderr=io.StringIO(),
+            stdout_is_terminal=False,
+            stderr_is_terminal=False,
+        )
+        self.assertEqual(stdout.getvalue(), "streamed answer\n")
+
+        json_stdout = io.StringIO()
+        emit_local_http_exec_result(JsonEventProcessor(), result, stdout=json_stdout)
+        json_lines = [json.loads(line) for line in json_stdout.getvalue().splitlines()]
+        self.assertEqual([line["type"] for line in json_lines], ["turn.started", "item.completed", "turn.completed"])
+        self.assertEqual(json_lines[1]["item"]["type"], "agent_message")
+        self.assertEqual(json_lines[1]["item"]["text"], "streamed answer")
+
+    def test_local_http_exec_result_prefers_response_items_over_streamed_last_agent_message(self) -> None:
+        result = UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(ResponseItem.message("assistant", (ContentItem.output_text("item answer"),)),),
+            last_agent_message="streamed answer",
+        )
+
+        self.assertEqual(final_text_from_local_http_exec_result(result), "item answer")
+
+    def test_local_http_exec_merge_preserves_followup_streamed_last_agent_message(self) -> None:
+        previous = UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(),
+            last_agent_message="partial answer",
+        )
+        followup = UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(),
+            last_agent_message="streamed followup answer",
+        )
+
+        merged = _merge_local_http_sampling_result(
+            previous,
+            (
+                {
+                    "type": "function_call_output",
+                    "call_id": "call-1",
+                    "output": "ok",
+                    "success": True,
+                },
+            ),
+            followup,
+        )
+
+        self.assertEqual(merged.last_agent_message, "streamed followup answer")
+        self.assertEqual(final_text_from_local_http_exec_result(merged), "streamed followup answer")
+
+    def test_local_http_exec_merge_preserves_followup_interrupted_status(self) -> None:
+        previous = UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(),
+            last_agent_message="partial answer",
+            turn_status="completed",
+        )
+        followup = UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(),
+            last_agent_message="interrupted partial",
+            turn_status="interrupted",
+        )
+
+        merged = _merge_local_http_sampling_result(previous, (), followup)
+
+        self.assertEqual(merged.turn_status, "interrupted")
+        self.assertEqual(merged.last_agent_message, "interrupted partial")
+        self.assertEqual(final_text_from_local_http_exec_result(merged), "")
+
+    def test_local_http_exec_merge_accumulates_stream_runtime_artifacts(self) -> None:
+        previous = UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(),
+            stream_events=({"type": "output_item.added", "item_id": "msg-1"},),
+            stream_event_dispatch_plans=("dispatch-1",),
+            stream_event_apply_plans=("apply-1",),
+            stream_runtime_state_summary={"last_agent_message": "partial"},
+        )
+        followup = UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(),
+            stream_events=({"type": "completed", "response_id": "resp-2"},),
+            stream_event_dispatch_plans=("dispatch-2",),
+            stream_event_apply_plans=("apply-2",),
+            stream_runtime_state_summary={"last_agent_message": "final"},
+        )
+
+        merged = _merge_local_http_sampling_result(previous, (), followup)
+
+        self.assertEqual(
+            merged.stream_events,
+            (
+                {"type": "output_item.added", "item_id": "msg-1"},
+                {"type": "completed", "response_id": "resp-2"},
+            ),
+        )
+        self.assertEqual(merged.stream_event_dispatch_plans, ("dispatch-1", "dispatch-2"))
+        self.assertEqual(merged.stream_event_apply_plans, ("apply-1", "apply-2"))
+        self.assertEqual(merged.stream_runtime_state_summary, {"last_agent_message": "final"})
+
+    def test_local_http_exec_merge_keeps_previous_stream_state_summary_when_followup_has_none(self) -> None:
+        previous = UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(),
+            stream_runtime_state_summary={"last_agent_message": "partial"},
+        )
+        followup = UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(),
+            stream_runtime_state_summary=None,
+        )
+
+        merged = _merge_local_http_sampling_result(previous, (), followup)
+
+        self.assertEqual(merged.stream_runtime_state_summary, {"last_agent_message": "partial"})
+
+    def test_local_http_exec_json_output_does_not_replay_stream_deltas(self) -> None:
+        result = UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(ResponseItem.message("assistant", (ContentItem.output_text("done"),)),),
+            session_events=(
+                EventMsg.from_mapping(
+                    {
+                        "type": "agent_message_content_delta",
+                        "thread_id": "thread-1",
+                        "turn_id": "turn-1",
+                        "item_id": "msg-1",
+                        "delta": "partial",
+                    }
+                ),
+                EventMsg.from_mapping(
+                    {
+                        "type": "reasoning_content_delta",
+                        "thread_id": "thread-1",
+                        "turn_id": "turn-1",
+                        "item_id": "reason-1",
+                        "delta": "think",
+                        "summary_index": 0,
+                    }
+                ),
+                EventMsg.from_mapping(
+                    {
+                        "type": "agent_reasoning_section_break",
+                        "item_id": "reason-1",
+                        "summary_index": 1,
+                    }
+                ),
+            ),
+            stream_events=(
+                {"type": "output_item_added", "item": ResponseItem.reasoning(id="reason-1")},
+                {"type": "reasoning_summary_delta", "item_id": "reason-1", "delta": "think", "summary_index": 0},
+                {"type": "reasoning_summary_part_added", "item_id": "reason-1", "summary_index": 0},
+                {"type": "completed", "response_id": "resp-1", "end_turn": True},
+            ),
+        )
+
+        json_stdout = io.StringIO()
+        emit_local_http_exec_result(JsonEventProcessor(), result, stdout=json_stdout)
+
+        json_lines = [json.loads(line) for line in json_stdout.getvalue().splitlines()]
+        self.assertEqual([line["type"] for line in json_lines], ["turn.started", "item.completed", "turn.completed"])
+        self.assertEqual(json_lines[1]["item"]["type"], "agent_message")
+        self.assertEqual(json_lines[1]["item"]["text"], "done")
+
         error_stderr = io.StringIO()
         emit_local_http_exec_error(
             HumanEventProcessor(),
@@ -1085,6 +1412,266 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         error_lines = [json.loads(line) for line in error_stdout.getvalue().splitlines()]
         self.assertEqual([line["type"] for line in error_lines], ["turn.started", "turn.failed"])
         self.assertEqual(error_lines[1]["error"]["message"], "boom")
+
+    def test_local_http_exec_error_replays_attached_session_events(self) -> None:
+        error = CodexErr.simple("context_window_exceeded")
+        object.__setattr__(error, "session_events", (
+            EventMsg.with_payload(
+                "token_count",
+                TokenCountEvent(
+                    info=TokenUsageInfo(
+                        total_token_usage=TokenUsage(
+                            input_tokens=5,
+                            cached_input_tokens=1,
+                            output_tokens=3,
+                            reasoning_output_tokens=2,
+                            total_tokens=8,
+                        ),
+                        last_token_usage=TokenUsage(
+                            input_tokens=5,
+                            cached_input_tokens=1,
+                            output_tokens=3,
+                            reasoning_output_tokens=2,
+                            total_tokens=8,
+                        ),
+                        model_context_window=128000,
+                    ),
+                ),
+            ),
+        ))
+        processor = JsonEventProcessor()
+        stdout = io.StringIO()
+
+        emit_local_http_exec_error(processor, error, stdout=stdout)
+
+        lines = [json.loads(line) for line in stdout.getvalue().splitlines()]
+        self.assertEqual([line["type"] for line in lines], ["turn.started", "turn.failed"])
+        self.assertEqual(lines[1]["error"]["message"], str(error))
+        self.assertEqual(processor.last_usage.input_tokens, 5)
+        self.assertEqual(processor.last_usage.cached_input_tokens, 1)
+
+    def test_local_http_exec_error_replays_metadata_session_events_inside_turn(self) -> None:
+        error = CodexErr.simple("context_window_exceeded")
+        object.__setattr__(error, "session_events", (
+            EventMsg.with_payload(
+                "model_reroute",
+                ModelRerouteEvent("gpt-5.3-codex", "gpt-5.2", ModelRerouteReason.HIGH_RISK_CYBER_ACTIVITY),
+            ),
+            EventMsg.with_payload("warning", WarningEvent("reroute warning")),
+            EventMsg.with_payload(
+                "model_verification",
+                ModelVerificationEvent((ModelVerification.TRUSTED_ACCESS_FOR_CYBER,)),
+            ),
+        ))
+        processor = JsonEventProcessor()
+        stdout = io.StringIO()
+
+        emit_local_http_exec_error(processor, error, stdout=stdout)
+
+        lines = [json.loads(line) for line in stdout.getvalue().splitlines()]
+        self.assertEqual(
+            [line["type"] for line in lines],
+            ["turn.started", "item.completed", "item.completed", "turn.failed"],
+        )
+        self.assertEqual(lines[1]["item"]["message"], "model rerouted: gpt-5.3-codex -> gpt-5.2 (HighRiskCyberActivity)")
+        self.assertEqual(lines[2]["item"]["message"], "reroute warning")
+        self.assertEqual(lines[3]["error"]["message"], str(error))
+
+    def test_local_http_exec_result_replays_metadata_session_events(self) -> None:
+        result = UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(ResponseItem.message("assistant", (ContentItem.output_text("done"),)),),
+            session_events=(
+                EventMsg.with_payload(
+                    "model_reroute",
+                    ModelRerouteEvent("gpt-5.3-codex", "gpt-5.2", ModelRerouteReason.HIGH_RISK_CYBER_ACTIVITY),
+                ),
+                EventMsg.with_payload("warning", WarningEvent("reroute warning")),
+                EventMsg.with_payload(
+                    "model_verification",
+                    ModelVerificationEvent((ModelVerification.TRUSTED_ACCESS_FOR_CYBER,)),
+                ),
+            ),
+        )
+
+        json_stdout = io.StringIO()
+        json_processor = JsonEventProcessor()
+        emit_local_http_exec_result(json_processor, result, stdout=json_stdout)
+        json_lines = [json.loads(line) for line in json_stdout.getvalue().splitlines()]
+        self.assertEqual(json_lines[0]["type"], "turn.started")
+        self.assertEqual(json_lines[1]["item"]["message"], "model rerouted: gpt-5.3-codex -> gpt-5.2 (HighRiskCyberActivity)")
+        self.assertEqual(json_lines[2]["item"]["message"], "reroute warning")
+        self.assertEqual(json_lines[-1]["type"], "turn.completed")
+
+        stderr = io.StringIO()
+        emit_local_http_exec_result(
+            HumanEventProcessor(),
+            result,
+            stdout=io.StringIO(),
+            stderr=stderr,
+            stdout_is_terminal=False,
+            stderr_is_terminal=False,
+        )
+        output = stderr.getvalue()
+        self.assertIn("model rerouted: gpt-5.3-codex -> gpt-5.2", output)
+        self.assertIn("warning: reroute warning", output)
+        self.assertNotIn("model/verification", output)
+
+    def test_local_http_exec_result_replays_stream_error_session_event(self) -> None:
+        result = UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(ResponseItem.message("assistant", (ContentItem.output_text("done"),)),),
+            session_events=(
+                EventMsg.with_payload(
+                    "stream_error",
+                    StreamErrorEvent(
+                        "Reconnecting... 1/5",
+                        CodexErrorInfo.response_stream_disconnected(502),
+                        "temporary disconnect",
+                    ),
+                ),
+            ),
+        )
+
+        json_stdout = io.StringIO()
+        emit_local_http_exec_result(JsonEventProcessor(), result, stdout=json_stdout)
+        json_lines = [json.loads(line) for line in json_stdout.getvalue().splitlines()]
+        self.assertEqual(json_lines[0]["type"], "turn.started")
+        self.assertEqual(json_lines[1]["type"], "error")
+        self.assertEqual(json_lines[1]["message"], "Reconnecting... 1/5 (temporary disconnect)")
+        self.assertEqual(json_lines[-1]["type"], "turn.completed")
+
+        stderr = io.StringIO()
+        emit_local_http_exec_result(
+            HumanEventProcessor(),
+            result,
+            stdout=io.StringIO(),
+            stderr=stderr,
+            stdout_is_terminal=False,
+            stderr_is_terminal=False,
+        )
+        self.assertIn("ERROR: Reconnecting... 1/5 (temporary disconnect)", stderr.getvalue())
+
+    def test_local_http_exec_result_renders_interrupted_turn_without_final_answer(self) -> None:
+        result = UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(ResponseItem.message("assistant", (ContentItem.output_text("partial"),)),),
+            turn_status="interrupted",
+        )
+
+        json_stdout = io.StringIO()
+        final_text = emit_local_http_exec_result(JsonEventProcessor(), result, stdout=json_stdout)
+        json_lines = [json.loads(line) for line in json_stdout.getvalue().splitlines()]
+        self.assertEqual(final_text, "")
+        self.assertEqual([line["type"] for line in json_lines], ["turn.started"])
+
+        stderr = io.StringIO()
+        final_text = emit_local_http_exec_result(
+            HumanEventProcessor(),
+            result,
+            stdout=io.StringIO(),
+            stderr=stderr,
+            stdout_is_terminal=False,
+            stderr_is_terminal=False,
+        )
+        self.assertEqual(final_text, "")
+        self.assertIn("turn interrupted", stderr.getvalue())
+        self.assertNotIn("partial", stderr.getvalue())
+
+    def test_local_http_exec_rollout_persists_interrupted_turn_marker(self) -> None:
+        result = UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(ResponseItem.message("assistant", (ContentItem.output_text("partial"),)),),
+            turn_status="interrupted",
+        )
+        config = ExecSessionConfig(model=None, model_provider_id=None, cwd=Path("C:/work/project"))
+        client = ModelClient(session_id="session", thread_id="thread-interrupted", installation_id="install")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rollout_path = persist_local_http_exec_rollout(Path(tmp), config, result, client)
+            self.assertIsNotNone(rollout_path)
+            items = read_response_items_from_rollout(rollout_path)
+            events = read_event_msgs_from_rollout(rollout_path)
+
+        self.assertEqual(items[-1].role, "user")
+        self.assertIn("<turn_aborted>", items[-1].content[0].text)
+        self.assertIn("interrupted the previous turn", items[-1].content[0].text)
+        self.assertEqual(events[-1].type, "turn_aborted")
+        self.assertEqual(events[-1].payload.reason, "interrupted")
+
+    def test_local_http_exec_error_replays_attached_terminal_error_event(self) -> None:
+        error = CodexErr.simple("context_window_exceeded")
+        object.__setattr__(error, "session_events", (
+            EventMsg.with_payload(
+                "error",
+                ErrorEvent("too much context", CodexErrorInfo.context_window_exceeded()),
+            ),
+        ))
+
+        json_stdout = io.StringIO()
+        emit_local_http_exec_error(JsonEventProcessor(), error, stdout=json_stdout)
+        json_lines = [json.loads(line) for line in json_stdout.getvalue().splitlines()]
+        self.assertEqual([line["type"] for line in json_lines], ["turn.started", "error", "turn.failed"])
+        self.assertEqual(json_lines[1]["message"], "too much context")
+        self.assertEqual(json_lines[2]["error"]["message"], str(error))
+
+        stderr = io.StringIO()
+        emit_local_http_exec_error(HumanEventProcessor(), error, stderr=stderr)
+        self.assertEqual(stderr.getvalue().count("ERROR:"), 1)
+        self.assertIn("ERROR: too much context", stderr.getvalue())
+
+    async def test_local_http_context_window_error_attaches_session_events(self) -> None:
+        class ContextWindowResponse:
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "status": "failed",
+                        "error": {
+                            "code": "context_length_exceeded",
+                            "message": "too much context",
+                        },
+                    }
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        def opener(_request):
+            return ContextWindowResponse()
+
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            context_window=2000,
+            max_context_window=None,
+            effective_context_window_percent=80,
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        config = ExecSessionConfig(model=None, model_provider_id=None, cwd=Path("C:/work/project"))
+        plan = ExecRunPlan(InitialOperation.user_turn((UserInput.text_input("hello"),)), "hello")
+
+        result = await run_exec_user_turn_http_sampling(
+            config,
+            plan,
+            ModelClient(session_id="session", thread_id="thread", installation_id="install"),
+            {"base_url": "https://api.example.test/v1"},
+            model_info,
+            auth="sk-test",
+            opener=opener,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(result.turn_status, "completed")
+        self.assertIsNone(result.last_agent_message)
+        events = tuple(getattr(result, "session_events", ()))
+        self.assertEqual([event.type for event in events[-3:]], ["token_count", "error", "task_complete"])
+        self.assertEqual(events[-3].payload.info.total_token_usage.total_tokens, 1600)
+        self.assertEqual(events[-2].payload.codex_error_info.type, "context_window_exceeded")
+        self.assertIsNone(events[-1].payload.last_agent_message)
 
     async def test_default_local_http_runtime_materializes_rollout_unless_ephemeral(self) -> None:
         def opener(_request):
@@ -1256,16 +1843,131 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(final_text_from_response_items(result.response_items), "done")
             message_items = [item for item in request_bodies[0]["input"] if item.get("type") == "message"]
-            self.assertEqual([item["role"] for item in message_items[-3:]], ["user", "assistant", "user"])
-            self.assertEqual(message_items[-3]["content"][0]["text"], "previous user")
-            self.assertEqual(message_items[-2]["content"][0]["text"], "previous assistant")
+            _assert_message_texts_in_order(self, message_items, ["previous user", "previous assistant", "current prompt"])
             self.assertEqual(message_items[-1]["content"][0]["text"], "current prompt")
             self.assertEqual(request_headers[0]["session-id"], thread_id)
             self.assertEqual(request_headers[0]["thread-id"], thread_id)
-            self.assertEqual(request_headers[0]["x-client-request-id"], thread_id)
             self.assertEqual(count_session_rollout_files(codex_home), 1)
             self.assertEqual(find_session_rollout_containing_response_marker(codex_home, "done"), rollout_path)
             self.assertEqual(read_response_items_from_rollout(rollout_path)[-1].content[0].text, "done")
+
+    async def test_local_http_resume_runner_uses_reconstructed_model_history(self) -> None:
+        request_bodies = []
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return FakeResponse()
+
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "base_instructions": "base",
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+                "service_tier_for_request": lambda _self, tier: tier,
+            },
+        )()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            thread_id = "33333333-3333-3333-3333-333333333333"
+            config = ExecSessionConfig(model=None, model_provider_id=None, cwd=Path("C:/work/resume"))
+            rollout_path = materialize_session_rollout(
+                codex_home,
+                SessionMeta(
+                    id=thread_id,
+                    timestamp="2025-01-02T03:04:05Z",
+                    cwd="C:/work/resume",
+                    originator="codex_exec",
+                    cli_version="test-version",
+                    source="cli",
+                    model_provider="openai",
+                ),
+            )
+            assert rollout_path is not None
+            with rollout_path.open("a", encoding="utf-8", newline="\n") as file:
+                for payload in (
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "pre compact"}],
+                    },
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "drop user"}],
+                    },
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "drop assistant"}],
+                    },
+                ):
+                    file.write(json.dumps({"timestamp": "2025-01-02T03:04:05Z", "type": "response_item", "payload": payload}) + "\n")
+                file.write(
+                    json.dumps(
+                        {
+                            "timestamp": "2025-01-02T03:04:06Z",
+                            "type": "compacted",
+                            "payload": {
+                                "message": "summary",
+                                "replacement_history": [
+                                    {
+                                        "type": "message",
+                                        "role": "user",
+                                        "content": [{"type": "input_text", "text": "summary user"}],
+                                    },
+                                    {
+                                        "type": "message",
+                                        "role": "assistant",
+                                        "content": [{"type": "output_text", "text": "summary assistant"}],
+                                    },
+                                    {
+                                        "type": "message",
+                                        "role": "user",
+                                        "content": [{"type": "input_text", "text": "rolled back user"}],
+                                    },
+                                    {
+                                        "type": "message",
+                                        "role": "assistant",
+                                        "content": [{"type": "output_text", "text": "rolled back assistant"}],
+                                    },
+                                ],
+                            },
+                        }
+                    )
+                    + "\n"
+                )
+                file.write(
+                    json.dumps(
+                        {
+                            "timestamp": "2025-01-02T03:04:07Z",
+                            "type": "event_msg",
+                            "payload": {"type": "thread_rolled_back", "num_turns": 1},
+                        }
+                    )
+                    + "\n"
+                )
+
+            await run_exec_resume_user_turn_http_sampling(
+                codex_home,
+                config,
+                ExecRunPlan(InitialOperation.user_turn((UserInput.text_input("current prompt"),)), "current prompt"),
+                ModelClient(session_id="session", thread_id="new-thread", installation_id="install"),
+                {"base_url": "https://api.example.test/v1"},
+                model_info,
+                thread_id=thread_id,
+                auth="sk-test",
+                opener=opener,
+                built_tools=lambda _sess, _turn: Router(),
+            )
+
+        message_items = [item for item in request_bodies[0]["input"] if item.get("type") == "message"]
+        message_texts = _message_texts(message_items)
+        _assert_message_texts_in_order(self, message_items, ["summary user", "summary assistant", "current prompt"])
+        self.assertNotIn("pre compact", message_texts)
+        self.assertNotIn("rolled back user", message_texts)
 
     async def test_local_http_resume_identity_alignment_updates_model_client_before_sampling(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1350,6 +2052,48 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(request_headers[0]["session-id"], thread_id)
             self.assertEqual(request_headers[0]["thread-id"], thread_id)
 
+    async def test_local_http_resume_runner_persists_interrupted_turn_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            thread_id = "77777777-7777-7777-7777-777777777777"
+            rollout_path = materialize_session_rollout(
+                codex_home,
+                SessionMeta(
+                    id=thread_id,
+                    timestamp="2025-01-02T03:04:05Z",
+                    cwd="C:/work/resume",
+                    originator="codex_exec",
+                    cli_version="test-version",
+                    source="cli",
+                    model_provider="openai",
+                ),
+            )
+            assert rollout_path is not None
+            interrupted = UserTurnSamplingResult(
+                request_plan=None,
+                response_items=(),
+                turn_status="interrupted",
+            )
+
+            with patch("pycodex.exec.local_runtime.run_exec_user_turn_http_sampling", return_value=interrupted):
+                result = await run_exec_resume_user_turn_http_sampling(
+                    codex_home,
+                    ExecSessionConfig(model=None, model_provider_id=None, cwd=Path("C:/work/resume")),
+                    ExecRunPlan(InitialOperation.user_turn((UserInput.text_input("current"),)), "current"),
+                    ModelClient(session_id="session", thread_id="fresh-thread", installation_id="install"),
+                    {"base_url": "https://api.example.test/v1"},
+                    SimpleNamespace(slug="gpt-test"),
+                    thread_id=thread_id,
+                    auth="sk-test",
+                )
+
+            self.assertIs(result, interrupted)
+            items = read_response_items_from_rollout(rollout_path)
+            self.assertIn("<turn_aborted>", items[-1].content[0].text)
+            events = read_event_msgs_from_rollout(rollout_path)
+            self.assertEqual(events[-1].type, "turn_aborted")
+            self.assertEqual(events[-1].payload.reason, "interrupted")
+
     async def test_local_http_resume_runner_resolves_named_session_through_index(self) -> None:
         request_bodies = []
 
@@ -1432,7 +2176,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(final_text_from_response_items(result.response_items), "done")
             message_items = [item for item in request_bodies[0]["input"] if item.get("type") == "message"]
-            self.assertEqual(message_items[-2]["content"][0]["text"], "previous named")
+            _assert_message_texts_in_order(self, message_items, ["previous named", "current named"])
             self.assertEqual(message_items[-1]["content"][0]["text"], "current named")
             self.assertEqual(find_session_rollout_containing_response_marker(codex_home, "done"), rollout_path)
 
@@ -1515,7 +2259,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(final_text_from_response_items(result.response_items), "done")
             first_messages = [item for item in request_bodies[0]["input"] if item.get("type") == "message"]
-            self.assertEqual(first_messages[-2]["content"][0]["text"], "previous shell")
+            _assert_message_texts_in_order(self, first_messages, ["previous shell", "current shell"])
             self.assertEqual(first_messages[-1]["content"][0]["text"], "current shell")
             self.assertEqual(len(request_bodies), 2)
             self.assertEqual(find_session_rollout_containing_response_marker(codex_home, "done"), rollout_path)
@@ -1530,8 +2274,8 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 and getattr(item.content[0], "text", None) == "current shell"
             )
             self.assertEqual(
-                persisted_types[current_index + 1 : current_index + 4],
-                ["function_call", "function_call_output", "message"],
+                persisted_types[current_index + 1 : current_index + 5],
+                ["function_call", "message", "function_call_output", "message"],
             )
 
     async def test_local_http_exec_result_maps_usage(self) -> None:
@@ -1566,6 +2310,8 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(usage.cached_input_tokens, 3)
         self.assertEqual(usage.output_tokens, 7)
         self.assertEqual(usage.reasoning_output_tokens, 2)
+        token_count = next(event for event in reversed(result.session_events) if event.type == "token_count")
+        self.assertEqual(token_count.payload.info.total_token_usage.input_tokens, 10)
 
         json_stdout = io.StringIO()
         emit_local_http_exec_result(JsonEventProcessor(), result, stdout=json_stdout)
@@ -1584,6 +2330,131 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn("tokens used", stderr.getvalue())
         self.assertIn("14", stderr.getvalue())
+
+    def test_local_http_exec_result_uses_session_token_count_event_when_raw_usage_missing(self) -> None:
+        result = UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(ResponseItem.message("assistant", (ContentItem.output_text("done"),)),),
+            session_events=(
+                EventMsg.with_payload(
+                    "token_count",
+                    TokenCountEvent(
+                        info=TokenUsageInfo(
+                            total_token_usage=TokenUsage(
+                                input_tokens=12,
+                                cached_input_tokens=2,
+                                output_tokens=8,
+                                reasoning_output_tokens=3,
+                                total_tokens=20,
+                            ),
+                            last_token_usage=TokenUsage(
+                                input_tokens=12,
+                                cached_input_tokens=2,
+                                output_tokens=8,
+                                reasoning_output_tokens=3,
+                                total_tokens=20,
+                            ),
+                            model_context_window=128000,
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        json_stdout = io.StringIO()
+        emit_local_http_exec_result(JsonEventProcessor(), result, stdout=json_stdout)
+        json_lines = [json.loads(line) for line in json_stdout.getvalue().splitlines()]
+        self.assertEqual(json_lines[-1]["type"], "turn.completed")
+        self.assertEqual(json_lines[-1]["usage"]["input_tokens"], 12)
+        self.assertEqual(json_lines[-1]["usage"]["cached_input_tokens"], 2)
+        self.assertEqual(json_lines[-1]["usage"]["output_tokens"], 8)
+        self.assertEqual(json_lines[-1]["usage"]["reasoning_output_tokens"], 3)
+
+        stderr = io.StringIO()
+        emit_local_http_exec_result(
+            HumanEventProcessor(),
+            result,
+            stdout=io.StringIO(),
+            stderr=stderr,
+            stdout_is_terminal=False,
+            stderr_is_terminal=False,
+        )
+        self.assertIn("18", stderr.getvalue())
+        self.assertIn("tokens used", stderr.getvalue())
+
+    def test_local_http_rollout_interleaves_multiple_client_tool_search_outputs(self) -> None:
+        result = UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(ResponseItem.message("assistant", (ContentItem.output_text("done"),)),),
+            tool_response_items=(
+                ResponseItem(type="tool_search_output", call_id="search-1", status="completed", execution="client"),
+                ResponseItem(type="tool_search_output", call_id="search-2", status="completed", execution="client"),
+            ),
+            raw_results=(
+                {
+                    "output": [
+                        {
+                            "type": "tool_search_call",
+                            "call_id": "search-1",
+                            "status": "completed",
+                            "execution": "client",
+                            "arguments": {"query": "alpha"},
+                        },
+                        {
+                            "type": "tool_search_call",
+                            "call_id": "search-2",
+                            "status": "completed",
+                            "execution": "client",
+                            "arguments": {"query": "beta"},
+                        },
+                    ]
+                },
+                {
+                    "output": [
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "done"}],
+                        }
+                    ]
+                },
+            ),
+        )
+
+        prompt_visible_items = _local_http_prompt_visible_rollout_items(result)
+
+        self.assertEqual(
+            [(item.type, item.call_id) for item in prompt_visible_items],
+            [
+                ("tool_search_call", "search-1"),
+                ("tool_search_call", "search-2"),
+                ("tool_search_output", "search-1"),
+                ("tool_search_output", "search-2"),
+                ("message", None),
+            ],
+        )
+
+    def test_local_http_rollout_prefers_raw_response_items_for_persistence(self) -> None:
+        display_item = SimpleNamespace(content=[SimpleNamespace(text="display only")])
+        result = SimpleNamespace(
+            response_items=(display_item,),
+            tool_response_items=(),
+            raw_result={
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "persisted"}],
+                    }
+                ]
+            },
+        )
+
+        payloads = _local_http_response_rollout_payloads(result)
+
+        self.assertEqual(payloads[0]["type"], "message")
+        self.assertEqual(payloads[0]["role"], "assistant")
+        self.assertEqual(payloads[0]["content"][0]["text"], "persisted")
 
     async def test_local_http_exec_shell_tool_loop_accumulates_usage(self) -> None:
         class Completed:
@@ -1772,6 +2643,116 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json_lines[1]["item"]["text"], "thinking summary")
         self.assertEqual(json_lines[2]["item"]["type"], "agent_message")
 
+    def test_local_http_reasoning_texts_skip_raw_reasoning_content_by_default(self) -> None:
+        result = UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(),
+            raw_result={
+                "output": [
+                    {
+                        "type": "reasoning",
+                        "summary": [{"type": "summary_text", "text": "public summary"}],
+                        "content": [
+                            {"type": "reasoning_text", "text": "hidden raw chain"},
+                            {"type": "text", "text": "visible note"},
+                        ],
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(
+            reasoning_texts_from_local_http_exec_result(result),
+            ("public summary",),
+        )
+
+    def test_local_http_reasoning_texts_accept_app_server_style_fields(self) -> None:
+        result = UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(),
+            raw_result={
+                "output": [
+                    {
+                        "type": "reasoning",
+                        "summary_text": ["public summary"],
+                        "raw_content": [
+                            {"type": "reasoning_text", "text": "hidden raw chain"},
+                            "visible raw note",
+                        ],
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(
+            reasoning_texts_from_local_http_exec_result(result),
+            ("public summary",),
+        )
+
+    def test_local_http_human_reasoning_uses_raw_content_when_enabled(self) -> None:
+        result = UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(),
+            raw_result={
+                "output": [
+                    {
+                        "type": "reasoning",
+                        "summary": [{"type": "summary_text", "text": "public summary"}],
+                        "content": [
+                            {"type": "reasoning_text", "text": "hidden raw chain"},
+                            {"type": "text", "text": "visible raw note"},
+                        ],
+                    }
+                ]
+            },
+        )
+
+        default_stderr = io.StringIO()
+        emit_local_http_exec_result(
+            HumanEventProcessor(),
+            result,
+            stdout=io.StringIO(),
+            stderr=default_stderr,
+            stdout_is_terminal=False,
+            stderr_is_terminal=False,
+        )
+        self.assertIn("public summary", default_stderr.getvalue())
+        self.assertNotIn("hidden raw chain", default_stderr.getvalue())
+        self.assertNotIn("visible raw note", default_stderr.getvalue())
+
+        raw_processor = HumanEventProcessor()
+        raw_processor.show_raw_agent_reasoning = True
+        raw_stderr = io.StringIO()
+        emit_local_http_exec_result(
+            raw_processor,
+            result,
+            stdout=io.StringIO(),
+            stderr=raw_stderr,
+            stdout_is_terminal=False,
+            stderr_is_terminal=False,
+        )
+        self.assertIn("hidden raw chain", raw_stderr.getvalue())
+        self.assertIn("visible raw note", raw_stderr.getvalue())
+        self.assertNotIn("public summary", raw_stderr.getvalue())
+
+        config_stderr = io.StringIO()
+        emit_local_http_exec_result(
+            HumanEventProcessor(),
+            result,
+            config=ExecSessionConfig(
+                model=None,
+                model_provider_id=None,
+                cwd=Path("C:/work/project"),
+                show_raw_agent_reasoning=True,
+            ),
+            stdout=io.StringIO(),
+            stderr=config_stderr,
+            stdout_is_terminal=False,
+            stderr_is_terminal=False,
+        )
+        self.assertIn("hidden raw chain", config_stderr.getvalue())
+        self.assertIn("visible raw note", config_stderr.getvalue())
+
     async def test_local_http_exec_result_maps_function_call_json_event_without_execution(self) -> None:
         def opener(_request):
             return FakeToolCallResponse()
@@ -1864,10 +2845,13 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(outputs[0]["type"], "function_call_output")
         self.assertEqual(outputs[0]["call_id"], "call-1")
         self.assertIs(outputs[0]["success"], True)
-        self.assertIn("exit_code: 0", outputs[0]["output"])
+        self.assertIn("Wall time:", outputs[0]["output"])
+        self.assertIn("Process exited with code 0", outputs[0]["output"])
+        self.assertIn("Original token count:", outputs[0]["output"])
+        self.assertIn("Output:", outputs[0]["output"])
         self.assertIn("C:/work/project", outputs[0]["output"])
 
-    async def test_local_http_exec_shell_tool_execution_failure_marks_unsuccessful(self) -> None:
+    async def test_local_http_exec_shell_tool_nonzero_exit_remains_successful_tool_result(self) -> None:
         class Completed:
             returncode = 7
             stdout = ""
@@ -1898,9 +2882,136 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         outputs = shell_tool_outputs_from_local_http_exec_result(result, config, runner=fake_runner)
 
-        self.assertIs(outputs[0]["success"], False)
-        self.assertIn("exit_code: 7", outputs[0]["output"])
+        self.assertIs(outputs[0]["success"], True)
+        self.assertIn("Process exited with code 7", outputs[0]["output"])
         self.assertIn("nope", outputs[0]["output"])
+
+    async def test_local_http_exec_shell_tool_nonzero_exit_marks_timeline_failed(self) -> None:
+        class Completed:
+            returncode = 7
+            stdout = ""
+            stderr = "nope"
+
+        def fake_runner(_command, **_kwargs):
+            return Completed()
+
+        responses = [FakeToolCallResponse(), FakeResponse()]
+
+        def opener(_request):
+            return responses.pop(0)
+
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+            approval_policy=AskForApproval.NEVER,
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("hello"),)),
+            "hello",
+        )
+        result = await run_exec_user_turn_with_shell_tools_http_sampling(
+            config,
+            plan,
+            ModelClient(session_id="session", thread_id="thread", installation_id="install"),
+            {"base_url": "https://api.example.test/v1"},
+            SimpleNamespace(
+                slug="gpt-test",
+                base_instructions="base",
+                supports_reasoning_summaries=False,
+                support_verbosity=False,
+                service_tier_for_request=lambda tier: tier,
+            ),
+            auth="sk-test",
+            opener=opener,
+            built_tools=lambda _sess, _turn: Router(),
+            runner=fake_runner,
+        )
+
+        tool_outputs = tool_output_items_from_local_http_exec_result(result, JsonEventProcessor())
+        self.assertEqual(tool_outputs[0].payload["status"], "failed")
+        self.assertIn("Process exited with code 7", tool_outputs[0].payload["result"])
+
+        json_stdout = io.StringIO()
+        emit_local_http_exec_result(JsonEventProcessor(), result, stdout=json_stdout)
+        json_lines = [json.loads(line) for line in json_stdout.getvalue().splitlines()]
+        completed_tools = [
+            line["item"]
+            for line in json_lines
+            if line["type"] == "item.completed" and line["item"]["type"] == "mcp_tool_call"
+        ]
+        self.assertEqual(completed_tools[-1]["status"], "failed")
+
+    async def test_local_http_exec_shell_tool_combines_stdout_and_stderr_with_separator(self) -> None:
+        class Completed:
+            returncode = 1
+            stdout = "stdout text"
+            stderr = "stderr text"
+
+        def fake_runner(_command, **_kwargs):
+            return Completed()
+
+        def opener(_request):
+            return FakeToolCallResponse()
+
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+            approval_policy=AskForApproval.NEVER,
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("hello"),)),
+            "hello",
+        )
+        result = await run_exec_user_turn_default_local_http_sampling(
+            config,
+            plan,
+            env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+            opener=opener,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        outputs = shell_tool_outputs_from_local_http_exec_result(result, config, runner=fake_runner)
+
+        self.assertIn("stdout text\nstderr text", outputs[0]["output"])
+
+    async def test_local_http_exec_shell_tool_timeout_uses_unified_exec_shape(self) -> None:
+        def fake_runner(_command, **_kwargs):
+            raise subprocess.TimeoutExpired(
+                cmd="pwd",
+                timeout=2.5,
+                output=b"partial stdout",
+                stderr=b"partial stderr",
+            )
+
+        def opener(_request):
+            return FakeToolCallResponse()
+
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+            approval_policy=AskForApproval.NEVER,
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("hello"),)),
+            "hello",
+        )
+        result = await run_exec_user_turn_default_local_http_sampling(
+            config,
+            plan,
+            env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+            opener=opener,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        outputs = shell_tool_outputs_from_local_http_exec_result(result, config, runner=fake_runner, timeout=2.5)
+
+        self.assertIs(outputs[0]["success"], False)
+        self.assertIn("Process exited with code 124", outputs[0]["output"])
+        self.assertIn("command timed out after 2500 milliseconds", outputs[0]["output"])
+        self.assertIn("partial stdout\npartial stderr", outputs[0]["output"])
 
     async def test_local_http_exec_shell_tool_uses_workdir_and_timeout_arguments(self) -> None:
         seen = {}
@@ -1979,9 +3090,10 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             output_max_chars=20,
         )
 
-        self.assertIn("Total output lines: 4", outputs[0]["output"])
+        self.assertIn("Original token count:", outputs[0]["output"])
+        self.assertIn("Output:", outputs[0]["output"])
         self.assertIn("chars truncated", outputs[0]["output"])
-        self.assertTrue(outputs[0]["output"].startswith("Total output lines: 4\n\n"))
+        self.assertTrue(outputs[0]["output"].startswith("Wall time: "))
 
     async def test_local_http_exec_shell_tool_uses_default_output_token_limit(self) -> None:
         class Completed:
@@ -1999,6 +3111,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             model=None,
             model_provider_id=None,
             cwd=Path("C:/work/project"),
+            approval_policy=AskForApproval.NEVER,
         )
         plan = ExecRunPlan(
             InitialOperation.user_turn((UserInput.text_input("hello"),)),
@@ -2019,7 +3132,46 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertIn("Total output lines:", outputs[0]["output"])
-        self.assertIn("chars truncated", outputs[0]["output"])
+        self.assertIn("tokens truncated", outputs[0]["output"])
+
+    async def test_local_http_exec_shell_tool_max_output_tokens_uses_token_marker(self) -> None:
+        class Completed:
+            returncode = 0
+            stdout = "alpha beta gamma delta epsilon zeta eta theta"
+            stderr = ""
+
+        def fake_runner(_command, **_kwargs):
+            return Completed()
+
+        def opener(_request):
+            return FakeExecCommandToolCallResponse()
+
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+            approval_policy=AskForApproval.NEVER,
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("hello"),)),
+            "hello",
+        )
+        result = await run_exec_user_turn_default_local_http_sampling(
+            config,
+            plan,
+            env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+            opener=opener,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        outputs = shell_tool_outputs_from_local_http_exec_result(
+            result,
+            config,
+            runner=fake_runner,
+        )
+
+        self.assertIn("tokens truncated", outputs[0]["output"])
+        self.assertNotIn("chars truncated", outputs[0]["output"])
 
     async def test_local_http_exec_shell_tool_passes_login_argument_to_runner(self) -> None:
         seen = {}
@@ -2065,7 +3217,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             raise AssertionError("runner must not be called when approval is required")
 
         def opener(_request):
-            return FakeToolCallResponse()
+            return FakeDangerousToolCallResponse()
 
         config = ExecSessionConfig(
             model=None,
@@ -2093,7 +3245,77 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(outputs[0]["call_id"], "call-1")
         self.assertIn("exit_code: approval_required", outputs[0]["output"])
         self.assertIn("approval_policy: on-request", outputs[0]["output"])
-        self.assertIn("pwd", outputs[0]["output"])
+        self.assertIn("rm -rf /important/data", outputs[0]["output"])
+
+    async def test_local_http_exec_shell_tool_rejects_forbidden_exec_policy_before_execution(self) -> None:
+        def rejecting_runner(_command, **_kwargs):
+            raise AssertionError("runner must not be called when exec policy forbids the command")
+
+        def opener(_request):
+            return FakeDangerousToolCallResponse()
+
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+            approval_policy=AskForApproval.NEVER,
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("hello"),)),
+            "hello",
+        )
+        result = await run_exec_user_turn_default_local_http_sampling(
+            config,
+            plan,
+            env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+            opener=opener,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        outputs = shell_tool_outputs_from_local_http_exec_result(result, config, runner=rejecting_runner)
+
+        self.assertFalse(outputs[0]["success"])
+        self.assertIn("exit_code: forbidden", outputs[0]["output"])
+        self.assertIn("approval_policy: never", outputs[0]["output"])
+        self.assertIn("rejected: blocked by policy", outputs[0]["output"])
+        self.assertIn("command:\nrm -rf /important/data", outputs[0]["output"])
+
+    async def test_local_http_exec_shell_tool_on_failure_executes_skip_requirement(self) -> None:
+        class Completed:
+            returncode = 0
+            stdout = "ok\n"
+            stderr = ""
+
+        def fake_runner(command, **_kwargs):
+            self.assertEqual(command, "pwd")
+            return Completed()
+
+        def opener(_request):
+            return FakeToolCallResponse()
+
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+            approval_policy=AskForApproval.ON_FAILURE,
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("hello"),)),
+            "hello",
+        )
+        result = await run_exec_user_turn_default_local_http_sampling(
+            config,
+            plan,
+            env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+            opener=opener,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        outputs = shell_tool_outputs_from_local_http_exec_result(result, config, runner=fake_runner)
+
+        self.assertTrue(outputs[0]["success"])
+        self.assertIn("ok", outputs[0]["output"])
+        self.assertNotIn("approval_required", outputs[0]["output"])
 
     async def test_local_http_exec_shell_tool_approval_output_preserves_metadata(self) -> None:
         def rejecting_runner(_command, **_kwargs):
@@ -2128,6 +3350,26 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("justification: Need to inspect the workspace", outputs[0]["output"])
         self.assertIn("command:\npwd", outputs[0]["output"])
 
+    def test_local_http_shell_tool_approval_output_includes_requirement_reason(self) -> None:
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+            approval_policy=AskForApproval.ON_REQUEST,
+        )
+
+        output = local_http_shell_tool_approval_required_output(
+            LocalHttpShellInvocation("cargo install ripgrep"),
+            config,
+            exec_approval_requirement=ExecApprovalRequirement.needs_approval(
+                reason="`cargo install ripgrep` requires approval by policy",
+            ),
+        )
+
+        self.assertIn("exit_code: approval_required", output)
+        self.assertIn("reason: `cargo install ripgrep` requires approval by policy", output)
+        self.assertIn("command:\ncargo install ripgrep", output)
+
     async def test_local_http_exec_shell_tool_rejects_additional_permissions_before_auto_execution(self) -> None:
         def rejecting_runner(_command, **_kwargs):
             raise AssertionError("runner must not be called for local additional permission requests")
@@ -2158,6 +3400,223 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(outputs[0]["success"])
         self.assertIn("permission_request_unsupported", outputs[0]["output"])
         self.assertIn("additional permissions are disabled", outputs[0]["output"])
+
+    async def test_local_http_exec_shell_tool_resolves_relative_additional_permissions_against_workdir(self) -> None:
+        def rejecting_runner(_command, **_kwargs):
+            raise AssertionError("runner must not be called when approval is required")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            nested = root / "nested"
+            nested.mkdir()
+
+            def opener(_request):
+                return FakeToolCallWithRelativeAdditionalPermissionsWorkdirResponse()
+
+            config = ExecSessionConfig(
+                model=None,
+                model_provider_id=None,
+                cwd=root,
+                approval_policy=AskForApproval.ON_REQUEST,
+            )
+            plan = ExecRunPlan(
+                InitialOperation.user_turn((UserInput.text_input("hello"),)),
+                "hello",
+            )
+            result = await run_exec_user_turn_default_local_http_sampling(
+                config,
+                plan,
+                env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+                opener=opener,
+                built_tools=lambda _sess, _turn: Router(),
+            )
+
+            outputs = shell_tool_outputs_from_local_http_exec_result(result, config, runner=rejecting_runner)
+
+        match = re.search(r"additional_permissions: (.+)\n", outputs[0]["output"])
+        self.assertIsNotNone(match)
+        additional_permissions = json.loads(match.group(1))
+        self.assertEqual(additional_permissions["file_system"]["write"], [str(nested)])
+
+    async def test_local_http_exec_shell_tool_approval_merges_partial_grant_with_new_permissions(self) -> None:
+        def rejecting_runner(_command, **_kwargs):
+            raise AssertionError("runner must not be called before approval")
+
+        with tempfile.TemporaryDirectory() as first_dir, tempfile.TemporaryDirectory() as second_dir:
+            first_root = Path(first_dir)
+            second_root = Path(second_dir)
+
+            class PartialGrantResponse:
+                def read(self) -> bytes:
+                    return json.dumps(
+                        {
+                            "output": [
+                                {
+                                    "type": "function_call",
+                                    "name": "shell",
+                                    "arguments": json.dumps(
+                                        {
+                                            "command": "pwd",
+                                            "sandbox_permissions": "with_additional_permissions",
+                                            "additional_permissions": {
+                                                "file_system": {"write": [str(second_root)]}
+                                            },
+                                        }
+                                    ),
+                                    "call_id": "call-1",
+                                }
+                            ]
+                        }
+                    ).encode("utf-8")
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, _exc_type, _exc, _tb) -> None:
+                    return None
+
+            def opener(_request):
+                return PartialGrantResponse()
+
+            config = ExecSessionConfig(
+                model=None,
+                model_provider_id=None,
+                cwd=Path("C:/work/project"),
+                approval_policy=AskForApproval.ON_REQUEST,
+            )
+            plan = ExecRunPlan(
+                InitialOperation.user_turn((UserInput.text_input("hello"),)),
+                "hello",
+            )
+            result = await run_exec_user_turn_default_local_http_sampling(
+                config,
+                plan,
+                env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+                opener=opener,
+                built_tools=lambda _sess, _turn: Router(),
+            )
+            granted_permissions = AdditionalPermissionProfile(
+                file_system=FileSystemPermissions(
+                    (
+                        FileSystemSandboxEntry(
+                            FileSystemPath.explicit_path(first_root),
+                            FileSystemAccessMode.WRITE,
+                        ),
+                    )
+                )
+            )
+            outputs = shell_tool_outputs_from_local_http_exec_result(
+                result,
+                config,
+                runner=rejecting_runner,
+                granted_permissions=granted_permissions,
+            )
+
+        self.assertFalse(outputs[0]["success"])
+        self.assertIn("approval_required", outputs[0]["output"])
+        match = re.search(r"additional_permissions: (.+)\n", outputs[0]["output"])
+        self.assertIsNotNone(match)
+        additional_permissions = json.loads(match.group(1))
+        self.assertEqual(
+            sorted(additional_permissions["file_system"]["write"]),
+            sorted([str(first_root), str(second_root)]),
+        )
+
+    async def test_local_http_exec_shell_tool_runs_with_granted_additional_permissions(self) -> None:
+        runner_calls = []
+
+        def runner(command, **kwargs):
+            runner_calls.append((command, kwargs))
+            return SimpleNamespace(returncode=0, stdout="allowed\n", stderr="")
+
+        def opener(_request):
+            return FakeToolCallWithApprovalMetadataResponse()
+
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+            approval_policy=AskForApproval.NEVER,
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("hello"),)),
+            "hello",
+        )
+        result = await run_exec_user_turn_default_local_http_sampling(
+            config,
+            plan,
+            env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+            opener=opener,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        outputs = shell_tool_outputs_from_local_http_exec_result(
+            result,
+            config,
+            runner=runner,
+            granted_permissions=AdditionalPermissionProfile(network=NetworkPermissions(enabled=True)),
+        )
+
+        self.assertEqual([call[0] for call in runner_calls], ["pwd"])
+        self.assertTrue(outputs[0]["success"])
+        self.assertIn("allowed", outputs[0]["output"])
+        self.assertNotIn("permission_request_unsupported", outputs[0]["output"])
+
+    async def test_local_http_exec_shell_tool_runs_with_granted_relative_workdir_permissions(self) -> None:
+        runner_calls = []
+
+        def runner(command, **kwargs):
+            runner_calls.append((command, kwargs))
+            return SimpleNamespace(returncode=0, stdout="allowed\n", stderr="")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            nested = root / "nested"
+            nested.mkdir()
+
+            def opener(_request):
+                return FakeToolCallWithRelativeAdditionalPermissionsWorkdirResponse()
+
+            config = ExecSessionConfig(
+                model=None,
+                model_provider_id=None,
+                cwd=root,
+                approval_policy=AskForApproval.ON_REQUEST,
+            )
+            plan = ExecRunPlan(
+                InitialOperation.user_turn((UserInput.text_input("hello"),)),
+                "hello",
+            )
+            result = await run_exec_user_turn_default_local_http_sampling(
+                config,
+                plan,
+                env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+                opener=opener,
+                built_tools=lambda _sess, _turn: Router(),
+            )
+
+            granted_permissions = AdditionalPermissionProfile(
+                file_system=FileSystemPermissions(
+                    (
+                        FileSystemSandboxEntry(
+                            FileSystemPath.explicit_path(nested),
+                            FileSystemAccessMode.WRITE,
+                        ),
+                    )
+                )
+            )
+            outputs = shell_tool_outputs_from_local_http_exec_result(
+                result,
+                config,
+                runner=runner,
+                granted_permissions=granted_permissions,
+            )
+
+        self.assertEqual([call[0] for call in runner_calls], ["pwd"])
+        self.assertEqual(runner_calls[0][1]["cwd"], str(nested))
+        self.assertTrue(outputs[0]["success"])
+        self.assertIn("allowed", outputs[0]["output"])
+        self.assertNotIn("approval_required", outputs[0]["output"])
 
     async def test_local_http_exec_shell_tool_rejects_require_escalated_before_auto_execution(self) -> None:
         def rejecting_runner(_command, **_kwargs):
@@ -2305,7 +3764,39 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         outputs = shell_tool_outputs_from_local_http_exec_result(result, config, runner=rejecting_runner)
 
         self.assertIn('prefix_rule: ["python","-m"]', outputs[0]["output"])
+        self.assertIn('proposed_execpolicy_amendment: {"command":["python","-m"]}', outputs[0]["output"])
         self.assertIn("command:\npython -m pytest", outputs[0]["output"])
+
+    async def test_local_http_exec_shell_tool_approval_output_skips_heredoc_prefix_rule_amendment(self) -> None:
+        def rejecting_runner(_command, **_kwargs):
+            raise AssertionError("runner must not be called when approval is required")
+
+        def opener(_request):
+            return FakeToolCallWithHeredocPrefixRuleResponse()
+
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+            approval_policy=AskForApproval.ON_REQUEST,
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("hello"),)),
+            "hello",
+        )
+        result = await run_exec_user_turn_default_local_http_sampling(
+            config,
+            plan,
+            env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+            opener=opener,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        outputs = shell_tool_outputs_from_local_http_exec_result(result, config, runner=rejecting_runner)
+
+        self.assertIn('prefix_rule: ["python3","script.py"]', outputs[0]["output"])
+        self.assertNotIn("proposed_execpolicy_amendment:", outputs[0]["output"])
+        self.assertIn("command:\npython3 <<'PY'\nprint('hello')\nPY", outputs[0]["output"])
 
     async def test_local_http_exec_apply_patch_tool_output_helper_applies_patch(self) -> None:
         def opener(_request):
@@ -2333,13 +3824,43 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(outputs[0]["type"], "custom_tool_call_output")
             self.assertEqual(outputs[0]["call_id"], "patch-1")
-            self.assertEqual(outputs[0]["name"], "apply_patch")
+            self.assertNotIn("name", outputs[0])
             self.assertIs(outputs[0]["success"], True)
-            self.assertIn("apply_patch succeeded", outputs[0]["output"])
+            self.assertIn("Success. Updated the following files:", outputs[0]["output"])
+            self.assertIn("A ", outputs[0]["output"])
+            self.assertIn("created.txt", outputs[0]["output"])
             self.assertEqual((Path(tmpdir) / "created.txt").read_text(encoding="utf-8"), "hello\n")
             tool_response_items = response_items_from_local_http_tool_outputs(outputs)
             self.assertEqual(tool_response_items[0].type, "custom_tool_call_output")
-            self.assertEqual(tool_response_items[0].name, "apply_patch")
+            self.assertIsNone(tool_response_items[0].name)
+            self.assertIn(Path("created.txt"), outputs[0]["internal_output"]["changes"])
+            result_with_outputs = replace(
+                result,
+                tool_response_items=tool_response_items,
+                raw_tool_output_items=outputs,
+            )
+            timeline_items = tool_timeline_items_from_local_http_exec_result(
+                result_with_outputs,
+                JsonEventProcessor(),
+            )
+            self.assertEqual([item.type for item in timeline_items], ["file_change", "file_change"])
+            self.assertEqual(
+                [item.payload["status"] for item in timeline_items],
+                ["in_progress", "completed"],
+            )
+            self.assertEqual(
+                timeline_items[0].payload["changes"],
+                [{"path": "created.txt", "kind": "add"}],
+            )
+            json_stdout = io.StringIO()
+            emit_local_http_exec_result(JsonEventProcessor(), result_with_outputs, stdout=json_stdout)
+            patch_events = [
+                line["item"]
+                for line in (json.loads(raw) for raw in json_stdout.getvalue().splitlines())
+                if line["type"] == "item.completed"
+                and line["item"]["type"] == "file_change"
+            ]
+            self.assertEqual([event["status"] for event in patch_events], ["in_progress", "completed"])
 
     async def test_local_http_exec_apply_patch_updates_deletes_and_moves_files(self) -> None:
         patch = (
@@ -2385,10 +3906,32 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             outputs = shell_tool_outputs_from_local_http_exec_result(result, config)
 
             self.assertIs(outputs[0]["success"], True)
+            changes = outputs[0]["internal_output"]["changes"]
+            self.assertIn("-old\n+new\n", changes[Path("old.txt")].unified_diff)
+            self.assertEqual(changes[Path("move.txt")].move_path, Path("moved.txt"))
             self.assertEqual((root / "old.txt").read_text(encoding="utf-8"), "new\n")
             self.assertFalse((root / "delete.txt").exists())
             self.assertFalse((root / "move.txt").exists())
             self.assertEqual((root / "moved.txt").read_text(encoding="utf-8"), "moved\n")
+            result_with_outputs = replace(
+                result,
+                tool_response_items=response_items_from_local_http_tool_outputs(outputs),
+                raw_tool_output_items=outputs,
+            )
+            timeline_items = tool_timeline_items_from_local_http_exec_result(
+                result_with_outputs,
+                JsonEventProcessor(),
+            )
+            self.assertEqual([item.type for item in timeline_items], ["file_change", "file_change"])
+            self.assertEqual(
+                timeline_items[0].payload["changes"],
+                [
+                    {"path": "old.txt", "kind": "update"},
+                    {"path": "delete.txt", "kind": "delete"},
+                    {"path": "move.txt", "kind": "update"},
+                ],
+            )
+            self.assertEqual([item.payload["status"] for item in timeline_items], ["in_progress", "completed"])
 
     async def test_local_http_exec_apply_patch_requires_approval_before_write(self) -> None:
         def opener(_request):
@@ -2415,10 +3958,211 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
             outputs = shell_tool_outputs_from_local_http_exec_result(result, config)
 
-            self.assertEqual(outputs[0]["name"], "apply_patch")
+            self.assertNotIn("name", outputs[0])
             self.assertIs(outputs[0]["success"], False)
             self.assertIn("approval_required", outputs[0]["output"])
             self.assertFalse((Path(tmpdir) / "created.txt").exists())
+            result_with_outputs = replace(
+                result,
+                tool_response_items=response_items_from_local_http_tool_outputs(outputs),
+                raw_tool_output_items=outputs,
+            )
+            timeline_items = tool_timeline_items_from_local_http_exec_result(
+                result_with_outputs,
+                JsonEventProcessor(),
+            )
+            self.assertEqual([item.type for item in timeline_items], ["file_change", "file_change"])
+            self.assertEqual(
+                [item.payload["status"] for item in timeline_items],
+                ["in_progress", "failed"],
+            )
+            self.assertEqual(
+                timeline_items[0].payload["changes"],
+                [{"path": "created.txt", "kind": "add"}],
+            )
+            json_stdout = io.StringIO()
+            emit_local_http_exec_result(JsonEventProcessor(), result_with_outputs, stdout=json_stdout)
+            patch_events = [
+                line["item"]
+                for line in (json.loads(raw) for raw in json_stdout.getvalue().splitlines())
+                if line["type"] == "item.completed"
+                and line["item"]["type"] == "file_change"
+            ]
+            self.assertEqual([event["status"] for event in patch_events], ["in_progress", "failed"])
+
+    async def test_local_http_exec_request_permissions_tool_output_helper_uses_rust_cancel_error(self) -> None:
+        def opener(_request):
+            return FakeRequestPermissionsToolCallResponse()
+
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+            approval_policy=AskForApproval.ON_REQUEST,
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("request network"),)),
+            "request network",
+        )
+        result = await run_exec_user_turn_default_local_http_sampling(
+            config,
+            plan,
+            env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+            opener=opener,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        outputs = shell_tool_outputs_from_local_http_exec_result(result, config)
+
+        self.assertEqual(outputs[0]["type"], "function_call_output")
+        self.assertEqual(outputs[0]["call_id"], "permissions-1")
+        self.assertEqual(outputs[0]["name"], "request_permissions")
+        self.assertIs(outputs[0]["success"], False)
+        self.assertEqual(
+            outputs[0]["output"],
+            "request_permissions was cancelled before receiving a response",
+        )
+
+    async def test_local_http_exec_request_permissions_tool_output_helper_auto_denies_when_approval_never(self) -> None:
+        def opener(_request):
+            return FakeRequestPermissionsToolCallResponse()
+
+        def request_permissions_callback(_parent_ctx, _call_id, _args, _cwd, _cancel_token):
+            raise AssertionError("approval never should not invoke request_permissions callback")
+
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+            approval_policy=AskForApproval.NEVER,
+            request_permissions_callback=request_permissions_callback,
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("request network"),)),
+            "request network",
+        )
+        result = await run_exec_user_turn_default_local_http_sampling(
+            config,
+            plan,
+            env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+            opener=opener,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        outputs = shell_tool_outputs_from_local_http_exec_result(result, config)
+
+        self.assertIs(outputs[0]["success"], True)
+        self.assertEqual(
+            json.loads(outputs[0]["output"]),
+            {
+                "permissions": {},
+                "scope": "turn",
+            },
+        )
+
+    async def test_local_http_exec_request_permissions_tool_output_helper_serializes_grant_response(self) -> None:
+        seen = {}
+
+        def opener(_request):
+            return FakeRequestPermissionsToolCallResponse()
+
+        def request_permissions_callback(parent_ctx, call_id, args, cwd, cancel_token):
+            seen["parent_ctx"] = parent_ctx
+            seen["call_id"] = call_id
+            seen["args"] = args
+            seen["cwd"] = cwd
+            seen["cancel_token"] = cancel_token
+            return RequestPermissionsResponse(
+                RequestPermissionProfile(network=NetworkPermissions(enabled=True)),
+                scope=PermissionGrantScope.TURN,
+            )
+
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+            approval_policy=AskForApproval.ON_REQUEST,
+            request_permissions_callback=request_permissions_callback,
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("request network"),)),
+            "request network",
+        )
+        result = await run_exec_user_turn_default_local_http_sampling(
+            config,
+            plan,
+            env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+            opener=opener,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        outputs = shell_tool_outputs_from_local_http_exec_result(result, config)
+
+        self.assertIsNone(seen["parent_ctx"])
+        self.assertEqual(seen["call_id"], "permissions-1")
+        self.assertEqual(seen["cwd"], Path("C:/work/project"))
+        self.assertIsNone(seen["cancel_token"])
+        self.assertEqual(seen["args"].permissions.network, NetworkPermissions(enabled=True))
+        self.assertIs(outputs[0]["success"], True)
+        self.assertEqual(
+            json.loads(outputs[0]["output"]),
+            {
+                "permissions": {"network": {"enabled": True}},
+                "scope": "turn",
+            },
+        )
+
+    async def test_local_http_exec_request_permissions_tool_output_helper_rejects_empty_permissions(self) -> None:
+        def opener(_request):
+            return FakeRequestPermissionsToolCallResponse({"permissions": {}})
+
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("request nothing"),)),
+            "request nothing",
+        )
+        result = await run_exec_user_turn_default_local_http_sampling(
+            config,
+            plan,
+            env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+            opener=opener,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        outputs = shell_tool_outputs_from_local_http_exec_result(result, config)
+
+        self.assertIs(outputs[0]["success"], False)
+        self.assertEqual(outputs[0]["output"], "request_permissions requires at least one permission")
+
+    async def test_local_http_exec_request_permissions_tool_output_helper_rejects_bad_arguments(self) -> None:
+        def opener(_request):
+            return FakeRequestPermissionsToolCallResponse("{")
+
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("request bad args"),)),
+            "request bad args",
+        )
+        result = await run_exec_user_turn_default_local_http_sampling(
+            config,
+            plan,
+            env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+            opener=opener,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        outputs = shell_tool_outputs_from_local_http_exec_result(result, config)
+
+        self.assertIs(outputs[0]["success"], False)
+        self.assertIn("failed to parse function arguments:", outputs[0]["output"])
 
     async def test_local_http_exec_tool_output_followup_request(self) -> None:
         request_bodies = []
@@ -2494,7 +4238,74 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         output_items = [item for item in input_items if item["type"] == "function_call_output"]
         self.assertEqual(output_items[0]["call_id"], "call-1")
         self.assertIs(output_items[0]["success"], True)
-        self.assertIn("exit_code: 0", output_items[0]["output"])
+        self.assertIn("Process exited with code 0", output_items[0]["output"])
+
+    async def test_local_http_exec_apply_patch_followup_request_omits_custom_output_name(self) -> None:
+        request_bodies = []
+
+        def first_opener(_request):
+            return FakeApplyPatchToolCallResponse()
+
+        def followup_opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return FakeResponse()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = ExecSessionConfig(
+                model=None,
+                model_provider_id=None,
+                cwd=Path(tmpdir),
+            )
+            plan = ExecRunPlan(
+                InitialOperation.user_turn((UserInput.text_input("hello"),)),
+                "hello",
+            )
+            previous = await run_exec_user_turn_default_local_http_sampling(
+                config,
+                plan,
+                env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+                opener=first_opener,
+                built_tools=lambda _sess, _turn: Router(),
+            )
+            tool_outputs = shell_tool_outputs_from_local_http_exec_result(previous, config)
+
+            tool_response_items = response_items_from_local_http_tool_outputs(tool_outputs)
+            self.assertEqual(tool_response_items[0].type, "custom_tool_call_output")
+            self.assertIsNone(tool_response_items[0].name)
+            self.assertIs(tool_response_items[0].output.success, True)
+
+            model_info = type(
+                "ModelInfo",
+                (),
+                {
+                    "slug": "gpt-test",
+                    "base_instructions": "base",
+                    "supports_reasoning_summaries": False,
+                    "support_verbosity": False,
+                    "service_tier_for_request": lambda _self, tier: tier,
+                },
+            )()
+            followup = await run_exec_tool_output_http_sampling(
+                config,
+                previous,
+                tool_outputs,
+                ModelClient(session_id="session", thread_id="thread", installation_id="install"),
+                {"base_url": "https://api.example.test/v1"},
+                model_info,
+                auth="sk-test",
+                opener=followup_opener,
+                built_tools=lambda _sess, _turn: Router(),
+            )
+
+            self.assertEqual(final_text_from_response_items(followup.response_items), "done")
+            input_items = request_bodies[0]["input"]
+            output_items = [item for item in input_items if item["type"] == "custom_tool_call_output"]
+            self.assertEqual(len(output_items), 1)
+            self.assertEqual(output_items[0]["call_id"], "patch-1")
+            self.assertNotIn("name", output_items[0])
+            self.assertIs(output_items[0]["success"], True)
+            self.assertIn("Success. Updated the following files:", output_items[0]["output"])
+            self.assertIn("created.txt", output_items[0]["output"])
 
     async def test_local_http_exec_shell_tool_loop_returns_followup_answer(self) -> None:
         request_bodies = []
@@ -2531,8 +4342,14 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             model_provider_id=None,
             cwd=Path("C:/work/project"),
         )
+        output_schema = {
+            "type": "object",
+            "properties": {"summary": {"type": "string"}},
+            "required": ["summary"],
+            "additionalProperties": False,
+        }
         plan = ExecRunPlan(
-            InitialOperation.user_turn((UserInput.text_input("hello"),)),
+            InitialOperation.user_turn((UserInput.text_input("hello"),), output_schema=output_schema),
             "hello",
         )
 
@@ -2551,6 +4368,14 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(final_text_from_response_items(result.response_items), "done")
         self.assertEqual(len(request_bodies), 2)
+        self.assertEqual(
+            request_bodies[0]["text"]["format"]["schema"]["properties"]["summary"]["type"],
+            "string",
+        )
+        self.assertEqual(
+            request_bodies[1]["text"]["format"]["schema"]["properties"]["summary"]["type"],
+            "string",
+        )
         self.assertTrue(any(tool["name"] == "exec_command" for tool in request_bodies[0]["tools"]))
         self.assertTrue(any(tool["name"] == "apply_patch" for tool in request_bodies[0]["tools"]))
         self.assertTrue(any(tool["name"] == "exec_command" for tool in request_bodies[1]["tools"]))
@@ -2566,6 +4391,665 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(emitted_tool_calls[0].payload["tool"], {"exec_command", "shell"})
         self.assertEqual(emitted_tool_outputs[0].payload["status"], "completed")
         self.assertIn("C:/work/project", emitted_tool_outputs[0].payload["result"])
+
+    async def test_local_http_exec_shell_tool_loop_returns_apply_patch_followup_answer(self) -> None:
+        request_bodies = []
+        patch = (
+            "*** Begin Patch\n"
+            "*** Update File: edit.txt\n"
+            "@@\n"
+            "-before\n"
+            "+after\n"
+            "*** End Patch\n"
+        )
+
+        responses = [FakeApplyPatchToolCallResponse(patch), FakeResponse()]
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return responses.pop(0)
+
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "base_instructions": "base",
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+                "service_tier_for_request": lambda _self, tier: tier,
+            },
+        )()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "edit.txt").write_text("before\n", encoding="utf-8")
+            config = ExecSessionConfig(
+                model=None,
+                model_provider_id=None,
+                cwd=root,
+            )
+            plan = ExecRunPlan(
+                InitialOperation.user_turn((UserInput.text_input("edit file"),)),
+                "edit file",
+            )
+
+            result = await run_exec_user_turn_with_shell_tools_http_sampling(
+                config,
+                plan,
+                ModelClient(session_id="session", thread_id="thread", installation_id="install"),
+                {"base_url": "https://api.example.test/v1"},
+                model_info,
+                auth="sk-test",
+                opener=opener,
+                built_tools=lambda _sess, _turn: Router(),
+            )
+
+            self.assertEqual((root / "edit.txt").read_text(encoding="utf-8"), "after\n")
+
+        self.assertEqual(final_text_from_response_items(result.response_items), "done")
+        self.assertEqual(len(request_bodies), 2)
+        output_items = [item for item in request_bodies[1]["input"] if item["type"] == "custom_tool_call_output"]
+        self.assertEqual(len(output_items), 1)
+        self.assertEqual(output_items[0]["call_id"], "patch-1")
+        self.assertNotIn("name", output_items[0])
+        self.assertIs(output_items[0]["success"], True)
+        self.assertIn("Success. Updated the following files:", output_items[0]["output"])
+
+        self.assertEqual(len(result.raw_tool_output_items), 1)
+        changes = result.raw_tool_output_items[0]["internal_output"]["changes"]
+        self.assertIn("-before\n+after\n", changes[Path("edit.txt")].unified_diff)
+        timeline_items = tool_timeline_items_from_local_http_exec_result(result, JsonEventProcessor())
+        self.assertEqual([item.type for item in timeline_items], ["file_change", "file_change"])
+        self.assertEqual(
+            [item.payload["status"] for item in timeline_items],
+            ["in_progress", "completed"],
+        )
+        self.assertEqual(timeline_items[0].payload["changes"], [{"path": "edit.txt", "kind": "update"}])
+
+    async def test_local_http_exec_shell_tool_loop_returns_apply_patch_approval_failure(self) -> None:
+        request_bodies = []
+
+        responses = [FakeApplyPatchToolCallResponse(), FakeResponse()]
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return responses.pop(0)
+
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "base_instructions": "base",
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+                "service_tier_for_request": lambda _self, tier: tier,
+            },
+        )()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = ExecSessionConfig(
+                model=None,
+                model_provider_id=None,
+                cwd=root,
+                approval_policy=AskForApproval.ON_REQUEST,
+            )
+            plan = ExecRunPlan(
+                InitialOperation.user_turn((UserInput.text_input("create file"),)),
+                "create file",
+            )
+
+            result = await run_exec_user_turn_with_shell_tools_http_sampling(
+                config,
+                plan,
+                ModelClient(session_id="session", thread_id="thread", installation_id="install"),
+                {"base_url": "https://api.example.test/v1"},
+                model_info,
+                auth="sk-test",
+                opener=opener,
+                built_tools=lambda _sess, _turn: Router(),
+            )
+
+            self.assertFalse((root / "created.txt").exists())
+
+        self.assertEqual(final_text_from_response_items(result.response_items), "done")
+        output_items = [item for item in request_bodies[1]["input"] if item["type"] == "custom_tool_call_output"]
+        self.assertEqual(len(output_items), 1)
+        self.assertEqual(output_items[0]["call_id"], "patch-1")
+        self.assertIs(output_items[0]["success"], False)
+        self.assertIn("approval_required", output_items[0]["output"])
+
+        self.assertEqual(len(result.raw_tool_output_items), 1)
+        changes = result.raw_tool_output_items[0]["internal_output"]["changes"]
+        self.assertIn(Path("created.txt"), changes)
+        timeline_items = tool_timeline_items_from_local_http_exec_result(result, JsonEventProcessor())
+        self.assertEqual([item.type for item in timeline_items], ["file_change", "file_change"])
+        self.assertEqual(
+            [item.payload["status"] for item in timeline_items],
+            ["in_progress", "failed"],
+        )
+        self.assertEqual(timeline_items[0].payload["changes"], [{"path": "created.txt", "kind": "add"}])
+
+    async def test_local_http_exec_shell_tool_loop_applies_granted_permissions_to_apply_patch(self) -> None:
+        request_bodies = []
+        patch = "*** Begin Patch\n*** Add File: created.txt\n+granted patch\n*** End Patch\n"
+
+        def request_permissions_arguments(root: Path) -> dict[str, object]:
+            permissions = RequestPermissionProfile(
+                file_system=FileSystemPermissions(
+                    (
+                        FileSystemSandboxEntry(
+                            FileSystemPath.explicit_path(root),
+                            FileSystemAccessMode.WRITE,
+                        ),
+                    )
+                )
+            )
+            return {
+                "reason": "Allow patching the temp workspace",
+                "permissions": permissions.to_mapping(),
+            }
+
+        def request_permissions_callback(_parent_ctx, _call_id, args, _cwd, _cancel_token):
+            return RequestPermissionsResponse(args.permissions, scope=PermissionGrantScope.TURN)
+
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "base_instructions": "base",
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+                "service_tier_for_request": lambda _self, tier: tier,
+            },
+        )()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            responses = [
+                FakeRequestPermissionsToolCallResponse(request_permissions_arguments(root)),
+                FakeApplyPatchToolCallResponse(patch),
+                FakeResponse(),
+            ]
+
+            def opener(request):
+                request_bodies.append(json.loads(request.data.decode("utf-8")))
+                return responses.pop(0)
+
+            config = ExecSessionConfig(
+                model=None,
+                model_provider_id=None,
+                cwd=root,
+                approval_policy=AskForApproval.ON_REQUEST,
+                request_permissions_callback=request_permissions_callback,
+            )
+            plan = ExecRunPlan(
+                InitialOperation.user_turn((UserInput.text_input("request then patch"),)),
+                "request then patch",
+            )
+
+            result = await run_exec_user_turn_with_shell_tools_http_sampling(
+                config,
+                plan,
+                ModelClient(session_id="session", thread_id="thread", installation_id="install"),
+                {"base_url": "https://api.example.test/v1"},
+                model_info,
+                auth="sk-test",
+                opener=opener,
+                built_tools=lambda _sess, _turn: Router(),
+                max_tool_rounds=2,
+            )
+
+            self.assertEqual((root / "created.txt").read_text(encoding="utf-8"), "granted patch\n")
+
+        self.assertEqual(final_text_from_response_items(result.response_items), "done")
+        patch_outputs = [
+            item for item in request_bodies[2]["input"]
+            if item["type"] == "custom_tool_call_output" and item["call_id"] == "patch-1"
+        ]
+        self.assertEqual(len(patch_outputs), 1)
+        self.assertTrue(patch_outputs[0]["success"])
+        self.assertIn("Success. Updated the following files:", patch_outputs[0]["output"])
+        self.assertNotIn("approval_required", patch_outputs[0]["output"])
+
+    async def test_local_http_exec_shell_tool_loop_returns_request_permissions_failure(self) -> None:
+        request_bodies = []
+        responses = [FakeRequestPermissionsToolCallResponse(), FakeResponse()]
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return responses.pop(0)
+
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "base_instructions": "base",
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+                "service_tier_for_request": lambda _self, tier: tier,
+            },
+        )()
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+            approval_policy=AskForApproval.ON_REQUEST,
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("request network"),)),
+            "request network",
+        )
+
+        result = await run_exec_user_turn_with_shell_tools_http_sampling(
+            config,
+            plan,
+            ModelClient(session_id="session", thread_id="thread", installation_id="install"),
+            {"base_url": "https://api.example.test/v1"},
+            model_info,
+            auth="sk-test",
+            opener=opener,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(final_text_from_response_items(result.response_items), "done")
+        self.assertEqual(len(request_bodies), 2)
+        output_items = [item for item in request_bodies[1]["input"] if item["type"] == "function_call_output"]
+        self.assertEqual(len(output_items), 1)
+        self.assertEqual(output_items[0]["call_id"], "permissions-1")
+        self.assertNotIn("name", output_items[0])
+        self.assertIs(output_items[0]["success"], False)
+        self.assertEqual(
+            output_items[0]["output"],
+            "request_permissions was cancelled before receiving a response",
+        )
+
+    async def test_local_http_exec_shell_tool_loop_returns_request_permissions_success(self) -> None:
+        request_bodies = []
+        responses = [FakeRequestPermissionsToolCallResponse(), FakeResponse()]
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return responses.pop(0)
+
+        def request_permissions_callback(_parent_ctx, _call_id, args, _cwd, _cancel_token):
+            return RequestPermissionsResponse(args.permissions, scope=PermissionGrantScope.TURN)
+
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "base_instructions": "base",
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+                "service_tier_for_request": lambda _self, tier: tier,
+            },
+        )()
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+            approval_policy=AskForApproval.ON_REQUEST,
+            request_permissions_callback=request_permissions_callback,
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("request network"),)),
+            "request network",
+        )
+
+        result = await run_exec_user_turn_with_shell_tools_http_sampling(
+            config,
+            plan,
+            ModelClient(session_id="session", thread_id="thread", installation_id="install"),
+            {"base_url": "https://api.example.test/v1"},
+            model_info,
+            auth="sk-test",
+            opener=opener,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(final_text_from_response_items(result.response_items), "done")
+        output_items = [item for item in request_bodies[1]["input"] if item["type"] == "function_call_output"]
+        self.assertEqual(len(output_items), 1)
+        self.assertEqual(output_items[0]["call_id"], "permissions-1")
+        self.assertNotIn("name", output_items[0])
+        self.assertIs(output_items[0]["success"], True)
+        self.assertEqual(
+            json.loads(output_items[0]["output"]),
+            {
+                "permissions": {"network": {"enabled": True}},
+                "scope": "turn",
+            },
+        )
+
+    async def test_local_http_exec_shell_tool_loop_applies_granted_request_permissions(self) -> None:
+        request_bodies = []
+        responses = [
+            FakeRequestPermissionsToolCallResponse(),
+            FakeToolCallWithApprovalMetadataResponse(),
+            FakeResponse(),
+        ]
+        runner_calls = []
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return responses.pop(0)
+
+        def runner(command, **kwargs):
+            runner_calls.append((command, kwargs))
+            return SimpleNamespace(returncode=0, stdout="network ok\n", stderr="")
+
+        def request_permissions_callback(_parent_ctx, _call_id, args, _cwd, _cancel_token):
+            return RequestPermissionsResponse(args.permissions, scope=PermissionGrantScope.TURN)
+
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "base_instructions": "base",
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+                "service_tier_for_request": lambda _self, tier: tier,
+            },
+        )()
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+            approval_policy=AskForApproval.ON_REQUEST,
+            request_permissions_callback=request_permissions_callback,
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("request and run"),)),
+            "request and run",
+        )
+
+        result = await run_exec_user_turn_with_shell_tools_http_sampling(
+            config,
+            plan,
+            ModelClient(session_id="session", thread_id="thread", installation_id="install"),
+            {"base_url": "https://api.example.test/v1"},
+            model_info,
+            auth="sk-test",
+            opener=opener,
+            built_tools=lambda _sess, _turn: Router(),
+            runner=runner,
+            max_tool_rounds=2,
+        )
+
+        self.assertEqual(final_text_from_response_items(result.response_items), "done")
+        self.assertEqual([call[0] for call in runner_calls], ["pwd"])
+        self.assertEqual(len(request_bodies), 3)
+        permission_outputs = [
+            item for item in request_bodies[1]["input"] if item["type"] == "function_call_output"
+        ]
+        self.assertEqual(permission_outputs[0]["call_id"], "permissions-1")
+        self.assertTrue(permission_outputs[0]["success"])
+        shell_outputs = [
+            item for item in request_bodies[2]["input"] if item["type"] == "function_call_output"
+        ]
+        shell_output = next(item for item in shell_outputs if item["call_id"] == "call-1")
+        self.assertTrue(shell_output["success"])
+        self.assertIn("network ok", shell_output["output"])
+        self.assertNotIn("permission_request_unsupported", shell_output["output"])
+
+    async def test_local_http_exec_shell_tool_loop_session_grant_carries_across_user_turns(self) -> None:
+        request_bodies = []
+        first_responses = [FakeRequestPermissionsToolCallResponse(), FakeResponse()]
+        second_responses = [FakeToolCallWithApprovalMetadataResponse(), FakeResponse()]
+        runner_calls = []
+
+        def first_opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return first_responses.pop(0)
+
+        def second_opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return second_responses.pop(0)
+
+        def runner(command, **kwargs):
+            runner_calls.append((command, kwargs))
+            return SimpleNamespace(returncode=0, stdout="session grant ok\n", stderr="")
+
+        def request_permissions_callback(_parent_ctx, _call_id, args, _cwd, _cancel_token):
+            return RequestPermissionsResponse(args.permissions, scope=PermissionGrantScope.SESSION)
+
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "base_instructions": "base",
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+                "service_tier_for_request": lambda _self, tier: tier,
+            },
+        )()
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+            approval_policy=AskForApproval.ON_REQUEST,
+            request_permissions_callback=request_permissions_callback,
+        )
+        first_plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("request session network"),)),
+            "request session network",
+        )
+        second_plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("reuse session network"),)),
+            "reuse session network",
+        )
+
+        first_result = await run_exec_user_turn_with_shell_tools_http_sampling(
+            config,
+            first_plan,
+            ModelClient(session_id="session", thread_id="thread", installation_id="install"),
+            {"base_url": "https://api.example.test/v1"},
+            model_info,
+            auth="sk-test",
+            opener=first_opener,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+        second_result = await run_exec_user_turn_with_shell_tools_http_sampling(
+            config,
+            second_plan,
+            ModelClient(session_id="session", thread_id="thread", installation_id="install"),
+            {"base_url": "https://api.example.test/v1"},
+            model_info,
+            auth="sk-test",
+            opener=second_opener,
+            built_tools=lambda _sess, _turn: Router(),
+            runner=runner,
+        )
+
+        self.assertEqual(final_text_from_response_items(first_result.response_items), "done")
+        self.assertEqual(final_text_from_response_items(second_result.response_items), "done")
+        self.assertEqual([call[0] for call in runner_calls], ["pwd"])
+        self.assertEqual(config.granted_session_permissions.network, NetworkPermissions(enabled=True))
+        shell_outputs = [
+            item for item in request_bodies[-1]["input"] if item["type"] == "function_call_output"
+        ]
+        shell_output = next(item for item in shell_outputs if item["call_id"] == "call-1")
+        self.assertTrue(shell_output["success"])
+        self.assertIn("session grant ok", shell_output["output"])
+
+    async def test_local_http_exec_shell_tool_loop_session_grant_applies_to_later_apply_patch(self) -> None:
+        request_bodies = []
+        patch = "*** Begin Patch\n*** Add File: session-created.txt\n+session patch\n*** End Patch\n"
+
+        def request_permissions_arguments(root: Path) -> dict[str, object]:
+            permissions = RequestPermissionProfile(
+                file_system=FileSystemPermissions(
+                    (
+                        FileSystemSandboxEntry(
+                            FileSystemPath.explicit_path(root),
+                            FileSystemAccessMode.WRITE,
+                        ),
+                    )
+                )
+            )
+            return {
+                "reason": "Allow session patching the temp workspace",
+                "permissions": permissions.to_mapping(),
+            }
+
+        def request_permissions_callback(_parent_ctx, _call_id, args, _cwd, _cancel_token):
+            return RequestPermissionsResponse(args.permissions, scope=PermissionGrantScope.SESSION)
+
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "base_instructions": "base",
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+                "service_tier_for_request": lambda _self, tier: tier,
+            },
+        )()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            first_responses = [
+                FakeRequestPermissionsToolCallResponse(request_permissions_arguments(root)),
+                FakeResponse(),
+            ]
+            second_responses = [FakeApplyPatchToolCallResponse(patch), FakeResponse()]
+
+            def first_opener(request):
+                request_bodies.append(json.loads(request.data.decode("utf-8")))
+                return first_responses.pop(0)
+
+            def second_opener(request):
+                request_bodies.append(json.loads(request.data.decode("utf-8")))
+                return second_responses.pop(0)
+
+            config = ExecSessionConfig(
+                model=None,
+                model_provider_id=None,
+                cwd=root,
+                approval_policy=AskForApproval.ON_REQUEST,
+                request_permissions_callback=request_permissions_callback,
+            )
+
+            first_result = await run_exec_user_turn_with_shell_tools_http_sampling(
+                config,
+                ExecRunPlan(
+                    InitialOperation.user_turn((UserInput.text_input("request session patch grant"),)),
+                    "request session patch grant",
+                ),
+                ModelClient(session_id="session", thread_id="thread", installation_id="install"),
+                {"base_url": "https://api.example.test/v1"},
+                model_info,
+                auth="sk-test",
+                opener=first_opener,
+                built_tools=lambda _sess, _turn: Router(),
+            )
+            second_result = await run_exec_user_turn_with_shell_tools_http_sampling(
+                config,
+                ExecRunPlan(
+                    InitialOperation.user_turn((UserInput.text_input("reuse session patch grant"),)),
+                    "reuse session patch grant",
+                ),
+                ModelClient(session_id="session", thread_id="thread", installation_id="install"),
+                {"base_url": "https://api.example.test/v1"},
+                model_info,
+                auth="sk-test",
+                opener=second_opener,
+                built_tools=lambda _sess, _turn: Router(),
+            )
+
+            self.assertEqual((root / "session-created.txt").read_text(encoding="utf-8"), "session patch\n")
+
+        self.assertEqual(final_text_from_response_items(first_result.response_items), "done")
+        self.assertEqual(final_text_from_response_items(second_result.response_items), "done")
+        self.assertIsNotNone(config.granted_session_permissions)
+        self.assertIsNotNone(config.granted_session_permissions.file_system)
+        patch_outputs = [
+            item for item in request_bodies[-1]["input"]
+            if item["type"] == "custom_tool_call_output" and item["call_id"] == "patch-1"
+        ]
+        self.assertEqual(len(patch_outputs), 1)
+        self.assertTrue(patch_outputs[0]["success"])
+        self.assertIn("Success. Updated the following files:", patch_outputs[0]["output"])
+        self.assertNotIn("approval_required", patch_outputs[0]["output"])
+
+    async def test_local_http_exec_shell_tool_loop_turn_grant_does_not_carry_across_user_turns(self) -> None:
+        first_responses = [FakeRequestPermissionsToolCallResponse(), FakeResponse()]
+        second_responses = [FakeToolCallWithApprovalMetadataResponse(), FakeResponse()]
+        second_request_bodies = []
+
+        def first_opener(_request):
+            return first_responses.pop(0)
+
+        def second_opener(request):
+            second_request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return second_responses.pop(0)
+
+        def rejecting_runner(_command, **_kwargs):
+            raise AssertionError("turn grants must not carry into a later user turn")
+
+        def request_permissions_callback(_parent_ctx, _call_id, args, _cwd, _cancel_token):
+            return RequestPermissionsResponse(args.permissions, scope=PermissionGrantScope.TURN)
+
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "base_instructions": "base",
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+                "service_tier_for_request": lambda _self, tier: tier,
+            },
+        )()
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+            approval_policy=AskForApproval.ON_REQUEST,
+            request_permissions_callback=request_permissions_callback,
+        )
+
+        await run_exec_user_turn_with_shell_tools_http_sampling(
+            config,
+            ExecRunPlan(
+                InitialOperation.user_turn((UserInput.text_input("request turn network"),)),
+                "request turn network",
+            ),
+            ModelClient(session_id="session", thread_id="thread", installation_id="install"),
+            {"base_url": "https://api.example.test/v1"},
+            model_info,
+            auth="sk-test",
+            opener=first_opener,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+        second_result = await run_exec_user_turn_with_shell_tools_http_sampling(
+            config,
+            ExecRunPlan(
+                InitialOperation.user_turn((UserInput.text_input("reuse turn network"),)),
+                "reuse turn network",
+            ),
+            ModelClient(session_id="session", thread_id="thread", installation_id="install"),
+            {"base_url": "https://api.example.test/v1"},
+            model_info,
+            auth="sk-test",
+            opener=second_opener,
+            built_tools=lambda _sess, _turn: Router(),
+            runner=rejecting_runner,
+        )
+
+        self.assertEqual(final_text_from_response_items(second_result.response_items), "done")
+        self.assertIsNone(config.granted_session_permissions)
+        shell_outputs = [
+            item for item in second_request_bodies[-1]["input"] if item["type"] == "function_call_output"
+        ]
+        shell_output = next(item for item in shell_outputs if item["call_id"] == "call-1")
+        self.assertFalse(shell_output["success"])
+        self.assertIn("approval_required", shell_output["output"])
 
     async def test_local_http_exec_command_tool_call_uses_cmd_argument(self) -> None:
         class Completed:
@@ -2589,7 +5073,15 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             cwd=Path("C:/work/project"),
         )
         plan = ExecRunPlan(
-            InitialOperation.user_turn((UserInput.text_input("hello"),)),
+            InitialOperation.user_turn(
+                (UserInput.text_input("hello"),),
+                output_schema={
+                    "type": "object",
+                    "properties": {"summary": {"type": "string"}},
+                    "required": ["summary"],
+                    "additionalProperties": False,
+                },
+            ),
             "hello",
         )
         result = await run_exec_user_turn_default_local_http_sampling(
@@ -2684,7 +5176,15 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             cwd=Path("C:/work/project"),
         )
         plan = ExecRunPlan(
-            InitialOperation.user_turn((UserInput.text_input("hello"),)),
+            InitialOperation.user_turn(
+                (UserInput.text_input("hello"),),
+                output_schema={
+                    "type": "object",
+                    "properties": {"summary": {"type": "string"}},
+                    "required": ["summary"],
+                    "additionalProperties": False,
+                },
+            ),
             "hello",
         )
         result = await run_exec_user_turn_default_local_http_sampling(
@@ -2947,6 +5447,110 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 stdin_outputs[0]["structured_output"]["chunk_id"],
                 outputs[0]["structured_output"]["chunk_id"],
             )
+
+    async def test_local_http_exec_command_session_nonzero_exit_remains_successful_tool_result(self) -> None:
+        manager = LocalHttpExecSessionManager()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script = Path(tmpdir) / "nonzero_child.py"
+            script.write_text(
+                "import sys\n"
+                "print('about to fail')\n"
+                "sys.exit(7)\n",
+                encoding="utf-8",
+            )
+            command = f"\"{sys.executable}\" -u \"{script}\""
+
+            def exec_opener(_request):
+                return FakeSessionExecCommandToolCallResponse(command, yield_time_ms=1000)
+
+            config = ExecSessionConfig(
+                model=None,
+                model_provider_id=None,
+                cwd=Path(tmpdir),
+            )
+            plan = ExecRunPlan(
+                InitialOperation.user_turn((UserInput.text_input("start nonzero session"),)),
+                "start nonzero session",
+            )
+            result = await run_exec_user_turn_default_local_http_sampling(
+                config,
+                plan,
+                env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+                opener=exec_opener,
+                built_tools=lambda _sess, _turn: Router(),
+            )
+
+            outputs = shell_tool_outputs_from_local_http_exec_result(
+                result,
+                config,
+                session_manager=manager,
+            )
+
+            self.assertIs(outputs[0]["success"], True)
+            self.assertEqual(outputs[0]["structured_output"]["exit_code"], 7)
+            self.assertIn("Process exited with code 7", outputs[0]["output"])
+            self.assertIn("about to fail", outputs[0]["output"])
+
+    async def test_local_http_write_stdin_nonzero_exit_remains_successful_tool_result(self) -> None:
+        manager = LocalHttpExecSessionManager()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script = Path(tmpdir) / "stdin_nonzero_child.py"
+            script.write_text(
+                "import sys\n"
+                "print('ready')\n"
+                "sys.stdin.readline()\n"
+                "print('done then fail')\n"
+                "sys.exit(9)\n",
+                encoding="utf-8",
+            )
+            command = f"\"{sys.executable}\" -u \"{script}\""
+
+            def exec_opener(_request):
+                return FakeSessionExecCommandToolCallResponse(command)
+
+            config = ExecSessionConfig(
+                model=None,
+                model_provider_id=None,
+                cwd=Path(tmpdir),
+            )
+            plan = ExecRunPlan(
+                InitialOperation.user_turn((UserInput.text_input("start stdin nonzero"),)),
+                "start stdin nonzero",
+            )
+            result = await run_exec_user_turn_default_local_http_sampling(
+                config,
+                plan,
+                env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+                opener=exec_opener,
+                built_tools=lambda _sess, _turn: Router(),
+            )
+            outputs = shell_tool_outputs_from_local_http_exec_result(result, config, session_manager=manager)
+            session_match = re.search(r"Process running with session ID (\d+)", outputs[0]["output"])
+            self.assertIsNotNone(session_match)
+
+            def stdin_opener(_request):
+                return FakeWriteStdinToolCallResponse(session_id=int(session_match.group(1)), chars="go\n")
+
+            stdin_result = await run_exec_user_turn_default_local_http_sampling(
+                config,
+                plan,
+                env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+                opener=stdin_opener,
+                built_tools=lambda _sess, _turn: Router(),
+            )
+
+            stdin_outputs = shell_tool_outputs_from_local_http_exec_result(
+                stdin_result,
+                config,
+                session_manager=manager,
+            )
+
+            self.assertIs(stdin_outputs[0]["success"], True)
+            self.assertEqual(stdin_outputs[0]["structured_output"]["exit_code"], 9)
+            self.assertIn("Process exited with code 9", stdin_outputs[0]["output"])
+            self.assertIn("done then fail", stdin_outputs[0]["output"])
 
     async def test_local_http_write_stdin_empty_chars_polls_session_output(self) -> None:
         manager = LocalHttpExecSessionManager()
@@ -3500,14 +6104,21 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "OPENAI_BASE_URL": "https://api.example.test/v1",
         }
 
-        with self.assertRaisesRegex(RuntimeError, "HTTP 400: bad schema"):
-            await run_exec_user_turn_default_local_http_sampling(
-                config,
-                plan,
-                env=env,
-                opener=opener,
-                built_tools=lambda _sess, _turn: Router(),
-            )
+        result = await run_exec_user_turn_default_local_http_sampling(
+            config,
+            plan,
+            env=env,
+            opener=opener,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(result.turn_status, "completed")
+        self.assertIsNone(result.last_agent_message)
+        events = tuple(getattr(result, "session_events", ()))
+        self.assertEqual([event.type for event in events[-2:]], ["error", "task_complete"])
+        self.assertEqual(events[-2].payload.codex_error_info.type, "other")
+        self.assertIn("bad schema", events[-2].payload.message)
+        self.assertIsNone(events[-1].payload.last_agent_message)
 
     def test_default_local_http_runtime_requires_api_key(self) -> None:
         config = ExecSessionConfig(
@@ -3529,9 +6140,9 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
     def test_default_local_http_auth_uses_auth_openai_api_key_value(self) -> None:
         auth = type("Auth", (), {"openai_api_key": "sk-auth-json"})()
 
-        resolved = default_local_http_exec_auth(auth=auth)
+        resolved = default_local_http_exec_auth(auth=auth, env={})
 
-        self.assertEqual(resolved, "sk-auth-json")
+        self.assertIs(resolved, auth)
 
     def test_default_local_http_auth_uses_codex_api_key_env_var(self) -> None:
         resolved = default_local_http_exec_auth(env={"CODEX_API_KEY": "sk-codex"})
@@ -3688,6 +6299,54 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("workdir: C:\\work\\project", summary_text)
         self.assertIn("model: gpt-env", summary_text)
         self.assertIn("provider: openai", summary_text)
+
+    def test_local_http_exec_config_summary_includes_resume_initial_messages(self) -> None:
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rollout_path = Path(tmpdir) / "rollout.jsonl"
+            with rollout_path.open("w", encoding="utf-8", newline="\n") as file:
+                file.write(
+                    json.dumps(
+                        {
+                            "timestamp": "2025-01-02T00:00:00Z",
+                            "type": "event_msg",
+                            "payload": {"type": "user_message", "message": "resume prompt", "kind": "plain"},
+                        }
+                    )
+                    + "\n"
+                )
+                file.write(
+                    json.dumps(
+                        {
+                            "timestamp": "2025-01-02T00:00:01Z",
+                            "type": "event_msg",
+                            "payload": {"type": "agent_message", "message": "resume answer"},
+                        }
+                    )
+                    + "\n"
+                )
+
+            initial_messages = local_http_exec_initial_messages_from_rollout(rollout_path)
+            _summary_config, summary_session = local_http_exec_config_summary(
+                config,
+                session_id="session-1",
+                thread_id="thread-1",
+                initial_messages=initial_messages,
+                rollout_path=rollout_path,
+            )
+
+        self.assertEqual(
+            summary_session["initial_messages"],
+            [
+                {"type": "user_message", "message": "resume prompt", "local_images": [], "text_elements": []},
+                {"type": "agent_message", "message": "resume answer"},
+            ],
+        )
+        self.assertEqual(summary_session["rollout_path"], str(rollout_path))
 
     def test_default_local_http_runtime_ids_can_feed_config_summary(self) -> None:
         config = ExecSessionConfig(

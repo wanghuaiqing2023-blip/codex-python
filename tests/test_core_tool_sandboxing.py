@@ -1,5 +1,6 @@
 import unittest
 from pathlib import Path
+from typing import Any
 
 from pycodex.core import (
     ApprovalStore,

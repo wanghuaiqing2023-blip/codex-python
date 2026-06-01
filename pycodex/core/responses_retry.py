@@ -102,6 +102,7 @@ def response_stream_retry_decision(
             delay=delay,
             report_error=report_error,
             notify_message=f"Reconnecting... {next_retries}/{max_retries}" if report_error else None,
+            error=err,
         )
 
     return RetryableResponseStreamDecision(

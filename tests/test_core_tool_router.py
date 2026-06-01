@@ -592,7 +592,7 @@ class ToolRouterTests(unittest.TestCase):
         self.assertEqual(telemetry_events[0]["telemetry_tags"], ())
         self.assertEqual(telemetry_events[0]["extra_trace_fields"], ())
         self.assertIsInstance(telemetry_events[0]["error"], FunctionCallError)
-        self.assertIn("unsupported tool", telemetry_events[0]["error_message"])
+        self.assertIn("unsupported call", telemetry_events[0]["error_message"])
 
     def test_dispatch_tool_call_saturates_active_turn_tool_calls(self) -> None:
         max_u64 = (1 << 64) - 1

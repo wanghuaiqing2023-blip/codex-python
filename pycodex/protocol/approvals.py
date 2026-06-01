@@ -83,8 +83,48 @@ def _string_list(value: JsonValue, label: str) -> tuple[str, ...]:
     return tuple(value)
 
 
+def _string_tuple(value: JsonValue, label: str) -> tuple[str, ...]:
+    return _string_list(value, label)
+
+
+def _sequence(value: JsonValue, label: str) -> tuple[JsonValue, ...]:
+    if isinstance(value, str) or not isinstance(value, (list, tuple)):
+        raise TypeError(f"{label} must be a list")
+    return tuple(value)
+
+
 def _path_list(value: JsonValue, label: str) -> tuple[Path, ...]:
     return tuple(Path(item) for item in _string_list(value, label))
+
+
+def _parsed_command_tuple(value: JsonValue) -> tuple[Any, ...]:
+    return tuple(_parsed_command_from_mapping(item) for item in _sequence(value, "parsed_cmd"))
+
+
+def _parsed_command_from_mapping(value: JsonValue) -> Any:
+    from .parse_command import ParsedCommand
+
+    return ParsedCommand.from_mapping(value)
+
+
+def _parsed_command_mapping(value: Any) -> JsonValue:
+    to_mapping = getattr(value, "to_mapping", None)
+    if callable(to_mapping):
+        return to_mapping()
+    if isinstance(value, dict):
+        return dict(value)
+    return value
+
+
+def _camel_to_snake(value: str) -> str:
+    if "_" in value:
+        return value
+    chars: list[str] = []
+    for index, char in enumerate(value):
+        if char.isupper() and index > 0:
+            chars.append("_")
+        chars.append(char.lower())
+    return "".join(chars)
 
 
 @dataclass(frozen=True)
@@ -141,6 +181,8 @@ class ExecPolicyAmendment:
 
     @classmethod
     def new(cls, command: list[str] | tuple[str, ...]) -> "ExecPolicyAmendment":
+        if isinstance(command, str) or not isinstance(command, (list, tuple)):
+            raise TypeError("command must be a list of strings")
         return cls(tuple(command))
 
     def command_tokens(self) -> tuple[str, ...]:
@@ -186,6 +228,14 @@ class NetworkApprovalContext:
                 object.__setattr__(self, "protocol", NetworkApprovalProtocol.parse(self.protocol))
             else:
                 raise TypeError("protocol must be a NetworkApprovalProtocol")
+
+    @classmethod
+    def from_mapping(cls, value: JsonValue) -> "NetworkApprovalContext":
+        data = _mapping(value, "network approval context")
+        return cls(host=_required_str(data, "host"), protocol=NetworkApprovalProtocol.parse(_required_str(data, "protocol")))
+
+    def to_mapping(self) -> dict[str, str]:
+        return {"host": self.host, "protocol": self.protocol.value}
 
 
 class NetworkPolicyRuleAction(str, Enum):
@@ -503,6 +553,10 @@ class ReviewDecision:
     proposed_execpolicy_amendment: ExecPolicyAmendment | None = None
     network_policy_amendment: NetworkPolicyAmendment | None = None
 
+    @property
+    def kind(self) -> str:
+        return self.type
+
     @classmethod
     def approved(cls) -> "ReviewDecision":
         return cls("approved")
@@ -742,6 +796,75 @@ class ExecApprovalRequestEvent:
             decisions.append(ReviewDecision.approved_execpolicy_amendment(proposed_execpolicy_amendment))
         decisions.append(ReviewDecision.abort())
         return tuple(decisions)
+
+    @classmethod
+    def from_mapping(cls, value: JsonValue) -> "ExecApprovalRequestEvent":
+        data = _mapping(value, "exec approval request event")
+        network_amendments = data.get("proposed_network_policy_amendments")
+        available_decisions = data.get("available_decisions")
+        parsed_cmd = data.get("parsed_cmd", ())
+        return cls(
+            call_id=_required_str(data, "call_id"),
+            approval_id=_optional_str(data, "approval_id"),
+            turn_id=_optional_str(data, "turn_id") or "",
+            started_at_ms=_ensure_i64(data.get("started_at_ms"), "started_at_ms"),
+            command=_string_tuple(data.get("command"), "command"),
+            cwd=Path(_required_str(data, "cwd")),
+            parsed_cmd=_parsed_command_tuple(parsed_cmd),
+            reason=_optional_str(data, "reason"),
+            network_approval_context=(
+                NetworkApprovalContext.from_mapping(data["network_approval_context"])
+                if data.get("network_approval_context") is not None
+                else None
+            ),
+            proposed_execpolicy_amendment=(
+                ExecPolicyAmendment.from_mapping(data["proposed_execpolicy_amendment"])
+                if data.get("proposed_execpolicy_amendment") is not None
+                else None
+            ),
+            proposed_network_policy_amendments=(
+                tuple(NetworkPolicyAmendment.from_mapping(item) for item in _sequence(network_amendments, "proposed_network_policy_amendments"))
+                if network_amendments is not None
+                else None
+            ),
+            additional_permissions=(
+                AdditionalPermissionProfile.from_mapping(data["additional_permissions"])
+                if data.get("additional_permissions") is not None
+                else None
+            ),
+            available_decisions=(
+                tuple(ReviewDecision.from_mapping(item) for item in _sequence(available_decisions, "available_decisions"))
+                if available_decisions is not None
+                else None
+            ),
+        )
+
+    def to_mapping(self) -> dict[str, JsonValue]:
+        data: dict[str, JsonValue] = {
+            "call_id": self.call_id,
+            "turn_id": self.turn_id,
+            "started_at_ms": self.started_at_ms,
+            "command": list(self.command),
+            "cwd": str(self.cwd),
+            "parsed_cmd": [_parsed_command_mapping(item) for item in self.parsed_cmd],
+        }
+        if self.approval_id is not None:
+            data["approval_id"] = self.approval_id
+        if self.reason is not None:
+            data["reason"] = self.reason
+        if self.network_approval_context is not None:
+            data["network_approval_context"] = self.network_approval_context.to_mapping()
+        if self.proposed_execpolicy_amendment is not None:
+            data["proposed_execpolicy_amendment"] = self.proposed_execpolicy_amendment.to_mapping()
+        if self.proposed_network_policy_amendments is not None:
+            data["proposed_network_policy_amendments"] = [
+                amendment.to_mapping() for amendment in self.proposed_network_policy_amendments
+            ]
+        if self.additional_permissions is not None:
+            data["additional_permissions"] = self.additional_permissions.to_mapping()
+        if self.available_decisions is not None:
+            data["available_decisions"] = [decision.to_mapping() for decision in self.available_decisions]
+        return data
 
 
 @dataclass(frozen=True)

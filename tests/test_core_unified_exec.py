@@ -10,6 +10,7 @@ from pycodex.core import (
     MAX_YIELD_TIME_MS,
     MIN_EMPTY_YIELD_TIME_MS,
     MIN_YIELD_TIME_MS,
+    ProcessOutputChunk,
     ProcessState,
     TRAILING_OUTPUT_GRACE_MS,
     UNIFIED_EXEC_OUTPUT_DELTA_MAX_BYTES,
@@ -26,6 +27,7 @@ from pycodex.core import (
     exec_server_write_status_marks_exited,
     generate_chunk_id,
     process_id_to_prune_from_meta,
+    process_output_chunk,
     resolve_aggregated_output,
     resolve_failed_aggregated_output,
     resolve_max_tokens,
@@ -178,6 +180,44 @@ class CoreUnifiedExecHeadTailBufferTests(unittest.TestCase):
 
     def test_split_valid_utf8_prefix_returns_none_for_empty_buffer(self) -> None:
         self.assertIsNone(split_valid_utf8_prefix(bytearray()))
+
+    def test_process_output_chunk_updates_transcript_and_emits_deltas(self) -> None:
+        pending = bytearray()
+        transcript = HeadTailBuffer.new(20)
+
+        chunks, emitted = process_output_chunk(pending, transcript, 0, "hi".encode("utf-8"))
+
+        self.assertEqual(chunks, [ProcessOutputChunk(b"hi", "hi")])
+        self.assertEqual(emitted, 1)
+        self.assertEqual(pending, bytearray())
+        self.assertEqual(transcript.to_bytes(), b"hi")
+
+    def test_process_output_chunk_holds_incomplete_utf8_until_boundary(self) -> None:
+        encoded = "甲".encode("utf-8")
+        pending = bytearray(encoded[:2])
+        transcript = HeadTailBuffer.new(20)
+
+        chunks, emitted = process_output_chunk(pending, transcript, 0, encoded[2:])
+
+        self.assertEqual(chunks, [ProcessOutputChunk(encoded, "甲")])
+        self.assertEqual(emitted, 1)
+        self.assertEqual(pending, bytearray())
+        self.assertEqual(transcript.to_bytes(), encoded)
+
+    def test_process_output_chunk_respects_delta_cap_but_keeps_transcript(self) -> None:
+        pending = bytearray()
+        transcript = HeadTailBuffer.new(20)
+
+        chunks, emitted = process_output_chunk(
+            pending,
+            transcript,
+            MAX_EXEC_OUTPUT_DELTAS_PER_CALL,
+            b"after-cap",
+        )
+
+        self.assertEqual(chunks, [ProcessOutputChunk(b"after-cap", None)])
+        self.assertEqual(emitted, MAX_EXEC_OUTPUT_DELTAS_PER_CALL)
+        self.assertEqual(transcript.to_bytes(), b"after-cap")
 
     def test_clamp_yield_time_uses_upstream_bounds(self) -> None:
         self.assertEqual(clamp_yield_time(0), MIN_YIELD_TIME_MS)
