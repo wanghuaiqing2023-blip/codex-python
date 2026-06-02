@@ -189,7 +189,7 @@ class ViewImageHandler:
     def matches_kind(self, payload: ToolPayload) -> bool:
         if not isinstance(payload, ToolPayload):
             raise TypeError("payload must be ToolPayload")
-        return payload.type in {"function", "tool_search"}
+        return payload.type == "function"
 
     def handle(self, invocation_or_payload: Any) -> ViewImageOutput:
         if not self.supports_image_inputs:
@@ -247,10 +247,15 @@ def parse_view_image_arguments(arguments: str) -> ViewImageArgs:
         raise TypeError("arguments must be a string")
     try:
         decoded = json.loads(arguments)
+    except json.JSONDecodeError as err:
+        raise FunctionCallError.respond_to_model(
+            f"failed to parse function arguments: {err}"
+        ) from err
+    try:
         return ViewImageArgs.from_mapping(decoded)
     except ValueError as err:
         raise FunctionCallError.respond_to_model(str(err)) from err
-    except (KeyError, TypeError, json.JSONDecodeError) as err:
+    except (KeyError, TypeError) as err:
         raise FunctionCallError.respond_to_model(
             f"failed to parse function arguments: {err}"
         ) from err

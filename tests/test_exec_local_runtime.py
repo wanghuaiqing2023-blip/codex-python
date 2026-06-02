@@ -3,6 +3,7 @@ import tempfile
 import io
 import os
 import re
+import shlex
 import subprocess
 import sys
 import asyncio
@@ -16,6 +17,7 @@ from pathlib import Path
 
 from pycodex.core import (
     ExecApprovalRequirement,
+    ExecPolicyPrefixRule,
     SessionMeta,
     append_thread_name,
     count_session_rollout_files,
@@ -27,6 +29,8 @@ from pycodex.core import (
     read_thread_item_from_rollout,
 )
 from pycodex.core.client import ModelClient
+from pycodex.core.client_common import REVIEW_PROMPT
+from pycodex.core.shell import Shell, ShellType
 from pycodex.core.turn_runtime import UserTurnSamplingResult
 from pycodex.exec.event_processor import HumanEventProcessor, JsonEventProcessor
 from pycodex.exec.local_runtime import (
@@ -42,7 +46,11 @@ from pycodex.exec.local_runtime import (
     final_text_from_response_items,
     LocalHttpHeadTailBuffer,
     LocalHttpExecSessionManager,
+    LocalHttpModelInfo,
+    LocalHttpProvider,
+    LocalHttpReviewModelInfo,
     LocalHttpShellInvocation,
+    LOCAL_HTTP_REVIEW_DISABLED_TOOL_NAMES,
     LOCAL_HTTP_EXEC_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS,
     LOCAL_HTTP_EXEC_EARLY_EXIT_GRACE_PERIOD_MS,
     LOCAL_HTTP_EXEC_MAX_YIELD_TIME_MS,
@@ -54,19 +62,38 @@ from pycodex.exec.local_runtime import (
     LOCAL_HTTP_EXEC_TIMEOUT_EXIT_CODE,
     LOCAL_HTTP_MAX_UNIFIED_EXEC_PROCESSES,
     align_local_http_exec_resume_model_client,
+    core_exec_config_summary,
+    core_exec_enabled,
+    core_exec_initial_messages_from_rollout,
+    core_review_rollout_input_items,
+    persist_core_exec_resume_rollout,
+    persist_core_exec_rollout,
+    local_core_exec_enabled,
     local_http_exec_enabled,
+    local_http_exec_shell_tools_enabled,
     local_http_generate_chunk_id,
     local_http_retain_head_tail_output,
     local_http_exec_schema_output_payload,
     local_http_exec_output_text,
+    local_http_apply_patch_approval_required_output,
     local_http_apply_patch_tool_spec,
     local_http_exec_config_summary,
     local_http_exec_max_tool_rounds,
+    local_http_review_rollout_input_items,
     local_http_request_permissions_tool_spec,
     local_http_write_stdin_tool_spec,
+    local_http_write_stdin_approval_required_output,
+    local_http_write_stdin_unknown_session_output,
+    local_http_model_allows_apply_patch_tool,
+    local_http_model_allows_view_image_tool,
+    local_http_model_can_request_original_image_detail,
+    local_http_model_disabled_tool_names,
+    local_http_model_supports_image_inputs,
+    local_http_view_image_tool_spec,
     local_http_exec_initial_messages_from_rollout,
     local_http_shell_tool_auto_execute_allowed,
     local_http_shell_tool_approval_required_output,
+    local_http_shell_tool_forbidden_output,
     local_http_shell_tool_spec,
     local_http_shell_tools_built_tools,
     local_http_exec_tool_output_max_chars,
@@ -76,7 +103,11 @@ from pycodex.exec.local_runtime import (
     response_items_from_local_http_tool_outputs,
     resolve_local_http_exec_resume_rollout_path,
     run_exec_tool_output_http_sampling,
+    run_exec_review_core_http_sampling,
+    run_exec_resume_user_turn_core_http_sampling,
     run_exec_resume_user_turn_http_sampling,
+    run_exec_review_http_sampling,
+    run_exec_user_turn_core_sampling,
     run_exec_user_turn_default_local_http_sampling,
     run_exec_user_turn_http_sampling,
     run_exec_user_turn_with_shell_tools_http_sampling,
@@ -90,6 +121,8 @@ from pycodex.exec.local_runtime import (
     _local_http_response_rollout_payloads,
     _approx_bytes_for_tokens,
     _approx_token_count,
+    _local_http_shell_tool_exec_policy_command,
+    _shell_command_execution_argv,
     _truncate_shell_tool_output,
 )
 from pycodex.exec.run import ExecRunPlan, InitialOperation
@@ -109,6 +142,7 @@ from pycodex.protocol import (
     ModelVerification,
     ModelVerificationEvent,
     NetworkPermissions,
+    PermissionProfile,
     PermissionGrantScope,
     RequestPermissionProfile,
     RequestPermissionsResponse,
@@ -119,7 +153,13 @@ from pycodex.protocol import (
     TokenUsageInfo,
     WarningEvent,
 )
-from pycodex.protocol import AskForApproval, CodexErr, UserInput
+from pycodex.protocol import AskForApproval, CodexErr, GranularApprovalConfig, ReviewRequest, ReviewTarget, UserInput
+
+
+def shell_join_for_test(argv: list[str]) -> str:
+    if os.name == "nt":
+        return subprocess.list2cmdline(argv)
+    return " ".join(shlex.quote(part) for part in argv)
 
 
 class FakeResponse:
@@ -135,6 +175,20 @@ class FakeResponse:
                 ]
             }
         ).encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb) -> None:
+        return None
+
+
+class FakePayloadResponse:
+    def __init__(self, payload: Mapping[str, object]) -> None:
+        self.payload = payload
+
+    def read(self) -> bytes:
+        return json.dumps(self.payload).encode("utf-8")
 
     def __enter__(self):
         return self
@@ -171,6 +225,60 @@ class ExistingToolRouter:
                 "description": "Existing test tool",
                 "parameters": {"type": "object", "properties": {}},
             }
+        ]
+
+
+class ExistingViewImageToolRouter:
+    def model_visible_specs(self) -> list[dict[str, object]]:
+        return [
+            {
+                "type": "function",
+                "name": "view_image",
+                "description": "Existing image tool",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        ]
+
+
+class ExistingReviewDisabledToolRouter:
+    def model_visible_specs(self) -> list[dict[str, object]]:
+        return [
+            {
+                "type": "function",
+                "name": "view_image",
+                "description": "Existing image tool",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            {
+                "type": "function",
+                "name": "get_goal",
+                "description": "Existing goal tool",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            {
+                "type": "function",
+                "name": "create_goal",
+                "description": "Existing goal tool",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            {
+                "type": "function",
+                "name": "update_goal",
+                "description": "Existing goal tool",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            {
+                "type": "function",
+                "name": "web_search",
+                "description": "Existing web search tool",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            {
+                "type": "function",
+                "name": "existing",
+                "description": "Existing allowed tool",
+                "parameters": {"type": "object", "properties": {}},
+            },
         ]
 
 
@@ -286,6 +394,32 @@ class FakeExecCommandToolCallResponse:
         return None
 
 
+class FakeRawExecCommandToolCallResponse:
+    def __init__(self, arguments: object, call_id: str = "call-1") -> None:
+        self.arguments = arguments
+        self.call_id = call_id
+
+    def read(self) -> bytes:
+        return json.dumps(
+            {
+                "output": [
+                    {
+                        "type": "function_call",
+                        "name": "exec_command",
+                        "arguments": json.dumps(self.arguments),
+                        "call_id": self.call_id,
+                    }
+                ]
+            }
+        ).encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb) -> None:
+        return None
+
+
 class FakeWriteStdinToolCallResponse:
     def __init__(
         self,
@@ -316,6 +450,32 @@ class FakeWriteStdinToolCallResponse:
                         "name": "write_stdin",
                         "arguments": json.dumps(arguments),
                         "call_id": "stdin-1",
+                    }
+                ]
+            }
+        ).encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb) -> None:
+        return None
+
+
+class FakeRawWriteStdinToolCallResponse:
+    def __init__(self, arguments: object, call_id: str = "stdin-1") -> None:
+        self.arguments = arguments
+        self.call_id = call_id
+
+    def read(self) -> bytes:
+        return json.dumps(
+            {
+                "output": [
+                    {
+                        "type": "function_call",
+                        "name": "write_stdin",
+                        "arguments": json.dumps(self.arguments),
+                        "call_id": self.call_id,
                     }
                 ]
             }
@@ -413,7 +573,7 @@ class FakeDangerousToolCallResponse:
                     {
                         "type": "function_call",
                         "name": "shell",
-                        "arguments": "{\"command\":\"rm -rf /important/data\"}",
+                        "arguments": "{\"command\":\"rm -rf /important/data\",\"shell\":\"/bin/bash\"}",
                         "call_id": "call-1",
                     }
                 ]
@@ -834,32 +994,25 @@ class LocalHttpShellToolSpecTests(unittest.TestCase):
         self.assertIsNone(spec["defer_loading"])
         self.assertEqual(spec["parameters"]["required"], ["cmd"])
         self.assertIn("workdir", spec["parameters"]["properties"])
-        self.assertIn("cwd", spec["parameters"]["properties"])
+        self.assertNotIn("cwd", spec["parameters"]["properties"])
         self.assertIn("yield_time_ms", spec["parameters"]["properties"])
         self.assertIn("max_output_tokens", spec["parameters"]["properties"])
-        self.assertIn("timeout", spec["parameters"]["properties"])
+        self.assertNotIn("timeout", spec["parameters"]["properties"])
+        self.assertNotIn("timeout_ms", spec["parameters"]["properties"])
         login = spec["parameters"]["properties"]["login"]
         self.assertIn("-l/-i semantics", login["description"])
         self.assertIn("Defaults to true", login["description"])
-        self.assertIn("additional_permissions", spec["parameters"]["properties"])
         sandbox_permissions = spec["parameters"]["properties"]["sandbox_permissions"]
-        self.assertIn("with_additional_permissions", sandbox_permissions["description"])
+        self.assertNotIn("additional_permissions", spec["parameters"]["properties"])
+        self.assertNotIn("with_additional_permissions", sandbox_permissions["description"])
         self.assertIn("require_escalated", sandbox_permissions["description"])
         justification = spec["parameters"]["properties"]["justification"]
         self.assertIn("Only set if sandbox_permissions", justification["description"])
         self.assertIn("Do you want to", justification["description"])
         prefix_rule = spec["parameters"]["properties"]["prefix_rule"]
         self.assertIn("Only specify when sandbox_permissions", prefix_rule["description"])
-        self.assertIn('["git", "pull"]', prefix_rule["description"])
-        additional_permissions = spec["parameters"]["properties"]["additional_permissions"]
-        self.assertFalse(additional_permissions["additionalProperties"])
-        self.assertIn("network", additional_permissions["properties"])
-        self.assertIn("file_system", additional_permissions["properties"])
-        self.assertIn("enabled", additional_permissions["properties"]["network"]["properties"])
-        file_system = additional_permissions["properties"]["file_system"]
-        self.assertFalse(file_system["additionalProperties"])
-        self.assertIn("read", file_system["properties"])
-        self.assertIn("write", file_system["properties"])
+        self.assertIn("git", prefix_rule["description"])
+        self.assertIn("pull", prefix_rule["description"])
         self.assertEqual(spec["output_schema"]["required"], ["wall_time_seconds", "output"])
         output_schema = spec["output_schema"]
         self.assertFalse(output_schema["additionalProperties"])
@@ -869,6 +1022,84 @@ class LocalHttpShellToolSpecTests(unittest.TestCase):
         self.assertIn("original_token_count", output_schema["properties"])
         self.assertIn("possibly truncated", output_schema["properties"]["output"]["description"])
         self.assertFalse(spec["parameters"]["additionalProperties"])
+
+    def test_local_http_shell_tool_spec_includes_additional_permissions_when_enabled(self) -> None:
+        spec = local_http_shell_tool_spec(exec_permission_approvals_enabled=True)
+
+        sandbox_permissions = spec["parameters"]["properties"]["sandbox_permissions"]
+        self.assertIn("with_additional_permissions", sandbox_permissions["description"])
+        additional_permissions = spec["parameters"]["properties"]["additional_permissions"]
+        self.assertFalse(additional_permissions["additionalProperties"])
+        self.assertIn("network", additional_permissions["properties"])
+        self.assertIn("file_system", additional_permissions["properties"])
+        self.assertIn("enabled", additional_permissions["properties"]["network"]["properties"])
+        file_system = additional_permissions["properties"]["file_system"]
+        self.assertFalse(file_system["additionalProperties"])
+        self.assertIn("read", file_system["properties"])
+        self.assertIn("write", file_system["properties"])
+
+    def test_local_http_shell_tool_spec_hides_login_and_additional_permissions_when_disabled(self) -> None:
+        spec = local_http_shell_tool_spec(
+            allow_login_shell=False,
+            exec_permission_approvals_enabled=False,
+        )
+
+        properties = spec["parameters"]["properties"]
+        self.assertNotIn("login", properties)
+        self.assertNotIn("additional_permissions", properties)
+        self.assertIn("sandbox_permissions", properties)
+        self.assertNotIn("with_additional_permissions", properties["sandbox_permissions"]["description"])
+
+    def test_local_http_shell_command_execution_argv_uses_default_user_shell(self) -> None:
+        invocation = LocalHttpShellInvocation("Get-Content README.md")
+
+        with patch(
+            "pycodex.exec.local_runtime.default_user_shell",
+            return_value=Shell(ShellType.POWERSHELL, "pwsh.exe"),
+        ):
+            self.assertEqual(
+                _shell_command_execution_argv(invocation),
+                ("pwsh.exe", "-Command", "Get-Content README.md"),
+            )
+
+        with patch(
+            "pycodex.exec.local_runtime.default_user_shell",
+            return_value=Shell(ShellType.SH, "/bin/sh"),
+        ):
+            self.assertEqual(
+                _shell_command_execution_argv(LocalHttpShellInvocation("cat README.md", login=False)),
+                ("/bin/sh", "-c", "cat README.md"),
+            )
+
+    def test_local_http_shell_command_execution_argv_preserves_explicit_shell(self) -> None:
+        self.assertEqual(
+            _shell_command_execution_argv(LocalHttpShellInvocation("Get-ChildItem", shell="powershell.exe")),
+            ("powershell.exe", "-Command", "Get-ChildItem"),
+        )
+        self.assertEqual(
+            _shell_command_execution_argv(LocalHttpShellInvocation("dir", shell="cmd.exe")),
+            ("cmd.exe", "/C", "dir"),
+        )
+        self.assertEqual(
+            _shell_command_execution_argv(LocalHttpShellInvocation("cat README.md", shell="/bin/bash", login=False)),
+            ("/bin/bash", "-c", "cat README.md"),
+        )
+
+    def test_local_http_shell_tool_exec_policy_command_uses_same_shell_argv(self) -> None:
+        invocation = LocalHttpShellInvocation("pwd")
+
+        with patch(
+            "pycodex.exec.local_runtime.default_user_shell",
+            return_value=Shell(ShellType.POWERSHELL, "pwsh.exe"),
+        ):
+            self.assertEqual(
+                _local_http_shell_tool_exec_policy_command(invocation),
+                _shell_command_execution_argv(invocation),
+            )
+            self.assertEqual(
+                _local_http_shell_tool_exec_policy_command(invocation),
+                ("pwsh.exe", "-Command", "pwd"),
+            )
 
     def test_local_http_apply_patch_tool_spec_shape(self) -> None:
         spec = local_http_apply_patch_tool_spec()
@@ -912,14 +1143,135 @@ class LocalHttpShellToolSpecTests(unittest.TestCase):
         self.assertIn("read", file_system["properties"])
         self.assertIn("write", file_system["properties"])
 
+    def test_local_http_view_image_tool_spec_shape(self) -> None:
+        spec = local_http_view_image_tool_spec(can_request_original_image_detail=True)
+
+        self.assertEqual(spec["type"], "function")
+        self.assertEqual(spec["name"], "view_image")
+        self.assertIs(spec["strict"], False)
+        self.assertEqual(spec["parameters"]["required"], ["path"])
+        self.assertIn("path", spec["parameters"]["properties"])
+        self.assertEqual(spec["parameters"]["properties"]["detail"]["enum"], ["high", "original"])
+        self.assertEqual(spec["output_schema"]["required"], ["image_url", "detail"])
+
     def test_local_http_shell_tools_built_tools_preserves_existing_specs(self) -> None:
         router = local_http_shell_tools_built_tools(lambda _session, _turn: ExistingToolRouter())(None, None)
         specs = router.model_visible_specs()
 
         self.assertEqual(
             [spec["name"] for spec in specs],
-            ["existing", "exec_command", "write_stdin", "request_permissions", "apply_patch"],
+            ["existing", "exec_command", "write_stdin", "apply_patch", "view_image"],
         )
+
+    def test_local_http_shell_tools_built_tools_uses_configured_shell_spec_flags(self) -> None:
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+            allow_login_shell=False,
+            exec_permission_approvals_enabled=False,
+            request_permissions_tool_enabled=False,
+        )
+
+        router = local_http_shell_tools_built_tools(config=config)(None, None)
+        specs = router.model_visible_specs()
+        self.assertEqual([spec["name"] for spec in specs], ["exec_command", "write_stdin", "apply_patch", "view_image"])
+        exec_command = next(spec for spec in specs if spec["name"] == "exec_command")
+        properties = exec_command["parameters"]["properties"]
+
+        self.assertNotIn("login", properties)
+        self.assertNotIn("additional_permissions", properties)
+        self.assertIn("sandbox_permissions", properties)
+        self.assertNotIn("with_additional_permissions", properties["sandbox_permissions"]["description"])
+
+    def test_local_http_shell_tools_built_tools_hides_apply_patch_when_model_lacks_support(self) -> None:
+        router = local_http_shell_tools_built_tools(
+            model_info=SimpleNamespace(apply_patch_tool_type=None)
+        )(None, None)
+        specs = router.model_visible_specs()
+
+        self.assertEqual([spec["name"] for spec in specs], ["exec_command", "write_stdin", "view_image"])
+
+    def test_local_http_model_allows_apply_patch_tool_matches_rust_model_gate(self) -> None:
+        self.assertTrue(local_http_model_allows_apply_patch_tool(None))
+        self.assertTrue(local_http_model_allows_apply_patch_tool(SimpleNamespace()))
+        self.assertTrue(local_http_model_allows_apply_patch_tool(LocalHttpModelInfo(slug="gpt-5")))
+        self.assertFalse(
+            local_http_model_allows_apply_patch_tool(SimpleNamespace(apply_patch_tool_type=None))
+        )
+
+    def test_local_http_model_image_helpers_match_rust_defaults(self) -> None:
+        self.assertTrue(local_http_model_supports_image_inputs(None))
+        self.assertTrue(local_http_model_supports_image_inputs(LocalHttpModelInfo(slug="gpt-5")))
+        self.assertFalse(local_http_model_supports_image_inputs(SimpleNamespace(input_modalities=("text",))))
+        self.assertTrue(local_http_model_supports_image_inputs(SimpleNamespace(input_modalities=("text", "image"))))
+        self.assertTrue(local_http_model_allows_view_image_tool(None))
+        self.assertTrue(local_http_model_allows_view_image_tool(LocalHttpModelInfo(slug="gpt-5")))
+        self.assertFalse(local_http_model_allows_view_image_tool(SimpleNamespace(view_image_tool_disabled=True)))
+        self.assertFalse(
+            local_http_model_allows_view_image_tool(SimpleNamespace(disabled_tool_names=("view_image",)))
+        )
+        self.assertEqual(local_http_model_disabled_tool_names(None), frozenset())
+        self.assertEqual(
+            local_http_model_disabled_tool_names(SimpleNamespace(disabled_tool_names=("view_image", "get_goal"))),
+            frozenset({"view_image", "get_goal"}),
+        )
+        self.assertFalse(local_http_model_can_request_original_image_detail(None))
+        self.assertFalse(local_http_model_can_request_original_image_detail(LocalHttpModelInfo(slug="gpt-5")))
+        self.assertTrue(
+            local_http_model_can_request_original_image_detail(
+                SimpleNamespace(supports_image_detail_original=True)
+            )
+        )
+
+    def test_local_http_shell_tools_built_tools_hides_view_image_for_review_model(self) -> None:
+        model_info = LocalHttpReviewModelInfo(LocalHttpModelInfo(slug="gpt-5"))
+
+        router = local_http_shell_tools_built_tools(model_info=model_info)(None, None)
+        specs = router.model_visible_specs()
+
+        self.assertEqual(local_http_model_disabled_tool_names(model_info), LOCAL_HTTP_REVIEW_DISABLED_TOOL_NAMES)
+        self.assertEqual([spec["name"] for spec in specs], ["exec_command", "write_stdin", "apply_patch"])
+
+    def test_local_http_shell_tools_built_tools_filters_existing_view_image_for_review_model(self) -> None:
+        model_info = LocalHttpReviewModelInfo(LocalHttpModelInfo(slug="gpt-5"))
+
+        router = local_http_shell_tools_built_tools(
+            lambda _session, _turn: ExistingViewImageToolRouter(),
+            model_info=model_info,
+        )(None, None)
+        specs = router.model_visible_specs()
+
+        self.assertEqual([spec["name"] for spec in specs], ["exec_command", "write_stdin", "apply_patch"])
+
+    def test_local_http_shell_tools_built_tools_filters_review_disabled_base_tools(self) -> None:
+        model_info = LocalHttpReviewModelInfo(LocalHttpModelInfo(slug="gpt-5"))
+
+        router = local_http_shell_tools_built_tools(
+            lambda _session, _turn: ExistingReviewDisabledToolRouter(),
+            model_info=model_info,
+        )(None, None)
+        specs = router.model_visible_specs()
+
+        self.assertEqual([spec["name"] for spec in specs], ["existing", "exec_command", "write_stdin", "apply_patch"])
+
+    def test_local_http_shell_tools_built_tools_exposes_permission_tools_when_configured(self) -> None:
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+            exec_permission_approvals_enabled=True,
+            request_permissions_tool_enabled=True,
+        )
+
+        router = local_http_shell_tools_built_tools(config=config)(None, None)
+        specs = router.model_visible_specs()
+        self.assertEqual([spec["name"] for spec in specs], ["exec_command", "write_stdin", "request_permissions", "apply_patch", "view_image"])
+        exec_command = next(spec for spec in specs if spec["name"] == "exec_command")
+        properties = exec_command["parameters"]["properties"]
+
+        self.assertIn("additional_permissions", properties)
+        self.assertIn("with_additional_permissions", properties["sandbox_permissions"]["description"])
 
     def test_local_http_shell_tools_built_tools_accepts_async_base_builder(self) -> None:
         async def build_base(_session, _turn):
@@ -930,7 +1282,7 @@ class LocalHttpShellToolSpecTests(unittest.TestCase):
 
         self.assertEqual(
             [spec["name"] for spec in specs],
-            ["existing", "exec_command", "write_stdin", "request_permissions", "apply_patch"],
+            ["existing", "exec_command", "write_stdin", "apply_patch", "view_image"],
         )
 
     def test_local_http_generate_chunk_id_shape(self) -> None:
@@ -1030,6 +1382,707 @@ class LocalHttpShellToolSpecTests(unittest.TestCase):
 
 
 class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_run_exec_user_turn_core_sampling_runs_default_exec_tool_loop(self) -> None:
+        cwd = Path.cwd()
+        config = ExecSessionConfig(
+            model="gpt-test",
+            model_provider_id="openai",
+            cwd=cwd,
+            user_instructions="project instructions",
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("run the command"),)),
+            "run the command",
+        )
+        provider = LocalHttpProvider()
+        model_info = LocalHttpModelInfo(slug="gpt-test", base_instructions="base")
+        client = ModelClient(
+            session_id="session",
+            thread_id="thread",
+            installation_id="install",
+            provider=provider,
+        )
+        command = shell_join_for_test(
+            [
+                sys.executable,
+                "-c",
+                "print('exec bridge output')",
+            ]
+        )
+        seen_requests = []
+
+        async def sampler(request):
+            seen_requests.append(request)
+            if len(seen_requests) == 1:
+                return [
+                    ResponseItem.function_call(
+                        "exec_command",
+                        json.dumps({"cmd": command, "yield_time_ms": 1_000}),
+                        "call-exec",
+                    )
+                ]
+            return [ResponseItem.message("assistant", (ContentItem.output_text("done after exec"),))]
+
+        result = await run_exec_user_turn_core_sampling(
+            config,
+            plan,
+            client,
+            provider,
+            model_info,
+            sampler,
+        )
+
+        self.assertEqual(len(seen_requests), 2)
+        self.assertEqual(result.last_agent_message, "done after exec")
+        self.assertEqual(len(result.request_plans), 2)
+        self.assertIn("base", seen_requests[0].request_plan.request["instructions"])
+        input_items = seen_requests[1].request_plan.request["input"]
+        output_items = [item for item in input_items if getattr(item, "type", None) == "function_call_output"]
+        self.assertEqual(len(output_items), 1)
+        self.assertEqual(output_items[0].call_id, "call-exec")
+        output_text = output_items[0].output.body.text
+        self.assertIn("exec bridge output", output_text)
+        self.assertIn("Process exited with code 0", output_text)
+        self.assertEqual(result.tool_response_items[0].call_id, "call-exec")
+
+    async def test_run_exec_user_turn_core_sampling_uses_config_allow_login_shell_for_tools(self) -> None:
+        cwd = Path.cwd()
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("inspect tools"),)),
+            "inspect tools",
+        )
+        provider = LocalHttpProvider()
+        model_info = LocalHttpModelInfo(slug="gpt-test", base_instructions="base")
+        client = ModelClient(
+            session_id="session",
+            thread_id="thread",
+            installation_id="install",
+            provider=provider,
+        )
+        seen_tools_by_setting = {}
+
+        async def run_with_setting(allow_login_shell: bool) -> None:
+            config = ExecSessionConfig(
+                model="gpt-test",
+                model_provider_id="openai",
+                cwd=cwd,
+                allow_login_shell=allow_login_shell,
+            )
+
+            async def sampler(request):
+                seen_tools_by_setting[allow_login_shell] = request.request_plan.request["tools"]
+                return [ResponseItem.message("assistant", (ContentItem.output_text("done"),))]
+
+            await run_exec_user_turn_core_sampling(
+                config,
+                plan,
+                client,
+                provider,
+                model_info,
+                sampler,
+            )
+
+        await run_with_setting(True)
+        await run_with_setting(False)
+
+        tools_when_allowed = {tool["name"]: tool for tool in seen_tools_by_setting[True]}
+        tools_when_blocked = {tool["name"]: tool for tool in seen_tools_by_setting[False]}
+        self.assertIn("login", tools_when_allowed["exec_command"]["parameters"]["properties"])
+        self.assertNotIn("login", tools_when_blocked["exec_command"]["parameters"]["properties"])
+
+    async def test_run_exec_user_turn_core_sampling_uses_model_parallel_tool_calls(self) -> None:
+        cwd = Path.cwd()
+        config = ExecSessionConfig(
+            model="gpt-test",
+            model_provider_id="openai",
+            cwd=cwd,
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("inspect request"),)),
+            "inspect request",
+        )
+        provider = LocalHttpProvider()
+        model_info = LocalHttpModelInfo(
+            slug="gpt-test",
+            base_instructions="base",
+            supports_parallel_tool_calls=True,
+        )
+        client = ModelClient(
+            session_id="session",
+            thread_id="thread",
+            installation_id="install",
+            provider=provider,
+        )
+        seen_requests = []
+
+        async def sampler(request):
+            seen_requests.append(request)
+            return [ResponseItem.message("assistant", (ContentItem.output_text("done"),))]
+
+        await run_exec_user_turn_core_sampling(
+            config,
+            plan,
+            client,
+            provider,
+            model_info,
+            sampler,
+        )
+
+        self.assertTrue(seen_requests[0].request_plan.request["parallel_tool_calls"])
+
+    async def test_run_exec_user_turn_http_sampling_uses_core_exec_tool_loop_by_default(self) -> None:
+        cwd = Path.cwd()
+        config = ExecSessionConfig(
+            model="gpt-test",
+            model_provider_id="openai",
+            cwd=cwd,
+            user_instructions="project instructions",
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("run the command"),)),
+            "run the command",
+        )
+        provider = LocalHttpProvider(base_url="https://api.example.test/v1")
+        model_info = LocalHttpModelInfo(slug="gpt-test", base_instructions="base")
+        client = ModelClient(
+            session_id="session",
+            thread_id="thread",
+            installation_id="install",
+            provider=provider,
+        )
+        command = shell_join_for_test(
+            [
+                sys.executable,
+                "-c",
+                "print('http core exec output')",
+            ]
+        )
+        request_bodies = []
+        responses = [
+            FakePayloadResponse(
+                {
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "name": "exec_command",
+                            "arguments": json.dumps({"cmd": command, "yield_time_ms": 1_000}),
+                            "call_id": "call-exec",
+                        }
+                    ]
+                }
+            ),
+            FakePayloadResponse(
+                {
+                    "output": [
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "done after core exec"}],
+                        }
+                    ]
+                }
+            ),
+        ]
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return responses.pop(0)
+
+        result = await run_exec_user_turn_http_sampling(
+            config,
+            plan,
+            client,
+            provider,
+            model_info,
+            auth="sk-test",
+            opener=opener,
+        )
+
+        self.assertEqual(len(request_bodies), 2)
+        self.assertTrue(any(tool["name"] == "exec_command" for tool in request_bodies[0]["tools"]))
+        output_items = [item for item in request_bodies[1]["input"] if item["type"] == "function_call_output"]
+        self.assertEqual(len(output_items), 1)
+        self.assertEqual(output_items[0]["call_id"], "call-exec")
+        self.assertIn("http core exec output", output_items[0]["output"])
+        self.assertEqual(result.last_agent_message, "done after core exec")
+
+        timeline_items = tool_timeline_items_from_local_http_exec_result(result, JsonEventProcessor(), config=config)
+        self.assertEqual(
+            [(item.id, item.type, item.payload["status"]) for item in timeline_items],
+            [
+                ("call-exec", "command_execution", "in_progress"),
+                ("call-exec", "command_execution", "completed"),
+            ],
+        )
+        self.assertEqual(timeline_items[0].payload["command"], command)
+        self.assertEqual(timeline_items[0].payload["source"], "agent")
+        self.assertIn("http core exec output", timeline_items[1].payload["aggregated_output"])
+        json_stdout = io.StringIO()
+        emit_local_http_exec_result(JsonEventProcessor(), result, config=config, stdout=json_stdout)
+        json_lines = [json.loads(line) for line in json_stdout.getvalue().splitlines()]
+        command_events = [
+            line["item"]
+            for line in json_lines
+            if line["type"] == "item.completed" and line["item"]["type"] == "command_execution"
+        ]
+        self.assertEqual(
+            [(item["id"], item["command"], item["status"]) for item in command_events],
+            [
+                ("call-exec", command, "in_progress"),
+                ("call-exec", command, "completed"),
+            ],
+        )
+        self.assertIn("http core exec output", command_events[1]["aggregated_output"])
+        human_stdout = io.StringIO()
+        human_stderr = io.StringIO()
+        emit_local_http_exec_result(
+            HumanEventProcessor(),
+            result,
+            config=config,
+            stdout=human_stdout,
+            stderr=human_stderr,
+            stdout_is_terminal=False,
+            stderr_is_terminal=False,
+        )
+        human_error = human_stderr.getvalue()
+        self.assertIn("exec", human_error)
+        self.assertIn(command, human_error)
+        self.assertIn("succeeded", human_error)
+        self.assertIn("http core exec output", human_error)
+        self.assertEqual(human_stdout.getvalue(), "done after core exec\n")
+
+    async def test_run_exec_user_turn_http_sampling_uses_core_apply_patch_tool_loop_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = ExecSessionConfig(
+                model="gpt-test",
+                model_provider_id="openai",
+                cwd=root,
+                approval_policy=AskForApproval.NEVER,
+                permission_profile=PermissionProfile.workspace_write(),
+            )
+            plan = ExecRunPlan(
+                InitialOperation.user_turn((UserInput.text_input("create file"),)),
+                "create file",
+            )
+            provider = LocalHttpProvider(base_url="https://api.example.test/v1")
+            model_info = LocalHttpModelInfo(slug="gpt-test", base_instructions="base")
+            client = ModelClient(
+                session_id="session",
+                thread_id="thread",
+                installation_id="install",
+                provider=provider,
+            )
+            patch_text = "*** Begin Patch\n*** Add File: created.txt\n+core patch\n*** End Patch\n"
+            request_bodies = []
+            responses = [
+                FakePayloadResponse(
+                    {
+                        "output": [
+                            {
+                                "type": "custom_tool_call",
+                                "name": "apply_patch",
+                                "input": patch_text,
+                                "call_id": "patch-1",
+                            }
+                        ]
+                    }
+                ),
+                FakePayloadResponse(
+                    {
+                        "output": [
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "done after patch"}],
+                            }
+                        ]
+                    }
+                ),
+            ]
+
+            def opener(request):
+                request_bodies.append(json.loads(request.data.decode("utf-8")))
+                return responses.pop(0)
+
+            result = await run_exec_user_turn_http_sampling(
+                config,
+                plan,
+                client,
+                provider,
+                model_info,
+                auth="sk-test",
+                opener=opener,
+            )
+
+            self.assertEqual((root / "created.txt").read_text(encoding="utf-8"), "core patch\n")
+
+        self.assertEqual(len(request_bodies), 2)
+        self.assertTrue(any(tool["name"] == "apply_patch" for tool in request_bodies[0]["tools"]))
+        output_items = [item for item in request_bodies[1]["input"] if item["type"] == "custom_tool_call_output"]
+        self.assertEqual(len(output_items), 1)
+        self.assertEqual(output_items[0]["call_id"], "patch-1")
+        self.assertNotIn("name", output_items[0])
+        self.assertIs(output_items[0]["success"], True)
+        self.assertIn("Success. Updated the following files:", output_items[0]["output"])
+        self.assertEqual(result.last_agent_message, "done after patch")
+
+    async def test_run_exec_user_turn_http_sampling_core_apply_patch_respects_read_only_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = ExecSessionConfig(
+                model="gpt-test",
+                model_provider_id="openai",
+                cwd=root,
+                approval_policy=AskForApproval.ON_REQUEST,
+                permission_profile=PermissionProfile.read_only(),
+            )
+            plan = ExecRunPlan(
+                InitialOperation.user_turn((UserInput.text_input("create file"),)),
+                "create file",
+            )
+            provider = LocalHttpProvider(base_url="https://api.example.test/v1")
+            model_info = LocalHttpModelInfo(slug="gpt-test", base_instructions="base")
+            client = ModelClient(
+                session_id="session",
+                thread_id="thread",
+                installation_id="install",
+                provider=provider,
+            )
+            patch_text = "*** Begin Patch\n*** Add File: created.txt\n+blocked patch\n*** End Patch\n"
+            request_bodies = []
+            responses = [
+                FakePayloadResponse(
+                    {
+                        "output": [
+                            {
+                                "type": "custom_tool_call",
+                                "name": "apply_patch",
+                                "input": patch_text,
+                                "call_id": "patch-1",
+                            }
+                        ]
+                    }
+                ),
+                FakePayloadResponse(
+                    {
+                        "output": [
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "blocked"}],
+                            }
+                        ]
+                    }
+                ),
+            ]
+
+            def opener(request):
+                request_bodies.append(json.loads(request.data.decode("utf-8")))
+                return responses.pop(0)
+
+            result = await run_exec_user_turn_http_sampling(
+                config,
+                plan,
+                client,
+                provider,
+                model_info,
+                auth="sk-test",
+                opener=opener,
+            )
+
+            self.assertFalse((root / "created.txt").exists())
+
+        self.assertEqual(result.last_agent_message, "blocked")
+        output_items = [item for item in request_bodies[1]["input"] if item["type"] == "custom_tool_call_output"]
+        self.assertEqual(len(output_items), 1)
+        self.assertEqual(output_items[0]["call_id"], "patch-1")
+        self.assertIs(output_items[0]["success"], False)
+        self.assertIn("approval_required", output_items[0]["output"])
+
+    async def test_run_exec_user_turn_http_sampling_core_request_permissions_unblocks_apply_patch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+
+            def request_permissions_callback(_parent_ctx, call_id, args, cwd, _cancel_token):
+                self.assertEqual(call_id, "perm-1")
+                self.assertEqual(cwd, root)
+                self.assertEqual(args.reason, "Need to create the requested file")
+                return RequestPermissionsResponse(
+                    permissions=RequestPermissionProfile(
+                        file_system=FileSystemPermissions(
+                            (
+                                FileSystemSandboxEntry(
+                                    FileSystemPath.explicit_path(root),
+                                    FileSystemAccessMode.WRITE,
+                                ),
+                            )
+                        )
+                    ),
+                    scope=PermissionGrantScope.TURN,
+                )
+
+            config = ExecSessionConfig(
+                model="gpt-test",
+                model_provider_id="openai",
+                cwd=root,
+                approval_policy=AskForApproval.ON_REQUEST,
+                permission_profile=PermissionProfile.read_only(),
+                request_permissions_callback=request_permissions_callback,
+                request_permissions_tool_enabled=True,
+            )
+            plan = ExecRunPlan(
+                InitialOperation.user_turn((UserInput.text_input("create file"),)),
+                "create file",
+            )
+            provider = LocalHttpProvider(base_url="https://api.example.test/v1")
+            model_info = LocalHttpModelInfo(slug="gpt-test", base_instructions="base")
+            client = ModelClient(
+                session_id="session",
+                thread_id="thread",
+                installation_id="install",
+                provider=provider,
+            )
+            request_permissions_arguments = {
+                "reason": "Need to create the requested file",
+                "permissions": {
+                    "file_system": {
+                        "entries": [
+                            {
+                                "path": {"type": "path", "path": "."},
+                                "access": "write",
+                            }
+                        ]
+                    }
+                },
+            }
+            patch_text = "*** Begin Patch\n*** Add File: created.txt\n+granted patch\n*** End Patch\n"
+            request_bodies = []
+            responses = [
+                FakePayloadResponse(
+                    {
+                        "output": [
+                            {
+                                "type": "function_call",
+                                "name": "request_permissions",
+                                "arguments": json.dumps(request_permissions_arguments),
+                                "call_id": "perm-1",
+                            }
+                        ]
+                    }
+                ),
+                FakePayloadResponse(
+                    {
+                        "output": [
+                            {
+                                "type": "custom_tool_call",
+                                "name": "apply_patch",
+                                "input": patch_text,
+                                "call_id": "patch-1",
+                            }
+                        ]
+                    }
+                ),
+                FakePayloadResponse(
+                    {
+                        "output": [
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "done after grant"}],
+                            }
+                        ]
+                    }
+                ),
+            ]
+
+            def opener(request):
+                request_bodies.append(json.loads(request.data.decode("utf-8")))
+                return responses.pop(0)
+
+            result = await run_exec_user_turn_http_sampling(
+                config,
+                plan,
+                client,
+                provider,
+                model_info,
+                auth="sk-test",
+                opener=opener,
+            )
+
+            self.assertEqual((root / "created.txt").read_text(encoding="utf-8"), "granted patch\n")
+
+        self.assertEqual(result.last_agent_message, "done after grant")
+        self.assertEqual(len(request_bodies), 3)
+        self.assertTrue(any(tool["name"] == "request_permissions" for tool in request_bodies[0]["tools"]))
+        request_permission_outputs = [
+            item for item in request_bodies[1]["input"] if item["type"] == "function_call_output"
+        ]
+        self.assertEqual(len(request_permission_outputs), 1)
+        self.assertEqual(request_permission_outputs[0]["call_id"], "perm-1")
+        self.assertIs(request_permission_outputs[0]["success"], True)
+        patch_outputs = [item for item in request_bodies[2]["input"] if item["type"] == "custom_tool_call_output"]
+        self.assertEqual(len(patch_outputs), 1)
+        self.assertEqual(patch_outputs[0]["call_id"], "patch-1")
+        self.assertIs(patch_outputs[0]["success"], True)
+        self.assertIn("Success. Updated the following files:", patch_outputs[0]["output"])
+
+    async def test_run_exec_user_turn_http_sampling_core_request_permissions_auto_denies_when_approval_never(self) -> None:
+        def request_permissions_callback(_parent_ctx, _call_id, _args, _cwd, _cancel_token):
+            raise AssertionError("approval never should not ask the client for permissions")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = ExecSessionConfig(
+                model="gpt-test",
+                model_provider_id="openai",
+                cwd=root,
+                approval_policy=AskForApproval.NEVER,
+                permission_profile=PermissionProfile.read_only(),
+                request_permissions_callback=request_permissions_callback,
+                request_permissions_tool_enabled=True,
+            )
+            plan = ExecRunPlan(
+                InitialOperation.user_turn((UserInput.text_input("request permissions"),)),
+                "request permissions",
+            )
+            provider = LocalHttpProvider(base_url="https://api.example.test/v1")
+            model_info = LocalHttpModelInfo(slug="gpt-test", base_instructions="base")
+            client = ModelClient(
+                session_id="session",
+                thread_id="thread",
+                installation_id="install",
+                provider=provider,
+            )
+            request_permissions_arguments = {
+                "reason": "Need network",
+                "permissions": {"network": {"enabled": True}},
+            }
+            request_bodies = []
+            responses = [
+                FakePayloadResponse(
+                    {
+                        "output": [
+                            {
+                                "type": "function_call",
+                                "name": "request_permissions",
+                                "arguments": json.dumps(request_permissions_arguments),
+                                "call_id": "perm-1",
+                            }
+                        ]
+                    }
+                ),
+                FakePayloadResponse(
+                    {
+                        "output": [
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "denied"}],
+                            }
+                        ]
+                    }
+                ),
+            ]
+
+            def opener(request):
+                request_bodies.append(json.loads(request.data.decode("utf-8")))
+                return responses.pop(0)
+
+            result = await run_exec_user_turn_http_sampling(
+                config,
+                plan,
+                client,
+                provider,
+                model_info,
+                auth="sk-test",
+                opener=opener,
+            )
+
+        self.assertEqual(result.last_agent_message, "denied")
+        self.assertEqual(len(request_bodies), 2)
+        output_items = [item for item in request_bodies[1]["input"] if item["type"] == "function_call_output"]
+        self.assertEqual(len(output_items), 1)
+        self.assertEqual(output_items[0]["call_id"], "perm-1")
+        self.assertIs(output_items[0]["success"], True)
+        output = json.loads(output_items[0]["output"])
+        self.assertEqual(output["permissions"], {})
+        self.assertEqual(output["scope"], "turn")
+        self.assertFalse(output.get("strict_auto_review", False))
+
+    async def test_run_exec_user_turn_http_sampling_passes_exec_approval_policy_to_core_tools(self) -> None:
+        cwd = Path.cwd()
+        config = ExecSessionConfig(
+            model="gpt-test",
+            model_provider_id="openai",
+            cwd=cwd,
+            approval_policy=AskForApproval.NEVER,
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("run escalated"),)),
+            "run escalated",
+        )
+        provider = LocalHttpProvider(base_url="https://api.example.test/v1")
+        model_info = LocalHttpModelInfo(slug="gpt-test", base_instructions="base")
+        client = ModelClient(
+            session_id="session",
+            thread_id="thread",
+            installation_id="install",
+            provider=provider,
+        )
+        request_bodies = []
+        responses = [
+            FakePayloadResponse(
+                {
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "name": "exec_command",
+                            "arguments": json.dumps(
+                                {
+                                    "cmd": "echo should-not-run",
+                                    "sandbox_permissions": "require_escalated",
+                                }
+                            ),
+                            "call_id": "call-escalated",
+                        }
+                    ]
+                }
+            ),
+            FakePayloadResponse(
+                {
+                    "output": [
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "blocked"}],
+                        }
+                    ]
+                }
+            ),
+        ]
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return responses.pop(0)
+
+        result = await run_exec_user_turn_http_sampling(
+            config,
+            plan,
+            client,
+            provider,
+            model_info,
+            auth="sk-test",
+            opener=opener,
+        )
+
+        self.assertEqual(result.last_agent_message, "blocked")
+        output_items = [item for item in request_bodies[1]["input"] if item["type"] == "function_call_output"]
+        self.assertEqual(len(output_items), 1)
+        self.assertEqual(output_items[0]["call_id"], "call-escalated")
+        self.assertIn("cannot ask for escalated permissions", output_items[0]["output"])
+        self.assertNotIn("should-not-run", output_items[0]["output"])
+
     async def test_run_exec_user_turn_http_sampling_uses_exec_config_and_plan(self) -> None:
         seen = {}
 
@@ -1153,6 +2206,357 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         _assert_message_texts_in_order(self, message_items, ["previous user", "previous assistant", "current prompt"])
         self.assertEqual(message_items[-1]["content"][0]["text"], "current prompt")
 
+    async def test_run_exec_review_http_sampling_uses_review_prompt_and_renders_output(self) -> None:
+        seen = {}
+
+        class ReviewResponse:
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "output": [
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [
+                                    {
+                                        "type": "output_text",
+                                        "text": json.dumps(
+                                            {
+                                                "findings": [],
+                                                "overall_correctness": "patch is correct",
+                                                "overall_explanation": "No findings.",
+                                                "overall_confidence_score": 0.91,
+                                            }
+                                        ),
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        def opener(request):
+            seen["body"] = json.loads(request.data.decode("utf-8"))
+            return ReviewResponse()
+
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "base_instructions": "base",
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+                "service_tier_for_request": lambda _self, tier: tier,
+            },
+        )()
+        config = ExecSessionConfig(
+            model="gpt-test",
+            model_provider_id="openai",
+            cwd=Path("C:/work/project"),
+            user_instructions="project instructions must not enter review",
+            approval_policy=AskForApproval.ON_REQUEST,
+        )
+        plan = ExecRunPlan(
+            InitialOperation.review(ReviewRequest(ReviewTarget.uncommitted_changes())),
+            "current changes",
+        )
+
+        result = await run_exec_review_http_sampling(
+            config,
+            plan,
+            ModelClient(session_id="session", thread_id="thread", installation_id="install"),
+            {"base_url": "https://api.example.test/v1"},
+            model_info,
+            auth="sk-test",
+            opener=opener,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(seen["body"]["instructions"], REVIEW_PROMPT)
+        input_texts = [item["content"][0]["text"] for item in seen["body"]["input"] if item.get("content")]
+        self.assertIn(
+            "Review the current code changes (staged, unstaged, and untracked files) and provide prioritized findings.",
+            input_texts,
+        )
+        self.assertFalse(any("project instructions must not enter review" in text for text in input_texts))
+        self.assertEqual(final_text_from_local_http_exec_result(result), "No findings.")
+        session_events = tuple(result.session_events)
+        self.assertEqual(session_events[0].type, "entered_review_mode")
+        self.assertEqual(session_events[0].payload.user_facing_hint, "current changes")
+        self.assertEqual(session_events[-1].type, "exited_review_mode")
+        self.assertEqual(session_events[-1].payload.review_output.overall_explanation, "No findings.")
+        self.assertEqual(session_events[-1].payload.review_output.overall_confidence_score, 0.91)
+        rollout_input = local_http_review_rollout_input_items(result)
+        self.assertEqual(len(rollout_input), 1)
+        self.assertIn("full review output from reviewer model", rollout_input[0].text)
+        self.assertIn("<action>review</action>", rollout_input[0].text)
+        self.assertIn("No findings.", rollout_input[0].text)
+
+    async def test_run_exec_review_core_http_sampling_uses_review_prompt_and_renders_output(self) -> None:
+        seen = {}
+
+        def opener(request):
+            seen["body"] = json.loads(request.data.decode("utf-8"))
+            return FakePayloadResponse(
+                {
+                    "output": [
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "output_text",
+                                    "text": json.dumps(
+                                        {
+                                            "findings": [],
+                                            "overall_correctness": "patch is correct",
+                                            "overall_explanation": "Core review ok.",
+                                            "overall_confidence_score": 0.87,
+                                        }
+                                    ),
+                                }
+                            ],
+                        }
+                    ]
+                }
+            )
+
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "base_instructions": "base",
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+                "service_tier_for_request": lambda _self, tier: tier,
+            },
+        )()
+        config = ExecSessionConfig(
+            model="gpt-test",
+            model_provider_id="openai",
+            cwd=Path("C:/work/project"),
+            user_instructions="project instructions must not enter review",
+            approval_policy=AskForApproval.ON_REQUEST,
+        )
+        plan = ExecRunPlan(
+            InitialOperation.review(ReviewRequest(ReviewTarget.uncommitted_changes())),
+            "current changes",
+        )
+
+        result = await run_exec_review_core_http_sampling(
+            config,
+            plan,
+            ModelClient(session_id="session", thread_id="thread", installation_id="install"),
+            {"base_url": "https://api.example.test/v1"},
+            model_info,
+            auth="sk-test",
+            opener=opener,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(seen["body"]["instructions"], REVIEW_PROMPT)
+        input_texts = [item["content"][0]["text"] for item in seen["body"]["input"] if item.get("content")]
+        self.assertIn(
+            "Review the current code changes (staged, unstaged, and untracked files) and provide prioritized findings.",
+            input_texts,
+        )
+        self.assertFalse(any("project instructions must not enter review" in text for text in input_texts))
+        self.assertEqual(final_text_from_local_http_exec_result(result), "Core review ok.")
+        session_events = tuple(result.session_events)
+        self.assertEqual([session_events[0].type, session_events[-1].type], ["entered_review_mode", "exited_review_mode"])
+        self.assertEqual(session_events[-1].payload.review_output.overall_confidence_score, 0.87)
+
+    async def test_run_exec_review_http_sampling_plain_text_output_emits_review_lifecycle(self) -> None:
+        class PlainReviewResponse:
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "output": [
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "Looks good from here."}],
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "base_instructions": "base",
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+                "service_tier_for_request": lambda _self, tier: tier,
+            },
+        )()
+        config = ExecSessionConfig(model="gpt-test", model_provider_id="openai", cwd=Path("C:/work/project"))
+        plan = ExecRunPlan(
+            InitialOperation.review(ReviewRequest(ReviewTarget.uncommitted_changes())),
+            "current changes",
+        )
+
+        result = await run_exec_review_http_sampling(
+            config,
+            plan,
+            ModelClient(session_id="session", thread_id="thread", installation_id="install"),
+            {"base_url": "https://api.example.test/v1"},
+            model_info,
+            auth="sk-test",
+            opener=lambda _request: PlainReviewResponse(),
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        session_events = tuple(result.session_events)
+        self.assertEqual([session_events[0].type, session_events[-1].type], ["entered_review_mode", "exited_review_mode"])
+        self.assertEqual(session_events[-1].payload.review_output.overall_explanation, "Looks good from here.")
+        self.assertEqual(final_text_from_local_http_exec_result(result), "Looks good from here.")
+
+    async def test_run_exec_review_http_sampling_shell_tools_hide_view_image(self) -> None:
+        seen = {}
+
+        class ReviewResponse:
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "output": [
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "Looks good from here."}],
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        def opener(request):
+            seen["body"] = json.loads(request.data.decode("utf-8"))
+            return ReviewResponse()
+
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "base_instructions": "base",
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+                "supports_image_detail_original": True,
+                "input_modalities": ("text", "image"),
+                "service_tier_for_request": lambda _self, tier: tier,
+            },
+        )()
+        config = ExecSessionConfig(model="gpt-test", model_provider_id="openai", cwd=Path("C:/work/project"))
+        plan = ExecRunPlan(
+            InitialOperation.review(ReviewRequest(ReviewTarget.uncommitted_changes())),
+            "current changes",
+        )
+
+        await run_exec_review_http_sampling(
+            config,
+            plan,
+            ModelClient(session_id="session", thread_id="thread", installation_id="install"),
+            {"base_url": "https://api.example.test/v1"},
+            model_info,
+            auth="sk-test",
+            opener=opener,
+            built_tools=lambda _sess, _turn: Router(),
+            use_shell_tools=True,
+        )
+
+        tool_names = [tool["name"] for tool in seen["body"]["tools"]]
+        self.assertIn("exec_command", tool_names)
+        self.assertIn("apply_patch", tool_names)
+        self.assertNotIn("view_image", tool_names)
+
+    async def test_run_exec_review_http_sampling_interrupted_output_uses_review_interrupted_lifecycle(self) -> None:
+        async def fake_run(*_args, **_kwargs):
+            return UserTurnSamplingResult(
+                request_plan=None,
+                response_items=(ResponseItem.message("assistant", (ContentItem.output_text("partial review"),)),),
+                turn_status="interrupted",
+            )
+
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "base_instructions": "base",
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+                "service_tier_for_request": lambda _self, tier: tier,
+            },
+        )()
+        config = ExecSessionConfig(model="gpt-test", model_provider_id="openai", cwd=Path("C:/work/project"))
+        plan = ExecRunPlan(
+            InitialOperation.review(ReviewRequest(ReviewTarget.uncommitted_changes())),
+            "current changes",
+        )
+
+        with patch("pycodex.exec.local_runtime.run_exec_user_turn_http_sampling", fake_run):
+            result = await run_exec_review_http_sampling(
+                config,
+                plan,
+                ModelClient(session_id="session", thread_id="thread", installation_id="install"),
+                {"base_url": "https://api.example.test/v1"},
+                model_info,
+                auth="sk-test",
+                built_tools=lambda _sess, _turn: Router(),
+            )
+
+        session_events = tuple(result.session_events)
+        self.assertEqual([session_events[0].type, session_events[-1].type], ["entered_review_mode", "exited_review_mode"])
+        self.assertIsNone(session_events[-1].payload.review_output)
+        self.assertEqual(final_text_from_local_http_exec_result(result), "")
+        self.assertIn("Review was interrupted", final_text_from_response_items(result.response_items))
+        rollout_input = local_http_review_rollout_input_items(result)
+        self.assertIn("User initiated a review task, but was interrupted.", rollout_input[0].text)
+        self.assertIn("<action>review</action>", rollout_input[0].text)
+        self.assertIn("None.", rollout_input[0].text)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rollout_path = persist_local_http_exec_rollout(
+                Path(tmpdir),
+                config,
+                result,
+                ModelClient(session_id="session", thread_id="review-interrupted", installation_id="install"),
+                input_items=rollout_input,
+            )
+            self.assertIsNotNone(rollout_path)
+            persisted_items = read_response_items_from_rollout(rollout_path)
+        persisted_texts = [
+            content.text
+            for item in persisted_items
+            for content in item.content
+            if isinstance(getattr(content, "text", None), str)
+        ]
+        self.assertTrue(any("User initiated a review task, but was interrupted." in text for text in persisted_texts))
+        self.assertTrue(any("Review was interrupted. Please re-run /review" in text for text in persisted_texts))
+        self.assertFalse(any("<turn_aborted>" in text for text in persisted_texts))
+
     async def test_default_local_http_runtime_uses_env_provider_and_model(self) -> None:
         seen = {}
 
@@ -1200,6 +2604,14 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(local_http_exec_enabled({"OPENAI_API_KEY": "sk-env"}))
         self.assertTrue(local_http_exec_enabled({"CODEX_API_KEY": "sk-codex"}))
         self.assertFalse(local_http_exec_enabled({"PYCODEX_EXEC_LOCAL_HTTP": "0", "OPENAI_API_KEY": "sk-env"}))
+        self.assertTrue(local_core_exec_enabled({"PYCODEX_EXEC_CORE": "1"}))
+        self.assertTrue(local_core_exec_enabled({"PYCODEX_EXEC_CORE": "enabled"}))
+        self.assertFalse(local_core_exec_enabled({"PYCODEX_EXEC_CORE": "0", "OPENAI_API_KEY": "sk-env"}))
+        self.assertFalse(local_core_exec_enabled({"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"}))
+        self.assertTrue(local_core_exec_enabled({"OPENAI_API_KEY": "sk-env"}))
+        self.assertTrue(local_core_exec_enabled({"CODEX_API_KEY": "sk-codex"}))
+        self.assertTrue(core_exec_enabled({"PYCODEX_EXEC_CORE": "1"}))
+        self.assertTrue(core_exec_enabled({"OPENAI_API_KEY": "sk-env"}))
 
         stdout = io.StringIO()
         emit_local_http_exec_result(
@@ -1851,6 +3263,271 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(find_session_rollout_containing_response_marker(codex_home, "done"), rollout_path)
             self.assertEqual(read_response_items_from_rollout(rollout_path)[-1].content[0].text, "done")
 
+    async def test_local_http_resume_runner_uses_core_exec_tool_loop_and_persists_outputs(self) -> None:
+        request_bodies = []
+        command = shell_join_for_test(
+            [
+                sys.executable,
+                "-c",
+                "print('resume core exec output')",
+            ]
+        )
+        responses = [
+            FakePayloadResponse(
+                {
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "name": "exec_command",
+                            "arguments": json.dumps({"cmd": command, "yield_time_ms": 1_000}),
+                            "call_id": "resume-core-exec",
+                        }
+                    ]
+                }
+            ),
+            FakePayloadResponse(
+                {
+                    "output": [
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "resume done"}],
+                        }
+                    ]
+                }
+            ),
+        ]
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return responses.pop(0)
+
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "base_instructions": "base",
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+                "service_tier_for_request": lambda _self, tier: tier,
+            },
+        )()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            thread_id = "77777777-7777-7777-7777-777777777777"
+            config = ExecSessionConfig(model=None, model_provider_id=None, cwd=Path("C:/work/resume"))
+            rollout_path = materialize_session_rollout(
+                codex_home,
+                SessionMeta(
+                    id=thread_id,
+                    timestamp="2025-01-02T03:04:05Z",
+                    cwd="C:/work/resume",
+                    originator="codex_exec",
+                    cli_version="test-version",
+                    source="cli",
+                    model_provider="openai",
+                ),
+            )
+            assert rollout_path is not None
+            with rollout_path.open("a", encoding="utf-8", newline="\n") as file:
+                for payload in (
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "previous user"}],
+                    },
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "previous assistant"}],
+                    },
+                ):
+                    file.write(json.dumps({"timestamp": "2025-01-02T03:04:05Z", "type": "response_item", "payload": payload}) + "\n")
+
+            plan = ExecRunPlan(InitialOperation.user_turn((UserInput.text_input("run resumed command"),)), "run resumed command")
+
+            result = await run_exec_resume_user_turn_http_sampling(
+                codex_home,
+                config,
+                plan,
+                ModelClient(session_id="session", thread_id="new-thread", installation_id="install"),
+                {"base_url": "https://api.example.test/v1"},
+                model_info,
+                thread_id=thread_id,
+                auth="sk-test",
+                opener=opener,
+            )
+
+            rollout_items = read_response_items_from_rollout(rollout_path)
+
+        self.assertEqual(result.last_agent_message, "resume done")
+        self.assertEqual(len(request_bodies), 2)
+        first_messages = [item for item in request_bodies[0]["input"] if item.get("type") == "message"]
+        _assert_message_texts_in_order(
+            self,
+            first_messages,
+            ["previous user", "previous assistant", "run resumed command"],
+        )
+        followup_outputs = [item for item in request_bodies[1]["input"] if item["type"] == "function_call_output"]
+        self.assertEqual(len(followup_outputs), 1)
+        self.assertEqual(followup_outputs[0]["call_id"], "resume-core-exec")
+        self.assertIn("resume core exec output", followup_outputs[0]["output"])
+        self.assertEqual(
+            [(item.type, item.call_id) for item in rollout_items[-3:]],
+            [
+                ("function_call", "resume-core-exec"),
+                ("function_call_output", "resume-core-exec"),
+                ("message", None),
+            ],
+        )
+        self.assertIn("resume core exec output", rollout_items[-2].output.body.text)
+        self.assertEqual(rollout_items[-1].content[0].text, "resume done")
+
+    async def test_core_http_resume_runner_uses_reconstructed_history_and_persists_output(self) -> None:
+        request_bodies = []
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return FakePayloadResponse(
+                {
+                    "output": [
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "core resumed"}],
+                        }
+                    ]
+                }
+            )
+
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "base_instructions": "base",
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+                "service_tier_for_request": lambda _self, tier: tier,
+            },
+        )()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            thread_id = "88888888-8888-8888-8888-888888888888"
+            config = ExecSessionConfig(model=None, model_provider_id=None, cwd=Path("C:/work/resume"))
+            rollout_path = materialize_session_rollout(
+                codex_home,
+                SessionMeta(
+                    id=thread_id,
+                    timestamp="2025-01-02T03:04:05Z",
+                    cwd="C:/work/resume",
+                    originator="codex_exec",
+                    cli_version="test-version",
+                    source="cli",
+                    model_provider="openai",
+                ),
+            )
+            assert rollout_path is not None
+            with rollout_path.open("a", encoding="utf-8", newline="\n") as file:
+                for payload in (
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "previous user"}],
+                    },
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "previous assistant"}],
+                    },
+                ):
+                    file.write(json.dumps({"timestamp": "2025-01-02T03:04:05Z", "type": "response_item", "payload": payload}) + "\n")
+
+            plan = ExecRunPlan(InitialOperation.user_turn((UserInput.text_input("continue core"),)), "continue core")
+
+            result = await run_exec_resume_user_turn_core_http_sampling(
+                codex_home,
+                config,
+                plan,
+                ModelClient(session_id="session", thread_id="new-thread", installation_id="install"),
+                {"base_url": "https://api.example.test/v1"},
+                model_info,
+                thread_id=thread_id,
+                auth="sk-test",
+                opener=opener,
+            )
+            rollout_items = read_response_items_from_rollout(rollout_path)
+
+        self.assertEqual(final_text_from_response_items(result.response_items), "core resumed")
+        message_items = [item for item in request_bodies[0]["input"] if item.get("type") == "message"]
+        _assert_message_texts_in_order(
+            self,
+            message_items,
+            ["previous user", "previous assistant", "continue core"],
+        )
+        self.assertEqual(rollout_items[-1].content[0].text, "core resumed")
+
+    async def test_core_http_resume_runner_passes_output_schema_to_request(self) -> None:
+        request_bodies = []
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return FakeResponse()
+
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "base_instructions": "base",
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+                "service_tier_for_request": lambda _self, tier: tier,
+            },
+        )()
+        output_schema = {
+            "type": "object",
+            "properties": {"ok": {"type": "boolean"}},
+            "required": ["ok"],
+            "additionalProperties": False,
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            thread_id = "99999999-9999-9999-9999-999999999999"
+            config = ExecSessionConfig(model=None, model_provider_id=None, cwd=Path("C:/work/resume"))
+            rollout_path = materialize_session_rollout(
+                codex_home,
+                SessionMeta(
+                    id=thread_id,
+                    timestamp="2025-01-02T03:04:05Z",
+                    cwd="C:/work/resume",
+                    originator="codex_exec",
+                    cli_version="test-version",
+                    source="cli",
+                    model_provider="openai",
+                ),
+            )
+            assert rollout_path is not None
+            plan = ExecRunPlan(
+                InitialOperation.user_turn((UserInput.text_input("continue with schema"),), output_schema=output_schema),
+                "continue with schema",
+            )
+
+            await run_exec_resume_user_turn_core_http_sampling(
+                codex_home,
+                config,
+                plan,
+                ModelClient(session_id="session", thread_id="new-thread", installation_id="install"),
+                {"base_url": "https://api.example.test/v1"},
+                model_info,
+                thread_id=thread_id,
+                auth="sk-test",
+                opener=opener,
+            )
+
+        self.assertEqual(request_bodies[0]["text"]["format"]["schema"], output_schema)
+
     async def test_local_http_resume_runner_uses_reconstructed_model_history(self) -> None:
         request_bodies = []
 
@@ -2434,6 +4111,112 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    def test_local_http_rollout_removes_orphan_tool_outputs_from_raw_payload(self) -> None:
+        result = UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(),
+            raw_result={
+                "output": [
+                    {
+                        "type": "function_call_output",
+                        "call_id": "orphan-function",
+                        "output": "drop",
+                    },
+                    {
+                        "type": "custom_tool_call_output",
+                        "call_id": "orphan-custom",
+                        "output": "drop",
+                    },
+                    {
+                        "type": "tool_search_output",
+                        "call_id": "orphan-search",
+                        "status": "completed",
+                        "execution": "client",
+                        "tools": [],
+                    },
+                    {
+                        "type": "tool_search_output",
+                        "call_id": "server-search",
+                        "status": "completed",
+                        "execution": "server",
+                        "tools": [],
+                    },
+                    {
+                        "type": "tool_search_output",
+                        "status": "completed",
+                        "execution": "client",
+                        "tools": [],
+                    },
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "done"}],
+                    },
+                ]
+            },
+        )
+
+        prompt_visible_items = _local_http_prompt_visible_rollout_items(result)
+
+        self.assertEqual(
+            [(item.type, item.call_id) for item in prompt_visible_items],
+            [
+                ("tool_search_output", "server-search"),
+                ("tool_search_output", None),
+                ("message", None),
+            ],
+        )
+
+    def test_local_http_rollout_inserts_missing_output_for_local_shell_call(self) -> None:
+        result = UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(),
+            raw_result={
+                "output": [
+                    {
+                        "type": "local_shell_call",
+                        "call_id": "shell-1",
+                        "status": "completed",
+                        "action": {
+                            "type": "exec",
+                            "command": ["pwd"],
+                        },
+                    },
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "done"}],
+                    },
+                ]
+            },
+        )
+
+        prompt_visible_items = _local_http_prompt_visible_rollout_items(result)
+
+        self.assertEqual(
+            [(item.type, item.call_id) for item in prompt_visible_items],
+            [
+                ("local_shell_call", "shell-1"),
+                ("function_call_output", "shell-1"),
+                ("message", None),
+            ],
+        )
+        self.assertEqual(prompt_visible_items[1].output.to_json(), "aborted")
+
+        timeline_items = tool_timeline_items_from_local_http_exec_result(
+            result,
+            JsonEventProcessor(),
+            config=ExecSessionConfig(model=None, model_provider_id=None, cwd=Path("C:/work/project")),
+        )
+        self.assertEqual(
+            [(item.id, item.type, item.payload["command"], item.payload["status"]) for item in timeline_items],
+            [
+                ("shell-1", "command_execution", "pwd", "in_progress"),
+                ("shell-1", "command_execution", "pwd", "completed"),
+            ],
+        )
+        self.assertEqual(timeline_items[-1].payload["aggregated_output"], "aborted")
+
     def test_local_http_rollout_prefers_raw_response_items_for_persistence(self) -> None:
         display_item = SimpleNamespace(content=[SimpleNamespace(text="display only")])
         result = SimpleNamespace(
@@ -2577,31 +4360,226 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         tool_output_items = tool_output_items_from_local_http_exec_result(result, JsonEventProcessor())
         self.assertEqual(len(tool_call_items), 2)
         self.assertEqual(len(tool_output_items), 2)
-        timeline_items = tool_timeline_items_from_local_http_exec_result(result, JsonEventProcessor())
+        timeline_items = tool_timeline_items_from_local_http_exec_result(result, JsonEventProcessor(), config=config)
         self.assertEqual(
-            [(item.payload["call_id"], item.payload["status"]) for item in timeline_items],
+            [(item.id, item.type, item.payload["command"], item.payload["cwd"], item.payload["status"]) for item in timeline_items],
             [
-                ("call-1", "in_progress"),
-                ("call-1", "completed"),
-                ("call-2", "in_progress"),
-                ("call-2", "completed"),
+                ("call-1", "command_execution", "pwd", "C:/work/project", "in_progress"),
+                ("call-1", "command_execution", "pwd", "C:/work/project", "completed"),
+                ("call-2", "command_execution", "pwd", "C:/work/project", "in_progress"),
+                ("call-2", "command_execution", "pwd", "C:/work/project", "completed"),
             ],
         )
-        self.assertEqual([item.id for item in timeline_items], ["item_0", "item_1", "item_2", "item_3"])
+        self.assertEqual([item.payload["aggregated_output"] for item in timeline_items], ["", "C:/work/project", "", "C:/work/project"])
+        self.assertEqual(
+            [item.payload["command_actions"] for item in timeline_items],
+            [
+                [{"type": "unknown", "command": "pwd"}],
+                [{"type": "unknown", "command": "pwd"}],
+                [{"type": "unknown", "command": "pwd"}],
+                [{"type": "unknown", "command": "pwd"}],
+            ],
+        )
         json_stdout = io.StringIO()
-        emit_local_http_exec_result(JsonEventProcessor(), result, stdout=json_stdout)
+        emit_local_http_exec_result(JsonEventProcessor(), result, config=config, stdout=json_stdout)
         json_lines = [json.loads(line) for line in json_stdout.getvalue().splitlines()]
-        tool_events = [line["item"] for line in json_lines if line["type"] == "item.completed" and line["item"]["type"] == "mcp_tool_call"]
+        tool_events = [
+            line["item"]
+            for line in json_lines
+            if line["type"] == "item.completed" and line["item"]["type"] == "command_execution"
+        ]
         self.assertEqual(
-            [(item["call_id"], item["status"]) for item in tool_events],
+            [(item["id"], item["command"], item["cwd"], item["source"], item["status"]) for item in tool_events],
             [
-                ("call-1", "in_progress"),
-                ("call-1", "completed"),
-                ("call-2", "in_progress"),
-                ("call-2", "completed"),
+                ("call-1", "pwd", "C:/work/project", "agent", "in_progress"),
+                ("call-1", "pwd", "C:/work/project", "agent", "completed"),
+                ("call-2", "pwd", "C:/work/project", "agent", "in_progress"),
+                ("call-2", "pwd", "C:/work/project", "agent", "completed"),
             ],
         )
-        self.assertEqual([item["id"] for item in tool_events], ["item_0", "item_1", "item_2", "item_3"])
+        self.assertEqual([item["aggregated_output"] for item in tool_events], ["", "C:/work/project", "", "C:/work/project"])
+        self.assertEqual(tool_events[0]["command_actions"], [{"type": "unknown", "command": "pwd"}])
+
+    def test_local_http_tool_timeline_uses_response_item_calls_when_raw_payload_is_absent(self) -> None:
+        result = UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(
+                ResponseItem.function_call(
+                    "exec_command",
+                    json.dumps({"cmd": "pwd"}),
+                    "call-history",
+                ),
+            ),
+            raw_tool_output_items=(
+                {
+                    "type": "function_call_output",
+                    "call_id": "call-history",
+                    "name": "exec_command",
+                    "output": "C:/work/project\n",
+                    "success": True,
+                },
+            ),
+        )
+        config = ExecSessionConfig(model=None, model_provider_id=None, cwd=Path("C:/work/project"))
+
+        tool_call_items = tool_call_items_from_local_http_exec_result(result, JsonEventProcessor())
+        self.assertEqual(len(tool_call_items), 1)
+        self.assertEqual(tool_call_items[0].payload["tool"], "exec_command")
+
+        timeline_items = tool_timeline_items_from_local_http_exec_result(result, JsonEventProcessor(), config=config)
+        self.assertEqual(
+            [(item.id, item.type, item.payload["command"], item.payload["status"]) for item in timeline_items],
+            [
+                ("call-history", "command_execution", "pwd", "in_progress"),
+                ("call-history", "command_execution", "pwd", "completed"),
+            ],
+        )
+        self.assertEqual(timeline_items[-1].payload["aggregated_output"], "C:/work/project")
+
+    def test_local_http_tool_timeline_uses_response_item_outputs_when_raw_payload_is_absent(self) -> None:
+        result = UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(
+                ResponseItem.function_call(
+                    "exec_command",
+                    json.dumps({"cmd": "pwd"}),
+                    "call-history",
+                ),
+                ResponseItem(type="function_call_output", call_id="call-history", output="C:/work/project\n"),
+            ),
+        )
+        config = ExecSessionConfig(model=None, model_provider_id=None, cwd=Path("C:/work/project"))
+
+        tool_output_items = tool_output_items_from_local_http_exec_result(result, JsonEventProcessor())
+        self.assertEqual(len(tool_output_items), 1)
+        self.assertEqual(tool_output_items[0].payload["result"], "C:/work/project\n")
+        self.assertEqual(tool_output_items[0].payload["status"], "completed")
+
+        timeline_items = tool_timeline_items_from_local_http_exec_result(result, JsonEventProcessor(), config=config)
+        self.assertEqual(
+            [(item.id, item.type, item.payload["command"], item.payload["status"]) for item in timeline_items],
+            [
+                ("call-history", "command_execution", "pwd", "in_progress"),
+                ("call-history", "command_execution", "pwd", "completed"),
+            ],
+        )
+        self.assertEqual(timeline_items[-1].payload["aggregated_output"], "C:/work/project")
+
+    def test_local_http_tool_timeline_drops_orphan_function_and_custom_outputs(self) -> None:
+        result = UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(),
+            raw_result={
+                "output": [
+                    {
+                        "type": "function_call_output",
+                        "call_id": "orphan-function",
+                        "output": "drop",
+                    },
+                    {
+                        "type": "custom_tool_call_output",
+                        "call_id": "orphan-custom",
+                        "output": "drop",
+                    },
+                    {
+                        "type": "function_call_output",
+                        "call_id": "",
+                        "output": "failed to parse tool arguments",
+                    },
+                ]
+            },
+        )
+
+        timeline_items = tool_timeline_items_from_local_http_exec_result(result, JsonEventProcessor())
+
+        self.assertEqual(len(timeline_items), 1)
+        self.assertEqual(timeline_items[0].type, "mcp_tool_call")
+        self.assertEqual(timeline_items[0].payload["call_id"], "")
+        self.assertEqual(timeline_items[0].payload["result"], "failed to parse tool arguments")
+
+    def test_local_http_tool_timeline_maps_local_shell_call_to_command_execution(self) -> None:
+        local_shell_call = ResponseItem.from_mapping(
+            {
+                "type": "local_shell_call",
+                "call_id": "shell-history",
+                "status": "completed",
+                "action": {
+                    "type": "exec",
+                    "command": ["pwd"],
+                    "working_directory": "C:/work/project",
+                },
+            }
+        )
+        result = UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(
+                local_shell_call,
+                ResponseItem(type="function_call_output", call_id="shell-history", output="C:/work/project\n"),
+            ),
+        )
+        config = ExecSessionConfig(model=None, model_provider_id=None, cwd=Path("C:/fallback"))
+
+        tool_call_items = tool_call_items_from_local_http_exec_result(result, JsonEventProcessor())
+        self.assertEqual(tool_call_items, ())
+
+        timeline_items = tool_timeline_items_from_local_http_exec_result(result, JsonEventProcessor(), config=config)
+        self.assertEqual(
+            [(item.id, item.type, item.payload["command"], item.payload["cwd"], item.payload["status"]) for item in timeline_items],
+            [
+                ("shell-history", "command_execution", "pwd", "C:/work/project", "in_progress"),
+                ("shell-history", "command_execution", "pwd", "C:/work/project", "completed"),
+            ],
+        )
+        self.assertEqual(timeline_items[-1].payload["aggregated_output"], "C:/work/project")
+        self.assertEqual(timeline_items[0].payload["command_actions"], [{"type": "unknown", "command": "pwd"}])
+
+    async def test_local_http_exec_shell_tool_loop_continues_by_default_until_no_tool_calls(self) -> None:
+        request_bodies = []
+
+        class Completed:
+            returncode = 0
+            stdout = "C:/work/project\n"
+            stderr = ""
+
+        def fake_runner(_command, **_kwargs):
+            return Completed()
+
+        responses = [FakeToolCallResponse(call_id="call-1"), FakeToolCallResponse(call_id="call-2"), FakeResponse()]
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return responses.pop(0)
+
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "base_instructions": "base",
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+                "service_tier_for_request": lambda _self, tier: tier,
+            },
+        )()
+        config = ExecSessionConfig(model=None, model_provider_id=None, cwd=Path("C:/work/project"))
+        plan = ExecRunPlan(InitialOperation.user_turn((UserInput.text_input("hello"),)), "hello")
+
+        result = await run_exec_user_turn_with_shell_tools_http_sampling(
+            config,
+            plan,
+            ModelClient(session_id="session", thread_id="thread", installation_id="install"),
+            {"base_url": "https://api.example.test/v1"},
+            model_info,
+            auth="sk-test",
+            opener=opener,
+            built_tools=lambda _sess, _turn: Router(),
+            runner=fake_runner,
+            tool_timeout=5.0,
+        )
+
+        self.assertEqual(final_text_from_response_items(result.response_items), "done")
+        self.assertEqual(len(request_bodies), 3)
+        self.assertEqual(len(result.raw_tool_output_items), 2)
 
     async def test_local_http_exec_result_maps_reasoning_json_event(self) -> None:
         def opener(_request):
@@ -2790,15 +4768,18 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tool_items[0].payload["status"], "in_progress")
 
         json_stdout = io.StringIO()
-        emit_local_http_exec_result(JsonEventProcessor(), result, stdout=json_stdout)
+        emit_local_http_exec_result(JsonEventProcessor(), result, config=config, stdout=json_stdout)
         json_lines = [json.loads(line) for line in json_stdout.getvalue().splitlines()]
         self.assertEqual(
             [line["type"] for line in json_lines],
             ["turn.started", "item.completed", "item.completed", "turn.completed"],
         )
-        self.assertEqual(json_lines[1]["item"]["type"], "mcp_tool_call")
-        self.assertEqual(json_lines[1]["item"]["tool"], "shell")
-        self.assertEqual(json_lines[1]["item"]["arguments"], {"command": "pwd"})
+        self.assertEqual(json_lines[1]["item"]["type"], "command_execution")
+        self.assertEqual(json_lines[1]["item"]["id"], "call-1")
+        self.assertEqual(json_lines[1]["item"]["command"], "pwd")
+        self.assertEqual(json_lines[1]["item"]["cwd"], "C:/work/project")
+        self.assertEqual(json_lines[1]["item"]["source"], "agent")
+        self.assertEqual(json_lines[1]["item"]["status"], "in_progress")
         self.assertEqual(json_lines[2]["item"]["type"], "agent_message")
 
     async def test_local_http_exec_shell_tool_output_execution_helper(self) -> None:
@@ -2886,6 +4867,102 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Process exited with code 7", outputs[0]["output"])
         self.assertIn("nope", outputs[0]["output"])
 
+    def test_local_http_exec_unknown_function_tool_returns_model_visible_error(self) -> None:
+        result = UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(),
+            raw_result={
+                "output": [
+                    {
+                        "type": "function_call",
+                        "name": "existing",
+                        "arguments": "{}",
+                        "call_id": "unknown-1",
+                    }
+                ]
+            },
+        )
+        config = ExecSessionConfig(model=None, model_provider_id=None, cwd=Path("C:/work/project"))
+
+        outputs = shell_tool_outputs_from_local_http_exec_result(result, config)
+
+        self.assertEqual(
+            outputs,
+            (
+                {
+                    "type": "function_call_output",
+                    "call_id": "unknown-1",
+                    "name": "existing",
+                    "output": "unsupported call: existing",
+                    "success": False,
+                },
+            ),
+        )
+
+    def test_local_http_exec_unknown_custom_tool_returns_model_visible_error(self) -> None:
+        result = UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(),
+            raw_result={
+                "output": [
+                    {
+                        "type": "custom_tool_call",
+                        "name": "custom_existing",
+                        "input": "raw input",
+                        "call_id": "custom-unknown-1",
+                    }
+                ]
+            },
+        )
+        config = ExecSessionConfig(model=None, model_provider_id=None, cwd=Path("C:/work/project"))
+
+        outputs = shell_tool_outputs_from_local_http_exec_result(result, config)
+
+        self.assertEqual(outputs[0]["type"], "custom_tool_call_output")
+        self.assertEqual(outputs[0]["call_id"], "custom-unknown-1")
+        self.assertNotIn("name", outputs[0])
+        self.assertEqual(outputs[0]["output"], "unsupported custom tool call: custom_existing")
+        self.assertIs(outputs[0]["success"], False)
+        tool_response_items = response_items_from_local_http_tool_outputs(outputs)
+        self.assertEqual(tool_response_items[0].type, "custom_tool_call_output")
+        self.assertIsNone(tool_response_items[0].name)
+        self.assertIs(tool_response_items[0].output.success, False)
+
+    def test_local_http_exec_custom_exec_command_payload_is_not_executed(self) -> None:
+        result = UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(),
+            raw_result={
+                "output": [
+                    {
+                        "type": "custom_tool_call",
+                        "name": "exec_command",
+                        "input": "pwd",
+                        "call_id": "custom-exec-1",
+                    }
+                ]
+            },
+        )
+        config = ExecSessionConfig(model=None, model_provider_id=None, cwd=Path("C:/work/project"))
+
+        def rejecting_runner(_command, **_kwargs):
+            raise AssertionError("custom exec_command payload must not be executed")
+
+        outputs = shell_tool_outputs_from_local_http_exec_result(result, config, runner=rejecting_runner)
+
+        self.assertEqual(outputs[0]["type"], "custom_tool_call_output")
+        self.assertEqual(outputs[0]["call_id"], "custom-exec-1")
+        self.assertNotIn("name", outputs[0])
+        self.assertEqual(outputs[0]["output"], "tool exec_command invoked with incompatible payload")
+        self.assertIs(outputs[0]["success"], False)
+        result_with_outputs = replace(
+            result,
+            tool_response_items=response_items_from_local_http_tool_outputs(outputs),
+            raw_tool_output_items=outputs,
+        )
+        timeline_items = tool_timeline_items_from_local_http_exec_result(result_with_outputs, JsonEventProcessor())
+        self.assertEqual([item.type for item in timeline_items], ["mcp_tool_call", "mcp_tool_call"])
+
     async def test_local_http_exec_shell_tool_nonzero_exit_marks_timeline_failed(self) -> None:
         class Completed:
             returncode = 7
@@ -2938,7 +5015,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         completed_tools = [
             line["item"]
             for line in json_lines
-            if line["type"] == "item.completed" and line["item"]["type"] == "mcp_tool_call"
+            if line["type"] == "item.completed" and line["item"]["type"] == "command_execution"
         ]
         self.assertEqual(completed_tools[-1]["status"], "failed")
 
@@ -3173,6 +5250,42 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("tokens truncated", outputs[0]["output"])
         self.assertNotIn("chars truncated", outputs[0]["output"])
 
+    async def test_local_http_exec_command_max_output_tokens_zero_truncates_all_output(self) -> None:
+        class Completed:
+            returncode = 0
+            stdout = "alpha beta gamma"
+            stderr = ""
+
+        def fake_runner(_command, **_kwargs):
+            return Completed()
+
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+            approval_policy=AskForApproval.NEVER,
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("hello"),)),
+            "hello",
+        )
+        result = await run_exec_user_turn_default_local_http_sampling(
+            config,
+            plan,
+            env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+            opener=lambda _request: FakeRawExecCommandToolCallResponse({"cmd": "pwd", "max_output_tokens": 0}),
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        outputs = shell_tool_outputs_from_local_http_exec_result(
+            result,
+            config,
+            runner=fake_runner,
+        )
+
+        self.assertIn("tokens truncated", outputs[0]["output"])
+        self.assertNotIn("alpha beta gamma", outputs[0]["output"])
+
     async def test_local_http_exec_shell_tool_passes_login_argument_to_runner(self) -> None:
         seen = {}
 
@@ -3212,6 +5325,76 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(seen["login"])
         self.assertIn("ok", outputs[0]["output"])
 
+    async def test_local_http_exec_shell_tool_rejects_login_when_disabled_by_config(self) -> None:
+        def rejecting_runner(_command, **_kwargs):
+            raise AssertionError("runner must not execute disallowed login shell")
+
+        def opener(_request):
+            return FakeToolCallWithLoginResponse()
+
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+            allow_login_shell=False,
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("hello"),)),
+            "hello",
+        )
+        result = await run_exec_user_turn_default_local_http_sampling(
+            config,
+            plan,
+            env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+            opener=opener,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        outputs = shell_tool_outputs_from_local_http_exec_result(result, config, runner=rejecting_runner)
+
+        self.assertFalse(outputs[0]["success"])
+        self.assertIn("login shell is disabled by config", outputs[0]["output"])
+
+    async def test_local_http_exec_shell_tool_resolves_omitted_login_from_config(self) -> None:
+        seen = {}
+
+        class Completed:
+            returncode = 0
+            stdout = "ok\n"
+            stderr = ""
+
+        def fake_runner(command, **kwargs):
+            seen["command"] = command
+            seen["login"] = kwargs["login"]
+            return Completed()
+
+        def opener(_request):
+            return FakeToolCallResponse()
+
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+            allow_login_shell=False,
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("hello"),)),
+            "hello",
+        )
+        result = await run_exec_user_turn_default_local_http_sampling(
+            config,
+            plan,
+            env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+            opener=opener,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        outputs = shell_tool_outputs_from_local_http_exec_result(result, config, runner=fake_runner)
+
+        self.assertEqual(seen["command"], "pwd")
+        self.assertFalse(seen["login"])
+        self.assertIn("ok", outputs[0]["output"])
+
     async def test_local_http_exec_shell_tool_output_requires_approval_before_execution(self) -> None:
         def rejecting_runner(_command, **_kwargs):
             raise AssertionError("runner must not be called when approval is required")
@@ -3224,6 +5407,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             model_provider_id=None,
             cwd=Path("C:/work/project"),
             approval_policy=AskForApproval.ON_REQUEST,
+            exec_permission_approvals_enabled=True,
         )
         plan = ExecRunPlan(
             InitialOperation.user_turn((UserInput.text_input("hello"),)),
@@ -3246,6 +5430,42 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("exit_code: approval_required", outputs[0]["output"])
         self.assertIn("approval_policy: on-request", outputs[0]["output"])
         self.assertIn("rm -rf /important/data", outputs[0]["output"])
+        timeline_items = tool_timeline_items_from_local_http_exec_result(
+            replace(result, raw_tool_output_items=outputs),
+            JsonEventProcessor(),
+        )
+        self.assertEqual([(item.type, item.payload["status"]) for item in timeline_items], [
+            ("command_execution", "in_progress"),
+            ("command_execution", "declined"),
+        ])
+        self.assertEqual(timeline_items[1].payload["command"], "rm -rf /important/data")
+
+    def test_local_http_approval_outputs_render_granular_label_like_rust_display(self) -> None:
+        granular = GranularApprovalConfig(
+            sandbox_approval=True,
+            rules=False,
+            skill_approval=False,
+            request_permissions=True,
+            mcp_elicitations=False,
+        )
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+            approval_policy=granular,
+        )
+        invocation = LocalHttpShellInvocation(command="echo hi")
+
+        outputs = [
+            local_http_shell_tool_approval_required_output(invocation, config),
+            local_http_shell_tool_forbidden_output(invocation, config, "blocked"),
+            local_http_apply_patch_approval_required_output(config),
+            local_http_write_stdin_approval_required_output(config),
+        ]
+
+        for output in outputs:
+            self.assertIn("approval_policy: granular", output)
+            self.assertNotIn("GranularApprovalConfig", output)
 
     async def test_local_http_exec_shell_tool_rejects_forbidden_exec_policy_before_execution(self) -> None:
         def rejecting_runner(_command, **_kwargs):
@@ -3317,6 +5537,43 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ok", outputs[0]["output"])
         self.assertNotIn("approval_required", outputs[0]["output"])
 
+    async def test_local_http_exec_shell_tool_applies_configured_exec_policy_prefix_rules(self) -> None:
+        def rejecting_runner(_command, **_kwargs):
+            raise AssertionError("runner must not be called when configured policy prompts")
+
+        def opener(_request):
+            return FakeToolCallResponse()
+
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+            approval_policy=AskForApproval.ON_REQUEST,
+            exec_policy_rules=(ExecPolicyPrefixRule.new(["pwd"], "prompt", "inspect cwd first"),),
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("hello"),)),
+            "hello",
+        )
+        result = await run_exec_user_turn_default_local_http_sampling(
+            config,
+            plan,
+            env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+            opener=opener,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        with patch(
+            "pycodex.exec.local_runtime.default_user_shell",
+            return_value=Shell(ShellType.POWERSHELL, "pwsh.exe"),
+        ):
+            outputs = shell_tool_outputs_from_local_http_exec_result(result, config, runner=rejecting_runner)
+
+        self.assertFalse(outputs[0]["success"])
+        self.assertIn("exit_code: approval_required", outputs[0]["output"])
+        self.assertIn("reason: `pwsh.exe -Command pwd` requires approval: inspect cwd first", outputs[0]["output"])
+        self.assertNotIn("proposed_execpolicy_amendment", outputs[0]["output"])
+
     async def test_local_http_exec_shell_tool_approval_output_preserves_metadata(self) -> None:
         def rejecting_runner(_command, **_kwargs):
             raise AssertionError("runner must not be called when approval is required")
@@ -3329,6 +5586,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             model_provider_id=None,
             cwd=Path("C:/work/project"),
             approval_policy=AskForApproval.ON_REQUEST,
+            exec_permission_approvals_enabled=True,
         )
         plan = ExecRunPlan(
             InitialOperation.user_turn((UserInput.text_input("hello"),)),
@@ -3356,6 +5614,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             model_provider_id=None,
             cwd=Path("C:/work/project"),
             approval_policy=AskForApproval.ON_REQUEST,
+            exec_permission_approvals_enabled=True,
         )
 
         output = local_http_shell_tool_approval_required_output(
@@ -3418,6 +5677,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 model_provider_id=None,
                 cwd=root,
                 approval_policy=AskForApproval.ON_REQUEST,
+                exec_permission_approvals_enabled=True,
             )
             plan = ExecRunPlan(
                 InitialOperation.user_turn((UserInput.text_input("hello"),)),
@@ -3483,6 +5743,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 model_provider_id=None,
                 cwd=Path("C:/work/project"),
                 approval_policy=AskForApproval.ON_REQUEST,
+                exec_permission_approvals_enabled=True,
             )
             plan = ExecRunPlan(
                 InitialOperation.user_turn((UserInput.text_input("hello"),)),
@@ -3537,6 +5798,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             model_provider_id=None,
             cwd=Path("C:/work/project"),
             approval_policy=AskForApproval.NEVER,
+            exec_permission_approvals_enabled=True,
         )
         plan = ExecRunPlan(
             InitialOperation.user_turn((UserInput.text_input("hello"),)),
@@ -3562,6 +5824,85 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("allowed", outputs[0]["output"])
         self.assertNotIn("permission_request_unsupported", outputs[0]["output"])
 
+    async def test_local_http_exec_shell_tool_runs_with_request_permissions_preapproved_grant(self) -> None:
+        runner_calls = []
+
+        def runner(command, **kwargs):
+            runner_calls.append((command, kwargs))
+            return SimpleNamespace(returncode=0, stdout="preapproved\n", stderr="")
+
+        def opener(_request):
+            return FakeToolCallWithApprovalMetadataResponse()
+
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+            approval_policy=AskForApproval.NEVER,
+            exec_permission_approvals_enabled=False,
+            request_permissions_tool_enabled=True,
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("hello"),)),
+            "hello",
+        )
+        result = await run_exec_user_turn_default_local_http_sampling(
+            config,
+            plan,
+            env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+            opener=opener,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        outputs = shell_tool_outputs_from_local_http_exec_result(
+            result,
+            config,
+            runner=runner,
+            granted_permissions=AdditionalPermissionProfile(network=NetworkPermissions(enabled=True)),
+        )
+
+        self.assertEqual([call[0] for call in runner_calls], ["pwd"])
+        self.assertTrue(outputs[0]["success"])
+        self.assertIn("preapproved", outputs[0]["output"])
+
+    async def test_local_http_exec_shell_tool_rejects_granted_permissions_when_feature_disabled(self) -> None:
+        def rejecting_runner(_command, **_kwargs):
+            raise AssertionError("runner must not execute when additional permissions feature is disabled")
+
+        def opener(_request):
+            return FakeToolCallWithApprovalMetadataResponse()
+
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+            approval_policy=AskForApproval.NEVER,
+            exec_permission_approvals_enabled=False,
+            request_permissions_tool_enabled=False,
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("hello"),)),
+            "hello",
+        )
+        result = await run_exec_user_turn_default_local_http_sampling(
+            config,
+            plan,
+            env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+            opener=opener,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        outputs = shell_tool_outputs_from_local_http_exec_result(
+            result,
+            config,
+            runner=rejecting_runner,
+            granted_permissions=AdditionalPermissionProfile(network=NetworkPermissions(enabled=True)),
+        )
+
+        self.assertFalse(outputs[0]["success"])
+        self.assertIn("permission_request_unsupported", outputs[0]["output"])
+        self.assertIn("additional permissions are disabled", outputs[0]["output"])
+
     async def test_local_http_exec_shell_tool_runs_with_granted_relative_workdir_permissions(self) -> None:
         runner_calls = []
 
@@ -3582,6 +5923,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 model_provider_id=None,
                 cwd=root,
                 approval_policy=AskForApproval.ON_REQUEST,
+                exec_permission_approvals_enabled=True,
             )
             plan = ExecRunPlan(
                 InitialOperation.user_turn((UserInput.text_input("hello"),)),
@@ -3779,6 +6121,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             model_provider_id=None,
             cwd=Path("C:/work/project"),
             approval_policy=AskForApproval.ON_REQUEST,
+            exec_permission_approvals_enabled=True,
         )
         plan = ExecRunPlan(
             InitialOperation.user_turn((UserInput.text_input("hello"),)),
@@ -3852,6 +6195,9 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 timeline_items[0].payload["changes"],
                 [{"path": "created.txt", "kind": "add"}],
             )
+            self.assertIs(timeline_items[0].payload["auto_approved"], True)
+            self.assertIn("created.txt", timeline_items[1].payload["stdout"])
+            self.assertEqual(timeline_items[1].payload["stderr"], "")
             json_stdout = io.StringIO()
             emit_local_http_exec_result(JsonEventProcessor(), result_with_outputs, stdout=json_stdout)
             patch_events = [
@@ -3861,6 +6207,199 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 and line["item"]["type"] == "file_change"
             ]
             self.assertEqual([event["status"] for event in patch_events], ["in_progress", "completed"])
+
+    async def test_local_http_exec_apply_patch_tool_missing_patch_returns_model_visible_error(self) -> None:
+        class EmptyApplyPatchResponse:
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "output": [
+                            {
+                                "type": "custom_tool_call",
+                                "name": "apply_patch",
+                                "input": "",
+                                "call_id": "patch-empty",
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        config = ExecSessionConfig(model=None, model_provider_id=None, cwd=Path("C:/work/project"))
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("patch"),)),
+            "patch",
+        )
+        result = await run_exec_user_turn_default_local_http_sampling(
+            config,
+            plan,
+            env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+            opener=lambda _request: EmptyApplyPatchResponse(),
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        outputs = shell_tool_outputs_from_local_http_exec_result(result, config)
+
+        self.assertEqual(outputs[0]["type"], "custom_tool_call_output")
+        self.assertEqual(outputs[0]["call_id"], "patch-empty")
+        self.assertEqual(outputs[0]["output"], "apply_patch handler received non-apply_patch input")
+        self.assertIs(outputs[0]["success"], False)
+        result_with_outputs = replace(
+            result,
+            tool_response_items=response_items_from_local_http_tool_outputs(outputs),
+            raw_tool_output_items=outputs,
+        )
+        timeline_items = tool_timeline_items_from_local_http_exec_result(result_with_outputs, JsonEventProcessor())
+        self.assertEqual([item.type for item in timeline_items], ["mcp_tool_call", "mcp_tool_call"])
+
+    async def test_local_http_exec_apply_patch_tool_invalid_patch_returns_verification_error(self) -> None:
+        def opener(_request):
+            return FakeApplyPatchToolCallResponse("*** Begin Patch\n*** Not A Real Hunk\n*** End Patch\n")
+
+        config = ExecSessionConfig(model=None, model_provider_id=None, cwd=Path("C:/work/project"))
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("patch"),)),
+            "patch",
+        )
+        result = await run_exec_user_turn_default_local_http_sampling(
+            config,
+            plan,
+            env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+            opener=opener,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        outputs = shell_tool_outputs_from_local_http_exec_result(result, config)
+
+        self.assertEqual(outputs[0]["type"], "custom_tool_call_output")
+        self.assertEqual(outputs[0]["call_id"], "patch-1")
+        self.assertIn("apply_patch verification failed:", outputs[0]["output"])
+        self.assertIs(outputs[0]["success"], False)
+        result_with_outputs = replace(
+            result,
+            tool_response_items=response_items_from_local_http_tool_outputs(outputs),
+            raw_tool_output_items=outputs,
+        )
+        timeline_items = tool_timeline_items_from_local_http_exec_result(result_with_outputs, JsonEventProcessor())
+        self.assertEqual([item.type for item in timeline_items], ["mcp_tool_call", "mcp_tool_call"])
+
+    def test_local_http_exec_function_apply_patch_payload_is_not_executed(self) -> None:
+        patch = "*** Begin Patch\n*** Add File: created.txt\n+hello\n*** End Patch\n"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            result = UserTurnSamplingResult(
+                request_plan=None,
+                response_items=(),
+                raw_result={
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "name": "apply_patch",
+                            "arguments": json.dumps({"patch": patch}),
+                            "call_id": "function-patch-1",
+                        }
+                    ]
+                },
+            )
+            config = ExecSessionConfig(model=None, model_provider_id=None, cwd=root)
+
+            outputs = shell_tool_outputs_from_local_http_exec_result(result, config)
+
+            self.assertFalse((root / "created.txt").exists())
+            self.assertEqual(outputs[0]["type"], "function_call_output")
+            self.assertEqual(outputs[0]["call_id"], "function-patch-1")
+            self.assertEqual(outputs[0]["name"], "apply_patch")
+            self.assertEqual(outputs[0]["output"], "tool apply_patch invoked with incompatible payload")
+            self.assertIs(outputs[0]["success"], False)
+            result_with_outputs = replace(
+                result,
+                tool_response_items=response_items_from_local_http_tool_outputs(outputs),
+                raw_tool_output_items=outputs,
+            )
+            timeline_items = tool_timeline_items_from_local_http_exec_result(result_with_outputs, JsonEventProcessor())
+            self.assertEqual([item.type for item in timeline_items], ["mcp_tool_call", "mcp_tool_call"])
+
+    async def test_local_http_exec_command_intercepts_apply_patch_heredoc_before_runner(self) -> None:
+        patch_command = (
+            "apply_patch <<'PATCH'\n"
+            "*** Begin Patch\n"
+            "*** Add File: shell-created.txt\n"
+            "+from shell wrapper\n"
+            "*** End Patch\n"
+            "PATCH"
+        )
+
+        class ShellApplyPatchResponse:
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "output": [
+                            {
+                                "type": "function_call",
+                                "name": "exec_command",
+                                "arguments": json.dumps({"cmd": patch_command}),
+                                "call_id": "call-patch",
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        def rejecting_runner(_command, **_kwargs):
+            raise AssertionError("apply_patch shell wrappers must be intercepted before shell execution")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = ExecSessionConfig(
+                model=None,
+                model_provider_id=None,
+                cwd=root,
+            )
+            plan = ExecRunPlan(
+                InitialOperation.user_turn((UserInput.text_input("patch through shell"),)),
+                "patch through shell",
+            )
+            result = await run_exec_user_turn_default_local_http_sampling(
+                config,
+                plan,
+                env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+                opener=lambda _request: ShellApplyPatchResponse(),
+                built_tools=lambda _sess, _turn: Router(),
+            )
+
+            outputs = shell_tool_outputs_from_local_http_exec_result(result, config, runner=rejecting_runner)
+
+            self.assertEqual(outputs[0]["type"], "function_call_output")
+            self.assertEqual(outputs[0]["call_id"], "call-patch")
+            self.assertIs(outputs[0]["success"], True)
+            self.assertIn("Success. Updated the following files:", outputs[0]["output"])
+            self.assertEqual((root / "shell-created.txt").read_text(encoding="utf-8"), "from shell wrapper\n")
+            self.assertIn(Path("shell-created.txt"), outputs[0]["internal_output"]["changes"])
+            result_with_outputs = replace(
+                result,
+                tool_response_items=response_items_from_local_http_tool_outputs(outputs),
+                raw_tool_output_items=outputs,
+            )
+            timeline_items = tool_timeline_items_from_local_http_exec_result(
+                result_with_outputs,
+                JsonEventProcessor(),
+            )
+            self.assertEqual([item.type for item in timeline_items], ["file_change", "file_change"])
+            self.assertEqual([item.payload["status"] for item in timeline_items], ["in_progress", "completed"])
+            self.assertEqual(timeline_items[0].payload["changes"], [{"path": "shell-created.txt", "kind": "add"}])
+            self.assertIs(timeline_items[0].payload["auto_approved"], True)
+            self.assertIn("shell-created.txt", timeline_items[1].payload["stdout"])
+            self.assertEqual(timeline_items[1].payload["stderr"], "")
 
     async def test_local_http_exec_apply_patch_updates_deletes_and_moves_files(self) -> None:
         patch = (
@@ -3974,12 +6513,15 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([item.type for item in timeline_items], ["file_change", "file_change"])
             self.assertEqual(
                 [item.payload["status"] for item in timeline_items],
-                ["in_progress", "failed"],
+                ["in_progress", "declined"],
             )
             self.assertEqual(
                 timeline_items[0].payload["changes"],
                 [{"path": "created.txt", "kind": "add"}],
             )
+            self.assertIs(timeline_items[0].payload["auto_approved"], False)
+            self.assertEqual(timeline_items[1].payload["stdout"], "")
+            self.assertIn("approval_required", timeline_items[1].payload["stderr"])
             json_stdout = io.StringIO()
             emit_local_http_exec_result(JsonEventProcessor(), result_with_outputs, stdout=json_stdout)
             patch_events = [
@@ -3988,7 +6530,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 if line["type"] == "item.completed"
                 and line["item"]["type"] == "file_change"
             ]
-            self.assertEqual([event["status"] for event in patch_events], ["in_progress", "failed"])
+            self.assertEqual([event["status"] for event in patch_events], ["in_progress", "declined"])
 
     async def test_local_http_exec_request_permissions_tool_output_helper_uses_rust_cancel_error(self) -> None:
         def opener(_request):
@@ -3999,6 +6541,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             model_provider_id=None,
             cwd=Path("C:/work/project"),
             approval_policy=AskForApproval.ON_REQUEST,
+            exec_permission_approvals_enabled=True,
         )
         plan = ExecRunPlan(
             InitialOperation.user_turn((UserInput.text_input("request network"),)),
@@ -4036,6 +6579,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             cwd=Path("C:/work/project"),
             approval_policy=AskForApproval.NEVER,
             request_permissions_callback=request_permissions_callback,
+            request_permissions_tool_enabled=True,
         )
         plan = ExecRunPlan(
             InitialOperation.user_turn((UserInput.text_input("request network"),)),
@@ -4083,6 +6627,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             cwd=Path("C:/work/project"),
             approval_policy=AskForApproval.ON_REQUEST,
             request_permissions_callback=request_permissions_callback,
+            request_permissions_tool_enabled=True,
         )
         plan = ExecRunPlan(
             InitialOperation.user_turn((UserInput.text_input("request network"),)),
@@ -4392,6 +6937,280 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(emitted_tool_outputs[0].payload["status"], "completed")
         self.assertIn("C:/work/project", emitted_tool_outputs[0].payload["result"])
 
+    async def test_local_http_exec_shell_tool_loop_groups_same_turn_tool_outputs(self) -> None:
+        request_bodies = []
+
+        class Completed:
+            returncode = 0
+            stdout = "shell output\n"
+            stderr = ""
+
+        class ThreeToolCallResponse:
+            def read(self) -> bytes:
+                output = []
+                for call_id in ("call-1", "call-2", "call-3"):
+                    output.append(
+                        {
+                            "type": "function_call",
+                            "name": "shell",
+                            "arguments": "{\"command\":\"echo shell output\"}",
+                            "call_id": call_id,
+                        }
+                    )
+                return json.dumps({"output": output}).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        def fake_runner(command, **_kwargs):
+            self.assertEqual(command, "echo shell output")
+            return Completed()
+
+        responses = [ThreeToolCallResponse(), FakeResponse()]
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return responses.pop(0)
+
+        model_info = LocalHttpModelInfo(slug="gpt-test", base_instructions="base")
+        config = ExecSessionConfig(model=None, model_provider_id=None, cwd=Path("C:/work/project"))
+        plan = ExecRunPlan(InitialOperation.user_turn((UserInput.text_input("run three"),)), "run three")
+
+        result = await run_exec_user_turn_with_shell_tools_http_sampling(
+            config,
+            plan,
+            ModelClient(session_id="session", thread_id="thread", installation_id="install"),
+            {"base_url": "https://api.example.test/v1"},
+            model_info,
+            auth="sk-test",
+            opener=opener,
+            built_tools=lambda _sess, _turn: Router(),
+            runner=fake_runner,
+            tool_timeout=5.0,
+        )
+
+        self.assertEqual(final_text_from_response_items(result.response_items), "done")
+        self.assertEqual(len(request_bodies), 2)
+        followup_input = request_bodies[1]["input"]
+        function_calls = [
+            (index, item)
+            for index, item in enumerate(followup_input)
+            if item["type"] == "function_call"
+        ]
+        function_call_outputs = [
+            (index, item)
+            for index, item in enumerate(followup_input)
+            if item["type"] == "function_call_output"
+        ]
+
+        self.assertEqual(len(function_calls), 3)
+        self.assertEqual(len(function_call_outputs), 3)
+        for call_index, _call in function_calls:
+            for output_index, _output in function_call_outputs:
+                self.assertLess(call_index, output_index)
+        self.assertEqual(
+            [call["call_id"] for _index, call in function_calls],
+            [output["call_id"] for _index, output in function_call_outputs],
+        )
+        self.assertEqual([output["success"] for _index, output in function_call_outputs], [True, True, True])
+        self.assertTrue(all("shell output" in output["output"] for _index, output in function_call_outputs))
+
+    async def test_local_http_exec_shell_tool_loop_follows_up_after_unknown_tool_error(self) -> None:
+        request_bodies = []
+
+        class UnknownToolResponse:
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "output": [
+                            {
+                                "type": "function_call",
+                                "name": "existing",
+                                "arguments": "{}",
+                                "call_id": "unknown-1",
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        responses = [UnknownToolResponse(), FakeResponse()]
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return responses.pop(0)
+
+        model_info = LocalHttpModelInfo(slug="gpt-test", base_instructions="base")
+        config = ExecSessionConfig(model=None, model_provider_id=None, cwd=Path("C:/work/project"))
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("hello"),)),
+            "hello",
+        )
+
+        result = await run_exec_user_turn_with_shell_tools_http_sampling(
+            config,
+            plan,
+            ModelClient(session_id="session", thread_id="thread", installation_id="install"),
+            {"base_url": "https://api.example.test/v1"},
+            model_info,
+            auth="sk-test",
+            opener=opener,
+            built_tools=lambda _sess, _turn: ExistingToolRouter(),
+        )
+
+        self.assertEqual(final_text_from_response_items(result.response_items), "done")
+        self.assertEqual(len(request_bodies), 2)
+        output_items = [item for item in request_bodies[1]["input"] if item["type"] == "function_call_output"]
+        self.assertEqual(output_items[0]["call_id"], "unknown-1")
+        self.assertEqual(output_items[0]["output"], "unsupported call: existing")
+        self.assertIs(output_items[0]["success"], False)
+
+    async def test_local_http_exec_shell_tool_loop_omits_custom_output_name_after_unknown_tool_error(self) -> None:
+        request_bodies = []
+
+        class UnknownCustomToolResponse:
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "output": [
+                            {
+                                "type": "custom_tool_call",
+                                "name": "custom_existing",
+                                "input": "raw input",
+                                "call_id": "custom-unknown-1",
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        responses = [UnknownCustomToolResponse(), FakeResponse()]
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return responses.pop(0)
+
+        model_info = LocalHttpModelInfo(slug="gpt-test", base_instructions="base")
+        config = ExecSessionConfig(model=None, model_provider_id=None, cwd=Path("C:/work/project"))
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("hello"),)),
+            "hello",
+        )
+
+        result = await run_exec_user_turn_with_shell_tools_http_sampling(
+            config,
+            plan,
+            ModelClient(session_id="session", thread_id="thread", installation_id="install"),
+            {"base_url": "https://api.example.test/v1"},
+            model_info,
+            auth="sk-test",
+            opener=opener,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(final_text_from_response_items(result.response_items), "done")
+        self.assertEqual(len(request_bodies), 2)
+        output_items = [item for item in request_bodies[1]["input"] if item["type"] == "custom_tool_call_output"]
+        self.assertEqual(len(output_items), 1)
+        self.assertEqual(output_items[0]["call_id"], "custom-unknown-1")
+        self.assertNotIn("name", output_items[0])
+        self.assertEqual(output_items[0]["output"], "unsupported custom tool call: custom_existing")
+        self.assertIs(output_items[0]["success"], False)
+
+    async def test_local_http_exec_view_image_tool_loop_returns_image_output(self) -> None:
+        request_bodies = []
+
+        class ViewImageResponse:
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "output": [
+                            {
+                                "type": "function_call",
+                                "name": "view_image",
+                                "arguments": json.dumps({"path": "image.png", "detail": "original"}),
+                                "call_id": "image-1",
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        responses = [ViewImageResponse(), FakeResponse()]
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return responses.pop(0)
+
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "base_instructions": "base",
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+                "supports_image_detail_original": True,
+                "input_modalities": ("text", "image"),
+                "service_tier_for_request": lambda _self, tier: tier,
+            },
+        )()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "image.png").write_bytes(
+                b"\x89PNG\r\n\x1a\n"
+                b"\x00\x00\x00\rIHDR"
+                b"\x00\x00\x00\x01\x00\x00\x00\x01"
+                b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+                b"\x00\x00\x00\nIDATx\x9cc\xf8\x0f\x00\x01\x01\x01\x00\x18\xdd\x8d\xb0"
+                b"\x00\x00\x00\x00IEND\xaeB`\x82"
+            )
+            config = ExecSessionConfig(model=None, model_provider_id=None, cwd=root)
+            plan = ExecRunPlan(
+                InitialOperation.user_turn((UserInput.text_input("inspect image"),)),
+                "inspect image",
+            )
+
+            result = await run_exec_user_turn_with_shell_tools_http_sampling(
+                config,
+                plan,
+                ModelClient(session_id="session", thread_id="thread", installation_id="install"),
+                {"base_url": "https://api.example.test/v1"},
+                model_info,
+                auth="sk-test",
+                opener=opener,
+                built_tools=lambda _sess, _turn: Router(),
+            )
+
+        self.assertEqual(final_text_from_response_items(result.response_items), "done")
+        self.assertEqual(len(request_bodies), 2)
+        view_image_tool = next(tool for tool in request_bodies[0]["tools"] if tool["name"] == "view_image")
+        self.assertEqual(view_image_tool["parameters"]["properties"]["detail"]["enum"], ["high", "original"])
+        output_items = [item for item in request_bodies[1]["input"] if item["type"] == "function_call_output"]
+        self.assertEqual(output_items[0]["call_id"], "image-1")
+        self.assertIs(output_items[0]["success"], True)
+        self.assertEqual(output_items[0]["output"][0]["type"], "input_image")
+        self.assertTrue(output_items[0]["output"][0]["image_url"].startswith("data:image/png;base64,"))
+        self.assertEqual(output_items[0]["output"][0]["detail"], "original")
+
     async def test_local_http_exec_shell_tool_loop_returns_apply_patch_followup_answer(self) -> None:
         request_bodies = []
         patch = (
@@ -4526,9 +7345,12 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item.type for item in timeline_items], ["file_change", "file_change"])
         self.assertEqual(
             [item.payload["status"] for item in timeline_items],
-            ["in_progress", "failed"],
+            ["in_progress", "declined"],
         )
         self.assertEqual(timeline_items[0].payload["changes"], [{"path": "created.txt", "kind": "add"}])
+        self.assertIs(timeline_items[0].payload["auto_approved"], False)
+        self.assertEqual(timeline_items[1].payload["stdout"], "")
+        self.assertIn("approval_required", timeline_items[1].payload["stderr"])
 
     async def test_local_http_exec_shell_tool_loop_applies_granted_permissions_to_apply_patch(self) -> None:
         request_bodies = []
@@ -4582,6 +7404,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 cwd=root,
                 approval_policy=AskForApproval.ON_REQUEST,
                 request_permissions_callback=request_permissions_callback,
+                request_permissions_tool_enabled=True,
             )
             plan = ExecRunPlan(
                 InitialOperation.user_turn((UserInput.text_input("request then patch"),)),
@@ -4636,6 +7459,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             model_provider_id=None,
             cwd=Path("C:/work/project"),
             approval_policy=AskForApproval.ON_REQUEST,
+            exec_permission_approvals_enabled=True,
         )
         plan = ExecRunPlan(
             InitialOperation.user_turn((UserInput.text_input("request network"),)),
@@ -4693,6 +7517,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             cwd=Path("C:/work/project"),
             approval_policy=AskForApproval.ON_REQUEST,
             request_permissions_callback=request_permissions_callback,
+            request_permissions_tool_enabled=True,
         )
         plan = ExecRunPlan(
             InitialOperation.user_turn((UserInput.text_input("request network"),)),
@@ -4761,6 +7586,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             cwd=Path("C:/work/project"),
             approval_policy=AskForApproval.ON_REQUEST,
             request_permissions_callback=request_permissions_callback,
+            request_permissions_tool_enabled=True,
         )
         plan = ExecRunPlan(
             InitialOperation.user_turn((UserInput.text_input("request and run"),)),
@@ -4834,6 +7660,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             cwd=Path("C:/work/project"),
             approval_policy=AskForApproval.ON_REQUEST,
             request_permissions_callback=request_permissions_callback,
+            request_permissions_tool_enabled=True,
         )
         first_plan = ExecRunPlan(
             InitialOperation.user_turn((UserInput.text_input("request session network"),)),
@@ -4933,6 +7760,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 cwd=root,
                 approval_policy=AskForApproval.ON_REQUEST,
                 request_permissions_callback=request_permissions_callback,
+                request_permissions_tool_enabled=True,
             )
 
             first_result = await run_exec_user_turn_with_shell_tools_http_sampling(
@@ -5012,6 +7840,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             cwd=Path("C:/work/project"),
             approval_policy=AskForApproval.ON_REQUEST,
             request_permissions_callback=request_permissions_callback,
+            request_permissions_tool_enabled=True,
         )
 
         await run_exec_user_turn_with_shell_tools_http_sampling(
@@ -5049,7 +7878,8 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         ]
         shell_output = next(item for item in shell_outputs if item["call_id"] == "call-1")
         self.assertFalse(shell_output["success"])
-        self.assertIn("approval_required", shell_output["output"])
+        self.assertIn("permission_request_unsupported", shell_output["output"])
+        self.assertIn("additional permissions are disabled", shell_output["output"])
 
     async def test_local_http_exec_command_tool_call_uses_cmd_argument(self) -> None:
         class Completed:
@@ -5103,6 +7933,187 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen["cwd"], "C:\\work\\project")
         self.assertEqual(outputs[0]["call_id"], "call-1")
         self.assertIs(outputs[0]["success"], True)
+
+    async def test_local_http_exec_command_rejects_command_alias_before_execution(self) -> None:
+        def rejecting_runner(_command, **_kwargs):
+            raise AssertionError("exec_command should require cmd before execution")
+
+        config = ExecSessionConfig(model=None, model_provider_id=None, cwd=Path("C:/work/project"))
+        plan = ExecRunPlan(InitialOperation.user_turn((UserInput.text_input("pwd"),)), "pwd")
+        result = await run_exec_user_turn_default_local_http_sampling(
+            config,
+            plan,
+            env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+            opener=lambda _request: FakeRawExecCommandToolCallResponse({"command": "pwd"}),
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        outputs = shell_tool_outputs_from_local_http_exec_result(result, config, runner=rejecting_runner)
+
+        self.assertEqual(outputs[0]["call_id"], "call-1")
+        self.assertIs(outputs[0]["success"], False)
+        self.assertIn("failed to parse function arguments:", outputs[0]["output"])
+        self.assertIn("cmd", outputs[0]["output"])
+
+    async def test_local_http_exec_command_rejects_invalid_yield_time_before_execution(self) -> None:
+        def rejecting_runner(_command, **_kwargs):
+            raise AssertionError("exec_command should reject invalid typed arguments before execution")
+
+        config = ExecSessionConfig(model=None, model_provider_id=None, cwd=Path("C:/work/project"))
+        plan = ExecRunPlan(InitialOperation.user_turn((UserInput.text_input("pwd"),)), "pwd")
+        result = await run_exec_user_turn_default_local_http_sampling(
+            config,
+            plan,
+            env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+            opener=lambda _request: FakeRawExecCommandToolCallResponse({"cmd": "pwd", "yield_time_ms": True}),
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        outputs = shell_tool_outputs_from_local_http_exec_result(result, config, runner=rejecting_runner)
+
+        self.assertEqual(outputs[0]["call_id"], "call-1")
+        self.assertIs(outputs[0]["success"], False)
+        self.assertIn("failed to parse function arguments:", outputs[0]["output"])
+        self.assertIn("yield_time_ms", outputs[0]["output"])
+
+    async def test_local_http_exec_command_ignores_legacy_cwd_and_timeout_aliases(self) -> None:
+        class Completed:
+            returncode = 0
+            stdout = "ok\n"
+            stderr = ""
+
+        seen = {}
+
+        def fake_runner(command, **kwargs):
+            seen["command"] = command
+            seen["cwd"] = kwargs["cwd"]
+            seen["timeout"] = kwargs["timeout"]
+            return Completed()
+
+        config = ExecSessionConfig(model=None, model_provider_id=None, cwd=Path("C:/work/project"))
+        plan = ExecRunPlan(InitialOperation.user_turn((UserInput.text_input("pwd"),)), "pwd")
+        result = await run_exec_user_turn_default_local_http_sampling(
+            config,
+            plan,
+            env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+            opener=lambda _request: FakeRawExecCommandToolCallResponse(
+                {"cmd": "pwd", "cwd": "subdir", "timeout_ms": 1}
+            ),
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        outputs = shell_tool_outputs_from_local_http_exec_result(result, config, runner=fake_runner, timeout=5.0)
+
+        self.assertEqual(seen["command"], "pwd")
+        self.assertEqual(seen["cwd"], "C:\\work\\project")
+        self.assertEqual(seen["timeout"], 5.0)
+        self.assertIs(outputs[0]["success"], True)
+
+    async def test_local_http_exec_command_honors_workdir_argument(self) -> None:
+        class Completed:
+            returncode = 0
+            stdout = "ok\n"
+            stderr = ""
+
+        seen = {}
+
+        def fake_runner(_command, **kwargs):
+            seen["cwd"] = kwargs["cwd"]
+            return Completed()
+
+        config = ExecSessionConfig(model=None, model_provider_id=None, cwd=Path("C:/work/project"))
+        plan = ExecRunPlan(InitialOperation.user_turn((UserInput.text_input("pwd"),)), "pwd")
+        result = await run_exec_user_turn_default_local_http_sampling(
+            config,
+            plan,
+            env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+            opener=lambda _request: FakeRawExecCommandToolCallResponse({"cmd": "pwd", "workdir": "subdir"}),
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        outputs = shell_tool_outputs_from_local_http_exec_result(result, config, runner=fake_runner, timeout=5.0)
+
+        self.assertEqual(seen["cwd"], "C:\\work\\project\\subdir")
+        self.assertIs(outputs[0]["success"], True)
+
+    async def test_local_http_exec_shell_tool_rejects_invalid_json_arguments_before_execution(self) -> None:
+        class InvalidArgumentsResponse:
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "output": [
+                            {
+                                "type": "function_call",
+                                "name": "shell",
+                                "arguments": "{",
+                                "call_id": "call-1",
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        def rejecting_runner(_command, **_kwargs):
+            raise AssertionError("runner must not execute invalid JSON tool arguments")
+
+        config = ExecSessionConfig(model=None, model_provider_id=None, cwd=Path("C:/work/project"))
+        plan = ExecRunPlan(InitialOperation.user_turn((UserInput.text_input("pwd"),)), "pwd")
+        result = await run_exec_user_turn_default_local_http_sampling(
+            config,
+            plan,
+            env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+            opener=lambda _request: InvalidArgumentsResponse(),
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        outputs = shell_tool_outputs_from_local_http_exec_result(result, config, runner=rejecting_runner)
+
+        self.assertEqual(outputs[0]["call_id"], "call-1")
+        self.assertIs(outputs[0]["success"], False)
+        self.assertIn("failed to parse function arguments:", outputs[0]["output"])
+
+    async def test_local_http_exec_shell_tool_reports_missing_command_argument(self) -> None:
+        class MissingCommandResponse:
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "output": [
+                            {
+                                "type": "function_call",
+                                "name": "shell",
+                                "arguments": "{}",
+                                "call_id": "call-1",
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        config = ExecSessionConfig(model=None, model_provider_id=None, cwd=Path("C:/work/project"))
+        plan = ExecRunPlan(InitialOperation.user_turn((UserInput.text_input("pwd"),)), "pwd")
+        result = await run_exec_user_turn_default_local_http_sampling(
+            config,
+            plan,
+            env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+            opener=lambda _request: MissingCommandResponse(),
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        outputs = shell_tool_outputs_from_local_http_exec_result(result, config)
+
+        self.assertEqual(outputs[0]["call_id"], "call-1")
+        self.assertIs(outputs[0]["success"], False)
+        self.assertIn("missing required command", outputs[0]["output"])
 
     async def test_local_http_exec_shell_tool_accepts_cwd_alias(self) -> None:
         seen = {}
@@ -5234,6 +8245,81 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(outputs[0]["success"], False)
         self.assertEqual(outputs[0]["output"], "write_stdin failed: Unknown process id 7")
         self.assertNotIn("structured_output", outputs[0])
+
+    async def test_local_http_write_stdin_missing_session_id_returns_parse_error(self) -> None:
+        class FakeSessionManager:
+            def __init__(self) -> None:
+                self.write_called = False
+
+            def write(self, session_id, chars, *, yield_time=None, output_max_chars=None):
+                self.write_called = True
+                raise AssertionError("write_stdin should not run with invalid arguments")
+
+        manager = FakeSessionManager()
+
+        def opener(_request):
+            return FakeRawWriteStdinToolCallResponse({"chars": "hello\n"})
+
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("continue process"),)),
+            "continue process",
+        )
+        result = await run_exec_user_turn_default_local_http_sampling(
+            config,
+            plan,
+            env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+            opener=opener,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        outputs = shell_tool_outputs_from_local_http_exec_result(result, config, session_manager=manager)
+
+        self.assertEqual(outputs[0]["name"], "write_stdin")
+        self.assertIs(outputs[0]["success"], False)
+        self.assertIn("failed to parse function arguments:", outputs[0]["output"])
+        self.assertIn("session_id", outputs[0]["output"])
+        self.assertFalse(manager.write_called)
+
+    async def test_local_http_write_stdin_rejects_non_string_chars(self) -> None:
+        class FakeSessionManager:
+            def write(self, session_id, chars, *, yield_time=None, output_max_chars=None):
+                raise AssertionError("write_stdin should not run with invalid arguments")
+
+        def opener(_request):
+            return FakeRawWriteStdinToolCallResponse({"session_id": 7, "chars": ["hello"]})
+
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("continue process"),)),
+            "continue process",
+        )
+        result = await run_exec_user_turn_default_local_http_sampling(
+            config,
+            plan,
+            env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+            opener=opener,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        outputs = shell_tool_outputs_from_local_http_exec_result(
+            result,
+            config,
+            session_manager=FakeSessionManager(),
+        )
+
+        self.assertEqual(outputs[0]["name"], "write_stdin")
+        self.assertIs(outputs[0]["success"], False)
+        self.assertIn("failed to parse function arguments:", outputs[0]["output"])
+        self.assertIn("chars", outputs[0]["output"])
 
     async def test_local_http_write_stdin_uses_default_yield_time(self) -> None:
         class FakeSessionManager:
@@ -5371,6 +8457,52 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(outputs[0]["success"], True)
         self.assertEqual(manager.output_max_chars, 16)
 
+    async def test_local_http_write_stdin_preserves_zero_max_output_tokens(self) -> None:
+        class FakeSessionManager:
+            def __init__(self) -> None:
+                self.output_max_chars = None
+
+            def write(self, session_id, chars, *, yield_time=None, output_max_chars=None):
+                self.output_max_chars = output_max_chars
+                return {
+                    "wall_time_seconds": 0.0,
+                    "exit_code": 0,
+                    "original_token_count": 3,
+                    "output": "…3 tokens truncated…",
+                }, True
+
+        manager = FakeSessionManager()
+
+        def opener(_request):
+            return FakeWriteStdinToolCallResponse(max_output_tokens=0)
+
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("continue process"),)),
+            "continue process",
+        )
+        result = await run_exec_user_turn_default_local_http_sampling(
+            config,
+            plan,
+            env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+            opener=opener,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        outputs = shell_tool_outputs_from_local_http_exec_result(
+            result,
+            config,
+            session_manager=manager,
+            output_max_chars=1000,
+        )
+
+        self.assertIs(outputs[0]["success"], True)
+        self.assertEqual(manager.output_max_chars, 0)
+
     async def test_local_http_exec_command_session_accepts_write_stdin(self) -> None:
         manager = LocalHttpExecSessionManager()
 
@@ -5447,6 +8579,172 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 stdin_outputs[0]["structured_output"]["chunk_id"],
                 outputs[0]["structured_output"]["chunk_id"],
             )
+
+    async def test_local_http_write_stdin_exit_clears_session(self) -> None:
+        manager = LocalHttpExecSessionManager()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script = Path(tmpdir) / "stdin_exit_child.py"
+            script.write_text(
+                "import sys\n"
+                "print('ready')\n"
+                "line = sys.stdin.readline()\n"
+                "print('got:' + line.strip())\n",
+                encoding="utf-8",
+            )
+            command = f"\"{sys.executable}\" -u \"{script}\""
+
+            config = ExecSessionConfig(
+                model=None,
+                model_provider_id=None,
+                cwd=Path(tmpdir),
+            )
+            plan = ExecRunPlan(
+                InitialOperation.user_turn((UserInput.text_input("start session"),)),
+                "start session",
+            )
+            result = await run_exec_user_turn_default_local_http_sampling(
+                config,
+                plan,
+                env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+                opener=lambda _request: FakeSessionExecCommandToolCallResponse(command),
+                built_tools=lambda _sess, _turn: Router(),
+            )
+
+            outputs = shell_tool_outputs_from_local_http_exec_result(
+                result,
+                config,
+                session_manager=manager,
+            )
+            session_id = outputs[0]["structured_output"]["session_id"]
+
+            stdin_result = await run_exec_user_turn_default_local_http_sampling(
+                config,
+                plan,
+                env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+                opener=lambda _request: FakeWriteStdinToolCallResponse(
+                    session_id=session_id,
+                    chars="hello\n",
+                    yield_time_ms=500,
+                ),
+                built_tools=lambda _sess, _turn: Router(),
+            )
+            stdin_outputs = shell_tool_outputs_from_local_http_exec_result(
+                stdin_result,
+                config,
+                session_manager=manager,
+            )
+
+            self.assertIs(stdin_outputs[0]["success"], True)
+            self.assertEqual(stdin_outputs[0]["structured_output"]["exit_code"], 0)
+            self.assertNotIn("session_id", stdin_outputs[0]["structured_output"])
+            self.assertIn("got:hello", stdin_outputs[0]["output"])
+
+            stale_result = await run_exec_user_turn_default_local_http_sampling(
+                config,
+                plan,
+                env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+                opener=lambda _request: FakeWriteStdinToolCallResponse(
+                    session_id=session_id,
+                    chars="again\n",
+                    yield_time_ms=100,
+                ),
+                built_tools=lambda _sess, _turn: Router(),
+            )
+            stale_outputs = shell_tool_outputs_from_local_http_exec_result(
+                stale_result,
+                config,
+                session_manager=manager,
+            )
+
+            self.assertIs(stale_outputs[0]["success"], False)
+            self.assertEqual(
+                stale_outputs[0]["output"],
+                local_http_write_stdin_unknown_session_output(session_id),
+            )
+
+    async def test_local_http_write_stdin_eot_closes_process_stdin(self) -> None:
+        manager = LocalHttpExecSessionManager()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script = Path(tmpdir) / "stdin_eof_child.py"
+            script.write_text(
+                "import sys\n"
+                "print('ready', flush=True)\n"
+                "for line in sys.stdin:\n"
+                "    print('got:' + line.strip(), flush=True)\n"
+                "print('closed', flush=True)\n",
+                encoding="utf-8",
+            )
+            command = f"\"{sys.executable}\" -u \"{script}\""
+
+            config = ExecSessionConfig(
+                model=None,
+                model_provider_id=None,
+                cwd=Path(tmpdir),
+            )
+            plan = ExecRunPlan(
+                InitialOperation.user_turn((UserInput.text_input("start eof session"),)),
+                "start eof session",
+            )
+            result = await run_exec_user_turn_default_local_http_sampling(
+                config,
+                plan,
+                env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+                opener=lambda _request: FakeSessionExecCommandToolCallResponse(command, tty=True),
+                built_tools=lambda _sess, _turn: Router(),
+            )
+
+            outputs = shell_tool_outputs_from_local_http_exec_result(
+                result,
+                config,
+                session_manager=manager,
+            )
+            session_id = outputs[0]["structured_output"]["session_id"]
+
+            write_result = await run_exec_user_turn_default_local_http_sampling(
+                config,
+                plan,
+                env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+                opener=lambda _request: FakeWriteStdinToolCallResponse(
+                    session_id=session_id,
+                    chars="hello\n",
+                    yield_time_ms=200,
+                ),
+                built_tools=lambda _sess, _turn: Router(),
+            )
+            write_outputs = shell_tool_outputs_from_local_http_exec_result(
+                write_result,
+                config,
+                session_manager=manager,
+            )
+
+            self.assertIs(write_outputs[0]["success"], True)
+            self.assertEqual(write_outputs[0]["structured_output"]["session_id"], session_id)
+            self.assertNotIn("exit_code", write_outputs[0]["structured_output"])
+            self.assertIn("got:hello", write_outputs[0]["output"])
+
+            eof_result = await run_exec_user_turn_default_local_http_sampling(
+                config,
+                plan,
+                env={"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"},
+                opener=lambda _request: FakeWriteStdinToolCallResponse(
+                    session_id=session_id,
+                    chars="\x04",
+                    yield_time_ms=500,
+                ),
+                built_tools=lambda _sess, _turn: Router(),
+            )
+            eof_outputs = shell_tool_outputs_from_local_http_exec_result(
+                eof_result,
+                config,
+                session_manager=manager,
+            )
+
+            self.assertIs(eof_outputs[0]["success"], True)
+            self.assertEqual(eof_outputs[0]["structured_output"]["exit_code"], 0)
+            self.assertNotIn("session_id", eof_outputs[0]["structured_output"])
+            self.assertIn("closed", eof_outputs[0]["output"])
 
     async def test_local_http_exec_command_session_nonzero_exit_remains_successful_tool_result(self) -> None:
         manager = LocalHttpExecSessionManager()
@@ -5973,7 +9271,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             command = f"\"{sys.executable}\" -u \"{script}\""
 
             def exec_opener(_request):
-                return FakeSessionExecCommandToolCallResponse(command, yield_time_ms=250, timeout_ms=100)
+                return FakeSessionExecCommandToolCallResponse(command, yield_time_ms=250)
 
             config = ExecSessionConfig(
                 model=None,
@@ -5996,6 +9294,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 result,
                 config,
                 session_manager=manager,
+                timeout=0.1,
             )
 
             self.assertIs(outputs[0]["success"], False)
@@ -6209,13 +9508,19 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(default_local_http_exec_model(config_default, env={}), "gpt-5")
 
     def test_local_http_exec_max_tool_rounds_env(self) -> None:
-        self.assertEqual(local_http_exec_max_tool_rounds(env={}), 1)
+        self.assertIsNone(local_http_exec_max_tool_rounds(env={}))
+        self.assertEqual(local_http_exec_max_tool_rounds(env={}, default=1), 1)
         self.assertEqual(local_http_exec_max_tool_rounds(env={"PYCODEX_EXEC_LOCAL_HTTP_MAX_TOOL_ROUNDS": "3"}), 3)
         self.assertEqual(local_http_exec_max_tool_rounds(env={"PYCODEX_EXEC_LOCAL_HTTP_MAX_TOOL_ROUNDS": "0"}), 0)
         with self.assertRaisesRegex(ValueError, "non-negative integer"):
             local_http_exec_max_tool_rounds(env={"PYCODEX_EXEC_LOCAL_HTTP_MAX_TOOL_ROUNDS": "-1"})
         with self.assertRaisesRegex(ValueError, "non-negative integer"):
             local_http_exec_max_tool_rounds(env={"PYCODEX_EXEC_LOCAL_HTTP_MAX_TOOL_ROUNDS": "many"})
+
+    def test_local_http_exec_shell_tools_default_disabled_with_explicit_enable(self) -> None:
+        self.assertFalse(local_http_exec_shell_tools_enabled(env={}))
+        self.assertTrue(local_http_exec_shell_tools_enabled(env={"PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "1"}))
+        self.assertFalse(local_http_exec_shell_tools_enabled(env={"PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "0"}))
 
     def test_local_http_exec_tool_output_max_chars_env(self) -> None:
         self.assertIsNone(local_http_exec_tool_output_max_chars(env={}))
@@ -6264,6 +9569,28 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provider.auth, "sk-local")
         self.assertEqual(provider.base_url, "https://local.example.test/v1")
 
+    def test_default_local_http_runtime_uses_config_provider_parallel_tool_calls(self) -> None:
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id="local-openai",
+            cwd=Path("C:/work/project"),
+        )
+
+        _client, _provider, model_info, _auth = build_default_local_http_exec_runtime(
+            config,
+            env={"LOCAL_OPENAI_KEY": "sk-local"},
+            config_toml={
+                "model_providers": {
+                    "local-openai": {
+                        "env_key": "LOCAL_OPENAI_KEY",
+                        "supports_parallel_tool_calls": True,
+                    }
+                }
+            },
+        )
+
+        self.assertTrue(model_info.supports_parallel_tool_calls)
+
     def test_local_http_exec_config_summary_uses_model_provider_and_cwd(self) -> None:
         config = ExecSessionConfig(
             model=None,
@@ -6299,6 +9626,30 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("workdir: C:\\work\\project", summary_text)
         self.assertIn("model: gpt-env", summary_text)
         self.assertIn("provider: openai", summary_text)
+
+    def test_local_http_exec_config_summary_renders_granular_approval_label(self) -> None:
+        granular = GranularApprovalConfig(
+            sandbox_approval=True,
+            rules=False,
+            skill_approval=False,
+            request_permissions=True,
+            mcp_elicitations=False,
+        )
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+            approval_policy=granular,
+        )
+
+        summary_config, summary_session = local_http_exec_config_summary(
+            config,
+            session_id="session-1",
+            thread_id="thread-1",
+        )
+
+        self.assertEqual(summary_config["approval_policy"], "granular")
+        self.assertEqual(summary_session["approval_policy"], "granular")
 
     def test_local_http_exec_config_summary_includes_resume_initial_messages(self) -> None:
         config = ExecSessionConfig(
@@ -6347,6 +9698,28 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
         self.assertEqual(summary_session["rollout_path"], str(rollout_path))
+
+    def test_core_runtime_aliases_preserve_local_runtime_helpers(self) -> None:
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+        )
+
+        summary_config, summary_session = core_exec_config_summary(
+            config,
+            model="gpt-core",
+            session_id="session-core",
+            thread_id="thread-core",
+        )
+
+        self.assertEqual(summary_config["model"], "gpt-core")
+        self.assertEqual(summary_session["session_id"], "session-core")
+        self.assertEqual(summary_session["thread_id"], "thread-core")
+        self.assertIs(persist_core_exec_rollout, persist_local_http_exec_rollout)
+        self.assertIs(persist_core_exec_resume_rollout, persist_local_http_exec_resume_rollout)
+        self.assertIs(core_review_rollout_input_items, local_http_review_rollout_input_items)
+        self.assertIs(core_exec_initial_messages_from_rollout, local_http_exec_initial_messages_from_rollout)
 
     def test_default_local_http_runtime_ids_can_feed_config_summary(self) -> None:
         config = ExecSessionConfig(

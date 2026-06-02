@@ -4,6 +4,7 @@ import unittest
 from datetime import timedelta
 
 from pycodex.core.user_shell_command import (
+    format_exec_output_for_model,
     format_exec_output_str,
     format_user_shell_command_record,
     user_shell_command_record_item,
@@ -89,6 +90,22 @@ class UserShellCommandTests(unittest.TestCase):
         self.assertEqual(
             format_exec_output_str(exec_output, TruncationPolicyConfig.bytes(1024)),
             "command timed out after 2500 milliseconds\npartial output",
+        )
+
+    def test_format_exec_output_for_model_includes_exit_code_wall_time_and_timeout(self) -> None:
+        exec_output = ExecToolCallOutput(
+            exit_code=124,
+            aggregated_output=StreamOutput.new("partial output"),
+            duration=timedelta(milliseconds=1250),
+            timed_out=True,
+        )
+
+        self.assertEqual(
+            format_exec_output_for_model(exec_output, TruncationPolicyConfig.bytes(1024)),
+            "Exit code: 124\n"
+            "Wall time: 1.3 seconds\n"
+            "Output:\n"
+            "command timed out after 1250 milliseconds\npartial output",
         )
 
     def test_output_is_truncated_before_record_rendering(self) -> None:

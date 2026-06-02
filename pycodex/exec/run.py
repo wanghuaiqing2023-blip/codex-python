@@ -145,6 +145,8 @@ def read_prompt_from_stdin(
     try:
         prompt_bytes = _read_stdin_bytes(stdin)
     except OSError as exc:
+        if behavior is StdinPromptBehavior.OPTIONAL_APPEND and stdin is None:
+            return None
         raise ExecRunError(f"Failed to read prompt from stdin: {exc}") from exc
 
     try:

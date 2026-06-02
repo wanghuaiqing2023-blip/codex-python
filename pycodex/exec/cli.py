@@ -12,7 +12,7 @@ from enum import Enum
 from typing import Iterable
 
 from pycodex.config import CliConfigOverrides
-from pycodex.protocol import ProfileV2Name, ProfileV2NameParseError, SandboxMode
+from pycodex.protocol import AskForApproval, ProfileV2Name, ProfileV2NameParseError, SandboxMode
 from pycodex.protocol.config_types import ConfigTypeParseError
 
 
@@ -81,6 +81,7 @@ class ExecCli:
     oss: bool = False
     local_provider: str | None = None
     profile: ProfileV2Name | None = None
+    approval_policy: AskForApproval | None = None
     sandbox: SandboxMode | None = None
     dangerously_bypass_approvals_and_sandbox: bool = False
     dangerously_bypass_hook_trust: bool = False
@@ -236,7 +237,7 @@ def parse_exec_args(argv: Iterable[str] | None = None, root_config_overrides: It
             index += consumed
             continue
 
-        if token.startswith("-"):
+        if token != "-" and token.startswith("-"):
             raise ExecCliParseError(f"Unknown option: {token}")
         if prompt is not None:
             raise ExecCliParseError(f"Unexpected extra argument(s): {token}")
@@ -273,7 +274,7 @@ def _parse_resume_args(tokens: list[str], state: _ExecState) -> ResumeArgs:
             index += consumed
             continue
 
-        if token.startswith("-"):
+        if token != "-" and token.startswith("-"):
             raise ExecCliParseError(f"Unknown resume option: {token}")
         resume.positionals.append(token)
         index += 1

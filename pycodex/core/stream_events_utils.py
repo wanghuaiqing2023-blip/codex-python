@@ -13,7 +13,9 @@ from pathlib import Path
 from pycodex.core.context import ImageGenerationInstructions
 from pycodex.core.event_mapping import parse_turn_item
 from pycodex.core.function_tool import FunctionCallError
+from pycodex.core.tool_context import call_tool_result_to_function_payload
 from pycodex.core.tool_router import ToolCall, ToolRouter
+from pycodex.core.util import error_or_panic
 from pycodex.protocol import AgentMessageContent, AgentMessageItem, ImageGenerationItem, MessagePhase, ResponseInputItem, ResponseItem, ToolName, TurnItem
 from pycodex.protocol import MemoryCitation, MemoryCitationEntry
 
@@ -193,7 +195,12 @@ def memory_citation_from_response_item(item: ResponseItem) -> MemoryCitation | N
     raw_text = raw_assistant_output_text_from_item(item)
     if raw_text is None:
         return None
-    for payload in _citation_payloads(raw_text):
+    return _memory_citation_from_text(raw_text)
+
+
+def _memory_citation_from_text(text: str) -> MemoryCitation | None:
+    _ensure_str(text, "text")
+    for payload in _citation_payloads(text):
         citation = _parse_memory_citation(payload)
         if citation is not None:
             return citation
@@ -298,10 +305,16 @@ def response_input_to_response_item(input_item: ResponseInputItem) -> ResponseIt
     if input_item.type in {
         "function_call_output",
         "custom_tool_call_output",
-        "mcp_tool_call_output",
         "tool_search_output",
     }:
         return ResponseItem.from_response_input_item(input_item)
+    if input_item.type == "mcp_tool_call_output":
+        return ResponseItem.from_response_input_item(
+            ResponseInputItem.function_call_output(
+                input_item.call_id or "",
+                call_tool_result_to_function_payload(input_item.output),
+            )
+        )
     return None
 
 
@@ -1293,12 +1306,15 @@ def _normalize_non_tool_turn_item(turn_item: TurnItem, plan_mode: bool) -> TurnI
         agent_message = turn_item.item
         combined = "".join(content.text for content in agent_message.content)
         stripped = strip_hidden_assistant_markup(combined, plan_mode)
+        memory_citation = agent_message.memory_citation
+        if memory_citation is None:
+            memory_citation = _memory_citation_from_text(combined)
         return TurnItem.agent_message(
             AgentMessageItem(
                 id=agent_message.id,
                 content=(AgentMessageContent.text_content(stripped),),
                 phase=agent_message.phase,
-                memory_citation=agent_message.memory_citation,
+                memory_citation=memory_citation,
             )
         )
     return turn_item
@@ -1547,7 +1563,10 @@ def sampling_output_text_delta_plan(
     _ensure_str(delta, "delta")
     _ensure_bool(active_item_is_streaming_to_client, "active_item_is_streaming_to_client")
     _ensure_bool(plan_mode, "plan_mode")
-    if active_item is None or not active_item_is_streaming_to_client:
+    if active_item is None:
+        error_or_panic("OutputTextDelta without active item")
+        return None
+    if not active_item_is_streaming_to_client:
         return None
     item_id = active_item.id()
     if active_item.type == "AgentMessage":
@@ -1681,6 +1700,9 @@ def sampling_reasoning_summary_delta_plan(
     thread_id: str = "",
     turn_id: str = "",
 ) -> SamplingReasoningDeltaPlan | None:
+    if active_item is None:
+        error_or_panic("ReasoningSummaryDelta without active item")
+        return None
     active_item = _streaming_active_item_or_none(active_item, active_item_is_streaming_to_client)
     if active_item is None:
         return None
@@ -1704,6 +1726,9 @@ def sampling_reasoning_summary_part_added_plan(
     thread_id: str = "",
     turn_id: str = "",
 ) -> SamplingReasoningDeltaPlan | None:
+    if active_item is None:
+        error_or_panic("ReasoningSummaryPartAdded without active item")
+        return None
     active_item = _streaming_active_item_or_none(active_item, active_item_is_streaming_to_client)
     if active_item is None:
         return None
@@ -1726,6 +1751,9 @@ def sampling_reasoning_content_delta_plan(
     thread_id: str = "",
     turn_id: str = "",
 ) -> SamplingReasoningDeltaPlan | None:
+    if active_item is None:
+        error_or_panic("ReasoningRawContentDelta without active item")
+        return None
     active_item = _streaming_active_item_or_none(active_item, active_item_is_streaming_to_client)
     if active_item is None:
         return None
@@ -2773,6 +2801,7 @@ _SAMPLING_STREAM_EVENT_TYPE_ALIASES = {
     "response.output_item.done": "output_item_done",
     "response.output_item.added": "output_item_added",
     "response.output_text.delta": "output_text_delta",
+    "response.function_call_arguments.delta": "tool_call_input_delta",
     "response.custom_tool_call_input.delta": "tool_call_input_delta",
     "response.reasoning_summary_text.delta": "reasoning_summary_delta",
     "response.reasoning_summary_part.added": "reasoning_summary_part_added",

@@ -8,6 +8,8 @@ without depending on the Rust extension runtime.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import inspect
 from dataclasses import dataclass
 from collections.abc import Mapping
@@ -15,6 +17,12 @@ from typing import Any
 
 from pycodex.core.tool_registry import ToolCallSource, ToolInvocation
 from pycodex.protocol import ToolName
+
+_LIFECYCLE_STORE_KEYS = ("session_store", "thread_store", "turn_store", "turn_id")
+_current_lifecycle_stores: contextvars.ContextVar[dict[str, Any]] = contextvars.ContextVar(
+    "pycodex_current_lifecycle_stores",
+    default={},
+)
 
 
 def _ensure_str(value: object, field: str) -> str:
@@ -280,12 +288,29 @@ async def notify_tool_finish(
             await result
 
 
+@contextlib.contextmanager
+def lifecycle_store_context(stores: Mapping[str, Any]):
+    lifecycle_stores = _explicit_lifecycle_store_kwargs(stores)
+    if not lifecycle_stores:
+        yield
+        return
+    merged = dict(_current_lifecycle_stores.get())
+    merged.update(lifecycle_stores)
+    token = _current_lifecycle_stores.set(merged)
+    try:
+        yield
+    finally:
+        _current_lifecycle_stores.reset(token)
+
+
 def _lifecycle_store_kwargs(stores: Mapping[str, Any]) -> dict[str, Any]:
-    return {
-        key: stores[key]
-        for key in ("session_store", "thread_store", "turn_store", "turn_id")
-        if key in stores
-    }
+    lifecycle_stores = dict(_current_lifecycle_stores.get())
+    lifecycle_stores.update(_explicit_lifecycle_store_kwargs(stores))
+    return lifecycle_stores
+
+
+def _explicit_lifecycle_store_kwargs(stores: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: stores[key] for key in _LIFECYCLE_STORE_KEYS if key in stores}
 
 
 async def notify_tool_aborted(contributors: Any, invocation: ToolInvocation, **stores: Any) -> None:
@@ -316,6 +341,7 @@ __all__ = [
     "ToolFinishInput",
     "ToolStartInput",
     "extension_tool_call_source",
+    "lifecycle_store_context",
     "notify_tool_aborted",
     "notify_tool_aborted_parts",
     "notify_tool_finish",

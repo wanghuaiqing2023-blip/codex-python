@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import inspect
-import os
+import shlex
 import subprocess
 import time
 from dataclasses import dataclass, replace
@@ -18,12 +18,15 @@ from pathlib import Path
 from typing import Any
 
 from pycodex.core.exec import DEFAULT_EXEC_COMMAND_TIMEOUT_MS
+from pycodex.core.exec_env import create_env
 from pycodex.core.unified_exec import (
     DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS,
     MAX_YIELD_TIME_MS,
     MIN_EMPTY_YIELD_TIME_MS,
     MIN_YIELD_TIME_MS,
+    UnifiedExecError,
     clamp_yield_time,
+    generate_chunk_id,
     resolve_write_stdin_yield_time,
     should_emit_terminal_interaction,
     terminal_interaction_process_id,
@@ -32,9 +35,16 @@ from pycodex.core.apply_patch import (
     apply_patch_action_to_disk,
     maybe_parse_apply_patch_verified,
 )
-from pycodex.core.handler_utils import resolve_tool_environment
+from pycodex.core.features import Feature
+from pycodex.core.handler_utils import (
+    apply_granted_turn_permissions,
+    implicit_granted_permissions,
+    normalize_and_validate_additional_permissions,
+    resolve_tool_environment,
+)
 from pycodex.core.hook_names import HookToolName
 from pycodex.core.shell import Shell, ShellType, default_user_shell, get_shell_by_model_provided_path
+from pycodex.core.string_utils import approx_token_count
 from pycodex.core.tool_context import ExecCommandToolOutput
 from pycodex.core.shell_spec import (
     CommandToolOptions,
@@ -46,9 +56,13 @@ from pycodex.core.tool_router import FunctionCallError
 from pycodex.core.tool_registry import PostToolUsePayload, PreToolUsePayload, ToolInvocation
 from pycodex.protocol import (
     AdditionalPermissionProfile,
+    AskForApproval,
     EventMsg,
+    GranularApprovalConfig,
     SandboxPermissions,
+    ShellEnvironmentPolicy,
     TerminalInteractionEvent,
+    ThreadId,
     ToolName,
     TruncationPolicyConfig,
 )
@@ -293,6 +307,66 @@ class WriteStdinRequest:
 
 
 @dataclass(frozen=True)
+class ExecCommandRequest:
+    call_id: str
+    command: tuple[str, ...]
+    shell_type: ShellType
+    hook_command: str
+    process_id: int
+    yield_time_ms: int
+    max_output_tokens: int | None
+    cwd: Path
+    sandbox_cwd: Path
+    environment: Any
+    network: Any
+    tty: bool
+    sandbox_permissions: SandboxPermissions
+    additional_permissions: AdditionalPermissionProfile | None
+    additional_permissions_preapproved: bool
+    justification: str | None
+    prefix_rule: tuple[str, ...] | None
+    truncation_policy: TruncationPolicyConfig
+
+    def __post_init__(self) -> None:
+        command = tuple(self.command)
+        if not command or not all(isinstance(part, str) for part in command):
+            raise TypeError("command must be a non-empty tuple of strings")
+        object.__setattr__(self, "command", command)
+        if not isinstance(self.call_id, str):
+            raise TypeError("call_id must be a string")
+        if not isinstance(self.shell_type, ShellType):
+            object.__setattr__(self, "shell_type", ShellType(self.shell_type))
+        if not isinstance(self.hook_command, str):
+            raise TypeError("hook_command must be a string")
+        if isinstance(self.process_id, bool) or not isinstance(self.process_id, int):
+            raise TypeError("process_id must be an integer")
+        _ensure_i32(self.process_id, "process_id")
+        if isinstance(self.yield_time_ms, bool) or not isinstance(self.yield_time_ms, int):
+            raise TypeError("yield_time_ms must be an integer")
+        _ensure_u64(self.yield_time_ms, "yield_time_ms")
+        if self.max_output_tokens is not None:
+            if isinstance(self.max_output_tokens, bool) or not isinstance(self.max_output_tokens, int):
+                raise TypeError("max_output_tokens must be an integer")
+            _ensure_usize(self.max_output_tokens, "max_output_tokens")
+        if not isinstance(self.cwd, Path):
+            object.__setattr__(self, "cwd", Path(self.cwd))
+        if not isinstance(self.sandbox_cwd, Path):
+            object.__setattr__(self, "sandbox_cwd", Path(self.sandbox_cwd))
+        if not isinstance(self.tty, bool):
+            raise TypeError("tty must be a bool")
+        if not isinstance(self.sandbox_permissions, SandboxPermissions):
+            object.__setattr__(self, "sandbox_permissions", SandboxPermissions(str(self.sandbox_permissions)))
+        if self.additional_permissions is not None and not isinstance(self.additional_permissions, AdditionalPermissionProfile):
+            raise TypeError("additional_permissions must be AdditionalPermissionProfile")
+        if not isinstance(self.additional_permissions_preapproved, bool):
+            raise TypeError("additional_permissions_preapproved must be a bool")
+        if self.prefix_rule is not None and not isinstance(self.prefix_rule, tuple):
+            object.__setattr__(self, "prefix_rule", tuple(self.prefix_rule))
+        if not isinstance(self.truncation_policy, TruncationPolicyConfig):
+            raise TypeError("truncation_policy must be TruncationPolicyConfig")
+
+
+@dataclass(frozen=True)
 class ZshForkConfig:
     shell_zsh_path: Path | str
     main_execve_wrapper_exe: Path | str | None = None
@@ -493,6 +567,10 @@ class ExecCommandHandler:
             )
         except (TypeError, ValueError, json.JSONDecodeError) as error:
             raise _parse_or_validation_error(error) from error
+        manager = _invocation_optional_unified_exec_manager(invocation)
+        exec_command = getattr(manager, "exec_command", None) if manager is not None else None
+        if callable(exec_command):
+            return self._handle_with_unified_exec_manager(invocation, resolved, exec_command)
         start = time.monotonic()
         intercepted = intercept_exec_apply_patch(
             resolved.resolved_command.command,
@@ -502,7 +580,7 @@ class ExecCommandHandler:
             return ExecCommandToolOutput(
                 event_call_id="",
                 chunk_id="",
-                wall_time_seconds=time.monotonic() - start,
+                wall_time_seconds=0.0,
                 raw_output=intercepted.encode("utf-8"),
                 truncation_policy=_invocation_truncation_policy(invocation),
                 max_output_tokens=resolved.args.max_output_tokens,
@@ -514,7 +592,7 @@ class ExecCommandHandler:
             completed = subprocess.run(
                 resolved.resolved_command.command,
                 cwd=resolved.cwd,
-                env=os.environ.copy(),
+                env=_invocation_exec_env(invocation),
                 capture_output=True,
                 timeout=DEFAULT_EXEC_COMMAND_TIMEOUT_MS / 1000,
                 check=False,
@@ -541,8 +619,126 @@ class ExecCommandHandler:
             max_output_tokens=resolved.args.max_output_tokens,
             process_id=None,
             exit_code=exit_code,
+            original_token_count=approx_token_count(raw_output.decode("utf-8", errors="replace")),
             hook_command=resolved.args.cmd,
         )
+
+    async def _handle_with_unified_exec_manager(
+        self,
+        invocation: ToolInvocation,
+        resolved: ResolvedExecCommandInvocation,
+        exec_command: Any,
+    ) -> ExecCommandToolOutput:
+        manager = _invocation_optional_unified_exec_manager(invocation)
+        turn = invocation.turn
+        approval_policy = _invocation_approval_policy(invocation)
+        process_id = await _allocate_unified_exec_process_id(manager)
+        requested_additional_permissions = resolved.args.additional_permissions
+        effective_additional_permissions = await apply_granted_turn_permissions(
+            _session_with_permission_accessors(invocation.session),
+            resolved.cwd,
+            resolved.args.sandbox_permissions,
+            resolved.args.additional_permissions,
+        )
+        additional_permissions_allowed = (
+            _invocation_feature_enabled(invocation, Feature.EXEC_PERMISSION_APPROVALS)
+            or (
+                _invocation_feature_enabled(invocation, Feature.REQUEST_PERMISSIONS_TOOL)
+                and effective_additional_permissions.permissions_preapproved
+            )
+        )
+
+        if (
+            effective_additional_permissions.sandbox_permissions.requests_sandbox_override()
+            and not effective_additional_permissions.permissions_preapproved
+            and approval_policy is not AskForApproval.ON_REQUEST
+        ):
+            await _release_unified_exec_process_id(manager, process_id)
+            raise FunctionCallError.respond_to_model(
+                f"approval policy is {approval_policy!r}; reject command - "
+                f"you cannot ask for escalated permissions if the approval policy is {approval_policy!r}"
+            )
+
+        try:
+            normalized_additional_permissions = implicit_granted_permissions(
+                resolved.args.sandbox_permissions,
+                requested_additional_permissions,
+                effective_additional_permissions,
+            )
+            if normalized_additional_permissions is None:
+                normalized_additional_permissions = normalize_and_validate_additional_permissions(
+                    additional_permissions_allowed,
+                    approval_policy,
+                    effective_additional_permissions.sandbox_permissions,
+                    effective_additional_permissions.additional_permissions,
+                    effective_additional_permissions.permissions_preapproved,
+                    resolved.cwd,
+                )
+        except (TypeError, ValueError) as error:
+            await _release_unified_exec_process_id(manager, process_id)
+            raise FunctionCallError.respond_to_model(str(error)) from error
+
+        intercepted = intercept_exec_apply_patch(
+            resolved.resolved_command.command,
+            resolved.cwd,
+        )
+        if intercepted is not None:
+            await _release_unified_exec_process_id(manager, process_id)
+            return ExecCommandToolOutput(
+                event_call_id="",
+                chunk_id="",
+                wall_time_seconds=0.0,
+                raw_output=intercepted.encode("utf-8"),
+                truncation_policy=_invocation_truncation_policy(invocation),
+                max_output_tokens=resolved.args.max_output_tokens,
+                process_id=None,
+                exit_code=None,
+                hook_command=None,
+            )
+        request = ExecCommandRequest(
+            call_id=invocation.call_id,
+            command=resolved.resolved_command.command,
+            shell_type=resolved.resolved_command.shell_type,
+            hook_command=resolved.args.cmd,
+            process_id=process_id,
+            yield_time_ms=resolved.args.yield_time_ms,
+            max_output_tokens=resolved.args.max_output_tokens,
+            cwd=resolved.cwd,
+            sandbox_cwd=Path(getattr(resolved.turn_environment, "cwd")),
+            environment=getattr(resolved.turn_environment, "environment", None),
+            network=getattr(turn, "network", None),
+            tty=resolved.args.tty,
+            sandbox_permissions=effective_additional_permissions.sandbox_permissions,
+            additional_permissions=normalized_additional_permissions,
+            additional_permissions_preapproved=effective_additional_permissions.permissions_preapproved,
+            justification=resolved.args.justification,
+            prefix_rule=resolved.args.prefix_rule,
+            truncation_policy=_invocation_truncation_policy(invocation),
+        )
+        try:
+            result = exec_command(request)
+            if inspect.isawaitable(result):
+                result = await result
+            return result
+        except UnifiedExecError as error:
+            if error.kind == UnifiedExecError.SANDBOX_DENIED and error.output is not None:
+                return _sandbox_denied_tool_output(
+                    error,
+                    invocation,
+                    resolved.args,
+                    _invocation_truncation_policy(invocation),
+                )
+            await _release_unified_exec_process_id(manager, process_id)
+            command_for_display = shlex.join(resolved.resolved_command.command)
+            raise FunctionCallError.respond_to_model(
+                f"exec_command failed for `{command_for_display}`: {error}"
+            ) from error
+        except Exception as error:
+            await _release_unified_exec_process_id(manager, process_id)
+            command_for_display = shlex.join(resolved.resolved_command.command)
+            raise FunctionCallError.respond_to_model(
+                f"exec_command failed for `{command_for_display}`: {error}"
+            ) from error
 
 
 class WriteStdinHandler:
@@ -597,6 +793,42 @@ def updated_hook_command(updated_input: JsonValue) -> str:
     if not isinstance(command, str):
         raise TypeError("updated hook input command must be a string")
     return command
+
+
+def _sandbox_denied_tool_output(
+    error: UnifiedExecError,
+    invocation: ToolInvocation,
+    args: ExecCommandArgs,
+    truncation_policy: TruncationPolicyConfig,
+) -> ExecCommandToolOutput:
+    output = error.output
+    if output is None:
+        raise TypeError("sandbox denied error must carry output")
+    aggregated_output = getattr(output, "aggregated_output", None)
+    raw_text = getattr(aggregated_output, "text", None)
+    if raw_text is None:
+        raw_text = getattr(output, "raw_output", b"")
+        if isinstance(raw_text, bytes):
+            raw_text = raw_text.decode("utf-8", errors="replace")
+    if not isinstance(raw_text, str):
+        raw_text = str(raw_text)
+    duration = getattr(output, "duration", None)
+    wall_time_seconds = duration.total_seconds() if hasattr(duration, "total_seconds") else 0.0
+    exit_code = getattr(output, "exit_code", None)
+    if exit_code is not None and (isinstance(exit_code, bool) or not isinstance(exit_code, int)):
+        raise TypeError("sandbox denied output exit_code must be an integer or None")
+    return ExecCommandToolOutput(
+        event_call_id=invocation.call_id,
+        chunk_id=generate_chunk_id(),
+        wall_time_seconds=wall_time_seconds,
+        raw_output=raw_text.encode("utf-8"),
+        truncation_policy=truncation_policy,
+        max_output_tokens=args.max_output_tokens,
+        process_id=None,
+        exit_code=exit_code,
+        original_token_count=approx_token_count(raw_text),
+        hook_command=args.cmd,
+    )
 
 
 def _parse_or_validation_error(error: BaseException) -> FunctionCallError:
@@ -655,6 +887,37 @@ def _invocation_truncation_policy(invocation: ToolInvocation) -> TruncationPolic
     return policy
 
 
+def _invocation_exec_env(invocation: ToolInvocation) -> dict[str, str]:
+    policy = _invocation_shell_environment_policy(invocation)
+    thread_id = _invocation_thread_id(invocation)
+    return create_env(policy, thread_id)
+
+
+def _invocation_shell_environment_policy(invocation: ToolInvocation) -> ShellEnvironmentPolicy:
+    turn = getattr(invocation, "turn", None)
+    policy = getattr(turn, "shell_environment_policy", None)
+    if policy is None:
+        return ShellEnvironmentPolicy.default()
+    if not isinstance(policy, ShellEnvironmentPolicy):
+        raise TypeError("turn.shell_environment_policy must be ShellEnvironmentPolicy")
+    return policy
+
+
+def _invocation_thread_id(invocation: ToolInvocation) -> ThreadId | None:
+    session = getattr(invocation, "session", None)
+    for value in (
+        getattr(session, "conversation_id", None),
+        getattr(session, "thread_id", None),
+        getattr(invocation.turn, "thread_id", None),
+    ):
+        if value is None:
+            continue
+        if isinstance(value, ThreadId):
+            return value
+        raise TypeError("thread id for exec environment must be ThreadId")
+    return None
+
+
 def _invocation_unified_exec_manager(invocation: ToolInvocation) -> Any:
     session = getattr(invocation, "session", None)
     services = getattr(session, "services", None)
@@ -662,6 +925,110 @@ def _invocation_unified_exec_manager(invocation: ToolInvocation) -> Any:
     if manager is None:
         raise FunctionCallError.respond_to_model("write_stdin failed: unified exec manager unavailable")
     return manager
+
+
+def _invocation_optional_unified_exec_manager(invocation: ToolInvocation) -> Any:
+    session = getattr(invocation, "session", None)
+    services = getattr(session, "services", None)
+    return getattr(services, "unified_exec_manager", None)
+
+
+async def _allocate_unified_exec_process_id(manager: Any) -> int:
+    allocate = getattr(manager, "allocate_process_id", None)
+    if not callable(allocate):
+        return 0
+    process_id = allocate()
+    if inspect.isawaitable(process_id):
+        process_id = await process_id
+    if isinstance(process_id, bool) or not isinstance(process_id, int):
+        raise TypeError("allocate_process_id must return an integer")
+    _ensure_i32(process_id, "process_id")
+    return process_id
+
+
+async def _release_unified_exec_process_id(manager: Any, process_id: int) -> None:
+    release = getattr(manager, "release_process_id", None)
+    if not callable(release):
+        return
+    result = release(process_id)
+    if inspect.isawaitable(result):
+        await result
+
+
+def _invocation_additional_permissions_preapproved(invocation: ToolInvocation) -> bool:
+    for owner in (getattr(invocation, "turn", None), getattr(invocation, "session", None)):
+        if owner is None:
+            continue
+        value = getattr(owner, "additional_permissions_preapproved", None)
+        if value is None:
+            value = getattr(owner, "permissions_preapproved", None)
+        if value is None:
+            continue
+        if not isinstance(value, bool):
+            raise TypeError("additional_permissions_preapproved must be a bool")
+        return value
+    return False
+
+
+def _invocation_approval_policy(invocation: ToolInvocation) -> AskForApproval | GranularApprovalConfig:
+    turn = getattr(invocation, "turn", None)
+    value = getattr(turn, "approval_policy", AskForApproval.ON_REQUEST)
+    method = getattr(value, "value", None)
+    if callable(method):
+        value = method()
+    if isinstance(value, GranularApprovalConfig):
+        return value
+    if not isinstance(value, AskForApproval):
+        value = AskForApproval.parse(str(value))
+    return value
+
+
+def _invocation_feature_enabled(invocation: ToolInvocation, feature: Feature) -> bool:
+    session = getattr(invocation, "session", None)
+    features = getattr(session, "features", None)
+    if callable(features):
+        features = features()
+    enabled = getattr(features, "enabled", None)
+    if not callable(enabled):
+        return False
+    result = enabled(feature)
+    if not isinstance(result, bool):
+        raise TypeError("features.enabled() must return a bool")
+    return result
+
+
+class _PermissionAccessorSessionProxy:
+    def __init__(self, session: Any) -> None:
+        self._session = session
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._session, name)
+
+    async def granted_session_permissions(self) -> AdditionalPermissionProfile | None:
+        reader = getattr(self._session, "granted_session_permissions", None)
+        if callable(reader):
+            result = reader()
+            if inspect.isawaitable(result):
+                result = await result
+            return result
+        return None
+
+    async def granted_turn_permissions(self) -> AdditionalPermissionProfile | None:
+        reader = getattr(self._session, "granted_turn_permissions", None)
+        if callable(reader):
+            result = reader()
+            if inspect.isawaitable(result):
+                result = await result
+            return result
+        return None
+
+
+def _session_with_permission_accessors(session: Any) -> Any:
+    if callable(getattr(session, "granted_session_permissions", None)) and callable(
+        getattr(session, "granted_turn_permissions", None)
+    ):
+        return session
+    return _PermissionAccessorSessionProxy(session)
 
 
 async def _send_write_stdin_terminal_interaction(
@@ -698,6 +1065,7 @@ __all__ = [
     "ExecCommandEnvironmentArgs",
     "ExecCommandHandler",
     "ExecCommandHandlerOptions",
+    "ExecCommandRequest",
     "MAX_YIELD_TIME_MS",
     "MIN_EMPTY_YIELD_TIME_MS",
     "MIN_YIELD_TIME_MS",

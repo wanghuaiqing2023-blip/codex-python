@@ -41,6 +41,10 @@ JsonValue = Any
 LOG = logging.getLogger(__name__)
 
 
+class ToolPostHookTypeError(TypeError):
+    """Type error raised after a tool handler has completed."""
+
+
 @dataclass(frozen=True)
 class ConversationHistory:
     items: tuple[ResponseItem, ...] = ()
@@ -457,8 +461,18 @@ async def dispatch_tool_call_with_terminal_outcome(
         await _apply_tool_completed_goal_runtime(invocation, finished, **stores)
         dispatch_trace.record_failed(err)
         raise
-    except TypeError:
-        raise
+    except TypeError as err:
+        fatal = FunctionCallError.fatal(str(err))
+        finished = await notify_tool_finish_if_unclaimed(
+            lifecycle_contributors,
+            invocation,
+            terminal_outcome_reached,
+            ToolCallOutcome.failed(True),
+            **stores,
+        )
+        await _apply_tool_completed_goal_runtime(invocation, finished, **stores)
+        dispatch_trace.record_failed(fatal)
+        raise ToolPostHookTypeError(str(err)) from err
     except Exception as err:
         fatal = FunctionCallError.fatal(str(err))
         finished = await notify_tool_finish_if_unclaimed(
@@ -560,7 +574,7 @@ async def _apply_pre_tool_use_hook(
     if result.updated_input is None:
         return invocation
     try:
-        return with_updated_hook_input(invocation, result.updated_input)
+        return _tool_with_updated_hook_input(tool, invocation, result.updated_input)
     except FunctionCallError as err:
         dispatch_trace.record_failed(err)
         await notify_tool_finish_if_unclaimed(
@@ -994,6 +1008,17 @@ def _tool_post_tool_use_payload(tool: Any, invocation: ToolInvocation, output: A
     return value
 
 
+def _tool_with_updated_hook_input(tool: Any, invocation: ToolInvocation, updated_input: JsonValue) -> ToolInvocation:
+    method = getattr(tool, "with_updated_hook_input", None)
+    if method is None:
+        value = with_updated_hook_input(invocation, updated_input)
+    else:
+        value = method(invocation, updated_input)
+    if not isinstance(value, ToolInvocation):
+        raise TypeError("with_updated_hook_input must return ToolInvocation")
+    return value
+
+
 async def notify_tool_finish_if_unclaimed(
     lifecycle_contributors: Any,
     invocation: ToolInvocation,
@@ -1077,6 +1102,7 @@ __all__ = [
     "ConversationHistory",
     "FunctionCallError",
     "ToolCall",
+    "ToolPostHookTypeError",
     "ToolRouter",
     "build_tool_call",
     "dispatch_tool_call",

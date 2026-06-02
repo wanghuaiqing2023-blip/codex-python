@@ -10,15 +10,18 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, replace
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
+from pycodex.core.exec import ExecCapturePolicy, ExecExpiration, ExecParams
+from pycodex.core.exec_env import create_env
 from pycodex.core.function_tool import FunctionCallError
 from pycodex.core.hook_names import HookToolName
 from pycodex.core.shell import Shell
 from pycodex.core.shell_spec import CommandToolOptions, create_shell_command_tool
 from pycodex.core.tool_context import ToolPayload
 from pycodex.core.tool_registry import PostToolUsePayload, PreToolUsePayload, ToolInvocation
-from pycodex.protocol import AdditionalPermissionProfile, SandboxPermissions, ToolName
+from pycodex.protocol import AdditionalPermissionProfile, SandboxPermissions, ShellEnvironmentPolicy, ThreadId, ToolName
 
 JsonValue = Any
 
@@ -209,6 +212,41 @@ class ShellCommandHandler:
             raise TypeError("command must be a string")
         return tuple(shell.derive_exec_args(command, use_login_shell))
 
+    @staticmethod
+    def to_exec_params(
+        params: ShellCommandToolCallParams,
+        session: Any,
+        turn_context: Any,
+        thread_id: ThreadId,
+        allow_login_shell: bool,
+    ) -> ExecParams:
+        if not isinstance(params, ShellCommandToolCallParams):
+            raise TypeError("params must be ShellCommandToolCallParams")
+        if not isinstance(thread_id, ThreadId):
+            raise TypeError("thread_id must be ThreadId")
+        shell = _session_user_shell(session)
+        use_login_shell = ShellCommandHandler.resolve_use_login_shell(params.login, allow_login_shell)
+        command = ShellCommandHandler.base_command(shell, params.command, use_login_shell)
+        cwd = _turn_resolve_path(turn_context, params.workdir)
+        shell_environment_policy = getattr(turn_context, "shell_environment_policy", None)
+        if shell_environment_policy is None:
+            shell_environment_policy = ShellEnvironmentPolicy.default()
+        if not isinstance(shell_environment_policy, ShellEnvironmentPolicy):
+            raise TypeError("turn_context.shell_environment_policy must be ShellEnvironmentPolicy")
+        return ExecParams(
+            command=command,
+            cwd=cwd,
+            expiration=ExecExpiration.from_timeout_ms(params.timeout_ms),
+            capture_policy=ExecCapturePolicy.SHELL_TOOL,
+            env=create_env(shell_environment_policy, thread_id),
+            network=getattr(turn_context, "network", None),
+            sandbox_permissions=params.sandbox_permissions_or_default(),
+            windows_sandbox_level=getattr(turn_context, "windows_sandbox_level", None),
+            windows_sandbox_private_desktop=_windows_sandbox_private_desktop(turn_context),
+            justification=params.justification,
+            arg0=None,
+        )
+
     def shell_runtime_backend(self) -> ShellCommandBackend:
         return self.backend
 
@@ -262,6 +300,35 @@ def updated_hook_command(updated_input: JsonValue) -> str:
     if not isinstance(command, str):
         raise TypeError("updated hook input command must be a string")
     return command
+
+
+def _session_user_shell(session: Any) -> Shell:
+    user_shell = getattr(session, "user_shell", None)
+    shell = user_shell() if callable(user_shell) else getattr(session, "shell", None)
+    if not isinstance(shell, Shell):
+        raise TypeError("session.user_shell() must return Shell")
+    return shell
+
+
+def _turn_resolve_path(turn_context: Any, workdir: str | None) -> Path:
+    resolve_path = getattr(turn_context, "resolve_path", None)
+    if callable(resolve_path):
+        resolved = resolve_path(workdir)
+    else:
+        cwd = getattr(turn_context, "cwd", None)
+        if cwd is None:
+            cwd = Path.cwd()
+        resolved = Path(cwd) if workdir is None else Path(cwd) / workdir
+    return Path(resolved)
+
+
+def _windows_sandbox_private_desktop(turn_context: Any) -> bool:
+    config = getattr(turn_context, "config", None)
+    permissions = getattr(config, "permissions", None)
+    value = getattr(permissions, "windows_sandbox_private_desktop", False)
+    if not isinstance(value, bool):
+        raise TypeError("turn_context.config.permissions.windows_sandbox_private_desktop must be a bool")
+    return value
 
 
 __all__ = [

@@ -20,7 +20,7 @@ from pycodex.core.tool_parallel import (
 )
 from pycodex.core.tool_registry import PostToolUsePayload, RegisteredTool, ToolCallSource, ToolInvocation, ToolRegistry
 from pycodex.core.tool_router import FunctionCallError, ToolCall, ToolRouter
-from pycodex.protocol import ToolName
+from pycodex.protocol import SearchToolCallParams, ToolName
 
 
 class Recorder:
@@ -97,7 +97,7 @@ class ToolParallelTests(unittest.TestCase):
         self.assertEqual(response.call_id, "call-1")
         self.assertIn("aborted by user after 2.0s", response.output.to_text())
         self.assertIsNone(result.post_tool_use_payload)
-        self.assertEqual(result.code_mode_result(), {"text": "aborted by user after 2.0s", "success": False})
+        self.assertEqual(result.code_mode_result(), "aborted by user after 2.0s")
 
     def test_failure_response_preserves_payload_specific_shape(self) -> None:
         function_call = ToolCall(
@@ -113,7 +113,7 @@ class ToolParallelTests(unittest.TestCase):
         search_call = ToolCall(
             tool_name=ToolName.plain("tool_search"),
             call_id="call-search",
-            payload=ToolPayload.tool_search("query"),
+            payload=ToolPayload.tool_search(SearchToolCallParams("query")),
         )
 
         function_response = failure_response(function_call, FunctionCallError.respond_to_model("nope"))
@@ -865,18 +865,20 @@ class ToolParallelTests(unittest.TestCase):
                 started.set()
                 await asyncio.sleep(10)
 
-            task = asyncio.create_task(runtime.handle_tool_call_with_source(call, dispatch))
+            task = asyncio.create_task(
+                runtime.handle_tool_call_with_source(call, dispatch, cancellation_token=token)
+            )
             await started.wait()
             token.cancel()
             return await task
 
         monotonic_values = iter([10.0, 11.234])
-        original_monotonic = tool_parallel_module.time.monotonic
+        original_monotonic = tool_parallel_module._monotonic
         try:
-            tool_parallel_module.time.monotonic = lambda: next(monotonic_values)
+            tool_parallel_module._monotonic = lambda: next(monotonic_values)
             result = asyncio.run(scenario())
         finally:
-            tool_parallel_module.time.monotonic = original_monotonic
+            tool_parallel_module._monotonic = original_monotonic
 
         self.assertEqual(result.to_response_item().output.to_text(), "aborted by user after 1.2s")
 
@@ -6243,7 +6245,7 @@ class ToolParallelTests(unittest.TestCase):
             result=JsonToolOutput.new({"ok": True}),
         )
 
-        self.assertEqual(plain.code_mode_result(), {})
+        self.assertEqual(plain.code_mode_result(), "plain")
         self.assertEqual(json_result.code_mode_result(), {"ok": True})
 
     def test_tool_call_result_passes_call_id_and_payload_to_output(self) -> None:

@@ -128,6 +128,29 @@ class ExecPolicyCommands:
 
 
 @dataclass(frozen=True)
+class ExecPolicyPrefixRule:
+    pattern: tuple[str | tuple[str, ...], ...]
+    decision: Decision
+    justification: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "pattern", _prefix_rule_pattern_tuple(self.pattern))
+        if not isinstance(self.decision, Decision):
+            object.__setattr__(self, "decision", Decision(str(self.decision)))
+        if self.justification is not None and not isinstance(self.justification, str):
+            raise TypeError("justification must be a string or None")
+
+    @classmethod
+    def new(
+        cls,
+        pattern: Sequence[str | Sequence[str]],
+        decision: Decision | str,
+        justification: str | None = None,
+    ) -> "ExecPolicyPrefixRule":
+        return cls(_prefix_rule_pattern_tuple(pattern), Decision(str(decision)), justification)
+
+
+@dataclass(frozen=True)
 class ExecApprovalRequest:
     command: tuple[str, ...]
     approval_policy: AskForApproval | GranularApprovalConfig
@@ -318,6 +341,34 @@ def create_exec_approval_requirement_for_command(
     return ExecApprovalRequirement.skip(proposed_execpolicy_amendment=proposed)
 
 
+def match_exec_policy_rules_for_command(
+    command: Sequence[str],
+    rules: Sequence[object] = (),
+) -> tuple[Mapping[str, object], ...]:
+    """Return Rust-shaped prefix rule matches for a shell command."""
+
+    if not rules:
+        return ()
+    parsed = commands_for_exec_policy(command)
+    matches: list[Mapping[str, object]] = []
+    seen: set[tuple[tuple[str, ...], str, str | None]] = set()
+    for plain_command in parsed.commands:
+        for rule in rules:
+            match = _exec_policy_prefix_rule_match(rule, plain_command)
+            if match is None:
+                continue
+            key = (
+                _matched_prefix(match),
+                str(match.get("decision")),
+                match.get("justification") if isinstance(match.get("justification"), str) else None,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            matches.append({"prefixRuleMatch": dict(match)})
+    return tuple(matches)
+
+
 def derive_requested_execpolicy_amendment_from_prefix_rule(
     prefix_rule: Sequence[str] | None,
     matched_rules: Sequence[object] = (),
@@ -458,6 +509,85 @@ def _commands_tuple(commands: Sequence[Sequence[str]] | None) -> tuple[tuple[str
     return tuple(tuple(str(item) for item in command) for command in commands)
 
 
+def _prefix_rule_pattern_tuple(pattern: Sequence[str | Sequence[str]]) -> tuple[str | tuple[str, ...], ...]:
+    if not isinstance(pattern, Sequence) or isinstance(pattern, (str, bytes)) or not pattern:
+        raise ValueError("prefix rule pattern must be a non-empty sequence")
+    parsed: list[str | tuple[str, ...]] = []
+    for token in pattern:
+        if isinstance(token, str):
+            parsed.append(token)
+            continue
+        if isinstance(token, Sequence) and not isinstance(token, (str, bytes)) and token:
+            alternatives = tuple(str(item) for item in token)
+            if not all(alternatives):
+                raise ValueError("prefix rule alternatives must be non-empty strings")
+            parsed.append(alternatives)
+            continue
+        raise ValueError("prefix rule pattern tokens must be strings or non-empty string sequences")
+    return tuple(parsed)
+
+
+def _exec_policy_prefix_rule_match(rule: object, command: tuple[str, ...]) -> Mapping[str, object] | None:
+    prefix_match = _prefix_rule_match(rule)
+    if prefix_match is not None:
+        prefix = _matched_prefix(prefix_match)
+        if prefix and _command_starts_with(command, prefix):
+            return prefix_match
+        return None
+    parsed = _prefix_rule_from_object(rule)
+    if parsed is None:
+        return None
+    pattern, decision, justification = parsed
+    prefix = _rule_pattern_matched_prefix(pattern, command)
+    if prefix is None:
+        return None
+    match: dict[str, object] = {"matchedPrefix": list(prefix), "decision": decision.value}
+    if justification:
+        match["justification"] = justification
+    return match
+
+
+def _prefix_rule_from_object(rule: object) -> tuple[tuple[str | tuple[str, ...], ...], Decision, str | None] | None:
+    if isinstance(rule, ExecPolicyPrefixRule):
+        return rule.pattern, rule.decision, rule.justification
+    if isinstance(rule, Mapping):
+        pattern = rule.get("pattern")
+        decision = rule.get("decision")
+        justification = rule.get("justification")
+    else:
+        pattern = getattr(rule, "pattern", None)
+        decision = getattr(rule, "decision", None)
+        justification = getattr(rule, "justification", None)
+    if pattern is None or decision is None:
+        return None
+    try:
+        parsed_pattern = _prefix_rule_pattern_tuple(pattern)  # type: ignore[arg-type]
+        parsed_decision = Decision(str(getattr(decision, "value", decision)))
+    except (TypeError, ValueError):
+        return None
+    parsed_justification = justification if isinstance(justification, str) and justification else None
+    return parsed_pattern, parsed_decision, parsed_justification
+
+
+def _rule_pattern_matched_prefix(
+    pattern: tuple[str | tuple[str, ...], ...],
+    command: tuple[str, ...],
+) -> tuple[str, ...] | None:
+    if len(command) < len(pattern):
+        return None
+    matched: list[str] = []
+    for pattern_token, command_token in zip(pattern, command, strict=False):
+        if isinstance(pattern_token, tuple):
+            if command_token not in pattern_token:
+                return None
+            matched.append(command_token)
+            continue
+        if command_token != pattern_token:
+            return None
+        matched.append(command_token)
+    return tuple(matched)
+
+
 def _command_starts_with(command: tuple[str, ...], prefix: tuple[str, ...]) -> bool:
     return len(command) >= len(prefix) and command[: len(prefix)] == prefix
 
@@ -542,6 +672,7 @@ __all__ = [
     "Decision",
     "ExecPolicyCommandOrigin",
     "ExecPolicyCommands",
+    "ExecPolicyPrefixRule",
     "ExecApprovalRequest",
     "PROMPT_CONFLICT_REASON",
     "REJECT_RULES_APPROVAL_REASON",
@@ -554,6 +685,7 @@ __all__ = [
     "derive_prompt_reason",
     "derive_requested_execpolicy_amendment_from_prefix_rule",
     "exec_approval_requirement_for_decision",
+    "match_exec_policy_rules_for_command",
     "prefix_rule_would_approve_all_commands",
     "profile_is_managed_read_only",
     "prompt_is_rejected_by_policy",

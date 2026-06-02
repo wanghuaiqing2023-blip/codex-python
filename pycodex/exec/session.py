@@ -26,6 +26,7 @@ from pycodex.protocol import (
     ApprovalsReviewer,
     AskForApproval,
     EventMsg,
+    GranularApprovalConfig,
     PermissionProfile,
     ReviewRequest,
     ReviewTarget,
@@ -335,7 +336,7 @@ class ExecSessionConfig:
     user_instructions: str | None = None
     instruction_sources: tuple[Path, ...] = ()
     startup_warnings: tuple[str, ...] = ()
-    approval_policy: AskForApproval = AskForApproval.NEVER
+    approval_policy: AskForApproval | GranularApprovalConfig = AskForApproval.NEVER
     approvals_reviewer: ApprovalsReviewer = ApprovalsReviewer.USER
     permission_profile: PermissionProfile = PermissionProfile.read_only()
     active_permission_profile: ActivePermissionProfile | None = None
@@ -345,6 +346,10 @@ class ExecSessionConfig:
     show_raw_agent_reasoning: bool = False
     request_permissions_callback: Any = None
     granted_session_permissions: AdditionalPermissionProfile | None = None
+    exec_policy_rules: tuple[Any, ...] = ()
+    allow_login_shell: bool = True
+    exec_permission_approvals_enabled: bool = False
+    request_permissions_tool_enabled: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.cwd, Path):
@@ -359,6 +364,13 @@ class ExecSessionConfig:
             AdditionalPermissionProfile,
         ):
             raise TypeError("granted_session_permissions must be AdditionalPermissionProfile or None")
+        object.__setattr__(self, "exec_policy_rules", tuple(self.exec_policy_rules or ()))
+        if not isinstance(self.allow_login_shell, bool):
+            raise TypeError("allow_login_shell must be a bool")
+        if not isinstance(self.exec_permission_approvals_enabled, bool):
+            raise TypeError("exec_permission_approvals_enabled must be a bool")
+        if not isinstance(self.request_permissions_tool_enabled, bool):
+            raise TypeError("request_permissions_tool_enabled must be a bool")
 
 
 @dataclass(frozen=True)
@@ -367,7 +379,7 @@ class ThreadStartParams:
     model_provider: str | None = None
     cwd: Path | str | None = None
     runtime_workspace_roots: tuple[Path, ...] | None = None
-    approval_policy: AskForApproval | None = None
+    approval_policy: AskForApproval | GranularApprovalConfig | None = None
     approvals_reviewer: ApprovalsReviewer | None = None
     sandbox: SandboxMode | None = None
     permissions: str | None = None
@@ -406,7 +418,7 @@ class ThreadResumeParams:
     model_provider: str | None = None
     cwd: Path | str | None = None
     runtime_workspace_roots: tuple[Path, ...] | None = None
-    approval_policy: AskForApproval | None = None
+    approval_policy: AskForApproval | GranularApprovalConfig | None = None
     approvals_reviewer: ApprovalsReviewer | None = None
     sandbox: SandboxMode | None = None
     permissions: str | None = None
@@ -448,7 +460,7 @@ class TurnStartParams:
     environments: JsonValue | None = None
     cwd: Path | str | None = None
     runtime_workspace_roots: tuple[Path, ...] | None = None
-    approval_policy: AskForApproval | None = None
+    approval_policy: AskForApproval | GranularApprovalConfig | None = None
     approvals_reviewer: ApprovalsReviewer | None = None
     sandbox_policy: JsonValue | None = None
     permissions: str | None = None
@@ -3524,7 +3536,9 @@ def all_thread_source_kinds() -> tuple[ThreadSourceKind, ...]:
 
 
 def resume_lookup_model_providers(config: ExecSessionConfig, resume_args: JsonValue) -> tuple[str, ...] | None:
-    return (config.model_provider_id,) if bool(_field(resume_args, "last")) else None
+    if not bool(_field(resume_args, "last")):
+        return None
+    return (config.model_provider_id or "openai",)
 
 
 def thread_list_params_for_resume(
@@ -4398,6 +4412,8 @@ def _parse_initial_messages(value: JsonValue) -> tuple[EventMsg, ...] | None:
 
 
 def _enum(value: JsonValue) -> JsonValue:
+    if isinstance(value, GranularApprovalConfig):
+        return {"granular": value.to_mapping()}
     return value.value if isinstance(value, Enum) else value
 
 
@@ -4584,9 +4600,15 @@ def _parse_thread_source(value: JsonValue) -> ThreadSource | None:
     return ThreadSource.parse(str(value))
 
 
-def _parse_approval_policy(value: JsonValue) -> AskForApproval:
+def _parse_approval_policy(value: JsonValue) -> AskForApproval | GranularApprovalConfig:
     if isinstance(value, AskForApproval):
         return value
+    if isinstance(value, GranularApprovalConfig):
+        return value
+    if isinstance(value, Mapping):
+        if "granular" in value:
+            return GranularApprovalConfig.from_mapping(value["granular"])
+        raise ValueError("approval policy must be a string or {'granular': {...}}")
     return AskForApproval.parse(str(value))
 
 

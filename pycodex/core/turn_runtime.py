@@ -9,6 +9,8 @@ history/tools/base instructions, and build a Responses API request.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import inspect
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -18,17 +20,26 @@ from pycodex.core.client import ModelClient, SamplingRequestRuntimeHookAdapter, 
 from pycodex.core.codex_thread import SessionSettingsUpdate
 from pycodex.core.compact_remote import normalize_history_for_prompt
 from pycodex.core.features import Feature
+from pycodex.core.hook_runtime import HookRuntimeOutcome, additional_context_messages
 from pycodex.core.string_utils import truncate_middle_with_token_budget
 from pycodex.core.original_image_detail import can_request_original_image_detail
+from pycodex.core.responses_retry import (
+    ResponsesStreamRequest,
+    RetryableResponseStreamAction,
+    response_stream_retry_decision,
+)
 from pycodex.core.spec_plan import build_environment_tool_router_from_turn_context
 from pycodex.core.tool_parallel import ToolCallRuntime
 from pycodex.core.tool_router import FunctionCallError, ToolRouter
 from pycodex.core.stream_events_utils import AssistantMessageStreamParsers, OutputItemResult, SamplingOutputState
 from pycodex.core.stream_events_utils import get_last_assistant_message_from_turn
+from pycodex.core.stream_events_utils import handle_non_tool_response_item
+from pycodex.core.stream_events_utils import last_assistant_message_from_item
 from pycodex.core.stream_events_utils import sampling_stream_event_apply_plan
 from pycodex.core.stream_events_utils import sampling_stream_event_dispatch_plan
+from pycodex.core.turn_timing import ResponseEvent as TimingResponseEvent
 from pycodex.core.turn_request import TurnResponsesRequestPlan, build_turn_responses_request
-from pycodex.protocol import BaseInstructions, CodexErr, CodexErrorInfo, ContentItem, ErrorEvent, EventMsg
+from pycodex.protocol import BaseInstructions, CodexErr, CodexErrorInfo, ContentItem, ErrorEvent, EventMsg, StreamErrorEvent
 from pycodex.protocol import FunctionCallOutputContentItem, FunctionCallOutputPayload
 from pycodex.protocol import HookPromptFragment, Op, ResponseInputItem, ResponseItem
 from pycodex.protocol import TurnCompleteEvent, TurnDiffEvent, TurnItem, TurnStartedEvent
@@ -37,6 +48,9 @@ from pycodex.protocol import build_hook_prompt_message
 
 
 MAX_ADDITIONAL_CONTEXT_TOKENS = 1000
+DEFAULT_STREAM_MAX_RETRIES = 5
+MAX_STREAM_MAX_RETRIES = 100
+TURN_TTFM_DURATION_METRIC = "codex.turn.ttfm.duration_ms"
 _LAST_AGENT_MESSAGE_UNSET = object()
 
 
@@ -90,7 +104,7 @@ async def build_user_turn_responses_request_from_session(
     environments: Sequence[Any] | None = None,
     output_schema: Any = None,
     apply_output_schema_update: bool = False,
-    output_schema_strict: bool = True,
+    output_schema_strict: bool | None = None,
 ) -> TurnResponsesRequestPlan:
     """Build a model request for a user turn from a session-like object."""
 
@@ -126,7 +140,7 @@ async def build_user_input_op_responses_request_from_session(
     effort: Any = None,
     summary: Any = None,
     service_tier: str | None = None,
-    output_schema_strict: bool = True,
+    output_schema_strict: bool | None = None,
 ) -> TurnResponsesRequestPlan:
     """Build a model request from a protocol ``Op.user_input`` value."""
 
@@ -169,7 +183,7 @@ async def run_user_turn_sampling_from_session(
     environments: Sequence[Any] | None = None,
     output_schema: Any = None,
     apply_output_schema_update: bool = False,
-    output_schema_strict: bool = True,
+    output_schema_strict: bool | None = None,
     max_tool_followups: int | None = None,
 ) -> UserTurnSamplingResult:
     """Build a request, run an injected sampler, and record response items."""
@@ -196,6 +210,8 @@ async def run_user_turn_sampling_from_session(
             apply_output_schema_update=apply_output_schema_update or output_schema is not None,
             output_schema_strict=output_schema_strict,
             run_pre_sampling_compact=True,
+            run_user_prompt_submit_hooks=True,
+            emit_turn_started_lifecycle=True,
         )
     except _PreSamplingCompactError as exc:
         prepared = _PreparedUserTurnRequest(
@@ -209,8 +225,33 @@ async def run_user_turn_sampling_from_session(
             output_schema_strict=output_schema_strict,
             request_plan=TurnResponsesRequestPlan(prompt=None, request={}),
         )
-        await _emit_turn_started_lifecycle(sess, exc.turn_context)
         await _handle_auto_compact_error(sess, exc.turn_context, exc.error)
+        return await _completed_user_turn_sampling_result(
+            prepared,
+            (),
+            (),
+            (),
+            (),
+            None,
+            sess,
+            (),
+            (),
+            (),
+            SamplingRuntimeEventApplicationState(),
+            last_agent_message_override=None,
+        )
+    except _UserInputBlocked as exc:
+        prepared = _PreparedUserTurnRequest(
+            turn_context=exc.turn_context,
+            router=None,
+            model_info=model_info,
+            effort=effort,
+            summary=summary,
+            service_tier=service_tier,
+            output_schema=output_schema,
+            output_schema_strict=output_schema_strict,
+            request_plan=TurnResponsesRequestPlan(prompt=None, request={}),
+        )
         return await _completed_user_turn_sampling_result(
             prepared,
             (),
@@ -231,10 +272,9 @@ async def run_user_turn_sampling_from_session(
         turn_context=prepared.turn_context,
         request_plan=prepared.request_plan,
     )
-    await _emit_turn_started_lifecycle(sess, prepared.turn_context)
     while True:
         try:
-            raw_result = await _maybe_await(sampler(sampling_request))
+            raw_result = await _sample_with_retry(sess, prepared.turn_context, provider, sampler, sampling_request)
             break
         except CodexErr as exc:
             if exc.kind == "turn_aborted":
@@ -296,13 +336,17 @@ async def run_user_turn_sampling_from_session(
                 last_agent_message_override=None,
             )
     await _record_sampling_token_usage(sess, prepared.turn_context, raw_result)
+    stream_runtime_state = SamplingRuntimeEventApplicationState()
     response_items = _response_items_from_sampling_result(raw_result)
     if response_items:
-        await _maybe_await(sess.record_conversation_items(prepared.turn_context, response_items))
+        await _record_response_items(sess, prepared.turn_context, response_items)
+        await _record_response_items_turn_ttfm(sess, prepared.turn_context, response_items)
+        _update_stream_runtime_last_agent_message_from_response_items(stream_runtime_state, response_items)
     all_response_items = list(response_items)
     all_tool_response_items: list[ResponseItem] = []
     raw_results = [raw_result]
     all_stream_events = list(_stream_events_from_sampling_result(raw_result))
+    await _record_stream_events_turn_ttft(sess, prepared.turn_context, all_stream_events)
     all_stream_event_dispatch_plans = list(
         _sampling_stream_event_dispatch_plans_from_result(
             raw_result,
@@ -312,14 +356,14 @@ async def run_user_turn_sampling_from_session(
             turn_id=_turn_context_turn_id(prepared.turn_context),
         )
     )
-    stream_runtime_state = SamplingRuntimeEventApplicationState()
     stream_event_apply_plans = list(
         _sampling_stream_event_apply_plans_from_result(
             raw_result,
-            all_stream_event_dispatch_plans,
-            stream_runtime_state,
-            turn_context=prepared.turn_context,
-        )
+        all_stream_event_dispatch_plans,
+        stream_runtime_state,
+        turn_context=prepared.turn_context,
+        has_pending_mailbox_items=await _has_pending_mailbox_items(sess) if all_stream_events else False,
+    )
     )
     emitted_stream_event_cursor = await _emit_stream_runtime_events(
         sess,
@@ -356,14 +400,32 @@ async def run_user_turn_sampling_from_session(
                 turn_status="interrupted",
             )
         raise
-    tool_response_items = await _handle_response_tool_calls(
+    stream_response_items = _stream_non_tool_response_items(
+        all_stream_events,
+        skip_items=response_items,
+    )
+    if stream_response_items:
+        await _maybe_await(sess.record_conversation_items(prepared.turn_context, stream_response_items))
+        await _record_response_items_turn_ttfm(sess, prepared.turn_context, stream_response_items)
+        _update_stream_runtime_last_agent_message_from_response_items(stream_runtime_state, stream_response_items)
+        all_response_items.extend(stream_response_items)
+    stream_tool_response_items = await _handle_stream_response_tool_calls(
+        sess,
+        prepared.turn_context,
+        prepared.router,
+        all_stream_events,
+        skip_call_ids=_tool_call_ids(response_items),
+    )
+    tool_response_items = stream_tool_response_items + await _handle_response_tool_calls(
         sess,
         prepared.turn_context,
         prepared.router,
         response_items,
     )
-    needs_model_followup = _sampling_result_needs_followup(raw_result) or _stream_completed_end_turn_needs_followup(
-        all_stream_events
+    needs_model_followup = (
+        _sampling_result_needs_followup(raw_result)
+        or _stream_completed_end_turn_needs_followup(all_stream_events)
+        or _stream_apply_plans_need_followup(stream_event_apply_plans)
     )
     tool_followups = 0
     stop_hook_active = False
@@ -372,14 +434,43 @@ async def run_user_turn_sampling_from_session(
         if tool_response_items:
             await _maybe_await(sess.record_conversation_items(prepared.turn_context, tool_response_items))
             all_tool_response_items.extend(tool_response_items)
-        pending_input_items = await _drain_pending_input_response_items(sess, prepared.turn_context)
-        if pending_input_items:
-            await _maybe_await(sess.record_conversation_items(prepared.turn_context, pending_input_items))
         tool_followup_limit_reached = (
             max_tool_followups is not None
             and has_tool_response_items
             and tool_followups >= max_tool_followups
         )
+        can_drain_pending_input = not needs_model_followup and (
+            not has_tool_response_items or tool_followup_limit_reached
+        )
+        checked_pending_compact = False
+        if can_drain_pending_input and await _has_pending_input(sess):
+            checked_pending_compact = True
+            compact_result = await _maybe_run_mid_turn_auto_compact_result(sess, prepared.turn_context)
+            if not compact_result.success:
+                return await _completed_user_turn_sampling_result(
+                    prepared,
+                    all_response_items,
+                    all_tool_response_items,
+                    request_plans,
+                    raw_results,
+                    raw_result,
+                    sess,
+                    all_stream_events,
+                    all_stream_event_dispatch_plans,
+                    stream_event_apply_plans,
+                    stream_runtime_state,
+                    last_agent_message_override=None,
+                )
+            if compact_result.compacted:
+                continue
+        pending_input_result = (
+            await _drain_and_record_pending_inputs(sess, prepared.turn_context)
+            if can_drain_pending_input
+            else _PendingInputRecordResult(())
+        )
+        pending_input_items = pending_input_result.recorded_items
+        if pending_input_result.blocked_without_accepted_user_input:
+            break
         if tool_followup_limit_reached and not needs_model_followup and not pending_input_items:
             break
         if not tool_response_items and not needs_model_followup and not pending_input_items:
@@ -437,7 +528,11 @@ async def run_user_turn_sampling_from_session(
                     last_agent_message_override=None,
                 )
             break
-        compact_continue = await _maybe_run_mid_turn_auto_compact(sess, prepared.turn_context)
+        compact_continue = (
+            True
+            if checked_pending_compact
+            else await _maybe_run_mid_turn_auto_compact(sess, prepared.turn_context)
+        )
         if not compact_continue:
             return await _completed_user_turn_sampling_result(
                 prepared,
@@ -467,7 +562,7 @@ async def run_user_turn_sampling_from_session(
         )
         while True:
             try:
-                raw_result = await _maybe_await(sampler(followup_request))
+                raw_result = await _sample_with_retry(sess, prepared.turn_context, provider, sampler, followup_request)
                 break
             except CodexErr as exc:
                 if exc.kind == "turn_aborted":
@@ -531,6 +626,7 @@ async def run_user_turn_sampling_from_session(
         await _record_sampling_token_usage(sess, prepared.turn_context, raw_result)
         raw_results.append(raw_result)
         followup_stream_events = _stream_events_from_sampling_result(raw_result)
+        await _record_stream_events_turn_ttft(sess, prepared.turn_context, followup_stream_events)
         followup_dispatch_plans = _sampling_stream_event_dispatch_plans_from_result(
             raw_result,
             prepared.router,
@@ -545,6 +641,7 @@ async def run_user_turn_sampling_from_session(
             followup_dispatch_plans,
             stream_runtime_state,
             turn_context=prepared.turn_context,
+            has_pending_mailbox_items=await _has_pending_mailbox_items(sess) if followup_stream_events else False,
         )
         stream_event_apply_plans.extend(followup_apply_plans)
         emitted_stream_event_cursor = await _emit_stream_runtime_events(
@@ -584,16 +681,36 @@ async def run_user_turn_sampling_from_session(
             raise
         response_items = _response_items_from_sampling_result(raw_result)
         if response_items:
-            await _maybe_await(sess.record_conversation_items(prepared.turn_context, response_items))
+            await _record_response_items(sess, prepared.turn_context, response_items)
+            await _record_response_items_turn_ttfm(sess, prepared.turn_context, response_items)
+            _update_stream_runtime_last_agent_message_from_response_items(stream_runtime_state, response_items)
             all_response_items.extend(response_items)
-        tool_response_items = await _handle_response_tool_calls(
+        stream_response_items = _stream_non_tool_response_items(
+            followup_stream_events,
+            skip_items=response_items,
+        )
+        if stream_response_items:
+            await _maybe_await(sess.record_conversation_items(prepared.turn_context, stream_response_items))
+            await _record_response_items_turn_ttfm(sess, prepared.turn_context, stream_response_items)
+            _update_stream_runtime_last_agent_message_from_response_items(stream_runtime_state, stream_response_items)
+            all_response_items.extend(stream_response_items)
+        stream_tool_response_items = await _handle_stream_response_tool_calls(
+            sess,
+            prepared.turn_context,
+            prepared.router,
+            followup_stream_events,
+            skip_call_ids=_tool_call_ids(response_items),
+        )
+        tool_response_items = stream_tool_response_items + await _handle_response_tool_calls(
             sess,
             prepared.turn_context,
             prepared.router,
             response_items,
         )
-        needs_model_followup = _sampling_result_needs_followup(raw_result) or _stream_completed_end_turn_needs_followup(
-            followup_stream_events
+        needs_model_followup = (
+            _sampling_result_needs_followup(raw_result)
+            or _stream_completed_end_turn_needs_followup(followup_stream_events)
+            or _stream_apply_plans_need_followup(followup_apply_plans)
         )
         if has_tool_response_items:
             tool_followups += 1
@@ -707,7 +824,7 @@ async def run_user_input_op_sampling_from_session(
     effort: Any = None,
     summary: Any = None,
     service_tier: str | None = None,
-    output_schema_strict: bool = True,
+    output_schema_strict: bool | None = None,
     max_tool_followups: int | None = None,
 ) -> UserTurnSamplingResult:
     """Run one protocol ``Op.user_input`` through the session-like runtime."""
@@ -744,7 +861,7 @@ class _PreparedUserTurnRequest:
     summary: Any
     service_tier: str | None
     output_schema: Any
-    output_schema_strict: bool
+    output_schema_strict: bool | None
     request_plan: TurnResponsesRequestPlan
 
 
@@ -753,6 +870,12 @@ class _PreSamplingCompactError(Exception):
         super().__init__(str(error))
         self.turn_context = turn_context
         self.error = error
+
+
+class _UserInputBlocked(Exception):
+    def __init__(self, turn_context: Any) -> None:
+        super().__init__("user input blocked")
+        self.turn_context = turn_context
 
 
 async def _prepare_user_turn_request_from_session(
@@ -772,8 +895,10 @@ async def _prepare_user_turn_request_from_session(
     environments: Sequence[Any] | None = None,
     output_schema: Any = None,
     apply_output_schema_update: bool = False,
-    output_schema_strict: bool = True,
+    output_schema_strict: bool | None = None,
     run_pre_sampling_compact: bool = False,
+    run_user_prompt_submit_hooks: bool = False,
+    emit_turn_started_lifecycle: bool = False,
 ) -> _PreparedUserTurnRequest:
     user_input = _user_inputs(input)
     await _apply_thread_settings_overrides(sess, thread_settings)
@@ -782,6 +907,8 @@ async def _prepare_user_turn_request_from_session(
         await _apply_final_output_json_schema(sess, output_schema)
     turn_context = await _maybe_await(sess.new_default_turn())
     _apply_responsesapi_client_metadata(turn_context, responsesapi_client_metadata)
+    if emit_turn_started_lifecycle:
+        await _emit_turn_started_lifecycle(sess, turn_context)
     if run_pre_sampling_compact:
         try:
             await _maybe_run_pre_sampling_auto_compact(sess, turn_context)
@@ -793,10 +920,17 @@ async def _prepare_user_turn_request_from_session(
     if additional_context_items:
         await _maybe_await(sess.record_conversation_items(turn_context, additional_context_items))
 
-    if user_input:
-        input_item = ResponseInputItem.from_user_inputs(user_input)
-        response_item = ResponseItem.from_response_input_item(input_item)
-        await _maybe_await(sess.record_conversation_items(turn_context, (response_item,)))
+    if user_input and run_user_prompt_submit_hooks:
+        if await _record_user_input_with_submit_hook(sess, turn_context, user_input):
+            raise _UserInputBlocked(turn_context)
+    elif user_input:
+        await _record_user_inputs(sess, turn_context, user_input)
+
+    pre_sampling_pending_input = _PendingInputRecordResult(())
+    if not user_input and run_user_prompt_submit_hooks:
+        pre_sampling_pending_input = await _drain_and_record_pending_inputs(sess, turn_context)
+        if pre_sampling_pending_input.blocked_without_accepted_user_input:
+            raise _UserInputBlocked(turn_context)
 
     history = await _maybe_await(sess.clone_history())
     effective_model_info = getattr(turn_context, "model_info", None) or model_info
@@ -832,7 +966,7 @@ async def _prepare_user_turn_request_from_session(
         router,
         turn_context,
         base_instructions,
-        has_current_user_input=bool(user_input),
+        has_current_user_input=bool(user_input) or pre_sampling_pending_input.accepted_user_input,
         effort=effective_effort,
         summary=effective_summary,
         service_tier=effective_service_tier,
@@ -897,6 +1031,127 @@ def _history_for_prompt(history: Any, input_modalities: Any) -> tuple[ResponseIt
     return normalize_history_for_prompt(prompt_items, input_modalities)
 
 
+async def _record_user_input_with_submit_hook(
+    sess: Any,
+    turn_context: Any,
+    user_input: tuple[UserInput, ...],
+) -> bool:
+    outcome = await _run_user_prompt_submit_hook(sess, turn_context, user_input)
+    if outcome is None:
+        await _record_user_inputs(sess, turn_context, user_input)
+        return False
+
+    additional_items = additional_context_messages(outcome.additional_contexts)
+    if outcome.should_stop:
+        if additional_items:
+            await _maybe_await(sess.record_conversation_items(turn_context, additional_items))
+        return True
+
+    await _record_user_inputs(sess, turn_context, user_input)
+    if additional_items:
+        await _maybe_await(sess.record_conversation_items(turn_context, additional_items))
+    return False
+
+
+async def _record_user_inputs(sess: Any, turn_context: Any, user_input: tuple[UserInput, ...]) -> ResponseItem:
+    response_item = ResponseItem.from_response_input_item(ResponseInputItem.from_user_inputs(user_input))
+    recorder = getattr(sess, "record_user_prompt_and_emit_turn_item", None)
+    if callable(recorder):
+        await _maybe_await(recorder(turn_context, user_input))
+        return response_item
+    await _maybe_await(sess.record_conversation_items(turn_context, (response_item,)))
+    return response_item
+
+
+async def _record_response_items(sess: Any, turn_context: Any, response_items: tuple[ResponseItem, ...]) -> None:
+    recorder = getattr(sess, "record_response_item_and_emit_turn_item", None)
+    if not callable(recorder):
+        await _maybe_await(sess.record_conversation_items(turn_context, response_items))
+        return
+    for item in response_items:
+        await _maybe_await(recorder(turn_context, item))
+
+
+async def _run_user_prompt_submit_hook(
+    sess: Any,
+    turn_context: Any,
+    user_input: tuple[UserInput, ...],
+) -> HookRuntimeOutcome | None:
+    hook = (
+        getattr(sess, "run_user_prompt_submit_hook", None)
+        or getattr(sess, "run_user_prompt_submit", None)
+        or getattr(sess, "user_prompt_submit_hook", None)
+        or getattr(turn_context, "run_user_prompt_submit_hook", None)
+    )
+    if not callable(hook):
+        return None
+    prompt = _user_prompt_submit_prompt(user_input)
+    raw_outcome = await _call_user_prompt_submit_hook(hook, sess, turn_context, user_input, prompt)
+    return _user_prompt_submit_outcome(raw_outcome)
+
+
+async def _call_user_prompt_submit_hook(
+    hook: Any,
+    sess: Any,
+    turn_context: Any,
+    user_input: tuple[UserInput, ...],
+    prompt: str,
+) -> Any:
+    try:
+        signature = inspect.signature(hook)
+    except (TypeError, ValueError):
+        return await _maybe_await(hook(turn_context, user_input, prompt))
+    parameters = tuple(signature.parameters.values())
+    if any(parameter.kind == inspect.Parameter.VAR_POSITIONAL for parameter in parameters):
+        return await _maybe_await(hook(sess, turn_context, user_input, prompt))
+    required = [
+        parameter
+        for parameter in parameters
+        if parameter.default is inspect.Parameter.empty
+        and parameter.kind
+        in {
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        }
+    ]
+    if len(required) >= 4:
+        return await _maybe_await(hook(sess, turn_context, user_input, prompt))
+    if len(required) == 3:
+        return await _maybe_await(hook(turn_context, user_input, prompt))
+    if len(required) == 2:
+        return await _maybe_await(hook(turn_context, prompt))
+    if len(required) == 1:
+        return await _maybe_await(hook(prompt))
+    return await _maybe_await(hook())
+
+
+def _user_prompt_submit_outcome(value: Any) -> HookRuntimeOutcome:
+    if value is None:
+        return HookRuntimeOutcome()
+    if isinstance(value, HookRuntimeOutcome):
+        return value
+    if isinstance(value, bool):
+        return HookRuntimeOutcome(should_stop=value)
+    if isinstance(value, Mapping):
+        should_stop = value.get("should_stop", value.get("shouldStop", False))
+        additional_contexts = value.get("additional_contexts", value.get("additionalContexts", ()))
+        return HookRuntimeOutcome(bool(should_stop), tuple(additional_contexts or ()))
+    should_stop = getattr(value, "should_stop", getattr(value, "shouldStop", False))
+    additional_contexts = getattr(value, "additional_contexts", getattr(value, "additionalContexts", ()))
+    return HookRuntimeOutcome(bool(should_stop), tuple(additional_contexts or ()))
+
+
+def _user_prompt_submit_prompt(user_input: tuple[UserInput, ...]) -> str:
+    input_item = ResponseInputItem.from_user_inputs(user_input)
+    text_parts = [
+        content.text
+        for content in input_item.content
+        if getattr(content, "type", None) == "input_text" and content.text is not None
+    ]
+    return "\n".join(text_parts)
+
+
 def _validate_max_tool_followups(value: int | None) -> int | None:
     if value is None:
         return None
@@ -907,14 +1162,81 @@ def _validate_max_tool_followups(value: int | None) -> int | None:
     return value
 
 
-async def _drain_pending_input_response_items(sess: Any, turn_context: Any) -> tuple[ResponseItem, ...]:
+@dataclass(frozen=True)
+class _PendingInputRecordResult:
+    recorded_items: tuple[ResponseItem, ...]
+    blocked_without_accepted_user_input: bool = False
+    accepted_user_input: bool = False
+
+
+@dataclass(frozen=True)
+class _PendingUserInput:
+    items: tuple[UserInput, ...]
+
+
+@dataclass(frozen=True)
+class _PendingResponseItem:
+    item: ResponseItem
+
+
+async def _drain_and_record_pending_inputs(sess: Any, turn_context: Any) -> _PendingInputRecordResult:
+    pending = await _drain_pending_input(sess)
+    return await _record_pending_inputs_with_hooks(sess, turn_context, pending)
+
+
+async def _drain_pending_input(sess: Any) -> Any:
     input_queue = getattr(sess, "input_queue", None)
     if input_queue is None:
         return ()
     get_pending_input = getattr(input_queue, "get_pending_input", None)
     if not callable(get_pending_input):
         return ()
-    pending = await _call_input_queue_method(get_pending_input, sess)
+    return await _call_input_queue_method(get_pending_input, sess)
+
+
+async def _record_pending_inputs_with_hooks(
+    sess: Any,
+    turn_context: Any,
+    pending: Any,
+) -> _PendingInputRecordResult:
+    blocked_input = False
+    accepted_user_input = False
+    recorded_items: list[ResponseItem] = []
+
+    for pending_item in _pending_input_turn_items(pending):
+        if isinstance(pending_item, _PendingUserInput):
+            outcome = await _run_user_prompt_submit_hook(sess, turn_context, pending_item.items)
+            if outcome is None:
+                outcome = HookRuntimeOutcome()
+            additional_items = additional_context_messages(outcome.additional_contexts)
+            if outcome.should_stop:
+                blocked_input = True
+                if additional_items:
+                    await _maybe_await(sess.record_conversation_items(turn_context, additional_items))
+                    recorded_items.extend(additional_items)
+                continue
+            if pending_item.items:
+                accepted_user_input = True
+            response_item = await _record_user_inputs(sess, turn_context, pending_item.items)
+            recorded_items.append(response_item)
+            if additional_items:
+                await _maybe_await(sess.record_conversation_items(turn_context, additional_items))
+                recorded_items.extend(additional_items)
+            continue
+
+        items = (pending_item.item,)
+        await _maybe_await(sess.record_conversation_items(turn_context, items))
+        recorded_items.extend(items)
+
+    return _PendingInputRecordResult(
+        tuple(recorded_items),
+        blocked_without_accepted_user_input=blocked_input and not accepted_user_input,
+        accepted_user_input=accepted_user_input,
+    )
+
+
+async def _drain_pending_input_response_items(sess: Any, turn_context: Any) -> tuple[ResponseItem, ...]:
+    pending = await _drain_pending_input(sess)
     return _pending_input_response_items(pending)
 
 
@@ -950,30 +1272,61 @@ async def _call_input_queue_method(method: Callable[..., Any], sess: Any) -> Any
 
 
 def _pending_input_response_items(pending: Any) -> tuple[ResponseItem, ...]:
+    return tuple(
+        item.item
+        if isinstance(item, _PendingResponseItem)
+        else ResponseItem.from_response_input_item(ResponseInputItem.from_user_inputs(item.items))
+        for item in _pending_input_turn_items(pending)
+    )
+
+
+def _pending_input_turn_items(pending: Any) -> tuple[_PendingUserInput | _PendingResponseItem, ...]:
     if pending is None:
         return ()
     if isinstance(pending, (str, bytes)) or not isinstance(pending, Sequence):
         raise TypeError("pending input must be a sequence")
-    response_items: list[ResponseItem] = []
+    pending_items: list[_PendingUserInput | _PendingResponseItem] = []
     user_inputs: list[UserInput] = []
 
     def flush_user_inputs() -> None:
         if not user_inputs:
             return
-        input_item = ResponseInputItem.from_user_inputs(tuple(user_inputs))
-        response_items.append(ResponseItem.from_response_input_item(input_item))
+        pending_items.append(_PendingUserInput(tuple(user_inputs)))
         user_inputs.clear()
 
     for item in pending:
         if isinstance(item, UserInput):
             user_inputs.append(item)
             continue
+        user_input = _pending_user_input(item)
+        if user_input is not None:
+            user_inputs.extend(user_input)
+            continue
         flush_user_inputs()
         response_item = _pending_response_item(item)
         if response_item is not None:
-            response_items.append(response_item)
+            pending_items.append(_PendingResponseItem(response_item))
     flush_user_inputs()
-    return tuple(response_items)
+    return tuple(pending_items)
+
+
+def _pending_user_input(value: Any) -> tuple[UserInput, ...] | None:
+    if isinstance(value, Mapping):
+        pending_type = value.get("type")
+        if pending_type in {"user_input", "UserInput"}:
+            raw_items = value.get("items", value.get("input", value.get("content", ())))
+            return _user_inputs(_sequence_value(raw_items))
+        if pending_type in {"text", "image", "local_image", "skill", "mention"}:
+            return (UserInput.from_mapping(value),)
+        return None
+    user_input = getattr(value, "user_input", None)
+    if user_input is None:
+        return None
+    if isinstance(user_input, UserInput):
+        return (user_input,)
+    if isinstance(user_input, Mapping):
+        return (UserInput.from_mapping(user_input),)
+    return _user_inputs(tuple(user_input))
 
 
 def _pending_response_item(value: Any) -> ResponseItem | None:
@@ -983,24 +1336,26 @@ def _pending_response_item(value: Any) -> ResponseItem | None:
         return ResponseItem.from_response_input_item(value)
     if isinstance(value, Mapping):
         pending_type = value.get("type")
-        if pending_type in {"text", "image", "local_image", "skill", "mention"}:
-            input_item = ResponseInputItem.from_user_inputs((UserInput.from_mapping(value),))
-            return ResponseItem.from_response_input_item(input_item)
+        if pending_type in {"response_item", "ResponseItem"}:
+            response_item = value.get("item", value.get("response_item"))
+            if response_item is None:
+                return None
+            return response_item if isinstance(response_item, ResponseItem) else ResponseItem.from_mapping(response_item)
         return ResponseItem.from_mapping(value)
-    user_input = getattr(value, "user_input", None)
-    if user_input is not None:
-        if isinstance(user_input, UserInput):
-            user_inputs = (user_input,)
-        elif isinstance(user_input, Mapping):
-            user_inputs = (UserInput.from_mapping(user_input),)
-        else:
-            user_inputs = _user_inputs(tuple(user_input))
-        input_item = ResponseInputItem.from_user_inputs(user_inputs)
-        return ResponseItem.from_response_input_item(input_item)
     response_item = getattr(value, "response_item", None)
     if response_item is not None:
         return response_item if isinstance(response_item, ResponseItem) else ResponseItem.from_mapping(response_item)
     return None
+
+
+def _sequence_value(value: Any) -> tuple[Any, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, (str, bytes)) or isinstance(value, Mapping):
+        return (value,)
+    if isinstance(value, Sequence):
+        return tuple(value)
+    return (value,)
 
 
 def _user_input_op_fields(value: Op | dict[str, Any]) -> dict[str, Any]:
@@ -1157,6 +1512,96 @@ def _stream_events_from_sampling_result(value: Any) -> tuple[Any, ...]:
     return tuple(raw_events)
 
 
+async def _record_stream_events_turn_ttft(
+    sess: Any,
+    turn_context: Any,
+    stream_events: Sequence[Any],
+) -> None:
+    timing_state = getattr(turn_context, "turn_timing_state", None) or getattr(sess, "turn_timing_state", None)
+    recorder = getattr(timing_state, "record_ttft_for_response_event", None)
+    if not callable(recorder):
+        return
+    for event in stream_events:
+        timing_event = _timing_response_event_from_stream_event(event)
+        if timing_event is None:
+            continue
+        recorded = await _maybe_await(recorder(timing_event))
+        if recorded is None:
+            continue
+        await _sync_turn_timing_first_token_ms(turn_context, timing_state)
+        return
+
+
+async def _sync_turn_timing_first_token_ms(turn_context: Any, timing_state: Any) -> None:
+    getter = getattr(timing_state, "time_to_first_token_ms", None)
+    if not callable(getter):
+        return
+    value = await _maybe_await(getter())
+    if isinstance(value, int) and not isinstance(value, bool):
+        try:
+            setattr(turn_context, "time_to_first_token_ms", value)
+        except Exception:
+            pass
+
+
+def _timing_response_event_from_stream_event(event: Any) -> TimingResponseEvent | None:
+    if not isinstance(event, Mapping):
+        return None
+    event_type = event.get("type")
+    if not isinstance(event_type, str):
+        return None
+    normalized_type = _STREAM_EVENT_TIMING_ALIASES.get(event_type, event_type)
+    if normalized_type == "output_item_done":
+        item = event.get("item")
+        if isinstance(item, ResponseItem):
+            return TimingResponseEvent.output_item_done(item)
+        return None
+    if normalized_type == "output_item_added":
+        item = event.get("item")
+        if isinstance(item, ResponseItem):
+            return TimingResponseEvent.output_item_added(item)
+        return None
+    if normalized_type == "output_text_delta":
+        return TimingResponseEvent.output_text_delta()
+    if normalized_type == "reasoning_summary_delta":
+        return TimingResponseEvent.reasoning_summary_delta()
+    if normalized_type == "reasoning_content_delta":
+        return TimingResponseEvent.reasoning_content_delta()
+    if normalized_type == "created":
+        return TimingResponseEvent.created()
+    if normalized_type == "server_model":
+        return TimingResponseEvent.server_model()
+    if normalized_type == "model_verifications":
+        return TimingResponseEvent.model_verifications()
+    if normalized_type == "server_reasoning_included":
+        return TimingResponseEvent.server_reasoning_included()
+    if normalized_type == "tool_call_input_delta":
+        return TimingResponseEvent.tool_call_input_delta()
+    if normalized_type == "completed":
+        return TimingResponseEvent.completed()
+    if normalized_type == "reasoning_summary_part_added":
+        return TimingResponseEvent.reasoning_summary_part_added()
+    if normalized_type == "rate_limits":
+        return TimingResponseEvent.rate_limits()
+    if normalized_type == "models_etag":
+        return TimingResponseEvent.models_etag()
+    return None
+
+
+_STREAM_EVENT_TIMING_ALIASES = {
+    "response.created": "created",
+    "response.output_item.done": "output_item_done",
+    "response.output_item.added": "output_item_added",
+    "response.output_text.delta": "output_text_delta",
+    "response.function_call_arguments.delta": "tool_call_input_delta",
+    "response.custom_tool_call_input.delta": "tool_call_input_delta",
+    "response.reasoning_summary_text.delta": "reasoning_summary_delta",
+    "response.reasoning_summary_part.added": "reasoning_summary_part_added",
+    "response.reasoning_text.delta": "reasoning_content_delta",
+    "response.completed": "completed",
+}
+
+
 def _sampling_stream_event_dispatch_plans_from_result(
     raw_result: Any,
     router: Any,
@@ -1198,9 +1643,9 @@ def _sampling_stream_event_dispatch_plans_from_result(
             turn_id=turn_id,
             summary_index=_int_event_field(event, "summary_index"),
             content_index=_int_event_field(event, "content_index"),
-            response_id=event.get("response_id") if isinstance(event.get("response_id"), str) else None,
-            token_usage=event.get("token_usage"),
-            end_turn=event.get("end_turn") if isinstance(event.get("end_turn"), bool) else None,
+            response_id=_sampling_stream_completed_response_id(event),
+            token_usage=_sampling_stream_completed_token_usage(event),
+            end_turn=_sampling_stream_completed_end_turn(event),
             turn_context=turn_context,
         )
         plans.append(dispatch_plan)
@@ -1275,6 +1720,171 @@ def _turn_context_plan_mode(turn_context: Any) -> bool:
     return str(value).lower() == "plan"
 
 
+async def _sample_with_retry(
+    sess: Any,
+    turn_context: Any,
+    provider: Any,
+    sampler: SamplerFn,
+    sampling_request: UserTurnSamplingRequest,
+) -> Any:
+    retries = 0
+    max_retries = _provider_stream_max_retries(provider)
+    while True:
+        try:
+            return await _maybe_await(sampler(sampling_request))
+        except CodexErr as err:
+            if not err.is_retryable():
+                raise
+            decision = response_stream_retry_decision(
+                retries=retries,
+                max_retries=max_retries,
+                err=err,
+                request=ResponsesStreamRequest.SAMPLING,
+                fallback_transport_available=_sampling_fallback_transport_available(sess),
+                responses_websocket_enabled=_responses_websocket_enabled(sess),
+            )
+            if decision.action is RetryableResponseStreamAction.RETRY:
+                await _emit_sampling_retry_decision(sess, turn_context, decision)
+                retries = decision.retries
+                if decision.delay is not None:
+                    await _sleep_for_sampling_retry(sess, decision.delay.total_seconds())
+                continue
+            if decision.action is RetryableResponseStreamAction.FALLBACK_TRANSPORT:
+                if _activate_sampling_fallback_transport(sess, turn_context):
+                    await _emit_sampling_retry_decision(sess, turn_context, decision)
+                    retries = decision.retries
+                    continue
+            raise decision.error or err
+
+
+def _provider_stream_max_retries(provider: Any) -> int:
+    configured = _provider_stream_max_retries_value(provider)
+    if configured is None:
+        return DEFAULT_STREAM_MAX_RETRIES
+    if isinstance(configured, bool) or not isinstance(configured, int):
+        raise TypeError("stream_max_retries must be an integer")
+    if configured < 0:
+        raise ValueError("stream_max_retries must be non-negative")
+    return min(configured, MAX_STREAM_MAX_RETRIES)
+
+
+def _provider_stream_max_retries_value(provider: Any) -> Any:
+    info = _provider_info(provider)
+    for source in (info, provider):
+        if source is None:
+            continue
+        value = _stream_max_retries_value(source)
+        if value is not None:
+            return value
+    return None
+
+
+def _provider_info(provider: Any) -> Any:
+    if isinstance(provider, Mapping):
+        value = provider.get("info")
+        return value() if callable(value) else value
+    value = getattr(provider, "info", None)
+    return value() if callable(value) else value
+
+
+def _stream_max_retries_value(source: Any) -> Any:
+    if isinstance(source, Mapping):
+        value = source.get("stream_max_retries")
+        return value() if callable(value) else value
+    value = getattr(source, "stream_max_retries", None)
+    return value() if callable(value) else value
+
+
+def _responses_websocket_enabled(sess: Any) -> bool:
+    services = getattr(sess, "services", None)
+    model_client = getattr(services, "model_client", None)
+    enabled = getattr(model_client, "responses_websocket_enabled", None)
+    if callable(enabled):
+        return bool(enabled())
+    if enabled is not None:
+        return bool(enabled)
+    return False
+
+
+def _sampling_fallback_transport_available(sess: Any) -> bool:
+    services = getattr(sess, "services", None)
+    model_client = getattr(services, "model_client", None)
+    fallback = getattr(model_client, "force_http_fallback", None)
+    return callable(fallback) and _responses_websocket_enabled(sess)
+
+
+def _activate_sampling_fallback_transport(sess: Any, turn_context: Any) -> bool:
+    services = getattr(sess, "services", None)
+    model_client = getattr(services, "model_client", None)
+    fallback = getattr(model_client, "force_http_fallback", None)
+    if not callable(fallback):
+        return False
+    session_telemetry = getattr(turn_context, "session_telemetry", None)
+    model_info = getattr(turn_context, "model_info", None)
+    return bool(fallback(session_telemetry, model_info))
+
+
+async def _emit_sampling_retry_decision(sess: Any, turn_context: Any, decision: Any) -> None:
+    warning_message = getattr(decision, "warning_message", None)
+    if isinstance(warning_message, str) and warning_message:
+        await _send_warning_event(sess, turn_context, warning_message)
+
+    notify_message = getattr(decision, "notify_message", None)
+    error = getattr(decision, "error", None)
+    if not isinstance(notify_message, str) or not notify_message or not isinstance(error, CodexErr):
+        return
+
+    notifier = getattr(sess, "notify_stream_error", None)
+    if callable(notifier):
+        await _maybe_await(notifier(turn_context, notify_message, error))
+        return
+
+    sender = getattr(sess, "send_event", None)
+    if callable(sender):
+        await _maybe_await(
+            sender(
+                turn_context,
+                EventMsg.with_payload(
+                    "stream_error",
+                    StreamErrorEvent(
+                        message=notify_message,
+                        codex_error_info=CodexErrorInfo.response_stream_disconnected(error.http_status_code_value()),
+                        additional_details=str(error),
+                    ),
+                ),
+            )
+        )
+
+
+async def _sleep_for_sampling_retry(sess: Any, seconds: float) -> None:
+    sleeper = getattr(sess, "sleep_for_sampling_retry", None) or getattr(sess, "sleep_for_retry", None)
+    if callable(sleeper):
+        await _maybe_await(sleeper(seconds))
+        return
+    await asyncio.sleep(seconds)
+
+
+async def _has_pending_mailbox_items(sess: Any) -> bool:
+    input_queue = getattr(sess, "input_queue", None)
+    for source in (input_queue, sess):
+        if source is None:
+            continue
+        checker = getattr(source, "has_pending_mailbox_items", None)
+        if callable(checker):
+            return bool(await _maybe_await(checker()))
+    return False
+
+
+async def _has_pending_input(sess: Any) -> bool:
+    input_queue = getattr(sess, "input_queue", None)
+    if input_queue is None:
+        return False
+    checker = getattr(input_queue, "has_pending_input", None)
+    if not callable(checker):
+        return False
+    return bool(await _call_input_queue_method(checker, sess))
+
+
 async def _emit_stream_runtime_events(
     sess: Any,
     turn_context: Any,
@@ -1288,6 +1898,7 @@ async def _emit_stream_runtime_events(
     for event in events[cursor:]:
         if event is None:
             continue
+        await _record_stream_runtime_event_turn_ttfm(sess, turn_context, event)
         await _maybe_await(sender(turn_context, event))
     return len(events)
 
@@ -1298,8 +1909,12 @@ async def _apply_stream_runtime_session_side_effects(
     runtime_state: SamplingRuntimeEventApplicationState,
     raw_result: Any,
 ) -> None:
+    await _apply_stream_metadata_event_side_effects(sess, turn_context, runtime_state)
+    metadata_events = tuple(getattr(runtime_state, "metadata_events", ()) or ())
+
     if getattr(runtime_state, "server_reasoning_included", None) is not None and (
         _first_metadata_attr(raw_result, "server_reasoning_included") is None
+        or _metadata_events_include_type(metadata_events, "server_reasoning_included")
     ):
         handler = getattr(sess, "set_server_reasoning_included", None)
         if callable(handler):
@@ -1308,6 +1923,7 @@ async def _apply_stream_runtime_session_side_effects(
 
     if getattr(runtime_state, "models_etag_to_refresh", None) is not None and (
         _first_metadata_attr(raw_result, "models_etag") is None
+        or _metadata_events_include_type(metadata_events, "models_etag")
     ):
         for name in ("refresh_models_etag", "record_models_etag"):
             handler = getattr(sess, name, None)
@@ -1316,7 +1932,9 @@ async def _apply_stream_runtime_session_side_effects(
                 break
         runtime_state.models_etag_to_refresh = None
 
-    if getattr(runtime_state, "rate_limits_to_record", None) is not None and not _rate_limits_from_sampling_result(raw_result):
+    if getattr(runtime_state, "rate_limits_to_record", None) is not None and (
+        not _rate_limits_from_sampling_result(raw_result) or _metadata_events_include_type(metadata_events, "rate_limits")
+    ):
         recorder = getattr(sess, "record_rate_limits_info", None)
         if callable(recorder):
             await _maybe_await(recorder(runtime_state.rate_limits_to_record))
@@ -1330,6 +1948,44 @@ async def _apply_stream_runtime_session_side_effects(
         if callable(recorder) and token_usage is not None:
             await _maybe_await(recorder(turn_context, token_usage))
         runtime_state.token_usage_to_record = None
+
+
+async def _apply_stream_metadata_event_side_effects(
+    sess: Any,
+    turn_context: Any,
+    runtime_state: SamplingRuntimeEventApplicationState,
+) -> None:
+    metadata_events = tuple(getattr(runtime_state, "metadata_events", ()) or ())
+    cursor = getattr(turn_context, "_stream_metadata_events_applied_count", 0)
+    if not isinstance(cursor, int) or isinstance(cursor, bool) or cursor < 0:
+        cursor = 0
+
+    for record in metadata_events[cursor:]:
+        if not isinstance(record, Mapping):
+            continue
+        server_model = record.get("server_model_to_check")
+        if isinstance(server_model, str) and not bool(getattr(turn_context, "server_model_warning_emitted", False)):
+            handler = getattr(sess, "maybe_warn_on_server_model_mismatch", None)
+            if callable(handler) and await _maybe_await(handler(turn_context, server_model)):
+                try:
+                    object.__setattr__(turn_context, "server_model_warning_emitted", True)
+                except Exception:
+                    pass
+
+        model_verification = record.get("model_verification_to_emit")
+        if model_verification is not None and not bool(getattr(turn_context, "model_verification_emitted", False)):
+            handler = getattr(sess, "emit_model_verification", None)
+            if callable(handler):
+                await _maybe_await(handler(turn_context, model_verification))
+                try:
+                    object.__setattr__(turn_context, "model_verification_emitted", True)
+                except Exception:
+                    pass
+
+    try:
+        object.__setattr__(turn_context, "_stream_metadata_events_applied_count", len(metadata_events))
+    except Exception:
+        pass
 
 
 def _coerce_stream_token_usage(value: Any) -> TokenUsage | None:
@@ -1405,9 +2061,33 @@ def _stream_runtime_loop_tail_from_apply_plans(apply_plans: Sequence[Any]) -> di
 
 def _stream_completed_end_turn_needs_followup(stream_events: Sequence[Any]) -> bool:
     for event in stream_events:
-        if isinstance(event, Mapping) and event.get("type") == "completed" and event.get("end_turn") is False:
+        if (
+            isinstance(event, Mapping)
+            and _is_completed_sampling_stream_event_type(event.get("type"))
+            and _sampling_stream_completed_end_turn(event) is False
+        ):
             return True
     return False
+
+
+def _stream_apply_plans_need_followup(apply_plans: Sequence[Any]) -> bool:
+    for plan in apply_plans:
+        done = getattr(plan, "output_item_done_apply_plan", None)
+        if done is None:
+            continue
+        mailbox_preemption = getattr(done, "mailbox_preemption_plan", None)
+        if mailbox_preemption is not None and bool(getattr(mailbox_preemption, "needs_follow_up", False)):
+            return True
+    return False
+
+
+def _update_stream_runtime_last_agent_message_from_response_items(
+    runtime_state: SamplingRuntimeEventApplicationState,
+    response_items: Sequence[ResponseItem],
+) -> None:
+    last_agent_message = get_last_assistant_message_from_turn(tuple(response_items))
+    if last_agent_message is not None:
+        runtime_state.result_last_agent_message = last_agent_message
 
 
 def _last_agent_message_from_sampling(
@@ -1504,6 +2184,7 @@ def _sampling_stream_event_apply_plans_from_result(
     runtime_state: SamplingRuntimeEventApplicationState,
     *,
     turn_context: Any = None,
+    has_pending_mailbox_items: bool = False,
 ) -> tuple[Any, ...]:
     stream_events = _stream_events_from_sampling_result(raw_result)
     if not stream_events:
@@ -1523,7 +2204,7 @@ def _sampling_stream_event_apply_plans_from_result(
         item = event.get("item") if event.get("type") == "output_item_done" else None
         output_item_done_item = item if isinstance(item, ResponseItem) else None
         output_item_done_result = (
-            _stream_event_output_result_for_item(output_item_done_item)
+            _stream_event_output_result_for_item(output_item_done_item, plan_mode=plan_mode)
             if output_item_done_item is not None
             else None
         )
@@ -1533,6 +2214,7 @@ def _sampling_stream_event_apply_plans_from_result(
             state=output_state,
             output_item_done_item=output_item_done_item,
             output_item_done_result=output_item_done_result,
+            has_pending_mailbox_items=has_pending_mailbox_items,
             assistant_message_stream_parsers=assistant_message_stream_parsers,
             plan_item_id=runtime_state.plan_item_id,
             plan_item_started=runtime_state.plan_item_started,
@@ -1553,8 +2235,11 @@ def _sampling_stream_event_apply_plans_from_result(
     return tuple(apply_plans)
 
 
-def _stream_event_output_result_for_item(item: ResponseItem) -> OutputItemResult:
-    return OutputItemResult(needs_follow_up=item.type in _TOOL_RESPONSE_ITEM_TYPES)
+def _stream_event_output_result_for_item(item: ResponseItem, *, plan_mode: bool) -> OutputItemResult:
+    return OutputItemResult(
+        needs_follow_up=item.type in _TOOL_RESPONSE_ITEM_TYPES,
+        last_agent_message=last_assistant_message_from_item(item, plan_mode),
+    )
 
 
 _TOOL_RESPONSE_ITEM_TYPES = {
@@ -1577,13 +2262,57 @@ def _sampling_stream_event_payload(event: Mapping[str, Any]) -> Any:
         "models_etag",
     }:
         return event.get(event_type)
-    if event_type == "completed":
+    if _is_completed_sampling_stream_event_type(event_type):
         return {
-            "response_id": event.get("response_id"),
-            "token_usage": event.get("token_usage"),
-            "end_turn": event.get("end_turn"),
+            "response_id": _sampling_stream_completed_response_id(event),
+            "token_usage": _sampling_stream_completed_token_usage(event),
+            "end_turn": _sampling_stream_completed_end_turn(event),
         }
     return event
+
+
+def _is_completed_sampling_stream_event_type(event_type: Any) -> bool:
+    return event_type in {"completed", "response.completed"}
+
+
+def _sampling_stream_completed_response(event: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    response = event.get("response")
+    return response if isinstance(response, Mapping) else None
+
+
+def _sampling_stream_completed_response_id(event: Mapping[str, Any]) -> str | None:
+    value = event.get("response_id")
+    if isinstance(value, str):
+        return value
+    response = _sampling_stream_completed_response(event)
+    if response is None:
+        return None
+    value = response.get("id")
+    return value if isinstance(value, str) else None
+
+
+def _sampling_stream_completed_token_usage(event: Mapping[str, Any]) -> Any:
+    usage = event.get("token_usage")
+    if usage is not None:
+        return usage
+    usage = event.get("usage")
+    if usage is not None:
+        return usage
+    response = _sampling_stream_completed_response(event)
+    if response is None:
+        return None
+    return response.get("usage")
+
+
+def _sampling_stream_completed_end_turn(event: Mapping[str, Any]) -> bool | None:
+    value = event.get("end_turn")
+    if isinstance(value, bool):
+        return value
+    response = _sampling_stream_completed_response(event)
+    if response is None:
+        return None
+    value = response.get("end_turn")
+    return value if isinstance(value, bool) else None
 
 
 def _int_event_field(event: Mapping[str, Any], name: str) -> int | None:
@@ -1754,8 +2483,19 @@ async def _apply_usage_limit_goal_runtime(sess: Any, turn_context: Any) -> None:
 
 
 async def _maybe_run_mid_turn_auto_compact(sess: Any, turn_context: Any) -> bool:
+    result = await _maybe_run_mid_turn_auto_compact_result(sess, turn_context)
+    return result.success
+
+
+@dataclass(frozen=True)
+class _AutoCompactResult:
+    success: bool = True
+    compacted: bool = False
+
+
+async def _maybe_run_mid_turn_auto_compact_result(sess: Any, turn_context: Any) -> _AutoCompactResult:
     try:
-        await _run_auto_compact_if_needed(
+        compacted = await _run_auto_compact_if_needed(
             sess,
             turn_context,
             initial_context_injection="before_last_user_message",
@@ -1764,8 +2504,8 @@ async def _maybe_run_mid_turn_auto_compact(sess: Any, turn_context: Any) -> bool
         )
     except CodexErr as exc:
         await _handle_auto_compact_error(sess, turn_context, exc)
-        return False
-    return True
+        return _AutoCompactResult(success=False)
+    return _AutoCompactResult(success=True, compacted=compacted)
 
 
 async def _maybe_run_pre_sampling_auto_compact(sess: Any, turn_context: Any) -> None:
@@ -1796,7 +2536,7 @@ async def _run_auto_compact_if_needed(
     initial_context_injection: str,
     reason: str,
     phase: str,
-) -> None:
+) -> bool:
     status_provider = _mapping_or_attr(sess, "auto_compact_token_status")
     if not callable(status_provider):
         status_provider = _mapping_or_attr(sess, "get_auto_compact_token_status")
@@ -1804,12 +2544,12 @@ async def _run_auto_compact_if_needed(
         return
     status = await _call_optional_turn_context(status_provider, turn_context)
     if not _auto_compact_token_limit_reached(status):
-        return
+        return False
     compact = _mapping_or_attr(sess, "run_auto_compact")
     if not callable(compact):
         compact = _mapping_or_attr(sess, "auto_compact")
     if not callable(compact):
-        return
+        return False
     await _call_auto_compact(
         compact,
         turn_context,
@@ -1817,6 +2557,7 @@ async def _run_auto_compact_if_needed(
         reason=reason,
         phase=phase,
     )
+    return True
 
 
 async def _handle_auto_compact_error(sess: Any, turn_context: Any, error: CodexErr) -> None:
@@ -1904,6 +2645,7 @@ async def _send_terminal_error_event(sess: Any, turn_context: Any, error: CodexE
 
 
 async def _emit_turn_started_lifecycle(sess: Any, turn_context: Any) -> None:
+    await _mark_turn_timing_started(sess, turn_context)
     sender = getattr(sess, "send_event", None)
     if callable(sender):
         await _maybe_await(
@@ -1931,6 +2673,7 @@ async def _emit_turn_complete_lifecycle(
     turn_context: Any,
     last_agent_message: str | None,
 ) -> None:
+    await _mark_turn_timing_completed(sess, turn_context)
     flusher = getattr(sess, "flush_rollout", None)
     if callable(flusher):
         try:
@@ -1958,6 +2701,122 @@ async def _emit_turn_complete_lifecycle(
                 ),
             )
         )
+
+
+async def _mark_turn_timing_started(sess: Any, turn_context: Any) -> None:
+    timing_state = _turn_timing_state(sess, turn_context)
+    marker = getattr(timing_state, "mark_turn_started", None)
+    if not callable(marker):
+        return
+    started_at = await _call_timing_marker(marker)
+    if isinstance(started_at, int) and not isinstance(started_at, bool):
+        _set_optional_int_attr(turn_context, "started_at", started_at)
+
+
+async def _mark_turn_timing_completed(sess: Any, turn_context: Any) -> None:
+    timing_state = _turn_timing_state(sess, turn_context)
+    completed = getattr(timing_state, "completed_at_and_duration_ms", None)
+    if callable(completed):
+        value = await _maybe_await(completed())
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes)) and len(value) >= 2:
+            completed_at, duration_ms = value[0], value[1]
+            if isinstance(completed_at, int) and not isinstance(completed_at, bool):
+                _set_optional_int_attr(turn_context, "completed_at", completed_at)
+            if isinstance(duration_ms, int) and not isinstance(duration_ms, bool):
+                _set_optional_int_attr(turn_context, "duration_ms", duration_ms)
+    await _sync_turn_timing_first_token_ms(turn_context, timing_state)
+
+
+async def _record_response_items_turn_ttfm(
+    sess: Any,
+    turn_context: Any,
+    response_items: Sequence[ResponseItem],
+) -> None:
+    for item in response_items:
+        if not isinstance(item, ResponseItem):
+            continue
+        turn_item = handle_non_tool_response_item(item, _turn_context_plan_mode(turn_context))
+        if turn_item is None:
+            continue
+        await _record_turn_item_ttfm(sess, turn_context, turn_item)
+
+
+async def _record_stream_runtime_event_turn_ttfm(sess: Any, turn_context: Any, event: Any) -> None:
+    if _field_or_mapping_value(event, "type", None) != "item_completed":
+        return
+    item = _field_or_mapping_value(event, "item", None)
+    if isinstance(item, TurnItem):
+        turn_item = item
+    elif isinstance(item, Mapping):
+        try:
+            turn_item = TurnItem.from_mapping(item)
+        except Exception:
+            return
+    else:
+        return
+    await _record_turn_item_ttfm(sess, turn_context, turn_item)
+
+
+async def _record_turn_item_ttfm(sess: Any, turn_context: Any, item: TurnItem) -> None:
+    timing_state = _turn_timing_state(sess, turn_context)
+    recorder = getattr(timing_state, "record_ttfm_for_turn_item", None)
+    if not callable(recorder):
+        return
+    duration = await _maybe_await(recorder(item))
+    if duration is None:
+        return
+    await _record_turn_ttfm_duration_metric(sess, turn_context, duration)
+
+
+async def _record_turn_ttfm_duration_metric(sess: Any, turn_context: Any, duration: Any) -> None:
+    telemetry = _session_telemetry(sess, turn_context)
+    recorder = getattr(telemetry, "record_duration", None)
+    if not callable(recorder):
+        return
+    await _maybe_await(recorder(TURN_TTFM_DURATION_METRIC, duration, ()))
+
+
+def _session_telemetry(sess: Any, turn_context: Any) -> Any:
+    telemetry = getattr(turn_context, "session_telemetry", None)
+    if telemetry is not None:
+        return telemetry
+    telemetry = getattr(sess, "session_telemetry", None)
+    if telemetry is not None:
+        return telemetry
+    services = getattr(sess, "services", None)
+    return getattr(services, "session_telemetry", None)
+
+
+def _turn_timing_state(sess: Any, turn_context: Any) -> Any:
+    return getattr(turn_context, "turn_timing_state", None) or getattr(sess, "turn_timing_state", None)
+
+
+async def _call_timing_marker(marker: Callable[..., Any]) -> Any:
+    try:
+        signature = inspect.signature(marker)
+    except (TypeError, ValueError):
+        return await _maybe_await(marker())
+    required = [
+        parameter
+        for parameter in signature.parameters.values()
+        if parameter.default is inspect.Parameter.empty
+        and parameter.kind
+        in {
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        }
+    ]
+    if required:
+        return None
+    return await _maybe_await(marker())
+
+
+def _set_optional_int_attr(target: Any, name: str, value: int) -> None:
+    try:
+        setattr(target, name, value)
+    except Exception:
+        pass
 
 
 async def _send_warning_event(sess: Any, turn_context: Any, message: str) -> None:
@@ -2184,9 +3043,18 @@ def _stop_outcome_field(outcome: Any, name: str, default: Any = None) -> Any:
 
 
 async def _record_sampling_token_usage(sess: Any, turn_context: Any, raw_result: Any) -> None:
-    await _apply_sampling_metadata(sess, turn_context, raw_result)
+    stream_events = _stream_events_from_sampling_result(raw_result)
+    await _apply_sampling_metadata(
+        sess,
+        turn_context,
+        raw_result,
+        skip_server_model=_stream_events_include_type(stream_events, "server_model"),
+        skip_model_verifications=_stream_events_include_type(stream_events, "model_verifications"),
+        skip_server_reasoning_included=_stream_events_include_type(stream_events, "server_reasoning_included"),
+        skip_models_etag=_stream_events_include_type(stream_events, "models_etag"),
+    )
     rate_limit_recorder = getattr(sess, "record_rate_limits_info", None)
-    if callable(rate_limit_recorder):
+    if callable(rate_limit_recorder) and not _stream_events_include_type(stream_events, "rate_limits"):
         for snapshot in _rate_limits_from_sampling_result(raw_result):
             await _maybe_await(rate_limit_recorder(snapshot))
     usage = _token_usage_from_sampling_result(raw_result)
@@ -2195,55 +3063,80 @@ async def _record_sampling_token_usage(sess: Any, turn_context: Any, raw_result:
     recorder = getattr(sess, "record_token_usage_info", None)
     if callable(recorder):
         await _maybe_await(recorder(turn_context, usage))
-    if _stream_events_from_sampling_result(raw_result):
+    if stream_events:
         return
     sender = getattr(sess, "send_token_count_event", None)
     if callable(sender):
         await _maybe_await(sender(turn_context))
 
 
-async def _apply_sampling_metadata(sess: Any, turn_context: Any, raw_result: Any) -> None:
-    server_models = _metadata_tuple(raw_result, "server_models")
-    if not server_models:
-        server_model = _first_metadata_attr(raw_result, "server_model")
-        server_models = (server_model,) if isinstance(server_model, str) else ()
-    for server_model in server_models:
-        if not isinstance(server_model, str):
-            continue
-        warned = bool(getattr(turn_context, "server_model_warning_emitted", False))
-        if not warned:
-            handler = getattr(sess, "maybe_warn_on_server_model_mismatch", None)
-            if callable(handler) and await _maybe_await(handler(turn_context, server_model)):
-                try:
-                    object.__setattr__(turn_context, "server_model_warning_emitted", True)
-                except Exception:
-                    pass
+async def _apply_sampling_metadata(
+    sess: Any,
+    turn_context: Any,
+    raw_result: Any,
+    *,
+    skip_server_model: bool = False,
+    skip_model_verifications: bool = False,
+    skip_server_reasoning_included: bool = False,
+    skip_models_etag: bool = False,
+) -> None:
+    if not skip_server_model:
+        server_models = _metadata_tuple(raw_result, "server_models")
+        if not server_models:
+            server_model = _first_metadata_attr(raw_result, "server_model")
+            server_models = (server_model,) if isinstance(server_model, str) else ()
+        for server_model in server_models:
+            if not isinstance(server_model, str):
+                continue
+            warned = bool(getattr(turn_context, "server_model_warning_emitted", False))
+            if not warned:
+                handler = getattr(sess, "maybe_warn_on_server_model_mismatch", None)
+                if callable(handler) and await _maybe_await(handler(turn_context, server_model)):
+                    try:
+                        object.__setattr__(turn_context, "server_model_warning_emitted", True)
+                    except Exception:
+                        pass
 
-    model_verifications = _metadata_tuple(raw_result, "model_verifications")
-    if model_verifications:
-        emitted = bool(getattr(turn_context, "model_verification_emitted", False))
-        if not emitted:
-            handler = getattr(sess, "emit_model_verification", None)
-            if callable(handler):
-                await _maybe_await(handler(turn_context, model_verifications))
-                try:
-                    object.__setattr__(turn_context, "model_verification_emitted", True)
-                except Exception:
-                    pass
+    if not skip_model_verifications:
+        model_verifications = _metadata_tuple(raw_result, "model_verifications")
+        if model_verifications:
+            emitted = bool(getattr(turn_context, "model_verification_emitted", False))
+            if not emitted:
+                handler = getattr(sess, "emit_model_verification", None)
+                if callable(handler):
+                    await _maybe_await(handler(turn_context, model_verifications))
+                    try:
+                        object.__setattr__(turn_context, "model_verification_emitted", True)
+                    except Exception:
+                        pass
 
     server_reasoning_included = _first_metadata_attr(raw_result, "server_reasoning_included")
-    if isinstance(server_reasoning_included, bool):
+    if not skip_server_reasoning_included and isinstance(server_reasoning_included, bool):
         handler = getattr(sess, "set_server_reasoning_included", None)
         if callable(handler):
             await _maybe_await(handler(server_reasoning_included))
 
     models_etag = _first_metadata_attr(raw_result, "models_etag")
-    if isinstance(models_etag, str):
+    if not skip_models_etag and isinstance(models_etag, str):
         for name in ("refresh_models_etag", "record_models_etag"):
             handler = getattr(sess, name, None)
             if callable(handler):
                 await _maybe_await(handler(models_etag))
                 break
+
+
+def _stream_events_include_type(stream_events: Sequence[Any], event_type: str) -> bool:
+    for event in stream_events:
+        if isinstance(event, Mapping) and event.get("type") == event_type:
+            return True
+    return False
+
+
+def _metadata_events_include_type(metadata_events: Sequence[Any], event_type: str) -> bool:
+    for event in metadata_events:
+        if isinstance(event, Mapping) and event.get("event_type") == event_type:
+            return True
+    return False
 
 
 def _token_usage_from_sampling_result(raw_result: Any) -> TokenUsage | None:
@@ -2359,31 +3252,153 @@ async def _handle_response_tool_calls(
     router: Any,
     response_items: Sequence[ResponseItem],
 ) -> tuple[ResponseItem, ...]:
+    return await _handle_tool_call_items(
+        sess,
+        turn_context,
+        router,
+        response_items,
+        record_tool_call_items=False,
+    )
+
+
+def _stream_non_tool_response_items(
+    stream_events: Sequence[Any],
+    *,
+    skip_items: Sequence[ResponseItem],
+) -> tuple[ResponseItem, ...]:
+    if not stream_events:
+        return ()
+    items: list[ResponseItem] = []
+    for event in stream_events:
+        if not isinstance(event, Mapping) or event.get("type") != "output_item_done":
+            continue
+        item = event.get("item")
+        if not isinstance(item, ResponseItem) or _response_item_already_recorded(item, skip_items):
+            continue
+        try:
+            call = ToolRouter.build_tool_call(item)
+        except FunctionCallError:
+            continue
+        if call is not None:
+            continue
+        items.append(item)
+    return tuple(items)
+
+
+def _response_item_already_recorded(item: ResponseItem, recorded: Sequence[ResponseItem]) -> bool:
+    for existing in recorded:
+        if existing == item:
+            return True
+        if item.id is not None and existing.type == item.type and existing.id == item.id:
+            return True
+        if item.call_id is not None and existing.type == item.type and existing.call_id == item.call_id:
+            return True
+    return False
+
+
+async def _handle_stream_response_tool_calls(
+    sess: Any,
+    turn_context: Any,
+    router: Any,
+    stream_events: Sequence[Any],
+    *,
+    skip_call_ids: set[str],
+) -> tuple[ResponseItem, ...]:
+    if not stream_events:
+        return ()
+    items: list[ResponseItem] = []
+    for event in stream_events:
+        if not isinstance(event, Mapping) or event.get("type") != "output_item_done":
+            continue
+        item = event.get("item")
+        if not isinstance(item, ResponseItem):
+            continue
+        call_id = getattr(item, "call_id", None)
+        if isinstance(call_id, str) and call_id in skip_call_ids:
+            continue
+        items.append(item)
+    if not items:
+        return ()
+    return await _handle_tool_call_items(
+        sess,
+        turn_context,
+        router,
+        items,
+        record_tool_call_items=True,
+    )
+
+
+async def _handle_tool_call_items(
+    sess: Any,
+    turn_context: Any,
+    router: Any,
+    response_items: Sequence[ResponseItem],
+    *,
+    record_tool_call_items: bool,
+) -> tuple[ResponseItem, ...]:
     if not isinstance(router, ToolRouter):
         return ()
     runtime = ToolCallRuntime(router)
-    tool_outputs: list[ResponseItem] = []
+    tool_outputs: list[ResponseItem | None] = []
+    pending: list[tuple[int, Any]] = []
     for item in response_items:
         try:
             call = ToolRouter.build_tool_call(item)
         except FunctionCallError as exc:
             if exc.is_model_response:
+                if record_tool_call_items:
+                    await _maybe_await(sess.record_conversation_items(turn_context, (item,)))
                 response_input_item = ResponseInputItem.function_call_output("", exc.message)
                 tool_outputs.append(ResponseItem.from_response_input_item(response_input_item))
                 continue
             raise CodexErr.fatal(exc.message) from exc
         if call is None:
             continue
-        try:
-            response_input_item = await runtime.handle_tool_call(
-                call,
-                session=sess,
-                turn=turn_context,
+        if record_tool_call_items:
+            await _maybe_await(sess.record_conversation_items(turn_context, (item,)))
+        output_index = len(tool_outputs)
+        tool_outputs.append(None)
+        pending.append(
+            (
+                output_index,
+                asyncio.create_task(
+                    runtime.handle_tool_call(
+                        call,
+                        session=sess,
+                        turn=turn_context,
+                    )
+                ),
             )
+        )
+    for output_index, task in pending:
+        try:
+            response_input_item = await task
         except RuntimeError as exc:
+            for _, pending_task in pending:
+                if pending_task is not task:
+                    pending_task.cancel()
+            await _drain_cancelled_tool_tasks(pending)
             raise CodexErr.fatal(str(exc)) from exc
-        tool_outputs.append(ResponseItem.from_response_input_item(response_input_item))
-    return tuple(tool_outputs)
+        tool_outputs[output_index] = ResponseItem.from_response_input_item(response_input_item)
+    return tuple(item for item in tool_outputs if item is not None)
+
+
+def _tool_call_ids(response_items: Sequence[ResponseItem]) -> set[str]:
+    call_ids: set[str] = set()
+    for item in response_items:
+        try:
+            call = ToolRouter.build_tool_call(item)
+        except FunctionCallError:
+            continue
+        if call is not None:
+            call_ids.add(call.call_id)
+    return call_ids
+
+
+async def _drain_cancelled_tool_tasks(tasks: Sequence[tuple[int, Any]]) -> None:
+    for _index, task in tasks:
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
 
 
 async def _default_built_tools(_sess: Any, _turn_context: Any) -> Any:
@@ -2397,6 +3412,10 @@ async def _default_built_tools(_sess: Any, _turn_context: Any) -> Any:
         exec_permission_approvals_enabled=_feature_enabled(
             getattr(_turn_context, "features", None),
             Feature.EXEC_PERMISSION_APPROVALS,
+        ),
+        request_permissions_tool_enabled=_feature_enabled(
+            getattr(_turn_context, "features", None),
+            Feature.REQUEST_PERMISSIONS_TOOL,
         ),
         can_request_original_image_detail=_can_request_original_image_detail(model_info),
     )

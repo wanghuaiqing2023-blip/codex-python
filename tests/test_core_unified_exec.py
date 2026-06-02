@@ -1,4 +1,7 @@
+import sys
+import time
 import unittest
+from types import SimpleNamespace
 
 from pycodex.core import (
     DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS,
@@ -10,6 +13,7 @@ from pycodex.core import (
     MAX_YIELD_TIME_MS,
     MIN_EMPTY_YIELD_TIME_MS,
     MIN_YIELD_TIME_MS,
+    ProcessEntry,
     ProcessOutputChunk,
     ProcessState,
     TRAILING_OUTPUT_GRACE_MS,
@@ -18,6 +22,7 @@ from pycodex.core import (
     UNIFIED_EXEC_OUTPUT_MAX_TOKENS,
     UNIFIED_EXEC_ENV,
     UnifiedExecError,
+    UnifiedExecProcessManager,
     apply_unified_exec_env,
     clamp_yield_time,
     env_overlay_for_exec_server,
@@ -38,7 +43,7 @@ from pycodex.core import (
     split_valid_utf8_prefix_with_max,
     terminal_interaction_process_id,
 )
-from pycodex.protocol import ExecToolCallOutput, StreamOutput
+from pycodex.protocol import ExecToolCallOutput, StreamOutput, TruncationPolicyConfig
 
 
 class CoreUnifiedExecHeadTailBufferTests(unittest.TestCase):
@@ -404,6 +409,197 @@ class CoreUnifiedExecHeadTailBufferTests(unittest.TestCase):
     def test_process_pruning_empty_or_all_protected_has_no_candidate(self) -> None:
         self.assertIsNone(process_id_to_prune_from_meta([]))
         self.assertIsNone(process_id_to_prune_from_meta([(1, 10, True), (2, 20, False)]))
+
+    def test_unified_exec_process_manager_allocates_deterministic_ids(self) -> None:
+        manager = UnifiedExecProcessManager()
+
+        first = manager.allocate_process_id()
+        second = manager.allocate_process_id()
+
+        self.assertEqual(first, 1000)
+        self.assertEqual(second, 1001)
+        self.assertEqual(manager.reserved_process_ids(), frozenset({1000, 1001}))
+
+    def test_unified_exec_process_manager_release_removes_reserved_and_entry(self) -> None:
+        manager = UnifiedExecProcessManager()
+        process_id = manager.allocate_process_id()
+        process = FakeUnifiedExecProcess(False)
+        manager.store_process(process_id, process, call_id="call-1", last_used=10)
+
+        entry = manager.release_process_id(process_id)
+
+        self.assertIsInstance(entry, ProcessEntry)
+        self.assertIs(entry.process, process)
+        self.assertIsNone(manager.get_process(process_id))
+        self.assertEqual(manager.reserved_process_ids(), frozenset())
+
+    def test_unified_exec_process_manager_prunes_exited_process_when_full(self) -> None:
+        manager = UnifiedExecProcessManager(max_processes=10)
+        ids = [manager.allocate_process_id() for _ in range(10)]
+        pruned = None
+        for index, process_id in enumerate(ids):
+            pruned = manager.store_process(
+                process_id,
+                FakeUnifiedExecProcess(index == 1),
+                last_used=10 + index,
+            )
+
+        self.assertIsNotNone(pruned)
+        assert pruned is not None
+        self.assertEqual(pruned.process_id, ids[1])
+        self.assertIsNone(manager.get_process(ids[1]))
+        self.assertEqual(manager.process_count(), 9)
+
+    def test_unified_exec_process_manager_protects_recent_entries_when_pruning(self) -> None:
+        manager = UnifiedExecProcessManager(max_processes=10)
+        ids = [manager.allocate_process_id() for _ in range(10)]
+        for index, process_id in enumerate(ids):
+            manager.store_process(
+                process_id,
+                FakeUnifiedExecProcess(index in {2, 9}),
+                last_used=10 + index,
+            )
+
+        self.assertIsNotNone(manager.get_process(ids[9]))
+        self.assertIsNone(manager.get_process(ids[0]))
+        self.assertEqual(manager.process_count(), 9)
+
+    def test_unified_exec_process_manager_terminate_all_processes_clears_store(self) -> None:
+        manager = UnifiedExecProcessManager(max_processes=4)
+        first = manager.allocate_process_id()
+        second = manager.allocate_process_id()
+        first_process = FakeUnifiedExecProcess(False)
+        second_process = FakeUnifiedExecProcess(False)
+        manager.store_process(first, first_process, last_used=10)
+        manager.store_process(second, second_process, last_used=20)
+
+        entries = manager.terminate_all_processes()
+
+        self.assertEqual({entry.process_id for entry in entries}, {first, second})
+        self.assertTrue(first_process.terminated)
+        self.assertTrue(second_process.terminated)
+        self.assertEqual(manager.process_count(), 0)
+        self.assertEqual(manager.reserved_process_ids(), frozenset())
+
+    def test_unified_exec_process_manager_exec_command_returns_completed_output(self) -> None:
+        manager = UnifiedExecProcessManager()
+        process_id = manager.allocate_process_id()
+
+        output = manager.exec_command(
+            SimpleNamespace(
+                command=(sys.executable, "-c", "print('managed hello')"),
+                process_id=process_id,
+                yield_time_ms=1_000,
+                max_output_tokens=None,
+                cwd=None,
+                environment=None,
+                hook_command="python quick",
+                tty=False,
+                truncation_policy=TruncationPolicyConfig.tokens(10_000),
+            )
+        )
+
+        self.assertIsNone(output.process_id)
+        self.assertEqual(output.exit_code, 0)
+        self.assertIn(b"managed hello", output.raw_output)
+        self.assertIsNone(manager.get_process(process_id))
+        self.assertNotIn(process_id, manager.reserved_process_ids())
+
+    def test_unified_exec_process_manager_write_stdin_completes_live_session(self) -> None:
+        manager = UnifiedExecProcessManager()
+        process_id = manager.allocate_process_id()
+        script = (
+            "import sys; "
+            "print('ready', flush=True); "
+            "line = sys.stdin.readline(); "
+            "print('got:' + line.strip(), flush=True)"
+        )
+
+        initial = manager.exec_command(
+            SimpleNamespace(
+                command=(sys.executable, "-c", script),
+                process_id=process_id,
+                yield_time_ms=250,
+                max_output_tokens=None,
+                cwd=None,
+                environment=None,
+                hook_command="python interactive",
+                tty=True,
+                truncation_policy=TruncationPolicyConfig.tokens(10_000),
+            )
+        )
+
+        self.assertEqual(initial.process_id, process_id)
+        self.assertIn(b"ready", initial.raw_output)
+        self.assertIsNotNone(manager.get_process(process_id))
+
+        followup = manager.write_stdin(
+            SimpleNamespace(
+                process_id=process_id,
+                input="hello\n",
+                yield_time_ms=1_000,
+                max_output_tokens=None,
+            )
+        )
+
+        self.assertIsNone(followup.process_id)
+        self.assertEqual(followup.exit_code, 0)
+        self.assertIn(b"got:hello", followup.raw_output)
+        self.assertIsNone(manager.get_process(process_id))
+
+    def test_write_stdin_to_recently_exited_session_returns_final_output(self) -> None:
+        manager = UnifiedExecProcessManager()
+        process_id = manager.allocate_process_id()
+        script = (
+            "import sys, time; "
+            "print('ready', flush=True); "
+            "time.sleep(0.2); "
+            "print('late', flush=True)"
+        )
+
+        initial = manager.exec_command(
+            SimpleNamespace(
+                command=(sys.executable, "-c", script),
+                process_id=process_id,
+                yield_time_ms=250,
+                max_output_tokens=None,
+                cwd=None,
+                environment=None,
+                hook_command="python short-lived interactive",
+                tty=True,
+                truncation_policy=TruncationPolicyConfig.tokens(10_000),
+            )
+        )
+
+        self.assertEqual(initial.process_id, process_id)
+        self.assertIn(b"ready", initial.raw_output)
+        time.sleep(0.5)
+
+        followup = manager.write_stdin(
+            SimpleNamespace(
+                process_id=process_id,
+                input="hello after exit\n",
+                yield_time_ms=250,
+                max_output_tokens=None,
+            )
+        )
+
+        self.assertIsNone(followup.process_id)
+        self.assertEqual(followup.exit_code, 0)
+        self.assertIn(b"late", followup.raw_output)
+        self.assertIsNone(manager.get_process(process_id))
+
+
+class FakeUnifiedExecProcess:
+    def __init__(self, exited: bool) -> None:
+        self.exited = exited
+        self.terminated = False
+
+    def has_exited(self) -> bool:
+        return self.exited
+
+    def terminate(self) -> None:
+        self.terminated = True
 
 
 if __name__ == "__main__":

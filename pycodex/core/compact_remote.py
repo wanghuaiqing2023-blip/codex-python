@@ -92,7 +92,7 @@ def remove_orphan_outputs(history: Sequence[ResponseItem]) -> tuple[ResponseItem
     for item in items:
         call_id = item.call_id
         if item.type == "function_call_output":
-            if call_id == "" or call_id in function_call_ids or call_id in local_shell_call_ids:
+            if call_id in function_call_ids or call_id in local_shell_call_ids:
                 kept.append(item)
             continue
         if item.type == "custom_tool_call_output":
@@ -304,10 +304,20 @@ def _remove_corresponding_for(items: list[ResponseItem], removed: ResponseItem) 
     call_id = removed.call_id
     if not isinstance(call_id, str):
         return
-    if removed.type in {"function_call_output", "tool_search_output", "custom_tool_call_output"}:
-        counterpart_types = {"function_call", "tool_search_call", "custom_tool_call", "local_shell_call"}
-    elif removed.type in {"function_call", "tool_search_call", "custom_tool_call", "local_shell_call"}:
-        counterpart_types = {"function_call_output", "tool_search_output", "custom_tool_call_output"}
+    if removed.type == "function_call_output":
+        counterpart_types = {"function_call", "local_shell_call"}
+    elif removed.type == "function_call":
+        counterpart_types = {"function_call_output"}
+    elif removed.type == "tool_search_output":
+        counterpart_types = {"tool_search_call"}
+    elif removed.type == "tool_search_call":
+        counterpart_types = {"tool_search_output"}
+    elif removed.type == "custom_tool_call_output":
+        counterpart_types = {"custom_tool_call"}
+    elif removed.type == "custom_tool_call":
+        counterpart_types = {"custom_tool_call_output"}
+    elif removed.type == "local_shell_call":
+        counterpart_types = {"function_call_output"}
     else:
         return
     for index, item in enumerate(items):

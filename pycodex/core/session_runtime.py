@@ -9,6 +9,7 @@ can be layered on later without changing the request/sampling path.
 from __future__ import annotations
 
 import inspect
+import math
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from datetime import datetime, timezone as utc_timezone
 from enum import Enum
@@ -34,6 +35,7 @@ from pycodex.core.context_updates import (
     personality_message_for,
 )
 from pycodex.core.features import Feature
+from pycodex.core.event_mapping import parse_turn_item
 from pycodex.core.permissions_instructions import PermissionsInstructions
 from pycodex.core.handler_utils import (
     merge_permission_profiles,
@@ -47,6 +49,9 @@ from pycodex.core.codex_thread import (
     ThreadConfigSnapshot,
 )
 from pycodex.core.compact_remote import normalize_history_for_prompt
+from pycodex.core.tool_context import truncate_function_output_payload
+from pycodex.core.turn_prompt import is_guardian_reviewer_source
+from pycodex.core.unified_exec import UnifiedExecProcessManager
 from pycodex.protocol import (
     AdditionalPermissionProfile,
     ApprovalsReviewer,
@@ -58,34 +63,46 @@ from pycodex.protocol import (
     FileSystemSandboxPolicy,
     FunctionCallOutputContentItem,
     FunctionCallOutputPayload,
+    GranularApprovalConfig,
     ModeKind,
     PermissionProfile,
     RequestPermissionProfile,
     RequestPermissionsArgs,
     RequestPermissionsResponse,
+    ResponseInputItem,
     ResponseItem,
     EventMsg,
+    ItemCompletedEvent,
+    ItemStartedEvent,
     ModelRerouteEvent,
     ModelRerouteReason,
     ModelVerificationEvent,
     RateLimitSnapshot,
     SandboxPolicy,
     SERVICE_TIER_DEFAULT_REQUEST_VALUE,
+    SessionSource,
     ServiceTier,
     Settings,
     TokenCountEvent,
+    TruncationPolicyConfig,
     TokenUsage,
     TokenUsageInfo,
     TurnContextItem,
     TurnContextNetworkItem,
     TurnEnvironmentSelection,
+    TurnItem,
     UserInput,
+    UserMessageItem,
     WarningEvent,
 )
 
 _SETTING_UNSET = SETTINGS_UNSET
 CYBER_VERIFY_URL = "https://chatgpt.com/cyber"
 CYBER_SAFETY_URL = "https://developers.openai.com/codex/concepts/cyber-safety"
+
+
+def _default_services() -> SimpleNamespace:
+    return SimpleNamespace(unified_exec_manager=UnifiedExecProcessManager())
 
 
 @dataclass(frozen=True)
@@ -116,6 +133,8 @@ class InMemoryTurnContext:
     final_output_json_schema: Any = None
     server_model_warning_emitted: bool = False
     model_verification_emitted: bool = False
+    truncation_policy: TruncationPolicyConfig = field(default_factory=lambda: TruncationPolicyConfig.tokens(10_000))
+    session_source: SessionSource = field(default_factory=SessionSource.default)
 
 
 @dataclass
@@ -172,9 +191,11 @@ class InMemoryCodexSession:
     """Minimal session-like runtime for core user turns."""
 
     cwd: Path | str
+    thread_id: str = "thread"
     turn_id: str | None = None
     model_info: Any = None
     model_provider_id: str = "openai"
+    services: Any = field(default_factory=_default_services)
     user_instructions: str | None = None
     developer_instructions: str | None = None
     base_instructions: BaseInstructions | str = field(default_factory=BaseInstructions.default)
@@ -191,6 +212,7 @@ class InMemoryCodexSession:
     sandbox_policy: SandboxPolicy = field(default_factory=SandboxPolicy.danger_full_access)
     file_system_sandbox_policy: FileSystemSandboxPolicy | None = None
     permission_profile: PermissionProfile = field(default_factory=PermissionProfile.disabled)
+    allow_login_shell: bool = False
     features: Any = None
     include_environment_context: bool = True
     include_permissions_instructions: bool = True
@@ -201,6 +223,7 @@ class InMemoryCodexSession:
     network: Any = None
     environments: Any = None
     final_output_json_schema: Any = None
+    session_source: SessionSource = field(default_factory=SessionSource.default)
     collaboration_mode: Any = None
     realtime_active: bool = False
     personality: Any = None
@@ -231,6 +254,8 @@ class InMemoryCodexSession:
 
     def __post_init__(self) -> None:
         self.cwd = Path(self.cwd)
+        if not isinstance(self.thread_id, str):
+            raise TypeError("thread_id must be a string")
         if not isinstance(self.base_instructions, BaseInstructions):
             self.base_instructions = BaseInstructions(str(self.base_instructions))
         if not isinstance(self.model_provider_id, str):
@@ -256,6 +281,8 @@ class InMemoryCodexSession:
             raise TypeError("approvals_reviewer must be ApprovalsReviewer")
         if not isinstance(self.permission_profile, PermissionProfile):
             raise TypeError("permission_profile must be PermissionProfile")
+        if not isinstance(self.allow_login_shell, bool):
+            raise TypeError("allow_login_shell must be a bool")
         if not isinstance(self.sandbox_policy, SandboxPolicy):
             raise TypeError("sandbox_policy must be SandboxPolicy")
         if self.file_system_sandbox_policy is not None and not isinstance(
@@ -334,6 +361,7 @@ class InMemoryCodexSession:
                 include_collaboration_mode_instructions=self.include_collaboration_mode_instructions,
                 experimental_realtime_start_instructions=self.experimental_realtime_start_instructions,
                 cwd=turn_cwd,
+                permissions=SimpleNamespace(allow_login_shell=self.allow_login_shell),
                 service_tier=self.service_tier,
                 model_reasoning_effort=reasoning_effort,
                 model_reasoning_summary=self.reasoning_summary,
@@ -354,6 +382,8 @@ class InMemoryCodexSession:
             network=self.network,
             environments=environments,
             final_output_json_schema=final_output_json_schema,
+            truncation_policy=_turn_truncation_policy(model_info),
+            session_source=self.session_source,
         )
 
     async def preview_settings(self, updates: Any) -> ThreadConfigSnapshot:
@@ -581,12 +611,70 @@ class InMemoryCodexSession:
 
     async def record_conversation_items(
         self,
-        _turn_context: InMemoryTurnContext,
+        turn_context: InMemoryTurnContext,
         items: tuple[ResponseItem, ...],
     ) -> None:
         batch = tuple(items)
         self.recorded_batches.append(batch)
-        self.history.extend(batch)
+        self.history.extend(_process_history_items(batch, _turn_truncation_policy_from_context(turn_context)))
+
+    async def emit_turn_item_started(self, turn_context: InMemoryTurnContext, item: TurnItem) -> None:
+        if not isinstance(item, TurnItem):
+            item = TurnItem.from_mapping(item)
+        await self.send_event(
+            turn_context,
+            EventMsg.with_payload(
+                "item_started",
+                ItemStartedEvent(
+                    self.thread_id,
+                    _turn_id_for_event(turn_context),
+                    item,
+                    _now_unix_timestamp_ms(),
+                ),
+            ),
+        )
+
+    async def emit_turn_item_completed(self, turn_context: InMemoryTurnContext, item: TurnItem) -> None:
+        if not isinstance(item, TurnItem):
+            item = TurnItem.from_mapping(item)
+        await self.send_event(
+            turn_context,
+            EventMsg.with_payload(
+                "item_completed",
+                ItemCompletedEvent(
+                    self.thread_id,
+                    _turn_id_for_event(turn_context),
+                    item,
+                    _now_unix_timestamp_ms(),
+                ),
+            ),
+        )
+
+    async def record_user_prompt_and_emit_turn_item(
+        self,
+        turn_context: InMemoryTurnContext,
+        input: tuple[UserInput, ...] | list[UserInput],
+    ) -> None:
+        user_input = tuple(item if isinstance(item, UserInput) else UserInput.from_mapping(item) for item in input)
+        response_item = ResponseItem.from_response_input_item(ResponseInputItem.from_user_inputs(user_input))
+        await self.record_conversation_items(turn_context, (response_item,))
+        turn_item = TurnItem.user_message(UserMessageItem.new(user_input))
+        await self.emit_turn_item_started(turn_context, turn_item)
+        await self.emit_turn_item_completed(turn_context, turn_item)
+
+    async def record_response_item_and_emit_turn_item(
+        self,
+        turn_context: InMemoryTurnContext,
+        response_item: ResponseItem,
+    ) -> None:
+        if not isinstance(response_item, ResponseItem):
+            response_item = ResponseItem.from_mapping(response_item)
+        await self.record_conversation_items(turn_context, (response_item,))
+        turn_item = parse_turn_item(response_item)
+        if turn_item is None:
+            return
+        await self.emit_turn_item_started(turn_context, turn_item)
+        await self.emit_turn_item_completed(turn_context, turn_item)
 
     async def clone_history(self) -> InMemoryHistory:
         return InMemoryHistory(list(self.history))
@@ -764,6 +852,9 @@ class InMemoryCodexSession:
     ) -> RequestPermissionsResponse:
         if not isinstance(args, RequestPermissionsArgs):
             raise TypeError("args must be RequestPermissionsArgs")
+        approval_policy = _approval_policy_value_from_context(parent_ctx, self.approval_policy)
+        if _request_permissions_auto_denied_by_policy(approval_policy):
+            return RequestPermissionsResponse(RequestPermissionProfile())
         if self.request_permissions_callback is None:
             return RequestPermissionsResponse(RequestPermissionProfile())
         effective_cwd = Path(cwd) if cwd is not None else self.cwd
@@ -795,22 +886,43 @@ class _NoFeatures:
 
 
 class _ApprovalCell:
-    def __init__(self, value: AskForApproval) -> None:
+    def __init__(self, value: AskForApproval | GranularApprovalConfig) -> None:
         self._value = value
 
-    def value(self) -> AskForApproval:
+    def value(self) -> AskForApproval | GranularApprovalConfig:
         return self._value
 
 
 def _approval_policy_cell(value: Any) -> _ApprovalCell:
     if isinstance(value, _ApprovalCell):
         return value
+    return _ApprovalCell(_coerce_approval_policy_value(value))
+
+
+def _approval_policy_value_from_context(parent_ctx: Any, fallback: Any) -> AskForApproval | GranularApprovalConfig:
+    value = getattr(parent_ctx, "approval_policy", None)
+    if value is None:
+        value = fallback
+    return _coerce_approval_policy_value(value)
+
+
+def _coerce_approval_policy_value(value: Any) -> AskForApproval | GranularApprovalConfig:
+    if isinstance(value, _ApprovalCell):
+        return value.value()
     method = getattr(value, "value", None)
     if callable(method):
         value = method()
+    if isinstance(value, GranularApprovalConfig):
+        return value
     if not isinstance(value, AskForApproval):
         value = AskForApproval.parse(str(value))
-    return _ApprovalCell(value)
+    return value
+
+
+def _request_permissions_auto_denied_by_policy(policy: AskForApproval | GranularApprovalConfig) -> bool:
+    if policy is AskForApproval.NEVER:
+        return True
+    return isinstance(policy, GranularApprovalConfig) and not policy.allows_request_permissions()
 
 
 def _session_shell(shell: Any) -> Any:
@@ -848,6 +960,55 @@ def _function_output_item_with_replaced_images(item: ResponseItem, placeholder: 
 def _model_slug(model_info: Any) -> str:
     slug = getattr(model_info, "slug", None)
     return str(slug) if slug is not None else ""
+
+
+def _turn_id_for_event(turn_context: InMemoryTurnContext) -> str:
+    return str(turn_context.turn_id or "")
+
+
+def _now_unix_timestamp_ms() -> int:
+    return int(datetime.now(utc_timezone.utc).timestamp() * 1000)
+
+
+def _turn_truncation_policy(model_info: Any) -> TruncationPolicyConfig:
+    policy = getattr(model_info, "truncation_policy", None)
+    if isinstance(policy, TruncationPolicyConfig):
+        return policy
+    if isinstance(policy, Mapping):
+        return TruncationPolicyConfig.from_mapping(policy)
+    return TruncationPolicyConfig.tokens(10_000)
+
+
+def _turn_truncation_policy_from_context(turn_context: Any) -> TruncationPolicyConfig:
+    policy = getattr(turn_context, "truncation_policy", None)
+    if isinstance(policy, TruncationPolicyConfig):
+        return policy
+    if isinstance(policy, Mapping):
+        return TruncationPolicyConfig.from_mapping(policy)
+    return _turn_truncation_policy(getattr(turn_context, "model_info", None))
+
+
+def _scaled_truncation_policy(policy: TruncationPolicyConfig, scale: float) -> TruncationPolicyConfig:
+    limit = max(1, math.ceil(policy.limit * scale))
+    if policy.mode.value == "bytes":
+        return TruncationPolicyConfig.bytes(limit)
+    return TruncationPolicyConfig.tokens(limit)
+
+
+def _process_history_items(items: tuple[ResponseItem, ...], policy: TruncationPolicyConfig) -> tuple[ResponseItem, ...]:
+    return tuple(_process_history_item(item, policy) for item in items)
+
+
+def _process_history_item(item: ResponseItem, policy: TruncationPolicyConfig) -> ResponseItem:
+    if item.type not in {"function_call_output", "custom_tool_call_output"}:
+        return item
+    output = item.output
+    if output is None:
+        return item
+    return replace(
+        item,
+        output=truncate_function_output_payload(output, _scaled_truncation_policy(policy, 1.2)),
+    )
 
 
 def _default_collaboration_mode(model_info: Any, reasoning_effort: Any = None) -> CollaborationMode:
@@ -1049,10 +1210,7 @@ def _collaboration_mode_settings(collaboration_mode: Any) -> Any:
 
 
 def _turn_context_item_from_turn_context(turn_context: InMemoryTurnContext) -> TurnContextItem:
-    approval_policy = turn_context.approval_policy
-    value = approval_policy.value() if callable(getattr(approval_policy, "value", None)) else approval_policy
-    if not isinstance(value, AskForApproval):
-        value = AskForApproval.parse(str(value))
+    value = _coerce_approval_policy_value(turn_context.approval_policy)
     return TurnContextItem(
         turn_id=turn_context.turn_id,
         cwd=Path(turn_context.cwd),
@@ -1089,7 +1247,7 @@ def _build_initial_context_items(
         developer_sections.append(
             PermissionsInstructions.from_permission_profile(
                 turn_context.permission_profile,
-                _approval_policy_cell(turn_context.approval_policy).value(),
+                _coerce_approval_policy_value(turn_context.approval_policy),
                 getattr(config, "approvals_reviewer", ApprovalsReviewer.USER),
                 None,
                 turn_context.cwd,
@@ -1097,7 +1255,8 @@ def _build_initial_context_items(
                 _feature_enabled(turn_context.features, Feature.REQUEST_PERMISSIONS_TOOL),
             ).render()
         )
-    if turn_context.developer_instructions:
+    separate_guardian_developer_message = is_guardian_reviewer_source(turn_context.session_source)
+    if turn_context.developer_instructions and not separate_guardian_developer_message:
         developer_sections.append(str(turn_context.developer_instructions))
     if getattr(config, "include_collaboration_mode_instructions", False):
         collaboration = CollaborationModeInstructions.from_collaboration_mode(turn_context.collaboration_mode)
@@ -1142,6 +1301,10 @@ def _build_initial_context_items(
     contextual_user_message = build_contextual_user_message(contextual_user_sections)
     if contextual_user_message is not None:
         items.append(contextual_user_message)
+    if separate_guardian_developer_message and turn_context.developer_instructions:
+        developer_message = build_developer_update_item([str(turn_context.developer_instructions)])
+        if developer_message is not None:
+            items.append(developer_message)
     return items
 
 

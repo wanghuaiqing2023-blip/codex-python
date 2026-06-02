@@ -108,14 +108,14 @@ class CancellationToken:
 class ExecExpiration:
     kind: ExecExpirationKind
     timeout: timedelta | None = None
-    cancellation: CancellationToken | None = None
+    _cancellation: CancellationToken | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, ExecExpirationKind):
             object.__setattr__(self, "kind", ExecExpirationKind(self.kind))
         if self.timeout is not None:
             _validate_non_negative_timeout(self.timeout)
-        if self.cancellation is not None and not isinstance(self.cancellation, CancellationToken):
+        if self._cancellation is not None and not isinstance(self._cancellation, CancellationToken):
             raise TypeError("cancellation must be a CancellationToken")
 
     @classmethod
@@ -133,13 +133,7 @@ class ExecExpiration:
 
     @classmethod
     def default_timeout(cls) -> "ExecExpiration":
-        return cls(ExecExpirationKind.DEFAULT_TIMEOUT, cancellation=None)
-
-    @classmethod
-    def cancellation(cls, cancellation: CancellationToken) -> "ExecExpiration":
-        if not isinstance(cancellation, CancellationToken):
-            raise TypeError("cancellation must be a CancellationToken")
-        return cls(ExecExpirationKind.CANCELLATION, cancellation=cancellation)
+        return cls(ExecExpirationKind.DEFAULT_TIMEOUT, _cancellation=None)
 
     @classmethod
     def timeout_or_cancellation(
@@ -150,7 +144,7 @@ class ExecExpiration:
         _validate_non_negative_timeout(timeout)
         if not isinstance(cancellation, CancellationToken):
             raise TypeError("cancellation must be a CancellationToken")
-        return cls(ExecExpirationKind.TIMEOUT_OR_CANCELLATION, timeout=timeout, cancellation=cancellation)
+        return cls(ExecExpirationKind.TIMEOUT_OR_CANCELLATION, timeout=timeout, _cancellation=cancellation)
 
     def timeout_ms(self) -> int | None:
         if self.kind is ExecExpirationKind.TIMEOUT and self.timeout is not None:
@@ -198,6 +192,22 @@ class ExecExpiration:
         for task in pending:
             task.cancel()
         return ExecExpirationOutcome.CANCELLED if cancel_task in done else ExecExpirationOutcome.TIMED_OUT
+
+
+class _ExecExpirationCancellationAccessor:
+    def __get__(self, instance: ExecExpiration | None, owner: type[ExecExpiration]):
+        if instance is not None:
+            return instance._cancellation
+
+        def factory(cancellation: CancellationToken) -> ExecExpiration:
+            if not isinstance(cancellation, CancellationToken):
+                raise TypeError("cancellation must be a CancellationToken")
+            return owner(ExecExpirationKind.CANCELLATION, _cancellation=cancellation)
+
+        return factory
+
+
+ExecExpiration.cancellation = _ExecExpirationCancellationAccessor()  # type: ignore[assignment]
 
 
 @dataclass(frozen=True, slots=True)
@@ -390,7 +400,13 @@ def unified_exec_sandbox_denial_message(
     )
     if not is_likely_sandbox_denied(sandbox_type, exec_output):
         return None
-    return text if text else f"Process exited with code {resolved_exit_code}"
+    if text:
+        from pycodex.core.tool_context import formatted_truncate_text
+        from pycodex.core.unified_exec import UNIFIED_EXEC_OUTPUT_MAX_TOKENS
+        from pycodex.protocol import TruncationPolicyConfig
+
+        return formatted_truncate_text(text, TruncationPolicyConfig.tokens(UNIFIED_EXEC_OUTPUT_MAX_TOKENS))
+    return f"Process exited with code {resolved_exit_code}"
 
 
 def apply_network_to_env(env: Mapping[str, str], network: Any) -> dict[str, str]:

@@ -38,7 +38,7 @@ def build_turn_responses_request(
     summary: Any = None,
     service_tier: str | None = None,
     output_schema: Any = None,
-    output_schema_strict: bool = True,
+    output_schema_strict: bool | None = None,
 ) -> TurnResponsesRequestPlan:
     """Build a Responses API request for a single turn.
 

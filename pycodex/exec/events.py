@@ -69,6 +69,7 @@ class PatchApplyStatus(str, Enum):
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
     FAILED = "failed"
+    DECLINED = "declined"
 
 
 class PatchChangeKind(str, Enum):
@@ -173,19 +174,35 @@ def command_execution_item(
     id: str,
     *,
     command: str,
+    cwd: str | Path | None = None,
+    process_id: str | None = None,
+    source: str | None = None,
+    command_actions: tuple[JsonValue, ...] | list[JsonValue] | None = None,
     aggregated_output: str = "",
     exit_code: int | None = None,
+    duration_ms: int | None = None,
     status: JsonValue = CommandExecutionStatus.IN_PROGRESS,
 ) -> ExecThreadItem:
+    payload: dict[str, JsonValue] = {
+        "command": command,
+        "aggregated_output": aggregated_output,
+        "exit_code": exit_code,
+        "status": _command_status(status),
+    }
+    if cwd is not None:
+        payload["cwd"] = cwd.as_posix() if isinstance(cwd, Path) else str(cwd)
+    if process_id is not None:
+        payload["process_id"] = process_id
+    if source is not None:
+        payload["source"] = source
+    if command_actions is not None:
+        payload["command_actions"] = list(command_actions)
+    if duration_ms is not None:
+        payload["duration_ms"] = duration_ms
     return ExecThreadItem(
         id,
         "command_execution",
-        {
-            "command": command,
-            "aggregated_output": aggregated_output,
-            "exit_code": exit_code,
-            "status": _command_status(status),
-        },
+        payload,
     )
 
 
@@ -238,7 +255,14 @@ def file_change_item(id: str, item: FileChangeItem) -> ExecThreadItem:
         }
         for path, change in item.changes.items()
     ]
-    return ExecThreadItem(id, "file_change", {"changes": changes, "status": _patch_status(item.status)})
+    payload: dict[str, object] = {"changes": changes, "status": _patch_status(item.status)}
+    if item.auto_approved is not None:
+        payload["auto_approved"] = item.auto_approved
+    if item.stdout is not None:
+        payload["stdout"] = item.stdout
+    if item.stderr is not None:
+        payload["stderr"] = item.stderr
+    return ExecThreadItem(id, "file_change", payload)
 
 
 def web_search_item(id: str, item: WebSearchItem) -> ExecThreadItem:
@@ -274,8 +298,13 @@ def exec_item_from_turn_item(item: TurnItem, id: str) -> ExecThreadItem | None:
         return command_execution_item(
             id,
             command=item.item.command,
+            cwd=item.item.cwd,
+            process_id=item.item.process_id,
+            source=item.item.source,
+            command_actions=item.item.command_actions,
             aggregated_output=item.item.aggregated_output or "",
             exit_code=item.item.exit_code,
+            duration_ms=item.item.duration_ms,
             status=item.item.status,
         )
     if item.type == "FileChange" and isinstance(item.item, FileChangeItem):
@@ -414,8 +443,10 @@ def _patch_status(status: JsonValue) -> str:
         return PatchApplyStatus.IN_PROGRESS.value
     if raw in {"completed", "Completed"}:
         return PatchApplyStatus.COMPLETED.value
-    if raw in {"failed", "Failed", "declined", "Declined"}:
+    if raw in {"failed", "Failed"}:
         return PatchApplyStatus.FAILED.value
+    if raw in {"declined", "Declined"}:
+        return PatchApplyStatus.DECLINED.value
     return str(raw)
 
 

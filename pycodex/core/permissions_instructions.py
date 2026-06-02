@@ -294,9 +294,10 @@ def writable_roots_text(writable_roots: Iterable[WritableRoot] | None) -> str | 
         return None
     if isinstance(writable_roots, str):
         raise TypeError("writable_roots must be an iterable of WritableRoot values")
-    roots = sorted(writable_roots, key=lambda root: str(root.root))
+    roots = tuple(writable_roots)
     if any(not isinstance(root, WritableRoot) for root in roots):
         raise TypeError("writable_roots must contain WritableRoot values")
+    roots = tuple(sorted(roots, key=lambda root: str(root.root)))
     if not roots:
         return None
     roots_list = [f"`{root.root}`" for root in roots]

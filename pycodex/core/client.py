@@ -366,6 +366,7 @@ class ModelClient:
             parse_turn_metadata_header(turn_metadata_header),
         )
         insert_header_if_valid(headers, "x-client-request-id", str(self.state.thread_id))
+        insert_header_if_valid(headers, X_CODEX_INSTALLATION_ID_HEADER, str(self.state.installation_id))
         headers.update(build_session_headers(str(self.state.session_id), str(self.state.thread_id)))
         headers.update(self.build_responses_identity_headers())
         insert_header_if_valid(headers, OPENAI_BETA_HEADER, RESPONSES_WEBSOCKETS_V2_BETA_HEADER_VALUE)
@@ -916,7 +917,13 @@ def build_reasoning(model_info: Any, effort: Any, summary: Any) -> dict[str, Any
         return None
     default_effort = getattr(model_info, "default_reasoning_level", None)
     effective_summary = None if _reasoning_summary_is_none(summary) else summary
-    return {"effort": effort or default_effort, "summary": effective_summary}
+    reasoning: dict[str, Any] = {}
+    effective_effort = effort or default_effort
+    if effective_effort is not None:
+        reasoning["effort"] = effective_effort
+    if effective_summary is not None:
+        reasoning["summary"] = effective_summary
+    return reasoning
 
 
 def _reasoning_summary_is_none(summary: Any) -> bool:
@@ -961,11 +968,26 @@ def create_tools_json_for_responses_api(tools: Sequence[Any]) -> list[dict[str, 
             raise TypeError("tool must be a mapping or expose to_mapping()")
         if not isinstance(value, Mapping):
             raise TypeError("tool.to_mapping() must return a mapping")
-        serialized = _serialize_request_value(value)
+        serialized = _serialize_tool_spec_value(value)
         if not isinstance(serialized, Mapping):
             raise TypeError("tool serialization must produce a mapping")
         tools_json.append(dict(serialized))
     return tools_json
+
+
+def _serialize_tool_spec_value(value: Any) -> Any:
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, Mapping):
+        tool_type = value.get("type")
+        return {
+            str(key): _serialize_tool_spec_value(item)
+            for key, item in value.items()
+            if item is not None and not (tool_type == "function" and key == "output_schema")
+        }
+    if isinstance(value, (list, tuple)):
+        return [_serialize_tool_spec_value(item) for item in value]
+    return value
 
 
 def serialize_responses_request(request: Mapping[str, Any]) -> dict[str, Any]:
@@ -974,7 +996,14 @@ def serialize_responses_request(request: Mapping[str, Any]) -> dict[str, Any]:
     serialized = {str(key): _serialize_request_value(value) for key, value in request.items()}
     if serialized.get("instructions") == "":
         serialized.pop("instructions", None)
-    for key in ("service_tier", "prompt_cache_key", "text", "client_metadata"):
+    for key in (
+        "service_tier",
+        "prompt_cache_key",
+        "text",
+        "client_metadata",
+        "previous_response_id",
+        "generate",
+    ):
         if serialized.get(key) is None:
             serialized.pop(key, None)
     return serialized
@@ -984,7 +1013,11 @@ def _serialize_request_value(value: Any) -> Any:
     if isinstance(value, Enum):
         return value.value
     if isinstance(value, Mapping):
-        return {str(key): _serialize_request_value(item) for key, item in value.items()}
+        return {
+            str(key): _serialize_request_value(item)
+            for key, item in value.items()
+            if item is not None
+        }
     if isinstance(value, (list, tuple)):
         return [_serialize_request_value(item) for item in value]
     return value
@@ -1868,14 +1901,20 @@ def _apply_sampling_event_plan_to_state(
 
     output_done = getattr(plan, "output_item_done_apply_plan", None)
     if output_done is not None:
+        transition = getattr(output_done, "transition_plan", None)
+        finished_tool_input_event = getattr(transition, "finished_tool_input_event", None)
         output_done_record = {
             "should_continue_loop": getattr(output_done, "should_continue_loop", False),
             "preempt_for_mailbox_mail": getattr(output_done, "preempt_for_mailbox_mail", False),
             "has_streamed_assistant_text_plan": getattr(output_done, "streamed_assistant_text_plan", None) is not None,
             "has_plan_mode_assistant_done_plan": getattr(output_done, "plan_mode_assistant_done_plan", None) is not None,
+            "has_finished_tool_input_event": finished_tool_input_event is not None,
             "has_completed_item": getattr(output_done, "completed_item", None) is not None,
         }
         state.output_item_done_events = state.output_item_done_events + (output_done_record,)
+        if finished_tool_input_event is not None:
+            state.emitted_stream_events = state.emitted_stream_events + (finished_tool_input_event,)
+        state.active_tool_argument_diff_consumer = None
         completed_item = getattr(output_done, "completed_item", None)
         if isinstance(completed_item, ResponseItem) and completed_item not in state.completed_output_items:
             state.completed_output_items = state.completed_output_items + (completed_item,)
@@ -1889,7 +1928,6 @@ def _apply_sampling_event_plan_to_state(
             _apply_streamed_assistant_text_plan_to_state(streamed, state)
         plan_done = getattr(output_done, "plan_mode_assistant_done_plan", None)
         if plan_done is not None:
-            transition = getattr(output_done, "transition_plan", None)
             _apply_plan_mode_assistant_done_plan_to_state(
                 plan_done,
                 state,
@@ -2128,13 +2166,14 @@ def _append_stream_event(state: SamplingRuntimeEventApplicationState, event: dic
 
 
 def _item_lifecycle_event(event_type: str, thread_id: str, turn_id: str, item: TurnItem) -> dict[str, Any]:
+    timestamp_ms = int(time.time() * 1000)
     return {
         "type": event_type,
         "thread_id": thread_id,
         "turn_id": turn_id,
         "item": item.to_mapping(),
-        "started_at_ms": 0,
-        "completed_at_ms": 0,
+        "started_at_ms": timestamp_ms if event_type == "item_started" else 0,
+        "completed_at_ms": timestamp_ms if event_type == "item_completed" else 0,
     }
 
 

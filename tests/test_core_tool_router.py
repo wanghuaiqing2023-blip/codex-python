@@ -30,6 +30,7 @@ from pycodex.core import (
     ToolPayload,
     ToolRegistry,
     ToolRouter,
+    ViewImageHandler,
     apply_post_tool_use_feedback,
     build_environment_tool_router_from_turn_context,
     build_tool_call,
@@ -465,6 +466,15 @@ class ToolRouterTests(unittest.TestCase):
                 ToolCall(
                     tool_name=ToolName.plain("missing"),
                     call_id="call-missing",
+                    payload=ToolPayload.function("{}"),
+                )
+            )
+        )
+        self.assertFalse(
+            router.tool_supports_parallel(
+                ToolCall(
+                    tool_name=ToolName.namespaced("mcp__server__", "exec_command"),
+                    call_id="call-namespaced-local-name",
                     payload=ToolPayload.function("{}"),
                 )
             )
@@ -1028,6 +1038,22 @@ class ToolRouterTests(unittest.TestCase):
             "Fatal error: tool custom_only invoked with incompatible payload",
         )
 
+    def test_dispatch_tool_call_rejects_view_image_tool_search_payload(self) -> None:
+        invocation = ToolInvocation(
+            call_id="call-image-search",
+            tool_name=ToolName.plain("view_image"),
+            payload=ToolPayload.tool_search(SearchToolCallParams("image")),
+        )
+
+        with self.assertRaises(FunctionCallError) as caught:
+            asyncio.run(dispatch_tool_call(ToolRegistry.from_tools([ViewImageHandler()]), invocation))
+
+        self.assertEqual(caught.exception.kind, "fatal")
+        self.assertEqual(
+            str(caught.exception),
+            "Fatal error: tool view_image invoked with incompatible payload",
+        )
+
     def test_dispatch_tool_call_failure_notifies_failed_executed_outcome(self) -> None:
         recorder = LifecycleRecorder()
         invocation = ToolInvocation(
@@ -1162,6 +1188,38 @@ class ToolRouterTests(unittest.TestCase):
         )
 
         self.assertEqual(handler.invocations[0].payload, ToolPayload.function('{"after":true}'))
+
+    def test_dispatch_pre_tool_use_hook_uses_handler_specific_input_rewrite(self) -> None:
+        class CustomRewriteHandler(EchoHandler):
+            def with_updated_hook_input(self, invocation, updated_input):
+                return ToolInvocation(
+                    call_id=invocation.call_id,
+                    tool_name=invocation.tool_name,
+                    payload=ToolPayload.function(json.dumps({"custom": updated_input["after"]}, separators=(",", ":"))),
+                    source=invocation.source,
+                    session=invocation.session,
+                    turn=invocation.turn,
+                )
+
+        handler = CustomRewriteHandler()
+        invocation = ToolInvocation(
+            call_id="call-1",
+            tool_name=ToolName.plain("echo"),
+            payload=ToolPayload.function('{"before":true}'),
+        )
+
+        asyncio.run(
+            dispatch_tool_call(
+                ToolRegistry.from_tools([handler]),
+                invocation,
+                pre_tool_use_hook=lambda _payload, _invocation: {
+                    "type": "continue",
+                    "updated_input": {"after": True},
+                },
+            )
+        )
+
+        self.assertEqual(handler.invocations[0].payload, ToolPayload.function('{"custom":true}'))
 
     def test_dispatch_hooks_use_handler_specific_payload_overrides(self) -> None:
         class CustomHookPayloadHandler(EchoHandler):

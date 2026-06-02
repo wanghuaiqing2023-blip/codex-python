@@ -1056,6 +1056,37 @@ class GranularApprovalConfig:
         }
 
 
+def _parse_approval_policy_value(value: JsonValue) -> AskForApproval | GranularApprovalConfig:
+    if isinstance(value, str):
+        return AskForApproval.parse(value)
+    data = _mapping(value, "approval policy")
+    if "granular" in data:
+        return GranularApprovalConfig.from_mapping(data["granular"])
+    raise ValueError("approval policy must be a string or {'granular': {...}}")
+
+
+def _approval_policy_to_json(value: AskForApproval | GranularApprovalConfig) -> JsonValue:
+    if isinstance(value, GranularApprovalConfig):
+        return {"granular": value.to_mapping()}
+    if not isinstance(value, AskForApproval):
+        raise TypeError("approval_policy must be AskForApproval or GranularApprovalConfig")
+    return value.value
+
+
+def approval_policy_display_value(value: AskForApproval | GranularApprovalConfig | str | JsonValue) -> str:
+    """Return the Rust-style human label for an approval policy."""
+
+    if isinstance(value, GranularApprovalConfig):
+        return "granular"
+    if isinstance(value, AskForApproval):
+        return value.value
+    if isinstance(value, Mapping):
+        if "granular" in value:
+            return "granular"
+        raise ValueError("approval policy must be a string or {'granular': {...}}")
+    return AskForApproval.parse(str(value)).value
+
+
 class NetworkAccess(str, Enum):
     RESTRICTED = "restricted"
     ENABLED = "enabled"
@@ -1111,7 +1142,7 @@ class SessionNetworkProxyRuntime:
 @dataclass(frozen=True)
 class TurnContextItem:
     cwd: Path
-    approval_policy: AskForApproval
+    approval_policy: AskForApproval | GranularApprovalConfig
     sandbox_policy: SandboxPolicy
     model: str
     turn_id: str | None = None
@@ -1134,7 +1165,7 @@ class TurnContextItem:
             cwd=Path(_required_str(data, "cwd")),
             current_date=_optional_str(data, "current_date"),
             timezone=_optional_str(data, "timezone"),
-            approval_policy=AskForApproval.parse(_required_str(data, "approval_policy")),
+            approval_policy=_parse_approval_policy_value(data["approval_policy"]),
             sandbox_policy=SandboxPolicy.from_mapping(data["sandbox_policy"]),
             permission_profile_value=(
                 PermissionProfile.from_mapping(data["permission_profile"])
@@ -1176,7 +1207,7 @@ class TurnContextItem:
     def to_mapping(self) -> dict[str, JsonValue]:
         data: dict[str, JsonValue] = {
             "cwd": str(self.cwd),
-            "approval_policy": self.approval_policy.value,
+            "approval_policy": _approval_policy_to_json(self.approval_policy),
             "sandbox_policy": self.sandbox_policy.to_mapping(),
             "model": self.model,
             "summary": self.summary,
@@ -1209,7 +1240,7 @@ class SessionConfiguredEvent:
     session_id: SessionId
     model: str
     model_provider_id: str
-    approval_policy: AskForApproval
+    approval_policy: AskForApproval | GranularApprovalConfig
     permission_profile: PermissionProfile
     cwd: Path
     thread_id: ThreadId | None = None
@@ -1247,7 +1278,7 @@ class SessionConfiguredEvent:
             model=_required_str(data, "model"),
             model_provider_id=_required_str(data, "model_provider_id"),
             service_tier=_optional_str(data, "service_tier"),
-            approval_policy=AskForApproval.parse(_required_str(data, "approval_policy")),
+            approval_policy=_parse_approval_policy_value(data["approval_policy"]),
             approvals_reviewer=ApprovalsReviewer.parse(str(data.get("approvals_reviewer", ApprovalsReviewer.USER.value))),
             permission_profile=permission_profile,
             active_permission_profile=_parse_active_permission_profile(data.get("active_permission_profile")),
@@ -1264,7 +1295,7 @@ class SessionConfiguredEvent:
             "thread_id": self.thread_id.to_json() if self.thread_id is not None else self.session_id.to_json(),
             "model": self.model,
             "model_provider_id": self.model_provider_id,
-            "approval_policy": self.approval_policy.value,
+            "approval_policy": _approval_policy_to_json(self.approval_policy),
             "approvals_reviewer": self.approvals_reviewer.value,
             "permission_profile": self.permission_profile.to_mapping(),
             "cwd": str(self.cwd),
@@ -1563,7 +1594,7 @@ class ThreadSettingsOverrides:
     cwd: Path | None = None
     workspace_roots: tuple[Path, ...] | None = None
     profile_workspace_roots: tuple[Path, ...] | None = None
-    approval_policy: AskForApproval | None = None
+    approval_policy: AskForApproval | GranularApprovalConfig | None = None
     approvals_reviewer: ApprovalsReviewer | None = None
     sandbox_policy: SandboxPolicy | None = None
     permission_profile: PermissionProfile | None = None
@@ -1604,7 +1635,7 @@ class ThreadSettingsOverrides:
                 else None
             ),
             approval_policy=(
-                AskForApproval.parse(_required_str(data, "approval_policy"))
+                _parse_approval_policy_value(data["approval_policy"])
                 if data.get("approval_policy") is not None
                 else None
             ),
@@ -1646,7 +1677,7 @@ class ThreadSettingsOverrides:
         if self.profile_workspace_roots is not None:
             data["profile_workspace_roots"] = [str(path) for path in self.profile_workspace_roots]
         if self.approval_policy is not None:
-            data["approval_policy"] = self.approval_policy.value
+            data["approval_policy"] = _approval_policy_to_json(self.approval_policy)
         if self.approvals_reviewer is not None:
             data["approvals_reviewer"] = self.approvals_reviewer.value
         if self.sandbox_policy is not None:
@@ -1676,7 +1707,7 @@ class ThreadSettingsOverrides:
 class ThreadSettingsSnapshot:
     model: str
     model_provider_id: str
-    approval_policy: AskForApproval
+    approval_policy: AskForApproval | GranularApprovalConfig
     approvals_reviewer: ApprovalsReviewer
     permission_profile: PermissionProfile
     cwd: Path
@@ -1694,7 +1725,7 @@ class ThreadSettingsSnapshot:
             model=_required_str(data, "model"),
             model_provider_id=_required_str(data, "model_provider_id"),
             service_tier=_optional_str(data, "service_tier"),
-            approval_policy=AskForApproval.parse(_required_str(data, "approval_policy")),
+            approval_policy=_parse_approval_policy_value(data["approval_policy"]),
             approvals_reviewer=ApprovalsReviewer.parse(_required_str(data, "approvals_reviewer")),
             permission_profile=PermissionProfile.from_mapping(data["permission_profile"]),
             active_permission_profile=_parse_active_permission_profile(data.get("active_permission_profile")),
@@ -1709,7 +1740,7 @@ class ThreadSettingsSnapshot:
         data: dict[str, JsonValue] = {
             "model": self.model,
             "model_provider_id": self.model_provider_id,
-            "approval_policy": self.approval_policy.value,
+            "approval_policy": _approval_policy_to_json(self.approval_policy),
             "approvals_reviewer": self.approvals_reviewer.value,
             "permission_profile": self.permission_profile.to_mapping(),
             "cwd": str(self.cwd),

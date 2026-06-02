@@ -27,6 +27,7 @@ from pycodex.protocol import (
     FileSystemSandboxPolicy,
     FileSystemSandboxEntry,
     FileSystemSpecialPath,
+    GranularApprovalConfig,
     NetworkPermissions,
     PermissionGrantScope,
     RequestPermissionProfile,
@@ -144,7 +145,7 @@ def normalize_additional_permissions(profile: AdditionalPermissionProfile) -> Ad
 
 def normalize_and_validate_additional_permissions(
     additional_permissions_allowed: bool,
-    approval_policy: AskForApproval,
+    approval_policy: AskForApproval | GranularApprovalConfig | str,
     sandbox_permissions: SandboxPermissions,
     additional_permissions: AdditionalPermissionProfile | None,
     permissions_preapproved: bool,
@@ -163,7 +164,7 @@ def normalize_and_validate_additional_permissions(
         )
 
     if uses_additional_permissions:
-        if not permissions_preapproved and AskForApproval(approval_policy) is not AskForApproval.ON_REQUEST:
+        if not permissions_preapproved and not _approval_policy_is_on_request(approval_policy):
             raise ValueError(
                 f"approval policy is {approval_policy!r}; reject command - you cannot request additional permissions unless the approval policy is OnRequest"
             )
@@ -181,6 +182,14 @@ def normalize_and_validate_additional_permissions(
     if additional_permissions is not None:
         raise ValueError("`additional_permissions` requires `sandbox_permissions` set to `with_additional_permissions`")
     return None
+
+
+def _approval_policy_is_on_request(policy: AskForApproval | GranularApprovalConfig | str) -> bool:
+    if isinstance(policy, GranularApprovalConfig):
+        return False
+    if isinstance(policy, AskForApproval):
+        return policy is AskForApproval.ON_REQUEST
+    return AskForApproval.parse(str(policy)) is AskForApproval.ON_REQUEST
 
 
 @dataclass(frozen=True)

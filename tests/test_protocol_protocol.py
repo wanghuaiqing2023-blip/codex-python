@@ -9,6 +9,7 @@ from pycodex.protocol import (
     ActivePermissionProfile,
     AdditionalPermissionProfile,
     ApplyPatchApprovalRequestEvent,
+    approval_policy_display_value,
     ApprovalsReviewer,
     AskForApproval,
     AgentStatus,
@@ -312,6 +313,20 @@ class ProtocolProtocolTests(unittest.TestCase):
                 "mcp_elicitations": True,
             },
         )
+
+    def test_approval_policy_display_value_matches_rust_labels(self):
+        granular = GranularApprovalConfig(
+            sandbox_approval=True,
+            rules=False,
+            skill_approval=False,
+            request_permissions=True,
+            mcp_elicitations=False,
+        )
+
+        self.assertEqual(approval_policy_display_value(AskForApproval.ON_REQUEST), "on-request")
+        self.assertEqual(approval_policy_display_value("never"), "never")
+        self.assertEqual(approval_policy_display_value(granular), "granular")
+        self.assertEqual(approval_policy_display_value({"granular": granular.to_mapping()}), "granular")
 
     def test_op_transport_shape_and_kind_aliases(self):
         op = Op.from_mapping({"type": "request_user_input_response", "id": "turn", "response": {"answers": {}}})
@@ -1442,6 +1457,27 @@ class ProtocolProtocolTests(unittest.TestCase):
         self.assertEqual(payload["file_system_sandbox_policy"]["entries"][0]["path"]["type"], "glob_pattern")
         self.assertEqual(TurnContextItem.from_mapping(payload).file_system_sandbox_policy, fs_policy)
 
+    def test_turn_context_item_round_trips_granular_approval_policy(self):
+        granular = GranularApprovalConfig(
+            sandbox_approval=True,
+            rules=False,
+            skill_approval=True,
+            request_permissions=False,
+            mcp_elicitations=True,
+        )
+        item = TurnContextItem(
+            cwd=Path("/repo"),
+            approval_policy=granular,
+            sandbox_policy=SandboxPolicy.read_only(),
+            model="gpt-5",
+        )
+
+        payload = item.to_mapping()
+        reparsed = TurnContextItem.from_mapping(payload)
+
+        self.assertEqual(payload["approval_policy"], {"granular": granular.to_mapping()})
+        self.assertEqual(reparsed.approval_policy, granular)
+
     def test_session_configured_event_deserializes_legacy_sandbox_policy(self):
         session_uuid = "11111111-1111-4111-8111-111111111111"
         payload = {
@@ -1485,6 +1521,32 @@ class ProtocolProtocolTests(unittest.TestCase):
         self.assertEqual(payload["network_proxy"], {"env_var": "HTTPS_PROXY", "value": "http://127.0.0.1:8080"})
         self.assertEqual(reparsed.network_proxy, configured.network_proxy)
         self.assertEqual(reparsed.permission_profile, configured.permission_profile)
+
+    def test_session_configured_event_round_trips_granular_approval_policy(self):
+        session_id = SessionId.from_string("33333333-3333-4333-8333-333333333333")
+        granular = GranularApprovalConfig(
+            sandbox_approval=True,
+            rules=False,
+            skill_approval=True,
+            request_permissions=True,
+            mcp_elicitations=False,
+        )
+        configured = SessionConfiguredEvent(
+            session_id=session_id,
+            model="gpt-5",
+            model_provider_id="openai",
+            approval_policy=granular,
+            permission_profile=PermissionProfile.read_only(),
+            cwd=Path("/repo"),
+        )
+
+        payload = configured.to_mapping()
+        msg = EventMsg.from_mapping({"type": "session_configured", **payload})
+
+        self.assertEqual(payload["approval_policy"], {"granular": granular.to_mapping()})
+        self.assertEqual(SessionConfiguredEvent.from_mapping(payload).approval_policy, granular)
+        self.assertIsInstance(msg.payload, SessionConfiguredEvent)
+        self.assertEqual(msg.payload.approval_policy, granular)
 
     def test_thread_settings_applied_event_parses_snapshot(self):
         cwd = Path("/repo")
@@ -1557,6 +1619,40 @@ class ProtocolProtocolTests(unittest.TestCase):
             {"model": "gpt-5", "reasoning_effort": None, "developer_instructions": None},
         )
         self.assertEqual(ThreadSettingsAppliedEvent.from_mapping(event.to_mapping()), event)
+
+    def test_thread_settings_round_trips_granular_approval_policy(self):
+        granular = GranularApprovalConfig(
+            sandbox_approval=True,
+            rules=False,
+            skill_approval=False,
+            request_permissions=True,
+            mcp_elicitations=False,
+        )
+        overrides = ThreadSettingsOverrides(approval_policy=granular)
+        self.assertEqual(
+            ThreadSettingsOverrides.from_mapping(overrides.to_mapping()).approval_policy,
+            granular,
+        )
+        snapshot = ThreadSettingsSnapshot(
+            model="gpt-5",
+            model_provider_id="openai",
+            approval_policy=granular,
+            approvals_reviewer=ApprovalsReviewer.USER,
+            permission_profile=PermissionProfile.disabled(),
+            cwd=Path("/repo"),
+            collaboration_mode=CollaborationMode(
+                mode=ModeKind.DEFAULT,
+                settings=Settings("gpt-5", None, None),
+            ),
+        )
+        event = ThreadSettingsAppliedEvent(snapshot)
+        payload = event.to_mapping()
+
+        self.assertEqual(
+            payload["thread_settings"]["approval_policy"],
+            {"granular": granular.to_mapping()},
+        )
+        self.assertEqual(ThreadSettingsAppliedEvent.from_mapping(payload), event)
 
     def test_turn_aborted_and_review_mode_events_parse(self):
         aborted = EventMsg.from_mapping(

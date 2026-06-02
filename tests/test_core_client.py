@@ -57,6 +57,7 @@ from pycodex.core import (
     subagent_header_value,
 )
 from pycodex.core.client_common import Prompt
+from pycodex.core.client import _item_lifecycle_event
 from pycodex.core.features import Feature
 from pycodex.core.hosted_spec import FreeformToolFormat, ToolSpec
 from pycodex.core.stream_events_utils import (
@@ -74,7 +75,19 @@ from pycodex.core.stream_events_utils import (
     SamplingStreamEventApplyPlan,
     SamplingToolCallInputDeltaApplyPlan,
 )
-from pycodex.protocol import ReasoningEffort, ReasoningSummary, ResponseItem, ServiceTier, SessionSource, SubAgentSource, ThreadId
+from pycodex.protocol import (
+    AgentMessageContent,
+    AgentMessageItem,
+    ContentItem,
+    ReasoningEffort,
+    ReasoningSummary,
+    ResponseItem,
+    ServiceTier,
+    SessionSource,
+    SubAgentSource,
+    ThreadId,
+    TurnItem,
+)
 
 
 class FeatureSet:
@@ -83,6 +96,29 @@ class FeatureSet:
 
     def enabled(self, feature: Feature) -> bool:
         return feature in self.features
+
+
+def _stable_ws_client_metadata(metadata: dict[str, str]) -> dict[str, str]:
+    return {
+        key: value
+        for key, value in metadata.items()
+        if key != "x-codex-ws-stream-request-start-ms"
+    }
+
+
+def test_item_lifecycle_event_stamps_started_or_completed_timestamp(monkeypatch):
+    monkeypatch.setattr("pycodex.core.client.time.time", lambda: 1234.567)
+    item = TurnItem.agent_message(
+        AgentMessageItem("msg-1", (AgentMessageContent.text_content("done"),))
+    )
+
+    started = _item_lifecycle_event("item_started", "thread-1", "turn-1", item)
+    completed = _item_lifecycle_event("item_completed", "thread-1", "turn-1", item)
+
+    assert started["started_at_ms"] == 1234567
+    assert started["completed_at_ms"] == 0
+    assert completed["started_at_ms"] == 0
+    assert completed["completed_at_ms"] == 1234567
 
 
 def test_build_responses_headers_includes_beta_turn_state_and_metadata():
@@ -344,9 +380,9 @@ def test_build_realtime_call_sideband_headers_adds_api_auth():
 def test_model_client_session_incremental_items_use_last_response_baseline():
     client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
     session = client.new_session()
-    first = ResponseItem.message("one")
-    second = ResponseItem.message("two")
-    third = ResponseItem.message("three")
+    first = ResponseItem.message("user", (ContentItem.input_text("one"),))
+    second = ResponseItem.message("assistant", (ContentItem.output_text("two"),))
+    third = ResponseItem.message("user", (ContentItem.input_text("three"),))
     request_base = {"model": "m", "input": [first]}
     session.websocket_session.last_request = request_base
 
@@ -360,11 +396,11 @@ def test_model_client_session_incremental_items_use_last_response_baseline():
 
 
 def test_prompt_get_formatted_input_matches_rust_clone_behavior():
-    item = ResponseItem.message("hello")
+    item = ResponseItem.message("user", (ContentItem.input_text("hello"),))
     prompt = Prompt(input=[item])
 
     formatted = prompt.get_formatted_input()
-    formatted.append(ResponseItem.message("extra"))
+    formatted.append(ResponseItem.message("user", (ContentItem.input_text("extra"),)))
 
     assert formatted[:1] == [item]
     assert prompt.input == [item]
@@ -1141,6 +1177,8 @@ def test_sampling_request_runtime_hook_adapter_applies_output_item_done_to_state
             "preempt_for_mailbox_mail": True,
             "has_streamed_assistant_text_plan": False,
             "has_plan_mode_assistant_done_plan": False,
+            "has_finished_tool_input_event": False,
+            "has_completed_item": False,
         },
     )
     assert state_snapshot["should_continue_loop"] is True
@@ -1218,6 +1256,13 @@ def test_sampling_request_runtime_hook_adapter_applies_added_and_text_delta_to_s
             "has_plan_segments_plan": False,
             "citations": ("cite-1",),
             "ignored_citations": False,
+            "event_to_emit": {
+                "type": "agent_message_content_delta",
+                "thread_id": "",
+                "turn_id": "",
+                "item_id": "msg-1",
+                "delta": "Hello",
+            },
         },
         {
             "item_id": "msg-1",
@@ -1225,10 +1270,27 @@ def test_sampling_request_runtime_hook_adapter_applies_added_and_text_delta_to_s
             "has_plan_segments_plan": False,
             "citations": (),
             "ignored_citations": True,
+            "event_to_emit": {
+                "type": "agent_message_content_delta",
+                "thread_id": "",
+                "turn_id": "",
+                "item_id": "msg-1",
+                "delta": ", world",
+            },
         },
     )
     assert text_result["state"]["raw_content_deltas"] == (
-        {"item_id": "msg-1", "raw_content_delta": "{raw}"},
+        {
+            "item_id": "msg-1",
+            "raw_content_delta": "{raw}",
+            "event_to_emit": {
+                "type": "agent_message_content_delta",
+                "thread_id": "",
+                "turn_id": "",
+                "item_id": "msg-1",
+                "delta": "{raw}",
+            },
+        },
     )
 
 
@@ -1452,9 +1514,23 @@ def test_execute_sampling_request_runtime_state_driven_plan_applies_events_befor
                         "should_emit_turn_diff": True,
                         "should_continue_loop": False,
                         "preempt_for_mailbox_mail": False,
+                        "metadata_state": {
+                            "has_token_usage_to_record": False,
+                            "server_reasoning_included": None,
+                            "has_rate_limits_to_record": False,
+                            "models_etag_to_refresh": None,
+                        },
+                        "follow_up_state": {
+                            "needs_follow_up": True,
+                            "last_agent_message": "state applied tail",
+                            "has_output_result": False,
+                            "has_state_after_output_result": False,
+                            "has_mailbox_preemption_plan": False,
+                        },
                         "stream_event_counts": {
                             "metadata": 0,
                             "output_item_done": 0,
+                            "completed_output_items": 0,
                             "output_item_added": 0,
                             "output_text_delta": 0,
                             "assistant_text_delta": 0,
@@ -1491,6 +1567,7 @@ def test_execute_sampling_request_runtime_state_driven_plan_applies_events_befor
                 "stream_event_counts": {
                     "metadata": 0,
                     "output_item_done": 0,
+                    "completed_output_items": 0,
                     "output_item_added": 0,
                     "output_text_delta": 0,
                     "assistant_text_delta": 0,
@@ -1537,6 +1614,7 @@ def test_execute_sampling_request_runtime_state_driven_plan_applies_events_befor
                 "stream_event_counts": {
                     "metadata": 0,
                     "output_item_done": 0,
+                    "completed_output_items": 0,
                     "output_item_added": 0,
                     "output_text_delta": 0,
                     "assistant_text_delta": 0,
@@ -1606,11 +1684,11 @@ def test_execute_sampling_request_runtime_state_driven_session_plan_caches_respo
     session = client.new_session()
     item = ResponseItem.message("assistant", ())
     state = SamplingRuntimeEventApplicationState()
-    added_plan = SamplingStreamEventApplyPlan(
-        event_type="response.output_item.added",
-        output_item_added_apply_plan=SamplingOutputItemAddedApplyPlan(
-            active_item_after=item,
-            active_item_is_streaming_to_client_after=True,
+    done_plan = SamplingStreamEventApplyPlan(
+        event_type="response.output_item.done",
+        output_item_done_apply_plan=SamplingOutputItemDoneApplyPlan(
+            transition_plan=SamplingOutputItemDoneTransitionPlan(),
+            completed_item=item,
         ),
     )
     completed_plan = SamplingStreamEventApplyPlan(
@@ -1624,7 +1702,7 @@ def test_execute_sampling_request_runtime_state_driven_session_plan_caches_respo
     execute_sampling_request_runtime_state_driven_session_plan(
         session,
         FeatureSet(),
-        event_apply_plans=(added_plan, completed_plan),
+        event_apply_plans=(done_plan, completed_plan),
         state=state,
         outcome_ok=True,
         cancellation_requested=False,
@@ -1768,11 +1846,11 @@ def test_execute_sampling_request_runtime_state_driven_session_plan_caches_last_
     second = ResponseItem.message("assistant", ())
     request = {"model": "m", "input": [first]}
     state = SamplingRuntimeEventApplicationState()
-    added_plan = SamplingStreamEventApplyPlan(
-        event_type="response.output_item.added",
-        output_item_added_apply_plan=SamplingOutputItemAddedApplyPlan(
-            active_item_after=second,
-            active_item_is_streaming_to_client_after=True,
+    done_plan = SamplingStreamEventApplyPlan(
+        event_type="response.output_item.done",
+        output_item_done_apply_plan=SamplingOutputItemDoneApplyPlan(
+            transition_plan=SamplingOutputItemDoneTransitionPlan(),
+            completed_item=second,
         ),
     )
     completed_plan = SamplingStreamEventApplyPlan(
@@ -1786,7 +1864,7 @@ def test_execute_sampling_request_runtime_state_driven_session_plan_caches_last_
     execute_sampling_request_runtime_state_driven_session_plan(
         session,
         FeatureSet(),
-        event_apply_plans=(added_plan, completed_plan),
+        event_apply_plans=(done_plan, completed_plan),
         state=state,
         request=request,
         outcome_ok=True,
@@ -1809,6 +1887,7 @@ def test_prepare_and_execute_sampling_request_runtime_state_driven_session_plan_
     first = ResponseItem.message("user", ())
     second = ResponseItem.message("assistant", ())
     third = ResponseItem.message("user", ())
+    session.websocket_session.connection = object()
     session.websocket_session.last_request = {"model": "m", "input": [first]}
     session.websocket_session.last_response = LastResponse("resp-prev", (second,))
     request = {"model": "m", "input": [first, second, third]}
@@ -1831,13 +1910,14 @@ def test_prepare_and_execute_sampling_request_runtime_state_driven_session_plan_
         outcome_ok=True,
         cancellation_requested=False,
         unified_diff=None,
+        websocket_connection_needs_new=False,
     )
 
     assert isinstance(result, SamplingRequestRuntimeSessionLifecycleResult)
     assert result.websocket_request["type"] == "response.create"
-    assert result.websocket_request["request"]["previous_response_id"] == "resp-prev"
-    assert result.websocket_request["request"]["input"] == [third]
-    assert result.websocket_request["request"]["client_metadata"] == {
+    assert result.websocket_request["previous_response_id"] == "resp-prev"
+    assert result.websocket_request["input"] == [third]
+    assert _stable_ws_client_metadata(result.websocket_request["client_metadata"]) == {
         X_CODEX_INSTALLATION_ID_HEADER: "install",
         X_CODEX_WINDOW_ID_HEADER: "thread:0",
     }
@@ -1848,18 +1928,18 @@ def test_prepare_and_execute_sampling_request_runtime_state_driven_session_plan_
     assert result.websocket_last_request_recorded is True
     assert result.websocket_stream_request_attempt == {
         "request": result.websocket_request,
-        "connection_available": False,
-        "connection_reused": False,
+        "connection_available": True,
+        "connection_reused": True,
     }
     assert result.websocket_stream_request_attempt_outcome == {
-        "status": "blocked",
-        "error": "websocket connection is unavailable",
+        "status": "ready",
+        "error": None,
     }
-    assert result.websocket_last_response_receiver_registered is False
+    assert result.websocket_last_response_receiver_registered is True
     assert result.websocket_stream_result == {
-        "status": "blocked",
-        "stream_mapped": False,
-        "last_response_receiver_registered": False,
+        "status": "stream",
+        "stream_mapped": True,
+        "last_response_receiver_registered": True,
     }
     assert result.from_untraced_warmup is False
     assert result.websocket_outcome == WebsocketStreamOutcome.STREAM
@@ -1869,11 +1949,16 @@ def test_prepare_and_execute_sampling_request_runtime_state_driven_session_plan_
         "needs_follow_up": False,
         "last_agent_message": None,
     }
-    assert result.runtime_state_summary["completed_response_id"] is None
-    assert result.runtime_state_summary["applied_event_types"] == ()
+    assert result.runtime_state_summary["completed_response_id"] == "resp-2"
+    assert result.runtime_state_summary["applied_event_types"] == ("completed",)
     assert session.websocket_session.last_request == request
-    assert session.websocket_session.last_response is None
-    assert result.inference_trace_completed is None
+    assert session.websocket_session.last_response == LastResponse("resp-2")
+    assert result.inference_trace_completed == {
+        "response_id": "resp-2",
+        "request_id": None,
+        "token_usage": None,
+        "output_items": (),
+    }
 
 
 def test_prepare_and_execute_sampling_request_runtime_state_driven_session_plan_builds_ws_payload_metadata():
@@ -1906,7 +1991,7 @@ def test_prepare_and_execute_sampling_request_runtime_state_driven_session_plan_
         turn_metadata_header="turn-meta",
     )
 
-    assert result.websocket_request["request"]["client_metadata"] == {
+    assert _stable_ws_client_metadata(result.websocket_request["client_metadata"]) == {
         X_CODEX_INSTALLATION_ID_HEADER: "install",
         X_CODEX_WINDOW_ID_HEADER: "thread:0",
         X_CODEX_TURN_METADATA_HEADER: "turn-meta",
@@ -1925,6 +2010,7 @@ def test_prepare_and_execute_sampling_request_runtime_state_driven_session_plan_
     first = ResponseItem.message("user", ())
     second = ResponseItem.message("assistant", ())
     third = ResponseItem.message("user", ())
+    session.websocket_session.connection = object()
     session.websocket_session.last_request = {"model": "m", "input": [first]}
     session.websocket_session.last_response = LastResponse("resp-prev", (second,))
     request = {"model": "m", "input": [first, second, third]}
@@ -1949,12 +2035,12 @@ def test_prepare_and_execute_sampling_request_runtime_state_driven_session_plan_
         turn_metadata_header="turn-meta",
     )
 
-    assert result.websocket_request["request"]["previous_response_id"] == "resp-prev"
-    assert result.websocket_request["request"]["input"] == [third]
-    assert result.websocket_request["request"]["client_metadata"][
+    assert result.websocket_request["previous_response_id"] == "resp-prev"
+    assert result.websocket_request["input"] == [third]
+    assert result.websocket_request["client_metadata"][
         WS_REQUEST_HEADER_TRACEPARENT_CLIENT_METADATA_KEY
     ] == "00-inc"
-    assert result.websocket_request["request"]["client_metadata"][X_CODEX_TURN_METADATA_HEADER] == "turn-meta"
+    assert result.websocket_request["client_metadata"][X_CODEX_TURN_METADATA_HEADER] == "turn-meta"
 
 
 def test_prepare_and_execute_sampling_request_runtime_state_driven_session_plan_records_http_fallback():
@@ -2071,6 +2157,7 @@ def test_prepare_and_execute_sampling_request_runtime_state_driven_session_plan_
     first = ResponseItem.message("user", ())
     second = ResponseItem.message("assistant", ())
     third = ResponseItem.message("user", ())
+    session.websocket_session.connection = object()
     session.websocket_session.last_request = {"model": "m", "input": [first]}
     session.websocket_session.last_response = LastResponse("warm-1", (second,))
     session.websocket_session.last_response_from_untraced_warmup = True
@@ -2100,8 +2187,8 @@ def test_prepare_and_execute_sampling_request_runtime_state_driven_session_plan_
     assert result.inference_trace_started_request_source == "logical_request"
     assert result.inference_trace_started_request == request
     assert result.websocket_last_request_recorded is True
-    assert result.websocket_request["request"]["previous_response_id"] == "warm-1"
-    assert result.websocket_request["request"]["input"] == [third]
+    assert result.websocket_request["previous_response_id"] == "warm-1"
+    assert result.websocket_request["input"] == [third]
     assert session.websocket_session.last_response == LastResponse("resp-warm-2")
     assert session.websocket_session.last_response_from_untraced_warmup is True
 
@@ -2110,6 +2197,7 @@ def test_prepare_and_execute_sampling_request_runtime_state_driven_session_plan_
     provider = SimpleNamespace(info=lambda: SimpleNamespace(supports_websockets=True))
     client = ModelClient(session_id="session", thread_id="thread", installation_id="install", provider=provider)
     session = client.new_session()
+    session.websocket_session.connection = object()
     session.websocket_session.set_connection_reused(True)
     request = {"model": "m", "input": [ResponseItem.message("user", ())]}
     completed_plan = SamplingStreamEventApplyPlan(
@@ -2296,8 +2384,8 @@ def test_prewarm_websocket_runs_warmup_when_enabled_without_last_request():
     assert prewarm["reason"] == "completed"
     assert prewarm["preconnect"] == {"preconnected": True, "connection_reused": False}
     assert result.websocket_outcome == WebsocketStreamOutcome.STREAM
-    assert result.websocket_request["request"]["generate"] is False
-    assert result.websocket_request["request"]["client_metadata"] == {
+    assert result.websocket_request["generate"] is False
+    assert _stable_ws_client_metadata(result.websocket_request["client_metadata"]) == {
         X_CODEX_INSTALLATION_ID_HEADER: "install",
         X_CODEX_WINDOW_ID_HEADER: "thread:0",
         X_CODEX_TURN_METADATA_HEADER: "turn-meta",
@@ -2307,7 +2395,7 @@ def test_prewarm_websocket_runs_warmup_when_enabled_without_last_request():
     assert result.completed_response_from_untraced_warmup is True
     assert session.websocket_session.connection is connection
     assert session.websocket_session.last_request == {**request, "generate": False}
-    assert request["client_metadata"] == {"http": "only"}
+    assert "client_metadata" not in request
     assert session.websocket_session.last_response == LastResponse("warm-1")
     assert session.websocket_session.last_response_from_untraced_warmup is True
 
@@ -2525,7 +2613,7 @@ def test_prepare_and_execute_sampling_request_runtime_state_driven_session_plan_
         "incremental_state_reset": False,
     }
     assert result.websocket_connection_reused is True
-    assert result.websocket_request["request"]["previous_response_id"] == "resp-1"
+    assert result.websocket_request["previous_response_id"] == "resp-1"
     assert result.websocket_stream_request_attempt["connection_available"] is True
     assert result.websocket_stream_request_attempt["connection_reused"] is True
     assert session.websocket_session.connection is connection
@@ -2586,8 +2674,8 @@ def test_prepare_and_execute_sampling_request_runtime_state_driven_session_plan_
         "items_added": (),
         "receiver_pending": True,
     }
-    assert result.websocket_request["request"]["input"] == request["input"]
-    assert "previous_response_id" not in result.websocket_request["request"]
+    assert result.websocket_request["input"] == request["input"]
+    assert "previous_response_id" not in result.websocket_request
     assert session.websocket_session.connection is connection
     assert session.websocket_session.last_response == LastResponse("resp-2")
     assert session.websocket_session.last_response_from_untraced_warmup is False
@@ -2689,8 +2777,8 @@ def test_prepare_and_execute_sampling_request_runtime_state_driven_session_plan_
         "items_added": (),
         "receiver_pending": True,
     }
-    assert result.websocket_request["request"]["previous_response_id"] == "resp-prev"
-    assert result.websocket_request["request"]["input"] == [third]
+    assert result.websocket_request["previous_response_id"] == "resp-prev"
+    assert result.websocket_request["input"] == [third]
 
 
 def test_prepare_and_execute_sampling_request_runtime_state_driven_session_plan_models_stream_request_error():
@@ -2926,7 +3014,10 @@ def test_prepare_and_execute_sampling_request_runtime_state_driven_session_plan_
     )
 
     assert result.websocket_request_start_ms_stamped is False
-    assert "client_metadata" not in result.websocket_request
+    assert result.websocket_request["client_metadata"] == {
+        X_CODEX_INSTALLATION_ID_HEADER: "install",
+        X_CODEX_WINDOW_ID_HEADER: "thread:0",
+    }
 
 
 def test_prepare_and_execute_sampling_request_runtime_state_driven_session_plan_records_last_request_before_abort():
@@ -3068,9 +3159,23 @@ def test_execute_sampling_request_runtime_state_driven_plan_traces_aborted_tail(
                         "should_emit_turn_diff": True,
                         "should_continue_loop": False,
                         "preempt_for_mailbox_mail": False,
+                        "metadata_state": {
+                            "has_token_usage_to_record": False,
+                            "server_reasoning_included": None,
+                            "has_rate_limits_to_record": False,
+                            "models_etag_to_refresh": None,
+                        },
+                        "follow_up_state": {
+                            "needs_follow_up": True,
+                            "last_agent_message": "cancelled tail",
+                            "has_output_result": False,
+                            "has_state_after_output_result": False,
+                            "has_mailbox_preemption_plan": False,
+                        },
                         "stream_event_counts": {
                             "metadata": 0,
                             "output_item_done": 0,
+                            "completed_output_items": 0,
                             "output_item_added": 0,
                             "output_text_delta": 0,
                             "assistant_text_delta": 0,
@@ -3107,6 +3212,7 @@ def test_execute_sampling_request_runtime_state_driven_plan_traces_aborted_tail(
                 "stream_event_counts": {
                     "metadata": 0,
                     "output_item_done": 0,
+                    "completed_output_items": 0,
                     "output_item_added": 0,
                     "output_text_delta": 0,
                     "assistant_text_delta": 0,
@@ -3151,6 +3257,7 @@ def test_execute_sampling_request_runtime_state_driven_plan_traces_aborted_tail(
                 "stream_event_counts": {
                     "metadata": 0,
                     "output_item_done": 0,
+                    "completed_output_items": 0,
                     "output_item_added": 0,
                     "output_text_delta": 0,
                     "assistant_text_delta": 0,
@@ -3211,6 +3318,7 @@ def test_execute_sampling_request_runtime_state_driven_plan_traces_stream_surfac
     assert result.phase_results[0]["event_summaries"][0]["state_after"]["stream_event_counts"] == {
         "metadata": 0,
         "output_item_done": 0,
+        "completed_output_items": 0,
         "output_item_added": 0,
         "output_text_delta": 0,
         "assistant_text_delta": 0,
@@ -3222,6 +3330,7 @@ def test_execute_sampling_request_runtime_state_driven_plan_traces_stream_surfac
     assert result.phase_results[0]["state_after"]["stream_event_counts"] == {
         "metadata": 0,
         "output_item_done": 0,
+        "completed_output_items": 0,
         "output_item_added": 0,
         "output_text_delta": 0,
         "assistant_text_delta": 0,
@@ -3289,35 +3398,38 @@ def test_execute_sampling_request_runtime_state_driven_plan_traces_output_item_a
     assert event_summaries[0]["state_after"]["stream_event_counts"] == {
         "metadata": 0,
         "output_item_done": 0,
+        "completed_output_items": 0,
         "output_item_added": 1,
         "output_text_delta": 0,
         "assistant_text_delta": 1,
         "raw_content_delta": 0,
         "tool_call_input_delta": 0,
         "reasoning_delta": 0,
-        "emitted_stream": 0,
+        "emitted_stream": 1,
     }
     assert event_summaries[1]["state_after"]["stream_event_counts"] == {
         "metadata": 0,
         "output_item_done": 0,
+        "completed_output_items": 0,
         "output_item_added": 1,
         "output_text_delta": 1,
         "assistant_text_delta": 2,
         "raw_content_delta": 1,
         "tool_call_input_delta": 0,
         "reasoning_delta": 0,
-        "emitted_stream": 0,
+        "emitted_stream": 3,
     }
     assert event_summaries[2]["state_after"]["stream_event_counts"] == {
         "metadata": 0,
         "output_item_done": 1,
+        "completed_output_items": 0,
         "output_item_added": 1,
         "output_text_delta": 1,
         "assistant_text_delta": 2,
         "raw_content_delta": 1,
         "tool_call_input_delta": 0,
         "reasoning_delta": 0,
-        "emitted_stream": 0,
+        "emitted_stream": 3,
     }
     assert event_summaries[2]["state_after"]["should_continue_loop"] is True
     assert result.phase_results[1]["step_types"] == (
@@ -3718,7 +3830,7 @@ def test_build_responses_request_uses_default_reasoning_effort_and_omits_none_su
 
     request = client.build_responses_request(provider, Prompt.default(), model_info, effort=None, summary=None)
 
-    assert request["reasoning"] == {"effort": "medium", "summary": None}
+    assert request["reasoning"] == {"effort": "medium"}
     assert request["include"] == ["reasoning.encrypted_content"]
 
 
@@ -3741,7 +3853,24 @@ def test_build_responses_request_treats_reasoning_summary_none_enum_as_absent_su
         summary=ReasoningSummary.NONE,
     )
 
-    assert request["reasoning"] == {"effort": "medium", "summary": None}
+    assert request["reasoning"] == {"effort": "medium"}
+
+
+def test_build_responses_request_keeps_empty_reasoning_object_when_model_supports_reasoning():
+    client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+    provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+    model_info = SimpleNamespace(
+        slug="gpt-default-reasoning",
+        supports_reasoning_summaries=True,
+        default_reasoning_level=None,
+        support_verbosity=False,
+        service_tier_for_request=lambda tier: tier,
+    )
+
+    request = client.build_responses_request(provider, Prompt.default(), model_info, effort=None, summary=None)
+
+    assert request["reasoning"] == {}
+    assert request["include"] == ["reasoning.encrypted_content"]
 
 
 def test_build_responses_request_normalizes_service_tier_request_values():
@@ -3818,6 +3947,68 @@ def test_serialize_responses_request_serializes_nested_enum_values():
     assert serialized["reasoning"] == {"effort": "high"}
 
 
+def test_serialize_responses_request_omits_nested_none_fields_like_rust_structs():
+    request = {
+        "model": "gpt-test",
+        "instructions": "base",
+        "input": [],
+        "tools": [],
+        "tool_choice": "auto",
+        "parallel_tool_calls": False,
+        "reasoning": {"effort": ReasoningEffort.HIGH, "summary": None},
+        "store": False,
+        "stream": True,
+        "include": [],
+    }
+
+    serialized = serialize_responses_request(request)
+
+    assert serialized["reasoning"] == {"effort": "high"}
+
+
+def test_serialize_responses_request_omits_optional_websocket_none_fields():
+    request = {
+        "model": "gpt-test",
+        "instructions": "base",
+        "previous_response_id": None,
+        "input": [],
+        "tools": [],
+        "tool_choice": "auto",
+        "parallel_tool_calls": False,
+        "reasoning": None,
+        "store": False,
+        "stream": True,
+        "include": [],
+        "generate": None,
+    }
+
+    serialized = serialize_responses_request(request)
+
+    assert "previous_response_id" not in serialized
+    assert "generate" not in serialized
+    assert serialized["reasoning"] is None
+
+
+def test_serialize_responses_request_preserves_false_generate_for_warmup():
+    request = {
+        "model": "gpt-test",
+        "instructions": "base",
+        "input": [],
+        "tools": [],
+        "tool_choice": "auto",
+        "parallel_tool_calls": False,
+        "reasoning": None,
+        "store": False,
+        "stream": True,
+        "include": [],
+        "generate": False,
+    }
+
+    serialized = serialize_responses_request(request)
+
+    assert serialized["generate"] is False
+
+
 def test_prepare_websocket_request_uses_serialized_payload_shape():
     client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
     session = client.new_session()
@@ -3850,8 +4041,8 @@ def test_prepare_websocket_request_uses_serialized_payload_shape():
 def test_prepare_websocket_request_wraps_incremental_delta_as_response_create():
     client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
     session = client.new_session()
-    first = ResponseItem.message("one")
-    second = ResponseItem.message("two")
+    first = ResponseItem.message("user", (ContentItem.input_text("one"),))
+    second = ResponseItem.message("assistant", (ContentItem.output_text("two"),))
     payload = {
         "model": "m",
         "instructions": "",
@@ -3948,6 +4139,72 @@ def test_create_tools_json_for_responses_api_serializes_nested_enum_values():
             "type": "function",
             "name": "plain_mapping",
             "metadata": {"effort": "high"},
+        }
+    ]
+
+
+def test_create_tools_json_for_responses_api_skips_function_output_schema_like_rust():
+    tool = {
+        "type": "function",
+        "name": "exec_command",
+        "description": "Run a command",
+        "strict": False,
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "output_schema": {"type": "string"},
+            },
+        },
+        "output_schema": {"type": "object", "properties": {"exit_code": {"type": "integer"}}},
+    }
+
+    assert create_tools_json_for_responses_api([tool]) == [
+        {
+            "type": "function",
+            "name": "exec_command",
+            "description": "Run a command",
+            "strict": False,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "output_schema": {"type": "string"},
+                },
+            },
+        }
+    ]
+
+
+def test_create_tools_json_for_responses_api_skips_namespace_child_output_schema_like_rust():
+    tool = {
+        "type": "namespace",
+        "name": "mcp__demo__",
+        "description": "Demo tools",
+        "tools": [
+            {
+                "type": "function",
+                "name": "lookup_order",
+                "description": "Look up an order",
+                "strict": False,
+                "parameters": {"type": "object", "properties": {}},
+                "output_schema": {"type": "object"},
+            }
+        ],
+    }
+
+    assert create_tools_json_for_responses_api([tool]) == [
+        {
+            "type": "namespace",
+            "name": "mcp__demo__",
+            "description": "Demo tools",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "lookup_order",
+                    "description": "Look up an order",
+                    "strict": False,
+                    "parameters": {"type": "object", "properties": {}},
+                }
+            ],
         }
     ]
 

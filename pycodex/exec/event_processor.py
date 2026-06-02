@@ -21,6 +21,7 @@ from pycodex.protocol import (
     SandboxPolicy,
     SessionConfiguredEvent,
     TurnItem,
+    approval_policy_display_value,
     turn_completed_notification as protocol_turn_completed_notification,
     turn_started_notification as protocol_turn_started_notification,
 )
@@ -234,13 +235,13 @@ class JsonEventProcessor:
         params = notification_params(notification)
 
         if method in {"configWarning", "warning"}:
-            return self.collect_warning(_message_with_details(_warning_summary(params), _field(params, "details")))
+            return self.collect_warning(_message_with_details(_warning_summary(params), _notification_details(params)))
 
         if method == "error":
             return self.collect_error(_turn_error_message(_field(params, "error") or params) or "")
 
         if method == "deprecationNotice":
-            return self.collect_warning(_message_with_details(_warning_summary(params), _field(params, "details")))
+            return self.collect_warning(_message_with_details(_warning_summary(params), _notification_details(params)))
 
         if method in {"hook/started", "hook/completed", "model/verification", "turn/diff/updated"}:
             return CollectedThreadEvents(events=(), status=CodexStatus.RUNNING)
@@ -620,12 +621,14 @@ def config_summary_entries(
     cwd = Path(str(_field(config, "cwd") or _field(session_configured, "cwd") or ""))
     permission_profile = _permission_profile_from_config(config, session_configured)
     workspace_roots = tuple(Path(str(path)) for path in (_field(config, "workspace_roots", "workspaceRoots") or ()))
-    approval_policy = _enum_value(_field(config, "approval_policy", "approvalPolicy") or _field(session_configured, "approval_policy"))
+    approval_policy = approval_policy_display_value(
+        _field(config, "approval_policy", "approvalPolicy") or _field(session_configured, "approval_policy")
+    )
     entries: list[tuple[str, str]] = [
         ("workdir", str(cwd)),
         ("model", str(_field(session_configured, "model") or _field(config, "model") or "")),
         ("provider", str(_field(session_configured, "model_provider_id", "modelProviderId") or _field(config, "model_provider_id", "modelProviderId") or "")),
-        ("approval", str(approval_policy)),
+        ("approval", approval_policy),
         ("sandbox", summarize_permission_profile(permission_profile, cwd, workspace_roots)),
     ]
     if _uses_responses_wire_api(config):
@@ -905,6 +908,15 @@ def exec_item_from_app_server_item(item: JsonValue, make_id: Any) -> ExecThreadI
             if "error" in item:
                 payload["error"] = _mcp_error_mapping(_field(item, "error"))
             return ExecThreadItem(make_id(), "mcp_tool_call", payload)
+        if item_type == "file_change":
+            return ExecThreadItem(
+                make_id(),
+                "file_change",
+                {
+                    "changes": _file_change_entries(_field(item, "changes") or ()),
+                    "status": _patch_status_for_exec_json(_field(item, "status")),
+                },
+            )
 
     turn_item = _turn_item_from_value(item)
     if turn_item is not None:
@@ -926,8 +938,13 @@ def exec_item_from_app_server_item(item: JsonValue, make_id: Any) -> ExecThreadI
         return command_execution_item(
             make_id(),
             command=str(_field(item, "command") or ""),
+            cwd=_field(item, "cwd"),
+            process_id=_optional_str(_field(item, "processId", "process_id")),
+            source=_optional_str(_field(item, "source")),
+            command_actions=_command_actions(_field(item, "commandActions", "command_actions")),
             aggregated_output=str(_field(item, "aggregatedOutput", "aggregated_output") or ""),
             exit_code=_optional_int(_field(item, "exitCode", "exit_code")),
+            duration_ms=_optional_int(_field(item, "durationMs", "duration_ms")),
             status=_field(item, "status"),
         )
 
@@ -1129,14 +1146,14 @@ def human_notification_lines(notification: JsonValue) -> tuple[str, ...]:
     params = notification_params(notification)
 
     if method in {"configWarning", "warning"}:
-        return (f"warning: {_message_with_details(_warning_summary(params), _field(params, 'details'))}",)
+        return (f"warning: {_message_with_details(_warning_summary(params), _notification_details(params))}",)
 
     if method == "error":
         return (f"ERROR: {_turn_error_message(_field(params, 'error') or params) or ''}",)
 
     if method == "deprecationNotice":
         lines = [f"deprecated: {_warning_summary(params)}"]
-        details = _field(params, "details")
+        details = _notification_details(params)
         if details:
             lines.append(str(details))
         return tuple(lines)
@@ -1275,6 +1292,14 @@ def _optional_str(value: JsonValue) -> str | None:
     return str(value)
 
 
+def _command_actions(value: JsonValue) -> tuple[JsonValue, ...] | None:
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        return tuple(value)
+    return None
+
+
 def _message_with_details(summary: JsonValue, details: JsonValue) -> str:
     summary_text = str(summary)
     if details:
@@ -1284,6 +1309,10 @@ def _message_with_details(summary: JsonValue, details: JsonValue) -> str:
 
 def _warning_summary(params: JsonValue) -> str:
     return str(_field(params, "summary", "message") or "")
+
+
+def _notification_details(params: JsonValue) -> JsonValue:
+    return _field(params, "details", "additionalDetails", "additional_details")
 
 
 def _turn_error_message(error: JsonValue) -> str | None:
@@ -1390,7 +1419,11 @@ def _normalized_item_type(value: JsonValue) -> str:
 def _uses_raw_exec_notification_boundary(item: JsonValue) -> bool:
     if not isinstance(item, Mapping):
         return False
-    return _normalized_item_type(_field(item, "type")) in {"web_search", "collab_agent_tool_call"}
+    return _normalized_item_type(_field(item, "type")) in {
+        "collab_agent_tool_call",
+        "file_change",
+        "web_search",
+    }
 
 
 def _turn_item_to_app_server_like_mapping(item: TurnItem) -> dict[str, JsonValue]:

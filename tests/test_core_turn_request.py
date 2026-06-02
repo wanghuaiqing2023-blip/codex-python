@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from pycodex.core.client import ModelClient
 from pycodex.core.turn_request import build_turn_responses_request
-from pycodex.protocol import BaseInstructions, ContentItem, ResponseItem
+from pycodex.protocol import BaseInstructions, ContentItem, ResponseItem, SessionSource, SubAgentSource
 
 
 class Router:
@@ -71,6 +71,35 @@ class TurnRequestTests(unittest.TestCase):
 
         self.assertTrue(plan.prompt.parallel_tool_calls)
         self.assertTrue(plan.request["parallel_tool_calls"])
+
+    def test_build_turn_responses_request_infers_non_strict_schema_for_guardian_reviewer(self) -> None:
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        context = SimpleNamespace(
+            model_info=SimpleNamespace(supports_parallel_tool_calls=False),
+            session_source=SessionSource.subagent(SubAgentSource.other_source("guardian")),
+        )
+        user = ResponseItem.message("user", (ContentItem.input_text("assess"),))
+
+        plan = build_turn_responses_request(
+            client,
+            provider,
+            model_info,
+            [user],
+            Router(),
+            context,
+            BaseInstructions("base"),
+            output_schema={"type": "object"},
+        )
+
+        self.assertFalse(plan.prompt.output_schema_strict)
+        self.assertEqual(plan.request["text"]["format"]["strict"], False)
 
 
 if __name__ == "__main__":

@@ -52,16 +52,16 @@ class ShellTest(unittest.TestCase):
 
     def test_derive_exec_args(self) -> None:
         bash = Shell(ShellType.BASH, Path("/bin/bash"))
-        self.assertEqual(bash.derive_exec_args("echo hello", False), [str(Path("/bin/bash")), "-c", "echo hello"])
-        self.assertEqual(bash.derive_exec_args("echo hello", True), [str(Path("/bin/bash")), "-lc", "echo hello"])
+        self.assertEqual(bash.derive_exec_args("echo hello", False), ["/bin/bash", "-c", "echo hello"])
+        self.assertEqual(bash.derive_exec_args("echo hello", True), ["/bin/bash", "-lc", "echo hello"])
 
         zsh = Shell(ShellType.ZSH, Path("/bin/zsh"))
-        self.assertEqual(zsh.derive_exec_args("echo hello", False), [str(Path("/bin/zsh")), "-c", "echo hello"])
-        self.assertEqual(zsh.derive_exec_args("echo hello", True), [str(Path("/bin/zsh")), "-lc", "echo hello"])
+        self.assertEqual(zsh.derive_exec_args("echo hello", False), ["/bin/zsh", "-c", "echo hello"])
+        self.assertEqual(zsh.derive_exec_args("echo hello", True), ["/bin/zsh", "-lc", "echo hello"])
 
         sh = Shell(ShellType.SH, Path("/bin/sh"))
-        self.assertEqual(sh.derive_exec_args("echo hello", False), [str(Path("/bin/sh")), "-c", "echo hello"])
-        self.assertEqual(sh.derive_exec_args("echo hello", True), [str(Path("/bin/sh")), "-lc", "echo hello"])
+        self.assertEqual(sh.derive_exec_args("echo hello", False), ["/bin/sh", "-c", "echo hello"])
+        self.assertEqual(sh.derive_exec_args("echo hello", True), ["/bin/sh", "-lc", "echo hello"])
 
         powershell = Shell(ShellType.POWERSHELL, Path("pwsh.exe"))
         self.assertEqual(

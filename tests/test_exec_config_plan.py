@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -31,7 +32,7 @@ from pycodex.exec import (
     thread_bootstrap_result_from_response,
     thread_bootstrap_request_from_startup_plan,
 )
-from pycodex.protocol import AskForApproval, SandboxMode
+from pycodex.protocol import AskForApproval, GranularApprovalConfig, SandboxMode
 
 
 class ExecConfigPlanTests(unittest.TestCase):
@@ -118,6 +119,29 @@ class ExecConfigPlanTests(unittest.TestCase):
             },
         )
         self.assertIs(overrides.approval_policy, AskForApproval.NEVER)
+
+    def test_exec_harness_overrides_preserves_cli_approval_policy(self):
+        cli = replace(parse_exec_args(["prompt"]), approval_policy=AskForApproval.ON_REQUEST)
+
+        overrides = exec_harness_overrides_from_cli(cli)
+
+        self.assertIs(overrides.approval_policy, AskForApproval.ON_REQUEST)
+        self.assertEqual(overrides.to_mapping()["approvalPolicy"], "on-request")
+
+    def test_exec_harness_overrides_serializes_granular_approval_policy(self):
+        granular = GranularApprovalConfig(
+            sandbox_approval=True,
+            rules=False,
+            skill_approval=False,
+            request_permissions=True,
+            mcp_elicitations=False,
+        )
+        cli = replace(parse_exec_args(["prompt"]), approval_policy=granular)
+
+        overrides = exec_harness_overrides_from_cli(cli)
+
+        self.assertEqual(overrides.approval_policy, granular)
+        self.assertEqual(overrides.to_mapping()["approvalPolicy"], {"granular": granular.to_mapping()})
 
     def test_build_exec_config_bootstrap_plan_resolves_cwd_and_cli_overrides(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -209,6 +233,63 @@ class ExecConfigPlanTests(unittest.TestCase):
         )
         self.assertTrue(config.ephemeral)
         self.assertFalse(config.show_raw_agent_reasoning)
+        self.assertTrue(config.allow_login_shell)
+        self.assertFalse(config.exec_permission_approvals_enabled)
+        self.assertFalse(config.request_permissions_tool_enabled)
+
+    def test_exec_session_config_projects_shell_feature_flags_from_config(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cli = parse_exec_args(["prompt"])
+            plan = build_exec_config_bootstrap_plan(
+                cli,
+                config_toml={
+                    "allow_login_shell": False,
+                    "features": {
+                        "exec_permission_approvals": True,
+                        "request_permissions_tool": True,
+                    },
+                },
+                current_dir=root,
+            )
+
+        config = exec_session_config_from_bootstrap_plan(plan)
+
+        self.assertFalse(config.allow_login_shell)
+        self.assertTrue(config.exec_permission_approvals_enabled)
+        self.assertTrue(config.request_permissions_tool_enabled)
+
+    def test_exec_session_config_applies_cli_overrides_before_projecting_shell_features(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cli = parse_exec_args(
+                [
+                    "-c",
+                    "allow_login_shell=true",
+                    "-c",
+                    "features.exec_permission_approvals=false",
+                    "-c",
+                    "features.request_permissions_tool=true",
+                    "prompt",
+                ]
+            )
+            plan = build_exec_config_bootstrap_plan(
+                cli,
+                config_toml={
+                    "allow_login_shell": False,
+                    "features": {
+                        "exec_permission_approvals": True,
+                        "request_permissions_tool": False,
+                    },
+                },
+                current_dir=root,
+            )
+
+        config = exec_session_config_from_bootstrap_plan(plan)
+
+        self.assertTrue(config.allow_login_shell)
+        self.assertFalse(config.exec_permission_approvals_enabled)
+        self.assertTrue(config.request_permissions_tool_enabled)
 
     def test_exec_session_config_projects_oss_raw_reasoning_override(self):
         with tempfile.TemporaryDirectory() as tmpdir:

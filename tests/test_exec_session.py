@@ -206,6 +206,7 @@ from pycodex.protocol import (
     ApprovalsReviewer,
     AskForApproval,
     FileSystemSandboxPolicy,
+    GranularApprovalConfig,
     ManagedFileSystemPermissions,
     NetworkSandboxPolicy,
     PermissionProfile,
@@ -319,6 +320,37 @@ class ExecSessionRequestBuilderTests(unittest.TestCase):
 
         self.assertIn("ephemeral", params)
         self.assertIs(params["ephemeral"], False)
+
+    def test_exec_session_config_serializes_granular_approval_policy_to_thread_and_turn_requests(self) -> None:
+        granular = GranularApprovalConfig(
+            sandbox_approval=True,
+            rules=False,
+            skill_approval=False,
+            request_permissions=True,
+            mcp_elicitations=False,
+        )
+        config = ExecSessionConfig(
+            model="gpt-5.5",
+            model_provider_id="openai",
+            cwd=Path("C:/work/project"),
+            approval_policy=granular,
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("hello"),)),
+            "hello",
+        )
+
+        expected = {"granular": granular.to_mapping()}
+        self.assertEqual(exec_session_config_mapping(config)["approvalPolicy"], expected)
+        self.assertEqual(thread_start_params_from_config(config).to_mapping()["approvalPolicy"], expected)
+        self.assertEqual(
+            thread_resume_params_from_config(config, "thread-1").to_mapping()["approvalPolicy"],
+            expected,
+        )
+        self.assertEqual(
+            turn_start_params_from_plan(config, "thread-1", plan).to_mapping()["approvalPolicy"],
+            expected,
+        )
 
     def test_thread_resume_uses_active_permissions_profile_instead_of_legacy_sandbox(self) -> None:
         config = ExecSessionConfig(
@@ -3421,6 +3453,15 @@ class ExecSessionRequestBuilderTests(unittest.TestCase):
         self.assertNotIn("modelProviders", request["params"])
         self.assertEqual(request["params"]["searchTerm"], "Daily work")
 
+    def test_resume_last_defaults_missing_model_provider_like_exec_config(self) -> None:
+        config = ExecSessionConfig("gpt-5.5", None, Path("C:/work/project"))
+        resume_args = {"last": True}
+
+        request = thread_list_request_for_resume(0, config, resume_args).to_mapping()
+
+        self.assertEqual(resume_lookup_model_providers(config, resume_args), ("openai",))
+        self.assertEqual(request["params"]["modelProviders"], ["openai"])
+
     def test_resume_thread_id_lookup_step_matches_upstream_branches(self) -> None:
         config = ExecSessionConfig("gpt-5.5", "openai", Path("C:/work/project"))
         thread_id = "55555555-5555-4555-8555-555555555555"
@@ -3807,6 +3848,37 @@ class ExecSessionRequestBuilderTests(unittest.TestCase):
         self.assertEqual(payload["reasoning_effort"], "high")
         self.assertEqual(payload["rollout_path"], str(Path("C:/work/project/thread.jsonl")))
         self.assertEqual(configured.permission_profile, config.permission_profile)
+
+    def test_session_configured_from_thread_start_response_accepts_granular_approval_policy(self) -> None:
+        granular = GranularApprovalConfig(
+            sandbox_approval=True,
+            rules=False,
+            skill_approval=False,
+            request_permissions=True,
+            mcp_elicitations=False,
+        )
+        config = ExecSessionConfig(
+            model="ignored-model-from-config",
+            model_provider_id="ignored-provider-from-config",
+            cwd=Path("C:/work/project"),
+            permission_profile=PermissionProfile.read_only(),
+        )
+        response = {
+            "thread": {
+                "sessionId": "11111111-1111-4111-8111-111111111111",
+                "id": "22222222-2222-4222-8222-222222222222",
+            },
+            "model": "gpt-5.5",
+            "modelProvider": "openai",
+            "approvalPolicy": {"granular": granular.to_mapping()},
+            "approvalsReviewer": "user",
+            "cwd": "C:/work/project",
+        }
+
+        configured = session_configured_from_thread_start_response(response, config)
+
+        self.assertEqual(configured.approval_policy, granular)
+        self.assertEqual(configured.to_mapping()["approval_policy"], {"granular": granular.to_mapping()})
 
     def test_session_configured_from_thread_resume_response_accepts_snake_case_response(self) -> None:
         session_id = "33333333-3333-4333-8333-333333333333"

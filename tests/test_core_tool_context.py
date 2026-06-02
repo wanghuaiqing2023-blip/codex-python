@@ -284,6 +284,15 @@ class ToolContextTests(unittest.TestCase):
         self.assertFalse(feedback.success_for_logging())
         self.assertEqual(feedback.code_mode_result(ToolPayload.function("{}")), {"raw": True})
 
+    def test_post_tool_use_feedback_code_mode_falls_back_to_original_response_body(self) -> None:
+        feedback = PostToolUseFeedbackOutput(
+            original=FunctionToolOutput.from_text("original", True),
+            model_visible=FunctionToolOutput.from_text("hook feedback", None),
+        )
+
+        self.assertEqual(feedback.to_response_item("call-feedback", ToolPayload.function("{}")).output.to_text(), "hook feedback")
+        self.assertEqual(feedback.code_mode_result(ToolPayload.function("{}")), "original")
+
     def test_mcp_tool_output_response_item_includes_wall_time(self) -> None:
         output = McpToolOutput(
             result=CallToolResult(

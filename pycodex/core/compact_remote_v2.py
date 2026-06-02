@@ -121,6 +121,8 @@ def collect_compaction_output(events: Sequence[Any]) -> tuple[ResponseItem, str]
     compaction_output: ResponseItem | None = None
     completed_response_id: str | None = None
     for event in events:
+        if isinstance(event, CodexErr):
+            raise event
         event_type = _event_type(event)
         if event_type == "output_item_done":
             output_item_count += 1
@@ -134,16 +136,16 @@ def collect_compaction_output(events: Sequence[Any]) -> tuple[ResponseItem, str]
             break
 
     if completed_response_id is None:
-        raise RemoteCompactionV2StreamError(
+        raise CodexErr.stream(
             "remote compaction v2 stream closed before response.completed"
         )
     if compaction_count != 1:
-        raise RemoteCompactionV2OutputError(
+        raise CodexErr.fatal(
             "remote compaction v2 expected exactly one compaction output item, "
             f"got {compaction_count} from {output_item_count} output items"
         )
     if compaction_output is None:
-        raise RemoteCompactionV2OutputError("compaction output missing")
+        raise CodexErr.fatal("compaction output missing")
     return compaction_output, completed_response_id
 
 

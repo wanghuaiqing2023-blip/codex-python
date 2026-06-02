@@ -20,6 +20,7 @@ from pycodex.core import (
     build_exec_stage_events,
     build_patch_begin_item,
     build_patch_end_for_stage,
+    command_actions_from_argv,
     command_execution_notification_from_event_msg,
     command_execution_status_from_guardian_status,
     exec_command_result_for_stage,
@@ -257,6 +258,49 @@ class ToolEventsTests(unittest.TestCase):
             ),
         )
 
+    def test_tool_emitters_parse_command_actions_by_default(self) -> None:
+        ctx = ToolEventCtx.new(None, _Turn(), "call-1")
+        shell = ToolEmitter.shell(["bash", "-lc", "cat README.md"], Path("/repo"))
+        unified = ToolEmitter.unified_exec(["bash", "-lc", "rg needle src"], Path("/repo"), process_id="45")
+
+        shell_event = shell.emit(ctx, ToolEventStage.begin())[0]
+        unified_event = unified.emit(ctx, ToolEventStage.begin())[0]
+        shell_item = build_command_execution_begin_item(shell_event.payload)
+        unified_item = build_command_execution_begin_item(unified_event.payload)
+
+        self.assertEqual(
+            shell_item.item.command_actions,
+            ({"type": "read", "command": "cat README.md", "name": "README.md", "path": str(Path("/repo") / "README.md")},),
+        )
+        self.assertEqual(
+            unified_item.item.command_actions,
+            ({"type": "search", "command": "rg needle src", "query": "needle", "path": "src"},),
+        )
+        self.assertEqual(unified_event.payload.process_id, "45")
+
+    def test_tool_emitters_preserve_explicit_parsed_commands(self) -> None:
+        ctx = ToolEventCtx.new(None, _Turn(), "call-1")
+        shell = ToolEmitter.shell(
+            ["bash", "-lc", "cat README.md"],
+            Path("/repo"),
+            parsed_cmd=(ParsedCommand.unknown("custom"),),
+        )
+
+        event = shell.emit(ctx, ToolEventStage.begin())[0]
+        item = build_command_execution_begin_item(event.payload)
+
+        self.assertEqual(item.item.command_actions, ({"type": "unknown", "command": "custom"},))
+
+    def test_command_actions_from_argv_uses_shell_command_parser(self) -> None:
+        self.assertEqual(
+            command_actions_from_argv(("bash", "-lc", "cat README.md"), Path("/repo")),
+            ({"type": "read", "command": "cat README.md", "name": "README.md", "path": str(Path("/repo") / "README.md")},),
+        )
+        self.assertEqual(
+            command_actions_from_argv(("bash", "-lc", "rg needle src"), Path("/repo")),
+            ({"type": "search", "command": "rg needle src", "query": "needle", "path": "src"},),
+        )
+
     def test_guardian_non_command_or_approved_assessment_does_not_build_command_execution_item(self) -> None:
         assessment = GuardianAssessmentEvent(
             id="assessment-1",
@@ -425,6 +469,30 @@ class ToolEventsTests(unittest.TestCase):
         self.assertEqual(patch_result.message, "patch rejected by user")
         self.assertEqual(patch_events[0].item.status, PatchApplyStatus.DECLINED)
         self.assertEqual(patch_events[0].item.stderr, "patch rejected by user")
+
+    def test_emitter_finish_returns_model_visible_exec_output_metadata(self) -> None:
+        ctx = ToolEventCtx.new(None, _Turn(), "call-4")
+        shell = ToolEmitter.shell(["python", "-m", "pytest"], Path("/tmp/project"))
+        output = ExecToolCallOutput(
+            exit_code=1,
+            stdout=StreamOutput.new(""),
+            stderr=StreamOutput.new("FAILED\n"),
+            aggregated_output=StreamOutput.new("FAILED\n"),
+            duration=timedelta(milliseconds=1250),
+        )
+
+        result, events = shell.finish(ctx, output)
+
+        self.assertIsInstance(result, Exception)
+        self.assertEqual(
+            result.message,
+            "Exit code: 1\n"
+            "Wall time: 1.3 seconds\n"
+            "Output:\n"
+            "FAILED\n",
+        )
+        self.assertEqual(events[0].type, "exec_command_end")
+        self.assertEqual(events[0].payload.formatted_output, "FAILED\n")
 
     def test_rejects_non_rust_variant_shapes(self) -> None:
         with self.assertRaises(TypeError):

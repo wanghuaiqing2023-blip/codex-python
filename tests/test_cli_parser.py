@@ -2,13 +2,18 @@ import unittest
 import io
 import os
 import json
+import re
+import shlex
+import subprocess
+import sys
 import tempfile
 import socket
 import threading
 import time
+from email.message import Message
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from pathlib import Path
 
@@ -35,11 +40,21 @@ from pycodex.cli.parser import (
 from pycodex.cli import DoctorUpdateCheck, NpmRootCheck, UpdateAction
 from pycodex.cli.login import AuthDotJson
 from pycodex.core import Feature, Features
-from pycodex.core.rollout import SessionMeta, materialize_session_rollout
-from pycodex.protocol import AskForApproval, ProfileV2Name, ResponseItem, SandboxMode
+from pycodex.core.rollout import (
+    SessionMeta,
+    materialize_session_rollout,
+    read_event_msgs_from_rollout,
+    read_response_items_from_rollout,
+)
+from pycodex.core.turn_runtime import UserTurnSamplingResult
+from pycodex.protocol import AskForApproval, ContentItem, ProfileV2Name, ResponseItem, SandboxMode
 
 
 class TopLevelCliParserTests(unittest.TestCase):
+    def _main_with_local_http_exec_disabled(self, argv, **kwargs):
+        with patch.dict(os.environ, {"PYCODEX_EXEC_LOCAL_HTTP": "0"}):
+            return main(argv, **kwargs)
+
     def test_no_args_defaults_to_interactive_mode(self):
         parsed = parse_args([])
 
@@ -1510,7 +1525,8 @@ class TopLevelCliParserTests(unittest.TestCase):
         stderr = io.StringIO()
 
         try:
-            code = main(["cloud"], stderr=stderr)
+            with patch("pycodex.cli.parser._cloud_auth_token", side_effect=RuntimeError("Not logged in.")):
+                code = main(["cloud"], stderr=stderr)
         finally:
             if previous_fallback is None:
                 os.environ.pop("PYCODEX_CLOUD_FALLBACK", None)
@@ -1518,7 +1534,8 @@ class TopLevelCliParserTests(unittest.TestCase):
                 os.environ["PYCODEX_CLOUD_FALLBACK"] = previous_fallback
 
         self.assertEqual(code, 2)
-        self.assertIn("No cloud subcommand provided. Use: codex cloud exec/status/list/apply/diff.", stderr.getvalue())
+        self.assertIn("No cloud subcommand provided. Falling back to `cloud list`.", stderr.getvalue())
+        self.assertIn("pycodex: Not logged in.", stderr.getvalue())
 
     def test_main_cloud_status_requires_auth(self):
         stderr = io.StringIO()
@@ -4686,7 +4703,8 @@ class TopLevelCliParserTests(unittest.TestCase):
     def test_main_review_alias_runs_exec_plan_preparation(self):
         stderr = io.StringIO()
 
-        code = main(["review", "--commit", "123456789", "--title", "Fix"], stderr=stderr)
+        with patch.dict(os.environ, {"PYCODEX_EXEC_LOCAL_HTTP": "0"}):
+            code = main(["review", "--commit", "123456789", "--title", "Fix"], stderr=stderr)
 
         self.assertEqual(code, 0)
         self.assertIn("prepared non-interactive review plan", stderr.getvalue())
@@ -4718,20 +4736,21 @@ class TopLevelCliParserTests(unittest.TestCase):
     def test_main_review_inherits_root_exec_shared_options(self):
         stderr = io.StringIO()
 
-        code = main(
-            [
-                "--model",
-                "gpt-5.2",
-                "--sandbox",
-                "workspace-write",
-                "review",
-                "--commit",
-                "123456789",
-                "--title",
-                "Fix",
-            ],
-            stderr=stderr,
-        )
+        with patch.dict(os.environ, {"PYCODEX_EXEC_LOCAL_HTTP": "0"}):
+            code = main(
+                [
+                    "--model",
+                    "gpt-5.2",
+                    "--sandbox",
+                    "workspace-write",
+                    "review",
+                    "--commit",
+                    "123456789",
+                    "--title",
+                    "Fix",
+                ],
+                stderr=stderr,
+            )
 
         self.assertEqual(code, 0)
         self.assertIn("prepared non-interactive review plan", stderr.getvalue())
@@ -5529,6 +5548,9 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "pycodex.cli.doctor_updates.fetch_latest_version", return_value="1.2.4"
                 ), patch(
                     "pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=False
+                ), patch(
+                    "pycodex.cli.parser.doctor_terminal_check",
+                    return_value=DoctorUpdateCheck(status="ok", summary="terminal metadata was detected", details=()),
                 ):
                     code = main(["doctor", "--json"], stdout=stdout)
             finally:
@@ -5559,6 +5581,9 @@ class TopLevelCliParserTests(unittest.TestCase):
                     "pycodex.cli.doctor_updates.fetch_latest_version", side_effect=RuntimeError("offline")
                 ), patch(
                     "pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=False
+                ), patch(
+                    "pycodex.cli.parser.doctor_terminal_check",
+                    return_value=DoctorUpdateCheck(status="ok", summary="terminal metadata was detected", details=()),
                 ):
                     code = main(["doctor", "--json"], stdout=stdout)
             finally:
@@ -5629,7 +5654,10 @@ class TopLevelCliParserTests(unittest.TestCase):
             try:
                 with patch("pycodex.cli.doctor_updates.detect_update_action", return_value=UpdateAction.BREW_UPGRADE), patch(
                     "pycodex.cli.doctor_updates.fetch_latest_version", side_effect=fake_fetch
-                ), patch("pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=False):
+                ), patch("pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=False), patch(
+                    "pycodex.cli.parser.doctor_terminal_check",
+                    return_value=DoctorUpdateCheck(status="ok", summary="terminal metadata was detected", details=()),
+                ):
                     code = main(["doctor", "--json"], stdout=stdout)
             finally:
                 if previous is None:
@@ -5657,6 +5685,9 @@ class TopLevelCliParserTests(unittest.TestCase):
                         summary="installation looks consistent",
                         details=("install context: other", "managed by npm: false"),
                     ),
+                ), patch(
+                    "pycodex.cli.parser.doctor_terminal_check",
+                    return_value=DoctorUpdateCheck(status="ok", summary="terminal metadata was detected", details=()),
                 ):
                     code = main(["doctor", "--json"], stdout=stdout)
             finally:
@@ -5685,6 +5716,9 @@ class TopLevelCliParserTests(unittest.TestCase):
                         summary="OS language en-US",
                         details=("os: TestOS", "os language: en-US"),
                     ),
+                ), patch(
+                    "pycodex.cli.parser.doctor_terminal_check",
+                    return_value=DoctorUpdateCheck(status="ok", summary="terminal metadata was detected", details=()),
                 ):
                     code = main(["doctor", "--json"], stdout=stdout)
             finally:
@@ -5742,6 +5776,9 @@ class TopLevelCliParserTests(unittest.TestCase):
                         summary="running local build on test-arch",
                         details=("version: test", "platform: test-arch"),
                     ),
+                ), patch(
+                    "pycodex.cli.parser.doctor_terminal_check",
+                    return_value=DoctorUpdateCheck(status="ok", summary="terminal metadata was detected", details=()),
                 ):
                     code = main(["doctor", "--json"], stdout=stdout)
             finally:
@@ -5802,6 +5839,9 @@ class TopLevelCliParserTests(unittest.TestCase):
                         summary="background server is not running",
                         details=("status: not running",),
                     ),
+                ), patch(
+                    "pycodex.cli.parser.doctor_terminal_check",
+                    return_value=DoctorUpdateCheck(status="ok", summary="terminal metadata was detected", details=()),
                 ):
                     code = main(["doctor", "--json"], stdout=stdout)
             finally:
@@ -5907,6 +5947,9 @@ class TopLevelCliParserTests(unittest.TestCase):
                 ), patch("pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=False), patch(
                     "pycodex.cli.parser.doctor_search_check",
                     return_value=DoctorUpdateCheck(status="warning", summary="search warning", details=()),
+                ), patch(
+                    "pycodex.cli.parser.doctor_terminal_check",
+                    return_value=DoctorUpdateCheck(status="ok", summary="terminal metadata was detected", details=()),
                 ):
                     code = main(["doctor", "--summary"], stdout=stdout)
             finally:
@@ -5929,7 +5972,10 @@ class TopLevelCliParserTests(unittest.TestCase):
                 ), patch("pycodex.cli.doctor_updates.doctor_managed_by_npm", return_value=False), patch(
                     "pycodex.cli.parser.doctor_installation_check",
                     return_value=DoctorUpdateCheck(status="ok", summary="installation looks consistent", details=()),
-                ) as installation_check:
+                ) as installation_check, patch(
+                    "pycodex.cli.parser.doctor_terminal_check",
+                    return_value=DoctorUpdateCheck(status="ok", summary="terminal metadata was detected", details=()),
+                ):
                     code = main(["doctor", "--all"], stdout=stdout)
             finally:
                 if previous is None:
@@ -5993,7 +6039,7 @@ class TopLevelCliParserTests(unittest.TestCase):
 
         self.assertEqual(code, 2)
         self.assertIn(
-            "pycodex: --listen cannot be used with --remote.",
+            "--listen cannot be used with --remote.",
             stderr.getvalue(),
         )
 
@@ -6030,7 +6076,16 @@ class TopLevelCliParserTests(unittest.TestCase):
     def test_main_exec_allows_strict_config(self):
         stderr = io.StringIO()
 
-        code = main(["--strict-config", "exec", "--full-auto", "prompt"], stderr=stderr)
+        class SuccessResult:
+            ok = True
+            exit_code = 0
+            error_message = None
+
+        with patch("pycodex.cli.parser.local_http_exec_enabled", return_value=False), patch(
+            "pycodex.cli.parser.remote_exec_session_connect_and_run",
+            return_value=SuccessResult(),
+        ):
+            code = main(["--strict-config", "exec", "--full-auto", "prompt"], stderr=stderr, stdin="")
 
         self.assertEqual(code, 0)
         self.assertIn("prepared non-interactive exec plan", stderr.getvalue())
@@ -6163,23 +6218,79 @@ class TopLevelCliParserTests(unittest.TestCase):
     def test_main_exec_reads_stdin_prompt_when_no_prompt_argument(self):
         stderr = io.StringIO()
 
-        code = main(["exec"], stdin="Summarize this\n", stderr=stderr)
+        class SuccessResult:
+            ok = True
+            exit_code = 0
+            error_message = None
+
+        with patch("pycodex.cli.parser.local_http_exec_enabled", return_value=False), patch(
+            "pycodex.cli.parser.remote_exec_session_connect_and_run",
+            return_value=SuccessResult(),
+        ):
+            code = main(["exec"], stdin="Summarize this\n", stderr=stderr)
 
         self.assertEqual(code, 0)
         self.assertIn("prepared non-interactive exec plan", stderr.getvalue())
 
+    def test_main_exec_dash_reads_forced_stdin_prompt(self):
+        stderr = io.StringIO()
+
+        class SuccessResult:
+            ok = True
+            exit_code = 0
+            error_message = None
+
+        with patch("pycodex.cli.parser.local_http_exec_enabled", return_value=False), patch(
+            "pycodex.cli.parser.remote_exec_session_connect_and_run",
+            return_value=SuccessResult(),
+        ):
+            code = main(["exec", "-"], stdin="Summarize this\n", stderr=stderr)
+
+        self.assertEqual(code, 0)
+        self.assertIn("prepared non-interactive exec plan", stderr.getvalue())
+
+    def test_main_exec_enforces_trusted_directory_gate_before_runtime(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir) / "not-a-repo"
+            project.mkdir()
+            with patch.dict(os.environ, {"PYCODEX_EXEC_LOCAL_HTTP": "0"}):
+                with patch("pycodex.exec.config_plan.get_git_repo_root", return_value=None):
+                    with patch(
+                        "pycodex.cli.parser.remote_exec_session_connect_and_run",
+                        side_effect=AssertionError("runtime should not start for untrusted cwd"),
+                    ):
+                        stderr = io.StringIO()
+                        code = main(["exec", "--cd", str(project), "prompt"], stderr=stderr, stdin="")
+
+        self.assertEqual(code, 2)
+        self.assertIn(
+            "Not inside a trusted directory and --skip-git-repo-check was not specified.",
+            stderr.getvalue(),
+        )
+
     def test_main_exec_prepares_noninteractive_plan(self):
         stderr = io.StringIO()
 
-        code = main(["exec", "--full-auto", "prompt"], stderr=stderr)
+        class SuccessResult:
+            ok = True
+            exit_code = 0
+            error_message = None
+
+        with patch("pycodex.cli.parser.local_http_exec_enabled", return_value=False), patch(
+            "pycodex.cli.parser.remote_exec_session_connect_and_run",
+            return_value=SuccessResult(),
+        ):
+            code = main(["exec", "--full-auto", "prompt"], stderr=stderr, stdin="")
 
         self.assertEqual(code, 0)
         self.assertIn("prepared non-interactive exec plan", stderr.getvalue())
 
     def test_main_exec_local_http_runtime_prints_summary_and_final_message(self):
         previous_enabled = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP")
+        previous_shell_tools = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS")
         previous_key = os.environ.get("OPENAI_API_KEY")
         os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = "1"
+        os.environ["PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS"] = "0"
         os.environ["OPENAI_API_KEY"] = "sk-test"
 
         class FakeResult:
@@ -6208,6 +6319,10 @@ class TopLevelCliParserTests(unittest.TestCase):
                 os.environ.pop("PYCODEX_EXEC_LOCAL_HTTP", None)
             else:
                 os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = previous_enabled
+            if previous_shell_tools is None:
+                os.environ.pop("PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS", None)
+            else:
+                os.environ["PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS"] = previous_shell_tools
             if previous_key is None:
                 os.environ.pop("OPENAI_API_KEY", None)
             else:
@@ -6218,6 +6333,247 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertIn("provider: openai", stderr.getvalue())
         self.assertIn("completed local HTTP non-interactive exec execution", stderr.getvalue())
         self.assertEqual(stdout.getvalue(), "done\n")
+
+    def test_main_exec_local_http_loads_default_execpolicy_rules(self):
+        class FakeResult:
+            response_items = (
+                ResponseItem.from_mapping(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "done"}],
+                    }
+                ),
+            )
+            raw_result = None
+
+        captured = {}
+
+        async def fake_run(session_config, *_args, **_kwargs):
+            captured["rules"] = session_config.exec_policy_rules
+            return FakeResult()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir) / "home"
+            project = Path(tmpdir) / "project"
+            (codex_home / "rules").mkdir(parents=True)
+            (project / ".codex" / "rules").mkdir(parents=True)
+            (project / ".git").mkdir()
+            (codex_home / "rules" / "user.rules").write_text(
+                'prefix_rule(pattern=["pwd"], decision="prompt", justification="inspect cwd")\n'
+            )
+            (project / ".codex" / "rules" / "project.rules").write_text(
+                'prefix_rule(pattern=["git", "push"], decision="forbidden")\n'
+            )
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": str(codex_home),
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "0",
+                    "OPENAI_API_KEY": "sk-test",
+                },
+            ):
+                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.parser.run_exec_user_turn_http_sampling", side_effect=fake_run):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(["exec", "--cd", str(project), "prompt"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            tuple(rule.pattern for rule in captured["rules"]),
+            (("pwd",), ("git", "push")),
+        )
+        self.assertEqual(captured["rules"][0].decision, "prompt")
+        self.assertEqual(captured["rules"][0].justification, "inspect cwd")
+        self.assertEqual(captured["rules"][1].decision, "forbidden")
+
+    def test_main_exec_local_http_ignore_rules_skips_default_execpolicy_rules(self):
+        class FakeResult:
+            response_items = (
+                ResponseItem.from_mapping(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "done"}],
+                    }
+                ),
+            )
+            raw_result = None
+
+        captured = {}
+
+        async def fake_run(session_config, *_args, **_kwargs):
+            captured["rules"] = session_config.exec_policy_rules
+            return FakeResult()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir) / "home"
+            (codex_home / "rules").mkdir(parents=True)
+            (codex_home / "rules" / "user.rules").write_text(
+                'prefix_rule(pattern=["pwd"], decision="prompt", justification="inspect cwd")\n'
+            )
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": str(codex_home),
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "0",
+                    "OPENAI_API_KEY": "sk-test",
+                },
+            ):
+                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.parser.run_exec_user_turn_http_sampling", side_effect=fake_run):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(["exec", "--ignore-rules", "prompt"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(captured["rules"], ())
+
+    def test_main_review_local_http_runtime_prints_summary_and_final_message(self):
+        class FakeResult:
+            response_items = (
+                ResponseItem.from_mapping(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "review done"}],
+                    }
+                ),
+            )
+            raw_result = None
+
+        async def fake_run(*_args, **_kwargs):
+            return FakeResult()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "0",
+                    "OPENAI_API_KEY": "sk-test",
+                },
+            ):
+                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.parser.run_exec_review_http_sampling", side_effect=fake_run) as run_review:
+                        with patch("pycodex.cli.parser.persist_local_http_exec_rollout") as persist_rollout:
+                            stdout = io.StringIO()
+                            stderr = io.StringIO()
+                            code = main(["review", "--uncommitted"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0)
+        self.assertTrue(run_review.called)
+        self.assertTrue(persist_rollout.called)
+        persisted_input = persist_rollout.call_args.kwargs["input_items"]
+        self.assertEqual(len(persisted_input), 1)
+        self.assertIn("full review output from reviewer model", persisted_input[0].text)
+        self.assertIn("<action>review</action>", persisted_input[0].text)
+        self.assertIn("review done", persisted_input[0].text)
+        self.assertIn("current changes", stderr.getvalue())
+        self.assertIn("completed local HTTP non-interactive review execution", stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "review done\n")
+
+    def test_main_review_core_env_uses_core_review_runner(self):
+        seen = {}
+
+        class FakeResult:
+            response_items = (
+                ResponseItem.from_mapping(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "core review done"}],
+                    }
+                ),
+            )
+            raw_result = None
+
+        async def fake_run(command, *_args, **kwargs):
+            seen["command"] = command
+            seen["auth"] = kwargs.get("auth")
+            seen["cli_version"] = kwargs.get("cli_version")
+            return FakeResult()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_CORE": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP": "0",
+                    "OPENAI_API_KEY": "sk-test",
+                },
+            ):
+                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.parser.run_core_exec_command", side_effect=fake_run) as run_review:
+                        with patch(
+                            "pycodex.cli.parser.run_exec_review_http_sampling",
+                            side_effect=AssertionError("local HTTP review runner should not run when core exec is enabled"),
+                        ):
+                            stdout = io.StringIO()
+                            stderr = io.StringIO()
+                            code = main(["review", "--uncommitted"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0)
+        self.assertTrue(run_review.called)
+        self.assertEqual(seen["command"], "review")
+        self.assertEqual(seen["auth"], "sk-test")
+        self.assertIsInstance(seen["cli_version"], str)
+        self.assertTrue(seen["cli_version"])
+        self.assertIn("completed core non-interactive review execution", stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "core review done\n")
+
+    def test_main_review_api_key_defaults_to_core_review_runner(self):
+        seen = {}
+
+        class FakeResult:
+            response_items = (
+                ResponseItem.from_mapping(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "default core review done"}],
+                    }
+                ),
+            )
+            raw_result = None
+
+        async def fake_run(command, *_args, **kwargs):
+            seen["command"] = command
+            seen["auth"] = kwargs.get("auth")
+            seen["cli_version"] = kwargs.get("cli_version")
+            return FakeResult()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "OPENAI_API_KEY": "sk-default-review",
+                },
+                clear=True,
+            ):
+                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.parser.run_core_exec_command", side_effect=fake_run) as run_review:
+                        with patch(
+                            "pycodex.cli.parser.run_exec_review_http_sampling",
+                            side_effect=AssertionError("local HTTP review runner should not be the API-key default"),
+                        ):
+                            stdout = io.StringIO()
+                            stderr = io.StringIO()
+                            code = main(["review", "--uncommitted"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(run_review.call_count, 1)
+        self.assertEqual(seen["command"], "review")
+        self.assertEqual(seen["auth"], "sk-default-review")
+        self.assertIsInstance(seen["cli_version"], str)
+        self.assertEqual(stdout.getvalue(), "default core review done\n")
+        self.assertIn("completed core non-interactive review execution", stderr.getvalue())
 
     def test_main_exec_local_http_configures_human_reasoning_visibility(self):
         class FakeResult:
@@ -6254,6 +6610,7 @@ class TopLevelCliParserTests(unittest.TestCase):
                 {
                     "CODEX_HOME": tmpdir,
                     "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "0",
                     "OPENAI_API_KEY": "sk-test",
                 },
             ):
@@ -6333,6 +6690,2006 @@ class TopLevelCliParserTests(unittest.TestCase):
             "pycodex-local-exec",
         )
         self.assertEqual(stdout.getvalue(), "smoke\n")
+
+    def test_main_prompt_without_subcommand_uses_local_http_exec_when_available(self) -> None:
+        seen = {}
+
+        class FakeResponse:
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "output": [
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "bare prompt done"}],
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        def opener(request):
+            seen["body"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "0",
+                    "OPENAI_API_KEY": "sk-smoke",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(["bare prompt"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "bare prompt done\n")
+        self.assertIn("prepared non-interactive exec plan", stderr.getvalue())
+        user_items = [
+            item
+            for item in seen["body"]["input"]
+            if item.get("type") == "message" and item.get("role") == "user"
+        ]
+        user_texts = [
+            content.get("text")
+            for item in user_items
+            for content in item.get("content", ())
+            if isinstance(content, dict)
+        ]
+        self.assertIn("bare prompt", user_texts)
+
+    def test_main_prompt_without_subcommand_uses_core_exec_when_core_only(self) -> None:
+        seen = {}
+
+        class FakeResult:
+            response_items = (
+                ResponseItem.from_mapping(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "core bare prompt done"}],
+                    }
+                ),
+            )
+            raw_result = None
+
+        async def fake_run(command, _codex_home, _config, plan, _model_client, _provider, _model_info, **kwargs):
+            seen["command"] = command
+            seen["prompt"] = plan.prompt_summary
+            seen["auth"] = kwargs.get("auth")
+            return FakeResult()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_CORE": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP": "0",
+                    "OPENAI_API_KEY": "sk-core",
+                },
+            ):
+                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.parser.run_core_exec_command", side_effect=fake_run) as run_core:
+                        with patch("pycodex.cli.parser._run_tui", side_effect=AssertionError("prompt should run through core exec")):
+                            stdout = io.StringIO()
+                            stderr = io.StringIO()
+                            code = main(["bare prompt"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(run_core.call_count, 1)
+        self.assertIsNone(seen["command"])
+        self.assertEqual(seen["prompt"], "bare prompt")
+        self.assertEqual(seen["auth"], "sk-core")
+        self.assertEqual(stdout.getvalue(), "core bare prompt done\n")
+        self.assertIn("completed core non-interactive exec execution", stderr.getvalue())
+
+    def test_main_prompt_without_subcommand_forwards_root_image_to_local_http_exec(self) -> None:
+        seen = {}
+
+        class FakeResponse:
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "output": [
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "image prompt done"}],
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        def opener(request):
+            seen["body"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse()
+
+        png_bytes = (
+            b"\x89PNG\r\n\x1a\n"
+            b"\x00\x00\x00\rIHDR"
+            b"\x00\x00\x00\x01\x00\x00\x00\x01"
+            b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+            b"\x00\x00\x00\nIDATx\x9cc\xf8\x0f\x00\x01\x01\x01\x00\x18\xdd\x8d\xb0"
+            b"\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = Path(tmpdir) / "image.png"
+            image_path.write_bytes(png_bytes)
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "0",
+                    "OPENAI_API_KEY": "sk-smoke",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(
+                            ["--image", str(image_path), "inspect the provided image"],
+                            stdout=stdout,
+                            stderr=stderr,
+                        )
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "image prompt done\n")
+        user_content = [
+            content
+            for item in seen["body"]["input"]
+            if item.get("type") == "message" and item.get("role") == "user"
+            for content in item.get("content", ())
+            if isinstance(content, dict)
+        ]
+        self.assertTrue(
+            any(
+                content.get("type") == "input_image"
+                and str(content.get("image_url", "")).startswith("data:image/png;base64,")
+                for content in user_content
+            )
+        )
+        self.assertTrue(any(content.get("text") == "inspect the provided image" for content in user_content))
+
+    def test_main_prompt_without_subcommand_forwards_root_cd_to_local_http_exec(self) -> None:
+        class FakeResponse:
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "output": [
+                            {
+                                "type": "local_shell_call",
+                                "call_id": "cwd-1",
+                                "status": "completed",
+                                "action": {
+                                    "type": "exec",
+                                    "command": ["pwd"],
+                                },
+                            },
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "cwd done"}],
+                            },
+                        ]
+                    }
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir) / "project"
+            project.mkdir()
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "0",
+                    "OPENAI_API_KEY": "sk-smoke",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", return_value=FakeResponse()):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(
+                            [
+                                "--cd",
+                                str(project),
+                                "inspect cwd",
+                            ],
+                            stdout=stdout,
+                            stderr=stderr,
+                        )
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "cwd done\n")
+        self.assertIn(f"workdir: {project}", stderr.getvalue())
+
+    def test_main_prompt_without_subcommand_forwards_root_model_to_local_http_exec(self) -> None:
+        seen = {}
+
+        class FakeResponse:
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "output": [
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "model done"}],
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        def opener(request):
+            seen["body"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "0",
+                    "OPENAI_API_KEY": "sk-smoke",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(
+                            ["--model", "gpt-test-root", "inspect model"],
+                            stdout=stdout,
+                            stderr=stderr,
+                        )
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "model done\n")
+        self.assertEqual(seen["body"]["model"], "gpt-test-root")
+        self.assertIn("model: gpt-test-root", stderr.getvalue())
+
+    def test_main_prompt_without_subcommand_forwards_root_approval_to_local_http_exec(self) -> None:
+        request_bodies = []
+        command = subprocess.list2cmdline(
+            [
+                sys.executable,
+                "-c",
+                "from pathlib import Path; Path('blocked-bare.txt').write_text('ran', encoding='utf-8')",
+            ]
+        )
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def read(self) -> bytes:
+                return json.dumps(self._payload).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        responses = [
+            {
+                "output": [
+                    {
+                        "type": "function_call",
+                        "name": "exec_command",
+                        "call_id": "bare-shell-blocked",
+                        "arguments": json.dumps({"cmd": command}),
+                    }
+                ]
+            },
+            {
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "bare approval needed"}],
+                    }
+                ]
+            },
+        ]
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return FakeResponse(responses.pop(0))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir) / "project"
+            project.mkdir()
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_MAX_TOOL_ROUNDS": "2",
+                    "OPENAI_API_KEY": "sk-smoke",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(
+                            [
+                                "--ask-for-approval",
+                                "on-request",
+                                "--cd",
+                                str(project),
+                                "run a shell command",
+                            ],
+                            stdout=stdout,
+                            stderr=stderr,
+                        )
+            created = project / "blocked-bare.txt"
+            created_exists = created.exists()
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        self.assertFalse(created_exists)
+        self.assertEqual(len(request_bodies), 2)
+        self.assertEqual(stdout.getvalue(), "bare approval needed\n")
+        tool_outputs = [
+            item for item in request_bodies[1]["input"] if item.get("type") == "function_call_output"
+        ]
+        self.assertEqual(len(tool_outputs), 1)
+        self.assertEqual(tool_outputs[0]["call_id"], "bare-shell-blocked")
+        self.assertIs(tool_outputs[0]["success"], False)
+        self.assertIn("exit_code: approval_required", tool_outputs[0]["output"])
+        self.assertIn("approval_policy: on-request", tool_outputs[0]["output"])
+        self.assertIn("blocked-bare.txt", tool_outputs[0]["output"])
+
+    def test_main_prompt_without_subcommand_forwards_root_dangerous_bypass_to_local_http_exec(self) -> None:
+        request_bodies = []
+        command = subprocess.list2cmdline(
+            [
+                sys.executable,
+                "-c",
+                "from pathlib import Path; Path('created-bare.txt').write_text('ran', encoding='utf-8')",
+            ]
+        )
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def read(self) -> bytes:
+                return json.dumps(self._payload).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        responses = [
+            {
+                "output": [
+                    {
+                        "type": "function_call",
+                        "name": "exec_command",
+                        "call_id": "bare-shell-created",
+                        "arguments": json.dumps({"cmd": command}),
+                    }
+                ]
+            },
+            {
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "bare shell ran"}],
+                    }
+                ]
+            },
+        ]
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return FakeResponse(responses.pop(0))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project = Path(tmpdir) / "project"
+            project.mkdir()
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_MAX_TOOL_ROUNDS": "2",
+                    "OPENAI_API_KEY": "sk-smoke",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(
+                            [
+                                "--dangerously-bypass-approvals-and-sandbox",
+                                "--cd",
+                                str(project),
+                                "run a shell command",
+                            ],
+                            stdout=stdout,
+                            stderr=stderr,
+                        )
+            created = project / "created-bare.txt"
+            created_text = created.read_text(encoding="utf-8") if created.exists() else None
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        self.assertEqual(created_text, "ran")
+        self.assertEqual(len(request_bodies), 2)
+        self.assertEqual(stdout.getvalue(), "bare shell ran\n")
+        tool_outputs = [
+            item for item in request_bodies[1]["input"] if item.get("type") == "function_call_output"
+        ]
+        self.assertEqual(len(tool_outputs), 1)
+        self.assertEqual(tool_outputs[0]["call_id"], "bare-shell-created")
+        self.assertIs(tool_outputs[0]["success"], True)
+        self.assertIn("Process exited with code 0", tool_outputs[0]["output"])
+
+    def test_main_exec_local_http_sse_smoke_outputs_final_message(self) -> None:
+        seen = {}
+
+        class FakeSseResponse:
+            headers = {"content-type": "text/event-stream"}
+
+            def read(self) -> bytes:
+                return (
+                    "event: response.output_item.done\n"
+                    "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"sse smoke\"}]}}\n"
+                    "\n"
+                    "event: response.completed\n"
+                    "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-cli-sse\",\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n"
+                    "\n"
+                    "data: [DONE]\n"
+                    "\n"
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        def opener(request):
+            seen["url"] = request.full_url
+            seen["body"] = json.loads(request.data.decode("utf-8"))
+            return FakeSseResponse()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "0",
+                    "OPENAI_API_KEY": "sk-smoke",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(["exec", "prompt"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        self.assertEqual(seen["url"], "https://api.openai.com/v1/responses")
+        self.assertIs(seen["body"]["stream"], True)
+        self.assertEqual(stdout.getvalue(), "sse smoke\n")
+
+    def test_main_exec_local_http_sse_streamed_exec_command_runs_tool_and_followup(self) -> None:
+        request_bodies = []
+        command = subprocess.list2cmdline([sys.executable, "-c", "print('streamed-tool-smoke')"])
+        arguments = json.dumps({"cmd": command})
+        split_at = max(1, len(arguments) // 2)
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def read(self) -> bytes:
+                return json.dumps(self._payload).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        class FakeSseToolCallResponse:
+            headers = {"content-type": "text/event-stream"}
+
+            def read(self) -> bytes:
+                frames = [
+                    (
+                        "response.output_item.added",
+                        {
+                            "type": "response.output_item.added",
+                            "item": {
+                                "id": "fc-stream-1",
+                                "type": "function_call",
+                                "call_id": "stream-call-1",
+                                "name": "exec_command",
+                                "arguments": "",
+                            },
+                        },
+                    ),
+                    (
+                        "response.function_call_arguments.delta",
+                        {
+                            "type": "response.function_call_arguments.delta",
+                            "item_id": "fc-stream-1",
+                            "delta": arguments[:split_at],
+                        },
+                    ),
+                    (
+                        "response.function_call_arguments.delta",
+                        {
+                            "type": "response.function_call_arguments.delta",
+                            "item_id": "fc-stream-1",
+                            "delta": arguments[split_at:],
+                        },
+                    ),
+                    (
+                        "response.completed",
+                        {
+                            "type": "response.completed",
+                            "response": {
+                                "id": "resp-streamed-tool",
+                                "usage": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5},
+                            },
+                        },
+                    ),
+                ]
+                body = "".join(
+                    f"event: {event}\n"
+                    f"data: {json.dumps(payload, separators=(',', ':'))}\n"
+                    "\n"
+                    for event, payload in frames
+                )
+                return (body + "data: [DONE]\n\n").encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        responses = [
+            FakeSseToolCallResponse(),
+            FakeResponse(
+                {
+                    "output": [
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "streamed tool done"}],
+                        }
+                    ]
+                }
+            ),
+        ]
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return responses.pop(0)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_MAX_TOOL_ROUNDS": "2",
+                    "OPENAI_API_KEY": "sk-smoke",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(
+                            ["exec", "--dangerously-bypass-approvals-and-sandbox", "prompt"],
+                            stdout=stdout,
+                            stderr=stderr,
+                        )
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        self.assertEqual(len(request_bodies), 2)
+        self.assertIs(request_bodies[0]["stream"], True)
+        self.assertEqual(stdout.getvalue(), "streamed tool done\n")
+        followup_input = request_bodies[1]["input"]
+        tool_outputs = [item for item in followup_input if item.get("type") == "function_call_output"]
+        self.assertEqual(len(tool_outputs), 1)
+        self.assertEqual(tool_outputs[0]["call_id"], "stream-call-1")
+        self.assertIn("streamed-tool-smoke", tool_outputs[0]["output"])
+
+    def test_main_exec_local_http_sse_streamed_apply_patch_runs_tool_and_followup(self) -> None:
+        request_bodies = []
+        patch_text = "*** Begin Patch\n*** Add File: streamed-patch.txt\n+from streamed patch\n*** End Patch\n"
+        split_at = max(1, len(patch_text) // 2)
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def read(self) -> bytes:
+                return json.dumps(self._payload).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        class FakeSseApplyPatchResponse:
+            headers = {"content-type": "text/event-stream"}
+
+            def read(self) -> bytes:
+                frames = [
+                    (
+                        "response.output_item.added",
+                        {
+                            "type": "response.output_item.added",
+                            "item": {
+                                "id": "custom-stream-1",
+                                "type": "custom_tool_call",
+                                "call_id": "patch-stream-1",
+                                "name": "apply_patch",
+                                "input": "",
+                            },
+                        },
+                    ),
+                    (
+                        "response.custom_tool_call_input.delta",
+                        {
+                            "type": "response.custom_tool_call_input.delta",
+                            "item_id": "custom-stream-1",
+                            "call_id": "patch-stream-1",
+                            "delta": patch_text[:split_at],
+                        },
+                    ),
+                    (
+                        "response.custom_tool_call_input.delta",
+                        {
+                            "type": "response.custom_tool_call_input.delta",
+                            "item_id": "custom-stream-1",
+                            "call_id": "patch-stream-1",
+                            "delta": patch_text[split_at:],
+                        },
+                    ),
+                    (
+                        "response.completed",
+                        {
+                            "type": "response.completed",
+                            "response": {
+                                "id": "resp-streamed-patch",
+                                "usage": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5},
+                            },
+                        },
+                    ),
+                ]
+                body = "".join(
+                    f"event: {event}\n"
+                    f"data: {json.dumps(payload, separators=(',', ':'))}\n"
+                    "\n"
+                    for event, payload in frames
+                )
+                return (body + "data: [DONE]\n\n").encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        responses = [
+            FakeSseApplyPatchResponse(),
+            FakeResponse(
+                {
+                    "output": [
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "streamed patch done"}],
+                        }
+                    ]
+                }
+            ),
+        ]
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return responses.pop(0)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_MAX_TOOL_ROUNDS": "2",
+                    "OPENAI_API_KEY": "sk-smoke",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(
+                            [
+                                "exec",
+                                "--cd",
+                                tmpdir,
+                                "--dangerously-bypass-approvals-and-sandbox",
+                                "create a file with streamed apply_patch",
+                            ],
+                            stdout=stdout,
+                            stderr=stderr,
+                        )
+            created = Path(tmpdir) / "streamed-patch.txt"
+            created_text = created.read_text(encoding="utf-8")
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        self.assertEqual(created_text, "from streamed patch\n")
+        self.assertEqual(len(request_bodies), 2)
+        self.assertIs(request_bodies[0]["stream"], True)
+        self.assertEqual(stdout.getvalue(), "streamed patch done\n")
+        followup_input = request_bodies[1]["input"]
+        patch_outputs = [item for item in followup_input if item.get("type") == "custom_tool_call_output"]
+        self.assertEqual(len(patch_outputs), 1)
+        self.assertEqual(patch_outputs[0]["call_id"], "patch-stream-1")
+        self.assertNotIn("name", patch_outputs[0])
+        self.assertIs(patch_outputs[0]["success"], True)
+        self.assertIn("Success. Updated the following files:", patch_outputs[0]["output"])
+        self.assertIn("streamed-patch.txt", patch_outputs[0]["output"])
+
+    def test_main_exec_local_http_shell_tools_smoke_runs_command_and_followup(self) -> None:
+        request_bodies = []
+        command = subprocess.list2cmdline([sys.executable, "-c", "print('tool-smoke')"])
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def read(self) -> bytes:
+                return json.dumps(self._payload).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        responses = [
+            {
+                "output": [
+                    {
+                        "type": "function_call",
+                        "name": "exec_command",
+                        "call_id": "call-1",
+                        "arguments": json.dumps({"cmd": command}),
+                    }
+                ]
+            },
+            {
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "tool done"}],
+                    }
+                ]
+            },
+        ]
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return FakeResponse(responses.pop(0))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_MAX_TOOL_ROUNDS": "2",
+                    "OPENAI_API_KEY": "sk-smoke",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(
+                            ["exec", "--dangerously-bypass-approvals-and-sandbox", "prompt"],
+                            stdout=stdout,
+                            stderr=stderr,
+                        )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(len(request_bodies), 2)
+        self.assertEqual(stdout.getvalue(), "tool done\n")
+        first_tools = request_bodies[0].get("tools")
+        self.assertTrue(any(tool.get("name") == "exec_command" for tool in first_tools))
+        followup_input = request_bodies[1]["input"]
+        tool_outputs = [item for item in followup_input if item.get("type") == "function_call_output"]
+        self.assertEqual(len(tool_outputs), 1)
+        self.assertEqual(tool_outputs[0]["call_id"], "call-1")
+        self.assertIn("tool-smoke", tool_outputs[0]["output"])
+
+    def test_main_exec_local_http_view_image_smoke_returns_image_content(self) -> None:
+        request_bodies = []
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def read(self) -> bytes:
+                return json.dumps(self._payload).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        responses = [
+            {
+                "output": [
+                    {
+                        "type": "function_call",
+                        "name": "view_image",
+                        "call_id": "image-1",
+                        "arguments": json.dumps({"path": "image.png", "detail": "high"}),
+                    }
+                ]
+            },
+            {
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "image done"}],
+                    }
+                ]
+            },
+        ]
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return FakeResponse(responses.pop(0))
+
+        png_bytes = (
+            b"\x89PNG\r\n\x1a\n"
+            b"\x00\x00\x00\rIHDR"
+            b"\x00\x00\x00\x01\x00\x00\x00\x01"
+            b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+            b"\x00\x00\x00\nIDATx\x9cc\xf8\x0f\x00\x01\x01\x01\x00\x18\xdd\x8d\xb0"
+            b"\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            Path(tmpdir, "image.png").write_bytes(png_bytes)
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_MAX_TOOL_ROUNDS": "2",
+                    "OPENAI_API_KEY": "sk-smoke",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(
+                            [
+                                "exec",
+                                "--cd",
+                                tmpdir,
+                                "--dangerously-bypass-approvals-and-sandbox",
+                                "inspect image",
+                            ],
+                            stdout=stdout,
+                            stderr=stderr,
+                        )
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        self.assertEqual(len(request_bodies), 2)
+        self.assertEqual(stdout.getvalue(), "image done\n")
+        first_tools = request_bodies[0].get("tools")
+        self.assertTrue(any(tool.get("name") == "view_image" for tool in first_tools))
+        view_image_tool = next(tool for tool in first_tools if tool.get("name") == "view_image")
+        self.assertNotIn("output_schema", view_image_tool)
+        followup_input = request_bodies[1]["input"]
+        tool_outputs = [item for item in followup_input if item.get("type") == "function_call_output"]
+        self.assertEqual(len(tool_outputs), 1)
+        self.assertEqual(tool_outputs[0]["call_id"], "image-1")
+        self.assertIs(tool_outputs[0]["success"], True)
+        image_content = tool_outputs[0]["output"]
+        self.assertEqual(len(image_content), 1)
+        self.assertEqual(image_content[0]["type"], "input_image")
+        self.assertEqual(image_content[0]["detail"], "high")
+        self.assertTrue(image_content[0]["image_url"].startswith("data:image/png;base64,"))
+
+    def test_main_exec_local_http_output_schema_smoke_reaches_followup_request(self) -> None:
+        request_bodies = []
+        command = subprocess.list2cmdline([sys.executable, "-c", "print('schema-tool-smoke')"])
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def read(self) -> bytes:
+                return json.dumps(self._payload).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        responses = [
+            {
+                "output": [
+                    {
+                        "type": "function_call",
+                        "name": "exec_command",
+                        "call_id": "schema-call-1",
+                        "arguments": json.dumps({"cmd": command}),
+                    }
+                ]
+            },
+            {
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "{\"summary\":\"schema done\"}"}],
+                    }
+                ]
+            },
+        ]
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return FakeResponse(responses.pop(0))
+
+        output_schema = {
+            "type": "object",
+            "properties": {"summary": {"type": "string"}},
+            "required": ["summary"],
+            "additionalProperties": False,
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            schema_path = Path(tmpdir) / "schema.json"
+            schema_path.write_text(json.dumps(output_schema), encoding="utf-8")
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_MAX_TOOL_ROUNDS": "2",
+                    "OPENAI_API_KEY": "sk-smoke",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(
+                            [
+                                "exec",
+                                "--output-schema",
+                                str(schema_path),
+                                "--dangerously-bypass-approvals-and-sandbox",
+                                "prompt",
+                            ],
+                            stdout=stdout,
+                            stderr=stderr,
+                        )
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        self.assertEqual(len(request_bodies), 2)
+        self.assertEqual(stdout.getvalue(), "{\"summary\":\"schema done\"}\n")
+        for body in request_bodies:
+            text_format = body["text"]["format"]
+            self.assertEqual(text_format["type"], "json_schema")
+            self.assertEqual(text_format["name"], "codex_output_schema")
+            self.assertIs(text_format["strict"], True)
+            self.assertEqual(text_format["schema"], output_schema)
+        followup_input = request_bodies[1]["input"]
+        tool_outputs = [item for item in followup_input if item.get("type") == "function_call_output"]
+        self.assertEqual(len(tool_outputs), 1)
+        self.assertEqual(tool_outputs[0]["call_id"], "schema-call-1")
+        self.assertIn("schema-tool-smoke", tool_outputs[0]["output"])
+
+    def test_main_exec_local_http_write_stdin_smoke_continues_session_and_followup(self) -> None:
+        request_bodies = []
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def read(self) -> bytes:
+                return json.dumps(self._payload).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script = Path(tmpdir) / "stdin_child.py"
+            script.write_text(
+                "import sys\n"
+                "print('ready', flush=True)\n"
+                "line = sys.stdin.readline()\n"
+                "print('got:' + line.strip(), flush=True)\n",
+                encoding="utf-8",
+            )
+            command = subprocess.list2cmdline([sys.executable, "-u", str(script)])
+            responses_seen = {"count": 0}
+
+            def opener(request):
+                body = json.loads(request.data.decode("utf-8"))
+                request_bodies.append(body)
+                responses_seen["count"] += 1
+                if responses_seen["count"] == 1:
+                    return FakeResponse(
+                        {
+                            "output": [
+                                {
+                                    "type": "function_call",
+                                    "name": "exec_command",
+                                    "call_id": "session-call-1",
+                                    "arguments": json.dumps({"cmd": command, "yield_time_ms": 100}),
+                                }
+                            ]
+                        }
+                    )
+                if responses_seen["count"] == 2:
+                    tool_output = next(
+                        item
+                        for item in body["input"]
+                        if item.get("type") == "function_call_output"
+                        and item.get("call_id") == "session-call-1"
+                    )
+                    session_match = re.search(r"Process running with session ID (\d+)", tool_output["output"])
+                    self.assertIsNotNone(session_match)
+                    assert session_match is not None
+                    return FakeResponse(
+                        {
+                            "output": [
+                                {
+                                    "type": "function_call",
+                                    "name": "write_stdin",
+                                    "call_id": "stdin-call-1",
+                                    "arguments": json.dumps(
+                                        {
+                                            "session_id": int(session_match.group(1)),
+                                            "chars": "hello\n",
+                                            "yield_time_ms": 500,
+                                        }
+                                    ),
+                                }
+                            ]
+                        }
+                    )
+                return FakeResponse(
+                    {
+                        "output": [
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "stdin done"}],
+                            }
+                        ]
+                    }
+                )
+
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_MAX_TOOL_ROUNDS": "3",
+                    "OPENAI_API_KEY": "sk-smoke",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(
+                            ["exec", "--dangerously-bypass-approvals-and-sandbox", "prompt"],
+                            stdout=stdout,
+                            stderr=stderr,
+                        )
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        self.assertEqual(len(request_bodies), 3)
+        self.assertEqual(stdout.getvalue(), "stdin done\n")
+        first_tools = request_bodies[0].get("tools")
+        self.assertTrue(any(tool.get("name") == "exec_command" for tool in first_tools))
+        self.assertTrue(any(tool.get("name") == "write_stdin" for tool in first_tools))
+        exec_outputs = [
+            item
+            for item in request_bodies[1]["input"]
+            if item.get("type") == "function_call_output" and item.get("call_id") == "session-call-1"
+        ]
+        self.assertEqual(len(exec_outputs), 1)
+        self.assertIn("ready", exec_outputs[0]["output"])
+        stdin_outputs = [
+            item
+            for item in request_bodies[2]["input"]
+            if item.get("type") == "function_call_output" and item.get("call_id") == "stdin-call-1"
+        ]
+        self.assertEqual(len(stdin_outputs), 1)
+        self.assertIs(stdin_outputs[0]["success"], True)
+        self.assertIn("got:hello", stdin_outputs[0]["output"])
+
+    def test_main_exec_local_http_shell_tool_on_request_requires_approval(self) -> None:
+        request_bodies = []
+        command = subprocess.list2cmdline(
+            [
+                sys.executable,
+                "-c",
+                "from pathlib import Path; Path('blocked-shell.txt').write_text('ran', encoding='utf-8')",
+            ]
+        )
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def read(self) -> bytes:
+                return json.dumps(self._payload).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        responses = [
+            {
+                "output": [
+                    {
+                        "type": "function_call",
+                        "name": "exec_command",
+                        "call_id": "shell-blocked",
+                        "arguments": json.dumps({"cmd": command}),
+                    }
+                ]
+            },
+            {
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "approval needed"}],
+                    }
+                ]
+            },
+        ]
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return FakeResponse(responses.pop(0))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_MAX_TOOL_ROUNDS": "2",
+                    "OPENAI_API_KEY": "sk-smoke",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(
+                            [
+                                "--ask-for-approval",
+                                "on-request",
+                                "exec",
+                                "--cd",
+                                tmpdir,
+                                "--skip-git-repo-check",
+                                "run a shell command",
+                            ],
+                            stdout=stdout,
+                            stderr=stderr,
+                        )
+            created = Path(tmpdir) / "blocked-shell.txt"
+            created_exists = created.exists()
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        self.assertFalse(created_exists)
+        self.assertEqual(len(request_bodies), 2)
+        self.assertEqual(stdout.getvalue(), "approval needed\n")
+        followup_input = request_bodies[1]["input"]
+        tool_outputs = [item for item in followup_input if item.get("type") == "function_call_output"]
+        self.assertEqual(len(tool_outputs), 1)
+        self.assertEqual(tool_outputs[0]["call_id"], "shell-blocked")
+        self.assertIs(tool_outputs[0]["success"], False)
+        self.assertIn("exit_code: approval_required", tool_outputs[0]["output"])
+        self.assertIn("approval_policy: on-request", tool_outputs[0]["output"])
+        self.assertIn("blocked-shell.txt", tool_outputs[0]["output"])
+
+    def test_main_exec_local_http_request_permissions_on_request_returns_cancel_output(self) -> None:
+        request_bodies = []
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def read(self) -> bytes:
+                return json.dumps(self._payload).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        responses = [
+            {
+                "output": [
+                    {
+                        "type": "function_call",
+                        "name": "request_permissions",
+                        "call_id": "permissions-1",
+                        "arguments": json.dumps(
+                            {
+                                "reason": "Need network for smoke test",
+                                "permissions": {"network": {"enabled": True}},
+                            }
+                        ),
+                    }
+                ]
+            },
+            {
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "permission handled"}],
+                    }
+                ]
+            },
+        ]
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return FakeResponse(responses.pop(0))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir) / "codex-home"
+            codex_home.mkdir()
+            (codex_home / "config.toml").write_text(
+                "\n".join(
+                    [
+                        "[features]",
+                        "request_permissions_tool = true",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            project = Path(tmpdir) / "project"
+            project.mkdir()
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": str(codex_home),
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_MAX_TOOL_ROUNDS": "2",
+                    "OPENAI_API_KEY": "sk-smoke",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(
+                            [
+                                "--ask-for-approval",
+                                "on-request",
+                                "exec",
+                                "--cd",
+                                str(project),
+                                "--skip-git-repo-check",
+                                "request network permission",
+                            ],
+                            stdout=stdout,
+                            stderr=stderr,
+                        )
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        self.assertEqual(len(request_bodies), 2)
+        self.assertEqual(stdout.getvalue(), "permission handled\n")
+        first_tools = request_bodies[0].get("tools")
+        self.assertTrue(any(tool.get("name") == "request_permissions" for tool in first_tools))
+        followup_input = request_bodies[1]["input"]
+        permission_outputs = [
+            item
+            for item in followup_input
+            if item.get("type") == "function_call_output"
+            and item.get("call_id") == "permissions-1"
+        ]
+        self.assertEqual(len(permission_outputs), 1)
+        self.assertNotIn("name", permission_outputs[0])
+        self.assertIs(permission_outputs[0]["success"], False)
+        self.assertEqual(
+            permission_outputs[0]["output"],
+            "request_permissions was cancelled before receiving a response",
+        )
+
+    def test_main_exec_local_http_apply_patch_smoke_writes_file_and_followup(self) -> None:
+        request_bodies = []
+        patch_text = "*** Begin Patch\n*** Add File: created.txt\n+hello\n*** End Patch\n"
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def read(self) -> bytes:
+                return json.dumps(self._payload).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        responses = [
+            {
+                "output": [
+                    {
+                        "type": "custom_tool_call",
+                        "name": "apply_patch",
+                        "input": patch_text,
+                        "call_id": "patch-1",
+                    }
+                ]
+            },
+            {
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "patch done"}],
+                    }
+                ]
+            },
+        ]
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return FakeResponse(responses.pop(0))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_MAX_TOOL_ROUNDS": "2",
+                    "OPENAI_API_KEY": "sk-smoke",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(
+                            [
+                                "exec",
+                                "--cd",
+                                tmpdir,
+                                "--dangerously-bypass-approvals-and-sandbox",
+                                "create a file",
+                            ],
+                            stdout=stdout,
+                            stderr=stderr,
+                        )
+            created = Path(tmpdir) / "created.txt"
+            created_text = created.read_text(encoding="utf-8")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(created_text, "hello\n")
+        self.assertEqual(len(request_bodies), 2)
+        self.assertEqual(stdout.getvalue(), "patch done\n")
+        self.assertTrue(any(tool.get("name") == "apply_patch" for tool in request_bodies[0].get("tools", ())))
+        followup_input = request_bodies[1]["input"]
+        patch_outputs = [item for item in followup_input if item.get("type") == "custom_tool_call_output"]
+        self.assertEqual(len(patch_outputs), 1)
+        self.assertEqual(patch_outputs[0]["call_id"], "patch-1")
+        self.assertNotIn("name", patch_outputs[0])
+        self.assertIs(patch_outputs[0]["success"], True)
+        self.assertIn("Success. Updated the following files:", patch_outputs[0]["output"])
+        self.assertIn("created.txt", patch_outputs[0]["output"])
+
+    def test_main_exec_local_http_apply_patch_on_request_requires_approval(self) -> None:
+        request_bodies = []
+        patch_text = "*** Begin Patch\n*** Add File: blocked.txt\n+no write\n*** End Patch\n"
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def read(self) -> bytes:
+                return json.dumps(self._payload).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        responses = [
+            {
+                "output": [
+                    {
+                        "type": "custom_tool_call",
+                        "name": "apply_patch",
+                        "input": patch_text,
+                        "call_id": "patch-blocked",
+                    }
+                ]
+            },
+            {
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "approval needed"}],
+                    }
+                ]
+            },
+        ]
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return FakeResponse(responses.pop(0))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_MAX_TOOL_ROUNDS": "2",
+                    "OPENAI_API_KEY": "sk-smoke",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(
+                            [
+                                "--ask-for-approval",
+                                "on-request",
+                                "exec",
+                                "--cd",
+                                tmpdir,
+                                "--skip-git-repo-check",
+                                "create a file",
+                            ],
+                            stdout=stdout,
+                            stderr=stderr,
+                        )
+            created = Path(tmpdir) / "blocked.txt"
+            created_exists = created.exists()
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        self.assertFalse(created_exists)
+        self.assertEqual(len(request_bodies), 2)
+        self.assertEqual(stdout.getvalue(), "approval needed\n")
+        followup_input = request_bodies[1]["input"]
+        patch_outputs = [item for item in followup_input if item.get("type") == "custom_tool_call_output"]
+        self.assertEqual(len(patch_outputs), 1)
+        self.assertEqual(patch_outputs[0]["call_id"], "patch-blocked")
+        self.assertNotIn("name", patch_outputs[0])
+        self.assertIs(patch_outputs[0]["success"], False)
+        self.assertIn("apply_patch: approval_required", patch_outputs[0]["output"])
+        self.assertIn("approval_policy: on-request", patch_outputs[0]["output"])
+
+    def test_main_exec_local_http_exec_command_apply_patch_heredoc_smoke(self) -> None:
+        request_bodies = []
+        patch_command = (
+            "apply_patch <<'PATCH'\n"
+            "*** Begin Patch\n"
+            "*** Add File: heredoc.txt\n"
+            "+from heredoc\n"
+            "*** End Patch\n"
+            "PATCH\n"
+        )
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def read(self) -> bytes:
+                return json.dumps(self._payload).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        responses = [
+            {
+                "output": [
+                    {
+                        "type": "function_call",
+                        "name": "exec_command",
+                        "call_id": "call-patch",
+                        "arguments": json.dumps({"cmd": patch_command}),
+                    }
+                ]
+            },
+            {
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "heredoc done"}],
+                    }
+                ]
+            },
+        ]
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return FakeResponse(responses.pop(0))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_MAX_TOOL_ROUNDS": "2",
+                    "OPENAI_API_KEY": "sk-smoke",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(
+                            [
+                                "exec",
+                                "--cd",
+                                tmpdir,
+                                "--dangerously-bypass-approvals-and-sandbox",
+                                "create a file with apply_patch",
+                            ],
+                            stdout=stdout,
+                            stderr=stderr,
+                        )
+            created = Path(tmpdir) / "heredoc.txt"
+            created_text = created.read_text(encoding="utf-8")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(created_text, "from heredoc\n")
+        self.assertEqual(len(request_bodies), 2)
+        self.assertEqual(stdout.getvalue(), "heredoc done\n")
+        followup_input = request_bodies[1]["input"]
+        patch_outputs = [item for item in followup_input if item.get("type") == "function_call_output"]
+        self.assertEqual(len(patch_outputs), 1)
+        self.assertEqual(patch_outputs[0]["call_id"], "call-patch")
+        self.assertIs(patch_outputs[0]["success"], True)
+        self.assertIn("Success. Updated the following files:", patch_outputs[0]["output"])
+        self.assertIn("heredoc.txt", patch_outputs[0]["output"])
+
+    def test_main_exec_local_http_json_local_shell_call_smoke_outputs_command_execution(self) -> None:
+        class FakeResponse:
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "output": [
+                            {
+                                "type": "local_shell_call",
+                                "call_id": "shell-smoke",
+                                "status": "completed",
+                                "action": {
+                                    "type": "exec",
+                                    "command": ["pwd"],
+                                    "working_directory": "C:/work/project",
+                                },
+                            },
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "done"}],
+                            },
+                        ]
+                    }
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "0",
+                    "OPENAI_API_KEY": "sk-smoke",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", return_value=FakeResponse()):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(["exec", "--json", "prompt"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        events = [json.loads(line) for line in stdout.getvalue().splitlines()]
+        command_events = [
+            event["item"]
+            for event in events
+            if event["type"] == "item.completed" and event["item"]["type"] == "command_execution"
+        ]
+        self.assertEqual(
+            [(item["id"], item["command"], item["cwd"], item["status"]) for item in command_events],
+            [
+                ("shell-smoke", "pwd", "C:/work/project", "in_progress"),
+                ("shell-smoke", "pwd", "C:/work/project", "completed"),
+            ],
+        )
+        self.assertEqual(command_events[-1]["aggregated_output"], "aborted")
+        agent_messages = [
+            event["item"]["text"]
+            for event in events
+            if event["type"] == "item.completed" and event["item"]["type"] == "agent_message"
+        ]
+        self.assertEqual(agent_messages, ["done"])
+
+    def test_main_exec_local_http_json_core_exec_command_smoke_outputs_command_execution(self) -> None:
+        class FakeResponse:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def read(self) -> bytes:
+                return json.dumps(self.payload).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        command = (
+            subprocess.list2cmdline([sys.executable, "-c", "print('cli core exec output')"])
+            if os.name == "nt"
+            else shlex.join([sys.executable, "-c", "print('cli core exec output')"])
+        )
+        responses = [
+            {
+                "output": [
+                    {
+                        "type": "function_call",
+                        "name": "exec_command",
+                        "arguments": json.dumps({"cmd": command, "yield_time_ms": 1_000}),
+                        "call_id": "core-exec-smoke",
+                    }
+                ]
+            },
+            {
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "done"}],
+                    }
+                ]
+            },
+        ]
+        request_bodies = []
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return FakeResponse(responses.pop(0))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "0",
+                    "OPENAI_API_KEY": "sk-smoke",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(["exec", "--json", "prompt"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        self.assertEqual(len(request_bodies), 2)
+        tool_outputs = [item for item in request_bodies[1]["input"] if item["type"] == "function_call_output"]
+        self.assertEqual(len(tool_outputs), 1)
+        self.assertEqual(tool_outputs[0]["call_id"], "core-exec-smoke")
+        self.assertIn("cli core exec output", tool_outputs[0]["output"])
+        events = [json.loads(line) for line in stdout.getvalue().splitlines()]
+        command_events = [
+            event["item"]
+            for event in events
+            if event["type"] == "item.completed" and event["item"]["type"] == "command_execution"
+        ]
+        self.assertEqual(
+            [(item["id"], item["command"], item["status"]) for item in command_events],
+            [
+                ("core-exec-smoke", command, "in_progress"),
+                ("core-exec-smoke", command, "completed"),
+            ],
+        )
+        self.assertIn("cli core exec output", command_events[-1]["aggregated_output"])
+        agent_messages = [
+            event["item"]["text"]
+            for event in events
+            if event["type"] == "item.completed" and event["item"]["type"] == "agent_message"
+        ]
+        self.assertEqual(agent_messages, ["done"])
+
+    def test_main_exec_local_http_json_orphan_tool_outputs_are_hidden(self) -> None:
+        class FakeResponse:
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "output": [
+                            {
+                                "type": "function_call_output",
+                                "call_id": "orphan-function",
+                                "output": "drop",
+                            },
+                            {
+                                "type": "custom_tool_call_output",
+                                "call_id": "orphan-custom",
+                                "output": "drop",
+                            },
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "done"}],
+                            },
+                        ]
+                    }
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "0",
+                    "OPENAI_API_KEY": "sk-smoke",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", return_value=FakeResponse()):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(["exec", "--json", "prompt"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        events = [json.loads(line) for line in stdout.getvalue().splitlines()]
+        completed_items = [
+            event["item"]
+            for event in events
+            if event["type"] == "item.completed"
+        ]
+        self.assertEqual(
+            [(item["type"], item.get("text")) for item in completed_items],
+            [("agent_message", "done")],
+        )
+        self.assertNotIn("drop", stdout.getvalue())
+
+    def test_main_exec_local_http_shell_tool_followup_interrupted_persists_tool_and_marker(self) -> None:
+        request_bodies = []
+        command = subprocess.list2cmdline([sys.executable, "-c", "print('before-interrupt')"])
+
+        class FakeResponse:
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "output": [
+                            {
+                                "type": "function_call",
+                                "name": "exec_command",
+                                "call_id": "interrupt-call-1",
+                                "arguments": json.dumps({"cmd": command}),
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return FakeResponse()
+
+        async def fake_followup(*_args, **_kwargs):
+            return UserTurnSamplingResult(
+                request_plan=None,
+                response_items=(ResponseItem.message("assistant", (ContentItem.output_text("partial after tool"),)),),
+                turn_status="interrupted",
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_MAX_TOOL_ROUNDS": "2",
+                    "OPENAI_API_KEY": "sk-smoke",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                    with patch("pycodex.exec.local_runtime.run_exec_tool_output_http_sampling", side_effect=fake_followup):
+                        with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                            stdout = io.StringIO()
+                            stderr = io.StringIO()
+                            code = main(
+                                [
+                                    "exec",
+                                    "--cd",
+                                    tmpdir,
+                                    "--dangerously-bypass-approvals-and-sandbox",
+                                    "run then interrupt",
+                                ],
+                                stdout=stdout,
+                                stderr=stderr,
+                            )
+            rollout_paths = list((Path(tmpdir) / "sessions").rglob("rollout-*.jsonl"))
+            self.assertEqual(len(rollout_paths), 1)
+            persisted_items = read_response_items_from_rollout(rollout_paths[0])
+            persisted_events = read_event_msgs_from_rollout(rollout_paths[0])
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("turn interrupted", stderr.getvalue())
+        self.assertNotIn("partial after tool", stderr.getvalue())
+        self.assertEqual(len(request_bodies), 1)
+        persisted_types = [item.type for item in persisted_items]
+        self.assertIn("function_call", persisted_types)
+        self.assertIn("function_call_output", persisted_types)
+        self.assertIn("before-interrupt", persisted_items[-2].output.to_json())
+        self.assertIn("<turn_aborted>", persisted_items[-1].content[0].text)
+        self.assertEqual(persisted_events[-1].type, "turn_aborted")
+        self.assertEqual(persisted_events[-1].payload.reason, "interrupted")
 
     def test_main_exec_local_http_smoke_uses_openai_base_url(self) -> None:
         previous_enabled = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP")
@@ -6468,10 +8825,468 @@ class TopLevelCliParserTests(unittest.TestCase):
             self.assertEqual(seen["body"]["input"][-1]["content"][0]["text"], "hello")
             self.assertIn("input", seen["body"])
 
+    def test_main_exec_resume_local_http_smoke_reads_history_and_appends_rollout(self) -> None:
+        request_bodies = []
+        request_headers = []
+
+        class FakeResponse:
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "output": [
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "resume cli done"}],
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            request_headers.append({key.lower(): value for key, value in request.header_items()})
+            return FakeResponse()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            thread_id = "bbbbbbbb-1111-2222-3333-444444444444"
+            rollout_path = materialize_session_rollout(
+                codex_home,
+                SessionMeta(
+                    id=thread_id,
+                    timestamp="2025-01-02T03:04:05Z",
+                    cwd="C:/work/resume",
+                    originator="codex_exec",
+                    cli_version="test-version",
+                    source="cli",
+                    model_provider="openai",
+                ),
+            )
+            self.assertIsNotNone(rollout_path)
+            assert rollout_path is not None
+            with rollout_path.open("a", encoding="utf-8", newline="\n") as file:
+                for payload in (
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "previous user"}],
+                    },
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "previous assistant"}],
+                    },
+                ):
+                    file.write(
+                        json.dumps(
+                            {
+                                "timestamp": "2025-01-02T03:04:05Z",
+                                "type": "response_item",
+                                "payload": payload,
+                            }
+                        )
+                        + "\n"
+                    )
+
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "0",
+                    "OPENAI_API_KEY": "sk-smoke",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(
+                            ["exec", "resume", thread_id, "current prompt"],
+                            stdout=stdout,
+                            stderr=stderr,
+                        )
+            persisted_items = read_response_items_from_rollout(rollout_path)
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "resume cli done\n")
+        self.assertEqual(len(request_bodies), 1)
+        message_texts = [
+            item["content"][0]["text"]
+            for item in request_bodies[0]["input"]
+            if item.get("type") == "message" and item.get("content")
+        ]
+        visible_turn_texts = [
+            text
+            for text in message_texts
+            if text in {"previous user", "previous assistant", "current prompt"}
+        ]
+        self.assertEqual(visible_turn_texts, ["previous user", "previous assistant", "current prompt"])
+        self.assertEqual(message_texts[-1], "current prompt")
+        self.assertEqual(request_headers[0]["session-id"], thread_id)
+        self.assertEqual(request_headers[0]["thread-id"], thread_id)
+        self.assertEqual(persisted_items[-1].content[0].text, "resume cli done")
+
+    def test_main_exec_resume_local_http_interrupted_appends_marker_and_suppresses_partial(self) -> None:
+        async def fake_run(*_args, **_kwargs):
+            return UserTurnSamplingResult(
+                request_plan=None,
+                response_items=(ResponseItem.message("assistant", (ContentItem.output_text("partial resume"),)),),
+                turn_status="interrupted",
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            thread_id = "dddddddd-1111-2222-3333-444444444444"
+            rollout_path = materialize_session_rollout(
+                codex_home,
+                SessionMeta(
+                    id=thread_id,
+                    timestamp="2025-01-02T03:04:05Z",
+                    cwd=str(codex_home),
+                    originator="codex_exec",
+                    cli_version="test-version",
+                    source="cli",
+                    model_provider="openai",
+                ),
+            )
+            self.assertIsNotNone(rollout_path)
+            assert rollout_path is not None
+            with rollout_path.open("a", encoding="utf-8", newline="\n") as file:
+                file.write(
+                    json.dumps(
+                        {
+                            "timestamp": "2025-01-02T03:04:05Z",
+                            "type": "response_item",
+                            "payload": {
+                                "type": "message",
+                                "role": "user",
+                                "content": [{"type": "input_text", "text": "previous resume"}],
+                            },
+                        }
+                    )
+                    + "\n"
+                )
+
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "0",
+                    "OPENAI_API_KEY": "sk-smoke",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.exec.local_runtime.run_exec_user_turn_http_sampling", side_effect=fake_run):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(["exec", "resume", thread_id, "resume interrupted"], stdout=stdout, stderr=stderr)
+            persisted_items = read_response_items_from_rollout(rollout_path)
+            persisted_events = read_event_msgs_from_rollout(rollout_path)
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("turn interrupted", stderr.getvalue())
+        self.assertNotIn("partial resume", stderr.getvalue())
+        self.assertIn("<turn_aborted>", persisted_items[-1].content[0].text)
+        self.assertIn("interrupted the previous turn", persisted_items[-1].content[0].text)
+        self.assertEqual(persisted_events[-1].type, "turn_aborted")
+        self.assertEqual(persisted_events[-1].payload.reason, "interrupted")
+
+    def test_main_exec_resume_local_http_shell_tools_smoke_runs_command_and_appends_rollout(self) -> None:
+        request_bodies = []
+        command = subprocess.list2cmdline([sys.executable, "-c", "print('resume-tool-smoke')"])
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def read(self) -> bytes:
+                return json.dumps(self._payload).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        responses = [
+            {
+                "output": [
+                    {
+                        "type": "function_call",
+                        "name": "exec_command",
+                        "call_id": "resume-call-1",
+                        "arguments": json.dumps({"cmd": command}),
+                    }
+                ]
+            },
+            {
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "resume tool done"}],
+                    }
+                ]
+            },
+        ]
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return FakeResponse(responses.pop(0))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            thread_id = "cccccccc-1111-2222-3333-444444444444"
+            rollout_path = materialize_session_rollout(
+                codex_home,
+                SessionMeta(
+                    id=thread_id,
+                    timestamp="2025-01-02T03:04:05Z",
+                    cwd=str(codex_home),
+                    originator="codex_exec",
+                    cli_version="test-version",
+                    source="cli",
+                    model_provider="openai",
+                ),
+            )
+            self.assertIsNotNone(rollout_path)
+            assert rollout_path is not None
+            with rollout_path.open("a", encoding="utf-8", newline="\n") as file:
+                file.write(
+                    json.dumps(
+                        {
+                            "timestamp": "2025-01-02T03:04:05Z",
+                            "type": "response_item",
+                            "payload": {
+                                "type": "message",
+                                "role": "user",
+                                "content": [{"type": "input_text", "text": "previous tool turn"}],
+                            },
+                        }
+                    )
+                    + "\n"
+                )
+
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_MAX_TOOL_ROUNDS": "2",
+                    "OPENAI_API_KEY": "sk-smoke",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(
+                            [
+                                "exec",
+                                "resume",
+                                thread_id,
+                                "--dangerously-bypass-approvals-and-sandbox",
+                                "resume with a tool",
+                            ],
+                            stdout=stdout,
+                            stderr=stderr,
+                        )
+            persisted_items = read_response_items_from_rollout(rollout_path)
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "resume tool done\n")
+        self.assertEqual(len(request_bodies), 2)
+        first_message_texts = [
+            item["content"][0]["text"]
+            for item in request_bodies[0]["input"]
+            if item.get("type") == "message" and item.get("content")
+        ]
+        self.assertIn("previous tool turn", first_message_texts)
+        self.assertEqual(first_message_texts[-1], "resume with a tool")
+        tool_outputs = [item for item in request_bodies[1]["input"] if item.get("type") == "function_call_output"]
+        self.assertEqual(len(tool_outputs), 1)
+        self.assertEqual(tool_outputs[0]["call_id"], "resume-call-1")
+        self.assertIn("resume-tool-smoke", tool_outputs[0]["output"])
+        self.assertEqual(persisted_items[-1].content[0].text, "resume tool done")
+        persisted_types = [item.type for item in persisted_items]
+        self.assertIn("function_call_output", persisted_types)
+
+    def test_main_exec_resume_local_http_output_schema_smoke_reaches_followup_request(self) -> None:
+        request_bodies = []
+        command = subprocess.list2cmdline([sys.executable, "-c", "print('resume-schema-tool-smoke')"])
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def read(self) -> bytes:
+                return json.dumps(self._payload).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        responses = [
+            {
+                "output": [
+                    {
+                        "type": "function_call",
+                        "name": "exec_command",
+                        "call_id": "resume-schema-call-1",
+                        "arguments": json.dumps({"cmd": command}),
+                    }
+                ]
+            },
+            {
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "{\"summary\":\"resume schema done\"}"}],
+                    }
+                ]
+            },
+        ]
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return FakeResponse(responses.pop(0))
+
+        output_schema = {
+            "type": "object",
+            "properties": {"summary": {"type": "string"}},
+            "required": ["summary"],
+            "additionalProperties": False,
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            thread_id = "eeeeeeee-1111-2222-3333-444444444444"
+            schema_path = codex_home / "schema.json"
+            schema_path.write_text(json.dumps(output_schema), encoding="utf-8")
+            rollout_path = materialize_session_rollout(
+                codex_home,
+                SessionMeta(
+                    id=thread_id,
+                    timestamp="2025-01-02T03:04:05Z",
+                    cwd=str(codex_home),
+                    originator="codex_exec",
+                    cli_version="test-version",
+                    source="cli",
+                    model_provider="openai",
+                ),
+            )
+            self.assertIsNotNone(rollout_path)
+            assert rollout_path is not None
+            with rollout_path.open("a", encoding="utf-8", newline="\n") as file:
+                for payload in (
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "previous schema user"}],
+                    },
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "previous schema assistant"}],
+                    },
+                ):
+                    file.write(
+                        json.dumps(
+                            {
+                                "timestamp": "2025-01-02T03:04:05Z",
+                                "type": "response_item",
+                                "payload": payload,
+                            }
+                        )
+                        + "\n"
+                    )
+
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_MAX_TOOL_ROUNDS": "2",
+                    "OPENAI_API_KEY": "sk-smoke",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(
+                            [
+                                "exec",
+                                "resume",
+                                thread_id,
+                                "--output-schema",
+                                str(schema_path),
+                                "--dangerously-bypass-approvals-and-sandbox",
+                                "resume with schema",
+                            ],
+                            stdout=stdout,
+                            stderr=stderr,
+                        )
+            persisted_items = read_response_items_from_rollout(rollout_path)
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "{\"summary\":\"resume schema done\"}\n")
+        self.assertEqual(len(request_bodies), 2)
+        for body in request_bodies:
+            text_format = body["text"]["format"]
+            self.assertEqual(text_format["type"], "json_schema")
+            self.assertEqual(text_format["name"], "codex_output_schema")
+            self.assertIs(text_format["strict"], True)
+            self.assertEqual(text_format["schema"], output_schema)
+        first_message_texts = [
+            item["content"][0]["text"]
+            for item in request_bodies[0]["input"]
+            if item.get("type") == "message" and item.get("content")
+        ]
+        self.assertEqual(
+            [
+                text
+                for text in first_message_texts
+                if text in {"previous schema user", "previous schema assistant", "resume with schema"}
+            ],
+            ["previous schema user", "previous schema assistant", "resume with schema"],
+        )
+        followup_input = request_bodies[1]["input"]
+        tool_outputs = [item for item in followup_input if item.get("type") == "function_call_output"]
+        self.assertEqual(len(tool_outputs), 1)
+        self.assertEqual(tool_outputs[0]["call_id"], "resume-schema-call-1")
+        self.assertIn("resume-schema-tool-smoke", tool_outputs[0]["output"])
+        self.assertEqual(persisted_items[-1].content[0].text, "{\"summary\":\"resume schema done\"}")
+
     def test_main_exec_local_http_json_outputs_thread_and_turn_events(self):
         previous_enabled = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP")
+        previous_shell_tools = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS")
         previous_key = os.environ.get("OPENAI_API_KEY")
         os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = "1"
+        os.environ["PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS"] = "0"
         os.environ["OPENAI_API_KEY"] = "sk-test"
 
         class FakeRaw:
@@ -6508,6 +9323,10 @@ class TopLevelCliParserTests(unittest.TestCase):
                 os.environ.pop("PYCODEX_EXEC_LOCAL_HTTP", None)
             else:
                 os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = previous_enabled
+            if previous_shell_tools is None:
+                os.environ.pop("PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS", None)
+            else:
+                os.environ["PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS"] = previous_shell_tools
             if previous_key is None:
                 os.environ.pop("OPENAI_API_KEY", None)
             else:
@@ -6559,6 +9378,73 @@ class TopLevelCliParserTests(unittest.TestCase):
             stderr.getvalue(),
         )
 
+    def test_main_exec_core_missing_api_key_prints_core_error(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_CORE": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP": "0",
+                },
+                clear=True,
+            ):
+                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                    stdout = io.StringIO()
+                    stderr = io.StringIO()
+                    code = main(["exec", "prompt"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 2)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn(
+            "ERROR: OPENAI_API_KEY or CODEX_API_KEY is required for core exec runtime",
+            stderr.getvalue(),
+        )
+        self.assertNotIn("PYCODEX_EXEC_LOCAL_HTTP=1", stderr.getvalue())
+
+    def test_main_exec_local_http_context_window_error_prints_human_error(self):
+        class ContextWindowResponse:
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "status": "failed",
+                        "error": {
+                            "code": "context_length_exceeded",
+                            "message": "too much context",
+                        },
+                    }
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "0",
+                    "OPENAI_API_KEY": "sk-context",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", return_value=ContextWindowResponse()):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(["exec", "prompt"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("ERROR:", stderr.getvalue())
+        self.assertIn("context window", stderr.getvalue())
+        self.assertIn("completed local HTTP non-interactive exec execution", stderr.getvalue())
+
     def test_main_exec_local_http_missing_api_key_prints_json_turn_failed(self):
         previous_enabled = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP")
         previous_key = os.environ.get("OPENAI_API_KEY")
@@ -6594,10 +9480,134 @@ class TopLevelCliParserTests(unittest.TestCase):
             "OPENAI_API_KEY or CODEX_API_KEY is required for PYCODEX_EXEC_LOCAL_HTTP=1",
         )
 
+    def test_main_exec_local_http_context_window_error_prints_json_error_event(self):
+        class ContextWindowResponse:
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "status": "failed",
+                        "error": {
+                            "code": "context_length_exceeded",
+                            "message": "too much context",
+                        },
+                    }
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "0",
+                    "OPENAI_API_KEY": "sk-context",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", return_value=ContextWindowResponse()):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(["exec", "--json", "prompt"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        events = [json.loads(line) for line in stdout.getvalue().splitlines()]
+        self.assertEqual([event["type"] for event in events], ["thread.started", "turn.started", "error", "turn.completed"])
+        self.assertIn("context window", events[2]["message"])
+        self.assertIn("usage", events[3])
+        self.assertIn("completed local HTTP non-interactive exec execution", stderr.getvalue())
+
+    def test_main_exec_local_http_interrupted_prints_human_without_partial_and_persists_marker(self):
+        async def fake_run(*_args, **_kwargs):
+            return UserTurnSamplingResult(
+                request_plan=None,
+                response_items=(ResponseItem.message("assistant", (ContentItem.output_text("partial answer"),)),),
+                turn_status="interrupted",
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "0",
+                    "OPENAI_API_KEY": "sk-interrupted",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.parser.run_exec_user_turn_http_sampling", side_effect=fake_run):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(["exec", "prompt"], stdout=stdout, stderr=stderr)
+            rollout_paths = list((Path(tmpdir) / "sessions").rglob("rollout-*.jsonl"))
+            self.assertEqual(len(rollout_paths), 1)
+            persisted_items = read_response_items_from_rollout(rollout_paths[0])
+            persisted_events = read_event_msgs_from_rollout(rollout_paths[0])
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("turn interrupted", stderr.getvalue())
+        self.assertNotIn("partial answer", stderr.getvalue())
+        self.assertIn("<turn_aborted>", persisted_items[-1].content[0].text)
+        self.assertIn("interrupted the previous turn", persisted_items[-1].content[0].text)
+        self.assertEqual(persisted_events[-1].type, "turn_aborted")
+        self.assertEqual(persisted_events[-1].payload.reason, "interrupted")
+
+    def test_main_exec_local_http_interrupted_prints_json_without_partial_and_persists_marker(self):
+        async def fake_run(*_args, **_kwargs):
+            return UserTurnSamplingResult(
+                request_plan=None,
+                response_items=(ResponseItem.message("assistant", (ContentItem.output_text("partial answer"),)),),
+                turn_status="interrupted",
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "0",
+                    "OPENAI_API_KEY": "sk-interrupted",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.parser.run_exec_user_turn_http_sampling", side_effect=fake_run):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(["exec", "--json", "prompt"], stdout=stdout, stderr=stderr)
+            rollout_paths = list((Path(tmpdir) / "sessions").rglob("rollout-*.jsonl"))
+            self.assertEqual(len(rollout_paths), 1)
+            persisted_items = read_response_items_from_rollout(rollout_paths[0])
+            persisted_events = read_event_msgs_from_rollout(rollout_paths[0])
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        events = [json.loads(line) for line in stdout.getvalue().splitlines()]
+        self.assertEqual([event["type"] for event in events], ["thread.started", "turn.started"])
+        self.assertNotIn("partial answer", stdout.getvalue())
+        self.assertIn("completed local HTTP non-interactive exec execution", stderr.getvalue())
+        self.assertIn("<turn_aborted>", persisted_items[-1].content[0].text)
+        self.assertEqual(persisted_events[-1].type, "turn_aborted")
+        self.assertEqual(persisted_events[-1].payload.reason, "interrupted")
+
     def test_main_exec_local_http_provider_error_prints_human_error(self):
         previous_enabled = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP")
+        previous_shell_tools = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS")
         previous_key = os.environ.get("OPENAI_API_KEY")
         os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = "1"
+        os.environ["PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS"] = "0"
         os.environ["OPENAI_API_KEY"] = "sk-test"
 
         async def fake_run(*_args, **_kwargs):
@@ -6614,6 +9624,10 @@ class TopLevelCliParserTests(unittest.TestCase):
                 os.environ.pop("PYCODEX_EXEC_LOCAL_HTTP", None)
             else:
                 os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = previous_enabled
+            if previous_shell_tools is None:
+                os.environ.pop("PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS", None)
+            else:
+                os.environ["PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS"] = previous_shell_tools
             if previous_key is None:
                 os.environ.pop("OPENAI_API_KEY", None)
             else:
@@ -6625,8 +9639,10 @@ class TopLevelCliParserTests(unittest.TestCase):
 
     def test_main_exec_local_http_provider_error_prints_json_turn_failed(self):
         previous_enabled = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP")
+        previous_shell_tools = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS")
         previous_key = os.environ.get("OPENAI_API_KEY")
         os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = "1"
+        os.environ["PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS"] = "0"
         os.environ["OPENAI_API_KEY"] = "sk-test"
 
         async def fake_run(*_args, **_kwargs):
@@ -6643,6 +9659,10 @@ class TopLevelCliParserTests(unittest.TestCase):
                 os.environ.pop("PYCODEX_EXEC_LOCAL_HTTP", None)
             else:
                 os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = previous_enabled
+            if previous_shell_tools is None:
+                os.environ.pop("PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS", None)
+            else:
+                os.environ["PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS"] = previous_shell_tools
             if previous_key is None:
                 os.environ.pop("OPENAI_API_KEY", None)
             else:
@@ -6653,10 +9673,342 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertEqual([event["type"] for event in events], ["thread.started", "turn.started", "turn.failed"])
         self.assertEqual(events[2]["error"]["message"], "Responses API request failed with HTTP 400: bad schema")
 
+    def test_main_exec_local_http_provider_http_error_prints_human_error_event(self):
+        def opener(_request, *_args, **_kwargs):
+            raise HTTPError(
+                "https://api.example.test/v1/responses",
+                400,
+                "Bad Request",
+                {},
+                io.BytesIO(b'{"error":{"message":"bad schema"}}'),
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "0",
+                    "OPENAI_API_KEY": "sk-provider",
+                    "OPENAI_BASE_URL": "https://api.example.test/v1",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(["exec", "prompt"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn('ERROR: {"error":{"message":"bad schema"}}', stderr.getvalue())
+        self.assertIn("completed local HTTP non-interactive exec execution", stderr.getvalue())
+
+    def test_main_exec_local_http_provider_http_error_prints_json_error_event(self):
+        def opener(_request, *_args, **_kwargs):
+            raise HTTPError(
+                "https://api.example.test/v1/responses",
+                400,
+                "Bad Request",
+                {},
+                io.BytesIO(b'{"error":{"message":"bad schema"}}'),
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "0",
+                    "OPENAI_API_KEY": "sk-provider",
+                    "OPENAI_BASE_URL": "https://api.example.test/v1",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(["exec", "--json", "prompt"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        events = [json.loads(line) for line in stdout.getvalue().splitlines()]
+        self.assertEqual([event["type"] for event in events], ["thread.started", "turn.started", "error", "turn.completed"])
+        self.assertEqual(events[2]["message"], '{"error":{"message":"bad schema"}}')
+        self.assertIn("usage", events[3])
+        self.assertIn("completed local HTTP non-interactive exec execution", stderr.getvalue())
+
+    def test_main_exec_local_http_provider_rate_limit_prints_json_error_event(self):
+        def opener(_request, *_args, **_kwargs):
+            raise HTTPError(
+                "https://api.example.test/v1/responses",
+                429,
+                "Too Many Requests",
+                {},
+                io.BytesIO(b'{"error":{"message":"too fast"}}'),
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "0",
+                    "OPENAI_API_KEY": "sk-provider",
+                    "OPENAI_BASE_URL": "https://api.example.test/v1",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        with patch("pycodex.core.http_transport.http_sampling_stream_max_retries", return_value=0):
+                            with patch("pycodex.core.turn_runtime._provider_stream_max_retries", return_value=0):
+                                stdout = io.StringIO()
+                                stderr = io.StringIO()
+                                code = main(["exec", "--json", "prompt"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        events = [json.loads(line) for line in stdout.getvalue().splitlines()]
+        self.assertEqual([event["type"] for event in events], ["thread.started", "turn.started", "error", "turn.completed"])
+        self.assertEqual(events[2]["message"], "exceeded retry limit, last status: 429 Too Many Requests")
+        self.assertIn("usage", events[3])
+        self.assertIn("completed local HTTP non-interactive exec execution", stderr.getvalue())
+
+    def test_main_exec_local_http_retryable_stream_error_retries_and_succeeds(self):
+        request_bodies = []
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def read(self) -> bytes:
+                return json.dumps(self._payload).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        responses = [
+            {
+                "error": {
+                    "code": "rate_limit_exceeded",
+                    "message": "temporary stream error, try again in 0s",
+                }
+            },
+            {
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "retry succeeded"}],
+                    }
+                ]
+            },
+        ]
+
+        def opener(request, *_args, **_kwargs):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return FakeResponse(responses.pop(0))
+
+        async def no_retry_sleep(_sess, _seconds):
+            return None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "0",
+                    "OPENAI_API_KEY": "sk-provider",
+                    "OPENAI_BASE_URL": "https://api.example.test/v1",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        with patch("pycodex.core.turn_runtime._provider_stream_max_retries", return_value=1):
+                            with patch("pycodex.core.turn_runtime._sleep_for_sampling_retry", side_effect=no_retry_sleep):
+                                stdout = io.StringIO()
+                                stderr = io.StringIO()
+                                code = main(["exec", "prompt"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        self.assertEqual(len(request_bodies), 2)
+        self.assertEqual(request_bodies[0]["input"], request_bodies[1]["input"])
+        self.assertEqual(stdout.getvalue(), "retry succeeded\n")
+        self.assertIn("completed local HTTP non-interactive exec execution", stderr.getvalue())
+
+    def test_main_exec_local_http_provider_usage_limit_prints_human_error_event(self):
+        headers = Message()
+        headers["x-codex-active-limit"] = "codex_other"
+        headers["x-codex-other-limit-name"] = "codex_other"
+        headers["x-codex-other-primary-used-percent"] = "100"
+        headers["x-codex-other-primary-window-minutes"] = "60"
+        headers["x-codex-promo-message"] = "Upgrade for more usage"
+        headers["x-codex-rate-limit-reached-type"] = "workspace_owner_usage_limit_reached"
+
+        def opener(_request, *_args, **_kwargs):
+            raise HTTPError(
+                "https://api.example.test/v1/responses",
+                429,
+                "Too Many Requests",
+                headers,
+                io.BytesIO(b'{"error":{"type":"usage_limit_reached","plan_type":"pro","resets_at":1704069000}}'),
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "0",
+                    "OPENAI_API_KEY": "sk-provider",
+                    "OPENAI_BASE_URL": "https://api.example.test/v1",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        with patch("pycodex.core.http_transport.http_sampling_stream_max_retries", return_value=0):
+                            with patch("pycodex.core.turn_runtime._provider_stream_max_retries", return_value=0):
+                                stdout = io.StringIO()
+                                stderr = io.StringIO()
+                                code = main(["exec", "prompt"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("ERROR: You've hit your usage limit for codex_other.", stderr.getvalue())
+        self.assertIn("Switch to another model now", stderr.getvalue())
+        self.assertIn("completed local HTTP non-interactive exec execution", stderr.getvalue())
+
+    def test_main_exec_local_http_provider_usage_limit_prints_json_error_event(self):
+        headers = Message()
+        headers["x-codex-active-limit"] = "codex_other"
+        headers["x-codex-other-limit-name"] = "codex_other"
+        headers["x-codex-other-primary-used-percent"] = "100"
+        headers["x-codex-other-primary-window-minutes"] = "60"
+        headers["x-codex-promo-message"] = "Upgrade for more usage"
+        headers["x-codex-rate-limit-reached-type"] = "workspace_owner_usage_limit_reached"
+
+        def opener(_request, *_args, **_kwargs):
+            raise HTTPError(
+                "https://api.example.test/v1/responses",
+                429,
+                "Too Many Requests",
+                headers,
+                io.BytesIO(b'{"error":{"type":"usage_limit_reached","plan_type":"pro","resets_at":1704069000}}'),
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "0",
+                    "OPENAI_API_KEY": "sk-provider",
+                    "OPENAI_BASE_URL": "https://api.example.test/v1",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        with patch("pycodex.core.http_transport.http_sampling_stream_max_retries", return_value=0):
+                            with patch("pycodex.core.turn_runtime._provider_stream_max_retries", return_value=0):
+                                stdout = io.StringIO()
+                                stderr = io.StringIO()
+                                code = main(["exec", "--json", "prompt"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        events = [json.loads(line) for line in stdout.getvalue().splitlines()]
+        self.assertEqual([event["type"] for event in events], ["thread.started", "turn.started", "error", "turn.completed"])
+        self.assertIn("usage limit for codex_other", events[2]["message"])
+        self.assertIn("Switch to another model now", events[2]["message"])
+        self.assertIn("usage", events[3])
+        self.assertIn("completed local HTTP non-interactive exec execution", stderr.getvalue())
+
+    def test_main_exec_local_http_provider_connection_error_prints_human_error_event(self):
+        def opener(_request, *_args, **_kwargs):
+            raise URLError("temporary dns failure")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "0",
+                    "OPENAI_API_KEY": "sk-provider",
+                    "OPENAI_BASE_URL": "https://api.example.test/v1",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        with patch("pycodex.core.http_transport.http_sampling_stream_max_retries", return_value=0):
+                            with patch("pycodex.core.turn_runtime._provider_stream_max_retries", return_value=0):
+                                stdout = io.StringIO()
+                                stderr = io.StringIO()
+                                code = main(["exec", "prompt"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("ERROR: Connection failed: temporary dns failure", stderr.getvalue())
+        self.assertIn("completed local HTTP non-interactive exec execution", stderr.getvalue())
+
+    def test_main_exec_local_http_provider_timeout_prints_json_error_event(self):
+        def opener(_request, *_args, **_kwargs):
+            raise TimeoutError("timed out")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "0",
+                    "OPENAI_API_KEY": "sk-provider",
+                    "OPENAI_BASE_URL": "https://api.example.test/v1",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        with patch("pycodex.core.http_transport.http_sampling_stream_max_retries", return_value=0):
+                            with patch("pycodex.core.turn_runtime._provider_stream_max_retries", return_value=0):
+                                stdout = io.StringIO()
+                                stderr = io.StringIO()
+                                code = main(["exec", "--json", "prompt"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        events = [json.loads(line) for line in stdout.getvalue().splitlines()]
+        self.assertEqual([event["type"] for event in events], ["thread.started", "turn.started", "error", "turn.completed"])
+        self.assertEqual(events[2]["message"], "request timed out")
+        self.assertIn("usage", events[3])
+        self.assertIn("completed local HTTP non-interactive exec execution", stderr.getvalue())
+
     def test_main_exec_local_http_writes_last_message_file(self):
         previous_enabled = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP")
+        previous_shell_tools = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS")
         previous_key = os.environ.get("OPENAI_API_KEY")
         os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = "1"
+        os.environ["PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS"] = "0"
         os.environ["OPENAI_API_KEY"] = "sk-test"
 
         class FakeResult:
@@ -6692,6 +10044,10 @@ class TopLevelCliParserTests(unittest.TestCase):
                 os.environ.pop("PYCODEX_EXEC_LOCAL_HTTP", None)
             else:
                 os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = previous_enabled
+            if previous_shell_tools is None:
+                os.environ.pop("PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS", None)
+            else:
+                os.environ["PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS"] = previous_shell_tools
             if previous_key is None:
                 os.environ.pop("OPENAI_API_KEY", None)
             else:
@@ -6703,8 +10059,10 @@ class TopLevelCliParserTests(unittest.TestCase):
 
     def test_main_exec_local_http_json_writes_last_message_file(self):
         previous_enabled = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP")
+        previous_shell_tools = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS")
         previous_key = os.environ.get("OPENAI_API_KEY")
         os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = "1"
+        os.environ["PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS"] = "0"
         os.environ["OPENAI_API_KEY"] = "sk-test"
 
         class FakeResult:
@@ -6740,6 +10098,10 @@ class TopLevelCliParserTests(unittest.TestCase):
                 os.environ.pop("PYCODEX_EXEC_LOCAL_HTTP", None)
             else:
                 os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = previous_enabled
+            if previous_shell_tools is None:
+                os.environ.pop("PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS", None)
+            else:
+                os.environ["PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS"] = previous_shell_tools
             if previous_key is None:
                 os.environ.pop("OPENAI_API_KEY", None)
             else:
@@ -6756,8 +10118,10 @@ class TopLevelCliParserTests(unittest.TestCase):
 
     def test_main_exec_local_http_uses_auth_json_api_key(self):
         previous_enabled = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP")
+        previous_shell_tools = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS")
         previous_key = os.environ.get("OPENAI_API_KEY")
         os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = "1"
+        os.environ["PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS"] = "0"
         os.environ.pop("OPENAI_API_KEY", None)
         seen = {}
 
@@ -6791,6 +10155,10 @@ class TopLevelCliParserTests(unittest.TestCase):
                 os.environ.pop("PYCODEX_EXEC_LOCAL_HTTP", None)
             else:
                 os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = previous_enabled
+            if previous_shell_tools is None:
+                os.environ.pop("PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS", None)
+            else:
+                os.environ["PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS"] = previous_shell_tools
             if previous_key is None:
                 os.environ.pop("OPENAI_API_KEY", None)
             else:
@@ -6802,9 +10170,11 @@ class TopLevelCliParserTests(unittest.TestCase):
 
     def test_main_exec_reads_config_toml_for_local_http_session_config(self):
         previous_enabled = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP")
+        previous_shell_tools = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS")
         previous_key = os.environ.get("OPENAI_API_KEY")
         previous_home = os.environ.get("CODEX_HOME")
         os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = "1"
+        os.environ["PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS"] = "0"
         os.environ["OPENAI_API_KEY"] = "sk-test"
         seen = {}
 
@@ -6822,12 +10192,27 @@ class TopLevelCliParserTests(unittest.TestCase):
 
         async def fake_run(config, *_args, **_kwargs):
             seen["user_instructions"] = config.user_instructions
+            seen["allow_login_shell"] = config.allow_login_shell
+            seen["exec_permission_approvals_enabled"] = config.exec_permission_approvals_enabled
+            seen["request_permissions_tool_enabled"] = config.request_permissions_tool_enabled
             return FakeResult()
 
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
                 os.environ["CODEX_HOME"] = tmpdir
-                (Path(tmpdir) / "config.toml").write_text('user_instructions = "from config"\n', encoding="utf-8")
+                (Path(tmpdir) / "config.toml").write_text(
+                    "\n".join(
+                        [
+                            'user_instructions = "from config"',
+                            "allow_login_shell = false",
+                            "[features]",
+                            "exec_permission_approvals = true",
+                            "request_permissions_tool = true",
+                            "",
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
                 with patch("pycodex.cli.parser.read_auth_json", return_value=None):
                     with patch("pycodex.cli.parser.run_exec_user_turn_http_sampling", side_effect=fake_run):
                         stdout = io.StringIO()
@@ -6838,6 +10223,10 @@ class TopLevelCliParserTests(unittest.TestCase):
                 os.environ.pop("PYCODEX_EXEC_LOCAL_HTTP", None)
             else:
                 os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = previous_enabled
+            if previous_shell_tools is None:
+                os.environ.pop("PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS", None)
+            else:
+                os.environ["PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS"] = previous_shell_tools
             if previous_key is None:
                 os.environ.pop("OPENAI_API_KEY", None)
             else:
@@ -6849,12 +10238,17 @@ class TopLevelCliParserTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertTrue(seen["user_instructions"].startswith("from config"))
+        self.assertFalse(seen["allow_login_shell"])
+        self.assertTrue(seen["exec_permission_approvals_enabled"])
+        self.assertTrue(seen["request_permissions_tool_enabled"])
         self.assertEqual(stdout.getvalue(), "done\n")
 
     def test_main_exec_local_http_prefers_env_api_key_over_auth_json(self):
         previous_enabled = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP")
+        previous_shell_tools = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS")
         previous_key = os.environ.get("OPENAI_API_KEY")
         os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = "1"
+        os.environ["PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS"] = "0"
         os.environ["OPENAI_API_KEY"] = "sk-env"
         seen = {}
 
@@ -6888,6 +10282,10 @@ class TopLevelCliParserTests(unittest.TestCase):
                 os.environ.pop("PYCODEX_EXEC_LOCAL_HTTP", None)
             else:
                 os.environ["PYCODEX_EXEC_LOCAL_HTTP"] = previous_enabled
+            if previous_shell_tools is None:
+                os.environ.pop("PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS", None)
+            else:
+                os.environ["PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS"] = previous_shell_tools
             if previous_key is None:
                 os.environ.pop("OPENAI_API_KEY", None)
             else:
@@ -6916,7 +10314,7 @@ class TopLevelCliParserTests(unittest.TestCase):
                 ):
                     with patch("pycodex.cli.parser.remote_exec_session_connect_and_run", return_value=FailedResult()):
                         stderr = io.StringIO()
-                        code = main(["exec", "prompt"], stderr=stderr)
+                        code = self._main_with_local_http_exec_disabled(["exec", "prompt"], stderr=stderr)
             finally:
                 if previous_home is None:
                     os.environ.pop("CODEX_HOME", None)
@@ -6954,7 +10352,7 @@ class TopLevelCliParserTests(unittest.TestCase):
                 ):
                     with patch("pycodex.cli.parser.remote_exec_session_connect_and_run", return_value=FailedResult()):
                         stderr = io.StringIO()
-                        code = main(["exec", "prompt"], stderr=stderr)
+                        code = self._main_with_local_http_exec_disabled(["exec", "prompt"], stderr=stderr)
             finally:
                 if previous_home is None:
                     os.environ.pop("CODEX_HOME", None)
@@ -6990,7 +10388,7 @@ class TopLevelCliParserTests(unittest.TestCase):
                 ):
                     with patch("pycodex.cli.parser.remote_exec_session_connect_and_run", return_value=FailedResult()):
                         stderr = io.StringIO()
-                        code = main(["exec", "prompt"], stderr=stderr)
+                        code = self._main_with_local_http_exec_disabled(["exec", "prompt"], stderr=stderr)
             finally:
                 if previous_home is None:
                     os.environ.pop("CODEX_HOME", None)
@@ -7025,7 +10423,7 @@ class TopLevelCliParserTests(unittest.TestCase):
                 ):
                     with patch("pycodex.cli.parser.remote_exec_session_connect_and_run", return_value=FailedResult()):
                         stderr = io.StringIO()
-                        code = main(["exec", "prompt"], stderr=stderr)
+                        code = self._main_with_local_http_exec_disabled(["exec", "prompt"], stderr=stderr)
             finally:
                 if previous_home is None:
                     os.environ.pop("CODEX_HOME", None)
@@ -7034,7 +10432,7 @@ class TopLevelCliParserTests(unittest.TestCase):
 
         self.assertEqual(code, 24)
         self.assertIn("app-server state: failed to read state: failed to read", stderr.getvalue())
-        self.assertIn("state file", stderr.getvalue())
+        self.assertIn("app-server-state.json", stderr.getvalue())
 
     def test_main_exec_when_local_app_server_connection_is_refused_prints_refused_hint(self):
         previous_home = os.environ.get("CODEX_HOME")
@@ -7058,7 +10456,7 @@ class TopLevelCliParserTests(unittest.TestCase):
                 ):
                     with patch("pycodex.cli.parser.remote_exec_session_connect_and_run", return_value=FailedResult()):
                         stderr = io.StringIO()
-                        code = main(["exec", "prompt"], stderr=stderr)
+                        code = self._main_with_local_http_exec_disabled(["exec", "prompt"], stderr=stderr)
             finally:
                 if previous_home is None:
                     os.environ.pop("CODEX_HOME", None)
@@ -7091,7 +10489,7 @@ class TopLevelCliParserTests(unittest.TestCase):
                 ):
                     with patch("pycodex.cli.parser.remote_exec_session_connect_and_run", return_value=FailedResult()):
                         stderr = io.StringIO()
-                        code = main(["exec", "prompt"], stderr=stderr)
+                        code = self._main_with_local_http_exec_disabled(["exec", "prompt"], stderr=stderr)
             finally:
                 if previous_home is None:
                     os.environ.pop("CODEX_HOME", None)
@@ -7100,7 +10498,7 @@ class TopLevelCliParserTests(unittest.TestCase):
 
         self.assertEqual(code, 25)
         self.assertIn("cannot connect to local app-server socket", stderr.getvalue())
-        self.assertIn("state says", stderr.getvalue())
+        self.assertIn("state file missing", stderr.getvalue())
 
     def test_main_exec_when_local_app_server_permission_is_denied_prints_permission_hint(self):
         previous_home = os.environ.get("CODEX_HOME")
@@ -7124,7 +10522,7 @@ class TopLevelCliParserTests(unittest.TestCase):
                 ):
                     with patch("pycodex.cli.parser.remote_exec_session_connect_and_run", return_value=FailedResult()):
                         stderr = io.StringIO()
-                        code = main(["exec", "prompt"], stderr=stderr)
+                        code = self._main_with_local_http_exec_disabled(["exec", "prompt"], stderr=stderr)
             finally:
                 if previous_home is None:
                     os.environ.pop("CODEX_HOME", None)
@@ -7158,7 +10556,7 @@ class TopLevelCliParserTests(unittest.TestCase):
                 ):
                     with patch("pycodex.cli.parser.remote_exec_session_connect_and_run", return_value=FailedResult()):
                         stderr = io.StringIO()
-                        code = main(["exec", "prompt"], stderr=stderr)
+                        code = self._main_with_local_http_exec_disabled(["exec", "prompt"], stderr=stderr)
             finally:
                 if previous_home is None:
                     os.environ.pop("CODEX_HOME", None)
@@ -7167,7 +10565,7 @@ class TopLevelCliParserTests(unittest.TestCase):
 
         self.assertEqual(code, 28)
         self.assertIn("connection timed out while waiting for startup", stderr.getvalue())
-        self.assertIn("state says", stderr.getvalue())
+        self.assertIn("state file missing", stderr.getvalue())
         self.assertIn("[Errno 110] Connection timed out", stderr.getvalue())
 
     def test_main_exec_when_local_app_server_state_running_but_socket_missing_warns_stale_state(self):
@@ -7191,7 +10589,7 @@ class TopLevelCliParserTests(unittest.TestCase):
                 ):
                     with patch("pycodex.cli.parser.remote_exec_session_connect_and_run", return_value=FailedResult()):
                         stderr = io.StringIO()
-                        code = main(["exec", "prompt"], stderr=stderr)
+                        code = self._main_with_local_http_exec_disabled(["exec", "prompt"], stderr=stderr)
             finally:
                 if previous_home is None:
                     os.environ.pop("CODEX_HOME", None)
@@ -7201,12 +10599,13 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertEqual(code, 21)
         self.assertIn("state says running", stderr.getvalue())
         self.assertIn("app-server state still reports running; socket may be stale or permission-limited.", stderr.getvalue())
-        self.assertIn("cannot connect to local app-server socket", stderr.getvalue())
+        self.assertIn("local app-server socket not found", stderr.getvalue())
 
     def test_main_prompt_without_subcommand_is_interactive_path(self):
         stderr = io.StringIO()
 
-        code = main(["prompt only"], stderr=stderr)
+        with patch.dict(os.environ, {"PYCODEX_EXEC_LOCAL_HTTP": "0"}):
+            code = main(["prompt only"], stderr=stderr)
 
         self.assertEqual(code, 64)
         self.assertIn("interactive TUI is recognized but not implemented yet.", stderr.getvalue())
@@ -7872,6 +11271,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertIn("interactive TUI is recognized but not implemented yet.", stderr.getvalue())
 
     def test_main_resume_with_exec_fallback_uses_noninteractive_resume_exec(self):
+        stdout = io.StringIO()
         stderr = io.StringIO()
         previous = os.environ.get("PYCODEX_RESUME_EXEC_FALLBACK")
         os.environ["PYCODEX_RESUME_EXEC_FALLBACK"] = "1"
@@ -7879,6 +11279,9 @@ class TopLevelCliParserTests(unittest.TestCase):
             with patch("pycodex.cli.parser._run_noninteractive_exec", return_value=7) as run_noninteractive:
                 code = main(
                     ["resume", "abc", "--include-non-interactive", "--all"],
+                    stdout=stdout,
+                    stdin="continue from stdin\n",
+                    stdin_is_terminal=False,
                     stderr=stderr,
                 )
         finally:
@@ -7890,6 +11293,9 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertEqual(code, 7)
         resumed_parsed = run_noninteractive.call_args.args[0]
         self.assertEqual(resumed_parsed.command_args, ("abc", "--all"))
+        self.assertIs(run_noninteractive.call_args.kwargs["stdout"], stdout)
+        self.assertEqual(run_noninteractive.call_args.kwargs["stdin"], "continue from stdin\n")
+        self.assertFalse(run_noninteractive.call_args.kwargs["stdin_is_terminal"])
 
     def test_main_fork_with_tui_fallback_runs_as_noop(self):
         stderr = io.StringIO()
@@ -7907,12 +11313,19 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertIn("fork accepted and running in non-interactive fallback mode.", stderr.getvalue())
 
     def test_main_fork_with_exec_fallback_uses_noninteractive_fork_exec(self):
+        stdout = io.StringIO()
         stderr = io.StringIO()
         previous = os.environ.get("PYCODEX_FORK_EXEC_FALLBACK")
         os.environ["PYCODEX_FORK_EXEC_FALLBACK"] = "1"
         try:
             with patch("pycodex.cli.parser._run_noninteractive_exec", return_value=11) as run_noninteractive:
-                code = main(["fork", "abc", "--all"], stderr=stderr)
+                code = main(
+                    ["fork", "abc", "--all"],
+                    stdout=stdout,
+                    stdin="fork from stdin\n",
+                    stdin_is_terminal=False,
+                    stderr=stderr,
+                )
         finally:
             if previous is None:
                 os.environ.pop("PYCODEX_FORK_EXEC_FALLBACK", None)
@@ -7923,6 +11336,9 @@ class TopLevelCliParserTests(unittest.TestCase):
         forked_parsed = run_noninteractive.call_args.args[0]
         self.assertEqual(forked_parsed.command, "resume")
         self.assertEqual(forked_parsed.command_args, ("abc", "--all"))
+        self.assertIs(run_noninteractive.call_args.kwargs["stdout"], stdout)
+        self.assertEqual(run_noninteractive.call_args.kwargs["stdin"], "fork from stdin\n")
+        self.assertFalse(run_noninteractive.call_args.kwargs["stdin_is_terminal"])
 
     def test_main_remote_control_start_is_implemented(self):
         stderr = io.StringIO()
@@ -8251,31 +11667,31 @@ class TopLevelCliParserTests(unittest.TestCase):
         code = main(["plugin", "--help"], stdout=stdout)
 
         self.assertEqual(code, 0)
-        self.assertIn("Usage: codex plugin [OPTIONS] <SUBCOMMAND>", stdout.getvalue())
+        self.assertIn("Usage: codex plugin <COMMAND>", stdout.getvalue())
 
         stdout_marketplace = io.StringIO()
         code = main(["plugin", "marketplace", "--help"], stdout=stdout_marketplace)
 
         self.assertEqual(code, 0)
-        self.assertIn("Usage: codex plugin marketplace [OPTIONS] <COMMAND>", stdout_marketplace.getvalue())
+        self.assertIn("Usage: codex plugin marketplace <COMMAND>", stdout_marketplace.getvalue())
 
         stdout_marketplace_add = io.StringIO()
         code = main(["plugin", "marketplace", "add", "--help"], stdout=stdout_marketplace_add)
 
         self.assertEqual(code, 0)
-        self.assertIn("Usage: codex plugin marketplace <SUBCOMMAND>", stdout_marketplace_add.getvalue())
+        self.assertIn("Usage: codex plugin marketplace add <SOURCE>", stdout_marketplace_add.getvalue())
 
         stdout_add = io.StringIO()
         code = main(["plugin", "add", "--help"], stdout=stdout_add)
 
         self.assertEqual(code, 0)
-        self.assertIn("Usage: codex plugin add [OPTIONS]", stdout_add.getvalue())
+        self.assertIn("Usage: codex plugin add <PLUGIN>[@<MARKETPLACE>]", stdout_add.getvalue())
 
         stdout_list = io.StringIO()
         code = main(["plugin", "list", "--help"], stdout=stdout_list)
 
         self.assertEqual(code, 0)
-        self.assertIn("Usage: codex plugin list [OPTIONS]", stdout_list.getvalue())
+        self.assertIn("Usage: codex plugin list [--marketplace MARKETPLACE]", stdout_list.getvalue())
 
     def test_main_features_help_prints_usage(self):
         stdout = io.StringIO()
@@ -8606,6 +12022,7 @@ class TopLevelCliParserTests(unittest.TestCase):
                 {
                     "CODEX_HOME": tmpdir,
                     "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "0",
                     "OPENAI_API_KEY": "",
                     "LOCAL_OPENAI_KEY": "sk-local",
                 },
@@ -8677,6 +12094,271 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertEqual(seen["tool_output_max_chars"], 50)
         self.assertIn("done", stdout.getvalue())
 
+    def test_main_exec_local_http_default_uses_core_http_sampling(self):
+        seen = {}
+
+        async def fake_run(_config, _plan, _model_client, _provider, _model_info, **kwargs):
+            seen["auth"] = kwargs["auth"]
+            return type(
+                "Result",
+                (),
+                {
+                    "response_items": (
+                        ResponseItem.from_mapping(
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "done"}],
+                            }
+                        ),
+                    ),
+                    "raw_result": None,
+                },
+            )()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "",
+                    "OPENAI_API_KEY": "sk-env",
+                },
+                clear=False,
+            ):
+                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.parser.run_exec_user_turn_http_sampling", side_effect=fake_run) as run_core:
+                        with patch(
+                            "pycodex.cli.parser.run_exec_user_turn_with_shell_tools_http_sampling",
+                            side_effect=AssertionError("legacy shell loop should not run by default"),
+                        ):
+                            stdout = io.StringIO()
+                            stderr = io.StringIO()
+                            code = main(["exec", "hello"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(run_core.call_count, 1)
+        self.assertEqual(seen["auth"], "sk-env")
+        self.assertEqual(stdout.getvalue(), "done\n")
+
+    def test_main_exec_core_env_uses_in_memory_core_http_sampling(self):
+        seen = {}
+
+        async def fake_run(command, *_args, **kwargs):
+            seen["command"] = command
+            seen["auth"] = kwargs["auth"]
+            seen["max_tool_followups"] = kwargs["max_tool_followups"]
+            seen["cli_version"] = kwargs["cli_version"]
+            return type(
+                "Result",
+                (),
+                {
+                    "response_items": (
+                        ResponseItem.from_mapping(
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "done"}],
+                            }
+                        ),
+                    ),
+                    "raw_result": None,
+                },
+            )()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_CORE": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP": "0",
+                    "PYCODEX_EXEC_LOCAL_HTTP_MAX_TOOL_ROUNDS": "2",
+                    "OPENAI_API_KEY": "sk-env",
+                },
+                clear=False,
+            ):
+                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.parser.run_core_exec_command", side_effect=fake_run) as run_core:
+                        with patch(
+                            "pycodex.cli.parser.run_exec_user_turn_http_sampling",
+                            side_effect=AssertionError("local HTTP wrapper should not run when core exec is enabled"),
+                        ):
+                            stdout = io.StringIO()
+                            stderr = io.StringIO()
+                            code = main(["exec", "hello"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(run_core.call_count, 1)
+        self.assertIsNone(seen["command"])
+        self.assertEqual(seen["auth"], "sk-env")
+        self.assertEqual(seen["max_tool_followups"], 2)
+        self.assertIsInstance(seen["cli_version"], str)
+        self.assertEqual(stdout.getvalue(), "done\n")
+        self.assertIn("completed core non-interactive exec execution", stderr.getvalue())
+
+    def test_main_exec_api_key_defaults_to_core_runtime(self):
+        seen = {}
+
+        async def fake_run(command, *_args, **kwargs):
+            seen["command"] = command
+            seen["auth"] = kwargs["auth"]
+            seen["max_tool_followups"] = kwargs["max_tool_followups"]
+            return type(
+                "Result",
+                (),
+                {
+                    "response_items": (
+                        ResponseItem.from_mapping(
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "done"}],
+                            }
+                        ),
+                    ),
+                    "raw_result": None,
+                },
+            )()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "OPENAI_API_KEY": "sk-env",
+                },
+                clear=True,
+            ):
+                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.parser.run_core_exec_command", side_effect=fake_run) as run_core:
+                        with patch(
+                            "pycodex.cli.parser.run_exec_user_turn_http_sampling",
+                            side_effect=AssertionError("legacy local HTTP runner should not be the API-key default"),
+                        ):
+                            stdout = io.StringIO()
+                            stderr = io.StringIO()
+                            code = main(["exec", "hello"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(run_core.call_count, 1)
+        self.assertIsNone(seen["command"])
+        self.assertEqual(seen["auth"], "sk-env")
+        self.assertIsNone(seen["max_tool_followups"])
+        self.assertEqual(stdout.getvalue(), "done\n")
+        self.assertIn("completed core non-interactive exec execution", stderr.getvalue())
+
+    def test_main_exec_local_http_shell_tools_explicit_tool_rounds_are_unbounded(self):
+        seen = {}
+
+        async def fake_run(_config, _plan, _model_client, _provider, _model_info, **kwargs):
+            seen["max_tool_rounds"] = kwargs["max_tool_rounds"]
+            return type(
+                "Result",
+                (),
+                {
+                    "response_items": (
+                        ResponseItem.from_mapping(
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "done"}],
+                            }
+                        ),
+                    ),
+                    "raw_result": None,
+                },
+            )()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "1",
+                    "OPENAI_API_KEY": "sk-env",
+                },
+                clear=False,
+            ):
+                os.environ.pop("PYCODEX_EXEC_LOCAL_HTTP_MAX_TOOL_ROUNDS", None)
+                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                    with patch(
+                        "pycodex.cli.parser.run_exec_user_turn_with_shell_tools_http_sampling",
+                        side_effect=fake_run,
+                    ):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(["exec", "hello"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0)
+        self.assertIsNone(seen["max_tool_rounds"])
+        self.assertEqual(stdout.getvalue(), "done\n")
+
+    def test_main_exec_local_http_shell_tools_passes_output_schema_to_tool_loop(self):
+        seen = {}
+
+        async def fake_run(_config, plan, _model_client, _provider, _model_info, **kwargs):
+            seen["output_schema"] = plan.initial_operation.output_schema
+            seen["max_tool_rounds"] = kwargs["max_tool_rounds"]
+            return type(
+                "Result",
+                (),
+                {
+                    "response_items": (
+                        ResponseItem.from_mapping(
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "done"}],
+                            }
+                        ),
+                    ),
+                    "raw_result": None,
+                },
+            )()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            schema_path = Path(tmpdir) / "schema.json"
+            schema_path.write_text(
+                json.dumps(
+                    {
+                        "type": "object",
+                        "properties": {"summary": {"type": "string"}},
+                        "required": ["summary"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "1",
+                    "OPENAI_API_KEY": "sk-env",
+                },
+                clear=False,
+            ):
+                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                    with patch(
+                        "pycodex.cli.parser.run_exec_user_turn_with_shell_tools_http_sampling",
+                        side_effect=fake_run,
+                    ):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(
+                            ["exec", "--output-schema", str(schema_path), "hello"],
+                            stdout=stdout,
+                            stderr=stderr,
+                        )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(seen["output_schema"]["properties"]["summary"]["type"], "string")
+        self.assertIsNone(seen["max_tool_rounds"])
+        self.assertEqual(stdout.getvalue(), "done\n")
+
     def test_main_exec_resume_local_http_last_uses_resume_runner(self):
         seen = {}
 
@@ -8736,6 +12418,137 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertEqual(seen["resolved_rollout_path"], Path("aligned-rollout.jsonl"))
         self.assertIn("session id: resumed-thread", stderr.getvalue())
         self.assertEqual(stdout.getvalue(), "resumed\n")
+
+    def test_main_exec_resume_core_env_uses_core_resume_runner(self):
+        seen = {}
+
+        class FakeResult:
+            response_items = (
+                ResponseItem.from_mapping(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "core resumed"}],
+                    }
+                ),
+            )
+            raw_result = None
+
+        async def fake_resume_run(command, codex_home, _config, plan, _model_client, _provider, _model_info, **kwargs):
+            seen["command"] = command
+            seen["codex_home"] = Path(codex_home)
+            seen["prompt"] = plan.prompt_summary
+            seen["resume_args"] = kwargs.get("resume_args")
+            seen["resume_target"] = kwargs.get("resume_target")
+            seen["resume_target_resolved"] = kwargs.get("resume_target_resolved")
+            seen["auth"] = kwargs.get("auth")
+            seen["cli_version"] = kwargs.get("cli_version")
+            return FakeResult()
+
+        def fake_align(_codex_home, _config, model_client, _resume_args):
+            model_client.state.session_id = "core-resumed-thread"
+            model_client.state.thread_id = "core-resumed-thread"
+            return type(
+                "Target",
+                (),
+                {
+                    "thread_id": None,
+                    "session_name": None,
+                    "rollout_path": Path("core-aligned-rollout.jsonl"),
+                },
+            )()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_CORE": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP": "0",
+                    "OPENAI_API_KEY": "sk-env",
+                },
+            ):
+                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.parser.resolve_core_exec_resume_target", side_effect=fake_align):
+                        with patch(
+                            "pycodex.cli.parser.run_core_exec_command",
+                            side_effect=fake_resume_run,
+                        ) as resume_runner:
+                            with patch(
+                                "pycodex.cli.parser.run_exec_resume_user_turn_http_sampling",
+                                side_effect=AssertionError("local HTTP resume runner should not run when core exec is enabled"),
+                            ):
+                                stdout = io.StringIO()
+                                stderr = io.StringIO()
+                                code = main(["exec", "resume", "--last", "hello"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(resume_runner.call_count, 1)
+        self.assertEqual(seen["command"], "resume")
+        self.assertEqual(seen["codex_home"], Path(tmpdir))
+        self.assertEqual(seen["prompt"], "hello")
+        self.assertTrue(seen["resume_args"].last)
+        self.assertFalse(seen["resume_args"].all)
+        self.assertIsNone(seen["resume_target"].thread_id)
+        self.assertTrue(seen["resume_target_resolved"])
+        self.assertEqual(seen["resume_target"].rollout_path, Path("core-aligned-rollout.jsonl"))
+        self.assertEqual(seen["auth"], "sk-env")
+        self.assertIsInstance(seen["cli_version"], str)
+        self.assertIn("session id: core-resumed-thread", stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "core resumed\n")
+
+    def test_main_exec_resume_core_env_without_target_starts_new_core_turn(self):
+        seen = {}
+
+        class FakeResult:
+            response_items = (
+                ResponseItem.from_mapping(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "new core turn"}],
+                    }
+                ),
+            )
+            raw_result = None
+
+        async def fake_resume_run(command, _codex_home, _config, plan, _model_client, _provider, _model_info, **kwargs):
+            seen["command"] = command
+            seen["prompt"] = plan.prompt_summary
+            seen["resume_args"] = kwargs.get("resume_args")
+            seen["resume_target"] = kwargs.get("resume_target")
+            seen["resume_target_resolved"] = kwargs.get("resume_target_resolved")
+            return FakeResult()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_CORE": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP": "0",
+                    "OPENAI_API_KEY": "sk-env",
+                },
+            ):
+                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.parser.resolve_core_exec_resume_target", return_value=None):
+                        with patch(
+                            "pycodex.cli.parser.run_core_exec_command",
+                            side_effect=fake_resume_run,
+                        ) as resume_runner:
+                            stdout = io.StringIO()
+                            stderr = io.StringIO()
+                            code = main(["exec", "resume", "--last", "hello"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(resume_runner.call_count, 1)
+        self.assertEqual(seen["command"], "resume")
+        self.assertEqual(seen["prompt"], "hello")
+        self.assertTrue(seen["resume_args"].last)
+        self.assertIsNone(seen["resume_target"])
+        self.assertTrue(seen["resume_target_resolved"])
+        self.assertIn("session id:", stderr.getvalue())
+        self.assertEqual(stdout.getvalue(), "new core turn\n")
 
     def test_main_exec_resume_local_http_named_session_uses_resume_runner(self):
         seen = {}
@@ -8838,6 +12651,70 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertEqual(seen["tool_output_max_chars"], 50)
         self.assertTrue(seen["resume_last"])
         self.assertEqual(stdout.getvalue(), "shell resumed\n")
+
+    def test_main_exec_resume_local_http_shell_tools_passes_output_schema(self):
+        seen = {}
+
+        class FakeResult:
+            response_items = (
+                ResponseItem.from_mapping(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "schema resumed"}],
+                    }
+                ),
+            )
+            raw_result = None
+
+        async def fake_resume_run(_codex_home, _config, plan, _model_client, _provider, _model_info, **kwargs):
+            seen["output_schema"] = plan.initial_operation.output_schema
+            seen["use_shell_tools"] = kwargs.get("use_shell_tools")
+            seen["resume_last"] = kwargs.get("resume_last")
+            return FakeResult()
+
+        def fake_align(_codex_home, _config, model_client, **_kwargs):
+            model_client.state.session_id = "schema-resumed-thread"
+            model_client.state.thread_id = "schema-resumed-thread"
+            return Path("rollout.jsonl")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            schema_path = Path(tmpdir) / "schema.json"
+            schema_path.write_text(
+                json.dumps(
+                    {
+                        "type": "object",
+                        "properties": {"summary": {"type": "string"}},
+                        "required": ["summary"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "1",
+                    "OPENAI_API_KEY": "sk-env",
+                },
+            ):
+                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.parser.align_local_http_exec_resume_model_client", side_effect=fake_align):
+                        with patch("pycodex.cli.parser.run_exec_resume_user_turn_http_sampling", side_effect=fake_resume_run):
+                            stdout = io.StringIO()
+                            stderr = io.StringIO()
+                            code = main(
+                                ["exec", "resume", "--last", "--output-schema", str(schema_path), "hello"],
+                                stdout=stdout,
+                                stderr=stderr,
+                            )
+
+        self.assertEqual(code, 0)
+        self.assertTrue(seen["use_shell_tools"])
+        self.assertTrue(seen["resume_last"])
+        self.assertEqual(seen["output_schema"]["properties"]["summary"]["type"], "string")
+        self.assertEqual(stdout.getvalue(), "schema resumed\n")
 
     def test_main_exec_local_http_shell_tools_rejects_invalid_max_rounds(self):
         with tempfile.TemporaryDirectory() as tmpdir:

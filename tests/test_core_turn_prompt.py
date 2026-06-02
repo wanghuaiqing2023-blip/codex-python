@@ -1,8 +1,13 @@
 import unittest
 from types import SimpleNamespace
 
-from pycodex.core.turn_prompt import build_turn_prompt, input_with_user_instructions, render_turn_user_instructions
-from pycodex.protocol import BaseInstructions, ContentItem, Personality, ResponseItem
+from pycodex.core.turn_prompt import (
+    build_turn_prompt,
+    input_with_user_instructions,
+    is_guardian_reviewer_source,
+    render_turn_user_instructions,
+)
+from pycodex.protocol import BaseInstructions, ContentItem, Personality, ResponseItem, SessionSource, SubAgentSource
 
 
 class Router:
@@ -68,6 +73,34 @@ class TurnPromptTests(unittest.TestCase):
 
         self.assertTrue(prompt.parallel_tool_calls)
         self.assertEqual(prompt.personality, Personality.FRIENDLY)
+
+    def test_build_turn_prompt_infers_non_strict_output_schema_for_guardian_reviewer(self) -> None:
+        context = SimpleNamespace(
+            session_source=SessionSource.subagent(SubAgentSource.other_source("guardian")),
+        )
+        item = ResponseItem.message("user", (ContentItem.input_text("assess"),))
+
+        prompt = build_turn_prompt([item], Router(), context, BaseInstructions("base"), output_schema={"type": "object"})
+
+        self.assertFalse(prompt.output_schema_strict)
+        self.assertTrue(is_guardian_reviewer_source(context.session_source))
+
+    def test_build_turn_prompt_allows_explicit_output_schema_strict_override(self) -> None:
+        context = SimpleNamespace(
+            session_source=SessionSource.subagent(SubAgentSource.other_source("guardian")),
+        )
+        item = ResponseItem.message("user", (ContentItem.input_text("assess"),))
+
+        prompt = build_turn_prompt(
+            [item],
+            Router(),
+            context,
+            BaseInstructions("base"),
+            output_schema={"type": "object"},
+            output_schema_strict=True,
+        )
+
+        self.assertTrue(prompt.output_schema_strict)
 
 
 if __name__ == "__main__":

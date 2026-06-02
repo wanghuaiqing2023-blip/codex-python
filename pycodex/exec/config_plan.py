@@ -9,6 +9,7 @@ Python app-server path.
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
@@ -18,17 +19,18 @@ import sys
 from typing import Any
 from typing import BinaryIO, TextIO
 
-from pycodex.config import ConfigOverride
+from pycodex.config import ConfigOverride, apply_single_override
 from pycodex.core.agents_md import (
     DEFAULT_PROJECT_DOC_MAX_BYTES,
     AgentsMdConfig,
     AgentsMdManager,
 )
+from pycodex.core.features import Feature, FeatureConfigSource, FeatureOverrides, Features, FeaturesToml
 from pycodex.core.git_info import get_git_repo_root
 from pycodex.core.otel_init import OtelProvider
 from pycodex.core.otel_init import build_provider as build_otel_provider
 from pycodex.core.paths import find_codex_home
-from pycodex.protocol import AskForApproval, PermissionProfile, SandboxMode
+from pycodex.protocol import AskForApproval, GranularApprovalConfig, PermissionProfile, SandboxMode
 
 from .cli import ExecCli
 from .event_processor import (
@@ -85,7 +87,7 @@ class ExecHarnessOverrides:
     """Subset of upstream ``ConfigOverrides`` supplied by ``codex exec``."""
 
     model: str | None = None
-    approval_policy: AskForApproval | None = AskForApproval.NEVER
+    approval_policy: AskForApproval | GranularApprovalConfig | None = AskForApproval.NEVER
     sandbox_mode: SandboxMode | None = None
     cwd: Path | None = None
     model_provider: str | None = None
@@ -132,6 +134,9 @@ class ExecConfigBootstrapPlan:
     user_instructions: str | None = None
     instruction_sources: tuple[Path, ...] = ()
     startup_warnings: tuple[str, ...] = ()
+    allow_login_shell: bool = True
+    exec_permission_approvals_enabled: bool = False
+    request_permissions_tool_enabled: bool = False
     upstream_source: str = UPSTREAM_EXEC_RUN_MAIN
 
     def __post_init__(self) -> None:
@@ -154,6 +159,9 @@ class ExecConfigBootstrapPlan:
             "userInstructions": self.user_instructions,
             "instructionSources": [str(path) for path in self.instruction_sources],
             "startupWarnings": list(self.startup_warnings),
+            "allowLoginShell": self.allow_login_shell,
+            "execPermissionApprovalsEnabled": self.exec_permission_approvals_enabled,
+            "requestPermissionsToolEnabled": self.request_permissions_tool_enabled,
         }
 
 
@@ -1308,7 +1316,7 @@ def exec_harness_overrides_from_cli(
     model_provider = exec_model_provider_override(cli, config_toml)
     return ExecHarnessOverrides(
         model=exec_model_override(cli, model_provider, config_toml),
-        approval_policy=AskForApproval.NEVER,
+        approval_policy=cli.approval_policy or AskForApproval.NEVER,
         sandbox_mode=exec_sandbox_mode_from_cli(cli),
         cwd=Path(cli.cwd) if cli.cwd is not None else None,
         model_provider=model_provider,
@@ -1342,10 +1350,13 @@ def build_exec_config_bootstrap_plan(
     """Plan the config inputs that precede full app-server startup."""
 
     config_cwd = resolve_exec_config_cwd(cli, current_dir)
+    cli_overrides = tuple(cli.cli_config_overrides().parse_overrides())
+    effective_config = _exec_config_with_overrides(config_toml, cli_overrides)
+    features = _features_from_exec_config(effective_config)
     warnings: list[str] = []
     user_instructions, instruction_sources = _resolve_exec_user_instructions(
         config_cwd,
-        config_toml,
+        effective_config,
         warnings,
     )
     return ExecConfigBootstrapPlan(
@@ -1353,11 +1364,14 @@ def build_exec_config_bootstrap_plan(
         strict_config=cli.strict_config,
         ignore_user_config=cli.ignore_user_config,
         ignore_rules=cli.ignore_rules,
-        cli_overrides=tuple(cli.cli_config_overrides().parse_overrides()),
-        harness_overrides=exec_harness_overrides_from_cli(cli, config_toml),
+        cli_overrides=cli_overrides,
+        harness_overrides=exec_harness_overrides_from_cli(cli, effective_config),
         user_instructions=user_instructions,
         instruction_sources=instruction_sources,
         startup_warnings=tuple(warnings),
+        allow_login_shell=_allow_login_shell_from_config(effective_config),
+        exec_permission_approvals_enabled=features.enabled(Feature.EXEC_PERMISSION_APPROVALS),
+        request_permissions_tool_enabled=features.enabled(Feature.REQUEST_PERMISSIONS_TOOL),
     )
 
 
@@ -1381,6 +1395,38 @@ def exec_session_config_from_bootstrap_plan(plan: ExecConfigBootstrapPlan) -> Ex
         ),
         ephemeral=bool(harness.ephemeral),
         show_raw_agent_reasoning=bool(harness.show_raw_agent_reasoning),
+        allow_login_shell=plan.allow_login_shell,
+        exec_permission_approvals_enabled=plan.exec_permission_approvals_enabled,
+        request_permissions_tool_enabled=plan.request_permissions_tool_enabled,
+    )
+
+
+def _exec_config_with_overrides(
+    config_toml: Mapping[str, JsonValue] | None,
+    cli_overrides: tuple[ConfigOverride, ...],
+) -> dict[str, JsonValue]:
+    config: dict[str, JsonValue] = copy.deepcopy(dict(config_toml or {}))
+    for override in cli_overrides:
+        apply_single_override(config, override.path, override.value)
+    return config
+
+
+def _allow_login_shell_from_config(config_toml: Mapping[str, JsonValue]) -> bool:
+    value = config_toml.get("allow_login_shell")
+    return value if isinstance(value, bool) else True
+
+
+def _features_from_exec_config(config_toml: Mapping[str, JsonValue]) -> Features:
+    features_value = config_toml.get("features")
+    features_toml = FeaturesToml.from_mapping(features_value) if isinstance(features_value, Mapping) else None
+    legacy_unified_exec = config_toml.get("experimental_use_unified_exec_tool")
+    return Features.from_sources(
+        FeatureConfigSource(
+            features=features_toml,
+            experimental_use_unified_exec_tool=legacy_unified_exec if isinstance(legacy_unified_exec, bool) else None,
+        ),
+        FeatureConfigSource(),
+        FeatureOverrides(),
     )
 
 
@@ -1602,6 +1648,9 @@ def _exec_session_config_to_mapping(config: ExecSessionConfig) -> dict[str, Json
         "ephemeral": config.ephemeral,
         "hideAgentReasoning": config.hide_agent_reasoning,
         "showRawAgentReasoning": config.show_raw_agent_reasoning,
+        "allowLoginShell": config.allow_login_shell,
+        "execPermissionApprovalsEnabled": config.exec_permission_approvals_enabled,
+        "requestPermissionsToolEnabled": config.request_permissions_tool_enabled,
     }
 
 
@@ -1616,7 +1665,9 @@ def _permission_profile_from_sandbox_mode(
     return PermissionProfile.read_only()
 
 
-def _enum_value(value: Enum | None) -> str | None:
+def _enum_value(value: Enum | GranularApprovalConfig | None) -> JsonValue | None:
+    if isinstance(value, GranularApprovalConfig):
+        return {"granular": value.to_mapping()}
     return value.value if isinstance(value, Enum) else None
 
 

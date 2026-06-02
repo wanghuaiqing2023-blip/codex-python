@@ -1,17 +1,21 @@
 import asyncio
 import json
+import os
 import shutil
 import sys
 import tempfile
 import unittest
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+from pycodex.core.features import Feature
 from pycodex.core.hook_names import HookToolName
 from pycodex.core.shell import Shell, ShellType
 from pycodex.core.tool_context import ExecCommandToolOutput, ToolPayload
 from pycodex.core.tool_router import FunctionCallError
 from pycodex.core.tool_registry import ToolInvocation
+from pycodex.core.unified_exec import UnifiedExecError
 from pycodex.core.unified_exec_handler import (
     DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS,
     DEFAULT_EXEC_YIELD_TIME_MS,
@@ -20,6 +24,7 @@ from pycodex.core.unified_exec_handler import (
     ExecCommandEnvironmentArgs,
     ExecCommandHandler,
     ExecCommandHandlerOptions,
+    ExecCommandRequest,
     UnifiedExecShellMode,
     WriteStdinArgs,
     WriteStdinHandler,
@@ -31,7 +36,22 @@ from pycodex.core.unified_exec_handler import (
     resolve_exec_command_invocation,
     resolve_write_stdin_yield_time,
 )
-from pycodex.protocol import SandboxPermissions, TerminalInteractionEvent, ToolName, TruncationPolicyConfig
+from pycodex.protocol import (
+    AdditionalPermissionProfile,
+    AskForApproval,
+    CODEX_THREAD_ID_ENV_VAR,
+    FileSystemPermissions,
+    GranularApprovalConfig,
+    SandboxPermissions,
+    ShellEnvironmentPolicy,
+    ShellEnvironmentPolicyInherit,
+    ExecToolCallOutput,
+    StreamOutput,
+    TerminalInteractionEvent,
+    ThreadId,
+    ToolName,
+    TruncationPolicyConfig,
+)
 
 
 class CoreUnifiedExecHandlerTests(unittest.TestCase):
@@ -76,6 +96,14 @@ class CoreUnifiedExecHandlerTests(unittest.TestCase):
             WriteStdinArgs.from_json('{"session_id":45,"yield_time_ms":-1}')
         with self.assertRaisesRegex(ValueError, "max_output_tokens must fit in usize"):
             WriteStdinArgs.from_json('{"session_id":45,"max_output_tokens":-1}')
+
+    def test_unified_exec_preserves_zero_max_output_tokens(self) -> None:
+        exec_args = ExecCommandArgs.from_json('{"cmd":"echo hi","max_output_tokens":0}')
+        stdin_args = WriteStdinArgs.from_json('{"session_id":45,"max_output_tokens":0}')
+
+        self.assertEqual(exec_args.max_output_tokens, 0)
+        self.assertEqual(exec_args.to_mapping()["max_output_tokens"], 0)
+        self.assertEqual(stdin_args.max_output_tokens, 0)
 
     def test_write_stdin_handler_forwards_request_to_unified_exec_manager(self) -> None:
         class Manager:
@@ -124,6 +152,360 @@ class CoreUnifiedExecHandlerTests(unittest.TestCase):
         self.assertEqual(manager.request.yield_time_ms, 250)
         self.assertEqual(manager.request.max_output_tokens, 12)
         self.assertEqual(manager.request.truncation_policy, TruncationPolicyConfig.tokens(123))
+
+    def test_exec_command_handler_forwards_request_to_unified_exec_manager(self) -> None:
+        class Manager:
+            def __init__(self) -> None:
+                self.request = None
+                self.allocated = 0
+
+            async def allocate_process_id(self) -> int:
+                self.allocated += 1
+                return 45
+
+            async def exec_command(self, request: ExecCommandRequest) -> ExecCommandToolOutput:
+                self.request = request
+                return ExecCommandToolOutput(
+                    event_call_id="event-managed",
+                    chunk_id="chunk-managed",
+                    wall_time_seconds=0.25,
+                    raw_output=b"managed\n",
+                    truncation_policy=request.truncation_policy,
+                    max_output_tokens=request.max_output_tokens,
+                    process_id=45,
+                    exit_code=None,
+                    hook_command=request.hook_command,
+                )
+
+        manager = Manager()
+        root = Path.cwd()
+        environment = object()
+        invocation = ToolInvocation(
+            call_id="call-managed",
+            tool_name="exec_command",
+            payload=ToolPayload.function(
+                json.dumps(
+                    {
+                        "cmd": "echo managed",
+                        "yield_time_ms": 750,
+                        "max_output_tokens": 12,
+                        "tty": True,
+                        "sandbox_permissions": "require_escalated",
+                        "justification": "test escalation",
+                        "prefix_rule": ["echo"],
+                    }
+                )
+            ),
+            session=SimpleNamespace(
+                user_shell=lambda: Shell(ShellType.SH, shutil.which("sh") or "/bin/sh"),
+                services=SimpleNamespace(unified_exec_manager=manager),
+            ),
+            turn=SimpleNamespace(
+                environments=(SimpleNamespace(environment_id="local", cwd=root, environment=environment),),
+                truncation_policy=TruncationPolicyConfig.tokens(123),
+                network="net",
+                additional_permissions_preapproved=True,
+            ),
+        )
+
+        output = asyncio.run(ExecCommandHandler().handle(invocation))
+
+        self.assertEqual(output.raw_output, b"managed\n")
+        self.assertEqual(manager.allocated, 1)
+        self.assertIsNotNone(manager.request)
+        request = manager.request
+        self.assertEqual(request.command[-2:], ("-c", "echo managed"))
+        self.assertEqual(request.shell_type, ShellType.SH)
+        self.assertEqual(request.hook_command, "echo managed")
+        self.assertEqual(request.process_id, 45)
+        self.assertEqual(request.yield_time_ms, 750)
+        self.assertEqual(request.max_output_tokens, 12)
+        self.assertEqual(request.cwd, root)
+        self.assertEqual(request.sandbox_cwd, root)
+        self.assertIs(request.environment, environment)
+        self.assertEqual(request.network, "net")
+        self.assertTrue(request.tty)
+        self.assertEqual(request.sandbox_permissions, SandboxPermissions.REQUIRE_ESCALATED)
+        self.assertFalse(request.additional_permissions_preapproved)
+        self.assertEqual(request.justification, "test escalation")
+        self.assertEqual(request.prefix_rule, ("echo",))
+
+    def test_exec_command_handler_releases_allocated_process_id_on_manager_error(self) -> None:
+        class Manager:
+            def __init__(self) -> None:
+                self.released = []
+
+            async def allocate_process_id(self) -> int:
+                return 46
+
+            async def release_process_id(self, process_id: int) -> None:
+                self.released.append(process_id)
+
+            async def exec_command(self, _request: ExecCommandRequest) -> ExecCommandToolOutput:
+                raise RuntimeError("spawn failed")
+
+        manager = Manager()
+        root = Path.cwd()
+        invocation = ToolInvocation(
+            call_id="call-managed-error",
+            tool_name="exec_command",
+            payload=ToolPayload.function(json.dumps({"cmd": "echo managed"})),
+            session=SimpleNamespace(
+                user_shell=lambda: Shell(ShellType.SH, shutil.which("sh") or "/bin/sh"),
+                services=SimpleNamespace(unified_exec_manager=manager),
+            ),
+            turn=SimpleNamespace(environments=(SimpleNamespace(environment_id="local", cwd=root),)),
+        )
+
+        with self.assertRaisesRegex(FunctionCallError, "exec_command failed"):
+            asyncio.run(ExecCommandHandler().handle(invocation))
+
+        self.assertEqual(manager.released, [46])
+
+    def test_exec_command_handler_returns_sandbox_denied_output(self) -> None:
+        class Manager:
+            def __init__(self) -> None:
+                self.allocated = 0
+
+            async def allocate_process_id(self) -> int:
+                self.allocated += 1
+                return 46
+
+            async def exec_command(self, _request: ExecCommandRequest) -> ExecCommandToolOutput:
+                output = ExecToolCallOutput(
+                    exit_code=126,
+                    aggregated_output=StreamOutput.new("sandbox denied\ncaptured output"),
+                    duration=timedelta(milliseconds=250),
+                )
+                raise UnifiedExecError.sandbox_denied("operation not permitted", output)
+
+        manager = Manager()
+        root = Path.cwd()
+        invocation = ToolInvocation(
+            call_id="call-sandbox-denied",
+            tool_name="exec_command",
+            payload=ToolPayload.function(json.dumps({"cmd": "cat /private", "max_output_tokens": 10})),
+            session=SimpleNamespace(
+                user_shell=lambda: Shell(ShellType.SH, shutil.which("sh") or "/bin/sh"),
+                services=SimpleNamespace(unified_exec_manager=manager),
+            ),
+            turn=SimpleNamespace(
+                environments=(SimpleNamespace(environment_id="local", cwd=root),),
+                truncation_policy=TruncationPolicyConfig.tokens(123),
+            ),
+        )
+
+        output = asyncio.run(ExecCommandHandler().handle(invocation))
+
+        self.assertEqual(manager.allocated, 1)
+        self.assertEqual(output.event_call_id, "call-sandbox-denied")
+        self.assertTrue(output.chunk_id)
+        self.assertEqual(output.wall_time_seconds, 0.25)
+        self.assertEqual(output.raw_output, b"sandbox denied\ncaptured output")
+        self.assertEqual(output.max_output_tokens, 10)
+        self.assertIsNone(output.process_id)
+        self.assertEqual(output.exit_code, 126)
+        self.assertIsNotNone(output.original_token_count)
+        self.assertEqual(output.hook_command, "cat /private")
+        self.assertIn("Process exited with code 126", output.response_text())
+        self.assertIn("sandbox denied", output.response_text())
+
+    def test_exec_command_handler_rejects_escalated_request_when_approval_never(self) -> None:
+        class Manager:
+            def __init__(self) -> None:
+                self.allocated = 0
+                self.released = []
+
+            async def allocate_process_id(self) -> int:
+                self.allocated += 1
+                return 47
+
+            async def release_process_id(self, process_id: int) -> None:
+                self.released.append(process_id)
+
+            async def exec_command(self, _request: ExecCommandRequest) -> ExecCommandToolOutput:
+                raise AssertionError("require_escalated must be rejected before execution")
+
+        manager = Manager()
+        root = Path.cwd()
+        invocation = ToolInvocation(
+            call_id="call-escalated-never",
+            tool_name="exec_command",
+            payload=ToolPayload.function(
+                json.dumps({"cmd": "echo blocked", "sandbox_permissions": "require_escalated"})
+            ),
+            session=SimpleNamespace(
+                user_shell=lambda: Shell(ShellType.SH, shutil.which("sh") or "/bin/sh"),
+                services=SimpleNamespace(unified_exec_manager=manager),
+            ),
+            turn=SimpleNamespace(
+                approval_policy=AskForApproval.NEVER,
+                environments=(SimpleNamespace(environment_id="local", cwd=root),),
+            ),
+        )
+
+        with self.assertRaisesRegex(FunctionCallError, "cannot ask for escalated permissions"):
+            asyncio.run(ExecCommandHandler().handle(invocation))
+
+        self.assertEqual(manager.allocated, 1)
+        self.assertEqual(manager.released, [47])
+
+    def test_exec_command_handler_rejects_escalated_request_when_approval_granular(self) -> None:
+        class Manager:
+            def __init__(self) -> None:
+                self.allocated = 0
+                self.released = []
+
+            async def allocate_process_id(self) -> int:
+                self.allocated += 1
+                return 47
+
+            async def release_process_id(self, process_id: int) -> None:
+                self.released.append(process_id)
+
+            async def exec_command(self, _request: ExecCommandRequest) -> ExecCommandToolOutput:
+                raise AssertionError("require_escalated must be rejected before execution")
+
+        manager = Manager()
+        root = Path.cwd()
+        invocation = ToolInvocation(
+            call_id="call-escalated-granular",
+            tool_name="exec_command",
+            payload=ToolPayload.function(
+                json.dumps({"cmd": "echo blocked", "sandbox_permissions": "require_escalated"})
+            ),
+            session=SimpleNamespace(
+                user_shell=lambda: Shell(ShellType.SH, shutil.which("sh") or "/bin/sh"),
+                services=SimpleNamespace(unified_exec_manager=manager),
+            ),
+            turn=SimpleNamespace(
+                approval_policy=GranularApprovalConfig(
+                    sandbox_approval=True,
+                    rules=True,
+                    skill_approval=False,
+                    request_permissions=True,
+                    mcp_elicitations=False,
+                ),
+                environments=(SimpleNamespace(environment_id="local", cwd=root),),
+            ),
+        )
+
+        with self.assertRaisesRegex(FunctionCallError, "cannot ask for escalated permissions"):
+            asyncio.run(ExecCommandHandler().handle(invocation))
+
+        self.assertEqual(manager.allocated, 1)
+        self.assertEqual(manager.released, [47])
+
+    def test_exec_command_handler_applies_preapproved_granted_permissions(self) -> None:
+        class Manager:
+            def __init__(self) -> None:
+                self.request = None
+
+            async def allocate_process_id(self) -> int:
+                return 48
+
+            async def exec_command(self, request: ExecCommandRequest) -> ExecCommandToolOutput:
+                self.request = request
+                return ExecCommandToolOutput(
+                    event_call_id="event-preapproved",
+                    chunk_id="chunk-preapproved",
+                    wall_time_seconds=0.1,
+                    raw_output=b"preapproved\n",
+                    truncation_policy=request.truncation_policy,
+                    process_id=None,
+                    exit_code=0,
+                    hook_command=request.hook_command,
+                )
+
+        class Session:
+            def __init__(self, manager: Manager, permissions: AdditionalPermissionProfile) -> None:
+                self.services = SimpleNamespace(unified_exec_manager=manager)
+                self.features = SimpleNamespace(
+                    enabled=lambda feature: feature is Feature.REQUEST_PERMISSIONS_TOOL
+                )
+                self.permissions = permissions
+
+            def user_shell(self) -> Shell:
+                return Shell(ShellType.SH, shutil.which("sh") or "/bin/sh")
+
+            async def granted_session_permissions(self) -> AdditionalPermissionProfile:
+                return self.permissions
+
+            async def granted_turn_permissions(self) -> None:
+                return None
+
+        manager = Manager()
+        root = Path.cwd()
+        granted = AdditionalPermissionProfile(
+            file_system=FileSystemPermissions.from_read_write_roots(write=(root,))
+        )
+        invocation = ToolInvocation(
+            call_id="call-preapproved",
+            tool_name="exec_command",
+            payload=ToolPayload.function(json.dumps({"cmd": "echo preapproved"})),
+            session=Session(manager, granted),
+            turn=SimpleNamespace(
+                approval_policy=AskForApproval.NEVER,
+                environments=(SimpleNamespace(environment_id="local", cwd=root),),
+                truncation_policy=TruncationPolicyConfig.tokens(123),
+            ),
+        )
+
+        output = asyncio.run(ExecCommandHandler().handle(invocation))
+
+        self.assertEqual(output.raw_output, b"preapproved\n")
+        self.assertIsNotNone(manager.request)
+        self.assertEqual(manager.request.sandbox_permissions, SandboxPermissions.WITH_ADDITIONAL_PERMISSIONS)
+        self.assertEqual(manager.request.additional_permissions, granted)
+        self.assertTrue(manager.request.additional_permissions_preapproved)
+
+    def test_write_stdin_handler_preserves_eot_input_and_terminal_interaction(self) -> None:
+        class Manager:
+            def __init__(self) -> None:
+                self.request = None
+
+            async def write_stdin(self, request: WriteStdinRequest) -> ExecCommandToolOutput:
+                self.request = request
+                return ExecCommandToolOutput(
+                    event_call_id="exec-call-45",
+                    chunk_id="chunk-stdin",
+                    wall_time_seconds=0.1,
+                    raw_output=b"",
+                    truncation_policy=request.truncation_policy,
+                    process_id=None,
+                    exit_code=0,
+                    hook_command="cat",
+                )
+
+        class Session:
+            def __init__(self, manager: Manager) -> None:
+                self.services = SimpleNamespace(unified_exec_manager=manager)
+                self.events = []
+
+            async def send_event(self, turn: object, event: object) -> None:
+                self.events.append((turn, event))
+
+        manager = Manager()
+        turn = SimpleNamespace(truncation_policy=TruncationPolicyConfig.tokens(123))
+        session = Session(manager)
+        invocation = ToolInvocation(
+            call_id="write-call",
+            tool_name="write_stdin",
+            payload=ToolPayload.function(json.dumps({"session_id": 45, "chars": "\x04"})),
+            session=session,
+            turn=turn,
+        )
+
+        asyncio.run(WriteStdinHandler().handle(invocation))
+
+        self.assertIsNotNone(manager.request)
+        self.assertEqual(manager.request.input, "\x04")
+        self.assertEqual(len(session.events), 1)
+        event = session.events[0][1]
+        self.assertEqual(event.type, "terminal_interaction")
+        self.assertEqual(event.payload.call_id, "exec-call-45")
+        self.assertEqual(event.payload.process_id, "45")
+        self.assertEqual(event.payload.stdin, "\x04")
 
     def test_write_stdin_handler_emits_terminal_interaction_for_visible_input(self) -> None:
         class Manager:
@@ -428,6 +810,61 @@ class CoreUnifiedExecHandlerTests(unittest.TestCase):
             self.assertEqual(output.exit_code, 7)
             self.assertIn("pycodex-fail", output.raw_output.decode("utf-8", errors="replace"))
 
+    def test_exec_command_handler_records_original_token_count(self) -> None:
+        shell, command = self.local_shell_and_token_count_command()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            invocation = ToolInvocation(
+                call_id="call-token-count",
+                tool_name="exec_command",
+                payload=ToolPayload.function(json.dumps({"cmd": command, "max_output_tokens": 1})),
+                session=SimpleNamespace(user_shell=lambda: shell),
+                turn=SimpleNamespace(environments=(SimpleNamespace(environment_id="local", cwd=root),)),
+            )
+
+            output = ExecCommandHandler().handle(invocation)
+
+            self.assertEqual(output.exit_code, 0)
+            self.assertIsNotNone(output.original_token_count)
+            self.assertGreater(output.original_token_count or 0, 1)
+            self.assertIn("Original token count:", output.response_text())
+
+    def test_exec_command_handler_applies_shell_environment_policy_and_thread_id(self) -> None:
+        shell, command = self.local_shell_and_env_command()
+        thread_id = ThreadId.new()
+        leak_key = "PYCODEX_EXEC_ENV_SHOULD_NOT_LEAK"
+        old_leak = os.environ.get(leak_key)
+        os.environ[leak_key] = "leaked"
+        policy = ShellEnvironmentPolicy(
+            inherit=ShellEnvironmentPolicyInherit.CORE,
+            ignore_default_excludes=True,
+            set_values={"ONLY_VAR": "visible"},
+        )
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                invocation = ToolInvocation(
+                    call_id="call-env",
+                    tool_name="exec_command",
+                    payload=ToolPayload.function(json.dumps({"cmd": command})),
+                    session=SimpleNamespace(user_shell=lambda: shell, conversation_id=thread_id),
+                    turn=SimpleNamespace(
+                        environments=(SimpleNamespace(environment_id="local", cwd=root),),
+                        shell_environment_policy=policy,
+                    ),
+                )
+
+                output = ExecCommandHandler().handle(invocation)
+
+                self.assertEqual(output.exit_code, 0)
+                lines = output.raw_output.decode("utf-8", errors="replace").splitlines()
+                self.assertEqual(lines, ["visible", "missing", thread_id.to_json()])
+        finally:
+            if old_leak is None:
+                os.environ.pop(leak_key, None)
+            else:
+                os.environ[leak_key] = old_leak
+
     def test_exec_command_handler_maps_bad_arguments_to_model_error(self) -> None:
         invocation = ToolInvocation(
             call_id="call-bad-args",
@@ -489,6 +926,55 @@ class CoreUnifiedExecHandlerTests(unittest.TestCase):
             self.assertEqual((root / "added.txt").read_text(encoding="utf-8"), "hello\n")
             self.assertIn("Success. Updated the following files:", output.raw_output.decode("utf-8"))
 
+    def test_exec_command_handler_releases_manager_process_id_after_apply_patch_intercept(self) -> None:
+        sh_path = shutil.which("sh")
+        if sh_path is None:
+            self.skipTest("sh is unavailable for portable heredoc interception test")
+
+        class Manager:
+            def __init__(self) -> None:
+                self.allocated = 0
+                self.released = []
+
+            async def allocate_process_id(self) -> int:
+                self.allocated += 1
+                return 49
+
+            async def release_process_id(self, process_id: int) -> None:
+                self.released.append(process_id)
+
+            async def exec_command(self, _request: ExecCommandRequest) -> ExecCommandToolOutput:
+                raise AssertionError("apply_patch intercept must not spawn unified exec")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manager = Manager()
+            command = (
+                "apply_patch <<'PATCH'\n"
+                "*** Begin Patch\n"
+                "*** Add File: added.txt\n"
+                "+hello\n"
+                "*** End Patch\n"
+                "PATCH"
+            )
+            invocation = ToolInvocation(
+                call_id="call-apply-patch-manager",
+                tool_name="exec_command",
+                payload=ToolPayload.function(json.dumps({"cmd": command})),
+                session=SimpleNamespace(
+                    user_shell=lambda: Shell(ShellType.SH, sh_path),
+                    services=SimpleNamespace(unified_exec_manager=manager),
+                ),
+                turn=SimpleNamespace(environments=(SimpleNamespace(environment_id="local", cwd=root),)),
+            )
+
+            output = asyncio.run(ExecCommandHandler().handle(invocation))
+
+            self.assertIsNone(output.exit_code)
+            self.assertEqual((root / "added.txt").read_text(encoding="utf-8"), "hello\n")
+            self.assertEqual(manager.allocated, 1)
+            self.assertEqual(manager.released, [49])
+
     def test_post_hook_uses_completed_exec_output_and_bash_name(self) -> None:
         invocation = ToolInvocation(
             call_id="write-call",
@@ -541,6 +1027,34 @@ class CoreUnifiedExecHandlerTests(unittest.TestCase):
                 "Write-Error 'pycodex-fail'; exit 7",
             )
         return Shell(ShellType.SH, shutil.which("sh") or "/bin/sh"), "echo pycodex-fail >&2; exit 7"
+
+    def local_shell_and_token_count_command(self) -> tuple[Shell, str]:
+        if sys.platform == "win32":
+            return (
+                Shell(ShellType.POWERSHELL, shutil.which("powershell") or "powershell.exe"),
+                "[Console]::WriteLine('alpha beta gamma delta epsilon zeta eta theta')",
+            )
+        return (
+            Shell(ShellType.SH, shutil.which("sh") or "/bin/sh"),
+            "printf '%s\\n' 'alpha beta gamma delta epsilon zeta eta theta'",
+        )
+
+    def local_shell_and_env_command(self) -> tuple[Shell, str]:
+        if sys.platform == "win32":
+            return (
+                Shell(ShellType.POWERSHELL, shutil.which("powershell") or "powershell.exe"),
+                (
+                    "$api = if ($env:API_KEY) { $env:API_KEY } else { 'missing' }; "
+                    "$leak = if ($env:PYCODEX_EXEC_ENV_SHOULD_NOT_LEAK) { $env:PYCODEX_EXEC_ENV_SHOULD_NOT_LEAK } else { 'missing' }; "
+                    "[Console]::WriteLine($env:ONLY_VAR); "
+                    "[Console]::WriteLine($leak); "
+                    f"[Console]::WriteLine($env:{CODEX_THREAD_ID_ENV_VAR})"
+                ),
+            )
+        return (
+            Shell(ShellType.SH, shutil.which("sh") or "/bin/sh"),
+            f'printf "%s\\n" "$ONLY_VAR" "${{PYCODEX_EXEC_ENV_SHOULD_NOT_LEAK:-missing}}" "${CODEX_THREAD_ID_ENV_VAR}"',
+        )
 
 
 if __name__ == "__main__":

@@ -32,6 +32,7 @@ from pycodex.protocol import (
     FileSystemSpecialPath,
     FunctionCallOutputContentItem,
     FunctionCallOutputPayload,
+    GranularApprovalConfig,
     NetworkPermissions,
     PermissionGrantScope,
     RequestPermissionProfile,
@@ -45,11 +46,17 @@ from pycodex.protocol import (
     SandboxPermissions,
     SandboxPolicy,
     SERVICE_TIER_DEFAULT_REQUEST_VALUE,
+    SessionSource,
     ServiceTier,
+    ByteRange,
     ModeKind,
     Settings,
+    SubAgentSource,
+    TextElement,
+    TurnItem,
     ThreadSettingsOverrides,
     ToolName,
+    TruncationPolicyConfig,
     TurnEnvironmentSelection,
     TurnContextNetworkItem,
     UserInput,
@@ -203,11 +210,25 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
             built_tools=lambda _sess, _turn: Router(),
         )
 
-        self.assertEqual(tuple(event.type for event in session.emitted_events), ("task_started", "task_complete"))
+        self.assertEqual(
+            tuple(event.type for event in session.emitted_events),
+            (
+                "task_started",
+                "item_started",
+                "item_completed",
+                "item_started",
+                "item_completed",
+                "task_complete",
+            ),
+        )
         self.assertEqual(session.emitted_events[0].payload.turn_id, "turn-1")
         self.assertEqual(session.emitted_events[0].payload.model_context_window, 128000)
-        self.assertEqual(session.emitted_events[1].payload.turn_id, "turn-1")
-        self.assertEqual(session.emitted_events[1].payload.last_agent_message, "done")
+        self.assertEqual(session.emitted_events[2].payload.item.type, "UserMessage")
+        self.assertEqual(session.emitted_events[2].payload.item.item.message(), "hello")
+        self.assertEqual(session.emitted_events[4].payload.item.type, "AgentMessage")
+        self.assertEqual(session.emitted_events[4].payload.item.item.content[0].text, "done")
+        self.assertEqual(session.emitted_events[5].payload.turn_id, "turn-1")
+        self.assertEqual(session.emitted_events[5].payload.last_agent_message, "done")
         self.assertFalse(session.server_reasoning_included)
         self.assertEqual(session.flush_rollout_count, 1)
         self.assertEqual(result.session_events, tuple(session.emitted_events))
@@ -288,6 +309,59 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(replaced)
         self.assertEqual(session.history, [user_image])
 
+    async def test_in_memory_session_record_conversation_items_truncates_function_output_history(self) -> None:
+        session = InMemoryCodexSession(
+            cwd="C:/work/project",
+            model_info=SimpleNamespace(slug="gpt-test", truncation_policy=TruncationPolicyConfig.bytes(10)),
+        )
+        turn = await session.new_default_turn()
+        item = ResponseItem(
+            type="function_call_output",
+            call_id="call-long",
+            output=FunctionCallOutputPayload.from_text("abcdefghijklmnopqrstuvwxyz", success=True),
+        )
+
+        await session.record_conversation_items(turn, (item,))
+
+        self.assertEqual(session.recorded_batches[-1], (item,))
+        history_output = session.history[-1].output
+        self.assertTrue(history_output.success)
+        self.assertNotEqual(history_output.to_text(), item.output.to_text())
+        self.assertIn("chars truncated", history_output.to_text())
+
+    async def test_in_memory_session_record_conversation_items_truncates_custom_tool_output_history(self) -> None:
+        session = InMemoryCodexSession(cwd="C:/work/project")
+        turn = SimpleNamespace(truncation_policy=TruncationPolicyConfig.bytes(8), model_info=None)
+        image = FunctionCallOutputContentItem.input_image("data:image/png;base64,AAA")
+        item = ResponseItem(
+            type="custom_tool_call_output",
+            call_id="call-custom",
+            name="custom",
+            output=FunctionCallOutputPayload.from_content_items(
+                (
+                    FunctionCallOutputContentItem.input_text("abcdefghijklmnopqrstuvwxyz"),
+                    image,
+                ),
+                success=False,
+            ),
+        )
+
+        await session.record_conversation_items(turn, (item,))
+
+        self.assertEqual(session.recorded_batches[-1], (item,))
+        history_output = session.history[-1].output
+        self.assertFalse(history_output.success)
+        self.assertEqual(history_output.body.content_items[-1], image)
+        self.assertIn("chars truncated", history_output.body.content_items[0].text)
+
+    async def test_in_memory_session_new_default_turn_carries_session_source(self) -> None:
+        source = SessionSource.subagent(SubAgentSource.other_source("guardian"))
+        session = InMemoryCodexSession(cwd="C:/work/project", session_source=source)
+
+        turn = await session.new_default_turn()
+
+        self.assertEqual(turn.session_source, source)
+
     async def test_in_memory_session_input_queue_drains_pending_items_for_active_turn(self) -> None:
         session = InMemoryCodexSession(cwd="C:/work/project")
         await session.inject_if_running(
@@ -303,6 +377,52 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pending[0], UserInput.text_input("queued steer"))
         self.assertEqual(pending[1].content[0].text, "queued item")
         self.assertFalse(await session.input_queue.has_pending_input(session.active_turn))
+
+    async def test_in_memory_session_record_user_prompt_emits_turn_item_events(self) -> None:
+        session = InMemoryCodexSession(cwd="C:/work/project", thread_id="thread-1", turn_id="turn-1")
+        turn = await session.new_default_turn()
+        text_element = TextElement(
+            ByteRange(0, len("hello".encode("utf-8"))),
+            "user-name",
+        )
+        user_input = UserInput.text_input("hello", text_elements=(text_element,))
+
+        await session.record_user_prompt_and_emit_turn_item(turn, (user_input,))
+
+        self.assertEqual(session.history[-1].role, "user")
+        self.assertEqual(session.history[-1].content[0].text, "hello")
+        self.assertEqual(tuple(event.type for event in session.emitted_events), ("item_started", "item_completed"))
+        started = session.emitted_events[0].payload
+        completed = session.emitted_events[1].payload
+        self.assertEqual(started.thread_id, "thread-1")
+        self.assertEqual(started.turn_id, "turn-1")
+        self.assertEqual(completed.thread_id, "thread-1")
+        self.assertEqual(completed.turn_id, "turn-1")
+        self.assertEqual(completed.item.type, "UserMessage")
+        self.assertEqual(completed.item.item.content, (user_input,))
+        legacy = completed.as_legacy_events()[0]
+        self.assertEqual(legacy.type, "user_message")
+        self.assertEqual(legacy.payload.message, "hello")
+        self.assertEqual(legacy.payload.text_elements, (text_element,))
+
+    async def test_in_memory_session_record_response_item_emits_turn_item_events(self) -> None:
+        session = InMemoryCodexSession(cwd="C:/work/project", thread_id="thread-1", turn_id="turn-1")
+        turn = await session.new_default_turn()
+        response_item = ResponseItem.message("assistant", (ContentItem.output_text("done"),), id="msg-1")
+
+        await session.record_response_item_and_emit_turn_item(turn, response_item)
+
+        self.assertEqual(session.history[-1], response_item)
+        self.assertEqual(tuple(event.type for event in session.emitted_events), ("item_started", "item_completed"))
+        started = session.emitted_events[0].payload
+        completed = session.emitted_events[1].payload
+        self.assertEqual(started.thread_id, "thread-1")
+        self.assertEqual(started.turn_id, "turn-1")
+        self.assertEqual(started.item.type, "AgentMessage")
+        self.assertEqual(completed.thread_id, "thread-1")
+        self.assertEqual(completed.turn_id, "turn-1")
+        self.assertEqual(completed.item.type, "AgentMessage")
+        self.assertEqual(completed.item.item.content[0].text, "done")
 
     async def test_in_memory_session_http_sampling_uses_pending_input_followup(self) -> None:
         bodies = []
@@ -712,6 +832,13 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         turn = await session.new_default_turn()
 
         self.assertEqual(turn.config.service_tier, "priority")
+
+    async def test_in_memory_session_turn_config_inherits_allow_login_shell(self) -> None:
+        session = InMemoryCodexSession(cwd="C:/work/project", allow_login_shell=True)
+
+        turn = await session.new_default_turn()
+
+        self.assertTrue(turn.config.permissions.allow_login_shell)
 
     async def test_in_memory_session_update_settings_applies_turn_local_environments_once(self) -> None:
         session = InMemoryCodexSession(
@@ -1150,6 +1277,41 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("<permissions instructions>", developer_sections[0])
         self.assertEqual(developer_sections[1], "<collaboration_mode>Plan before editing.</collaboration_mode>")
 
+    async def test_in_memory_session_initial_context_supports_granular_approval_policy(self) -> None:
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+            },
+        )()
+        granular = GranularApprovalConfig(
+            sandbox_approval=True,
+            rules=False,
+            skill_approval=False,
+            request_permissions=False,
+            mcp_elicitations=True,
+        )
+        session = InMemoryCodexSession(
+            cwd="C:/work/project",
+            model_info=model_info,
+            approval_policy=granular,
+        )
+
+        turn = await session.new_default_turn()
+        await session.record_context_updates_and_set_reference_context_item(turn)
+
+        developer_sections = [content.text for content in session.recorded_batches[0][0].content]
+        self.assertIn("Approval policy is `granular`", developer_sections[0])
+        self.assertIn("`sandbox_approval`", developer_sections[0])
+        self.assertIn("`rules`", developer_sections[0])
+        self.assertNotIn("# request_permissions Tool", developer_sections[0])
+        reference = await session.reference_context_item()
+        self.assertIsNotNone(reference)
+        self.assertEqual(reference.approval_policy, granular)
+
     async def test_in_memory_session_reference_context_jsonifies_collaboration_mode(self) -> None:
         collaboration_mode = SimpleNamespace(
             mode="default",
@@ -1213,6 +1375,39 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("<permissions instructions>", developer_sections[0])
         self.assertEqual(developer_sections[1], "Follow the project policy.")
         self.assertEqual(developer_sections[2], "<collaboration_mode>Plan before editing.</collaboration_mode>")
+
+    async def test_in_memory_session_guardian_source_separates_developer_instructions(self) -> None:
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+            },
+        )()
+        session = InMemoryCodexSession(
+            cwd="C:/work/project",
+            model_info=model_info,
+            developer_instructions="Review shell approvals carefully.",
+            session_source=SessionSource.subagent(SubAgentSource.other_source("guardian")),
+            collaboration_mode=SimpleNamespace(
+                settings=SimpleNamespace(developer_instructions="Plan before editing.")
+            ),
+        )
+
+        turn = await session.new_default_turn()
+        await session.record_context_updates_and_set_reference_context_item(turn)
+
+        self.assertEqual(session.recorded_batches[0][0].role, "developer")
+        self.assertEqual(session.recorded_batches[0][1].role, "user")
+        self.assertEqual(session.recorded_batches[0][2].role, "developer")
+        first_sections = [content.text for content in session.recorded_batches[0][0].content]
+        final_sections = [content.text for content in session.recorded_batches[0][2].content]
+        self.assertIn("<permissions instructions>", first_sections[0])
+        self.assertEqual(first_sections[1], "<collaboration_mode>Plan before editing.</collaboration_mode>")
+        self.assertIn("<environment_context>", session.recorded_batches[0][1].content[0].text)
+        self.assertEqual(final_sections, ["Review shell approvals carefully."])
 
     async def test_in_memory_session_initial_context_includes_realtime_start(self) -> None:
         model_info = type(
@@ -1612,6 +1807,58 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await session.granted_turn_permissions())
         self.assertFalse(session.strict_auto_review_enabled)
 
+    async def test_in_memory_session_request_permissions_auto_denies_when_approval_never(self) -> None:
+        def callback(parent_ctx, call_id, args, cwd, cancel_token):
+            raise AssertionError("approval never should not request permissions from the client")
+
+        session = InMemoryCodexSession(
+            cwd="C:/work/project",
+            approval_policy=AskForApproval.NEVER,
+            request_permissions_callback=callback,
+        )
+        args = RequestPermissionsArgs(
+            RequestPermissionProfile(network=NetworkPermissions(enabled=True))
+        )
+
+        response = await session.request_permissions_for_cwd(None, "call-1", args, session.cwd, None)
+
+        self.assertEqual(
+            response,
+            RequestPermissionsResponse(
+                RequestPermissionProfile(),
+                scope=PermissionGrantScope.TURN,
+                strict_auto_review=False,
+            ),
+        )
+        self.assertIsNone(await session.granted_session_permissions())
+        self.assertIsNone(await session.granted_turn_permissions())
+        self.assertFalse(session.strict_auto_review_enabled)
+
+    async def test_in_memory_session_request_permissions_auto_denies_when_granular_disallows_tool(self) -> None:
+        def callback(parent_ctx, call_id, args, cwd, cancel_token):
+            raise AssertionError("granular policy should not request permissions from the client")
+
+        session = InMemoryCodexSession(
+            cwd="C:/work/project",
+            approval_policy=GranularApprovalConfig(
+                sandbox_approval=True,
+                rules=True,
+                mcp_elicitations=True,
+                request_permissions=False,
+            ),
+            request_permissions_callback=callback,
+        )
+        args = RequestPermissionsArgs(
+            RequestPermissionProfile(network=NetworkPermissions(enabled=True))
+        )
+
+        response = await session.request_permissions_for_cwd(None, "call-1", args, session.cwd, None)
+
+        self.assertEqual(response, RequestPermissionsResponse(RequestPermissionProfile()))
+        self.assertIsNone(await session.granted_session_permissions())
+        self.assertIsNone(await session.granted_turn_permissions())
+        self.assertFalse(session.strict_auto_review_enabled)
+
     async def test_in_memory_session_strict_turn_grant_feeds_orchestrator_plan(self) -> None:
         session = InMemoryCodexSession(cwd="C:/work/project")
         response = RequestPermissionsResponse(
@@ -1908,6 +2155,52 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event.type, "token_count")
         self.assertIsNone(event.payload.info)
         self.assertEqual(event.payload.rate_limits, session.latest_rate_limits)
+
+    async def test_in_memory_session_rate_limits_default_missing_limit_id_to_codex_after_other_bucket(self) -> None:
+        session = InMemoryCodexSession(cwd="C:/work/project")
+        await session.record_rate_limits_info(
+            RateLimitSnapshot(
+                limit_id="codex_other",
+                limit_name="codex_other",
+                primary=RateLimitWindow(used_percent=20.0, window_minutes=60, resets_at=200),
+            )
+        )
+
+        await session.record_rate_limits_info(
+            RateLimitSnapshot(
+                primary=RateLimitWindow(used_percent=30.0, window_minutes=60, resets_at=300),
+            )
+        )
+
+        self.assertEqual(session.latest_rate_limits.limit_id, "codex")
+        self.assertIsNone(session.latest_rate_limits.limit_name)
+        self.assertEqual(session.latest_rate_limits.primary.used_percent, 30.0)
+
+    async def test_in_memory_session_rate_limits_carry_credits_and_plan_type_across_buckets(self) -> None:
+        session = InMemoryCodexSession(cwd="C:/work/project")
+        await session.record_rate_limits_info(
+            RateLimitSnapshot(
+                limit_id="codex",
+                limit_name="codex",
+                primary=RateLimitWindow(used_percent=10.0, window_minutes=60, resets_at=100),
+                credits=CreditsSnapshot(has_credits=True, unlimited=False, balance="50"),
+                plan_type=AccountPlanType.PLUS,
+            )
+        )
+
+        await session.record_rate_limits_info(
+            RateLimitSnapshot(
+                limit_id="codex_other",
+                primary=RateLimitWindow(used_percent=30.0, window_minutes=120, resets_at=200),
+            )
+        )
+
+        self.assertEqual(session.latest_rate_limits.limit_id, "codex_other")
+        self.assertIsNone(session.latest_rate_limits.limit_name)
+        self.assertEqual(session.latest_rate_limits.primary.used_percent, 30.0)
+        self.assertEqual(session.latest_rate_limits.primary.window_minutes, 120)
+        self.assertEqual(session.latest_rate_limits.credits, CreditsSnapshot(True, False, "50"))
+        self.assertEqual(session.latest_rate_limits.plan_type, AccountPlanType.PLUS)
 
 
 if __name__ == "__main__":

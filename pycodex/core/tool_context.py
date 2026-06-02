@@ -425,7 +425,7 @@ class PostToolUseFeedbackOutput:
     def code_mode_result(self, payload: ToolPayload) -> JsonValue:
         method = getattr(self.original, "code_mode_result", None)
         if method is None:
-            return {}
+            return response_input_to_code_mode_result(self.original.to_response_item("", payload))
         return method(payload)
 
 
@@ -535,6 +535,44 @@ def function_tool_response(
     return ResponseInputItem.function_call_output(call_id, output)
 
 
+def response_input_to_code_mode_result(response: ResponseInputItem) -> JsonValue:
+    if not isinstance(response, ResponseInputItem):
+        raise TypeError("response must be ResponseInputItem")
+    if response.type == "message":
+        return _content_items_to_code_mode_result(response.content)
+    if response.type in {"function_call_output", "custom_tool_call_output"}:
+        output = response.output
+        if isinstance(output, FunctionCallOutputPayload):
+            if output.content_items is not None:
+                return _content_items_to_code_mode_result(output.content_items)
+            return output.to_text() or ""
+        return output
+    if response.type == "tool_search_output":
+        return list(response.tools)
+    if response.type == "mcp_tool_call_output":
+        output = response.output
+        to_mapping = getattr(output, "to_mapping", None)
+        if callable(to_mapping):
+            return to_mapping()
+        return output
+    return {}
+
+
+def _content_items_to_code_mode_result(items: Any) -> str:
+    parts: list[str] = []
+    for item in items:
+        item_type = getattr(item, "type", None)
+        if item_type in {"input_text", "output_text"}:
+            text = getattr(item, "text", None)
+            if isinstance(text, str) and text.strip():
+                parts.append(text)
+        elif item_type == "input_image":
+            image_url = getattr(item, "image_url", None)
+            if isinstance(image_url, str) and image_url.strip():
+                parts.append(image_url)
+    return "\n".join(parts)
+
+
 def telemetry_preview(content: str) -> str:
     truncated_slice = take_bytes_at_char_boundary(content, TELEMETRY_PREVIEW_MAX_BYTES)
     truncated_by_bytes = len(truncated_slice.encode("utf-8")) < len(content.encode("utf-8"))
@@ -571,6 +609,22 @@ def truncate_text(content: str, policy: TruncationPolicyConfig) -> str:
         return truncate_middle_chars(content, policy.limit)
     truncated, _original_token_count = truncate_middle_with_token_budget(content, policy.limit)
     return truncated
+
+
+def truncate_function_output_payload(
+    payload: FunctionCallOutputPayload | JsonValue,
+    policy: TruncationPolicyConfig,
+) -> FunctionCallOutputPayload:
+    output = FunctionCallOutputPayload.from_value(payload)
+    if output.content_items is not None:
+        return FunctionCallOutputPayload.from_content_items(
+            truncate_function_output_items_with_policy(output.content_items, policy),
+            output.success,
+        )
+    return FunctionCallOutputPayload.from_text(
+        truncate_text(output.to_text() or "", policy),
+        output.success,
+    )
 
 
 def formatted_truncate_text_content_items_with_policy(
@@ -688,6 +742,12 @@ def _call_tool_result_to_function_payload(result: CallToolResult) -> FunctionCal
     )
 
 
+def call_tool_result_to_function_payload(result: CallToolResult | JsonValue) -> FunctionCallOutputPayload:
+    if not isinstance(result, CallToolResult):
+        result = CallToolResult.from_mapping(result)
+    return _call_tool_result_to_function_payload(result)
+
+
 def _convert_mcp_content_to_items(contents: tuple[JsonValue, ...]) -> tuple[FunctionCallOutputContentItem, ...] | None:
     saw_image = False
     items: list[FunctionCallOutputContentItem] = []
@@ -779,7 +839,10 @@ __all__ = [
     "formatted_truncate_text_content_items_with_policy",
     "formatted_truncate_text",
     "function_tool_response",
+    "call_tool_result_to_function_payload",
+    "response_input_to_code_mode_result",
     "telemetry_preview",
+    "truncate_function_output_payload",
     "truncate_function_output_items_with_policy",
     "truncate_text",
 ]

@@ -8,6 +8,7 @@ from pycodex.core.exec import (
     DEFAULT_EXEC_COMMAND_TIMEOUT_MS,
     EXEC_OUTPUT_MAX_BYTES,
     EXEC_TIMEOUT_EXIT_CODE,
+    EXIT_CODE_SIGNAL_BASE,
     CancellationToken,
     ExecCapturePolicy,
     ExecExpiration,
@@ -24,6 +25,8 @@ from pycodex.core.exec import (
     is_likely_sandbox_denied,
     unified_exec_sandbox_denial_message,
 )
+from pycodex.core.string_utils import approx_token_count
+from pycodex.core.unified_exec import UNIFIED_EXEC_OUTPUT_MAX_TOKENS
 from pycodex.protocol import ExecToolCallOutput, StreamOutput
 
 
@@ -168,6 +171,18 @@ def test_unified_exec_sandbox_denial_message_falls_back_to_exit_code_when_empty(
         unified_exec_sandbox_denial_message("linux_seccomp", True, EXIT_CODE_SIGNAL_BASE + 31, "")
         == "Process exited with code 159"
     )
+
+
+def test_unified_exec_sandbox_denial_message_truncates_long_output():
+    text = "permission denied\n" + ("x" * ((UNIFIED_EXEC_OUTPUT_MAX_TOKENS * 4) + 128))
+
+    message = unified_exec_sandbox_denial_message("linux_seccomp", True, 1, text)
+
+    assert message is not None
+    assert message != text
+    assert message.startswith("Total output lines: 2\n\n")
+    assert "tokens truncated" in message
+    assert approx_token_count(message) < approx_token_count(text)
 
 
 def test_unified_exec_sandbox_denial_message_is_exported_from_core():

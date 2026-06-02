@@ -382,6 +382,40 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
         self.assertEqual(tool_search.to_mapping()["tools"], [{"name": "lookup"}])
         self.assertIsNone(response_input_to_response_item(ResponseInputItem.message("user", (ContentItem.input_text("hi"),))))
 
+    def test_response_input_to_response_item_maps_mcp_output_as_function_payload(self) -> None:
+        response_item = response_input_to_response_item(
+            ResponseInputItem.mcp_tool_call_output(
+                "mcp-call-1",
+                {
+                    "content": [{"type": "text", "text": "ignored"}],
+                    "structuredContent": {"answer": 42},
+                    "isError": False,
+                },
+            )
+        )
+
+        self.assertIsNotNone(response_item)
+        self.assertEqual(response_item.type, "function_call_output")
+        self.assertEqual(response_item.call_id, "mcp-call-1")
+        self.assertEqual(response_item.output.to_text(), '{"answer":42}')
+        self.assertTrue(response_item.output.success)
+
+    def test_response_input_to_response_item_maps_mcp_error_success_flag(self) -> None:
+        response_item = response_input_to_response_item(
+            ResponseInputItem.mcp_tool_call_output(
+                "mcp-call-err",
+                {
+                    "content": [{"type": "text", "text": "failed"}],
+                    "isError": True,
+                },
+            )
+        )
+
+        self.assertIsNotNone(response_item)
+        self.assertEqual(response_item.type, "function_call_output")
+        self.assertFalse(response_item.output.success)
+        self.assertEqual(response_item.output.to_text(), '[{"type":"text","text":"failed"}]')
+
     def test_function_call_error_to_response_input_maps_model_visible_error(self) -> None:
         response = function_call_error_to_response_input(FunctionCallError.respond_to_model("patch rejected"))
 
@@ -402,7 +436,12 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
 
     def test_finalize_non_tool_response_item_strips_hidden_markup_and_records_facts(self) -> None:
         item = assistant_output_text(
-            "visible<oai-mem-citation>hidden</oai-mem-citation>\n"
+            "visible<oai-mem-citation><citation_entries>\n"
+            "MEMORY.md:1-2|note=[x]\n"
+            "</citation_entries>\n"
+            "<rollout_ids>\n"
+            "rollout-1\n"
+            "</rollout_ids></oai-mem-citation>\n"
             "<proposed_plan>\nsecret\n</proposed_plan>\n"
             "done"
         )
@@ -412,7 +451,44 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
         self.assertIsNotNone(finalized)
         self.assertEqual(finalized.turn_item.type, "AgentMessage")
         self.assertEqual(finalized.facts.last_agent_message, "visible\ndone")
+        self.assertIsInstance(finalized.turn_item.item.memory_citation, MemoryCitation)
+        assert finalized.turn_item.item.memory_citation is not None
+        self.assertEqual(finalized.turn_item.item.memory_citation.entries[0].path, "MEMORY.md")
+        self.assertEqual(finalized.turn_item.item.memory_citation.rollout_ids, ("rollout-1",))
+        self.assertIs(finalized.facts.memory_citation, finalized.turn_item.item.memory_citation)
         self.assertTrue(finalized.facts.defers_mailbox_delivery_to_next_turn)
+
+    def test_finalize_non_tool_response_item_preserves_existing_memory_citation(self) -> None:
+        existing = MemoryCitation(rollout_ids=("existing-rollout",))
+
+        class Contributor:
+            def contribute(self, _thread_extension_data, _turn_store, item):
+                agent_message = item.item
+                return TurnItem.agent_message(
+                    AgentMessageItem(
+                        id=agent_message.id,
+                        content=agent_message.content,
+                        phase=agent_message.phase,
+                        memory_citation=existing,
+                    )
+                )
+
+        item = assistant_output_text(
+            "visible<oai-mem-citation><rollout_ids>\nparsed-rollout\n</rollout_ids></oai-mem-citation>"
+        )
+
+        turn_item = _run_async(
+            handle_non_tool_response_item_with_contributors(
+                SimpleNamespace(turn_item_contributors=lambda: (Contributor(),)),
+                SimpleNamespace(),
+                None,
+                item,
+                False,
+            )
+        )
+
+        self.assertIsNotNone(turn_item)
+        self.assertIs(turn_item.item.memory_citation, existing)
 
     def test_finalize_non_tool_response_item_keeps_commentary_from_deferring_mailbox(self) -> None:
         finalized = finalize_non_tool_response_item(assistant_output_text("working", MessagePhase.COMMENTARY), False)
@@ -563,6 +639,13 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
                 self.recorded = []
                 self.lifecycle = []
                 self.conversation_id = "thread-1"
+                self.active_turn = "active-1"
+                self.input_queue = SimpleNamespace(accepted=[])
+
+                async def accept_mailbox_delivery_for_current_turn(active_turn, sub_id):
+                    self.input_queue.accepted.append((active_turn, sub_id))
+
+                self.input_queue.accept_mailbox_delivery_for_current_turn = accept_mailbox_delivery_for_current_turn
 
             async def record_conversation_items(self, turn_context, items):
                 self.recorded.extend(items)
@@ -575,7 +658,7 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
         session = Session()
         ctx = HandleOutputCtx(
             session,
-            SimpleNamespace(collaboration_mode=SimpleNamespace(mode="default")),
+            SimpleNamespace(collaboration_mode=SimpleNamespace(mode="default"), sub_id="sub-1"),
             tool_runtime=runtime,
             cancellation_token=cancellation,
         )
@@ -588,6 +671,7 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
         self.assertEqual(session.lifecycle[0].tool_name, "shell")
         self.assertEqual(session.lifecycle[0].payload_preview, "{}")
         self.assertEqual(session.lifecycle[0].thread_id, "thread-1")
+        self.assertEqual(session.input_queue.accepted, [("active-1", "sub-1")])
 
     def test_tool_call_lifecycle_plan_rejects_non_tool_call(self) -> None:
         with self.assertRaisesRegex(TypeError, "call must be a ToolCall"):
@@ -632,6 +716,13 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
         class Session:
             def __init__(self):
                 self.recorded = []
+                self.active_turn = "active-1"
+                self.input_queue = SimpleNamespace(accepted=[])
+
+                async def accept_mailbox_delivery_for_current_turn(active_turn, sub_id):
+                    self.input_queue.accepted.append((active_turn, sub_id))
+
+                self.input_queue.accept_mailbox_delivery_for_current_turn = accept_mailbox_delivery_for_current_turn
 
             async def record_conversation_items(self, turn_context, items):
                 self.recorded.extend(items)
@@ -642,14 +733,17 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
             tool_router.ToolRouter.build_tool_call = staticmethod(
                 lambda item: (_ for _ in ()).throw(tool_router.FunctionCallError.respond_to_model("unsupported"))
             )
-            ctx = HandleOutputCtx(session, SimpleNamespace(collaboration_mode=SimpleNamespace(mode="default")))
+            ctx = HandleOutputCtx(session, SimpleNamespace(collaboration_mode=SimpleNamespace(mode="default"), sub_id="sub-1"))
 
-            result = _run_async(handle_output_item_done(ctx, assistant_output_text("tool?"), None))
+            original_item = assistant_output_text("tool?")
+            result = _run_async(handle_output_item_done(ctx, original_item, None))
         finally:
             tool_router.ToolRouter.build_tool_call = original
 
         self.assertTrue(result.needs_follow_up)
+        self.assertEqual(session.recorded[0], original_item)
         self.assertEqual(session.recorded[-1].output.body.text, "unsupported")
+        self.assertEqual(session.input_queue.accepted, [])
 
     def test_handle_output_item_done_router_fatal_error_raises_without_model_response(self) -> None:
         from pycodex.core import tool_router
@@ -925,7 +1019,7 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
             SamplingOutputTextDeltaPlan(item_id="rs-1", delta="thinking", raw_content_delta="thinking"),
         )
 
-    def test_sampling_output_text_delta_plan_skips_non_streaming_or_missing_active_item(self) -> None:
+    def test_sampling_output_text_delta_plan_skips_non_streaming_and_panics_without_active_item(self) -> None:
         active = TurnItem.agent_message(
             AgentMessageItem(id="msg-1", content=(AgentMessageContent.text_content(""),))
         )
@@ -938,14 +1032,13 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
                 plan_mode=False,
             )
         )
-        self.assertIsNone(
+        with self.assertRaisesRegex(RuntimeError, "OutputTextDelta without active item"):
             sampling_output_text_delta_plan(
                 None,
                 "hidden",
                 active_item_is_streaming_to_client=True,
                 plan_mode=False,
             )
-        )
 
     def test_sampling_output_text_delta_apply_plan_streams_agent_message_delta(self) -> None:
         text_delta_plan = SamplingOutputTextDeltaPlan(
@@ -1105,7 +1198,7 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
             ),
         )
 
-    def test_sampling_reasoning_delta_plans_skip_when_not_streaming(self) -> None:
+    def test_sampling_reasoning_delta_plans_skip_when_not_streaming_and_panic_without_active_item(self) -> None:
         active = handle_non_tool_response_item(ResponseItem.reasoning(id="rs-1", content=()), False)
 
         self.assertIsNone(
@@ -1116,14 +1209,26 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
                 active_item_is_streaming_to_client=False,
             )
         )
-        self.assertIsNone(
+        with self.assertRaisesRegex(RuntimeError, "ReasoningRawContentDelta without active item"):
             sampling_reasoning_content_delta_plan(
                 None,
                 delta="raw",
                 content_index=0,
                 active_item_is_streaming_to_client=True,
             )
-        )
+        with self.assertRaisesRegex(RuntimeError, "ReasoningSummaryDelta without active item"):
+            sampling_reasoning_summary_delta_plan(
+                None,
+                delta="summary",
+                summary_index=0,
+                active_item_is_streaming_to_client=True,
+            )
+        with self.assertRaisesRegex(RuntimeError, "ReasoningSummaryPartAdded without active item"):
+            sampling_reasoning_summary_part_added_plan(
+                None,
+                summary_index=0,
+                active_item_is_streaming_to_client=True,
+            )
 
         with self.assertRaisesRegex(TypeError, "active_item must be a TurnItem"):
             sampling_reasoning_summary_part_added_plan(
@@ -1695,6 +1800,13 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
             tool_delta_without_call_id.tool_call_input_delta_plan.call_id,
             "call-1",
         )
+
+        function_delta_without_consumer = sampling_stream_event_dispatch_plan(
+            "response.function_call_arguments.delta",
+            {"item_id": "func-1", "call_id": "call-func", "delta": "{\"cmd\""},
+        )
+        self.assertEqual(function_delta_without_consumer.event_type, "tool_call_input_delta")
+        self.assertIsNone(function_delta_without_consumer.tool_call_input_delta_plan)
 
         response_named_reasoning_delta = sampling_stream_event_dispatch_plan(
             "response.reasoning_text.delta",

@@ -12,15 +12,15 @@ import asyncio
 import contextlib
 import inspect
 import threading
-import time
 from dataclasses import dataclass
+from time import monotonic as _monotonic
 from typing import Any
 
 from pycodex.core.network_approval import CancellationToken
-from pycodex.core.tool_context import AbortedToolOutput, ToolPayload
-from pycodex.core.tool_lifecycle import notify_tool_aborted_parts
+from pycodex.core.tool_context import AbortedToolOutput, ToolPayload, response_input_to_code_mode_result
+from pycodex.core.tool_lifecycle import lifecycle_store_context, notify_tool_aborted_parts
 from pycodex.core.tool_registry import PostToolUsePayload, ToolCallSource
-from pycodex.core.tool_router import FunctionCallError, ToolCall, ToolRouter
+from pycodex.core.tool_router import FunctionCallError, ToolCall, ToolPostHookTypeError, ToolRouter
 from pycodex.protocol import FunctionCallOutputPayload, ResponseInputItem
 
 JsonValue = Any
@@ -56,7 +56,7 @@ class ToolCallResult:
     def code_mode_result(self) -> JsonValue:
         method = getattr(self.result, "code_mode_result", None)
         if method is None:
-            return {}
+            return response_input_to_code_mode_result(self.to_response_item())
         return method(self.payload)
 
 
@@ -186,7 +186,7 @@ class ToolCallRuntime:
         if pre_cancelled is not None:
             return pre_cancelled
         supports_parallel = self.router.tool_supports_parallel(call)
-        started = time.monotonic()
+        started = _monotonic()
 
         async def run_dispatch() -> ToolCallResult:
             async with self._parallel_execution.acquire(supports_parallel):
@@ -202,7 +202,20 @@ class ToolCallRuntime:
             cancel_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await cancel_task
-            result = await task
+            if (
+                token.is_cancelled()
+                and self.decision_for_call(call).waits_for_runtime_cancellation
+                and not terminal_outcome.load()
+            ):
+                with contextlib.suppress(asyncio.CancelledError, FunctionCallError):
+                    await task
+                result = aborted_tool_result(
+                    call,
+                    _runtime_abort_elapsed_seconds(_runtime_elapsed_seconds(started, elapsed_seconds)),
+                )
+                await self.notify_aborted(call, source=source, **stores)
+            else:
+                result = await task
         else:
             result = await self._handle_inflight_cancellation(
                 call,
@@ -284,6 +297,8 @@ class ToolCallRuntime:
             if getattr(err, "kind", None) == "fatal":
                 raise RuntimeError(err.message) from err
             return failure_response(call, err)
+        except ToolPostHookTypeError as err:
+            raise RuntimeError(str(err)) from err
         return result.to_response_item()
 
     async def _dispatch_router_tool_call(
@@ -299,16 +314,17 @@ class ToolCallRuntime:
             raise FunctionCallError.respond_to_model(f"unsupported tool call: {call.tool_name}")
         dispatch_stores = dict(stores)
         dispatch_stores.pop("lifecycle_contributors", None)
-        result = dispatch(
-            call,
-            source=source,
-            cancellation_token=cancellation_token,
-            lifecycle_contributors=self.lifecycle_contributors,
-            terminal_outcome_reached=terminal_outcome_reached,
-            **dispatch_stores,
-        )
-        if inspect.isawaitable(result):
-            result = await result
+        with lifecycle_store_context(dispatch_stores):
+            result = dispatch(
+                call,
+                source=source,
+                cancellation_token=cancellation_token,
+                lifecycle_contributors=self.lifecycle_contributors,
+                terminal_outcome_reached=terminal_outcome_reached,
+                **dispatch_stores,
+            )
+            if inspect.isawaitable(result):
+                result = await result
         return result
 
 
@@ -359,7 +375,7 @@ def _runtime_abort_elapsed_seconds(elapsed_seconds: float) -> float:
 def _runtime_elapsed_seconds(started: float, explicit_elapsed_seconds: float | None) -> float:
     if explicit_elapsed_seconds is not None:
         return float(explicit_elapsed_seconds)
-    return time.monotonic() - started
+    return _monotonic() - started
 
 
 def failure_response(call: ToolCall, err: FunctionCallError | Exception | str) -> ResponseInputItem:

@@ -16,7 +16,7 @@ from pycodex.core import (
     data_url_for_image,
     parse_view_image_arguments,
 )
-from pycodex.protocol import DEFAULT_IMAGE_DETAIL, ImageDetail, ToolName
+from pycodex.protocol import DEFAULT_IMAGE_DETAIL, ImageDetail, SearchToolCallParams, ToolName
 
 
 class ViewImageHandlerTests(unittest.TestCase):
@@ -47,6 +47,14 @@ class ViewImageHandlerTests(unittest.TestCase):
         with self.assertRaises(FunctionCallError) as bad:
             parse_view_image_arguments(json.dumps({"path": "image.png", "detail": "low"}))
         self.assertIn("only supports `high` or `original`", str(bad.exception))
+
+        with self.assertRaises(FunctionCallError) as bad_json:
+            parse_view_image_arguments("{")
+        self.assertIn("failed to parse function arguments:", str(bad_json.exception))
+
+        with self.assertRaises(FunctionCallError) as missing_path:
+            parse_view_image_arguments("{}")
+        self.assertIn("failed to parse function arguments:", str(missing_path.exception))
 
     def test_view_image_output_shapes(self) -> None:
         output = ViewImageOutput("data:image/png;base64,AAA", DEFAULT_IMAGE_DETAIL)
@@ -87,6 +95,7 @@ class ViewImageHandlerTests(unittest.TestCase):
             self.assertEqual(handler.tool_name(), ToolName.plain("view_image"))
             self.assertTrue(handler.supports_parallel_tool_calls())
             self.assertTrue(handler.matches_kind(ToolPayload.function("{}")))
+            self.assertFalse(handler.matches_kind(ToolPayload.tool_search(SearchToolCallParams("image"))))
             self.assertTrue(output.image_url.startswith("data:image/png;base64,"))
             self.assertEqual(output.image_detail, ImageDetail.ORIGINAL)
 

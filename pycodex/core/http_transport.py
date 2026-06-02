@@ -8,7 +8,7 @@ import os
 import re
 import inspect
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
@@ -20,6 +20,7 @@ from pycodex.core.client import (
     ModelClient,
     ModelClientSession,
     RESPONSES_ENDPOINT,
+    X_CODEX_TURN_STATE_HEADER,
     build_responses_headers,
     build_session_headers,
     insert_header_if_valid,
@@ -53,6 +54,7 @@ class HttpTransportConfig:
     endpoint: str
     headers: Mapping[str, str] | None = None
     timeout: float | None = None
+    turn_state: Any = None
 
 
 def http_transport_config_from_provider(
@@ -99,7 +101,7 @@ def send_prepared_http_sampling_request(
 
     json_request = _to_json_compatible(prepared.prepared_request)
     body = json.dumps(json_request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    headers = {"Content-Type": "application/json", **dict(config.headers or {})}
+    headers = _request_headers_for_config(config)
     request = Request(config.endpoint, data=body, headers=headers, method="POST")
     open_fn = urlopen if opener is None else opener
     try:
@@ -111,6 +113,7 @@ def send_prepared_http_sampling_request(
     except URLError as exc:
         raise _codex_err_from_url_error(exc) from exc
     headers = _response_headers(response)
+    _record_turn_state_from_headers(config.turn_state, headers)
     with response:
         try:
             payload = response.read()
@@ -141,6 +144,28 @@ def send_prepared_http_sampling_request(
     )
 
 
+def _request_headers_for_config(config: HttpTransportConfig) -> dict[str, str]:
+    headers = {"Content-Type": "application/json", **dict(config.headers or {})}
+    turn_state = getattr(config, "turn_state", None)
+    getter = getattr(turn_state, "get", None)
+    if callable(getter):
+        state = getter()
+        if isinstance(state, str):
+            insert_header_if_valid(headers, X_CODEX_TURN_STATE_HEADER, state)
+    return headers
+
+
+def _record_turn_state_from_headers(turn_state: Any, headers: Any) -> None:
+    if turn_state is None:
+        return
+    value = _header_value_allow_empty(headers, X_CODEX_TURN_STATE_HEADER)
+    if value is None:
+        return
+    setter = getattr(turn_state, "set", None)
+    if callable(setter):
+        setter(value)
+
+
 def _prepared_sampling_result_from_sse(
     prepared: PreparedSamplingRequest,
     payload: bytes,
@@ -152,20 +177,49 @@ def _prepared_sampling_result_from_sse(
     except UnicodeDecodeError as exc:
         raise CodexErr.response_stream_failed(ResponseStreamFailed(str(exc))) from exc
     parsed = _parse_responses_sse_stream(text)
+    header_rate_limits = _parse_all_rate_limits(headers)
+    header_server_model = _non_empty_header(headers, OPENAI_MODEL_HEADER)
+    header_events = _response_header_stream_events(
+        header_server_model=header_server_model,
+        rate_limits=header_rate_limits,
+        models_etag=_non_empty_header(headers, X_MODELS_ETAG_HEADER),
+        server_reasoning_included=_server_reasoning_included(headers),
+    )
+    parsed_stream_events = tuple(parsed.get("stream_events") or ())
+    parsed_server_models = tuple(parsed.get("server_models") or ())
     return PreparedSamplingResult(
         prepared_request=prepared.prepared_request,
         response_items=parsed["response_items"],
         raw_result=parsed["raw_result"],
         mode=prepared.mode,
-        rate_limits=_parse_all_rate_limits(headers),
-        server_model=parsed.get("server_model") or _non_empty_header(headers, OPENAI_MODEL_HEADER),
-        server_models=tuple(parsed.get("server_models") or _single_optional(_non_empty_header(headers, OPENAI_MODEL_HEADER))),
+        rate_limits=header_rate_limits,
+        server_model=parsed.get("server_model") or header_server_model,
+        server_models=tuple(_single_optional(header_server_model)) + parsed_server_models,
         server_reasoning_included=_server_reasoning_included(headers),
         models_etag=_non_empty_header(headers, X_MODELS_ETAG_HEADER),
         model_verifications=tuple(parsed.get("model_verifications") or ()),
         end_turn=parsed.get("end_turn") if isinstance(parsed.get("end_turn"), bool) else None,
-        stream_events=tuple(parsed.get("stream_events") or ()),
+        stream_events=header_events + parsed_stream_events,
     )
+
+
+def _response_header_stream_events(
+    *,
+    header_server_model: str | None,
+    rate_limits: tuple[RateLimitSnapshot, ...],
+    models_etag: str | None,
+    server_reasoning_included: bool | None,
+) -> tuple[dict[str, Any], ...]:
+    events: list[dict[str, Any]] = []
+    if header_server_model is not None:
+        events.append({"type": "server_model", "server_model": header_server_model})
+    for snapshot in rate_limits:
+        events.append({"type": "rate_limits", "rate_limits": snapshot})
+    if models_etag is not None:
+        events.append({"type": "models_etag", "models_etag": models_etag})
+    if server_reasoning_included is not None:
+        events.append({"type": "server_reasoning_included", "server_reasoning_included": server_reasoning_included})
+    return tuple(events)
 
 
 def _parse_responses_sse_stream(text: str) -> dict[str, Any]:
@@ -181,16 +235,29 @@ def _parse_responses_sse_stream(text: str) -> dict[str, Any]:
     stream_events: list[dict[str, Any]] = []
     active_delta_message: dict[str, Any] | None = None
     active_delta_index: int | None = None
+    active_delta_tool_call: dict[str, Any] | None = None
+    active_delta_tool_call_index: int | None = None
+    pending_stream_error: CodexErr | None = None
     for event in events:
-        response_event = _response_event_from_sse_event(event)
-        if response_event is not None:
-            stream_events.append(response_event)
         server_model = _sse_response_model(event)
         if server_model is not None and (not server_models or server_models[-1] != server_model):
             server_models.append(server_model)
+            stream_events.append({"type": "server_model", "server_model": server_model})
+        new_model_verifications: list[ModelVerification] = []
         for verification in _sse_model_verifications(event):
             if verification not in model_verifications:
                 model_verifications.append(verification)
+                new_model_verifications.append(verification)
+        if new_model_verifications:
+            stream_events.append(
+                {
+                    "type": "model_verifications",
+                    "model_verifications": tuple(new_model_verifications),
+                }
+            )
+        response_event = _response_event_from_sse_event(event)
+        if response_event is not None:
+            stream_events.append(response_event)
         event_type = event.get("type")
         if event_type == "response.output_item.done":
             item = event.get("item") or event.get("output_item")
@@ -204,15 +271,25 @@ def _parse_responses_sse_stream(text: str) -> dict[str, Any]:
                     and _sse_done_replaces_active_delta(done_item, active_delta_message)
                 ):
                     response_items[active_delta_index] = done_item
+                elif (
+                    active_delta_tool_call is not None
+                    and active_delta_tool_call_index is not None
+                    and _sse_done_replaces_active_tool_call(done_item, active_delta_tool_call)
+                ):
+                    response_items[active_delta_tool_call_index] = done_item
                 else:
                     response_items.append(done_item)
                 active_delta_message = None
                 active_delta_index = None
+                active_delta_tool_call = None
+                active_delta_tool_call_index = None
         elif event_type == "response.output_item.added":
             item = event.get("item") or event.get("output_item")
             active_delta_index = None
+            active_delta_tool_call_index = None
             added_item = _sse_response_item_or_none(item)
             active_delta_message = _sse_delta_message_seed(item) if added_item is not None else None
+            active_delta_tool_call = _sse_delta_tool_call_seed(item) if added_item is not None else None
             if added_item is not None and active_delta_message is not None:
                 response_items.append(
                     ResponseItem.message(
@@ -222,6 +299,9 @@ def _parse_responses_sse_stream(text: str) -> dict[str, Any]:
                     )
                 )
                 active_delta_index = len(response_items) - 1
+            elif added_item is not None and active_delta_tool_call is not None:
+                response_items.append(_sse_tool_call_item_from_delta(active_delta_tool_call))
+                active_delta_tool_call_index = len(response_items) - 1
         elif event_type == "response.output_text.delta":
             delta = event.get("delta")
             if isinstance(delta, str) and active_delta_message is not None and active_delta_index is not None:
@@ -231,22 +311,34 @@ def _parse_responses_sse_stream(text: str) -> dict[str, Any]:
                     (ContentItem.output_text(str(active_delta_message.get("text") or "")),),
                     id=active_delta_message.get("id") if isinstance(active_delta_message.get("id"), str) else None,
                 )
+        elif event_type in {"response.function_call_arguments.delta", "response.custom_tool_call_input.delta"}:
+            delta = event.get("delta")
+            if (
+                isinstance(delta, str)
+                and active_delta_tool_call is not None
+                and active_delta_tool_call_index is not None
+                and _sse_tool_delta_applies(event, active_delta_tool_call, event_type)
+            ):
+                active_delta_tool_call["text"] = str(active_delta_tool_call.get("text") or "") + delta
+                response_items[active_delta_tool_call_index] = _sse_tool_call_item_from_delta(active_delta_tool_call)
         elif event_type == "response.completed":
             response = event.get("response")
             if isinstance(response, Mapping):
                 _validate_sse_completed_response(response)
                 completed_event = event
                 completed_response = response
+                break
         elif event_type == "response.incomplete":
-            raise CodexErr.stream(_sse_incomplete_message(event))
+            pending_stream_error = CodexErr.stream(_sse_incomplete_message(event))
         elif event_type == "response.failed":
             mapped = _codex_err_from_responses_payload(event)
             if mapped is None:
                 response = event.get("response")
                 mapped = _codex_err_from_responses_payload(response) if isinstance(response, Mapping) else None
             if mapped is not None:
-                raise mapped
-            raise CodexErr.stream(_sse_failed_message(event))
+                pending_stream_error = mapped
+            else:
+                pending_stream_error = CodexErr.stream(_sse_failed_message(event))
         elif event_type in {"error", "response.error"}:
             mapped = _codex_err_from_responses_payload(event)
             if mapped is not None:
@@ -254,6 +346,8 @@ def _parse_responses_sse_stream(text: str) -> dict[str, Any]:
             raise CodexErr.response_stream_failed(ResponseStreamFailed(_sse_error_message(event)))
 
     if completed_response is None:
+        if pending_stream_error is not None:
+            raise pending_stream_error
         raise CodexErr.response_stream_failed(ResponseStreamFailed("stream closed before response.completed"))
 
     if not response_items:
@@ -299,6 +393,14 @@ def _response_event_from_sse_event(event: Mapping[str, Any]) -> dict[str, Any] |
         item_id = event.get("item_id") or event.get("call_id")
         if isinstance(delta, str) and isinstance(item_id, str):
             result: dict[str, Any] = {"type": "tool_call_input_delta", "item_id": item_id, "delta": delta}
+            if isinstance(event.get("call_id"), str):
+                result["call_id"] = event["call_id"]
+            return result
+    if event_type == "response.function_call_arguments.delta":
+        delta = event.get("delta")
+        item_id = event.get("item_id") or event.get("call_id")
+        if isinstance(delta, str) and isinstance(item_id, str):
+            result = {"type": "tool_call_input_delta", "item_id": item_id, "delta": delta}
             if isinstance(event.get("call_id"), str):
                 result["call_id"] = event["call_id"]
             return result
@@ -399,6 +501,54 @@ def _sse_delta_message_seed(item: Any) -> dict[str, Any] | None:
     }
 
 
+def _sse_delta_tool_call_seed(item: Any) -> dict[str, Any] | None:
+    if not isinstance(item, Mapping):
+        return None
+    item_type = item.get("type")
+    if item_type == "function_call":
+        name = item.get("name")
+        call_id = item.get("call_id")
+        if not isinstance(name, str) or not isinstance(call_id, str):
+            return None
+        arguments = item.get("arguments")
+        return {
+            "id": item.get("id"),
+            "type": "function_call",
+            "call_id": call_id,
+            "name": name,
+            "namespace": item.get("namespace"),
+            "text": arguments if isinstance(arguments, str) else "",
+        }
+    if item_type == "custom_tool_call":
+        name = item.get("name")
+        call_id = item.get("call_id")
+        if not isinstance(name, str) or not isinstance(call_id, str):
+            return None
+        input_text = item.get("input")
+        return {
+            "id": item.get("id"),
+            "type": "custom_tool_call",
+            "call_id": call_id,
+            "name": name,
+            "status": item.get("status"),
+            "text": input_text if isinstance(input_text, str) else "",
+        }
+    return None
+
+
+def _sse_tool_call_item_from_delta(state: Mapping[str, Any]) -> ResponseItem:
+    item_type = state.get("type")
+    item_id = state.get("id") if isinstance(state.get("id"), str) else None
+    call_id = str(state.get("call_id"))
+    name = str(state.get("name"))
+    text = str(state.get("text") or "")
+    if item_type == "function_call":
+        namespace = state.get("namespace") if isinstance(state.get("namespace"), str) else None
+        return ResponseItem.function_call(name, text, call_id, namespace=namespace, id=item_id)
+    status = state.get("status") if isinstance(state.get("status"), str) else None
+    return ResponseItem.custom_tool_call(name, text, call_id, status=status, id=item_id)
+
+
 def _sse_response_item_or_none(item: Any) -> ResponseItem | None:
     if not isinstance(item, Mapping):
         return None
@@ -413,6 +563,38 @@ def _sse_done_replaces_active_delta(done_item: ResponseItem, active_delta_messag
     if isinstance(active_id, str):
         return done_item.id == active_id
     return done_item.id is None and done_item.type == "message" and done_item.role == active_delta_message.get("role")
+
+
+def _sse_done_replaces_active_tool_call(done_item: ResponseItem, active_delta_tool_call: Mapping[str, Any]) -> bool:
+    active_id = active_delta_tool_call.get("id")
+    if isinstance(active_id, str):
+        return done_item.id == active_id
+    return (
+        done_item.id is None
+        and done_item.type == active_delta_tool_call.get("type")
+        and done_item.call_id == active_delta_tool_call.get("call_id")
+    )
+
+
+def _sse_tool_delta_applies(
+    event: Mapping[str, Any],
+    active_delta_tool_call: Mapping[str, Any],
+    event_type: str,
+) -> bool:
+    expected_type = (
+        "function_call"
+        if event_type == "response.function_call_arguments.delta"
+        else "custom_tool_call"
+    )
+    if active_delta_tool_call.get("type") != expected_type:
+        return False
+    item_id = event.get("item_id")
+    if isinstance(item_id, str) and isinstance(active_delta_tool_call.get("id"), str):
+        return item_id == active_delta_tool_call.get("id")
+    call_id = event.get("call_id")
+    if isinstance(call_id, str):
+        return call_id == active_delta_tool_call.get("call_id")
+    return True
 
 
 def _responses_output_is_empty(output: Any) -> bool:
@@ -590,6 +772,13 @@ def _response_headers(response: Any) -> Any:
 
 
 def _header_value(headers: Any, name: str) -> str | None:
+    value = _header_value_allow_empty(headers, name)
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
+def _header_value_allow_empty(headers: Any, name: str) -> str | None:
     if headers is None:
         return None
     getter = getattr(headers, "get", None)
@@ -599,13 +788,13 @@ def _header_value(headers: Any, name: str) -> str | None:
             value = getter(name.lower())
         if value is None:
             value = getter(name.upper())
-        if isinstance(value, str) and value:
+        if isinstance(value, str):
             return value
     items = getattr(headers, "items", None)
     if callable(items):
         name_lower = name.lower()
         for key, value in items():
-            if isinstance(key, str) and key.lower() == name_lower and isinstance(value, str) and value:
+            if isinstance(key, str) and key.lower() == name_lower and isinstance(value, str):
                 return value
     return None
 
@@ -982,8 +1171,12 @@ def model_client_http_sampler(
 ) -> SamplerFn:
     """Create a sampler using ``ModelClientSession`` plus stdlib HTTP."""
 
+    effective_config = config
+    if getattr(effective_config, "turn_state", None) is None:
+        effective_config = replace(effective_config, turn_state=model_session.turn_state)
+
     async def sampler(sampling_request):
-        transport = lambda prepared: send_prepared_http_sampling_request(prepared, config, opener=opener)
+        transport = lambda prepared: send_prepared_http_sampling_request(prepared, effective_config, opener=opener)
         if max_retries is None:
             return await sample_with_model_client_session(sampling_request, model_session, transport)
         retry_decision_callback = _http_sampling_retry_decision_callback(
@@ -1112,7 +1305,7 @@ async def run_user_turn_http_sampling_from_session(
     environments: tuple[Any, ...] | list[Any] | None = None,
     turn_metadata_header: str | None = None,
     output_schema: Any = None,
-    output_schema_strict: bool = True,
+    output_schema_strict: bool | None = None,
     max_tool_followups: int | None = None,
     sampling_max_retries: int | None = None,
     retry_sleep: Any = None,

@@ -1,6 +1,9 @@
 import json
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
 
+from pycodex.core.exec import ExecCapturePolicy
 from pycodex.core.function_tool import FunctionCallError
 from pycodex.core.hook_names import HookToolName
 from pycodex.core.shell import Shell, ShellType
@@ -14,7 +17,7 @@ from pycodex.core.shell_handler import (
 )
 from pycodex.core.tool_context import FunctionToolOutput, ToolPayload
 from pycodex.core.tool_registry import ToolInvocation
-from pycodex.protocol import SandboxPermissions, ToolName
+from pycodex.protocol import CODEX_THREAD_ID_ENV_VAR, SandboxPermissions, ShellEnvironmentPolicy, ShellEnvironmentPolicyInherit, ThreadId, ToolName
 
 
 class CoreShellHandlerTests(unittest.TestCase):
@@ -40,6 +43,50 @@ class CoreShellHandlerTests(unittest.TestCase):
     def test_base_command_uses_shell_exec_args(self) -> None:
         command = ShellCommandHandler.base_command(Shell(ShellType.BASH, "/bin/bash"), "echo hi", True)
         self.assertEqual(command, ("/bin/bash", "-lc", "echo hi"))
+
+    def test_to_exec_params_uses_session_shell_and_turn_context(self) -> None:
+        thread_id = ThreadId.new()
+        policy = ShellEnvironmentPolicy(
+            inherit=ShellEnvironmentPolicyInherit.NONE,
+            set_values={"ONLY_VAR": "visible"},
+        )
+        turn = SimpleNamespace(
+            cwd=Path("/repo"),
+            shell_environment_policy=policy,
+            network="net",
+            windows_sandbox_level="restricted",
+            config=SimpleNamespace(
+                permissions=SimpleNamespace(windows_sandbox_private_desktop=True)
+            ),
+        )
+        params = ShellCommandToolCallParams(
+            command="echo hello",
+            workdir="subdir",
+            timeout_ms=1234,
+            sandbox_permissions=SandboxPermissions.REQUIRE_ESCALATED,
+            justification="because tests",
+        )
+
+        exec_params = ShellCommandHandler.to_exec_params(
+            params,
+            SimpleNamespace(user_shell=lambda: Shell(ShellType.BASH, "/bin/bash")),
+            turn,
+            thread_id,
+            allow_login_shell=True,
+        )
+
+        self.assertEqual(exec_params.command, ("/bin/bash", "-lc", "echo hello"))
+        self.assertEqual(exec_params.cwd, Path("/repo/subdir"))
+        self.assertEqual(exec_params.expiration.timeout_ms(), 1234)
+        self.assertEqual(exec_params.capture_policy, ExecCapturePolicy.SHELL_TOOL)
+        self.assertEqual(exec_params.env["ONLY_VAR"], "visible")
+        self.assertEqual(exec_params.env[CODEX_THREAD_ID_ENV_VAR], thread_id.to_json())
+        self.assertEqual(exec_params.network, "net")
+        self.assertEqual(exec_params.sandbox_permissions, SandboxPermissions.REQUIRE_ESCALATED)
+        self.assertEqual(exec_params.windows_sandbox_level, "restricted")
+        self.assertTrue(exec_params.windows_sandbox_private_desktop)
+        self.assertEqual(exec_params.justification, "because tests")
+        self.assertIsNone(exec_params.arg0)
 
     def test_handler_backend_and_spec(self) -> None:
         handler = ShellCommandHandler(

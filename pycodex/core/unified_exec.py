@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import os
 import random
+import subprocess
+import threading
+import time
 from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from pycodex.protocol import ExecToolCallOutput
 
@@ -265,6 +269,361 @@ class UnifiedExecError(Exception):
         return self.kind
 
 
+class _ManagedUnifiedExecSession:
+    """Small subprocess-backed session used by the Python core manager."""
+
+    def __init__(
+        self,
+        process: subprocess.Popen[bytes],
+        *,
+        process_id: int,
+        hook_command: str,
+        tty: bool,
+        truncation_policy: Any,
+    ) -> None:
+        self.process = process
+        self.process_id = process_id
+        self.hook_command = hook_command
+        self.tty = tty
+        self.truncation_policy = truncation_policy
+        self._buffer = HeadTailBuffer()
+        self._condition = threading.Condition()
+        self._reader = threading.Thread(target=self._read_output, daemon=True)
+        self._reader.start()
+
+    def _read_output(self) -> None:
+        stream = self.process.stdout
+        if stream is None:
+            with self._condition:
+                self._condition.notify_all()
+            return
+        try:
+            while True:
+                chunk = stream.read(1)
+                if not chunk:
+                    break
+                with self._condition:
+                    self._buffer.push_chunk(chunk)
+                    self._condition.notify_all()
+        finally:
+            with self._condition:
+                self._condition.notify_all()
+
+    def has_exited(self) -> bool:
+        return self.process.poll() is not None
+
+    def exit_code(self) -> int | None:
+        return self.process.poll()
+
+    def terminate(self) -> None:
+        if self.has_exited():
+            return
+        self.process.terminate()
+
+    def close(self) -> None:
+        if not self.has_exited():
+            return
+        for stream in (self.process.stdin, self.process.stdout):
+            if stream is not None and not stream.closed:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+
+    def write(self, chars: str) -> None:
+        if not self.tty:
+            raise UnifiedExecError.stdin_closed()
+        stdin = self.process.stdin
+        if stdin is None or stdin.closed:
+            raise UnifiedExecError.stdin_closed()
+        if chars == "\x04":
+            stdin.close()
+            return
+        try:
+            stdin.write(chars.encode("utf-8"))
+            stdin.flush()
+        except BrokenPipeError as err:
+            raise UnifiedExecError.stdin_closed() from err
+        except OSError as err:
+            raise UnifiedExecError.write_to_stdin() from err
+
+    def snapshot(
+        self,
+        *,
+        yield_time_ms: int,
+        max_output_tokens: int | None,
+        event_call_id: str,
+    ) -> Any:
+        start = time.monotonic()
+        deadline = start + (yield_time_ms / 1000.0)
+        with self._condition:
+            while not self.has_exited():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._condition.wait(remaining)
+            raw_output = b"".join(self._buffer.drain_chunks())
+        wall_time_seconds = time.monotonic() - start
+        exited = self.has_exited()
+        exit_code = self.exit_code() if exited else None
+        output_process_id = None if exited else self.process_id
+
+        from pycodex.core.string_utils import approx_token_count
+        from pycodex.core.tool_context import ExecCommandToolOutput
+
+        text = raw_output.decode("utf-8", errors="replace")
+        return ExecCommandToolOutput(
+            event_call_id=event_call_id,
+            chunk_id=generate_chunk_id(),
+            wall_time_seconds=wall_time_seconds,
+            raw_output=raw_output,
+            truncation_policy=self.truncation_policy,
+            max_output_tokens=max_output_tokens,
+            process_id=output_process_id,
+            exit_code=exit_code,
+            original_token_count=approx_token_count(text),
+            hook_command=self.hook_command,
+        )
+
+
+@dataclass(frozen=True)
+class ProcessEntry:
+    process_id: int
+    process: Any
+    call_id: str = ""
+    hook_command: str = ""
+    tty: bool = False
+    last_used: float = 0.0
+
+    def __post_init__(self) -> None:
+        if isinstance(self.process_id, bool) or not isinstance(self.process_id, int):
+            raise TypeError("process_id must be an integer")
+        if not isinstance(self.call_id, str):
+            raise TypeError("call_id must be a string")
+        if not isinstance(self.hook_command, str):
+            raise TypeError("hook_command must be a string")
+        if not isinstance(self.tty, bool):
+            raise TypeError("tty must be a bool")
+        if isinstance(self.last_used, bool) or not isinstance(self.last_used, (int, float)):
+            raise TypeError("last_used must be a number")
+
+    def has_exited(self) -> bool:
+        value = getattr(self.process, "has_exited", None)
+        if callable(value):
+            value = value()
+        if value is not None:
+            return bool(value)
+        poll = getattr(self.process, "poll", None)
+        if callable(poll):
+            return poll() is not None
+        return bool(getattr(self.process, "exited", False))
+
+
+class UnifiedExecProcessManager:
+    """Small stdlib manager for unified exec process ids, sessions, and pruning."""
+
+    def __init__(
+        self,
+        *,
+        max_processes: int = MAX_UNIFIED_EXEC_PROCESSES,
+        deterministic_process_ids: bool = True,
+    ) -> None:
+        if isinstance(max_processes, bool) or not isinstance(max_processes, int):
+            raise TypeError("max_processes must be an integer")
+        if max_processes <= 0:
+            raise ValueError("max_processes must be positive")
+        if not isinstance(deterministic_process_ids, bool):
+            raise TypeError("deterministic_process_ids must be a bool")
+        self.max_processes = max_processes
+        self.deterministic_process_ids = deterministic_process_ids
+        self._processes: dict[int, ProcessEntry] = {}
+        self._reserved_process_ids: set[int] = set()
+
+    def exec_command(self, request: Any) -> Any:
+        command = tuple(getattr(request, "command", ()) or ())
+        process_id = getattr(request, "process_id", None)
+        if not command:
+            if process_id is not None:
+                self.release_process_id(process_id)
+            raise UnifiedExecError.missing_command_line()
+        if isinstance(process_id, bool) or not isinstance(process_id, int):
+            raise TypeError("request.process_id must be an integer")
+
+        env = apply_unified_exec_env(os.environ)
+        request_env = getattr(request, "environment", None)
+        if isinstance(request_env, dict):
+            env.update({str(key): str(value) for key, value in request_env.items()})
+
+        cwd = getattr(request, "cwd", None) or None
+        call_id = str(getattr(request, "call_id", ""))
+        tty = bool(getattr(request, "tty", False))
+        hook_command = str(getattr(request, "hook_command", ""))
+        truncation_policy = getattr(request, "truncation_policy", None)
+        max_output_tokens = getattr(request, "max_output_tokens", None)
+        yield_time_ms = clamp_yield_time(int(getattr(request, "yield_time_ms", MIN_YIELD_TIME_MS)))
+
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=str(cwd) if cwd is not None else None,
+                env=env,
+                stdin=subprocess.PIPE if tty else subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                shell=False,
+            )
+        except OSError as err:
+            self.release_process_id(process_id)
+            raise UnifiedExecError.create_process(str(err)) from err
+
+        session = _ManagedUnifiedExecSession(
+            process,
+            process_id=process_id,
+            hook_command=hook_command,
+            tty=tty,
+            truncation_policy=truncation_policy,
+        )
+        self.store_process(
+            process_id,
+            session,
+            call_id=call_id,
+            hook_command=hook_command,
+            tty=tty,
+        )
+        output = session.snapshot(
+            yield_time_ms=yield_time_ms,
+            max_output_tokens=max_output_tokens,
+            event_call_id=call_id,
+        )
+        if output.process_id is None:
+            self.release_process_id(process_id)
+        return output
+
+    def write_stdin(self, request: Any) -> Any:
+        process_id = getattr(request, "process_id", None)
+        if isinstance(process_id, bool) or not isinstance(process_id, int):
+            raise TypeError("request.process_id must be an integer")
+        entry = self.touch_process(process_id)
+        if entry is None:
+            raise UnifiedExecError.unknown_process_id(process_id)
+
+        session = entry.process
+        chars = str(getattr(request, "input", ""))
+        if chars:
+            try:
+                session.write(chars)
+            except UnifiedExecError:
+                if not session.has_exited():
+                    raise
+            else:
+                time.sleep(0.1)
+        yield_time_ms = resolve_write_stdin_yield_time(
+            chars,
+            int(getattr(request, "yield_time_ms", MIN_YIELD_TIME_MS)),
+        )
+        output = session.snapshot(
+            yield_time_ms=yield_time_ms,
+            max_output_tokens=getattr(request, "max_output_tokens", None),
+            event_call_id=entry.call_id,
+        )
+        if output.process_id is None:
+            self.release_process_id(process_id)
+        return output
+
+    def allocate_process_id(self) -> int:
+        while True:
+            if self.deterministic_process_ids:
+                process_id = max(self._reserved_process_ids, default=999) + 1
+                process_id = max(process_id, 1000)
+            else:
+                process_id = random.randrange(1_000, 100_000)
+            if process_id in self._reserved_process_ids:
+                continue
+            self._reserved_process_ids.add(process_id)
+            return process_id
+
+    def release_process_id(self, process_id: int) -> ProcessEntry | None:
+        self._reserved_process_ids.discard(process_id)
+        entry = self._processes.pop(process_id, None)
+        if entry is not None:
+            close = getattr(entry.process, "close", None)
+            if callable(close):
+                close()
+        return entry
+
+    def store_process(
+        self,
+        process_id: int,
+        process: Any,
+        *,
+        call_id: str = "",
+        hook_command: str = "",
+        tty: bool = False,
+        last_used: float | None = None,
+    ) -> ProcessEntry | None:
+        if last_used is None:
+            last_used = time.monotonic()
+        entry = ProcessEntry(
+            process_id=process_id,
+            process=process,
+            call_id=call_id,
+            hook_command=hook_command,
+            tty=tty,
+            last_used=last_used,
+        )
+        self._reserved_process_ids.add(process_id)
+        self._processes[process_id] = entry
+        return self.prune_processes_if_needed()
+
+    def get_process(self, process_id: int) -> ProcessEntry | None:
+        return self._processes.get(process_id)
+
+    def touch_process(self, process_id: int, *, last_used: float | None = None) -> ProcessEntry | None:
+        entry = self._processes.get(process_id)
+        if entry is None:
+            return None
+        if last_used is None:
+            last_used = time.monotonic()
+        updated = ProcessEntry(
+            process_id=entry.process_id,
+            process=entry.process,
+            call_id=entry.call_id,
+            hook_command=entry.hook_command,
+            tty=entry.tty,
+            last_used=last_used,
+        )
+        self._processes[process_id] = updated
+        return updated
+
+    def prune_processes_if_needed(self) -> ProcessEntry | None:
+        if len(self._processes) < self.max_processes:
+            return None
+        meta = [
+            (process_id, entry.last_used, entry.has_exited())
+            for process_id, entry in self._processes.items()
+        ]
+        process_id = process_id_to_prune_from_meta(meta)
+        if process_id is None:
+            return None
+        return self.release_process_id(process_id)
+
+    def terminate_all_processes(self) -> tuple[ProcessEntry, ...]:
+        entries = tuple(self._processes.values())
+        self._processes.clear()
+        self._reserved_process_ids.clear()
+        for entry in entries:
+            terminate = getattr(entry.process, "terminate", None)
+            if callable(terminate):
+                terminate()
+        return entries
+
+    def process_count(self) -> int:
+        return len(self._processes)
+
+    def reserved_process_ids(self) -> frozenset[int]:
+        return frozenset(self._reserved_process_ids)
+
+
 @dataclass(frozen=True)
 class ProcessState:
     has_exited: bool = False
@@ -430,6 +789,7 @@ __all__ = [
     "MIN_EMPTY_YIELD_TIME_MS",
     "MIN_YIELD_TIME_MS",
     "ProcessState",
+    "ProcessEntry",
     "ProcessOutputChunk",
     "UNIFIED_EXEC_OUTPUT_DELTA_MAX_BYTES",
     "UNIFIED_EXEC_OUTPUT_MAX_BYTES",
@@ -437,6 +797,7 @@ __all__ = [
     "UNIFIED_EXEC_ENV",
     "TRAILING_OUTPUT_GRACE_MS",
     "UnifiedExecError",
+    "UnifiedExecProcessManager",
     "apply_unified_exec_env",
     "clamp_yield_time",
     "env_overlay_for_exec_server",

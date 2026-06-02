@@ -16,7 +16,7 @@ from typing import Any, Mapping
 
 from pycodex.core.function_tool import FunctionCallError
 from pycodex.core.turn_diff_tracker import AppliedPatchDelta, TurnDiffTracker
-from pycodex.core.user_shell_command import format_exec_output_str
+from pycodex.core.user_shell_command import format_exec_output_for_model, format_exec_output_str
 from pycodex.protocol import (
     CommandExecutionItem,
     EventMsg,
@@ -826,9 +826,16 @@ class ToolEmitter:
         command: tuple[str, ...] | list[str],
         cwd: str | Path,
         source: ExecCommandSource = ExecCommandSource.AGENT,
-        parsed_cmd: tuple[JsonValue, ...] | list[JsonValue] = (),
+        parsed_cmd: tuple[JsonValue, ...] | list[JsonValue] | None = None,
     ) -> "ToolEmitter":
-        return cls("shell", tuple(command), Path(cwd), source, tuple(parsed_cmd))
+        command_tuple = tuple(command)
+        return cls(
+            "shell",
+            command_tuple,
+            Path(cwd),
+            source,
+            tuple(parse_command(command_tuple) if parsed_cmd is None else parsed_cmd),
+        )
 
     @classmethod
     def apply_patch(cls, changes: Mapping[str | Path, FileChange], auto_approved: bool) -> "ToolEmitter":
@@ -841,9 +848,17 @@ class ToolEmitter:
         cwd: str | Path,
         source: ExecCommandSource = ExecCommandSource.AGENT,
         process_id: str | None = None,
-        parsed_cmd: tuple[JsonValue, ...] | list[JsonValue] = (),
+        parsed_cmd: tuple[JsonValue, ...] | list[JsonValue] | None = None,
     ) -> "ToolEmitter":
-        return cls("unified_exec", tuple(command), Path(cwd), source, tuple(parsed_cmd), process_id=process_id)
+        command_tuple = tuple(command)
+        return cls(
+            "unified_exec",
+            command_tuple,
+            Path(cwd),
+            source,
+            tuple(parse_command(command_tuple) if parsed_cmd is None else parsed_cmd),
+            process_id=process_id,
+        )
 
     def __post_init__(self) -> None:
         if self.type in ("shell", "unified_exec"):
@@ -900,7 +915,7 @@ class ToolEmitter:
     ) -> tuple[str | FunctionCallError, tuple[EventMsg | TurnItem, ...]]:
         if isinstance(out, ExecToolCallOutput):
             stage = ToolEventStage.success(out, applied_patch_delta)
-            result: str | FunctionCallError = format_exec_output_str(out, ctx.truncation_policy)
+            result: str | FunctionCallError = format_exec_output_for_model(out, ctx.truncation_policy)
             if out.exit_code != 0:
                 result = FunctionCallError.respond_to_model(result)
         elif isinstance(out, ToolEventFailure):
@@ -909,7 +924,7 @@ class ToolEmitter:
                 normalized = "patch rejected by user" if self.type == "apply_patch" else "exec command rejected by user"
                 failure = ToolEventFailure.rejected(normalized, applied_patch_delta)
             stage = ToolEventStage.failure(failure)
-            message = failure.message if failure.message is not None else format_exec_output_str(failure.output, ctx.truncation_policy)
+            message = failure.message if failure.message is not None else format_exec_output_for_model(failure.output, ctx.truncation_policy)
             result = FunctionCallError.respond_to_model(message)
         else:
             raise TypeError("out must be ExecToolCallOutput or ToolEventFailure")
@@ -990,6 +1005,15 @@ def _command_actions_from_parsed_commands(parsed_cmd: tuple[JsonValue, ...], cwd
     return tuple(_command_action_from_parsed(_parsed_command(command), cwd) for command in parsed_cmd)
 
 
+def command_actions_from_argv(command: tuple[str, ...] | list[str], cwd: Path) -> tuple[dict[str, JsonValue], ...]:
+    """Return app-server command actions for a shell argv using Rust's parse-command path."""
+
+    parsed_cmd = parse_command(command)
+    if not parsed_cmd:
+        return ({"type": "unknown", "command": shlex.join(tuple(command))},)
+    return _command_actions_from_parsed_commands(tuple(parsed_cmd), cwd)
+
+
 def _parsed_command(value: JsonValue) -> ParsedCommand:
     if isinstance(value, ParsedCommand):
         return value
@@ -1043,6 +1067,7 @@ __all__ = [
     "build_command_execution_end_item",
     "build_command_execution_item_from_guardian_event",
     "build_command_execution_item_mapping_from_guardian_event",
+    "command_actions_from_argv",
     "build_exec_command_begin_event",
     "build_exec_command_end_event",
     "build_exec_stage_events",

@@ -32,6 +32,8 @@ from pycodex.protocol import (
     ModelVerification,
     ReasoningEffort,
     ResponseItem,
+    SessionSource,
+    SubAgentSource,
     ToolName,
     UserInput,
 )
@@ -389,18 +391,21 @@ class HttpTransportTests(unittest.TestCase):
         self.assertEqual(result.stream_events[-1]["response_id"], "resp-events")
         self.assertEqual(result.stream_events[-1]["end_turn"], False)
 
-    def test_send_prepared_http_sampling_request_ignores_function_call_argument_deltas(self) -> None:
+    def test_send_prepared_http_sampling_request_accumulates_function_call_argument_deltas(self) -> None:
         class SseResponse:
             def read(self) -> bytes:
                 return (
-                    "event: response.custom_tool_call_input.delta\n"
-                    "data: {\"item_id\":\"custom-1\",\"call_id\":\"call-1\",\"delta\":\"*** Begin\"}\n"
+                    "event: response.output_item.added\n"
+                    "data: {\"item\":{\"id\":\"fc-1\",\"type\":\"function_call\",\"call_id\":\"call-1\",\"name\":\"exec_command\",\"arguments\":\"\"}}\n"
                     "\n"
                     "event: response.function_call_arguments.delta\n"
                     "data: {\"item_id\":\"fc-1\",\"delta\":\"{\\\"cmd\\\":\\\"\"}\n"
                     "\n"
+                    "event: response.function_call_arguments.delta\n"
+                    "data: {\"item_id\":\"fc-1\",\"delta\":\"echo hi\\\"}\"}\n"
+                    "\n"
                     "event: response.completed\n"
-                    "data: {\"response\":{\"id\":\"resp-ignored-function-delta\"}}\n"
+                    "data: {\"response\":{\"id\":\"resp-function-delta\"}}\n"
                     "\n"
                 ).encode("utf-8")
 
@@ -423,10 +428,63 @@ class HttpTransportTests(unittest.TestCase):
 
         self.assertEqual(
             tuple(event["type"] for event in result.stream_events),
-            ("tool_call_input_delta", "completed"),
+            ("output_item_added", "tool_call_input_delta", "tool_call_input_delta", "completed"),
         )
-        self.assertEqual(result.stream_events[0]["item_id"], "custom-1")
-        self.assertEqual(result.stream_events[-1]["response_id"], "resp-ignored-function-delta")
+        self.assertEqual(result.stream_events[1]["item_id"], "fc-1")
+        self.assertEqual(result.stream_events[-1]["response_id"], "resp-function-delta")
+        self.assertEqual(result.response_items[0].type, "function_call")
+        self.assertEqual(result.response_items[0].name, "exec_command")
+        self.assertEqual(result.response_items[0].call_id, "call-1")
+        self.assertEqual(result.response_items[0].arguments, "{\"cmd\":\"echo hi\"}")
+        self.assertEqual(result.raw_result["output"][0]["arguments"], "{\"cmd\":\"echo hi\"}")
+
+    def test_send_prepared_http_sampling_request_accumulates_custom_tool_input_deltas(self) -> None:
+        class SseResponse:
+            def read(self) -> bytes:
+                return (
+                    "event: response.output_item.added\n"
+                    "data: {\"item\":{\"id\":\"custom-1\",\"type\":\"custom_tool_call\",\"call_id\":\"patch-1\",\"name\":\"apply_patch\",\"input\":\"\"}}\n"
+                    "\n"
+                    "event: response.custom_tool_call_input.delta\n"
+                    "data: {\"item_id\":\"custom-1\",\"call_id\":\"patch-1\",\"delta\":\"*** Begin Patch\\n\"}\n"
+                    "\n"
+                    "event: response.custom_tool_call_input.delta\n"
+                    "data: {\"item_id\":\"custom-1\",\"call_id\":\"patch-1\",\"delta\":\"*** End Patch\\n\"}\n"
+                    "\n"
+                    "event: response.completed\n"
+                    "data: {\"response\":{\"id\":\"resp-custom-delta\"}}\n"
+                    "\n"
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        prepared = PreparedSamplingRequest(
+            sampling_request=UserTurnSamplingRequest(session=None, turn_context=None, request_plan=None),
+            prepared_request={"model": "gpt-test", "input": [], "stream": True},
+        )
+
+        result = send_prepared_http_sampling_request(
+            prepared,
+            HttpTransportConfig("https://api.example.test/responses"),
+            opener=lambda _request: SseResponse(),
+        )
+
+        self.assertEqual(
+            tuple(event["type"] for event in result.stream_events),
+            ("output_item_added", "tool_call_input_delta", "tool_call_input_delta", "completed"),
+        )
+        self.assertEqual(result.stream_events[1]["item_id"], "custom-1")
+        self.assertEqual(result.stream_events[1]["call_id"], "patch-1")
+        self.assertEqual(result.stream_events[-1]["response_id"], "resp-custom-delta")
+        self.assertEqual(result.response_items[0].type, "custom_tool_call")
+        self.assertEqual(result.response_items[0].name, "apply_patch")
+        self.assertEqual(result.response_items[0].call_id, "patch-1")
+        self.assertEqual(result.response_items[0].input, "*** Begin Patch\n*** End Patch\n")
+        self.assertEqual(result.raw_result["output"][0]["input"], "*** Begin Patch\n*** End Patch\n")
 
     def test_send_prepared_http_sampling_request_replaces_streamed_item_on_matching_done(self) -> None:
         class SseResponse:
@@ -507,6 +565,120 @@ class HttpTransportTests(unittest.TestCase):
         self.assertEqual(result.response_items[0].content[0].text, "final")
         self.assertEqual(len(result.raw_result["output"]), 1)
         self.assertEqual(result.raw_result["output"][0]["content"][0]["text"], "final")
+
+    def test_send_prepared_http_sampling_request_stops_processing_after_sse_completed_like_rust(self) -> None:
+        class SseResponse:
+            def read(self) -> bytes:
+                return (
+                    "event: response.output_item.done\n"
+                    "data: {\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"done\"}]}}\n"
+                    "\n"
+                    "event: response.completed\n"
+                    "data: {\"response\":{\"id\":\"resp-complete\",\"usage\":{\"input_tokens\":4,\"output_tokens\":1,\"total_tokens\":5}}}\n"
+                    "\n"
+                    "event: response.failed\n"
+                    "data: {\"response\":{\"status\":\"failed\",\"error\":{\"message\":\"late failure\"}}}\n"
+                    "\n"
+                    "event: response.output_item.done\n"
+                    "data: {\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"late\"}]}}\n"
+                    "\n"
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        prepared = PreparedSamplingRequest(
+            sampling_request=UserTurnSamplingRequest(session=None, turn_context=None, request_plan=None),
+            prepared_request={"model": "gpt-test", "input": [], "stream": True},
+        )
+
+        result = send_prepared_http_sampling_request(
+            prepared,
+            HttpTransportConfig("https://api.example.test/responses"),
+            opener=lambda _request: SseResponse(),
+        )
+
+        self.assertEqual(result.raw_result["id"], "resp-complete")
+        self.assertEqual([item.content[0].text for item in result.response_items], ["done"])
+        self.assertEqual(
+            tuple(event["type"] for event in result.stream_events),
+            ("output_item_done", "completed"),
+        )
+
+    def test_send_prepared_http_sampling_request_defers_sse_failed_until_close_like_rust(self) -> None:
+        class SseResponse:
+            def read(self) -> bytes:
+                return (
+                    "event: response.failed\n"
+                    "data: {\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"unknown\",\"message\":\"early failure\"}}}\n"
+                    "\n"
+                    "event: response.output_item.done\n"
+                    "data: {\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"recovered\"}]}}\n"
+                    "\n"
+                    "event: response.completed\n"
+                    "data: {\"response\":{\"id\":\"resp-recovered\",\"usage\":{\"input_tokens\":4,\"output_tokens\":1,\"total_tokens\":5}}}\n"
+                    "\n"
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        prepared = PreparedSamplingRequest(
+            sampling_request=UserTurnSamplingRequest(session=None, turn_context=None, request_plan=None),
+            prepared_request={"model": "gpt-test", "input": [], "stream": True},
+        )
+
+        result = send_prepared_http_sampling_request(
+            prepared,
+            HttpTransportConfig("https://api.example.test/responses"),
+            opener=lambda _request: SseResponse(),
+        )
+
+        self.assertEqual(result.raw_result["id"], "resp-recovered")
+        self.assertEqual(result.response_items[0].content[0].text, "recovered")
+        self.assertEqual(
+            tuple(event["type"] for event in result.stream_events),
+            ("output_item_done", "completed"),
+        )
+
+    def test_send_prepared_http_sampling_request_raises_pending_sse_failed_when_stream_closes(self) -> None:
+        message = "early failure"
+
+        class SseResponse:
+            def read(self) -> bytes:
+                return (
+                    "event: response.failed\n"
+                    f"data: {{\"response\":{{\"status\":\"failed\",\"error\":{{\"code\":\"unknown\",\"message\":{json.dumps(message)}}}}}}}\n"
+                    "\n"
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        prepared = PreparedSamplingRequest(
+            sampling_request=UserTurnSamplingRequest(session=None, turn_context=None, request_plan=None),
+            prepared_request={"model": "gpt-test", "input": [], "stream": True},
+        )
+
+        with self.assertRaises(CodexErr) as caught:
+            send_prepared_http_sampling_request(
+                prepared,
+                HttpTransportConfig("https://api.example.test/responses"),
+                opener=lambda _request: SseResponse(),
+            )
+
+        self.assertEqual(caught.exception.kind, "stream")
+        self.assertEqual(caught.exception.message, message)
+        self.assertTrue(caught.exception.is_retryable())
 
     def test_send_prepared_http_sampling_request_backfills_empty_sse_completed_output(self) -> None:
         class SseResponse:
@@ -1051,13 +1223,15 @@ class HttpTransportTests(unittest.TestCase):
         self.assertFalse(caught.exception.is_retryable())
 
     def test_send_prepared_http_sampling_request_maps_400_to_invalid_request(self) -> None:
+        body = b'{"error":{"message":"bad schema","code":"some_other_policy"}}'
+
         def opener(_request):
             raise HTTPError(
                 "https://api.example.test/responses",
                 400,
                 "Bad Request",
                 {},
-                BytesIO(b'{"error":{"message":"bad schema"}}'),
+                BytesIO(body),
             )
 
         prepared = PreparedSamplingRequest(
@@ -1074,7 +1248,7 @@ class HttpTransportTests(unittest.TestCase):
 
         self.assertEqual(caught.exception.kind, "invalid_request")
         self.assertFalse(caught.exception.is_retryable())
-        self.assertIn("bad schema", str(caught.exception))
+        self.assertEqual(caught.exception.message, body.decode("utf-8"))
 
     def test_send_prepared_http_sampling_request_maps_url_error_to_connection_failed(self) -> None:
         def opener(_request):
@@ -1182,6 +1356,56 @@ class HttpTransportTests(unittest.TestCase):
         self.assertEqual(config.headers["x-codex-window-id"], "thread:0")
         self.assertEqual(config.headers["x-responsesapi-include-timing-metrics"], "true")
         self.assertEqual(config.headers["Originator"], CODEX_EXEC_ORIGINATOR)
+
+    def test_http_transport_records_and_replays_turn_state_header(self) -> None:
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        model_session = client.new_session()
+        config = http_transport_config_from_provider(
+            client,
+            {"base_url": "https://api.example.test/v1"},
+            auth={"api_key": "sk-test"},
+        )
+        config = HttpTransportConfig(
+            config.endpoint,
+            headers=config.headers,
+            timeout=config.timeout,
+            turn_state=model_session.turn_state,
+        )
+        prepared = PreparedSamplingRequest(
+            sampling_request=UserTurnSamplingRequest(session=None, turn_context=None, request_plan=None),
+            prepared_request={"model": "gpt-test", "input": []},
+        )
+        seen_headers = []
+        response_headers = Message()
+        response_headers["x-codex-turn-state"] = "sticky"
+        replacement_headers = Message()
+        replacement_headers["x-codex-turn-state"] = "replacement"
+
+        def opener(request):
+            seen_headers.append({key.lower(): value for key, value in request.header_items()})
+            headers = response_headers if len(seen_headers) == 1 else replacement_headers
+            return FakeResponse(
+                {
+                    "output": [
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "done"}],
+                        }
+                    ]
+                },
+                headers=headers,
+            )
+
+        first = send_prepared_http_sampling_request(prepared, config, opener=opener)
+        second = send_prepared_http_sampling_request(prepared, config, opener=opener)
+
+        self.assertEqual(first.response_items[0].content[0].text, "done")
+        self.assertEqual(second.response_items[0].content[0].text, "done")
+        self.assertNotIn("x-codex-turn-state", seen_headers[0])
+        self.assertEqual(model_session.turn_state.get(), "sticky")
+        self.assertEqual(seen_headers[1]["x-codex-turn-state"], "sticky")
+        self.assertEqual(model_session.turn_state.get(), "sticky")
 
 
     def test_http_transport_config_skips_invalid_identity_header_values(self) -> None:
@@ -1456,6 +1680,63 @@ class HttpTransportTests(unittest.TestCase):
         self.assertEqual(seen["body"]["model"], "gpt-test")
         self.assertEqual(result.response_items[0].content[0].text, "done")
 
+    def test_run_user_turn_http_sampling_infers_guardian_output_schema_non_strict(self) -> None:
+        seen = {}
+
+        def opener(request):
+            seen["body"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse(
+                {
+                    "output": [
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "reviewed"}],
+                        }
+                    ]
+                }
+            )
+
+        async def run():
+            client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+            model_info = type(
+                "ModelInfo",
+                (),
+                {
+                    "slug": "gpt-test",
+                    "supports_reasoning_summaries": False,
+                    "support_verbosity": False,
+                    "service_tier_for_request": lambda _self, tier: tier,
+                },
+            )()
+            session = InMemoryCodexSession(
+                "C:/work",
+                model_info=model_info,
+                session_source=SessionSource.subagent(SubAgentSource.other_source("guardian")),
+            )
+            provider = {
+                "base_url": "https://api.example.test/v1",
+                "is_azure_responses_endpoint": lambda: False,
+            }
+            return await run_user_turn_http_sampling_from_session(
+                session,
+                (UserInput.text_input("assess"),),
+                client,
+                provider,
+                model_info,
+                auth="sk-test",
+                opener=opener,
+                built_tools=lambda _sess, _turn: Router(),
+                output_schema={"type": "object"},
+            )
+
+        import asyncio
+
+        result = asyncio.run(run())
+
+        self.assertEqual(result.response_items[0].content[0].text, "reviewed")
+        self.assertEqual(seen["body"]["text"]["format"]["strict"], False)
+
     def test_run_user_turn_http_sampling_uses_provider_stream_retry_default(self) -> None:
         attempts = 0
 
@@ -1642,6 +1923,89 @@ class HttpTransportTests(unittest.TestCase):
         self.assertIn("high-risk cyber activity", non_lifecycle[1].payload.message)
         self.assertEqual(non_lifecycle[-1].type, "token_count")
 
+    def test_run_user_turn_http_sampling_projects_sse_header_metadata_stream_events(self) -> None:
+        headers = Message()
+        headers["openai-model"] = "gpt-5.2"
+        headers["x-codex-primary-used-percent"] = "47"
+        headers["x-models-etag"] = "etag-sse"
+        headers["x-reasoning-included"] = ""
+
+        class SseResponse:
+            def __init__(self) -> None:
+                self.headers = headers
+
+            def read(self) -> bytes:
+                return (
+                    "event: response.output_item.done\n"
+                    "data: {\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"done\"}]}}\n"
+                    "\n"
+                    "event: response.completed\n"
+                    "data: {\"response\":{\"id\":\"resp-1\",\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"total_tokens\":5}}}\n"
+                    "\n"
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        async def run():
+            model_info = type(
+                "ModelInfo",
+                (),
+                {
+                    "slug": "gpt-5.3-codex",
+                    "supports_reasoning_summaries": False,
+                    "support_verbosity": False,
+                    "service_tier_for_request": lambda _self, tier: tier,
+                },
+            )()
+            client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+            session = InMemoryCodexSession("C:/work", model_info=model_info)
+            provider = {
+                "base_url": "https://api.example.test/v1",
+                "is_azure_responses_endpoint": lambda: False,
+            }
+            result = await run_user_turn_http_sampling_from_session(
+                session,
+                (UserInput.text_input("hello"),),
+                client,
+                provider,
+                model_info,
+                auth="sk-test",
+                opener=lambda _request: SseResponse(),
+                built_tools=lambda _sess, _turn: Router(),
+            )
+            return result, session
+
+        import asyncio
+
+        result, session = asyncio.run(run())
+
+        self.assertEqual(result.response_items[0].content[0].text, "done")
+        self.assertEqual(
+            tuple(event["type"] for event in result.stream_events),
+            (
+                "server_model",
+                "rate_limits",
+                "models_etag",
+                "server_reasoning_included",
+                "output_item_done",
+                "completed",
+            ),
+        )
+        self.assertEqual(result.stream_events[0]["server_model"], "gpt-5.2")
+        self.assertEqual(result.stream_events[1]["rate_limits"].primary.used_percent, 47.0)
+        self.assertEqual(result.stream_events[2]["models_etag"], "etag-sse")
+        self.assertTrue(result.stream_events[3]["server_reasoning_included"])
+        self.assertTrue(session.server_reasoning_included)
+        self.assertEqual(session.models_etag, "etag-sse")
+        self.assertEqual(session.latest_rate_limits.primary.used_percent, 47.0)
+        non_lifecycle = non_lifecycle_events(result.session_events)
+        self.assertEqual([event.type for event in non_lifecycle[:2]], ["model_reroute", "warning"])
+        self.assertEqual(non_lifecycle[-1].type, "token_count")
+
     def test_run_user_turn_http_sampling_records_sse_metadata_model_verification_once(self) -> None:
         class SseResponse:
             def read(self) -> bytes:
@@ -1700,6 +2064,15 @@ class HttpTransportTests(unittest.TestCase):
         result = asyncio.run(run())
 
         self.assertEqual(result.response_items[0].content[0].text, "done")
+        self.assertEqual(
+            tuple(event["type"] for event in result.stream_events),
+            ("server_model", "model_verifications", "output_item_done", "completed"),
+        )
+        self.assertEqual(result.stream_events[0]["server_model"], "gpt-5.2")
+        self.assertEqual(
+            result.stream_events[1]["model_verifications"],
+            (ModelVerification.TRUSTED_ACCESS_FOR_CYBER,),
+        )
         self.assertEqual(
             [event.type for event in non_lifecycle_events(result.session_events)[:3]],
             ["model_reroute", "warning", "model_verification"],

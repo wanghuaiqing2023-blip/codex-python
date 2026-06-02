@@ -30,6 +30,7 @@ from pycodex.protocol import (
     FileSystemSandboxEntry,
     FileSystemPath,
     FileSystemSpecialPath,
+    GranularApprovalConfig,
     NetworkPermissions,
     PermissionGrantScope,
     RequestPermissionProfile,
@@ -109,6 +110,36 @@ class HandlerUtilsTests(unittest.TestCase):
                 False,
                 Path("/workspace"),
             )
+
+    def test_additional_permissions_rejects_unapproved_granular_policy_like_rust(self):
+        profile = AdditionalPermissionProfile(network=NetworkPermissions(enabled=True))
+        policy = GranularApprovalConfig(
+            sandbox_approval=True,
+            rules=True,
+            skill_approval=False,
+            request_permissions=True,
+            mcp_elicitations=False,
+        )
+        with self.assertRaisesRegex(ValueError, "unless the approval policy is OnRequest"):
+            normalize_and_validate_additional_permissions(
+                True,
+                policy,
+                SandboxPermissions.WITH_ADDITIONAL_PERMISSIONS,
+                profile,
+                False,
+                Path("/workspace"),
+            )
+        self.assertEqual(
+            normalize_and_validate_additional_permissions(
+                True,
+                policy,
+                SandboxPermissions.WITH_ADDITIONAL_PERMISSIONS,
+                profile,
+                True,
+                Path("/workspace"),
+            ),
+            profile,
+        )
 
     def test_implicit_granted_permissions_only_apply_to_default_requests(self):
         profile = AdditionalPermissionProfile(network=NetworkPermissions(enabled=True))

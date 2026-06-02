@@ -52,6 +52,7 @@ from pycodex.protocol import (
     DynamicToolCallStatus,
     FileChange,
     FileChangeItem,
+    GranularApprovalConfig,
     McpToolCallItem,
     McpToolCallStatus,
     PatchApplyStatus,
@@ -694,7 +695,7 @@ class ExecEventProcessorTests(unittest.TestCase):
             },
         )
 
-    def test_json_processor_file_change_declined_maps_to_failed_status(self):
+    def test_json_processor_file_change_declined_maps_to_failed_status_like_upstream_jsonl(self):
         processor = JsonEventProcessor()
 
         collected = processor.collect_thread_events(
@@ -845,8 +846,13 @@ class ExecEventProcessorTests(unittest.TestCase):
         item = collected.events[0].to_mapping()["item"]
         self.assertEqual(item["type"], "command_execution")
         self.assertEqual(item["command"], "python -m unittest")
+        self.assertEqual(item["cwd"], "C:/work")
+        self.assertNotIn("process_id", item)
+        self.assertEqual(item["source"], "userShell")
+        self.assertEqual(item["command_actions"], [])
         self.assertEqual(item["aggregated_output"], "OK")
         self.assertEqual(item["exit_code"], 0)
+        self.assertEqual(item["duration_ms"], 12)
         self.assertEqual(item["status"], "completed")
 
     def test_human_completed_lines_render_typed_command_execution_item(self):
@@ -949,6 +955,22 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(events[-1]["type"], "turn.completed")
         self.assertEqual(events[-1]["usage"]["input_tokens"], 11)
         self.assertEqual(processor.final_message, "done")
+
+    def test_json_processor_config_warning_uses_additional_details_alias(self):
+        processor = JsonEventProcessor()
+        output = io.StringIO()
+
+        status = processor.process_server_notification(
+            {
+                "method": "configWarning",
+                "params": {"summary": "bad config", "additionalDetails": "ignored key"},
+            },
+            output=output,
+        )
+
+        self.assertEqual(status, CodexStatus.RUNNING)
+        event = json.loads(output.getvalue())
+        self.assertEqual(event["item"], {"id": "item_0", "type": "error", "message": "bad config (ignored key)"})
 
     def test_json_processor_token_usage_update_is_emitted_on_turn_completion(self):
         processor = JsonEventProcessor()
@@ -1219,6 +1241,21 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertIn("diff --git a/a b/a\n", output)
         self.assertIn("ERROR: boom (retry later)\n", output)
 
+    def test_human_deprecation_notice_uses_additional_details_alias(self):
+        processor = HumanEventProcessor()
+        stderr = io.StringIO()
+
+        status = processor.process_server_notification(
+            {
+                "method": "deprecationNotice",
+                "params": {"summary": "old flag", "additionalDetails": "use new flag"},
+            },
+            stderr=stderr,
+        )
+
+        self.assertEqual(status, CodexStatus.RUNNING)
+        self.assertEqual(stderr.getvalue(), "deprecated: old flag\nuse new flag\n")
+
     def test_json_processor_model_reroute_reason_matches_upstream_debug_name(self):
         processor = JsonEventProcessor()
 
@@ -1343,6 +1380,9 @@ class ExecEventProcessorTests(unittest.TestCase):
         item = TurnItem.file_change(
             FileChangeItem("patch-1", {Path("a.txt"): FileChange.add("after")}, status=PatchApplyStatus.COMPLETED)
         )
+        declined_item = TurnItem.file_change(
+            FileChangeItem("patch-2", {Path("b.txt"): FileChange.update("before", "after")}, status=PatchApplyStatus.DECLINED)
+        )
         mcp_item = TurnItem.mcp_tool_call(
             McpToolCallItem(
                 "mcp-1",
@@ -1355,6 +1395,8 @@ class ExecEventProcessorTests(unittest.TestCase):
         )
 
         self.assertEqual(human_item_completed_lines(item), ("patch: completed", "a.txt"))
+        self.assertEqual(human_item_completed_lines(declined_item), ("patch: declined", "b.txt"))
+        self.assertEqual(exec_item_from_turn_item(declined_item, "item-declined").to_mapping()["status"], "declined")
         self.assertEqual(human_item_completed_lines(mcp_item), ("mcp: server/lookup (completed)",))
         self.assertEqual(
             exec_item_from_app_server_item(item.to_app_server_mapping(), lambda: "item-1").to_mapping(),
@@ -1769,6 +1811,32 @@ class ExecEventProcessorTests(unittest.TestCase):
         self.assertEqual(dict(entries)["reasoning summaries"], "none")
         self.assertEqual(dict(entries)["session id"], "session-1")
         self.assertNotIn("thread_id", dict(entries))
+
+    def test_config_summary_entries_render_granular_approval_like_rust_display(self):
+        granular = GranularApprovalConfig(
+            sandbox_approval=True,
+            rules=False,
+            skill_approval=False,
+            request_permissions=True,
+            mcp_elicitations=False,
+        )
+        config = {
+            "cwd": "C:/work/project",
+            "permission_profile": PermissionProfile.read_only(),
+            "approval_policy": {"granular": granular.to_mapping()},
+            "wire_api": "chat",
+        }
+        session = {
+            "session_id": "session-1",
+            "thread_id": "thread-1",
+            "model": "gpt-5.5",
+            "model_provider_id": "openai",
+            "cwd": "C:/work/project",
+        }
+
+        entries = dict(config_summary_entries(config, session))
+
+        self.assertEqual(entries["approval"], "granular")
 
     def test_config_summary_lines_match_human_output_shape(self):
         config = {

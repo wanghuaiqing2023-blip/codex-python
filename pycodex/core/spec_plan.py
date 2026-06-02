@@ -329,6 +329,7 @@ def add_environment_tools_for_turn_context(
     apply_patch_tool_type: JsonValue | None = None,
     allow_login_shell: bool = False,
     exec_permission_approvals_enabled: bool = False,
+    request_permissions_tool_enabled: bool = False,
     can_request_original_image_detail: bool = False,
 ) -> None:
     add_unified_exec_tools_for_turn_context(
@@ -341,6 +342,10 @@ def add_environment_tools_for_turn_context(
         planned_tools,
         turn_context,
         apply_patch_tool_type=apply_patch_tool_type,
+    )
+    add_request_permissions_tool(
+        planned_tools,
+        request_permissions_tool_enabled=request_permissions_tool_enabled,
     )
     add_view_image_tool_for_turn_context(
         planned_tools,
@@ -356,6 +361,7 @@ def build_environment_tool_router_from_turn_context(
     apply_patch_tool_type: JsonValue | None = None,
     allow_login_shell: bool = False,
     exec_permission_approvals_enabled: bool = False,
+    request_permissions_tool_enabled: bool = False,
     can_request_original_image_detail: bool = False,
 ) -> ToolRouter:
     planned_tools = PlannedTools()
@@ -365,6 +371,7 @@ def build_environment_tool_router_from_turn_context(
         apply_patch_tool_type=apply_patch_tool_type,
         allow_login_shell=allow_login_shell,
         exec_permission_approvals_enabled=exec_permission_approvals_enabled,
+        request_permissions_tool_enabled=request_permissions_tool_enabled,
         can_request_original_image_detail=can_request_original_image_detail,
     )
     return build_tool_router_from_plan(planned_tools, options)

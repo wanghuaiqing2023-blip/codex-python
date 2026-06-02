@@ -10,6 +10,7 @@ from pycodex.core import (
     ExecApprovalRequest,
     ExecPolicyCommandOrigin,
     ExecPolicyCommands,
+    ExecPolicyPrefixRule,
     UnmatchedCommandContext,
     commands_for_exec_policy,
     commands_for_intercepted_exec_policy,
@@ -18,6 +19,7 @@ from pycodex.core import (
     derive_prompt_reason,
     derive_requested_execpolicy_amendment_from_prefix_rule,
     exec_approval_requirement_for_decision,
+    match_exec_policy_rules_for_command,
     prefix_rule_would_approve_all_commands,
     profile_is_managed_read_only,
     prompt_is_rejected_by_policy,
@@ -268,6 +270,40 @@ class CoreExecPolicyTests(unittest.TestCase):
             derive_prompt_reason(("bash", "-lc", "cargo install ripgrep"), matched_rules),
             "`bash -lc cargo install ripgrep` requires approval by policy",
         )
+
+    def test_match_exec_policy_rules_for_command_matches_shell_wrapped_prefix_rules(self):
+        rules = (
+            ExecPolicyPrefixRule.new(["cargo", "install"], "prompt", "review installs"),
+            ExecPolicyPrefixRule.new([["npm", "pnpm"], "publish"], "forbidden"),
+        )
+
+        cargo_matches = match_exec_policy_rules_for_command(("bash", "-lc", "cargo install ripgrep"), rules)
+        npm_matches = match_exec_policy_rules_for_command(("bash", "-lc", "npm publish"), rules)
+
+        self.assertEqual(
+            cargo_matches,
+            (
+                {
+                    "prefixRuleMatch": {
+                        "matchedPrefix": ["cargo", "install"],
+                        "decision": "prompt",
+                        "justification": "review installs",
+                    }
+                },
+            ),
+        )
+        self.assertEqual(
+            npm_matches,
+            (
+                {
+                    "prefixRuleMatch": {
+                        "matchedPrefix": ["npm", "publish"],
+                        "decision": "forbidden",
+                    }
+                },
+            ),
+        )
+        self.assertEqual(match_exec_policy_rules_for_command(("bash", "-lc", "git status"), rules), ())
 
     def test_create_exec_approval_requirement_for_command_honors_forbidden_rule_reason(self):
         matched_rules = (

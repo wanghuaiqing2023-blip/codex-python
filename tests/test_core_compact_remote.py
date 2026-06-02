@@ -236,12 +236,20 @@ class CompactRemoteTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-    def test_remove_orphan_outputs_keeps_empty_function_output_for_model_visible_tool_error(self) -> None:
-        error_output = function_call_output("", "failed to parse tool_search arguments")
+    def test_remove_orphan_outputs_drops_empty_function_output_without_matching_call(self) -> None:
+        orphan_output = function_call_output("", "failed to parse tool_search arguments")
 
-        retained = remove_orphan_outputs((error_output,))
+        retained = remove_orphan_outputs((orphan_output,))
 
-        self.assertEqual(retained, (error_output,))
+        self.assertEqual(retained, ())
+
+    def test_remove_orphan_outputs_keeps_empty_function_output_with_matching_call(self) -> None:
+        function_call = ResponseItem.function_call("tool", "{}", "")
+        function_output = function_call_output("", "ok")
+
+        retained = remove_orphan_outputs((function_call, function_output))
+
+        self.assertEqual(retained, (function_call, function_output))
 
     def test_normalize_call_outputs_inserts_missing_outputs_then_removes_orphans(self) -> None:
         function_call = ResponseItem.function_call("tool", "{}", "call-1")
@@ -252,6 +260,18 @@ class CompactRemoteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item.type for item in normalized], ["function_call", "function_call_output"])
         self.assertEqual(normalized[1].call_id, "call-1")
         self.assertEqual(normalized[1].output.to_text(), "aborted")
+
+    def test_normalize_call_outputs_drops_bad_tool_search_error_output_and_inserts_search_output(self) -> None:
+        tool_search_call = ResponseItem.tool_search_call({"limit": 3}, call_id="search-bad", execution="client")
+        error_output = function_call_output("", "failed to parse tool_search arguments")
+
+        normalized = normalize_call_outputs((tool_search_call, error_output))
+
+        self.assertEqual([item.type for item in normalized], ["tool_search_call", "tool_search_output"])
+        self.assertEqual(normalized[1].call_id, "search-bad")
+        self.assertEqual(normalized[1].status, "completed")
+        self.assertEqual(normalized[1].execution, "client")
+        self.assertEqual(normalized[1].tools, ())
 
     def test_strip_images_when_unsupported_replaces_images_and_clears_image_generation_result(self) -> None:
         message = ResponseItem.message(
@@ -471,6 +491,23 @@ class CompactRemoteTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.deleted_items, 1)
         self.assertEqual(result.items, (user,))
+
+    def test_trim_function_call_history_removes_only_same_kind_counterpart_for_tool_search_output(self) -> None:
+        user = user_message("hello")
+        same_id_function_call = ResponseItem.function_call("tool", "{}", "shared")
+        tool_search_call = ResponseItem.tool_search_call({"query": "docs"}, call_id="shared")
+        tool_output = tool_search_output("shared")
+        estimates = [12, 5]
+
+        result = trim_function_call_history_to_fit_context_window(
+            (user, same_id_function_call, tool_search_call, tool_output),
+            10,
+            "instructions",
+            lambda items, base: estimates.pop(0),
+        )
+
+        self.assertEqual(result.deleted_items, 1)
+        self.assertEqual(result.items, (user, same_id_function_call))
 
     def test_trim_function_call_history_stops_at_non_codex_tail(self) -> None:
         user = user_message("hello")

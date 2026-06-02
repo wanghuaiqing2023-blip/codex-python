@@ -105,14 +105,29 @@ class CompactRemoteV2Tests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response_id, "resp-compact")
 
     def test_collect_compaction_output_requires_completed_response(self) -> None:
-        with self.assertRaisesRegex(
-            RemoteCompactionV2StreamError,
-            "closed before response.completed",
-        ):
+        with self.assertRaises(CodexErr) as caught:
             collect_compaction_output(({"type": "output_item_done", "item": ResponseItem.compaction("enc")},))
 
+        self.assertEqual(caught.exception.kind, "stream")
+        self.assertTrue(caught.exception.is_retryable())
+        self.assertIn("closed before response.completed", caught.exception.message)
+
+    def test_collect_compaction_output_propagates_stream_errors_like_rust(self) -> None:
+        err = CodexErr.stream("remote disconnect")
+
+        with self.assertRaises(CodexErr) as caught:
+            collect_compaction_output(
+                (
+                    {"type": "output_item_done", "item": ResponseItem.compaction("enc")},
+                    err,
+                    {"type": "completed", "response_id": "resp-compact"},
+                )
+            )
+
+        self.assertIs(caught.exception, err)
+
     def test_collect_compaction_output_requires_exactly_one_compaction_item(self) -> None:
-        with self.assertRaisesRegex(RemoteCompactionV2OutputError, "got 0 from 1 output items"):
+        with self.assertRaises(CodexErr) as caught_zero:
             collect_compaction_output(
                 (
                     {"type": "output_item_done", "item": message("assistant", "ignored")},
@@ -120,7 +135,11 @@ class CompactRemoteV2Tests(unittest.IsolatedAsyncioTestCase):
                 )
             )
 
-        with self.assertRaisesRegex(RemoteCompactionV2OutputError, "got 2 from 2 output items"):
+        self.assertEqual(caught_zero.exception.kind, "fatal")
+        self.assertFalse(caught_zero.exception.is_retryable())
+        self.assertIn("got 0 from 1 output items", caught_zero.exception.message)
+
+        with self.assertRaises(CodexErr) as caught_two:
             collect_compaction_output(
                 (
                     {"type": "output_item_done", "item": ResponseItem.compaction("one")},
@@ -128,6 +147,10 @@ class CompactRemoteV2Tests(unittest.IsolatedAsyncioTestCase):
                     {"type": "completed", "response_id": "resp-compact"},
                 )
             )
+
+        self.assertEqual(caught_two.exception.kind, "fatal")
+        self.assertFalse(caught_two.exception.is_retryable())
+        self.assertIn("got 2 from 2 output items", caught_two.exception.message)
 
     def test_response_processed_request_for_remote_compaction_v2_requires_feature(self) -> None:
         self.assertIsNone(
@@ -384,6 +407,18 @@ class CompactRemoteV2Tests(unittest.IsolatedAsyncioTestCase):
             ),
             [image_only, newest],
         )
+        self.assertEqual(
+            truncate_retained_messages_for_remote_compaction((image_only, newest), max_tokens=1),
+            [newest],
+        )
+
+    def test_retained_history_truncation_drops_image_only_messages_after_budget_is_spent(self) -> None:
+        image_only = ResponseItem.message(
+            "user",
+            (ContentItem.input_image("data:image/png;base64,abc"),),
+        )
+        newest = message("user", "new")
+
         self.assertEqual(
             truncate_retained_messages_for_remote_compaction((image_only, newest), max_tokens=1),
             [newest],

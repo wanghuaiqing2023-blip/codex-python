@@ -11,6 +11,7 @@ from pycodex.core import (
     APPLY_PATCH_TOOL_NAME,
     ApplyPatchAction,
     ApplyPatchArgs,
+    ApplyPatchArgumentDiffConsumer,
     ApplyPatchError,
     ApplyPatchFileChange,
     ApplyPatchFileUpdate,
@@ -22,7 +23,9 @@ from pycodex.core import (
     MaybeApplyPatch,
     StreamingPatchParser,
     ToolPayload,
+    ToolInvocation,
     UpdateFileChunk,
+    convert_apply_patch_hunks_to_protocol,
     convert_apply_patch_to_protocol,
     create_apply_patch_freeform_tool,
     derive_new_contents_from_chunks,
@@ -34,7 +37,19 @@ from pycodex.core import (
     unified_diff_from_chunks,
     verify_apply_patch_args,
 )
-from pycodex.protocol import ToolName
+from pycodex.core.features import Feature
+from pycodex.core.hook_names import HookToolName
+from pycodex.protocol import (
+    AdditionalPermissionProfile,
+    AskForApproval,
+    FileSystemAccessMode,
+    FileSystemPath,
+    FileSystemPermissions,
+    FileSystemSandboxEntry,
+    GranularApprovalConfig,
+    PermissionProfile,
+    ToolName,
+)
 from pycodex.protocol import FileChange
 
 
@@ -171,6 +186,78 @@ class CoreApplyPatchTests(unittest.TestCase):
         self.assertTrue(handler.matches_kind(ToolPayload.custom("*** Begin Patch\n")))
         self.assertFalse(handler.matches_kind(ToolPayload.function("{}")))
 
+    def test_apply_patch_handler_hook_payloads_match_rust_custom_shape(self) -> None:
+        handler = ApplyPatchHandler()
+        patch = "*** Begin Patch\n*** Add File: hello.txt\n+hello\n*** End Patch\n"
+        invocation = ToolInvocation(
+            call_id="patch-1",
+            tool_name=ToolName.plain("apply_patch"),
+            payload=ToolPayload.custom(patch),
+        )
+
+        pre = handler.pre_tool_use_payload(invocation)
+
+        self.assertIsNotNone(pre)
+        self.assertEqual(pre.tool_name, HookToolName.apply_patch())
+        self.assertEqual(pre.tool_input, {"command": patch})
+
+        rewritten = handler.with_updated_hook_input(
+            invocation,
+            {"command": "*** Begin Patch\n*** Add File: rewritten.txt\n+new\n*** End Patch\n"},
+        )
+
+        self.assertEqual(
+            rewritten.payload.input,
+            "*** Begin Patch\n*** Add File: rewritten.txt\n+new\n*** End Patch\n",
+        )
+
+        output = ApplyPatchToolOutput.from_text("Success. Updated the following files:\nA hello.txt\n")
+        post = handler.post_tool_use_payload(invocation, output)
+
+        self.assertIsNotNone(post)
+        self.assertEqual(post.tool_name, HookToolName.apply_patch())
+        self.assertEqual(post.tool_use_id, "patch-1")
+        self.assertEqual(post.tool_input, {"command": patch})
+        self.assertEqual(post.tool_response, output.text)
+
+    def test_apply_patch_argument_diff_consumer_emits_patch_apply_updates_when_feature_enabled(self) -> None:
+        class Features:
+            def enabled(self, feature) -> bool:
+                return feature is Feature.APPLY_PATCH_STREAMING_EVENTS
+
+        consumer = ApplyPatchArgumentDiffConsumer()
+        patch = "*** Begin Patch\n*** Add File: streamed.txt\n+hello\n*** End Patch\n"
+
+        event = consumer.consume_diff(SimpleNamespace(features=Features()), "patch-1", patch)
+
+        self.assertIsNotNone(event)
+        self.assertEqual(event.type, "patch_apply_updated")
+        self.assertEqual(event.payload.call_id, "patch-1")
+        self.assertEqual(event.payload.changes, {Path("streamed.txt"): FileChange.add("hello\n")})
+        self.assertIsNone(consumer.finish())
+
+    def test_apply_patch_argument_diff_consumer_respects_streaming_feature_gate(self) -> None:
+        consumer = ApplyPatchArgumentDiffConsumer()
+        patch = "*** Begin Patch\n*** Add File: skipped.txt\n+hello\n*** End Patch\n"
+
+        event = consumer.consume_diff(SimpleNamespace(features={}), "patch-1", patch)
+
+        self.assertIsNone(event)
+
+    def test_convert_apply_patch_hunks_to_protocol_formats_update_progress(self) -> None:
+        hunks = (
+            Hunk.update_file(
+                "edit.txt",
+                move_path="moved.txt",
+                chunks=(UpdateFileChunk(None, old_lines=("old",), new_lines=("new",)),),
+            ),
+        )
+
+        self.assertEqual(
+            convert_apply_patch_hunks_to_protocol(hunks),
+            {Path("edit.txt"): FileChange.update("@@\n-old\n+new\n", move_path=Path("moved.txt"))},
+        )
+
     def test_resolve_apply_patch_invocation_uses_selected_environment(self) -> None:
         remote = SimpleNamespace(environment_id="remote", cwd=Path("/remote"))
         invocation = SimpleNamespace(
@@ -296,6 +383,114 @@ class CoreApplyPatchTests(unittest.TestCase):
                 ApplyPatchHandler().handle(invocation)
 
             self.assertIn("apply_patch verification failed:", str(error.exception))
+
+    def test_apply_patch_handler_requires_approval_for_read_only_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            invocation = SimpleNamespace(
+                turn=SimpleNamespace(
+                    approval_policy=AskForApproval.ON_REQUEST,
+                    file_system_sandbox_policy=PermissionProfile.read_only().file_system_sandbox_policy(),
+                    environments=(SimpleNamespace(environment_id="local", cwd=root),),
+                ),
+                payload=ToolPayload.custom(
+                    "*** Begin Patch\n"
+                    "*** Add File: created.txt\n"
+                    "+blocked\n"
+                    "*** End Patch"
+                ),
+            )
+
+            with self.assertRaises(FunctionCallError) as error:
+                ApplyPatchHandler().handle(invocation)
+
+            self.assertIn("approval_required", str(error.exception))
+            self.assertFalse((root / "created.txt").exists())
+
+    def test_apply_patch_handler_forbids_read_only_policy_when_granular_disallows_sandbox_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            invocation = SimpleNamespace(
+                turn=SimpleNamespace(
+                    approval_policy=GranularApprovalConfig(
+                        sandbox_approval=False,
+                        rules=True,
+                        skill_approval=False,
+                        request_permissions=True,
+                        mcp_elicitations=False,
+                    ),
+                    file_system_sandbox_policy=PermissionProfile.read_only().file_system_sandbox_policy(),
+                    environments=(SimpleNamespace(environment_id="local", cwd=root),),
+                ),
+                payload=ToolPayload.custom(
+                    "*** Begin Patch\n"
+                    "*** Add File: created.txt\n"
+                    "+blocked\n"
+                    "*** End Patch"
+                ),
+            )
+
+            with self.assertRaises(FunctionCallError) as error:
+                ApplyPatchHandler().handle(invocation)
+
+            self.assertIn("exit_code: forbidden", str(error.exception))
+            self.assertIn("approval_policy: granular", str(error.exception))
+            self.assertFalse((root / "created.txt").exists())
+
+    def test_apply_patch_handler_allows_workspace_write_policy_for_cwd(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            invocation = SimpleNamespace(
+                turn=SimpleNamespace(
+                    approval_policy=AskForApproval.NEVER,
+                    file_system_sandbox_policy=PermissionProfile.workspace_write().file_system_sandbox_policy(),
+                    environments=(SimpleNamespace(environment_id="local", cwd=root),),
+                ),
+                payload=ToolPayload.custom(
+                    "*** Begin Patch\n"
+                    "*** Add File: created.txt\n"
+                    "+allowed\n"
+                    "*** End Patch"
+                ),
+            )
+
+            output = ApplyPatchHandler().handle(invocation)
+
+            self.assertIn("Success. Updated the following files:", output.text)
+            self.assertEqual((root / "created.txt").read_text(encoding="utf-8"), "allowed\n")
+
+    def test_apply_patch_handler_allows_granted_write_permissions_for_read_only_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            granted_permissions = AdditionalPermissionProfile(
+                file_system=FileSystemPermissions(
+                    (
+                        FileSystemSandboxEntry(
+                            FileSystemPath.explicit_path(root),
+                            FileSystemAccessMode.WRITE,
+                        ),
+                    )
+                )
+            )
+            invocation = SimpleNamespace(
+                session=SimpleNamespace(_granted_turn_permissions=granted_permissions),
+                turn=SimpleNamespace(
+                    approval_policy=AskForApproval.ON_REQUEST,
+                    file_system_sandbox_policy=PermissionProfile.read_only().file_system_sandbox_policy(),
+                    environments=(SimpleNamespace(environment_id="local", cwd=root),),
+                ),
+                payload=ToolPayload.custom(
+                    "*** Begin Patch\n"
+                    "*** Add File: created.txt\n"
+                    "+granted\n"
+                    "*** End Patch"
+                ),
+            )
+
+            output = ApplyPatchHandler().handle(invocation)
+
+            self.assertIn("Success. Updated the following files:", output.text)
+            self.assertEqual((root / "created.txt").read_text(encoding="utf-8"), "granted\n")
 
     def test_apply_patch_handler_move_update_reports_original_path_like_rust(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

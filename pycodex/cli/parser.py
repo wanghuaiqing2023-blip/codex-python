@@ -50,6 +50,8 @@ from pycodex.exec import (
     JsonEventProcessor,
     build_exec_config_bootstrap_plan,
     direct_resume_thread_id,
+    ensure_exec_trusted_directory,
+    exec_trusted_directory_check,
     parse_exec_args,
     prepare_exec_run_plan,
     resolve_remote_endpoint,
@@ -69,10 +71,20 @@ from pycodex.exec.local_runtime import (
     local_http_exec_tool_output_max_chars,
     local_http_exec_config_summary,
     local_http_exec_initial_messages_from_rollout,
+    local_http_review_rollout_input_items,
     persist_local_http_exec_rollout,
+    run_exec_review_http_sampling,
     run_exec_resume_user_turn_http_sampling,
     run_exec_user_turn_http_sampling,
     run_exec_user_turn_with_shell_tools_http_sampling,
+)
+from pycodex.exec.core_runtime import (
+    build_default_core_exec_runtime,
+    core_exec_enabled,
+    emit_core_exec_config_summary,
+    emit_core_exec_result,
+    run_core_exec_command,
+    resolve_core_exec_resume_target,
 )
 from pycodex.protocol import AskForApproval, ProfileV2Name, ProfileV2NameParseError, SandboxMode
 from pycodex.protocol.config_types import ConfigTypeParseError
@@ -119,6 +131,7 @@ from .doctor_updates import (
     redacted_doctor_report_mapping,
 )
 from pycodex.tui import run_tui
+from pycodex.core.exec_policy import ExecPolicyPrefixRule
 from pycodex.core.git_info import current_branch_name, default_branch_name
 from pycodex.core.paths import find_codex_home
 from pycodex.core.config_edit import CONFIG_TOML_FILE, read_toml_mapping, write_toml_mapping
@@ -737,6 +750,7 @@ def _parse_app_server_args(args: tuple[str, ...]) -> tuple[str, ...]:
         return args
     if not args:
         return args
+    original_args = args
 
     root_bool_options = {"--strict-config", "--remote-control", "--analytics-default-enabled"}
     root_value_options = {
@@ -805,8 +819,8 @@ def _parse_app_server_args(args: tuple[str, ...]) -> tuple[str, ...]:
                 or root_ws_max_clock_skew
             ):
                 raise CliParseError(
-                    "websocket auth flags require `--ws-auth capability-token` or "
-                    "`--ws-auth signed-bearer-token`"
+                    "websocket auth flags require `--ws-auth` "
+                    "(`--ws-auth capability-token` or `--ws-auth signed-bearer-token`)"
                 )
         elif root_ws_auth == "capability-token":
             if root_ws_shared_secret_file or root_ws_issuer or root_ws_audience or root_ws_max_clock_skew:
@@ -855,14 +869,14 @@ def _parse_app_server_args(args: tuple[str, ...]) -> tuple[str, ...]:
             if len(rest) == 2 and rest[1] != "--remote-control":
                 raise CliParseError(f"Unknown argument for app-server daemon bootstrap: {rest[1]}")
             if len(rest) == 1 or rest[1] == "--remote-control":
-                return args
+                return original_args
         elif len(rest) != 1:
             raise CliParseError(f"Too many arguments for `app-server daemon {daemon_command}`.")
-        return args
+        return original_args
 
     if subcommand == "proxy":
         if not rest:
-            return args
+            return original_args
         index = 0
         while index < len(rest):
             arg = rest[index]
@@ -874,7 +888,7 @@ def _parse_app_server_args(args: tuple[str, ...]) -> tuple[str, ...]:
             if arg.startswith("-"):
                 raise CliParseError(f"Unknown argument for app-server proxy: {arg}")
             raise CliParseError(f"Unknown argument for app-server proxy: {arg}")
-        return args
+        return original_args
 
     if subcommand == "generate-ts":
         if not rest:
@@ -904,7 +918,7 @@ def _parse_app_server_args(args: tuple[str, ...]) -> tuple[str, ...]:
             raise CliParseError(f"Unknown argument for app-server generate-ts: {arg}")
         if not seen_out:
             raise CliParseError("app-server generate-ts requires --out.")
-        return args
+        return original_args
 
     if subcommand == "generate-json-schema":
         if not rest:
@@ -929,7 +943,7 @@ def _parse_app_server_args(args: tuple[str, ...]) -> tuple[str, ...]:
             raise CliParseError(f"Unknown argument for app-server generate-json-schema: {arg}")
         if not seen_out:
             raise CliParseError("app-server generate-json-schema requires --out.")
-        return args
+        return original_args
 
     if subcommand == "generate-internal-json-schema":
         if not rest:
@@ -951,7 +965,7 @@ def _parse_app_server_args(args: tuple[str, ...]) -> tuple[str, ...]:
             raise CliParseError(f"Unknown argument for app-server generate-internal-json-schema: {arg}")
         if not seen_out:
             raise CliParseError("app-server generate-internal-json-schema requires --out.")
-        return args
+        return original_args
 
     raise CliParseError(f"Unknown app-server subcommand: {subcommand}")
 
@@ -1195,7 +1209,7 @@ def _parse_apply_args(args: tuple[str, ...]) -> tuple[str, ...]:
         return args
 
     if not args:
-        return args
+        raise CliParseError("apply requires TASK_ID.")
     if args[0] == "--":
         if len(args) < 2:
             raise CliParseError("apply requires TASK_ID.")
@@ -1422,7 +1436,7 @@ def _parse_debug_args(args: tuple[str, ...]) -> tuple[str, ...]:
 
     if subcommand == "app-server":
         if not rest:
-            raise CliParseError("debug app-server requires a subcommand.")
+            raise CliParseError("debug app-server send-message-v2 requires USER_MESSAGE.")
         if rest[0] != "send-message-v2":
             raise CliParseError(f"Unknown debug app-server subcommand: {rest[0]}")
         if len(rest) != 2:
@@ -2052,7 +2066,7 @@ def _print_cloud_list_output(
         return
 
     if not tasks:
-        print("No tasks found.")
+        print("No tasks found.", file=stdout)
         return
 
     for item in tasks:
@@ -2060,9 +2074,9 @@ def _print_cloud_list_output(
         status = item.get("status") or "unknown"
         title = item.get("title") or ""
         url = item.get("url") or ""
-        print(f"{task_id}  {status}  {title}")
+        print(f"{task_id}  {status}  {title}", file=stdout)
         if url:
-            print(f"  {url}")
+            print(f"  {url}", file=stdout)
 
 
 def _cloud_task_id_and_attempt(command: str, args: tuple[str, ...]) -> tuple[str, int | None]:
@@ -2186,12 +2200,28 @@ def main(
         return 0
 
     if parsed.is_interactive:
+        if parsed.prompt is not None and (local_http_exec_enabled() or core_exec_enabled()):
+            fallback = replace(
+                parsed,
+                command="exec",
+                command_spec=COMMANDS_BY_NAME.get("exec"),
+                command_args=(parsed.prompt,),
+                prompt=None,
+            )
+            return _run_noninteractive_exec(
+                fallback,
+                stdout=out,
+                stderr=err,
+                stdin=stdin,
+                stdin_is_terminal=stdin_is_terminal,
+            )
         if os.environ.get("PYCODEX_INTERACTIVE_TO_EXEC_FALLBACK", "").strip().lower() in {"1", "true", "yes", "on"}:
             fallback = replace(
                 parsed,
                 command="exec",
                 command_spec=COMMANDS_BY_NAME.get("exec"),
-                command_args=(),
+                command_args=() if parsed.prompt is None else (parsed.prompt,),
+                prompt=None,
             )
             return _run_noninteractive_exec(
                 fallback,
@@ -2332,6 +2362,8 @@ def main(
             parsed,
             stdout=out,
             stderr=err,
+            stdin=stdin,
+            stdin_is_terminal=stdin_is_terminal,
         )
     elif parsed.command == "app":
         if parsed.command_args and any(arg in {"-h", "--help"} for arg in parsed.command_args):
@@ -3819,18 +3851,18 @@ def _run_remote_control_command(
         if subcommand == "start":
             return _run_remote_control_start(
                 mode="daemon",
-                json=is_json,
+                json_output=is_json,
                 stdout=stdout,
                 stderr=stderr,
             )
         if subcommand == "stop":
-            return _run_remote_control_stop(json=is_json, stdout=stdout, stderr=stderr)
+            return _run_remote_control_stop(json_output=is_json, stdout=stdout, stderr=stderr)
         print(f"pycodex: unrecognized remote-control subcommand: {subcommand}", file=stderr)
         return 2
 
     return _run_remote_control_start(
         mode="foreground",
-        json=is_json,
+        json_output=is_json,
         stdout=stdout,
         stderr=stderr,
     )
@@ -3839,7 +3871,7 @@ def _run_remote_control_command(
 def _run_remote_control_start(
     *,
     mode: str,
-    json: bool,
+    json_output: bool,
     stdout: TextIO,
     stderr: TextIO,
 ) -> int:
@@ -3848,7 +3880,7 @@ def _run_remote_control_start(
         if mode == "foreground"
         else "Starting app-server daemon with remote control enabled..."
     )
-    if not json:
+    if not json_output:
         print(start_message, file=stdout)
 
     try:
@@ -3937,7 +3969,7 @@ def _run_remote_control_start(
         print(f"pycodex: failed to write remote-control state: {exc}", file=stderr)
         return 2
 
-    if json:
+    if json_output:
         payload = _remote_control_start_json_payload(
             remote_control,
             mode=mode,
@@ -3953,7 +3985,7 @@ def _run_remote_control_start(
 
 def _run_remote_control_stop(
     *,
-    json: bool,
+    json_output: bool,
     stdout: TextIO,
     stderr: TextIO,
 ) -> int:
@@ -3962,9 +3994,6 @@ def _run_remote_control_stop(
     except RuntimeError as exc:
         print(f"pycodex: {exc}", file=stderr)
         return 2
-
-    if not json:
-        print("Stopping remote control...", file=stdout)
 
     state_path = codex_home / _APP_SERVER_STATE_FILE
     try:
@@ -4021,7 +4050,7 @@ def _run_remote_control_stop(
         print(f"pycodex: failed to write remote-control state: {exc}", file=stderr)
         return 2
 
-    if json:
+    if json_output:
         print(
             json.dumps(
                 _remote_control_stop_json_payload(
@@ -4752,6 +4781,8 @@ def _run_responses_api_proxy(
         "connection",
         "trailer",
         "upgrade",
+        "server",
+        "date",
     }
 
     class _ResponsesApiProxyHandler(BaseHTTPRequestHandler):
@@ -4824,9 +4855,12 @@ def _run_responses_api_proxy(
 
                 self.send_response(status)
                 response_headers = list(response.headers.items()) if response is not None else []
-                for name, value in response_headers:
-                    if name.lower() in skip_response_headers:
-                        continue
+                forwarded_response_headers = [
+                    (name, value)
+                    for name, value in response_headers
+                    if name.lower() not in skip_response_headers
+                ]
+                for name, value in forwarded_response_headers:
                     self.send_header(name, value)
                 self.end_headers()
 
@@ -4840,7 +4874,7 @@ def _run_responses_api_proxy(
 
                 response_dump = _ResponseBodyDumper(
                     status,
-                    response_headers,
+                    forwarded_response_headers,
                     response,
                     response_path,
                     stderr,
@@ -5284,6 +5318,25 @@ def _run_mcp_server_stdio_runtime(
                 )
                 return
 
+            unknown = sorted(str(key) for key in arguments if key not in _MCP_STUB_CODEX_TOOL_ARGUMENT_KEYS)
+            if unknown:
+                message = f"Failed to parse configuration for Codex tool: unknown field `{unknown[0]}`"
+                _emit(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "result": {
+                            "content": [{"type": "text", "text": message}],
+                            "structuredContent": {
+                                "threadId": "",
+                                "content": message,
+                            },
+                            "isError": True,
+                        },
+                    }
+                )
+                return
+
             thread_id = _next_stub_thread_id()
             _MCP_STUB_SESSION_STORE[thread_id] = {
                 "prompt": prompt,
@@ -5662,6 +5715,8 @@ def _run_resume_or_fork_command(
     *,
     stdout: TextIO,
     stderr: TextIO,
+    stdin: object | None = None,
+    stdin_is_terminal: bool | None = None,
 ) -> int:
     command = parsed.command
     if command is None:
@@ -5714,6 +5769,9 @@ def _run_resume_or_fork_command(
                 command_args=filtered_args,
                 command_spec=COMMANDS_BY_NAME.get("resume"),
             ),
+            stdout=stdout,
+            stdin=stdin,
+            stdin_is_terminal=stdin_is_terminal,
             stderr=stderr,
         )
 
@@ -5725,6 +5783,7 @@ def _run_resume_or_fork_command(
                 command_args=command_args,
                 command_spec=COMMANDS_BY_NAME.get("resume"),
             ),
+            stdout=stdout,
             stdin=stdin,
             stdin_is_terminal=stdin_is_terminal,
             stderr=stderr,
@@ -6225,6 +6284,43 @@ def _load_execpolicy_rules(
     return rules_by_program, host_executables
 
 
+def _collect_execpolicy_rule_files_from_dir(rules_dir: Path | str) -> tuple[str, ...]:
+    path = Path(rules_dir)
+    if not path.exists():
+        return ()
+    if not path.is_dir():
+        raise RuntimeError(f"failed to read rules files from {path}: not a directory")
+    try:
+        return tuple(str(child) for child in sorted(path.iterdir()) if child.is_file() and child.suffix == ".rules")
+    except OSError as exc:
+        raise RuntimeError(f"failed to read rules files from {path}: {exc}") from exc
+
+
+def _default_execpolicy_rule_paths(codex_home: Path | str, cwd: Path | str) -> tuple[str, ...]:
+    paths: list[str] = []
+    for rules_dir in (Path(codex_home) / "rules", Path(cwd) / ".codex" / "rules"):
+        paths.extend(_collect_execpolicy_rule_files_from_dir(rules_dir))
+    return tuple(paths)
+
+
+def _execpolicy_rules_for_local_http_exec(
+    codex_home: Path | str,
+    cwd: Path | str,
+    *,
+    ignore_rules: bool,
+) -> tuple[ExecPolicyPrefixRule, ...]:
+    if ignore_rules:
+        return ()
+    rule_paths = _default_execpolicy_rule_paths(codex_home, cwd)
+    if not rule_paths:
+        return ()
+    rules_by_program, _host_executables = _load_execpolicy_rules(rule_paths)
+    return tuple(
+        ExecPolicyPrefixRule.new(rule.pattern, rule.decision, rule.justification)
+        for rule in _iter_execpolicy_rules(rules_by_program)
+    )
+
+
 def _render_execpolicy_output(
     matched_rules: list[tuple[_ExecPolicyRule, tuple[str, ...], str | None]],
     *,
@@ -6335,7 +6431,7 @@ def _run_cloud_command(
     stdin_is_terminal: bool | None = None,
 ) -> int:
     if any(arg in {"-h", "--help"} for arg in command_args):
-        if not command_args:
+        if not command_args or command_args[0] in {"-h", "--help"}:
             print(_cloud_help_text(None), file=stdout)
         elif command_args[0] in {"exec", "status", "list", "apply", "diff"}:
             print(_cloud_help_text(command_args[0]), file=stdout)
@@ -7168,7 +7264,7 @@ def _run_app_command(
             stderr=stderr,
         )
 
-    if os.name == "nt":
+    if sys.platform.startswith("win"):
         return _run_app_command_windows(
             workspace=workspace,
             download_url=download_url,
@@ -7902,7 +7998,11 @@ def _login_help_text() -> str:
     )
 
 
-def _build_exec_session_config(bootstrap: ExecConfigBootstrapPlan) -> ExecSessionConfig:
+def _build_exec_session_config(
+    bootstrap: ExecConfigBootstrapPlan,
+    *,
+    exec_policy_rules: Iterable[ExecPolicyPrefixRule] = (),
+) -> ExecSessionConfig:
     """Build the minimal session config for remote execution startup."""
 
     return ExecSessionConfig(
@@ -7916,6 +8016,10 @@ def _build_exec_session_config(bootstrap: ExecConfigBootstrapPlan) -> ExecSessio
         approval_policy=bootstrap.harness_overrides.approval_policy or AskForApproval.NEVER,
         ephemeral=bool(bootstrap.harness_overrides.ephemeral),
         show_raw_agent_reasoning=bool(bootstrap.harness_overrides.show_raw_agent_reasoning),
+        exec_policy_rules=tuple(exec_policy_rules),
+        allow_login_shell=bootstrap.allow_login_shell,
+        exec_permission_approvals_enabled=bootstrap.exec_permission_approvals_enabled,
+        request_permissions_tool_enabled=bootstrap.request_permissions_tool_enabled,
     )
 
 
@@ -8076,25 +8180,105 @@ def _run_noninteractive_exec(
             stdin_is_terminal=stdin_is_terminal,
             stderr=stderr,
         )
+        ensure_exec_trusted_directory(
+            exec_trusted_directory_check(exec_cli, bootstrap_plan.config_cwd)
+        )
     except (ExecConfigPlanError, ExecRunError, ValueError) as exc:
         print(str(exc), file=stderr)
         return 2
 
     command_name = parsed.command
     print(f"pycodex: prepared non-interactive {command_name} plan.", file=stderr)
-    if command_name == "review":
+    if command_name == "review" and not (local_http_exec_enabled() or core_exec_enabled()):
+        return 0
+
+    if core_exec_enabled():
+        processor = _build_noninteractive_exec_event_processor(exec_cli)
+        try:
+            exec_policy_rules = _execpolicy_rules_for_local_http_exec(
+                codex_home,
+                bootstrap_plan.config_cwd,
+                ignore_rules=exec_cli.ignore_rules,
+            )
+            session_config = _build_exec_session_config(
+                bootstrap_plan,
+                exec_policy_rules=exec_policy_rules,
+            )
+            if isinstance(processor, HumanEventProcessor):
+                processor.configure_from_config(session_config)
+            auth_json = read_auth_json()
+            model_client, provider, model_info, resolved_auth = build_default_core_exec_runtime(
+                session_config,
+                auth=auth_json,
+                config_toml=config_toml,
+            )
+            resolved_resume_rollout_path = None
+            if exec_cli.command == "resume":
+                resume_target = resolve_core_exec_resume_target(
+                    codex_home,
+                    session_config,
+                    model_client,
+                    exec_cli.resume,
+                )
+                if resume_target is not None:
+                    resolved_resume_rollout_path = resume_target.rollout_path
+            emit_core_exec_config_summary(
+                processor,
+                session_config,
+                plan,
+                model_client,
+                model_info,
+                rollout_path=resolved_resume_rollout_path,
+                stdout=out,
+                stderr=stderr,
+                version=__version__,
+            )
+            local_result = asyncio.run(
+                run_core_exec_command(
+                    exec_cli.command,
+                    codex_home,
+                    session_config,
+                    plan,
+                    model_client,
+                    provider,
+                    model_info,
+                    resume_args=exec_cli.resume,
+                    resume_target=resume_target if exec_cli.command == "resume" else None,
+                    resume_target_resolved=exec_cli.command == "resume",
+                    auth=resolved_auth,
+                    max_tool_followups=local_http_exec_max_tool_rounds(),
+                    cli_version=__version__,
+                )
+            )
+        except ValueError as exc:
+            emit_local_http_exec_error(processor, str(exc), stdout=out, stderr=stderr)
+            return 2
+        except (OSError, RuntimeError) as exc:
+            emit_local_http_exec_error(processor, str(exc), stdout=out, stderr=stderr)
+            return 1
+
+        emit_core_exec_result(
+            command_name,
+            processor,
+            local_result,
+            session_config,
+            stdout=out,
+            stderr=stderr,
+        )
         return 0
 
     if local_http_exec_enabled():
-        if exec_cli.command == "review":
-            print(
-                "pycodex: PYCODEX_EXEC_LOCAL_HTTP currently supports only fresh `codex exec` user turns.",
-                file=stderr,
-            )
-            return 2
         processor = _build_noninteractive_exec_event_processor(exec_cli)
         try:
-            session_config = _build_exec_session_config(bootstrap_plan)
+            exec_policy_rules = _execpolicy_rules_for_local_http_exec(
+                codex_home,
+                bootstrap_plan.config_cwd,
+                ignore_rules=exec_cli.ignore_rules,
+            )
+            session_config = _build_exec_session_config(
+                bootstrap_plan,
+                exec_policy_rules=exec_policy_rules,
+            )
             if isinstance(processor, HumanEventProcessor):
                 processor.configure_from_config(session_config)
             auth_json = read_auth_json()
@@ -8151,7 +8335,30 @@ def _run_noninteractive_exec(
                     stderr=stderr,
                     version=__version__,
                 )
-            if exec_cli.command == "resume":
+            if exec_cli.command == "review":
+                use_shell_tools = local_http_exec_shell_tools_enabled()
+                local_result = asyncio.run(
+                    run_exec_review_http_sampling(
+                        session_config,
+                        plan,
+                        model_client,
+                        provider,
+                        model_info,
+                        auth=resolved_auth,
+                        use_shell_tools=use_shell_tools,
+                        max_tool_rounds=local_http_exec_max_tool_rounds() if use_shell_tools else 1,
+                        tool_output_max_chars=local_http_exec_tool_output_max_chars() if use_shell_tools else None,
+                    )
+                )
+                persist_local_http_exec_rollout(
+                    codex_home,
+                    session_config,
+                    local_result,
+                    model_client,
+                    input_items=local_http_review_rollout_input_items(local_result),
+                    cli_version=__version__,
+                )
+            elif exec_cli.command == "resume":
                 local_result = asyncio.run(
                     run_exec_resume_user_turn_http_sampling(
                         codex_home,
@@ -8415,6 +8622,9 @@ def _inherit_exec_root_options(exec_cli: ExecCli, parsed: ParsedCli) -> ExecCli:
         if exec_cli.local_provider is not None
         else _typed_root_value(root, "local_provider", str),
         profile=exec_cli.profile if exec_cli.profile is not None else _typed_root_value(root, "profile", ProfileV2Name),
+        approval_policy=exec_cli.approval_policy
+        if exec_cli.approval_policy is not None
+        else _typed_root_value(root, "approval_policy", AskForApproval),
         sandbox=exec_cli.sandbox
         if exec_selected_sandbox or not root_selected_sandbox
         else _typed_root_value(root, "sandbox", SandboxMode),

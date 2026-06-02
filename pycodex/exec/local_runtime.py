@@ -6,13 +6,14 @@ import os
 import json
 import inspect
 import secrets
+import shlex
 import signal
 import subprocess
 import threading
 import time
 from collections import deque
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from itertools import count
 from pathlib import Path
@@ -23,25 +24,38 @@ from pycodex.core.apply_patch import (
     apply_patch_action_to_disk,
     convert_apply_patch_to_protocol,
     create_apply_patch_freeform_tool,
+    maybe_parse_apply_patch_verified,
     parse_patch,
     verify_apply_patch_args,
 )
 from pycodex.core.client import ModelClient
+from pycodex.core.client_common import REVIEW_EXIT_INTERRUPTED_TMPL, REVIEW_EXIT_SUCCESS_TMPL, REVIEW_PROMPT
+from pycodex.core.compact_remote import normalize_call_outputs
 from pycodex.core.context import TurnAborted
 from pycodex.core.exec_policy import (
     ExecApprovalRequest,
     ExecPolicyCommandOrigin,
     commands_for_exec_policy,
     create_exec_approval_requirement_for_command,
+    match_exec_policy_rules_for_command,
 )
+from pycodex.core.features import Feature
 from pycodex.core.handler_utils import (
     merge_permission_profiles,
     normalize_additional_permissions,
     permissions_are_preapproved,
 )
-from pycodex.core.http_transport import response_items_from_responses_payload, run_user_turn_http_sampling_from_session
+from pycodex.core.http_transport import (
+    http_sampling_stream_max_retries,
+    http_transport_config_from_provider,
+    model_client_http_sampler,
+    response_items_from_responses_payload,
+    run_user_turn_http_sampling_from_session,
+)
 from pycodex.core.function_tool import FunctionCallError
 from pycodex.core.request_permissions_handler import RequestPermissionsHandler
+from pycodex.core.review_format import format_review_findings_block, render_review_output_text
+from pycodex.core.review_prompts import resolve_review_request
 from pycodex.core.rollout import (
     SessionMeta,
     ThreadSortKey,
@@ -59,8 +73,22 @@ from pycodex.core.rollout import (
     read_session_meta_line,
 )
 from pycodex.core.session_runtime import InMemoryCodexSession
-from pycodex.core.shell_spec import create_request_permissions_tool, request_permissions_tool_description
-from pycodex.core.turn_runtime import UserTurnSamplingResult
+from pycodex.core.shell import default_user_shell
+from pycodex.core.shell_spec import (
+    CommandToolOptions,
+    create_exec_command_tool,
+    create_request_permissions_tool,
+    create_write_stdin_tool,
+    request_permissions_tool_description,
+    unified_exec_output_schema,
+)
+from pycodex.core.tool_events import command_actions_from_argv
+from pycodex.core.turn_runtime import UserTurnSamplingResult, run_user_turn_sampling_from_session
+from pycodex.core.view_image_handler import (
+    ViewImageHandler,
+    ViewImageToolOptions,
+    create_view_image_tool,
+)
 from pycodex.core.unified_exec import (
     DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS as CORE_UNIFIED_EXEC_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS,
     DEFAULT_MAX_OUTPUT_TOKENS as CORE_UNIFIED_EXEC_DEFAULT_MAX_OUTPUT_TOKENS,
@@ -82,7 +110,9 @@ from pycodex.protocol import (
     AskForApproval,
     BaseInstructions,
     CodexErr,
+    ContentItem,
     EventMsg,
+    ExitedReviewModeEvent,
     FileChange,
     FileChangeItem,
     FileSystemAccessMode,
@@ -93,23 +123,37 @@ from pycodex.protocol import (
     PatchApplyStatus,
     ResponseInputItem,
     ResponseItem,
+    ReviewOutputEvent,
     RequestPermissionProfile,
     PermissionGrantScope,
     RequestPermissionsResponse,
     SandboxPermissions,
+    TurnEnvironmentSelection,
+    UserInput,
+    approval_policy_display_value,
 )
 from pycodex.protocol import TurnAbortReason, TurnAbortedEvent, TurnItem
 from pycodex.protocol.models import AdditionalPermissionProfile, FunctionCallOutputPayload
 
 from .event_processor import HumanEventProcessor, JsonEventProcessor, exec_turn_completed_notification
-from .events import ExecThreadItem, ThreadErrorEvent, ThreadEvent, Usage, agent_message_item, file_change_item, reasoning_item
-from .run import ExecRunPlan
+from .events import (
+    ExecThreadItem,
+    ThreadErrorEvent,
+    ThreadEvent,
+    Usage,
+    agent_message_item,
+    command_execution_item,
+    file_change_item,
+    reasoning_item,
+)
+from .run import ExecRunPlan, InitialOperation
 from .session import ExecSessionConfig, cwds_match
 
 
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_OPENAI_MODEL = "gpt-5"
 LOCAL_HTTP_EXEC_ENV = "PYCODEX_EXEC_LOCAL_HTTP"
+CORE_EXEC_ENV = "PYCODEX_EXEC_CORE"
 LOCAL_HTTP_EXEC_SHELL_TOOLS_ENV = "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS"
 LOCAL_HTTP_EXEC_MAX_TOOL_ROUNDS_ENV = "PYCODEX_EXEC_LOCAL_HTTP_MAX_TOOL_ROUNDS"
 LOCAL_HTTP_EXEC_TOOL_OUTPUT_MAX_CHARS_ENV = "PYCODEX_EXEC_LOCAL_HTTP_TOOL_OUTPUT_MAX_CHARS"
@@ -141,6 +185,10 @@ class LocalHttpModelInfo:
     base_instructions: str = "You are Codex, a coding agent."
     supports_reasoning_summaries: bool = False
     support_verbosity: bool = False
+    apply_patch_tool_type: str | None = "freeform"
+    input_modalities: tuple[str, ...] = ("text", "image")
+    supports_image_detail_original: bool = False
+    supports_parallel_tool_calls: bool = False
 
     def service_tier_for_request(self, service_tier: str | None) -> str | None:
         return service_tier
@@ -192,6 +240,42 @@ class LocalHttpOutputBudget:
 
     kind: str
     amount: int
+
+
+@dataclass(frozen=True)
+class LocalHttpApplyPatchCommand:
+    """Verified apply_patch intercepted from an exec_command shell script."""
+
+    action: Any | None = None
+    changes: dict[Path, FileChange] | None = None
+    error: str | None = None
+
+
+LOCAL_HTTP_REVIEW_DISABLED_TOOL_NAMES = frozenset(
+    {
+        "view_image",
+        "web_search",
+        "get_goal",
+        "create_goal",
+        "update_goal",
+    }
+)
+
+
+class LocalHttpReviewModelInfo:
+    """Model metadata view with Rust's review-task base instructions."""
+
+    def __init__(self, inner: Any) -> None:
+        self.inner = inner
+        self.base_instructions = REVIEW_PROMPT
+        self.view_image_tool_disabled = True
+        self.disabled_tool_names = LOCAL_HTTP_REVIEW_DISABLED_TOOL_NAMES
+
+    def get_model_instructions(self, _prompt: Any = None) -> str:
+        return REVIEW_PROMPT
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.inner, name)
 
 
 class LocalHttpHeadTailBuffer:
@@ -339,6 +423,9 @@ class LocalHttpExecSession:
 
     def write(self, chars: str) -> None:
         if self.process.stdin is None or self.process.poll() is not None:
+            return
+        if chars == "\x04":
+            self.process.stdin.close()
             return
         try:
             self.process.stdin.write(chars.encode("utf-8"))
@@ -515,8 +602,40 @@ _DEFAULT_EXEC_SESSION_MANAGER = LocalHttpExecSessionManager()
 class LocalHttpShellToolRouter:
     """Minimal model-visible shell tool router for the local HTTP exec path."""
 
-    def __init__(self, base_router: Any = None) -> None:
+    def __init__(
+        self,
+        base_router: Any = None,
+        *,
+        allow_login_shell: bool = True,
+        exec_permission_approvals_enabled: bool = False,
+        request_permissions_tool_enabled: bool = False,
+        apply_patch_tool_enabled: bool = True,
+        can_request_original_image_detail: bool = False,
+        view_image_tool_enabled: bool = True,
+        disabled_tool_names: Iterable[str] = (),
+    ) -> None:
         self._base_router = base_router
+        if not isinstance(allow_login_shell, bool):
+            raise TypeError("allow_login_shell must be a bool")
+        if not isinstance(exec_permission_approvals_enabled, bool):
+            raise TypeError("exec_permission_approvals_enabled must be a bool")
+        if not isinstance(request_permissions_tool_enabled, bool):
+            raise TypeError("request_permissions_tool_enabled must be a bool")
+        if not isinstance(apply_patch_tool_enabled, bool):
+            raise TypeError("apply_patch_tool_enabled must be a bool")
+        if not isinstance(can_request_original_image_detail, bool):
+            raise TypeError("can_request_original_image_detail must be a bool")
+        if not isinstance(view_image_tool_enabled, bool):
+            raise TypeError("view_image_tool_enabled must be a bool")
+        if isinstance(disabled_tool_names, (str, bytes)):
+            raise TypeError("disabled_tool_names must be an iterable of strings")
+        self._allow_login_shell = allow_login_shell
+        self._exec_permission_approvals_enabled = exec_permission_approvals_enabled
+        self._request_permissions_tool_enabled = request_permissions_tool_enabled
+        self._apply_patch_tool_enabled = apply_patch_tool_enabled
+        self._can_request_original_image_detail = can_request_original_image_detail
+        self._view_image_tool_enabled = view_image_tool_enabled
+        self._disabled_tool_names = frozenset(str(name) for name in disabled_tool_names)
 
     def model_visible_specs(self) -> list[dict[str, Any]]:
         specs: list[dict[str, Any]] = []
@@ -525,114 +644,49 @@ class LocalHttpShellToolRouter:
             if callable(base_specs):
                 for spec in base_specs():
                     if isinstance(spec, Mapping):
-                        specs.append(dict(spec))
+                        spec_dict = dict(spec)
+                        if _local_http_tool_spec_name(spec_dict) in self._disabled_tool_names:
+                            continue
+                        specs.append(spec_dict)
         if not any(_local_http_shell_tool_spec_matches(spec) for spec in specs):
-            specs.append(local_http_shell_tool_spec())
+            specs.append(
+                local_http_shell_tool_spec(
+                    allow_login_shell=self._allow_login_shell,
+                    exec_permission_approvals_enabled=self._exec_permission_approvals_enabled,
+                )
+            )
         if not any(_local_http_write_stdin_tool_spec_matches(spec) for spec in specs):
             specs.append(local_http_write_stdin_tool_spec())
-        if not any(_local_http_request_permissions_tool_spec_matches(spec) for spec in specs):
+        if self._request_permissions_tool_enabled and not any(
+            _local_http_request_permissions_tool_spec_matches(spec) for spec in specs
+        ):
             specs.append(local_http_request_permissions_tool_spec())
-        if not any(_local_http_apply_patch_tool_spec_matches(spec) for spec in specs):
+        if self._apply_patch_tool_enabled and not any(
+            _local_http_apply_patch_tool_spec_matches(spec) for spec in specs
+        ):
             specs.append(local_http_apply_patch_tool_spec())
+        if self._view_image_tool_enabled and not any(_local_http_view_image_tool_spec_matches(spec) for spec in specs):
+            specs.append(
+                local_http_view_image_tool_spec(
+                    can_request_original_image_detail=self._can_request_original_image_detail,
+                )
+            )
         return specs
 
 
-def local_http_shell_tool_spec() -> dict[str, Any]:
+def local_http_shell_tool_spec(
+    *,
+    allow_login_shell: bool = True,
+    exec_permission_approvals_enabled: bool = False,
+) -> dict[str, Any]:
     """Return the Responses function tool spec used by local HTTP exec loop."""
 
-    description = "Runs a command in a PTY, returning output or a session ID for ongoing interaction."
-    if os.name == "nt":
-        description = f"{description}\n\n{local_http_windows_shell_guidance()}"
-
-    return {
-        "type": "function",
-        "name": "exec_command",
-        "description": description,
-        "strict": False,
-        "defer_loading": None,
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "cmd": {"type": "string", "description": "Shell command to execute."},
-                "workdir": {
-                    "type": "string",
-                    "description": "Optional working directory to run the command in; defaults to the turn cwd.",
-                },
-                "cwd": {
-                    "type": "string",
-                    "description": "Compatibility alias for workdir.",
-                },
-                "shell": {
-                    "type": "string",
-                    "description": "Shell binary to launch. Defaults to the user's default shell.",
-                },
-                "tty": {
-                    "type": "boolean",
-                    "description": (
-                        "Whether to allocate a TTY for the command. Defaults to false (plain pipes); "
-                        "set to true to open a PTY and access TTY process."
-                    ),
-                },
-                "yield_time_ms": {
-                    "type": "number",
-                    "description": "How long to wait (in milliseconds) for output before yielding.",
-                },
-                "max_output_tokens": {
-                    "type": "number",
-                    "description": "Maximum number of tokens to return. Excess output will be truncated.",
-                },
-                "timeout_ms": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "description": "Compatibility alias for command timeout in milliseconds.",
-                },
-                "timeout": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "description": "Compatibility alias for command timeout in milliseconds.",
-                },
-                "login": {
-                    "type": "boolean",
-                    "description": "Whether to run the shell with -l/-i semantics. Defaults to true.",
-                },
-                "sandbox_permissions": {
-                    "type": "string",
-                    "description": (
-                        'Sandbox permissions for the command. Use "with_additional_permissions" to request '
-                        'additional sandboxed filesystem or network permissions (preferred), or '
-                        '"require_escalated" to request running without sandbox restrictions; defaults to '
-                        '"use_default".'
-                    ),
-                },
-                "additional_permissions": {
-                    **local_http_permission_profile_schema(),
-                    "description": "Optional additional permission profile requested for this command.",
-                },
-                "justification": {
-                    "type": "string",
-                    "description": (
-                        'Only set if sandbox_permissions is "require_escalated".\n'
-                        "Request approval from the user to run this command outside the sandbox.\n"
-                        "Phrased as a simple question that summarizes the purpose of the\n"
-                        "command as it relates to the task at hand - e.g. 'Do you want to\n"
-                        "fetch and pull the latest version of this git branch?'"
-                    ),
-                },
-                "prefix_rule": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": (
-                        "Only specify when sandbox_permissions is `require_escalated`.\n"
-                        "Suggest a prefix command pattern that will allow you to fulfill similar requests from the user in the future.\n"
-                        'Should be a short but reasonable prefix, e.g. ["git", "pull"] or ["uv", "run"] or ["pytest"].'
-                    ),
-                },
-            },
-            "required": ["cmd"],
-            "additionalProperties": False,
-        },
-        "output_schema": local_http_exec_command_output_schema(),
-    }
+    return create_exec_command_tool(
+        CommandToolOptions(
+            allow_login_shell=allow_login_shell,
+            exec_permission_approvals_enabled=exec_permission_approvals_enabled,
+        )
+    )
 
 
 def local_http_windows_shell_guidance() -> str:
@@ -686,73 +740,13 @@ def local_http_permission_profile_schema() -> dict[str, Any]:
 def local_http_exec_command_output_schema() -> dict[str, Any]:
     """Return the Rust Codex ``exec_command`` output schema."""
 
-    return {
-        "type": "object",
-        "properties": {
-            "chunk_id": {
-                "type": "string",
-                "description": "Chunk identifier included when the response reports one.",
-            },
-            "wall_time_seconds": {
-                "type": "number",
-                "description": "Elapsed wall time spent waiting for output in seconds.",
-            },
-            "exit_code": {
-                "type": "number",
-                "description": "Process exit code when the command finished during this call.",
-            },
-            "session_id": {
-                "type": "number",
-                "description": "Session identifier to pass to write_stdin when the process is still running.",
-            },
-            "original_token_count": {
-                "type": "number",
-                "description": "Approximate token count before output truncation.",
-            },
-            "output": {
-                "type": "string",
-                "description": "Command output text, possibly truncated.",
-            },
-        },
-        "required": ["wall_time_seconds", "output"],
-        "additionalProperties": False,
-    }
+    return unified_exec_output_schema()
 
 
 def local_http_write_stdin_tool_spec() -> dict[str, Any]:
     """Return the Rust Codex ``write_stdin`` companion tool spec."""
 
-    return {
-        "type": "function",
-        "name": "write_stdin",
-        "description": "Writes characters to an existing unified exec session and returns recent output.",
-        "strict": False,
-        "defer_loading": None,
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "session_id": {
-                    "type": "number",
-                    "description": "Identifier of the running unified exec session.",
-                },
-                "chars": {
-                    "type": "string",
-                    "description": "Bytes to write to stdin (may be empty to poll).",
-                },
-                "yield_time_ms": {
-                    "type": "number",
-                    "description": "How long to wait (in milliseconds) for output before yielding.",
-                },
-                "max_output_tokens": {
-                    "type": "number",
-                    "description": "Maximum number of tokens to return. Excess output will be truncated.",
-                },
-            },
-            "required": ["session_id"],
-            "additionalProperties": False,
-        },
-        "output_schema": local_http_exec_command_output_schema(),
-    }
+    return create_write_stdin_tool()
 
 
 def local_http_request_permissions_tool_spec() -> dict[str, Any]:
@@ -767,19 +761,123 @@ def local_http_apply_patch_tool_spec() -> dict[str, Any]:
     return dict(create_apply_patch_freeform_tool(False).to_mapping())
 
 
-def local_http_shell_tools_built_tools(base_built_tools: Any = None) -> Any:
+def local_http_view_image_tool_spec(
+    *,
+    can_request_original_image_detail: bool = False,
+) -> dict[str, Any]:
+    """Return the Rust Codex ``view_image`` function tool spec."""
+
+    return create_view_image_tool(
+        ViewImageToolOptions(
+            can_request_original_image_detail=can_request_original_image_detail,
+        )
+    )
+
+
+def local_http_shell_tools_built_tools(
+    base_built_tools: Any = None,
+    *,
+    config: ExecSessionConfig | None = None,
+    model_info: Any = None,
+) -> Any:
     """Wrap an optional built-tools callback with the local shell tool spec."""
+
+    allow_login_shell = True if config is None else config.allow_login_shell
+    exec_permission_approvals_enabled = False if config is None else config.exec_permission_approvals_enabled
+    request_permissions_tool_enabled = False if config is None else config.request_permissions_tool_enabled
+    apply_patch_tool_enabled = local_http_model_allows_apply_patch_tool(model_info)
+    can_request_original_image_detail = local_http_model_can_request_original_image_detail(model_info)
+    disabled_tool_names = local_http_model_disabled_tool_names(model_info)
+    view_image_tool_enabled = local_http_model_allows_view_image_tool(model_info)
 
     def build(session: Any, turn_context: Any) -> Any:
         base_router = base_built_tools(session, turn_context) if callable(base_built_tools) else base_built_tools
         if inspect.isawaitable(base_router):
             async def resolve() -> LocalHttpShellToolRouter:
-                return LocalHttpShellToolRouter(await base_router)
+                return LocalHttpShellToolRouter(
+                    await base_router,
+                    allow_login_shell=allow_login_shell,
+                    exec_permission_approvals_enabled=exec_permission_approvals_enabled,
+                    request_permissions_tool_enabled=request_permissions_tool_enabled,
+                    apply_patch_tool_enabled=apply_patch_tool_enabled,
+                    can_request_original_image_detail=can_request_original_image_detail,
+                    view_image_tool_enabled=view_image_tool_enabled,
+                    disabled_tool_names=disabled_tool_names,
+                )
 
             return resolve()
-        return LocalHttpShellToolRouter(base_router)
+        return LocalHttpShellToolRouter(
+            base_router,
+            allow_login_shell=allow_login_shell,
+            exec_permission_approvals_enabled=exec_permission_approvals_enabled,
+            request_permissions_tool_enabled=request_permissions_tool_enabled,
+            apply_patch_tool_enabled=apply_patch_tool_enabled,
+            can_request_original_image_detail=can_request_original_image_detail,
+            view_image_tool_enabled=view_image_tool_enabled,
+            disabled_tool_names=disabled_tool_names,
+        )
 
     return build
+
+
+def local_http_model_allows_apply_patch_tool(model_info: Any) -> bool:
+    """Return whether Rust would expose apply_patch for this local model view."""
+
+    if model_info is None:
+        return True
+    missing = object()
+    apply_patch_tool_type = getattr(model_info, "apply_patch_tool_type", missing)
+    if apply_patch_tool_type is missing:
+        return True
+    return apply_patch_tool_type is not None
+
+
+def local_http_model_supports_image_inputs(model_info: Any) -> bool:
+    """Return whether the local model view can consume image input content."""
+
+    if model_info is None:
+        return True
+    modalities = getattr(model_info, "input_modalities", None)
+    if modalities is None:
+        return True
+    try:
+        return any(str(modality).lower().split(".")[-1] == "image" for modality in modalities)
+    except TypeError:
+        return False
+
+
+def local_http_model_can_request_original_image_detail(model_info: Any) -> bool:
+    """Return whether view_image may request original-resolution detail."""
+
+    if model_info is None:
+        return False
+    return bool(getattr(model_info, "supports_image_detail_original", False))
+
+
+def local_http_model_allows_view_image_tool(model_info: Any) -> bool:
+    """Return whether the model view should expose the view_image tool."""
+
+    if bool(getattr(model_info, "view_image_tool_disabled", False)):
+        return False
+    return "view_image" not in local_http_model_disabled_tool_names(model_info)
+
+
+def local_http_model_disabled_tool_names(model_info: Any) -> frozenset[str]:
+    """Return direct tool names hidden from this local model view."""
+
+    raw_names = getattr(model_info, "disabled_tool_names", ())
+    if raw_names is None:
+        return frozenset()
+    if isinstance(raw_names, (str, bytes)):
+        return frozenset((str(raw_names),))
+    try:
+        return frozenset(str(name) for name in raw_names)
+    except TypeError:
+        return frozenset()
+
+
+def _local_http_tool_spec_name(spec: Mapping[str, Any]) -> str:
+    return str(spec.get("name") or spec.get("tool") or spec.get("server_label") or "")
 
 
 def _local_http_shell_tool_spec_matches(spec: Mapping[str, Any]) -> bool:
@@ -804,6 +902,10 @@ def _local_http_apply_patch_tool_spec_matches(spec: Mapping[str, Any]) -> bool:
     return spec.get("name") == "apply_patch" and spec.get("type") in {"custom", "function"}
 
 
+def _local_http_view_image_tool_spec_matches(spec: Mapping[str, Any]) -> bool:
+    return spec.get("type") == "function" and spec.get("name") == "view_image"
+
+
 def local_http_exec_enabled(env: Any = None) -> bool:
     """Return true when the experimental local HTTP exec path is enabled."""
 
@@ -825,27 +927,68 @@ def local_http_exec_enabled(env: Any = None) -> bool:
     )
 
 
-def local_http_exec_shell_tools_enabled(env: Any = None) -> bool:
-    """Return true when local HTTP exec should run the shell tool loop."""
+def local_core_exec_enabled(env: Any = None) -> bool:
+    """Return true when the direct in-memory core exec path is enabled."""
 
     source = os.environ if env is None else env
-    return str(source.get(LOCAL_HTTP_EXEC_SHELL_TOOLS_ENV, "")).strip().lower() in {
+    explicit_state = str(source.get(CORE_EXEC_ENV, "")).strip().lower()
+    if explicit_state in {
         "1",
         "true",
         "yes",
         "on",
         "enable",
         "enabled",
-    }
+    }:
+        return True
+    if explicit_state in {"0", "false", "no", "off", "disable", "disabled"}:
+        return False
+    local_http_state = str(source.get(LOCAL_HTTP_EXEC_ENV, "")).strip().lower()
+    if local_http_state in {
+        "1",
+        "true",
+        "yes",
+        "on",
+        "enable",
+        "enabled",
+    }:
+        return False
+    if local_http_state in {"0", "false", "no", "off", "disable", "disabled"}:
+        return False
+    if str(source.get("OPENAI_API_KEY", "")).strip():
+        return True
+    if str(source.get("CODEX_API_KEY", "")).strip():
+        return True
+    return False
 
 
-def local_http_exec_max_tool_rounds(env: Any = None, default: int = 1) -> int:
+def local_http_exec_shell_tools_enabled(env: Any = None) -> bool:
+    """Return true when local HTTP exec should run the legacy shell tool loop."""
+
+    source = os.environ if env is None else env
+    explicit_state = str(source.get(LOCAL_HTTP_EXEC_SHELL_TOOLS_ENV, "")).strip().lower()
+    if explicit_state in {
+        "1",
+        "true",
+        "yes",
+        "on",
+        "enable",
+        "enabled",
+    }:
+        return True
+    if explicit_state in {"0", "false", "no", "off", "disable", "disabled"}:
+        return False
+    return False
+
+
+def local_http_exec_max_tool_rounds(env: Any = None, default: int | None = None) -> int | None:
     """Resolve the local HTTP exec shell tool loop round limit."""
 
-    if isinstance(default, bool) or not isinstance(default, int):
-        raise TypeError("default must be an integer")
-    if default < 0:
-        raise ValueError("default must be non-negative")
+    if default is not None:
+        if isinstance(default, bool) or not isinstance(default, int):
+            raise TypeError("default must be an integer or None")
+        if default < 0:
+            raise ValueError("default must be non-negative")
     source = os.environ if env is None else env
     raw = source.get(LOCAL_HTTP_EXEC_MAX_TOOL_ROUNDS_ENV)
     if raw is None or str(raw).strip() == "":
@@ -927,7 +1070,10 @@ def build_default_local_http_exec_runtime(
     model = default_local_http_exec_model(config, env=source, config_toml=config_toml)
     base_url = default_local_http_exec_base_url(env=source, config_toml=config_toml, provider_id=provider_id)
     provider = LocalHttpProvider(base_url=base_url, auth=resolved_auth)
-    model_info = LocalHttpModelInfo(slug=model)
+    model_info = LocalHttpModelInfo(
+        slug=model,
+        supports_parallel_tool_calls=_config_provider_supports_parallel_tool_calls(config_toml, provider_id),
+    )
     client = ModelClient(
         session_id=str(uuid4()),
         thread_id=str(uuid4()),
@@ -1007,6 +1153,21 @@ def _config_provider_env_key(config_toml: Mapping[str, Any] | None, provider_id:
     return env_key if isinstance(env_key, str) and env_key else None
 
 
+def _config_provider_supports_parallel_tool_calls(
+    config_toml: Mapping[str, Any] | None,
+    provider_id: str | None,
+) -> bool:
+    if config_toml is None or provider_id is None:
+        return False
+    providers = config_toml.get("model_providers")
+    if not isinstance(providers, Mapping):
+        return False
+    provider = providers.get(provider_id)
+    if not isinstance(provider, Mapping):
+        return False
+    return provider.get("supports_parallel_tool_calls") is True
+
+
 def local_http_exec_config_summary(
     config: ExecSessionConfig,
     *,
@@ -1022,7 +1183,7 @@ def local_http_exec_config_summary(
     resolved_model = model or default_local_http_exec_model(config)
     resolved_provider = provider_id or config.model_provider_id or "openai"
     resolved_thread_id = thread_id or session_id
-    approval = getattr(config.approval_policy, "value", str(config.approval_policy))
+    approval = approval_policy_display_value(config.approval_policy)
     permission_profile = config.permission_profile.to_mapping()
     config_mapping = {
         "cwd": str(config.cwd),
@@ -1269,7 +1430,7 @@ async def run_exec_resume_user_turn_http_sampling(
     opener: Any = None,
     built_tools: Any = None,
     use_shell_tools: bool = False,
-    max_tool_rounds: int = 1,
+    max_tool_rounds: int | None = None,
     tool_output_max_chars: int | None = None,
     runner: Any = None,
     resolved_rollout_path: Path | None = None,
@@ -1337,6 +1498,72 @@ async def run_exec_resume_user_turn_http_sampling(
     return result
 
 
+async def run_exec_resume_user_turn_core_http_sampling(
+    codex_home: Path,
+    config: ExecSessionConfig,
+    plan: ExecRunPlan,
+    model_client: ModelClient,
+    provider: Any,
+    model_info: Any,
+    *,
+    thread_id: str | None = None,
+    session_name: str | None = None,
+    resume_last: bool = False,
+    include_all: bool = False,
+    auth: Any = None,
+    endpoint: str | None = None,
+    timeout: float | None = None,
+    opener: Any = None,
+    built_tools: Any = None,
+    resolved_rollout_path: Path | None = None,
+    max_tool_followups: int | None = None,
+) -> UserTurnSamplingResult:
+    """Run a resumed ``codex exec`` turn through the in-memory core loop."""
+
+    if resolved_rollout_path is None:
+        rollout_path = align_local_http_exec_resume_model_client(
+            codex_home,
+            config,
+            model_client,
+            thread_id=thread_id,
+            session_name=session_name,
+            resume_last=resume_last,
+            include_all=include_all,
+        )
+    else:
+        rollout_path = Path(resolved_rollout_path)
+        _align_local_http_model_client_to_rollout_session(model_client, rollout_path)
+    if rollout_path is None:
+        raise ValueError("no local rollout found for resume")
+    history_items = read_model_history_from_rollout(rollout_path)
+    result = await run_exec_user_turn_core_http_sampling(
+        config,
+        plan,
+        model_client,
+        provider,
+        model_info,
+        auth=auth,
+        endpoint=endpoint,
+        timeout=timeout,
+        opener=opener,
+        built_tools=built_tools,
+        history_items=history_items,
+        max_tool_followups=max_tool_followups,
+    )
+    operation = plan.initial_operation
+    input_items = operation.items if operation.kind == "user_turn" else ()
+    timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    append_turn_to_rollout(
+        rollout_path,
+        _local_http_input_rollout_payload(input_items),
+        _local_http_response_rollout_payloads(result),
+        timestamp=timestamp,
+        cwd=config.cwd,
+    )
+    _append_local_http_interrupted_event_to_rollout(rollout_path, result, timestamp=timestamp)
+    return result
+
+
 def _local_http_input_rollout_payload(input_items: tuple[Any, ...] | list[Any]) -> dict[str, Any] | None:
     if not input_items:
         return None
@@ -1345,9 +1572,17 @@ def _local_http_input_rollout_payload(input_items: tuple[Any, ...] | list[Any]) 
 
 def _local_http_response_rollout_payloads(result: UserTurnSamplingResult) -> tuple[dict[str, Any], ...]:
     prompt_visible_items = _local_http_prompt_visible_rollout_items(result)
-    if _local_http_result_turn_status(result) == "interrupted":
+    if _local_http_result_turn_status(result) == "interrupted" and not _local_http_result_has_review_rollout_message(result):
         prompt_visible_items = prompt_visible_items + (_local_http_interrupted_turn_marker_item(),)
     return tuple(_response_item_rollout_payload(item) for item in prompt_visible_items)
+
+
+def _local_http_result_has_review_rollout_message(result: UserTurnSamplingResult) -> bool:
+    summary = getattr(result, "stream_runtime_state_summary", None)
+    if not isinstance(summary, Mapping):
+        return False
+    message = summary.get("review_rollout_user_message")
+    return isinstance(message, str) and bool(message)
 
 
 def _local_http_interrupted_turn_marker_item() -> ResponseItem:
@@ -1386,9 +1621,9 @@ def _local_http_prompt_visible_rollout_items(result: UserTurnSamplingResult) -> 
             except (KeyError, TypeError, ValueError):
                 continue
         if raw_items:
-            return tuple(raw_items)
+            return _normalize_local_http_rollout_items(tuple(raw_items))
     if len(raw_payloads) <= 1:
-        return tuple(result.response_items) + tool_response_items
+        return _normalize_local_http_rollout_items(tuple(result.response_items) + tool_response_items)
 
     items: list[ResponseItem] = []
     tool_index = 0
@@ -1409,7 +1644,13 @@ def _local_http_prompt_visible_rollout_items(result: UserTurnSamplingResult) -> 
             items.append(tool_response_items[tool_index])
             tool_index += 1
     items.extend(tool_response_items[tool_index:])
-    return tuple(items) if items else tuple(result.response_items) + tool_response_items
+    return _normalize_local_http_rollout_items(tuple(items) if items else tuple(result.response_items) + tool_response_items)
+
+
+def _normalize_local_http_rollout_items(items: tuple[Any, ...]) -> tuple[Any, ...]:
+    if not all(isinstance(item, ResponseItem) for item in items):
+        return items
+    return normalize_call_outputs(items)
 
 
 def _tool_call_count(items: tuple[ResponseItem, ...]) -> int:
@@ -1436,6 +1677,46 @@ def _response_item_rollout_payload(item: Any) -> dict[str, Any]:
     raise TypeError(f"response item is not serializable to rollout payload: {type(item).__name__}")
 
 
+@dataclass(frozen=True)
+class _ExecConfigFeatures:
+    exec_permission_approvals_enabled: bool = False
+    request_permissions_tool_enabled: bool = False
+
+    def enabled(self, feature: Feature) -> bool:
+        if feature is Feature.EXEC_PERMISSION_APPROVALS:
+            return self.exec_permission_approvals_enabled
+        if feature is Feature.REQUEST_PERMISSIONS_TOOL:
+            return self.request_permissions_tool_enabled
+        return False
+
+
+def _in_memory_exec_session(
+    config: ExecSessionConfig,
+    model_info: Any,
+    *,
+    environments: tuple[TurnEnvironmentSelection, ...] = (),
+) -> InMemoryCodexSession:
+    return InMemoryCodexSession(
+        cwd=config.cwd,
+        model_info=model_info,
+        user_instructions=config.user_instructions,
+        base_instructions=_base_instructions_from_model_info(model_info),
+        workspace_roots=config.workspace_roots,
+        request_permissions_callback=config.request_permissions_callback,
+        approval_policy=config.approval_policy,
+        approvals_reviewer=config.approvals_reviewer,
+        permission_profile=config.permission_profile,
+        allow_login_shell=config.allow_login_shell,
+        file_system_sandbox_policy=config.permission_profile.file_system_sandbox_policy(),
+        features=_ExecConfigFeatures(
+            exec_permission_approvals_enabled=config.exec_permission_approvals_enabled,
+            request_permissions_tool_enabled=config.request_permissions_tool_enabled,
+        ),
+        _granted_session_permissions=config.granted_session_permissions,
+        environments=environments,
+    )
+
+
 async def run_exec_user_turn_http_sampling(
     config: ExecSessionConfig,
     plan: ExecRunPlan,
@@ -1455,12 +1736,10 @@ async def run_exec_user_turn_http_sampling(
     operation = plan.initial_operation
     if operation.kind != "user_turn":
         raise ValueError("local exec HTTP runtime currently supports only user_turn operations")
-    session = InMemoryCodexSession(
-        cwd=config.cwd,
-        model_info=model_info,
-        user_instructions=config.user_instructions,
-        base_instructions=_base_instructions_from_model_info(model_info),
-        request_permissions_callback=config.request_permissions_callback,
+    session = _in_memory_exec_session(
+        config,
+        model_info,
+        environments=(TurnEnvironmentSelection("local", str(config.cwd)),),
     )
     if history_items:
         turn_context = await session.new_default_turn()
@@ -1485,6 +1764,309 @@ async def run_exec_user_turn_http_sampling(
         raise
 
 
+async def run_exec_user_turn_core_sampling(
+    config: ExecSessionConfig,
+    plan: ExecRunPlan,
+    model_client: ModelClient,
+    provider: Any,
+    model_info: Any,
+    sampler: Any,
+    *,
+    built_tools: Any = None,
+    history_items: tuple[ResponseItem, ...] | list[ResponseItem] = (),
+    max_tool_followups: int | None = None,
+) -> UserTurnSamplingResult:
+    """Run a prepared ``codex exec`` user turn through the in-memory core loop."""
+
+    operation = plan.initial_operation
+    if operation.kind != "user_turn":
+        raise ValueError("local exec core runtime currently supports only user_turn operations")
+    session = _in_memory_exec_session(
+        config,
+        model_info,
+        environments=(TurnEnvironmentSelection("local", str(config.cwd)),),
+    )
+    if history_items:
+        turn_context = await session.new_default_turn()
+        await session.record_conversation_items(turn_context, tuple(history_items))
+    try:
+        return await run_user_turn_sampling_from_session(
+            session,
+            operation.items,
+            model_client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=built_tools,
+            effort=config.reasoning_effort,
+            output_schema=operation.output_schema,
+            max_tool_followups=max_tool_followups,
+        )
+    except CodexErr as exc:
+        _attach_local_http_session_events(exc, session)
+        raise
+
+
+async def run_exec_user_turn_core_http_sampling(
+    config: ExecSessionConfig,
+    plan: ExecRunPlan,
+    model_client: ModelClient,
+    provider: Any,
+    model_info: Any,
+    *,
+    auth: Any = None,
+    endpoint: str | None = None,
+    timeout: float | None = None,
+    opener: Any = None,
+    built_tools: Any = None,
+    history_items: tuple[ResponseItem, ...] | list[ResponseItem] = (),
+    max_tool_followups: int | None = None,
+) -> UserTurnSamplingResult:
+    """Run ``codex exec`` through the in-memory core loop with stdlib HTTP sampling."""
+
+    transport_config = http_transport_config_from_provider(
+        model_client,
+        provider,
+        auth=auth,
+        endpoint=endpoint,
+        timeout=timeout,
+    )
+    sampler = model_client_http_sampler(
+        model_client.new_session(),
+        transport_config,
+        opener=opener,
+        max_retries=http_sampling_stream_max_retries(provider),
+    )
+    return await run_exec_user_turn_core_sampling(
+        config,
+        plan,
+        model_client,
+        provider,
+        model_info,
+        sampler,
+        built_tools=built_tools,
+        history_items=history_items,
+        max_tool_followups=max_tool_followups,
+    )
+
+
+def local_http_review_user_turn_plan(config: ExecSessionConfig, plan: ExecRunPlan) -> ExecRunPlan:
+    """Convert an exec review operation into the user turn run by Rust's ReviewTask."""
+
+    review_plan, _review_request = _local_http_review_plan_and_request(config, plan)
+    return review_plan
+
+
+def _local_http_review_plan_and_request(config: ExecSessionConfig, plan: ExecRunPlan) -> tuple[ExecRunPlan, Any]:
+    operation = plan.initial_operation
+    if operation.kind != "review" or operation.review_request is None:
+        raise ValueError("local exec review runtime requires a review initial operation")
+    resolved = resolve_review_request(operation.review_request, config.cwd)
+    return (
+        ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input(resolved.prompt),)),
+            resolved.user_facing_hint,
+        ),
+        resolved.to_review_request(),
+    )
+
+
+async def run_exec_review_http_sampling(
+    config: ExecSessionConfig,
+    plan: ExecRunPlan,
+    model_client: ModelClient,
+    provider: Any,
+    model_info: Any,
+    *,
+    auth: Any = None,
+    endpoint: str | None = None,
+    timeout: float | None = None,
+    opener: Any = None,
+    built_tools: Any = None,
+    runner: Any = None,
+    tool_timeout: float | None = 30.0,
+    tool_output_max_chars: int | None = None,
+    max_tool_rounds: int | None = None,
+    use_shell_tools: bool = False,
+) -> UserTurnSamplingResult:
+    """Run a local HTTP review turn using Rust's review prompt and output rendering."""
+
+    review_plan, review_request = _local_http_review_plan_and_request(config, plan)
+    review_config = replace(config, user_instructions=None, approval_policy=AskForApproval.NEVER)
+    review_model_info = LocalHttpReviewModelInfo(model_info)
+    run_local_http_sampling = (
+        run_exec_user_turn_with_shell_tools_http_sampling
+        if use_shell_tools
+        else run_exec_user_turn_http_sampling
+    )
+    kwargs: dict[str, Any] = {
+        "auth": auth,
+        "endpoint": endpoint,
+        "timeout": timeout,
+        "opener": opener,
+        "built_tools": built_tools,
+    }
+    if run_local_http_sampling is run_exec_user_turn_with_shell_tools_http_sampling:
+        kwargs.update(
+            {
+                "runner": runner,
+                "tool_timeout": tool_timeout,
+                "tool_output_max_chars": tool_output_max_chars,
+                "max_tool_rounds": max_tool_rounds,
+            }
+        )
+    result = await run_local_http_sampling(
+        review_config,
+        review_plan,
+        model_client,
+        provider,
+        review_model_info,
+        **kwargs,
+    )
+    return _render_local_http_review_result(result, review_request)
+
+
+async def run_exec_review_core_http_sampling(
+    config: ExecSessionConfig,
+    plan: ExecRunPlan,
+    model_client: ModelClient,
+    provider: Any,
+    model_info: Any,
+    *,
+    auth: Any = None,
+    endpoint: str | None = None,
+    timeout: float | None = None,
+    opener: Any = None,
+    built_tools: Any = None,
+    max_tool_followups: int | None = None,
+) -> UserTurnSamplingResult:
+    """Run a review turn through the in-memory core loop and render review output."""
+
+    review_plan, review_request = _local_http_review_plan_and_request(config, plan)
+    review_config = replace(config, user_instructions=None, approval_policy=AskForApproval.NEVER)
+    review_model_info = LocalHttpReviewModelInfo(model_info)
+    result = await run_exec_user_turn_core_http_sampling(
+        review_config,
+        review_plan,
+        model_client,
+        provider,
+        review_model_info,
+        auth=auth,
+        endpoint=endpoint,
+        timeout=timeout,
+        opener=opener,
+        built_tools=built_tools,
+        max_tool_followups=max_tool_followups,
+    )
+    return _render_local_http_review_result(result, review_request)
+
+
+def _render_local_http_review_result(result: UserTurnSamplingResult, review_request: Any | None = None) -> UserTurnSamplingResult:
+    if _local_http_result_turn_status(result) == "interrupted":
+        return _render_local_http_interrupted_review_result(result, review_request)
+    review_output = parse_local_http_review_output(final_text_from_local_http_exec_result(result))
+    rendered = render_review_output_text(review_output)
+    rollout_user_message = render_local_http_review_rollout_user_message(review_output)
+    rendered_item = ResponseItem.message(
+        "assistant",
+        (ContentItem.output_text(rendered),),
+        id="review_rollout_assistant",
+    )
+    summary = dict(getattr(result, "stream_runtime_state_summary", None) or {})
+    summary["review_output"] = review_output.to_mapping()
+    summary["review_rollout_user_message"] = rollout_user_message
+    session_events = tuple(getattr(result, "session_events", ()) or ())
+    if review_request is not None:
+        session_events = (
+            EventMsg.with_payload("entered_review_mode", review_request),
+            *session_events,
+            EventMsg.with_payload("exited_review_mode", ExitedReviewModeEvent(review_output)),
+        )
+    return replace(
+        result,
+        response_items=(rendered_item,),
+        session_events=session_events,
+        stream_runtime_state_summary=summary,
+        last_agent_message=rendered,
+    )
+
+
+def _render_local_http_interrupted_review_result(
+    result: UserTurnSamplingResult,
+    review_request: Any | None = None,
+) -> UserTurnSamplingResult:
+    rendered = "Review was interrupted. Please re-run /review and wait for it to complete."
+    rendered_item = ResponseItem.message(
+        "assistant",
+        (ContentItem.output_text(rendered),),
+        id="review_rollout_assistant",
+    )
+    summary = dict(getattr(result, "stream_runtime_state_summary", None) or {})
+    summary.pop("review_output", None)
+    summary["review_rollout_user_message"] = render_local_http_review_interrupted_rollout_user_message()
+    session_events = tuple(getattr(result, "session_events", ()) or ())
+    if review_request is not None:
+        session_events = (
+            EventMsg.with_payload("entered_review_mode", review_request),
+            *session_events,
+            EventMsg.with_payload("exited_review_mode", ExitedReviewModeEvent(None)),
+        )
+    return replace(
+        result,
+        response_items=(rendered_item,),
+        session_events=session_events,
+        stream_runtime_state_summary=summary,
+        last_agent_message=rendered,
+    )
+
+
+def local_http_review_rollout_input_items(result: UserTurnSamplingResult) -> tuple[UserInput, ...]:
+    """Return parent-thread rollout input items for a rendered review result."""
+
+    summary = getattr(result, "stream_runtime_state_summary", None)
+    message = summary.get("review_rollout_user_message") if isinstance(summary, Mapping) else None
+    if not isinstance(message, str) or not message:
+        if _local_http_result_turn_status(result) == "interrupted":
+            message = render_local_http_review_interrupted_rollout_user_message()
+        else:
+            review_output = parse_local_http_review_output(final_text_from_local_http_exec_result(result))
+            message = render_local_http_review_rollout_user_message(review_output)
+    return (UserInput.text_input(message),)
+
+
+def render_local_http_review_interrupted_rollout_user_message() -> str:
+    """Render Rust's parent-thread review interrupted user-action message."""
+
+    return REVIEW_EXIT_INTERRUPTED_TMPL.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def render_local_http_review_rollout_user_message(review_output: ReviewOutputEvent) -> str:
+    """Render Rust's parent-thread review history user-action message."""
+
+    text = review_output.overall_explanation.strip()
+    findings_str = text
+    if review_output.findings:
+        findings_str += f"\n{format_review_findings_block(review_output.findings)}"
+    return REVIEW_EXIT_SUCCESS_TMPL.replace("\r\n", "\n").replace("\r", "\n").replace("{{results}}", findings_str)
+
+
+def parse_local_http_review_output(text: str) -> ReviewOutputEvent:
+    """Parse Rust review-task JSON output, falling back to plain explanation text."""
+
+    try:
+        return ReviewOutputEvent.from_mapping(json.loads(text))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        pass
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and start < end:
+        try:
+            return ReviewOutputEvent.from_mapping(json.loads(text[start : end + 1]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
+    return ReviewOutputEvent(overall_explanation=text)
+
+
 async def run_exec_tool_output_http_sampling(
     config: ExecSessionConfig,
     previous_result: UserTurnSamplingResult,
@@ -1502,13 +2084,7 @@ async def run_exec_tool_output_http_sampling(
 ) -> Any:
     """Run a follow-up model turn with tool output items in history."""
 
-    session = InMemoryCodexSession(
-        cwd=config.cwd,
-        model_info=model_info,
-        user_instructions=config.user_instructions,
-        base_instructions=_base_instructions_from_model_info(model_info),
-        request_permissions_callback=config.request_permissions_callback,
-    )
+    session = _in_memory_exec_session(config, model_info)
     turn_context = await session.new_default_turn()
     if previous_result.response_items:
         await session.record_conversation_items(turn_context, previous_result.response_items)
@@ -1553,16 +2129,21 @@ async def run_exec_user_turn_with_shell_tools_http_sampling(
     runner: Any = None,
     tool_timeout: float | None = 30.0,
     tool_output_max_chars: int | None = None,
-    max_tool_rounds: int = 1,
+    max_tool_rounds: int | None = None,
     history_items: tuple[ResponseItem, ...] | list[ResponseItem] = (),
 ) -> Any:
     """Run a user turn and feed shell tool outputs back to the model."""
 
-    if isinstance(max_tool_rounds, bool) or not isinstance(max_tool_rounds, int):
-        raise TypeError("max_tool_rounds must be an integer")
-    if max_tool_rounds < 0:
-        raise ValueError("max_tool_rounds must be non-negative")
-    shell_built_tools = local_http_shell_tools_built_tools(built_tools)
+    if max_tool_rounds is not None:
+        if isinstance(max_tool_rounds, bool) or not isinstance(max_tool_rounds, int):
+            raise TypeError("max_tool_rounds must be an integer or None")
+        if max_tool_rounds < 0:
+            raise ValueError("max_tool_rounds must be non-negative")
+    shell_built_tools = local_http_shell_tools_built_tools(
+        built_tools,
+        config=config,
+        model_info=model_info,
+    )
     result = await run_exec_user_turn_http_sampling(
         config,
         plan,
@@ -1577,7 +2158,9 @@ async def run_exec_user_turn_with_shell_tools_http_sampling(
         history_items=history_items,
     )
     turn_granted_permissions: AdditionalPermissionProfile | None = None
-    for _round in range(max_tool_rounds):
+    rounds_completed = 0
+    while max_tool_rounds is None or rounds_completed < max_tool_rounds:
+        rounds_completed += 1
         effective_granted_permissions = merge_permission_profiles(
             config.granted_session_permissions,
             turn_granted_permissions,
@@ -1589,6 +2172,7 @@ async def run_exec_user_turn_with_shell_tools_http_sampling(
             timeout=tool_timeout,
             output_max_chars=tool_output_max_chars,
             granted_permissions=effective_granted_permissions,
+            model_info=model_info,
         )
         if not tool_outputs:
             return result
@@ -1727,7 +2311,7 @@ def emit_local_http_exec_result(
         events = []
         for reasoning_text in reasoning_texts_from_local_http_exec_result(result):
             events.append(ThreadEvent.item_completed(reasoning_item(processor.next_item_id(), reasoning_text)))
-        for tool_item in tool_timeline_items_from_local_http_exec_result(result, processor):
+        for tool_item in tool_timeline_items_from_local_http_exec_result(result, processor, config=config):
             events.append(ThreadEvent.item_completed(tool_item))
         if final_text:
             processor.final_message = final_text
@@ -1753,6 +2337,19 @@ def emit_local_http_exec_result(
     _replay_local_http_session_events(processor, result, stderr=stderr)
     for item in reasoning_turn_items_from_local_http_exec_result(result):
         processor.collect_item_completed(item, stderr=stderr)
+    for item in tool_timeline_items_from_local_http_exec_result(result, JsonEventProcessor(), config=config):
+        status = str(item.payload.get("status") or "").lower() if isinstance(item.payload, Mapping) else ""
+        rendered_item = item.to_mapping()
+        if item.type == "command_execution" and status == "in_progress":
+            processor.process_server_notification(
+                {"method": "item/started", "params": {"item": rendered_item}},
+                stderr=stderr,
+            )
+        else:
+            processor.process_server_notification(
+                {"method": "item/completed", "params": {"item": rendered_item}},
+                stderr=stderr,
+            )
     if _usage_is_zero(usage) and processor.last_usage is not None:
         usage = processor.last_usage
     processor.last_usage = usage
@@ -1784,12 +2381,23 @@ def tool_call_items_from_local_http_exec_result(
     """Extract read-only tool/function call items from a local HTTP Responses payload."""
 
     items: list[ExecThreadItem] = []
+    seen_call_ids: set[str] = set()
     for payload in _raw_responses_payloads(result):
         for item in _response_output_mappings(payload):
             item_type = str(item.get("type") or "")
             if item_type not in {"function_call", "custom_tool_call", "mcp_tool_call"}:
                 continue
+            call_id = str(item.get("call_id") or item.get("id") or "")
+            if call_id:
+                seen_call_ids.add(call_id)
             items.append(_tool_call_exec_thread_item(item, processor))
+    for item in _response_item_tool_call_mappings(result):
+        call_id = str(item.get("call_id") or item.get("id") or "")
+        if call_id and call_id in seen_call_ids:
+            continue
+        if call_id:
+            seen_call_ids.add(call_id)
+        items.append(_tool_call_exec_thread_item(item, processor))
     return tuple(items)
 
 
@@ -1815,6 +2423,8 @@ def tool_output_items_from_local_http_exec_result(
             mapping = _response_item_mapping(response_item)
             if mapping is not None:
                 output_items.append(mapping)
+    if not output_items:
+        output_items.extend(_response_item_tool_output_mappings(result))
     for item in output_items:
         items.append(_tool_output_exec_thread_item(item, processor))
     return tuple(items)
@@ -1861,6 +2471,8 @@ def _request_permissions_response_from_tool_output(output: Mapping[str, Any]) ->
 def tool_timeline_items_from_local_http_exec_result(
     result: UserTurnSamplingResult,
     processor: JsonEventProcessor,
+    *,
+    config: ExecSessionConfig | Mapping[str, Any] | None = None,
 ) -> tuple[ExecThreadItem, ...]:
     """Extract tool call/output items in user-turn order."""
 
@@ -1869,10 +2481,18 @@ def tool_timeline_items_from_local_http_exec_result(
     for payload in _raw_responses_payloads(result):
         for item in _response_output_mappings(payload):
             item_type = str(item.get("type") or "")
-            if item_type in {"function_call", "custom_tool_call", "mcp_tool_call"}:
+            if item_type in {"function_call", "custom_tool_call", "mcp_tool_call", "local_shell_call"}:
                 calls.append(item)
             elif item_type in {"function_call_output", "custom_tool_call_output", "mcp_tool_call_output"}:
                 output_items.append(item)
+    seen_call_ids = {str(item.get("call_id") or item.get("id") or "") for item in calls}
+    for item in _response_item_tool_call_mappings(result, include_local_shell=True):
+        call_id = str(item.get("call_id") or item.get("id") or "")
+        if call_id and call_id in seen_call_ids:
+            continue
+        if call_id:
+            seen_call_ids.add(call_id)
+        calls.append(item)
     raw_tool_output_items = tuple(getattr(result, "raw_tool_output_items", ()) or ())
     if raw_tool_output_items:
         output_items.extend(item for item in raw_tool_output_items if isinstance(item, Mapping))
@@ -1881,6 +2501,8 @@ def tool_timeline_items_from_local_http_exec_result(
             mapping = _response_item_mapping(response_item)
             if mapping is not None:
                 output_items.append(mapping)
+    if not output_items:
+        output_items.extend(_response_item_tool_output_mappings(result))
 
     outputs_by_call_id: dict[str, list[Mapping[str, Any]]] = {}
     unkeyed_outputs: list[Mapping[str, Any]] = []
@@ -1890,11 +2512,24 @@ def tool_timeline_items_from_local_http_exec_result(
             outputs_by_call_id.setdefault(call_id, []).append(output)
         else:
             unkeyed_outputs.append(output)
+    _insert_missing_local_shell_call_outputs(calls, outputs_by_call_id)
     timeline: list[ExecThreadItem] = []
+    default_cwd = _local_http_timeline_default_cwd(config)
     for call in calls:
-        is_apply_patch = _tool_name_from_item(call) == "apply_patch"
+        call_item_type = str(call.get("type") or "")
         call_id = str(call.get("call_id") or call.get("id") or "")
         matching_outputs = outputs_by_call_id.pop(call_id, ()) if call_id else ()
+        output_has_apply_patch_changes = any(_tool_output_has_apply_patch_changes(output) for output in matching_outputs)
+        is_apply_patch = output_has_apply_patch_changes or (
+            _tool_name_from_item(call) == "apply_patch"
+            and call_item_type == "custom_tool_call"
+            and not matching_outputs
+            and bool(_apply_patch_protocol_changes_from_call(call))
+        )
+        is_local_shell_call = call_item_type == "local_shell_call"
+        is_shell_tool = is_local_shell_call or (
+            call_item_type == "function_call" and _local_http_tool_name_is_shell(_tool_name_from_item(call))
+        )
         timeline.append(
             _apply_patch_file_change_exec_thread_item(
                 call,
@@ -1903,19 +2538,86 @@ def tool_timeline_items_from_local_http_exec_result(
                 changes_output=matching_outputs[0] if is_apply_patch and matching_outputs else None,
             )
             if is_apply_patch
+            else _local_shell_command_execution_exec_thread_item(call, None, processor, default_cwd=default_cwd)
+            if is_local_shell_call
+            else _shell_command_execution_exec_thread_item(call, None, processor, default_cwd=default_cwd)
+            if is_shell_tool
             else _tool_call_exec_thread_item(call, processor)
         )
         if matching_outputs:
             timeline.extend(
                 _apply_patch_file_change_exec_thread_item(call, output, processor)
                 if is_apply_patch
+                else _local_shell_command_execution_exec_thread_item(call, output, processor, default_cwd=default_cwd)
+                if is_local_shell_call
+                else _shell_command_execution_exec_thread_item(call, output, processor, default_cwd=default_cwd)
+                if is_shell_tool
                 else _tool_output_exec_thread_item(output, processor)
                 for output in matching_outputs
             )
     for remaining in outputs_by_call_id.values():
-        timeline.extend(_tool_output_exec_thread_item(output, processor) for output in remaining)
+        timeline.extend(
+            _tool_output_exec_thread_item(output, processor)
+            for output in remaining
+            if not _drop_orphan_tool_output_from_timeline(output)
+        )
     timeline.extend(_tool_output_exec_thread_item(output, processor) for output in unkeyed_outputs)
     return tuple(timeline)
+
+
+def _response_item_tool_call_mappings(
+    result: UserTurnSamplingResult,
+    *,
+    include_local_shell: bool = False,
+) -> tuple[Mapping[str, Any], ...]:
+    items: list[Mapping[str, Any]] = []
+    tool_call_types = {"function_call", "custom_tool_call", "mcp_tool_call"}
+    if include_local_shell:
+        tool_call_types.add("local_shell_call")
+    for response_item in getattr(result, "response_items", ()) or ():
+        mapping = _response_item_mapping(response_item)
+        if mapping is None:
+            continue
+        if str(mapping.get("type") or "") in tool_call_types:
+            items.append(mapping)
+    return tuple(items)
+
+
+def _response_item_tool_output_mappings(result: UserTurnSamplingResult) -> tuple[Mapping[str, Any], ...]:
+    items: list[Mapping[str, Any]] = []
+    for response_item in getattr(result, "response_items", ()) or ():
+        mapping = _response_item_mapping(response_item)
+        if mapping is None:
+            continue
+        if str(mapping.get("type") or "") in {"function_call_output", "custom_tool_call_output", "mcp_tool_call_output"}:
+            items.append(mapping)
+    return tuple(items)
+
+
+def _insert_missing_local_shell_call_outputs(
+    calls: list[Mapping[str, Any]],
+    outputs_by_call_id: dict[str, list[Mapping[str, Any]]],
+) -> None:
+    for call in calls:
+        if str(call.get("type") or "") != "local_shell_call":
+            continue
+        call_id = str(call.get("call_id") or call.get("id") or "")
+        if not call_id or outputs_by_call_id.get(call_id):
+            continue
+        outputs_by_call_id[call_id] = [
+            {
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": "aborted",
+            }
+        ]
+
+
+def _drop_orphan_tool_output_from_timeline(item: Mapping[str, Any]) -> bool:
+    item_type = str(item.get("type") or "")
+    call_id = str(item.get("call_id") or item.get("id") or "")
+    tool_name = str(item.get("name") or item.get("tool") or "")
+    return bool(call_id) and not tool_name and item_type in {"function_call_output", "custom_tool_call_output"}
 
 
 def _tool_call_exec_thread_item(item: Mapping[str, Any], processor: JsonEventProcessor) -> ExecThreadItem:
@@ -1932,6 +2634,191 @@ def _tool_call_exec_thread_item(item: Mapping[str, Any], processor: JsonEventPro
             "status": "in_progress",
         },
     )
+
+
+def _local_http_tool_name_is_shell(tool_name: str) -> bool:
+    return tool_name in {"exec_command", "shell_command", "shell", "local_shell", "exec"}
+
+
+def _local_http_timeline_default_cwd(config: ExecSessionConfig | Mapping[str, Any] | None) -> Path | None:
+    if config is None:
+        return None
+    if isinstance(config, Mapping):
+        value = config.get("cwd")
+    else:
+        value = getattr(config, "cwd", None)
+    return value if isinstance(value, Path) else Path(value) if isinstance(value, str) and value else None
+
+
+def _local_shell_command_execution_exec_thread_item(
+    call: Mapping[str, Any],
+    output: Mapping[str, Any] | None,
+    processor: JsonEventProcessor,
+    *,
+    default_cwd: Path | None = None,
+) -> ExecThreadItem:
+    call_id = str(call.get("call_id") or call.get("id") or "")
+    argv = _local_shell_command_argv_from_call(call)
+    cwd = _local_shell_command_cwd_from_call(call, default_cwd)
+    return command_execution_item(
+        call_id or processor.next_item_id(),
+        command=shlex.join(argv) if argv else "",
+        cwd=cwd,
+        process_id=_shell_command_execution_process_id_from_tool_output(output),
+        source="agent",
+        command_actions=command_actions_from_argv(argv, Path(cwd) if cwd is not None else Path.cwd()) if argv else None,
+        duration_ms=None if output is None else _shell_command_execution_duration_ms_from_tool_output(output),
+        aggregated_output="" if output is None else _shell_command_execution_aggregated_output_from_tool_output(output),
+        exit_code=None if output is None else _tool_output_exit_code_from_item(output),
+        status="in_progress" if output is None else _shell_command_execution_status_from_tool_output(output),
+    )
+
+
+def _local_shell_command_argv_from_call(item: Mapping[str, Any]) -> tuple[str, ...]:
+    action = item.get("action")
+    if not isinstance(action, Mapping) or action.get("type") != "exec":
+        return ()
+    command = action.get("command")
+    if isinstance(command, str) or not isinstance(command, (list, tuple)):
+        return ()
+    if not all(isinstance(part, str) for part in command):
+        return ()
+    return tuple(command)
+
+
+def _local_shell_command_cwd_from_call(item: Mapping[str, Any], default_cwd: Path | None) -> str | Path | None:
+    action = item.get("action")
+    if isinstance(action, Mapping):
+        working_directory = action.get("working_directory")
+        if isinstance(working_directory, str) and working_directory:
+            return working_directory
+    return default_cwd
+
+
+def _shell_command_execution_exec_thread_item(
+    call: Mapping[str, Any],
+    output: Mapping[str, Any] | None,
+    processor: JsonEventProcessor,
+    *,
+    default_cwd: Path | None = None,
+) -> ExecThreadItem:
+    call_id = str(call.get("call_id") or call.get("id") or "")
+    invocation = _shell_invocation_from_arguments(
+        _tool_arguments_from_item(call),
+        default_cwd=default_cwd or Path.cwd(),
+        default_timeout=None,
+        unified_exec=_tool_name_from_item(call) == "exec_command",
+    )
+    return command_execution_item(
+        call_id or processor.next_item_id(),
+        command=invocation.command if invocation is not None else _shell_command_execution_command_from_call(call),
+        cwd=(invocation.workdir if invocation is not None else None) or default_cwd,
+        process_id=_shell_command_execution_process_id_from_tool_output(output),
+        source="agent",
+        command_actions=_shell_command_execution_command_actions(invocation, default_cwd),
+        duration_ms=None if output is None else _shell_command_execution_duration_ms_from_tool_output(output),
+        aggregated_output="" if output is None else _shell_command_execution_aggregated_output_from_tool_output(output),
+        exit_code=None if output is None else _tool_output_exit_code_from_item(output),
+        status="in_progress" if output is None else _shell_command_execution_status_from_tool_output(output),
+    )
+
+
+def _shell_command_execution_command_from_call(item: Mapping[str, Any]) -> str:
+    arguments = _tool_arguments_from_item(item)
+    for key in ("cmd", "command"):
+        value = arguments.get(key)
+        if isinstance(value, str):
+            return value
+    return ""
+
+
+def _shell_command_execution_command_actions(
+    invocation: LocalHttpShellInvocation | None,
+    default_cwd: Path | None,
+) -> tuple[dict[str, Any], ...] | None:
+    if invocation is None:
+        return None
+    cwd = invocation.workdir or default_cwd or Path.cwd()
+    return command_actions_from_argv(_shell_command_execution_argv(invocation), cwd)
+
+
+def _shell_command_execution_argv(invocation: LocalHttpShellInvocation) -> tuple[str, ...]:
+    if invocation.shell:
+        name = Path(invocation.shell.replace("\\", "/")).stem.lower()
+        if name in {"pwsh", "powershell"}:
+            return (invocation.shell, "-Command", invocation.command)
+        if name == "cmd":
+            return (invocation.shell, "/C", invocation.command)
+        return (invocation.shell, "-lc" if invocation.login is not False else "-c", invocation.command)
+    return tuple(default_user_shell().derive_exec_args(invocation.command, invocation.login is not False))
+
+
+def _shell_command_execution_aggregated_output_from_tool_output(item: Mapping[str, Any]) -> str:
+    for key in ("internal_output", "structured_output"):
+        value = item.get(key)
+        if isinstance(value, Mapping):
+            output = value.get("output")
+            if isinstance(output, str):
+                return output
+    output = _tool_output_from_item(item)
+    if not isinstance(output, str):
+        return ""
+    return _shell_command_execution_aggregated_output_from_text(output)
+
+
+def _shell_command_execution_aggregated_output_from_text(output: str) -> str:
+    output_marker = "\nOutput:\n"
+    if output_marker in output:
+        return output.rsplit(output_marker, 1)[1]
+    return _strip_process_exit_marker(output)
+
+
+def _strip_process_exit_marker(output: str) -> str:
+    lines = output.splitlines()
+    while lines and lines[-1] == "":
+        lines.pop()
+    if lines and lines[-1].startswith("Process exited with code "):
+        lines.pop()
+    return "\n".join(lines)
+
+
+def _shell_command_execution_status_from_tool_output(item: Mapping[str, Any]) -> str:
+    output = _tool_output_from_item(item)
+    if isinstance(output, str) and (
+        "exit_code: approval_required" in output
+        or "exit_code: forbidden" in output
+        or "permission_request_rejected" in output
+    ):
+        return "declined"
+    return _tool_output_status_from_item(item)
+
+
+def _shell_command_execution_process_id_from_tool_output(item: Mapping[str, Any] | None) -> str | None:
+    if item is None:
+        return None
+    for key in ("internal_output", "structured_output"):
+        value = item.get(key)
+        if isinstance(value, Mapping):
+            process_id = value.get("process_id")
+            if isinstance(process_id, str):
+                return process_id
+            session_id = value.get("session_id")
+            if isinstance(session_id, int) and not isinstance(session_id, bool):
+                return str(session_id)
+    return None
+
+
+def _shell_command_execution_duration_ms_from_tool_output(item: Mapping[str, Any]) -> int | None:
+    for key in ("internal_output", "structured_output"):
+        value = item.get(key)
+        if isinstance(value, Mapping):
+            duration_ms = value.get("duration_ms")
+            if isinstance(duration_ms, int) and not isinstance(duration_ms, bool):
+                return duration_ms
+            wall_time_seconds = value.get("wall_time_seconds")
+            if isinstance(wall_time_seconds, (int, float)) and not isinstance(wall_time_seconds, bool):
+                return max(0, int(float(wall_time_seconds) * 1000))
+    return None
 
 
 def _apply_patch_file_change_exec_thread_item(
@@ -1953,11 +2840,49 @@ def _apply_patch_file_change_exec_thread_item(
             id=str(call.get("call_id") or call.get("id") or ""),
             changes=changes or _apply_patch_protocol_changes_from_call(call),
             status=status,
+            auto_approved=(
+                _apply_patch_auto_approved_from_tool_output(changes_output)
+                if output is None
+                else None
+            ),
+            stdout=_apply_patch_stdout_from_tool_output(output),
+            stderr=_apply_patch_stderr_from_tool_output(output),
         ),
     )
 
 
+def _tool_output_has_apply_patch_changes(item: Mapping[str, Any]) -> bool:
+    return _apply_patch_protocol_changes_from_tool_output(item) is not None
+
+
+def _apply_patch_auto_approved_from_tool_output(item: Mapping[str, Any] | None) -> bool | None:
+    metadata = _apply_patch_internal_output_mapping(item)
+    if metadata is None:
+        return None
+    value = metadata.get("auto_approved")
+    return value if isinstance(value, bool) else None
+
+
+def _apply_patch_stdout_from_tool_output(item: Mapping[str, Any] | None) -> str | None:
+    metadata = _apply_patch_internal_output_mapping(item)
+    if metadata is None:
+        return None
+    value = metadata.get("stdout")
+    return value if isinstance(value, str) else None
+
+
+def _apply_patch_stderr_from_tool_output(item: Mapping[str, Any] | None) -> str | None:
+    metadata = _apply_patch_internal_output_mapping(item)
+    if metadata is None:
+        return None
+    value = metadata.get("stderr")
+    return value if isinstance(value, str) else None
+
+
 def _patch_apply_status_from_tool_output(item: Mapping[str, Any]) -> PatchApplyStatus:
+    output = _tool_output_from_item(item)
+    if isinstance(output, str) and "approval_required" in output:
+        return PatchApplyStatus.DECLINED
     return PatchApplyStatus.FAILED if _tool_output_status_from_item(item) == "failed" else PatchApplyStatus.COMPLETED
 
 
@@ -1983,10 +2908,8 @@ def _apply_patch_protocol_changes_from_call(item: Mapping[str, Any]) -> dict[Pat
 
 
 def _apply_patch_protocol_changes_from_tool_output(item: Mapping[str, Any] | None) -> dict[Path, FileChange] | None:
-    if item is None:
-        return None
-    internal_output = item.get("internal_output")
-    if not isinstance(internal_output, Mapping):
+    internal_output = _apply_patch_internal_output_mapping(item)
+    if internal_output is None:
         return None
     changes = internal_output.get("changes")
     if not isinstance(changes, Mapping):
@@ -1997,6 +2920,13 @@ def _apply_patch_protocol_changes_from_tool_output(item: Mapping[str, Any] | Non
             return None
         protocol_changes[Path(path)] = change
     return protocol_changes
+
+
+def _apply_patch_internal_output_mapping(item: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+    if item is None:
+        return None
+    internal_output = item.get("internal_output")
+    return internal_output if isinstance(internal_output, Mapping) else None
 
 
 def _tool_output_exec_thread_item(item: Mapping[str, Any], processor: JsonEventProcessor) -> ExecThreadItem:
@@ -2062,6 +2992,7 @@ def shell_tool_outputs_from_local_http_exec_result(
     timeout: float | None = 30.0,
     output_max_chars: int | None = None,
     granted_permissions: AdditionalPermissionProfile | None = None,
+    model_info: Any = None,
 ) -> tuple[dict[str, Any], ...]:
     """Execute shell function calls from a local HTTP Responses payload.
 
@@ -2091,6 +3022,21 @@ def shell_tool_outputs_from_local_http_exec_result(
             continue
         tool = _tool_name_from_item(item)
         call_id = item.get("call_id") or item.get("id") or ""
+        argument_error = _local_http_function_call_argument_error(item, tool)
+        if argument_error is not None:
+            outputs.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": str(call_id),
+                    "name": tool,
+                    "output": argument_error,
+                    "success": False,
+                }
+            )
+            continue
+        if _local_http_tool_payload_incompatible(item_type, tool):
+            outputs.append(_local_http_incompatible_tool_payload_output(item_type, str(call_id), tool))
+            continue
         if tool == "request_permissions":
             request_permissions_callback = (
                 _local_http_request_permissions_empty_callback
@@ -2114,12 +3060,39 @@ def shell_tool_outputs_from_local_http_exec_result(
                 }
             )
             continue
+        if tool == "view_image":
+            view_image_output, success, internal_output = _local_http_view_image_tool_output(
+                item,
+                config,
+                model_info=model_info,
+            )
+            outputs.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": str(call_id),
+                    "name": "view_image",
+                    "output": view_image_output,
+                    **({"structured_output": internal_output} if internal_output is not None else {}),
+                    **({"internal_output": internal_output} if internal_output is not None else {}),
+                    "success": success,
+                }
+            )
+            continue
         if tool == "apply_patch":
             patch_text = _apply_patch_text_from_arguments(_tool_arguments_from_item(item))
             if patch_text is None:
+                outputs.append(
+                    {
+                        "type": "custom_tool_call_output" if item_type == "custom_tool_call" else "function_call_output",
+                        "call_id": str(call_id),
+                        "output": "apply_patch handler received non-apply_patch input",
+                        "success": False,
+                    }
+                )
                 continue
             changes = _local_http_apply_patch_protocol_changes(patch_text, config.cwd)
-            if not local_http_shell_tool_auto_execute_allowed(config) and not _local_http_apply_patch_preapproved(
+            patch_auto_approved = local_http_shell_tool_auto_execute_allowed(config)
+            if not patch_auto_approved and not _local_http_apply_patch_preapproved(
                 changes,
                 config.cwd,
                 granted_permissions,
@@ -2128,8 +3101,17 @@ def shell_tool_outputs_from_local_http_exec_result(
                     {
                         "type": "custom_tool_call_output" if item_type == "custom_tool_call" else "function_call_output",
                         "call_id": str(call_id),
-                        "output": local_http_apply_patch_approval_required_output(config),
-                        "internal_output": {"changes": changes} if changes is not None else None,
+                        "output": (approval_output := local_http_apply_patch_approval_required_output(config)),
+                        "internal_output": (
+                            {
+                                "changes": changes,
+                                "auto_approved": False,
+                                "stdout": "",
+                                "stderr": approval_output,
+                            }
+                            if changes is not None
+                            else None
+                        ),
                         "success": False,
                     }
                 )
@@ -2140,13 +3122,35 @@ def shell_tool_outputs_from_local_http_exec_result(
                     "type": "custom_tool_call_output" if item_type == "custom_tool_call" else "function_call_output",
                     "call_id": str(call_id),
                     "output": output_text,
-                    "internal_output": {"changes": changes} if changes is not None else None,
+                    "internal_output": (
+                        {
+                            "changes": changes,
+                            "auto_approved": patch_auto_approved,
+                            "stdout": output_text if success else "",
+                            "stderr": "" if success else output_text,
+                        }
+                        if changes is not None
+                        else None
+                    ),
                     "success": success,
                 }
             )
             continue
         if tool == "write_stdin":
-            stdin_invocation = _write_stdin_invocation_from_arguments(_tool_arguments_from_item(item))
+            stdin_arguments = _tool_arguments_from_item(item)
+            stdin_argument_error = _local_http_write_stdin_argument_error(stdin_arguments)
+            if stdin_argument_error is not None:
+                outputs.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": str(call_id),
+                        "name": "write_stdin",
+                        "output": stdin_argument_error,
+                        "success": False,
+                    }
+                )
+                continue
+            stdin_invocation = _write_stdin_invocation_from_arguments(stdin_arguments)
             if not local_http_shell_tool_auto_execute_allowed(config):
                 outputs.append(
                     {
@@ -2203,14 +3207,37 @@ def shell_tool_outputs_from_local_http_exec_result(
             )
             continue
         if tool not in {"exec_command", "shell_command", "shell", "local_shell", "exec"}:
+            outputs.append(_local_http_unsupported_tool_call_output(item_type, str(call_id), tool))
             continue
         invocation = _shell_invocation_from_arguments(
             _tool_arguments_from_item(item),
             default_cwd=config.cwd,
             default_timeout=timeout,
+            unified_exec=tool == "exec_command",
         )
         if invocation is None:
+            outputs.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": str(call_id),
+                    "name": tool,
+                    "output": "failed to parse function arguments: missing required command",
+                    "success": False,
+                }
+            )
             continue
+        login_error = local_http_shell_tool_login_error(invocation, config)
+        if login_error is not None:
+            outputs.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": str(call_id),
+                    "output": login_error,
+                    "success": False,
+                }
+            )
+            continue
+        invocation = local_http_shell_invocation_with_config_login(invocation, config)
         sandbox_permissions_error = local_http_shell_tool_sandbox_permissions_error(invocation)
         if sandbox_permissions_error is not None:
             outputs.append(
@@ -2229,10 +3256,15 @@ def shell_tool_outputs_from_local_http_exec_result(
             granted_permissions=granted_permissions,
             cwd=permission_cwd,
         )
+        additional_permissions_allowed = local_http_shell_tool_additional_permissions_allowed(
+            config,
+            permissions_preapproved=preapproved_permissions,
+        )
         permission_error = local_http_shell_tool_permission_request_error(
             invocation,
             granted_permissions=granted_permissions,
             cwd=permission_cwd,
+            additional_permissions_allowed=additional_permissions_allowed,
             allow_pending_approval=not auto_execute_allowed and not preapproved_permissions,
         )
         if permission_error is not None:
@@ -2286,6 +3318,74 @@ def shell_tool_outputs_from_local_http_exec_result(
                 }
             )
             continue
+        apply_patch_command = _local_http_apply_patch_command_from_shell_invocation(
+            invocation,
+            cwd=invocation.workdir or config.cwd,
+        )
+        if apply_patch_command is not None:
+            if apply_patch_command.error is not None:
+                outputs.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": str(call_id),
+                        "output": apply_patch_command.error,
+                        "success": False,
+                    }
+                )
+                continue
+            changes = apply_patch_command.changes
+            patch_auto_approved = auto_execute_allowed
+            if not patch_auto_approved and not _local_http_apply_patch_preapproved(
+                changes,
+                invocation.workdir or config.cwd,
+                granted_permissions,
+            ):
+                outputs.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": str(call_id),
+                        "output": (approval_output := local_http_apply_patch_approval_required_output(config)),
+                        "internal_output": (
+                            {
+                                "changes": changes,
+                                "auto_approved": False,
+                                "stdout": "",
+                                "stderr": approval_output,
+                            }
+                            if changes is not None
+                            else None
+                        ),
+                        "success": False,
+                    }
+                )
+                continue
+            try:
+                if apply_patch_command.action is None:
+                    raise ValueError("missing apply_patch action")
+                output_text = apply_patch_action_to_disk(apply_patch_command.action)
+                success = True
+            except Exception as exc:
+                output_text = f"apply_patch failed: {exc}"
+                success = False
+            outputs.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": str(call_id),
+                    "output": output_text,
+                    "internal_output": (
+                        {
+                            "changes": changes,
+                            "auto_approved": patch_auto_approved,
+                            "stdout": output_text if success else "",
+                            "stderr": "" if success else output_text,
+                        }
+                        if changes is not None
+                        else None
+                    ),
+                    "success": success,
+                }
+            )
+            continue
         effective_output_budget = _effective_shell_output_budget(output_max_chars, invocation.max_output_tokens)
         effective_output_max_chars = _output_budget_max_bytes(effective_output_budget)
         if runner is None and _should_start_local_http_exec_session(invocation):
@@ -2326,8 +3426,106 @@ def shell_tool_outputs_from_local_http_exec_result(
     return tuple(outputs)
 
 
+def _local_http_unsupported_tool_call_output(item_type: str, call_id: str, tool: str) -> dict[str, Any]:
+    custom = item_type == "custom_tool_call"
+    return {
+        "type": "custom_tool_call_output" if custom else "function_call_output",
+        "call_id": call_id,
+        **({} if custom else {"name": tool}),
+        "output": (
+            f"unsupported custom tool call: {tool}"
+            if custom
+            else f"unsupported call: {tool}"
+        ),
+        "success": False,
+    }
+
+
+def _local_http_tool_payload_incompatible(item_type: str, tool: str) -> bool:
+    if item_type == "custom_tool_call" and tool in {
+        "exec_command",
+        "shell_command",
+        "shell",
+        "local_shell",
+        "exec",
+        "write_stdin",
+        "request_permissions",
+        "view_image",
+    }:
+        return True
+    if item_type == "function_call" and tool == "apply_patch":
+        return True
+    return False
+
+
+def _local_http_incompatible_tool_payload_output(item_type: str, call_id: str, tool: str) -> dict[str, Any]:
+    custom = item_type == "custom_tool_call"
+    return {
+        "type": "custom_tool_call_output" if custom else "function_call_output",
+        "call_id": call_id,
+        **({} if custom else {"name": tool}),
+        "output": f"tool {tool} invoked with incompatible payload",
+        "success": False,
+    }
+
+
+def local_http_shell_tool_login_error(
+    invocation: LocalHttpShellInvocation,
+    config: ExecSessionConfig,
+) -> str | None:
+    """Return Rust's model-facing error for disallowed explicit login shells."""
+
+    if invocation.login is True and not config.allow_login_shell:
+        return "login shell is disabled by config; omit `login` or set it to false."
+    return None
+
+
+def local_http_shell_invocation_with_config_login(
+    invocation: LocalHttpShellInvocation,
+    config: ExecSessionConfig,
+) -> LocalHttpShellInvocation:
+    """Resolve omitted login flag using Rust's allow_login_shell default."""
+
+    if invocation.login is not None:
+        return invocation
+    return replace(invocation, login=config.allow_login_shell)
+
+
+def _local_http_view_image_tool_output(
+    item: Mapping[str, Any],
+    config: ExecSessionConfig,
+    *,
+    model_info: Any = None,
+) -> tuple[Any, bool, dict[str, Any] | None]:
+    arguments = _tool_arguments_json_from_item(item)
+    handler = ViewImageHandler(
+        ViewImageToolOptions(
+            can_request_original_image_detail=local_http_model_can_request_original_image_detail(model_info),
+        ),
+        supports_image_inputs=local_http_model_supports_image_inputs(model_info),
+        cwd=config.cwd,
+    )
+    try:
+        output = handler.handle(ToolPayload.function(arguments))
+    except FunctionCallError as exc:
+        return str(exc), False, None
+    content_item = {
+        "type": "input_image",
+        "image_url": output.image_url,
+        "detail": output.image_detail.value,
+    }
+    return (
+        (content_item,),
+        True,
+        {
+            "image_url": output.image_url,
+            "detail": output.image_detail.value,
+        },
+    )
+
+
 def local_http_apply_patch_approval_required_output(config: ExecSessionConfig) -> str:
-    approval = getattr(config.approval_policy, "value", str(config.approval_policy))
+    approval = approval_policy_display_value(config.approval_policy)
     return (
         "apply_patch: approval_required\n"
         f"approval_policy: {approval}\n"
@@ -2336,7 +3534,7 @@ def local_http_apply_patch_approval_required_output(config: ExecSessionConfig) -
 
 
 def local_http_write_stdin_approval_required_output(config: ExecSessionConfig) -> str:
-    approval = getattr(config.approval_policy, "value", str(config.approval_policy))
+    approval = approval_policy_display_value(config.approval_policy)
     return (
         "exit_code: approval_required\n"
         f"approval_policy: {approval}\n"
@@ -2440,6 +3638,32 @@ def _write_stdin_invocation_from_arguments(arguments: Any) -> LocalHttpWriteStdi
         ),
         max_output_tokens=_shell_max_output_tokens_from_arguments(arguments),
     )
+
+
+def _local_http_write_stdin_argument_error(arguments: Any) -> str | None:
+    if not isinstance(arguments, Mapping):
+        return "failed to parse function arguments: expected JSON object"
+    if "session_id" not in arguments:
+        return "failed to parse function arguments: missing field `session_id`"
+    session_id = arguments.get("session_id")
+    if isinstance(session_id, bool) or not isinstance(session_id, int):
+        return "failed to parse function arguments: invalid type for `session_id`, expected i32"
+    if session_id < -(2**31) or session_id > 2**31 - 1:
+        return "failed to parse function arguments: invalid value for `session_id`, expected i32"
+    chars = arguments.get("chars")
+    if chars is not None and not isinstance(chars, str):
+        return "failed to parse function arguments: invalid type for `chars`, expected string"
+    yield_time_ms = arguments.get("yield_time_ms")
+    if yield_time_ms is not None and (
+        isinstance(yield_time_ms, bool) or not isinstance(yield_time_ms, int) or yield_time_ms < 0
+    ):
+        return "failed to parse function arguments: invalid type for `yield_time_ms`, expected u64"
+    max_output_tokens = arguments.get("max_output_tokens")
+    if max_output_tokens is not None and (
+        isinstance(max_output_tokens, bool) or not isinstance(max_output_tokens, int) or max_output_tokens < 0
+    ):
+        return "failed to parse function arguments: invalid type for `max_output_tokens`, expected usize"
+    return None
 
 
 def _write_stdin_session_id_from_arguments(arguments: Any) -> int | None:
@@ -2588,9 +3812,9 @@ def _apply_local_http_apply_patch(patch_text: str, cwd: Path) -> tuple[str, bool
     try:
         verified = verify_apply_patch_args(parse_patch(patch_text), cwd)
     except Exception as exc:
-        return f"apply_patch failed: {exc}", False, None
+        return f"apply_patch verification failed: {exc}", False, None
     if verified.type != "body" or verified.body is None:
-        return f"apply_patch failed: {verified.error}", False, None
+        return f"apply_patch verification failed: {verified.error}", False, None
     changes = _relative_apply_patch_protocol_changes(
         convert_apply_patch_to_protocol(verified.body),
         cwd,
@@ -2599,6 +3823,58 @@ def _apply_local_http_apply_patch(patch_text: str, cwd: Path) -> tuple[str, bool
         return apply_patch_action_to_disk(verified.body), True, changes
     except OSError as exc:
         return f"apply_patch failed: {exc}", False, changes
+
+
+def _local_http_apply_patch_command_from_shell_invocation(
+    invocation: LocalHttpShellInvocation,
+    *,
+    cwd: Path,
+) -> LocalHttpApplyPatchCommand | None:
+    for argv in _local_http_apply_patch_argv_candidates(invocation):
+        try:
+            verified = maybe_parse_apply_patch_verified(argv, cwd)
+        except Exception as exc:
+            return LocalHttpApplyPatchCommand(error=f"apply_patch verification failed: {exc}")
+        if verified.type in {"not_apply_patch", "shell_parse_error"}:
+            continue
+        if verified.type == "correctness_error":
+            return LocalHttpApplyPatchCommand(error=f"apply_patch verification failed: {verified.error}")
+        if verified.type == "body":
+            if verified.body is None:
+                return LocalHttpApplyPatchCommand(error="apply_patch verification failed: missing patch body")
+            changes = _relative_apply_patch_protocol_changes(
+                convert_apply_patch_to_protocol(verified.body),
+                cwd,
+            )
+            return LocalHttpApplyPatchCommand(action=verified.body, changes=changes)
+    return None
+
+
+def _local_http_apply_patch_argv_candidates(invocation: LocalHttpShellInvocation) -> tuple[tuple[str, ...], ...]:
+    command = invocation.command
+    shell = invocation.shell
+    candidates: list[tuple[str, ...]] = []
+    if shell:
+        name = Path(shell.replace("\\", "/")).stem.lower()
+        if name in {"pwsh", "powershell"}:
+            candidates.append((shell, "-Command", command))
+            candidates.append((shell, "-NoProfile", "-Command", command))
+        elif name == "cmd":
+            candidates.append((shell, "/C", command))
+        else:
+            candidates.append((shell, "-lc" if invocation.login is not False else "-c", command))
+    else:
+        flag = "-lc" if invocation.login is not False else "-c"
+        candidates.extend(
+            (
+                ("bash", flag, command),
+                ("sh", "-c", command),
+                ("pwsh", "-Command", command),
+                ("cmd", "/C", command),
+            )
+        )
+    candidates.append((command,))
+    return tuple(dict.fromkeys(candidates))
 
 
 def _local_http_apply_patch_protocol_changes(patch_text: str, cwd: Path) -> dict[Path, FileChange] | None:
@@ -2701,10 +3977,13 @@ def local_http_shell_tool_permission_request_error(
     *,
     granted_permissions: AdditionalPermissionProfile | None = None,
     cwd: Path | str | None = None,
+    additional_permissions_allowed: bool = True,
     allow_pending_approval: bool = False,
 ) -> str | None:
     """Return a Rust-style model-facing error for unsupported local permission requests."""
 
+    if not isinstance(additional_permissions_allowed, bool):
+        raise TypeError("additional_permissions_allowed must be a bool")
     if invocation.additional_permissions_is_invalid:
         return (
             "exit_code: permission_request_invalid\n"
@@ -2738,7 +4017,19 @@ def local_http_shell_tool_permission_request_error(
             granted_permissions,
             Path.cwd() if cwd is None else cwd,
         ):
-            return None
+            if additional_permissions_allowed:
+                return None
+            return (
+                "exit_code: permission_request_unsupported\n"
+                "stderr:\n"
+                "additional permissions are disabled; enable `features.exec_permission_approvals` before using `with_additional_permissions`"
+            )
+        if not additional_permissions_allowed:
+            return (
+                "exit_code: permission_request_unsupported\n"
+                "stderr:\n"
+                "additional permissions are disabled; enable `features.exec_permission_approvals` before using `with_additional_permissions`"
+            )
         if allow_pending_approval:
             return None
         return (
@@ -2761,6 +4052,20 @@ def local_http_shell_tool_permission_request_error(
             "approval policy is never; reject command - you cannot ask for escalated permissions if the approval policy is never"
         )
     return None
+
+
+def local_http_shell_tool_additional_permissions_allowed(
+    config: ExecSessionConfig,
+    *,
+    permissions_preapproved: bool,
+) -> bool:
+    """Return Rust's feature gate for shell additional permissions."""
+
+    if not isinstance(permissions_preapproved, bool):
+        raise TypeError("permissions_preapproved must be a bool")
+    return bool(config.exec_permission_approvals_enabled) or (
+        bool(config.request_permissions_tool_enabled) and permissions_preapproved
+    )
 
 
 def _local_http_shell_tool_preapproved(
@@ -2793,7 +4098,7 @@ def local_http_shell_tool_approval_required_output(
 ) -> str:
     """Build a tool output explaining that approval is required."""
 
-    approval = getattr(config.approval_policy, "value", str(config.approval_policy))
+    approval = approval_policy_display_value(config.approval_policy)
     if isinstance(invocation, LocalHttpShellInvocation):
         command = invocation.command
         sandbox_permissions = invocation.sandbox_permissions
@@ -2875,7 +4180,7 @@ def local_http_shell_tool_forbidden_output(
     config: ExecSessionConfig,
     reason: str,
 ) -> str:
-    approval = getattr(config.approval_policy, "value", str(config.approval_policy))
+    approval = approval_policy_display_value(config.approval_policy)
     command = invocation.command if isinstance(invocation, LocalHttpShellInvocation) else invocation
     return (
         "exit_code: forbidden\n"
@@ -2903,6 +4208,10 @@ def _local_http_shell_tool_exec_approval_requirement(
             sandbox_cwd=invocation.workdir or config.cwd,
             sandbox_permissions=sandbox_permissions,
             prefix_rule=invocation.prefix_rule,
+            matched_rules=match_exec_policy_rules_for_command(
+                _local_http_shell_tool_exec_policy_command(invocation),
+                getattr(config, "exec_policy_rules", ()),
+            ),
         )
     )
 
@@ -2915,20 +4224,22 @@ def _local_http_shell_tool_proposed_execpolicy_amendment(
 ):
     if not isinstance(invocation, LocalHttpShellInvocation):
         return None
+    if _local_http_shell_command_uses_heredoc_or_herestring(invocation.command):
+        return None
     requirement = exec_approval_requirement
     if requirement is None:
         requirement = _local_http_shell_tool_exec_approval_requirement(invocation, config)
     return requirement.proposed_amendment()
 
 
+def _local_http_shell_command_uses_heredoc_or_herestring(command: str) -> bool:
+    if not isinstance(command, str):
+        return False
+    return "<<" in command
+
+
 def _local_http_shell_tool_exec_policy_command(invocation: LocalHttpShellInvocation) -> tuple[str, ...]:
-    shell = invocation.shell
-    if shell:
-        shell_name = Path(shell).name.lower()
-        if shell_name in {"pwsh", "pwsh.exe", "powershell", "powershell.exe"}:
-            return (shell, "-Command", invocation.command)
-        return (shell, "-lc", invocation.command)
-    return ("bash", "-lc", invocation.command)
+    return _shell_command_execution_argv(invocation)
 
 
 def _local_http_additional_permissions_output_mapping(
@@ -2980,8 +4291,9 @@ def _shell_invocation_from_arguments(
     *,
     default_cwd: Path,
     default_timeout: float | None,
+    unified_exec: bool = False,
 ) -> LocalHttpShellInvocation | None:
-    command = _shell_command_from_arguments(arguments)
+    command = _shell_command_from_arguments(arguments, unified_exec=unified_exec)
     if not command:
         return None
     if not isinstance(arguments, Mapping):
@@ -2997,8 +4309,8 @@ def _shell_invocation_from_arguments(
         additional_permissions_value = _optional_mapping_argument(arguments, "additional_permissions")
     return LocalHttpShellInvocation(
         command,
-        workdir=_shell_workdir_from_arguments(arguments, default_cwd=default_cwd),
-        timeout=_shell_timeout_from_arguments(arguments, default_timeout=default_timeout),
+        workdir=_shell_workdir_from_arguments(arguments, default_cwd=default_cwd, unified_exec=unified_exec),
+        timeout=_shell_timeout_from_arguments(arguments, default_timeout=default_timeout, unified_exec=unified_exec),
         login=_shell_login_from_arguments(arguments),
         shell=_optional_str_argument(arguments, "shell"),
         tty=_optional_bool_argument(arguments, "tty"),
@@ -3012,11 +4324,48 @@ def _shell_invocation_from_arguments(
     )
 
 
-def _shell_command_from_arguments(arguments: Any) -> str | None:
+def _local_http_exec_command_argument_error(arguments: Mapping[str, Any]) -> str | None:
+    if "cmd" not in arguments:
+        return "failed to parse function arguments: missing field `cmd`"
+    cmd = arguments.get("cmd")
+    if not isinstance(cmd, str):
+        return "failed to parse function arguments: invalid type for `cmd`, expected string"
+    for key in ("workdir", "shell", "justification"):
+        value = arguments.get(key)
+        if value is not None and not isinstance(value, str):
+            return f"failed to parse function arguments: invalid type for `{key}`, expected string"
+    for key in ("login", "tty"):
+        value = arguments.get(key)
+        if value is not None and not isinstance(value, bool):
+            return f"failed to parse function arguments: invalid type for `{key}`, expected bool"
+    for key, expected in (("yield_time_ms", "u64"), ("max_output_tokens", "usize")):
+        value = arguments.get(key)
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
+            return f"failed to parse function arguments: invalid type for `{key}`, expected {expected}"
+    sandbox_permissions = arguments.get("sandbox_permissions")
+    if sandbox_permissions is not None and not isinstance(sandbox_permissions, str):
+        return "failed to parse function arguments: invalid type for `sandbox_permissions`, expected string"
+    additional_permissions = arguments.get("additional_permissions")
+    if additional_permissions is not None and not isinstance(additional_permissions, Mapping):
+        return "failed to parse function arguments: invalid type for `additional_permissions`, expected object"
+    prefix_rule = arguments.get("prefix_rule")
+    if prefix_rule is not None and (
+        isinstance(prefix_rule, (str, bytes))
+        or not isinstance(prefix_rule, (list, tuple))
+        or not all(isinstance(item, str) for item in prefix_rule)
+    ):
+        return "failed to parse function arguments: invalid type for `prefix_rule`, expected array of strings"
+    return None
+
+
+def _shell_command_from_arguments(arguments: Any, *, unified_exec: bool = False) -> str | None:
     if isinstance(arguments, str):
         return arguments if arguments else None
     if not isinstance(arguments, Mapping):
         return None
+    if unified_exec:
+        value = arguments.get("cmd")
+        return value if isinstance(value, str) and value else None
     for key in ("command", "cmd", "script"):
         value = arguments.get(key)
         if isinstance(value, str) and value:
@@ -3027,9 +4376,14 @@ def _shell_command_from_arguments(arguments: Any) -> str | None:
     return None
 
 
-def _shell_workdir_from_arguments(arguments: Mapping[str, Any], *, default_cwd: Path) -> Path | None:
+def _shell_workdir_from_arguments(
+    arguments: Mapping[str, Any],
+    *,
+    default_cwd: Path,
+    unified_exec: bool = False,
+) -> Path | None:
     value = arguments.get("workdir")
-    if value is None:
+    if value is None and not unified_exec:
         value = arguments.get("cwd")
     if not isinstance(value, str) or not value:
         return None
@@ -3037,7 +4391,14 @@ def _shell_workdir_from_arguments(arguments: Mapping[str, Any], *, default_cwd: 
     return path if path.is_absolute() else Path(default_cwd) / path
 
 
-def _shell_timeout_from_arguments(arguments: Mapping[str, Any], *, default_timeout: float | None) -> float | None:
+def _shell_timeout_from_arguments(
+    arguments: Mapping[str, Any],
+    *,
+    default_timeout: float | None,
+    unified_exec: bool = False,
+) -> float | None:
+    if unified_exec:
+        return default_timeout
     value = arguments.get("timeout_ms")
     if value is None:
         value = arguments.get("timeout")
@@ -3104,7 +4465,7 @@ def _shell_max_output_tokens_from_arguments(arguments: Mapping[str, Any]) -> int
     value = arguments.get("max_output_tokens")
     if isinstance(value, bool) or value is None:
         return None
-    if isinstance(value, int | float) and value > 0:
+    if isinstance(value, int | float) and value >= 0:
         return int(value)
     return None
 
@@ -3323,6 +4684,37 @@ def _tool_name_from_item(item: Mapping[str, Any]) -> str:
     return str(value or "")
 
 
+def _local_http_function_call_argument_error(item: Mapping[str, Any], tool: str) -> str | None:
+    if item.get("type") != "function_call":
+        return None
+    if tool not in {
+        "exec_command",
+        "shell_command",
+        "shell",
+        "local_shell",
+        "exec",
+        "write_stdin",
+        "request_permissions",
+        "view_image",
+    }:
+        return None
+    raw_arguments = item.get("arguments")
+    if raw_arguments is None:
+        return "failed to parse function arguments: expected value"
+    if isinstance(raw_arguments, str):
+        try:
+            parsed = json.loads(raw_arguments)
+        except ValueError as exc:
+            return f"failed to parse function arguments: {exc}"
+    else:
+        parsed = raw_arguments
+    if not isinstance(parsed, Mapping):
+        return "failed to parse function arguments: expected JSON object"
+    if tool == "exec_command":
+        return _local_http_exec_command_argument_error(parsed)
+    return None
+
+
 def _tool_arguments_from_item(item: Mapping[str, Any]) -> Any:
     value = item.get("arguments")
     if value is None:
@@ -3335,6 +4727,15 @@ def _tool_arguments_from_item(item: Mapping[str, Any]) -> Any:
         except ValueError:
             return value
     return value if value is not None else {}
+
+
+def _tool_arguments_json_from_item(item: Mapping[str, Any]) -> str:
+    value = item.get("arguments")
+    if value is None:
+        value = item.get("input")
+    if isinstance(value, str):
+        return value
+    return json.dumps(value if value is not None else {})
 
 
 def _tool_output_from_item(item: Mapping[str, Any]) -> Any:
@@ -3766,6 +5167,14 @@ class _SessionEventsResult:
     session_events: tuple[Any, ...]
 
 
+core_exec_config_summary = local_http_exec_config_summary
+core_exec_enabled = local_core_exec_enabled
+core_exec_initial_messages_from_rollout = local_http_exec_initial_messages_from_rollout
+core_review_rollout_input_items = local_http_review_rollout_input_items
+persist_core_exec_resume_rollout = persist_local_http_exec_resume_rollout
+persist_core_exec_rollout = persist_local_http_exec_rollout
+
+
 __all__ = [
     "DEFAULT_OPENAI_BASE_URL",
     "DEFAULT_OPENAI_MODEL",
@@ -3788,18 +5197,26 @@ __all__ = [
     "LOCAL_HTTP_EXEC_OUTPUT_MAX_TOKENS",
     "LOCAL_HTTP_MAX_UNIFIED_EXEC_PROCESSES",
     "LOCAL_HTTP_UNIFIED_EXEC_PROTECTED_RECENT_PROCESSES",
+    "LOCAL_HTTP_REVIEW_DISABLED_TOOL_NAMES",
     "LocalHttpShellInvocation",
     "LocalHttpWriteStdinInvocation",
     "LocalHttpHeadTailBuffer",
     "LocalHttpExecSessionManager",
     "LocalHttpModelInfo",
     "LocalHttpProvider",
+    "LocalHttpReviewModelInfo",
     "local_http_exec_command_output_schema",
     "local_http_exec_output_text",
     "local_http_write_stdin_tool_spec",
     "local_http_request_permissions_tool_spec",
     "local_http_request_permissions_unavailable_output",
     "local_http_write_stdin_unavailable_output",
+    "local_http_model_allows_apply_patch_tool",
+    "local_http_model_allows_view_image_tool",
+    "local_http_model_disabled_tool_names",
+    "local_http_model_supports_image_inputs",
+    "local_http_model_can_request_original_image_detail",
+    "local_http_view_image_tool_spec",
     "local_http_shell_tools_built_tools",
     "local_http_shell_tool_spec",
     "local_http_apply_patch_approval_required_output",
@@ -3814,6 +5231,13 @@ __all__ = [
     "emit_local_http_exec_result",
     "final_text_from_local_http_exec_result",
     "final_text_from_response_items",
+    "core_exec_config_summary",
+    "core_exec_enabled",
+    "core_exec_initial_messages_from_rollout",
+    "core_review_rollout_input_items",
+    "persist_core_exec_resume_rollout",
+    "persist_core_exec_rollout",
+    "local_core_exec_enabled",
     "local_http_exec_enabled",
     "local_http_exec_max_tool_rounds",
     "local_http_generate_chunk_id",
@@ -3823,6 +5247,8 @@ __all__ = [
     "local_http_exec_tool_output_max_chars",
     "local_http_exec_config_summary",
     "local_http_exec_initial_messages_from_rollout",
+    "local_http_review_rollout_input_items",
+    "local_http_review_user_turn_plan",
     "local_http_shell_tool_approval_required_output",
     "local_http_shell_tool_auto_execute_allowed",
     "persist_local_http_exec_rollout",
@@ -3830,6 +5256,14 @@ __all__ = [
     "reasoning_texts_from_local_http_exec_result",
     "resolve_local_http_exec_resume_rollout_path",
     "response_items_from_local_http_tool_outputs",
+    "parse_local_http_review_output",
+    "render_local_http_review_interrupted_rollout_user_message",
+    "render_local_http_review_rollout_user_message",
+    "run_exec_review_http_sampling",
+    "run_exec_review_core_http_sampling",
+    "run_exec_resume_user_turn_core_http_sampling",
+    "run_exec_user_turn_core_http_sampling",
+    "run_exec_user_turn_core_sampling",
     "run_exec_user_turn_default_local_http_sampling",
     "run_exec_tool_output_http_sampling",
     "run_exec_resume_user_turn_http_sampling",

@@ -6,12 +6,14 @@ from pathlib import Path
 from pycodex.exec import (
     ExecRunError,
     PromptDecodeError,
+    StdinPromptBehavior,
     build_review_request,
     decode_prompt_bytes,
     load_output_schema,
     parse_exec_args,
     prepare_exec_run_plan,
     prompt_with_stdin_context,
+    read_prompt_from_stdin,
     resolve_prompt,
     resolve_root_prompt,
     review_user_facing_hint,
@@ -85,6 +87,24 @@ class ExecRunPreparationTests(unittest.TestCase):
             "Summarize",
         )
 
+    def test_optional_append_ignores_unreadable_default_stdin(self):
+        class UnreadableStdin:
+            def isatty(self):
+                return False
+
+            def read(self):
+                raise OSError("stdin is captured")
+
+        with unittest.mock.patch("pycodex.exec.run.sys.stdin", UnreadableStdin()):
+            value = read_prompt_from_stdin(
+                StdinPromptBehavior.OPTIONAL_APPEND,
+                stdin=None,
+                stdin_is_terminal=None,
+                stderr=io.StringIO(),
+            )
+
+        self.assertIsNone(value)
+
     def test_resolve_prompt_reads_dash_or_missing_prompt_from_stdin(self):
         stderr = io.StringIO()
 
@@ -96,6 +116,22 @@ class ExecRunPreparationTests(unittest.TestCase):
             resolve_prompt(None, stdin=b"prompt from stdin\n", stdin_is_terminal=False, stderr=stderr),
             "prompt from stdin\n",
         )
+
+    def test_prepare_exec_run_plan_accepts_dash_prompt_from_cli(self):
+        cli = parse_exec_args(["-"])
+
+        plan = prepare_exec_run_plan(cli, stdin=b"prompt from stdin\n", stdin_is_terminal=False, stderr=io.StringIO())
+
+        self.assertEqual(plan.initial_operation.items, (UserInput.text_input("prompt from stdin\n"),))
+        self.assertEqual(plan.prompt_summary, "prompt from stdin\n")
+
+    def test_prepare_exec_run_plan_resume_accepts_dash_prompt_from_cli(self):
+        cli = parse_exec_args(["resume", "session-123", "-"])
+
+        plan = prepare_exec_run_plan(cli, stdin=b"continue from stdin\n", stdin_is_terminal=False, stderr=io.StringIO())
+
+        self.assertEqual(plan.initial_operation.items, (UserInput.text_input("continue from stdin\n"),))
+        self.assertEqual(plan.prompt_summary, "continue from stdin\n")
 
     def test_resolve_prompt_rejects_missing_terminal_prompt_and_empty_forced_stdin(self):
         with self.assertRaisesRegex(ExecRunError, "Either specify one as an argument"):

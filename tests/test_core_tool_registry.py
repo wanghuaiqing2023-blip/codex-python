@@ -4,6 +4,7 @@ from pycodex.core import (
     MULTI_AGENT_V1_NAMESPACE,
     FunctionToolOutput,
     HookToolName,
+    JsonToolOutput,
     McpToolOutput,
     PostToolUsePayload,
     PreToolUsePayload,
@@ -489,7 +490,7 @@ class ToolRegistryHookTests(unittest.TestCase):
         output = FunctionToolOutput.from_content(
             (
                 FunctionCallOutputContentItem.input_text("rendered"),
-                {"type": "image", "image_url": "file:///tmp/image.png"},
+                {"type": "input_image", "image_url": "file:///tmp/image.png"},
             ),
             True,
         )
@@ -498,7 +499,7 @@ class ToolRegistryHookTests(unittest.TestCase):
 
         self.assertEqual(payload.tool_input, {"path": "image.png"})
         self.assertEqual(payload.tool_response[0], {"type": "input_text", "text": "rendered"})
-        self.assertEqual(payload.tool_response[1], {"type": "image", "image_url": "file:///tmp/image.png"})
+        self.assertEqual(payload.tool_response[1], {"type": "input_image", "image_url": "file:///tmp/image.png"})
 
     def test_post_tool_use_payload_preserves_mcp_input_and_result(self) -> None:
         invocation = ToolInvocation(
