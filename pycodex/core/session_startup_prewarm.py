@@ -103,6 +103,7 @@ class SessionStartupPrewarmHandle:
             done, pending = await asyncio.wait(wait_tasks, timeout=remaining, return_when=asyncio.FIRST_COMPLETED)
             if cancellation_task is not None and cancellation_task in done:
                 self.task.cancel()
+                await _drain_cancelled_task(self.task)
                 for pending_task in pending:
                     pending_task.cancel()
                 _record_startup_phase(session_telemetry, "startup_prewarm_resolve", time.monotonic() - resolve_started_at, "cancelled")
@@ -115,6 +116,7 @@ class SessionStartupPrewarmHandle:
                 resolution = resolution_from_task_result(self.task, self.started_at)
             else:
                 self.task.cancel()
+                await _drain_cancelled_task(self.task)
                 if cancellation_task is not None:
                     cancellation_task.cancel()
                 resolution = SessionStartupPrewarmResolution.unavailable("timed_out", time.monotonic() - self.started_at)
@@ -166,6 +168,16 @@ async def schedule_startup_prewarm(
             _record_duration(session_telemetry, STARTUP_PREWARM_DURATION_METRIC, elapsed, (("status", status),))
 
     return SessionStartupPrewarmHandle.new(asyncio.create_task(run()), started_at, timeout)
+
+
+async def _drain_cancelled_task(task: asyncio.Task[Any]) -> None:
+    try:
+        await task
+    except asyncio.CancelledError:
+        return
+    except Exception:
+        return
+    await asyncio.sleep(0)
 
 
 def unavailable_startup_prewarm_not_scheduled() -> SessionStartupPrewarmResolution:

@@ -513,9 +513,13 @@ async def _apply_pre_tool_use_hook(
     if hook_payload is None:
         return invocation
     try:
-        raw_result = pre_tool_use_hook(hook_payload, invocation)
-        if inspect.isawaitable(raw_result):
-            raw_result = await raw_result
+        raw_result = await _call_tool_hook(
+            pre_tool_use_hook,
+            hook_payload,
+            invocation,
+            first_name="payload",
+            second_name="invocation",
+        )
     except FunctionCallError as err:
         dispatch_trace.record_failed(err)
         await notify_tool_finish_if_unclaimed(
@@ -607,12 +611,64 @@ async def _apply_post_tool_use_hook(
 ) -> Any:
     if post_tool_use_hook is None or result.post_tool_use_payload is None:
         return result
-    raw_outcome = post_tool_use_hook(result.post_tool_use_payload, result)
-    if inspect.isawaitable(raw_outcome):
-        raw_outcome = await raw_outcome
+    raw_outcome = await _call_tool_hook(
+        post_tool_use_hook,
+        result.post_tool_use_payload,
+        result,
+        first_name="payload",
+        second_name="result",
+    )
     outcome = _coerce_post_tool_use_outcome(raw_outcome)
     await _record_post_tool_use_additional_contexts(outcome, invocation=invocation, **stores)
     return apply_post_tool_use_feedback(result, post_tool_use_replacement_text(outcome))
+
+
+async def _call_tool_hook(
+    hook: Any,
+    first: Any,
+    second: Any,
+    *,
+    first_name: str,
+    second_name: str,
+) -> Any:
+    """Call a hook across common positional and keyword-only signatures.
+
+    Some host integrations pass hooks as keyword-only handlers. We prefer explicit
+    positional calls to preserve existing behavior, while probing compatible
+    keyword forms when positional signatures are not matched.
+    """
+
+    if not callable(hook):
+        raise TypeError("hook must be callable")
+    try:
+        signature = inspect.signature(hook)
+    except (TypeError, ValueError):
+        signature = None
+
+    if signature is not None:
+        candidates: tuple[tuple[tuple[Any, ...], dict[str, Any]], ...] = (
+            ((first, second), {}),
+            ((), {first_name: first, second_name: second}),
+            ((), {first_name: first}),
+            ((first,), {}),
+            ((), {second_name: second}),
+            ((), {}),
+        )
+        for args, kwargs in candidates:
+            try:
+                signature.bind_partial(*args, **kwargs)
+            except TypeError:
+                continue
+            result = hook(*args, **kwargs)
+            if inspect.isawaitable(result):
+                return await result
+            return result
+        raise TypeError("hook signature does not accept supported arguments")
+
+    result = hook(first, second)
+    if inspect.isawaitable(result):
+        return await result
+    return result
 
 
 async def _record_post_tool_use_additional_contexts(
@@ -807,10 +863,10 @@ def _unwrap_optional_holder(value: Any) -> Any:
     return value
 
 
-def _field_or_attr(value: Any, name: str) -> Any:
+def _field_or_attr(value: Any, name: str, default: Any = None) -> Any:
     if isinstance(value, dict):
-        return value.get(name)
-    return getattr(value, name, None)
+        return value.get(name, default)
+    return getattr(value, name, default)
 
 
 def _call_or_value(value: Any) -> Any:
@@ -1037,12 +1093,45 @@ async def notify_tool_finish_if_unclaimed(
 
 
 async def _handle_tool(tool: Any, invocation: ToolInvocation) -> Any:
-    handle = getattr(tool, "handle", None)
+    handle = _field_or_attr(tool, "handle", None)
     if handle is None:
         raise FunctionCallError.fatal(f"tool {invocation.tool_name} has no handle method")
-    result = handle(invocation)
+    if not callable(handle):
+        raise FunctionCallError.fatal(f"tool {invocation.tool_name} has no handle method")
+    result = await _call_tool_method(handle, invocation)
     if inspect.isawaitable(result):
         result = await result
+    return result
+
+
+async def _call_tool_method(callback: Any, invocation: ToolInvocation) -> Any:
+    if not callable(callback):
+        raise FunctionCallError.fatal(f"tool {invocation.tool_name} has invalid handle method")
+    try:
+        signature = inspect.signature(callback)
+    except (TypeError, ValueError):
+        signature = None
+
+    if signature is not None:
+        candidates: tuple[tuple[tuple[Any, ...], dict[str, Any]], ...] = (
+            ((invocation,), {}),
+            ((), {"invocation": invocation}),
+            ((), {}),
+        )
+        for args, kwargs in candidates:
+            try:
+                signature.bind_partial(*args, **kwargs)
+            except TypeError:
+                continue
+            result = callback(*args, **kwargs)
+            if inspect.isawaitable(result):
+                return await result
+            return result
+        raise TypeError(f"tool {invocation.tool_name} has invalid handle signature")
+
+    result = callback(invocation)
+    if inspect.isawaitable(result):
+        return await result
     return result
 
 

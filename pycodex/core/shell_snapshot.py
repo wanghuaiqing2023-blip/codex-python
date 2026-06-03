@@ -1,7 +1,6 @@
-"""Shell snapshot helpers ported from ``core/src/shell_snapshot.rs``."""
-
 from __future__ import annotations
 
+"""Shell snapshot helpers ported from ``core/src/shell_snapshot.rs``."""
 import os
 import subprocess
 import time

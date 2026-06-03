@@ -175,16 +175,14 @@ def create_followup_task_tool() -> dict[str, JsonValue]:
 
 
 def create_resume_agent_tool() -> dict[str, JsonValue]:
-    return _namespace_tool(
-        {
-            "type": "function",
-            "name": "resume_agent",
-            "description": "Resume a previously closed agent by id so it can receive send_input and wait_agent calls.",
-            "strict": False,
-            "parameters": _object_schema({"id": {"type": "string", "description": "Agent id to resume."}}, ["id"], False),
-            "output_schema": resume_agent_output_schema(),
-        }
-    )
+    return {
+        "type": "function",
+        "name": "resume_agent",
+        "description": "Resume a previously closed agent by id so it can receive send_input and wait_agent calls.",
+        "strict": False,
+        "parameters": _object_schema({"id": {"type": "string", "description": "Agent id to resume."}}, ["id"], False),
+        "output_schema": resume_agent_output_schema(),
+    }
 
 
 def create_wait_agent_tool_v1(options: WaitAgentTimeoutOptions = WaitAgentTimeoutOptions()) -> dict[str, JsonValue]:

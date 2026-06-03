@@ -858,7 +858,7 @@ class NetworkApprovalTests(unittest.TestCase):
         self.assertEqual(plan.decision, NetworkDecision.deny(NETWORK_APPROVAL_DENY_REASON_NOT_ALLOWED))
         self.assertIsNotNone(plan.pending)
         if plan.pending is not None:
-        self.assertEqual(plan.pending.decision, PendingApprovalDecision.DENY)
+            self.assertEqual(plan.pending.decision, PendingApprovalDecision.DENY)
         self.assertFalse(service.pending_host_approvals)
 
     def test_inline_network_policy_request_rejects_invalid_protocol_type(self) -> None:

@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from pycodex.core.client_common import Prompt
-from pycodex.core.turn_prompt import build_turn_prompt
+from pycodex.core.turn_prompt import build_turn_prompt, render_turn_user_instructions
 from pycodex.protocol import BaseInstructions, ResponseInputItem, ResponseItem, UserInput
 
 
@@ -82,6 +82,14 @@ async def build_prompt_input_from_session(
     history = await _maybe_await(sess.clone_history())
     input_modalities = getattr(getattr(turn_context, "model_info", None), "input_modalities", None)
     prompt_input = history.for_prompt(input_modalities) if hasattr(history, "for_prompt") else list(history)
+    if user_input:
+        instruction_item = render_turn_user_instructions(turn_context)
+        if instruction_item is not None:
+            prompt_input = list(prompt_input)
+            if prompt_input:
+                prompt_input.insert(-1, instruction_item)
+            else:
+                prompt_input.append(instruction_item)
 
     built_tools_fn = built_tools or _default_built_tools
     router = await _maybe_await(built_tools_fn(sess, turn_context))

@@ -17,6 +17,8 @@ from pycodex.protocol import (
 def agent_status_from_event(msg: EventMsg | dict[str, Any]) -> AgentStatus | None:
     """Derive the next tracked agent status from a single event."""
 
+    if isinstance(msg, dict) and msg.get("type") == "turn_complete":
+        return AgentStatus.completed(_last_agent_message(msg))
     event = EventMsg.from_mapping(msg) if isinstance(msg, dict) else msg
     if not isinstance(event, EventMsg):
         raise TypeError("agent status event must be an EventMsg or mapping")

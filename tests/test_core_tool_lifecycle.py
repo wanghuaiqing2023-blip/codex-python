@@ -143,6 +143,57 @@ class ToolLifecycleTests(unittest.TestCase):
             ExtensionToolCallSource.code_mode("cell-1", "runtime-1"),
         )
 
+    def test_notify_helpers_support_keyword_only_contributor_signatures(self) -> None:
+        called = {"start": False, "finish": False}
+
+        async def on_tool_start(self, *, input):
+            called["start"] = input.call_id == "call-1"
+            self.called = called
+
+        async def on_tool_finish(self, *, input):
+            called["finish"] = input.outcome == ToolCallOutcome.blocked()
+            self.finished = called
+
+        contributor = type("Contributor", (), {"on_tool_start": on_tool_start, "on_tool_finish": on_tool_finish})()
+        invocation = ToolInvocation(
+            call_id="call-1",
+            tool_name=ToolName.plain("lookup"),
+            payload=ToolPayload.function("{}"),
+        )
+        self.called = False
+        self.finished = False
+
+        asyncio.run(notify_tool_start([contributor], invocation, turn_id="turn-1"))
+        asyncio.run(notify_tool_finish([contributor], invocation, ToolCallOutcome.blocked(), turn_id="turn-1"))
+
+        self.assertTrue(called["start"])
+        self.assertTrue(called["finish"])
+
+    def test_notify_helpers_support_mapping_contributors(self) -> None:
+        started = []
+        finished = []
+
+        async def on_tool_start(input):
+            started.append(input)
+
+        def on_tool_finish(input):
+            finished.append(input)
+
+        contributor = {"on_tool_start": on_tool_start, "on_tool_finish": on_tool_finish}
+        invocation = ToolInvocation(
+            call_id="call-map",
+            tool_name=ToolName.plain("lookup"),
+            payload=ToolPayload.function("{}"),
+        )
+
+        asyncio.run(notify_tool_start([contributor], invocation, turn_id="turn-map"))
+        asyncio.run(notify_tool_finish([contributor], invocation, ToolCallOutcome.aborted(), turn_id="turn-map"))
+
+        self.assertEqual(len(started), 1)
+        self.assertEqual(len(finished), 1)
+        self.assertEqual(started[0].call_id, "call-map")
+        self.assertEqual(finished[0].outcome, ToolCallOutcome.aborted())
+
     def test_notify_helpers_ignore_missing_contributors_and_callbacks(self) -> None:
         invocation = ToolInvocation(
             call_id="call-1",

@@ -9505,7 +9505,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             default_local_http_exec_model(config_default, env={}, config_toml={"model": "gpt-config"}),
             "gpt-config",
         )
-        self.assertEqual(default_local_http_exec_model(config_default, env={}), "gpt-5")
+        self.assertEqual(default_local_http_exec_model(config_default, env={}), "gpt-5.3-codex")
 
     def test_local_http_exec_max_tool_rounds_env(self) -> None:
         self.assertIsNone(local_http_exec_max_tool_rounds(env={}))

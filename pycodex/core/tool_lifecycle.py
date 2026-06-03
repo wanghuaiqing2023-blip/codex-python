@@ -239,10 +239,10 @@ def tool_finish_input_parts(
 async def notify_tool_start(contributors: Any, invocation: ToolInvocation, **stores: Any) -> None:
     start_input = tool_start_input(invocation, **_lifecycle_store_kwargs(stores))
     for contributor in tuple(contributors or ()):
-        callback = getattr(contributor, "on_tool_start", None)
+        callback = _field_or_attr(contributor, "on_tool_start", None)
         if callback is None:
             continue
-        result = callback(start_input)
+        result = await _call_lifecycle_callback(callback, start_input, first_name="input")
         if inspect.isawaitable(result):
             await result
 
@@ -264,10 +264,10 @@ async def notify_tool_finish_parts(
         **_lifecycle_store_kwargs(stores),
     )
     for contributor in tuple(contributors or ()):
-        callback = getattr(contributor, "on_tool_finish", None)
+        callback = _field_or_attr(contributor, "on_tool_finish", None)
         if callback is None:
             continue
-        result = callback(finish_input)
+        result = await _call_lifecycle_callback(callback, finish_input, first_name="input")
         if inspect.isawaitable(result):
             await result
 
@@ -280,12 +280,39 @@ async def notify_tool_finish(
 ) -> None:
     finish_input = tool_finish_input(invocation, outcome, **_lifecycle_store_kwargs(stores))
     for contributor in tuple(contributors or ()):
-        callback = getattr(contributor, "on_tool_finish", None)
+        callback = _field_or_attr(contributor, "on_tool_finish", None)
         if callback is None:
             continue
-        result = callback(finish_input)
+        result = await _call_lifecycle_callback(callback, finish_input, first_name="input")
         if inspect.isawaitable(result):
             await result
+
+
+async def _call_lifecycle_callback(callback: Any, value: Any, *, first_name: str) -> Any:
+    if not callable(callback):
+        raise TypeError(f"{callback!r} is not callable")
+    try:
+        signature = inspect.signature(callback)
+    except (TypeError, ValueError):
+        signature = None
+
+    if signature is not None:
+        candidates: tuple[tuple[tuple[Any, ...], dict[str, Any]], ...] = (
+            ((value,), {}),
+            ((), {first_name: value}),
+            ((), {}),
+        )
+        for args, kwargs in candidates:
+            try:
+                signature.bind_partial(*args, **kwargs)
+            except TypeError:
+                continue
+            result = callback(*args, **kwargs)
+            return await result if inspect.isawaitable(result) else result
+        raise TypeError("callback signature does not accept supported arguments")
+
+    result = callback(value)
+    return await result if inspect.isawaitable(result) else result
 
 
 @contextlib.contextmanager
@@ -311,6 +338,12 @@ def _lifecycle_store_kwargs(stores: Mapping[str, Any]) -> dict[str, Any]:
 
 def _explicit_lifecycle_store_kwargs(stores: Mapping[str, Any]) -> dict[str, Any]:
     return {key: stores[key] for key in _LIFECYCLE_STORE_KEYS if key in stores}
+
+
+def _field_or_attr(value: Any, name: str, default: Any = None) -> Any:
+    if isinstance(value, Mapping) and name in value:
+        return value[name]
+    return getattr(value, name, default)
 
 
 async def notify_tool_aborted(contributors: Any, invocation: ToolInvocation, **stores: Any) -> None:

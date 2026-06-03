@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 from datetime import timedelta
 from pathlib import Path
+import io
 import inspect
 import json
 import struct
@@ -988,6 +989,13 @@ def shell_escalate_client_plan_run(
     if plan.action.type == "run":
         return shell_local_execv_run(plan.local_execv, execv=execv)  # type: ignore[arg-type]
     if plan.action.type == "escalate":
+        if super_exec is not None:
+            if super_exec_send_with_fds is not None or super_exec_receive_result is not None:
+                raise TypeError("super_exec cannot be used with split super_exec callbacks")
+        elif super_exec_send_with_fds is None and super_exec_receive_result is None:
+            raise TypeError("super-exec execution requires super_exec or split super_exec callbacks")
+        elif super_exec_send_with_fds is None or super_exec_receive_result is None:
+            raise TypeError("super_exec_send_with_fds and super_exec_receive_result must be both provided")
         transferred_fds = shell_super_exec_stdio_transfer_fds(stdio, dup=dup)
         if super_exec is not None:
             return shell_super_exec_exchange_exit_code(plan.super_exec, transferred_fds, exchange=super_exec)
@@ -1304,7 +1312,14 @@ def shell_super_exec_duplicate_fd_for_transfer(
         fileno = getattr(source_fd, "fileno", None)
         if not callable(fileno):
             raise TypeError("fd must be an integer file descriptor or expose fileno()")
-        source_fd = fileno()
+        try:
+            source_fd = fileno()
+        except io.UnsupportedOperation:
+            fallback_fds = {"stdin": 0, "stdout": 1, "stderr": 2}
+            if name in fallback_fds:
+                source_fd = fallback_fds[name]
+            else:
+                raise
     if isinstance(source_fd, bool) or not isinstance(source_fd, int):
         raise TypeError("fd must be an integer file descriptor or expose fileno()")
     try:

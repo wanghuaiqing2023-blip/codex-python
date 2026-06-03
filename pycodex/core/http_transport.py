@@ -1349,6 +1349,8 @@ async def run_user_turn_http_sampling_from_session(
         output_schema=output_schema,
         output_schema_strict=output_schema_strict,
         max_tool_followups=max_tool_followups,
+        emit_user_prompt_turn_item=False,
+        emit_response_item_turn_item=False,
     )
 
 

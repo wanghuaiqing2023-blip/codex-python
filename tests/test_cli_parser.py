@@ -52,7 +52,13 @@ from pycodex.protocol import AskForApproval, ContentItem, ProfileV2Name, Respons
 
 class TopLevelCliParserTests(unittest.TestCase):
     def _main_with_local_http_exec_disabled(self, argv, **kwargs):
-        with patch.dict(os.environ, {"PYCODEX_EXEC_LOCAL_HTTP": "0"}):
+        with patch.dict(
+            os.environ,
+            {
+                "PYCODEX_EXEC_LOCAL_HTTP": "0",
+                "PYCODEX_EXEC_CORE": "0",
+            },
+        ):
             return main(argv, **kwargs)
 
     def test_no_args_defaults_to_interactive_mode(self):
@@ -2294,6 +2300,18 @@ class TopLevelCliParserTests(unittest.TestCase):
 
         self.assertEqual(code, 2)
         self.assertIn("not `codex debug models`", stderr.getvalue())
+
+    def test_main_debug_models_returns_supported_default_models(self) -> None:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        code = main(["debug", "models"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr.getvalue(), "")
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["source"], "online")
+        self.assertIn("gpt-5.3-codex", payload["models"])
 
     def test_main_remote_rejects_debug_models_with_preceding_help_flag(self):
         stderr = io.StringIO()
@@ -6082,9 +6100,8 @@ class TopLevelCliParserTests(unittest.TestCase):
             error_message = None
 
         with patch("pycodex.cli.parser.local_http_exec_enabled", return_value=False), patch(
-            "pycodex.cli.parser.remote_exec_session_connect_and_run",
-            return_value=SuccessResult(),
-        ):
+            "pycodex.cli.parser.core_exec_enabled", return_value=False
+        ), patch("pycodex.cli.parser.remote_exec_session_connect_and_run", return_value=SuccessResult()):
             code = main(["--strict-config", "exec", "--full-auto", "prompt"], stderr=stderr, stdin="")
 
         self.assertEqual(code, 0)
@@ -6224,6 +6241,8 @@ class TopLevelCliParserTests(unittest.TestCase):
             error_message = None
 
         with patch("pycodex.cli.parser.local_http_exec_enabled", return_value=False), patch(
+            "pycodex.cli.parser.core_exec_enabled", return_value=False
+        ), patch(
             "pycodex.cli.parser.remote_exec_session_connect_and_run",
             return_value=SuccessResult(),
         ):
@@ -6241,6 +6260,8 @@ class TopLevelCliParserTests(unittest.TestCase):
             error_message = None
 
         with patch("pycodex.cli.parser.local_http_exec_enabled", return_value=False), patch(
+            "pycodex.cli.parser.core_exec_enabled", return_value=False
+        ), patch(
             "pycodex.cli.parser.remote_exec_session_connect_and_run",
             return_value=SuccessResult(),
         ):
@@ -6277,6 +6298,8 @@ class TopLevelCliParserTests(unittest.TestCase):
             error_message = None
 
         with patch("pycodex.cli.parser.local_http_exec_enabled", return_value=False), patch(
+            "pycodex.cli.parser.core_exec_enabled", return_value=False
+        ), patch(
             "pycodex.cli.parser.remote_exec_session_connect_and_run",
             return_value=SuccessResult(),
         ):
@@ -6683,7 +6706,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertIn("x-codex-window-id", headers)
         self.assertEqual(headers.get("content-type"), "application/json")
         self.assertIn("input", seen["body"])
-        self.assertEqual(seen["body"]["model"], "gpt-5")
+        self.assertEqual(seen["body"]["model"], "gpt-5.3-codex")
         self.assertIn("client_metadata", seen["body"])
         self.assertEqual(
             seen["body"]["client_metadata"]["x-codex-installation-id"],

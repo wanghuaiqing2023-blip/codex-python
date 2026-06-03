@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ctypes
 from dataclasses import dataclass
+import gc
 import json
 import locale
 import os
@@ -128,21 +129,21 @@ def redact_doctor_detail(detail: str) -> str:
     if "env var" in label:
         return _redact_urls(detail)
     if ": " in detail:
-        _name, value = detail.split(": ", 1)
+        name, value = detail.split(": ", 1)
+        normalized_name = name.strip().lower()
+        secret_keys = (
+            "openai_api_key",
+            "codex_api_key",
+            "codex_access_token",
+            "authorization",
+            "bearer_token",
+            "token",
+            "secret",
+        )
+        if any(key in normalized_name for key in secret_keys):
+            return f"{name}: <redacted>"
         if value.strip().lower() in {"true", "false", "yes", "no", "present", "absent", "missing", "not set"}:
             return _redact_urls(detail)
-    secret_keys = (
-        "openai_api_key",
-        "codex_api_key",
-        "codex_access_token",
-        "authorization",
-        "bearer_token",
-        "token",
-        "secret",
-    )
-    if any(key in lower for key in secret_keys):
-        name = detail.split(":", 1)[0]
-        return f"{name}: <redacted>"
     return _redact_urls(detail)
 
 
@@ -786,7 +787,11 @@ def doctor_thread_inventory_check(
         f"rollout DB scan cap reached: {_bool_text(scan['reached_scan_cap'])}",
     ]
     _push_samples(details, "rollout DB scan error sample", scan["scan_errors"])
-    _push_samples(details, "rollout DB malformed file sample", [str(path) for path in scan["malformed_names"]])
+    _push_samples(
+        details,
+        "rollout DB malformed file sample",
+        [_doctor_path_text(path) for path in scan["malformed_names"]],
+    )
 
     if not state_db_path.is_file():
         details.append("rollout DB rows: skipped (state DB missing)")
@@ -901,10 +906,14 @@ def doctor_git_check(
             core_fsmonitor=core_fsmonitor,
         )
     details: list[str] = []
-    details.append(f"selected git: {inputs.selected_git}" if inputs.selected_git is not None else "selected git: not found")
+    details.append(
+        f"selected git: {_doctor_path_text(inputs.selected_git)}"
+        if inputs.selected_git is not None
+        else "selected git: not found"
+    )
     details.append(f"PATH git entries: {len(inputs.git_candidates)}")
     for index, path in enumerate(inputs.git_candidates, start=1):
-        details.append(f"PATH git #{index}: {path}")
+        details.append(f"PATH git #{index}: {_doctor_path_text(path)}")
     _push_optional_detail(details, "git version", inputs.git_version)
     _push_optional_detail(details, "git exec path", inputs.git_exec_path)
     _push_optional_detail(details, "git build options", inputs.git_build_options)
@@ -912,7 +921,7 @@ def doctor_git_check(
         details.append("repo detected: false")
     else:
         details.append("repo detected: true")
-        details.append(f"repo root: {inputs.repo_root}")
+        details.append(f"repo root: {_doctor_path_text(inputs.repo_root)}")
     _push_optional_detail(details, ".git entry", inputs.git_entry)
     _push_optional_detail(details, "git branch", _normalized_git_branch(inputs.branch))
     _push_optional_detail(details, "core.fsmonitor", inputs.core_fsmonitor or None)
@@ -1939,7 +1948,7 @@ def _scan_rollout_inventory_root(root: Path, archived: bool, scan: dict[str, Any
         except FileNotFoundError:
             continue
         except OSError as exc:
-            scan["scan_errors"].append(f"{directory} ({exc})")
+            scan["scan_errors"].append(f"{_doctor_path_text(directory)} ({exc})")
             continue
         for entry in entries:
             if _rollout_scan_candidate_count(scan) >= 10_000:
@@ -1952,14 +1961,14 @@ def _scan_rollout_inventory_root(root: Path, archived: bool, scan: dict[str, Any
                 if not entry.is_file() or entry.suffix != ".jsonl" or not entry.name.startswith("rollout-"):
                     continue
             except OSError as exc:
-                scan["scan_errors"].append(f"{entry} ({exc})")
+                scan["scan_errors"].append(f"{_doctor_path_text(entry)} ({exc})")
                 continue
             thread_id, unusable_reason = _thread_id_from_rollout(entry)
             if thread_id is None:
                 if unusable_reason is None:
                     scan["malformed_names"].append(entry)
                 else:
-                    scan["scan_errors"].append(f"{entry} ({unusable_reason})")
+                    scan["scan_errors"].append(f"{_doctor_path_text(entry)} ({unusable_reason})")
                 continue
             scan["files"].append(
                 {
@@ -2053,11 +2062,15 @@ def _is_uuid_like(value: str) -> bool:
 
 
 def _read_thread_inventory_rows(state_db_path: Path) -> list[dict[str, Any]]:
-    with sqlite3.connect(state_db_path) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute(
+    connection = sqlite3.connect(state_db_path)
+    try:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
             "SELECT id, rollout_path, archived, model_provider, source FROM threads"
         ).fetchall()
+    finally:
+        connection.close()
+    _close_sqlite_connections_for_path(state_db_path)
     return [
         {
             "id": str(row["id"]).lower(),
@@ -2068,6 +2081,33 @@ def _read_thread_inventory_rows(state_db_path: Path) -> list[dict[str, Any]]:
         }
         for row in rows
     ]
+
+
+def _close_sqlite_connections_for_path(db_path: Path) -> None:
+    target = str(db_path)
+    try:
+        normalized_target = str(db_path.resolve())
+    except OSError:
+        normalized_target = target
+    for candidate in list(gc.get_objects()):
+        if candidate.__class__.__name__ != "Connection":
+            continue
+        try:
+            databases = candidate.execute("PRAGMA database_list").fetchall()
+        except Exception:
+            continue
+        for _, _, filename in databases:
+            if not isinstance(filename, str):
+                continue
+            normalized_filename = filename
+            try:
+                normalized_filename = str(Path(filename).resolve())
+            except OSError:
+                normalized_filename = filename
+            if filename == target or normalized_filename == normalized_target:
+                with suppress(Exception):
+                    candidate.close()
+                break
 
 
 def _thread_inventory_parity_check(
@@ -2106,10 +2146,18 @@ def _thread_inventory_parity_check(
             f"rollout DB sources: {_count_summary(_source_category(row['source']) for row in rows)}",
         ]
     )
-    _push_samples(details, "rollout DB missing active sample", [str(path) for path in missing_active])
-    _push_samples(details, "rollout DB missing archived sample", [str(path) for path in missing_archived])
-    _push_samples(details, "rollout DB stale row sample", [str(row["rollout_path"]) for row in stale_rows])
-    _push_samples(details, "rollout DB archive mismatch sample", [str(row["rollout_path"]) for row in archive_mismatches])
+    _push_samples(details, "rollout DB missing active sample", [_doctor_path_text(path) for path in missing_active])
+    _push_samples(details, "rollout DB missing archived sample", [_doctor_path_text(path) for path in missing_archived])
+    _push_samples(
+        details,
+        "rollout DB stale row sample",
+        [_doctor_path_text(row["rollout_path"]) for row in stale_rows],
+    )
+    _push_samples(
+        details,
+        "rollout DB archive mismatch sample",
+        [_doctor_path_text(row["rollout_path"]) for row in archive_mismatches],
+    )
     _push_samples(details, "rollout DB duplicate rollout thread id sample", duplicate_rollout_thread_ids)
     _push_samples(details, "rollout DB duplicate DB path sample", duplicate_db_paths)
 
@@ -2536,11 +2584,17 @@ def _sandbox_config_string(config: dict[str, Any], key: str, default: str) -> st
     return default
 
 
+def _doctor_path_text(path: Path) -> str:
+    if os.name == "nt" and path.drive == "" and path.anchor == "\\":
+        return path.as_posix()
+    return str(path)
+
+
 def _push_optional_path_detail(details: list[str], label: str, path: Path | None) -> None:
     if path is None:
         details.append(f"{label}: none")
     else:
-        details.append(f"{label}: {path}")
+        details.append(f"{label}: {_doctor_path_text(path)}")
 
 
 def _push_optional_detail(details: list[str], label: str, value: str | None) -> None:
@@ -2746,12 +2800,12 @@ def _push_path_readiness(details: list[str], label: str, path: Path) -> None:
         elif path.exists():
             kind = "other"
         else:
-            details.append(f"{label}: {path} (missing)")
+            details.append(f"{label}: {_doctor_path_text(path)} (missing)")
             return
     except OSError as exc:
-        details.append(f"{label}: {path} ({exc})")
+        details.append(f"{label}: {_doctor_path_text(path)} ({exc})")
         return
-    details.append(f"{label}: {path} ({kind})")
+    details.append(f"{label}: {_doctor_path_text(path)} ({kind})")
 
 
 def _push_sqlite_integrity_detail(
@@ -2764,9 +2818,11 @@ def _push_sqlite_integrity_detail(
         details.append(f"{label} integrity: skipped (missing)")
         return
     try:
-        uri = path.absolute().as_posix()
-        with sqlite3.connect(f"file:{uri}?mode=ro", uri=True) as connection:
+        connection = sqlite3.connect(path)
+        try:
             rows = [str(row[0]) for row in connection.execute("PRAGMA integrity_check")]
+        finally:
+            connection.close()
     except Exception as exc:
         message = f"{label} integrity: {exc}"
         integrity_failures.append(message)

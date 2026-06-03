@@ -288,6 +288,7 @@ class _ManagedUnifiedExecSession:
         self.truncation_policy = truncation_policy
         self._buffer = HeadTailBuffer()
         self._condition = threading.Condition()
+        self._output_closed = False
         self._reader = threading.Thread(target=self._read_output, daemon=True)
         self._reader.start()
 
@@ -295,6 +296,7 @@ class _ManagedUnifiedExecSession:
         stream = self.process.stdout
         if stream is None:
             with self._condition:
+                self._output_closed = True
                 self._condition.notify_all()
             return
         try:
@@ -307,6 +309,7 @@ class _ManagedUnifiedExecSession:
                     self._condition.notify_all()
         finally:
             with self._condition:
+                self._output_closed = True
                 self._condition.notify_all()
 
     def has_exited(self) -> bool:
@@ -356,13 +359,45 @@ class _ManagedUnifiedExecSession:
     ) -> Any:
         start = time.monotonic()
         deadline = start + (yield_time_ms / 1000.0)
+        post_exit_deadline: float | None = None
+        exit_signal_received = self.has_exited()
+        collected: list[bytes] = []
         with self._condition:
-            while not self.has_exited():
+            while True:
+                chunks = self._buffer.drain_chunks()
+                if chunks:
+                    collected.extend(chunks)
+                    exit_signal_received = self.has_exited()
+                    if self.tty and not exit_signal_received:
+                        break
+                    if time.monotonic() >= deadline:
+                        break
+                    continue
+
+                exit_signal_received = exit_signal_received or self.has_exited()
+                if exit_signal_received and self._output_closed:
+                    break
+
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
+
+                if exit_signal_received:
+                    now = time.monotonic()
+                    if post_exit_deadline is None:
+                        post_exit_deadline = now + min(
+                            remaining,
+                            TRAILING_OUTPUT_GRACE_MS / 1000.0,
+                        )
+                    wait_time = post_exit_deadline - now
+                    if wait_time <= 0:
+                        break
+                    self._condition.wait(wait_time)
+                    continue
+
                 self._condition.wait(remaining)
-            raw_output = b"".join(self._buffer.drain_chunks())
+
+            raw_output = b"".join(collected)
         wall_time_seconds = time.monotonic() - start
         exited = self.has_exited()
         exit_code = self.exit_code() if exited else None
@@ -495,6 +530,22 @@ class UnifiedExecProcessManager:
             max_output_tokens=max_output_tokens,
             event_call_id=call_id,
         )
+        if output.process_id is None and tty:
+            from pycodex.core.tool_context import ExecCommandToolOutput
+
+            output = ExecCommandToolOutput(
+                event_call_id=output.event_call_id,
+                chunk_id=output.chunk_id,
+                wall_time_seconds=output.wall_time_seconds,
+                raw_output=output.raw_output,
+                truncation_policy=output.truncation_policy,
+                max_output_tokens=output.max_output_tokens,
+                process_id=process_id,
+                exit_code=output.exit_code,
+                original_token_count=output.original_token_count,
+                hook_command=output.hook_command,
+            )
+            return output
         if output.process_id is None:
             self.release_process_id(process_id)
         return output

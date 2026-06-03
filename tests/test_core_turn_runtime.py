@@ -171,6 +171,44 @@ class PendingInputQueue:
         return bool(self.items)
 
 
+class StrictActiveTurnInputQueue:
+    def __init__(self) -> None:
+        self.items = []
+        self.calls = 0
+        self.active_turns = []
+
+    async def get_pending_input(self, active_turn):
+        self.calls += 1
+        self.active_turns.append(active_turn)
+        items = tuple(self.items)
+        self.items.clear()
+        return items
+
+    async def has_pending_input(self, active_turn):
+        self.calls += 1
+        self.active_turns.append(active_turn)
+        return bool(self.items)
+
+
+class KeywordOnlyActiveTurnInputQueue:
+    def __init__(self) -> None:
+        self.items = []
+        self.calls = 0
+        self.active_turns = []
+
+    async def get_pending_input(self, *, active_turn=None):
+        self.calls += 1
+        self.active_turns.append(active_turn)
+        items = tuple(self.items)
+        self.items.clear()
+        return items
+
+    async def has_pending_input(self, *, active_turn=None):
+        self.calls += 1
+        self.active_turns.append(active_turn)
+        return bool(self.items)
+
+
 class PendingMailboxQueue:
     def __init__(self, pending: bool = True) -> None:
         self.pending = pending
@@ -1266,6 +1304,83 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item.content[0].text for item in session.history[:3]], ["context", "hello", "hook context"])
         self.assertEqual([item.content[0].text for item in seen_inputs[0][:3]], ["context", "hello", "hook context"])
 
+    async def test_run_user_turn_sampling_user_prompt_submit_hook_keyword_only_prompt_blocks_input(self) -> None:
+        session = Session()
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        hook_prompts = []
+
+        async def hook(*, prompt):
+            hook_prompts.append(prompt)
+            return HookRuntimeOutcome(should_stop=True, additional_contexts=("blocked by policy",))
+
+        async def sampler(_request):
+            raise AssertionError("sampler should not run when user prompt submit hook blocks input")
+
+        session.run_user_prompt_submit_hook = hook
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(hook_prompts, ["hello"])
+        self.assertEqual(result.response_items, ())
+        self.assertEqual(tuple(item.role for item in session.history[-2:]), ("developer", "developer"))
+        self.assertEqual(session.history[-1].content[0].text, "blocked by policy")
+
+    async def test_run_user_turn_sampling_user_prompt_submit_hook_keyword_only_full_signature(self) -> None:
+        session = Session()
+        session.turn_context.turn_id = "turn-1"
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        recorded = []
+
+        async def hook(*, turn_context, user_input, prompt):
+            recorded.append((turn_context, len(user_input), prompt))
+            return {
+                "additional_contexts": ("hook context",),
+                "should_stop": False,
+            }
+
+        async def sampler(request):
+            return [ResponseItem.message("assistant", (ContentItem.output_text("done"),))]
+
+        session.run_user_prompt_submit_hook = hook
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(result.last_agent_message, "done")
+        self.assertEqual(recorded[0][0], session.turn_context)
+        self.assertEqual(recorded[0][1], 1)
+        self.assertEqual(recorded[0][2], "hello")
+        self.assertEqual([item.content[0].text for item in session.history[:3]], ["context", "hello", "hook context"])
+
     async def test_run_user_turn_sampling_emits_turn_lifecycle_events(self) -> None:
         session = Session()
         session.turn_context.turn_id = "turn-1"
@@ -1448,6 +1563,53 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("final answer missing required note", session.emitted_events[1].payload.message)
         self.assertIsNone(session.emitted_events[2].payload.last_agent_message)
 
+    async def test_run_user_turn_sampling_after_agent_abort_emits_error_and_clears_last_message_keyword_only(self) -> None:
+        session = Session()
+        session.turn_context.turn_id = "turn-1"
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        after_agent_calls = []
+
+        async def after_agent_hook(*, input_messages, last_agent_message):
+            after_agent_calls.append((input_messages, last_agent_message))
+            return {
+                "hook_name": "lint-after-agent-keyword",
+                "should_abort": True,
+                "error": "final answer missing required note",
+            }
+
+        session.run_legacy_after_agent_hook = after_agent_hook
+
+        async def sampler(_request):
+            return [ResponseItem.message("assistant", (ContentItem.output_text("done"),))]
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(after_agent_calls, [(("hello",), "done")])
+        self.assertEqual(result.response_items[-1].content[0].text, "done")
+        self.assertIsNone(result.last_agent_message)
+        self.assertEqual(
+            tuple(event.type for event in session.emitted_events),
+            ("task_started", "error", "task_complete"),
+        )
+        self.assertIn("lint-after-agent-keyword", session.emitted_events[1].payload.message)
+        self.assertIn("final answer missing required note", session.emitted_events[1].payload.message)
+        self.assertIsNone(session.emitted_events[2].payload.last_agent_message)
+
     async def test_run_user_turn_sampling_returns_streamed_last_agent_message(self) -> None:
         session = Session()
         session.turn_context.turn_id = "turn-1"
@@ -1627,6 +1789,61 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
             warning.payload.message,
             "Stop hook requested continuation without a prompt; ignoring the block.",
         )
+
+    async def test_run_user_turn_sampling_stop_hook_continuation_prompts_followup_with_keyword_only_signature(self) -> None:
+        session = Session()
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        stop_hook_calls = []
+        stop_hook_outcomes = [
+            SimpleNamespace(
+                should_block=True,
+                continuation_fragments=(HookPromptFragment.from_single_hook("Revise with tests.", "hook-run-1"),),
+            ),
+            SimpleNamespace(should_block=False, should_stop=True),
+        ]
+
+        async def stop_hook(*, turn_context, stop_hook_active, last_agent_message):
+            stop_hook_calls.append((turn_context, stop_hook_active, last_agent_message))
+            return stop_hook_outcomes.pop(0)
+
+        session.run_turn_stop_hook = stop_hook
+        seen_requests = []
+
+        async def sampler(request):
+            seen_requests.append(request)
+            if len(seen_requests) == 1:
+                return [ResponseItem.message("assistant", (ContentItem.output_text("draft"),))]
+            return [ResponseItem.message("assistant", (ContentItem.output_text("final"),))]
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(len(seen_requests), 2)
+        self.assertEqual(stop_hook_calls[0][0], session.turn_context)
+        self.assertEqual(
+            [(stop_hook_active, last_agent_message) for _, stop_hook_active, last_agent_message in stop_hook_calls],
+            [(False, "draft"), (True, "final")],
+        )
+        self.assertEqual(result.last_agent_message, "final")
+        hook_prompt = seen_requests[1].request_plan.request["input"][-1]
+        self.assertEqual(hook_prompt.role, "user")
+        self.assertIn("Revise with tests.", hook_prompt.content[0].text)
+        self.assertIn("hook-run-1", hook_prompt.content[0].text)
+        self.assertEqual(session.history[-1].content[0].text, "final")
 
     async def test_run_user_turn_sampling_projects_sampler_stream_events(self) -> None:
         session = Session()
@@ -3731,6 +3948,68 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertIn("blocked before sampling", history_texts)
         self.assertNotIn("blocked first", history_texts)
+
+    async def test_run_user_turn_sampling_empty_input_pending_input_uses_active_turn(self) -> None:
+        session = Session()
+        session.input_queue = StrictActiveTurnInputQueue()
+        session.input_queue.items.append(UserInput.text_input("queued first with active turn"))
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+
+        async def sampler(request):
+            return [ResponseItem.message("assistant", (ContentItem.output_text("done"),))]
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(len(result.request_plans), 1)
+        self.assertGreaterEqual(len(session.input_queue.active_turns), 2)
+        self.assertTrue(all(value is session.active_turn for value in session.input_queue.active_turns))
+        self.assertEqual(result.last_agent_message, "done")
+
+    async def test_run_user_turn_sampling_empty_input_pending_input_uses_active_turn_with_keyword_only_queue(self) -> None:
+        session = Session()
+        session.input_queue = KeywordOnlyActiveTurnInputQueue()
+        session.input_queue.items.append(UserInput.text_input("queued first with keyword-only active turn"))
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+
+        async def sampler(request):
+            return [ResponseItem.message("assistant", (ContentItem.output_text("done"),))]
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(len(result.request_plans), 1)
+        self.assertTrue(session.input_queue.active_turns)
+        self.assertTrue(all(value is session.active_turn for value in session.input_queue.active_turns))
+        self.assertEqual(result.last_agent_message, "done")
 
     async def test_run_user_turn_sampling_pending_input_hook_records_context_after_input(self) -> None:
         session = Session()

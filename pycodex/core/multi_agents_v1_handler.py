@@ -45,6 +45,25 @@ MULTI_AGENT_TOOL_SEARCH_SOURCE_NAME = "Multi-agent tools"
 MULTI_AGENT_TOOL_SEARCH_SOURCE_DESCRIPTION = "Spawn and manage sub-agents."
 
 
+class _V1UserInput(UserInput):
+    def to_mapping(self) -> dict[str, JsonValue]:
+        data = super().to_mapping()
+        if self.type == "text" and self.text_elements == ():
+            data.pop("text_elements", None)
+        return data
+
+
+def _coerce_v1_user_inputs(items: tuple[UserInput, ...]) -> tuple[UserInput, ...]:
+    output: list[UserInput] = []
+    for item in items:
+        if isinstance(item, UserInput) and item.type == "text" and not item.text_elements:
+            output.append(_V1UserInput(type="text", text=item.text))
+            continue
+        output.append(item)
+    return tuple(output)
+
+
+
 def _mapping(value: JsonValue, label: str) -> dict[str, JsonValue]:
     if not isinstance(value, dict):
         raise TypeError(f"{label} must be a mapping")
@@ -155,7 +174,7 @@ class V1SpawnAgentArgs:
         return role or None
 
     def input_items(self) -> tuple[UserInput, ...]:
-        return parse_collab_input(self.message, self.items)
+        return _coerce_v1_user_inputs(parse_collab_input(self.message, self.items))
 
     def validate_for_spawn(self) -> None:
         self.input_items()
@@ -212,7 +231,7 @@ class SendInputArgs:
         return parse_agent_id_target(self.target)
 
     def input_items(self) -> tuple[UserInput, ...]:
-        return parse_collab_input(self.message, self.items)
+        return _coerce_v1_user_inputs(parse_collab_input(self.message, self.items))
 
 
 @dataclass(frozen=True)

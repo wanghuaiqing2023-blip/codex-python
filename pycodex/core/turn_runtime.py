@@ -42,7 +42,7 @@ from pycodex.core.turn_request import TurnResponsesRequestPlan, build_turn_respo
 from pycodex.protocol import BaseInstructions, CodexErr, CodexErrorInfo, ContentItem, ErrorEvent, EventMsg, StreamErrorEvent
 from pycodex.protocol import FunctionCallOutputContentItem, FunctionCallOutputPayload
 from pycodex.protocol import HookPromptFragment, Op, ResponseInputItem, ResponseItem
-from pycodex.protocol import TurnCompleteEvent, TurnDiffEvent, TurnItem, TurnStartedEvent
+from pycodex.protocol import TurnCompleteEvent, TurnDiffEvent, TurnItem, TurnStartedEvent, UserMessageItem
 from pycodex.protocol import ThreadSettingsOverrides, TokenUsage, UsageLimitReachedError, UserInput, WarningEvent
 from pycodex.protocol import build_hook_prompt_message
 
@@ -185,6 +185,8 @@ async def run_user_turn_sampling_from_session(
     apply_output_schema_update: bool = False,
     output_schema_strict: bool | None = None,
     max_tool_followups: int | None = None,
+    emit_user_prompt_turn_item: bool = True,
+    emit_response_item_turn_item: bool = True,
 ) -> UserTurnSamplingResult:
     """Build a request, run an injected sampler, and record response items."""
 
@@ -216,6 +218,7 @@ async def run_user_turn_sampling_from_session(
     except _PreSamplingCompactError as exc:
         prepared = _PreparedUserTurnRequest(
             turn_context=exc.turn_context,
+            user_input=(),
             router=None,
             model_info=model_info,
             effort=effort,
@@ -243,6 +246,7 @@ async def run_user_turn_sampling_from_session(
     except _UserInputBlocked as exc:
         prepared = _PreparedUserTurnRequest(
             turn_context=exc.turn_context,
+            user_input=(),
             router=None,
             model_info=model_info,
             effort=effort,
@@ -267,11 +271,13 @@ async def run_user_turn_sampling_from_session(
             last_agent_message_override=None,
         )
     request_plans = [prepared.request_plan]
+    user_input_to_emit = prepared.user_input
     sampling_request = UserTurnSamplingRequest(
         session=sess,
         turn_context=prepared.turn_context,
         request_plan=prepared.request_plan,
     )
+    user_input_emitted = False
     while True:
         try:
             raw_result = await _sample_with_retry(sess, prepared.turn_context, provider, sampler, sampling_request)
@@ -336,12 +342,20 @@ async def run_user_turn_sampling_from_session(
                 last_agent_message_override=None,
             )
     await _record_sampling_token_usage(sess, prepared.turn_context, raw_result)
+    if not user_input_emitted and user_input_to_emit and emit_user_prompt_turn_item:
+        await _emit_user_prompt_turn_item(sess, prepared.turn_context, user_input_to_emit)
+        user_input_emitted = True
     stream_runtime_state = SamplingRuntimeEventApplicationState()
     response_items = _response_items_from_sampling_result(raw_result)
     if response_items:
-        await _record_response_items(sess, prepared.turn_context, response_items)
-        await _record_response_items_turn_ttfm(sess, prepared.turn_context, response_items)
-        _update_stream_runtime_last_agent_message_from_response_items(stream_runtime_state, response_items)
+        await _record_response_items(
+            sess,
+            prepared.turn_context,
+            response_items,
+            emit_turn_item=emit_response_item_turn_item,
+        )
+    await _record_response_items_turn_ttfm(sess, prepared.turn_context, response_items)
+    _update_stream_runtime_last_agent_message_from_response_items(stream_runtime_state, response_items)
     all_response_items = list(response_items)
     all_tool_response_items: list[ResponseItem] = []
     raw_results = [raw_result]
@@ -681,7 +695,12 @@ async def run_user_turn_sampling_from_session(
             raise
         response_items = _response_items_from_sampling_result(raw_result)
         if response_items:
-            await _record_response_items(sess, prepared.turn_context, response_items)
+            await _record_response_items(
+                sess,
+                prepared.turn_context,
+                response_items,
+                emit_turn_item=emit_response_item_turn_item,
+            )
             await _record_response_items_turn_ttfm(sess, prepared.turn_context, response_items)
             _update_stream_runtime_last_agent_message_from_response_items(stream_runtime_state, response_items)
             all_response_items.extend(response_items)
@@ -855,6 +874,7 @@ async def run_user_input_op_sampling_from_session(
 @dataclass(frozen=True)
 class _PreparedUserTurnRequest:
     turn_context: Any
+    user_input: tuple[UserInput, ...]
     router: Any
     model_info: Any
     effort: Any
@@ -921,10 +941,15 @@ async def _prepare_user_turn_request_from_session(
         await _maybe_await(sess.record_conversation_items(turn_context, additional_context_items))
 
     if user_input and run_user_prompt_submit_hooks:
-        if await _record_user_input_with_submit_hook(sess, turn_context, user_input):
+        if await _record_user_input_with_submit_hook(
+            sess,
+            turn_context,
+            user_input,
+            emit_turn_item=False,
+        ):
             raise _UserInputBlocked(turn_context)
     elif user_input:
-        await _record_user_inputs(sess, turn_context, user_input)
+        await _record_user_inputs(sess, turn_context, user_input, emit_turn_item=False)
 
     pre_sampling_pending_input = _PendingInputRecordResult(())
     if not user_input and run_user_prompt_submit_hooks:
@@ -980,6 +1005,7 @@ async def _prepare_user_turn_request_from_session(
     )
     return _PreparedUserTurnRequest(
         turn_context=turn_context,
+        user_input=user_input,
         router=router,
         model_info=effective_model_info,
         effort=effective_effort,
@@ -1035,10 +1061,12 @@ async def _record_user_input_with_submit_hook(
     sess: Any,
     turn_context: Any,
     user_input: tuple[UserInput, ...],
+    *,
+    emit_turn_item: bool = True,
 ) -> bool:
     outcome = await _run_user_prompt_submit_hook(sess, turn_context, user_input)
     if outcome is None:
-        await _record_user_inputs(sess, turn_context, user_input)
+        await _record_user_inputs(sess, turn_context, user_input, emit_turn_item=emit_turn_item)
         return False
 
     additional_items = additional_context_messages(outcome.additional_contexts)
@@ -1047,25 +1075,53 @@ async def _record_user_input_with_submit_hook(
             await _maybe_await(sess.record_conversation_items(turn_context, additional_items))
         return True
 
-    await _record_user_inputs(sess, turn_context, user_input)
+    await _record_user_inputs(sess, turn_context, user_input, emit_turn_item=emit_turn_item)
     if additional_items:
         await _maybe_await(sess.record_conversation_items(turn_context, additional_items))
     return False
 
 
-async def _record_user_inputs(sess: Any, turn_context: Any, user_input: tuple[UserInput, ...]) -> ResponseItem:
+async def _record_user_inputs(
+    sess: Any,
+    turn_context: Any,
+    user_input: tuple[UserInput, ...],
+    *,
+    emit_turn_item: bool = True,
+) -> ResponseItem:
     response_item = ResponseItem.from_response_input_item(ResponseInputItem.from_user_inputs(user_input))
     recorder = getattr(sess, "record_user_prompt_and_emit_turn_item", None)
-    if callable(recorder):
+    if callable(recorder) and emit_turn_item:
         await _maybe_await(recorder(turn_context, user_input))
         return response_item
     await _maybe_await(sess.record_conversation_items(turn_context, (response_item,)))
     return response_item
 
 
-async def _record_response_items(sess: Any, turn_context: Any, response_items: tuple[ResponseItem, ...]) -> None:
+async def _emit_user_prompt_turn_item(
+    sess: Any,
+    turn_context: Any,
+    user_input: tuple[UserInput, ...],
+) -> None:
+    started = getattr(sess, "emit_turn_item_started", None)
+    completed = getattr(sess, "emit_turn_item_completed", None)
+    if callable(started) and callable(completed):
+        turn_item = TurnItem.user_message(UserMessageItem.new(user_input))
+        await _maybe_await(started(turn_context, turn_item))
+        await _maybe_await(completed(turn_context, turn_item))
+        return
+    # The user prompt is already recorded before sampling begins, so we only emit
+    # lifecycle events here when possible.
+
+
+async def _record_response_items(
+    sess: Any,
+    turn_context: Any,
+    response_items: tuple[ResponseItem, ...],
+    *,
+    emit_turn_item: bool = True,
+) -> None:
     recorder = getattr(sess, "record_response_item_and_emit_turn_item", None)
-    if not callable(recorder):
+    if not callable(recorder) or not emit_turn_item:
         await _maybe_await(sess.record_conversation_items(turn_context, response_items))
         return
     for item in response_items:
@@ -1117,6 +1173,38 @@ async def _call_user_prompt_submit_hook(
     ]
     if len(required) >= 4:
         return await _maybe_await(hook(sess, turn_context, user_input, prompt))
+    by_name = {parameter.name: parameter for parameter in parameters}
+    if (
+        "turn_context" in by_name
+        and "user_input" in by_name
+        and "prompt" in by_name
+    ):
+        try:
+            return await _maybe_await(
+                hook(
+                    turn_context=turn_context,
+                    user_input=user_input,
+                    prompt=prompt,
+                )
+            )
+        except TypeError:
+            if len(required) == 3:
+                return await _maybe_await(hook(turn_context, user_input, prompt))
+            pass
+    if (
+        "user_input" in by_name
+        and "prompt" in by_name
+        and len(required) == 2
+    ):
+        try:
+            return await _maybe_await(hook(user_input=user_input, prompt=prompt))
+        except TypeError:
+            pass
+    if "prompt" in by_name:
+        try:
+            return await _maybe_await(hook(prompt=prompt))
+        except TypeError:
+            pass
     if len(required) == 3:
         return await _maybe_await(hook(turn_context, user_input, prompt))
     if len(required) == 2:
@@ -1264,8 +1352,26 @@ async def _call_input_queue_method(method: Callable[..., Any], sess: Any) -> Any
         )
         for parameter in signature.parameters.values()
     )
+    accepts_kw_only_active_turn = any(
+        parameter.kind == inspect.Parameter.KEYWORD_ONLY
+        and parameter.name == "active_turn"
+        and parameter.default is inspect.Parameter.empty
+        for parameter in signature.parameters.values()
+    )
+    accepts_kw_active_turn_optional = any(
+        parameter.kind == inspect.Parameter.KEYWORD_ONLY
+        and parameter.name == "active_turn"
+        for parameter in signature.parameters.values()
+    )
     if active_turn is not None and accepts_positional:
         return await _maybe_await(method(active_turn))
+    if active_turn is not None and accepts_kw_only_active_turn:
+        return await _maybe_await(method(active_turn=active_turn))
+    if active_turn is not None and accepts_kw_active_turn_optional:
+        try:
+            return await _maybe_await(method(active_turn=active_turn))
+        except TypeError:
+            pass
     if required:
         return await _maybe_await(method(active_turn))
     return await _maybe_await(method())
@@ -2848,9 +2954,10 @@ async def _run_turn_stop_hook(
         signature = inspect.signature(hook)
     except (TypeError, ValueError):
         return await _maybe_await(hook(turn_context, stop_hook_active, last_agent_message))
+    params = tuple(signature.parameters.values())
     required = [
         parameter
-        for parameter in signature.parameters.values()
+        for parameter in params
         if parameter.default is inspect.Parameter.empty
         and parameter.kind
         in {
@@ -2859,10 +2966,45 @@ async def _run_turn_stop_hook(
             inspect.Parameter.KEYWORD_ONLY,
         }
     ]
-    if len(required) >= 4:
+    by_name = {parameter.name: parameter for parameter in params}
+    if len(required) >= 4 or any(
+        parameter.kind == inspect.Parameter.VAR_POSITIONAL for parameter in params
+    ):
         return await _maybe_await(hook(sess, turn_context, stop_hook_active, last_agent_message))
+    has_canonical_stop_kw = (
+        "turn_context" in by_name
+        and "stop_hook_active" in by_name
+        and "last_agent_message" in by_name
+    )
+    if has_canonical_stop_kw:
+        try:
+            return await _maybe_await(
+                hook(
+                    turn_context=turn_context,
+                    stop_hook_active=stop_hook_active,
+                    last_agent_message=last_agent_message,
+                )
+            )
+        except TypeError:
+            pass
     if len(required) == 3:
         return await _maybe_await(hook(turn_context, stop_hook_active, last_agent_message))
+    if (
+        "stop_hook_active" in by_name
+        and "last_agent_message" in by_name
+        and len(required) == 2
+    ):
+        try:
+            return await _maybe_await(
+                hook(
+                    stop_hook_active=stop_hook_active,
+                    last_agent_message=last_agent_message,
+                )
+            )
+        except TypeError:
+            return await _maybe_await(hook(stop_hook_active, last_agent_message))
+    if "last_agent_message" in by_name:
+        return await _maybe_await(hook(last_agent_message=last_agent_message))
     if len(required) == 2:
         return await _maybe_await(hook(stop_hook_active, last_agent_message))
     if len(required) == 1:
@@ -2916,9 +3058,10 @@ async def _call_after_agent_hook(
         signature = inspect.signature(hook)
     except (TypeError, ValueError):
         return await _maybe_await(hook(turn_context, input_messages, last_agent_message))
+    params = tuple(signature.parameters.values())
     required = [
         parameter
-        for parameter in signature.parameters.values()
+        for parameter in params
         if parameter.default is inspect.Parameter.empty
         and parameter.kind
         in {
@@ -2927,10 +3070,45 @@ async def _call_after_agent_hook(
             inspect.Parameter.KEYWORD_ONLY,
         }
     ]
-    if len(required) >= 4:
+    by_name = {parameter.name: parameter for parameter in params}
+    if len(required) >= 4 or any(
+        parameter.kind == inspect.Parameter.VAR_POSITIONAL for parameter in params
+    ):
         return await _maybe_await(hook(sess, turn_context, input_messages, last_agent_message))
+    has_canonical_after_kw = (
+        "turn_context" in by_name
+        and "input_messages" in by_name
+        and "last_agent_message" in by_name
+    )
+    if has_canonical_after_kw:
+        try:
+            return await _maybe_await(
+                hook(
+                    turn_context=turn_context,
+                    input_messages=input_messages,
+                    last_agent_message=last_agent_message,
+                )
+            )
+        except TypeError:
+            pass
     if len(required) == 3:
         return await _maybe_await(hook(turn_context, input_messages, last_agent_message))
+    if (
+        "input_messages" in by_name
+        and "last_agent_message" in by_name
+        and len(required) == 2
+    ):
+        try:
+            return await _maybe_await(
+                hook(
+                    input_messages=input_messages,
+                    last_agent_message=last_agent_message,
+                )
+            )
+        except TypeError:
+            return await _maybe_await(hook(input_messages, last_agent_message))
+    if "last_agent_message" in by_name:
+        return await _maybe_await(hook(last_agent_message=last_agent_message))
     if len(required) == 2:
         return await _maybe_await(hook(input_messages, last_agent_message))
     if len(required) == 1:

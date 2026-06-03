@@ -203,6 +203,94 @@ class ToolDispatchTraceTests(unittest.TestCase):
         self.assertEqual(service.completed[0][1].type, "direct_response")
         self.assertEqual(str(service.failed[0]), "boom")
 
+    def test_trace_facade_supports_mapping_trace_context(self) -> None:
+        state = {
+            "invocations": [],
+            "completed": [],
+            "failed": [],
+            "is_enabled": True,
+        }
+
+        def start_tool_dispatch_trace(invocation_factory):
+            state["invocations"].append(invocation_factory())
+            return state
+
+        state["start_tool_dispatch_trace"] = start_tool_dispatch_trace
+
+        def record_completed(status, result):
+            state["completed"].append((status, result))
+
+        def record_failed(error):
+            state["failed"].append(error)
+
+        state["record_completed"] = record_completed
+        state["record_failed"] = record_failed
+
+        invocation = ToolInvocation(
+            call_id="direct-call",
+            tool_name=ToolName.plain("test_tool"),
+            payload=ToolPayload.function("{}"),
+        )
+
+        trace = ToolDispatchTrace.start(
+            invocation,
+            state,
+            thread_id="thread-1",
+            codex_turn_id="turn-1",
+        )
+        trace.record_completed(
+            invocation,
+            invocation.call_id,
+            invocation.payload,
+            FunctionToolOutput.from_text("ok", True),
+        )
+        trace.record_failed(RuntimeError("boom"))
+
+        self.assertEqual(state["invocations"][0].tool_call_id, "direct-call")
+        self.assertEqual(state["completed"][0][0], ExecutionStatus.COMPLETED)
+        self.assertEqual(state["completed"][0][1].type, "direct_response")
+        self.assertEqual(str(state["failed"][0]), "boom")
+
+    def test_trace_facade_mapping_context_respects_disabled_flag(self) -> None:
+        state = {
+            "invocations": [],
+            "completed": [],
+            "failed": [],
+            "is_enabled": False,
+        }
+
+        def start_tool_dispatch_trace(invocation_factory):
+            state["invocations"].append(invocation_factory())
+            return state
+
+        state["start_tool_dispatch_trace"] = start_tool_dispatch_trace
+
+        def record_completed(status, result):
+            state["completed"].append((status, result))
+
+        state["record_completed"] = record_completed
+
+        invocation = ToolInvocation(
+            call_id="direct-call",
+            tool_name=ToolName.plain("test_tool"),
+            payload=ToolPayload.function("{}"),
+        )
+
+        trace = ToolDispatchTrace.start(
+            invocation,
+            state,
+            thread_id="thread-1",
+            codex_turn_id="turn-1",
+        )
+        trace.record_completed(
+            invocation,
+            invocation.call_id,
+            invocation.payload,
+            FunctionToolOutput.from_text("ok", True),
+        )
+
+        self.assertEqual(len(state["completed"]), 0)
+
     def test_trace_facade_skips_completed_record_when_disabled_or_unmappable(self) -> None:
         class DisabledTraceContext:
             def __init__(self):

@@ -257,7 +257,9 @@ def begin_network_approval(
     registration_id: str | None = None,
 ) -> ActiveNetworkApproval | None:
     if not isinstance(service, NetworkApprovalService):
-        raise TypeError("service must be NetworkApprovalService")
+        raise TypeError("service must be a NetworkApprovalService")
+    if registration_id is not None and not isinstance(registration_id, str):
+        raise TypeError("registration_id must be a string")
     if not isinstance(turn_id, str):
         raise TypeError("turn_id must be a string")
     if not isinstance(managed_network_active, bool):
@@ -525,6 +527,9 @@ def plan_inline_network_policy_request(
 ) -> InlineNetworkApprovalPlan:
     if not isinstance(service, NetworkApprovalService):
         raise TypeError("service must be a NetworkApprovalService")
+    if not isinstance(approval_policy, (AskForApproval, str)):
+        raise TypeError("approval_policy must be an AskForApproval or string")
+    approval_policy = AskForApproval(approval_policy)
 
     key = HostApprovalKey.from_request(request, protocol)
     host = _request_value(request, "host")
@@ -533,16 +538,18 @@ def plan_inline_network_policy_request(
         raise TypeError("host must be a string")
     _validate_u16_port(port)
 
-    target = NetworkApprovalService.format_network_target(key.protocol, host, port)
-    prompt_reason = f"{host} is not in the allowed_domains"
+    raw_target = NetworkApprovalService.format_network_target(key.protocol, host, port)
+    normalized_target = NetworkApprovalService.format_network_target(key.protocol, key.host, port)
+    target = raw_target
+    prompt_reason = f"{key.host} is not in the allowed_domains"
     approval_id = NetworkApprovalService.approval_id_for_key(key)
     prompt_command = ("network-access", target)
-    policy_denial_message = f'Network access to "{target}" was blocked by policy.'
+    policy_denial_message = f'Network access to "{normalized_target}" was blocked by policy.'
 
     if key in service.session_denied_hosts:
         return InlineNetworkApprovalPlan(
             key=key,
-            target=target,
+            target=normalized_target,
             prompt_reason=prompt_reason,
             approval_id=approval_id,
             prompt_command=prompt_command,
@@ -564,16 +571,36 @@ def plan_inline_network_policy_request(
 
     pending, is_owner = service.get_or_create_pending_approval(key)
     if not is_owner:
-        decision = pending.decision
+        if permission_profile is not None and permission_profile_allows_network_approval_flow(permission_profile):
+            decision = pending.decision
+            return InlineNetworkApprovalPlan(
+                key=key,
+                target=target,
+                prompt_reason=prompt_reason,
+                approval_id=approval_id,
+                prompt_command=prompt_command,
+                disposition=InlineNetworkApprovalDisposition.WAIT_FOR_PENDING,
+                decision=None if decision is None else decision.to_network_decision(),
+                pending=pending,
+                pending_owner=False,
+                policy_denial_message=policy_denial_message,
+            )
+        pending.set_decision(PendingApprovalDecision.DENY)
+        service.pending_host_approvals.pop(key, None)
+        service.record_outcome_for_single_active_call(
+            NetworkApprovalOutcome.denied_by_policy(policy_denial_message)
+        )
+        denied_pending = PendingHostApproval()
+        denied_pending.set_decision(PendingApprovalDecision.DENY)
         return InlineNetworkApprovalPlan(
             key=key,
-            target=target,
+            target=normalized_target,
             prompt_reason=prompt_reason,
             approval_id=approval_id,
             prompt_command=prompt_command,
-            disposition=InlineNetworkApprovalDisposition.WAIT_FOR_PENDING,
-            decision=None if decision is None else decision.to_network_decision(),
-            pending=pending,
+            disposition=InlineNetworkApprovalDisposition.DENY_POLICY,
+            decision=NetworkDecision.deny(NETWORK_APPROVAL_DENY_REASON_NOT_ALLOWED),
+            pending=denied_pending,
             pending_owner=False,
             policy_denial_message=policy_denial_message,
         )
@@ -590,7 +617,7 @@ def plan_inline_network_policy_request(
         )
         return InlineNetworkApprovalPlan(
             key=key,
-            target=target,
+            target=normalized_target,
             prompt_reason=prompt_reason,
             approval_id=approval_id,
             prompt_command=prompt_command,
@@ -709,6 +736,8 @@ def apply_network_review_decision(
     pending = service.pending_host_approvals.get(key)
     if pending is not None:
         pending.set_decision(resolution.decision)
+
+    if resolution.policy_amendment is not None:
         service.pending_host_approvals.pop(key, None)
 
     if registration_id is not None and resolution.outcome is not None:

@@ -549,8 +549,10 @@ def _runtime_tool_name(handler: Any) -> ToolName:
 def _runtime_handle(handler: Any, invocation: ToolInvocation) -> Any:
     if not isinstance(invocation, ToolInvocation):
         raise TypeError("invocation must be ToolInvocation")
-    method = getattr(handler, "handle", None)
+    method = _field_or_attr(handler, "handle", None)
     if method is None:
+        raise TypeError("registered tool must expose handle(invocation)")
+    if not callable(method):
         raise TypeError("registered tool must expose handle(invocation)")
     return method(invocation)
 
@@ -580,8 +582,10 @@ def _runtime_waits_for_runtime_cancellation(handler: Any) -> bool:
 def _runtime_telemetry_tags(handler: Any, invocation: ToolInvocation) -> Any:
     if not isinstance(invocation, ToolInvocation):
         raise TypeError("invocation must be ToolInvocation")
-    method = getattr(handler, "telemetry_tags", None)
+    method = _field_or_attr(handler, "telemetry_tags", None)
     if method is None:
+        return ()
+    if not callable(method):
         return ()
     return method(invocation)
 
@@ -589,9 +593,11 @@ def _runtime_telemetry_tags(handler: Any, invocation: ToolInvocation) -> Any:
 def _runtime_matches_kind(handler: Any, payload: ToolPayload) -> bool:
     if not isinstance(payload, ToolPayload):
         raise TypeError("payload must be ToolPayload")
-    matches_kind = getattr(handler, "matches_kind", None)
+    matches_kind = _field_or_attr(handler, "matches_kind", None)
     if matches_kind is None:
         return payload.type in {"function", "tool_search"}
+    if not callable(matches_kind):
+        raise TypeError("matches_kind must be callable")
     value = matches_kind(payload)
     if not isinstance(value, bool):
         raise TypeError("matches_kind must return a bool")
@@ -601,9 +607,11 @@ def _runtime_matches_kind(handler: Any, payload: ToolPayload) -> bool:
 def _runtime_pre_tool_use_payload(handler: Any, invocation: ToolInvocation) -> PreToolUsePayload | None:
     if not isinstance(invocation, ToolInvocation):
         raise TypeError("invocation must be ToolInvocation")
-    method = getattr(handler, "pre_tool_use_payload", None)
+    method = _field_or_attr(handler, "pre_tool_use_payload", None)
     if method is None:
         return pre_tool_use_payload(invocation)
+    if not callable(method):
+        raise TypeError("pre_tool_use_payload must be callable")
     value = method(invocation)
     if value is not None and not isinstance(value, PreToolUsePayload):
         raise TypeError("pre_tool_use_payload must return PreToolUsePayload or None")
@@ -617,9 +625,11 @@ def _runtime_post_tool_use_payload(
 ) -> PostToolUsePayload | None:
     if not isinstance(invocation, ToolInvocation):
         raise TypeError("invocation must be ToolInvocation")
-    method = getattr(handler, "post_tool_use_payload", None)
+    method = _field_or_attr(handler, "post_tool_use_payload", None)
     if method is None:
         return post_tool_use_payload(invocation, result)
+    if not callable(method):
+        raise TypeError("post_tool_use_payload must be callable")
     value = method(invocation, result)
     if value is not None and not isinstance(value, PostToolUsePayload):
         raise TypeError("post_tool_use_payload must return PostToolUsePayload or None")
@@ -633,9 +643,11 @@ def _runtime_with_updated_hook_input(
 ) -> ToolInvocation:
     if not isinstance(invocation, ToolInvocation):
         raise TypeError("invocation must be ToolInvocation")
-    method = getattr(handler, "with_updated_hook_input", None)
+    method = _field_or_attr(handler, "with_updated_hook_input", None)
     if method is None:
         return with_updated_hook_input(invocation, updated_input)
+    if not callable(method):
+        raise TypeError("with_updated_hook_input must be callable")
     value = method(invocation, updated_input)
     if not isinstance(value, ToolInvocation):
         raise TypeError("with_updated_hook_input must return ToolInvocation")
@@ -643,24 +655,34 @@ def _runtime_with_updated_hook_input(
 
 
 def _runtime_search_info(handler: Any) -> Any:
-    method = getattr(handler, "search_info", None)
+    method = _field_or_attr(handler, "search_info", None)
     if method is None:
         return None
+    if not callable(method):
+        return method
     return method()
 
 
 def _runtime_create_diff_consumer(handler: Any) -> Any:
-    method = getattr(handler, "create_diff_consumer", None)
+    method = _field_or_attr(handler, "create_diff_consumer", None)
     if method is None:
         return None
+    if not callable(method):
+        return method
     return method()
 
 
 def _call_or_get(handler: Any, name: str, default: Any) -> Any:
-    value = getattr(handler, name, default)
+    value = _field_or_attr(handler, name, default)
     if callable(value):
         return value()
     return value
+
+
+def _field_or_attr(value: Any, name: str, default: Any = None) -> Any:
+    if isinstance(value, Mapping) and name in value:
+        return value[name]
+    return getattr(value, name, default)
 
 
 def _string_tuple(value: Any, field_name: str) -> tuple[str, ...]:

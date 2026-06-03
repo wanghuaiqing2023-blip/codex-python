@@ -19,6 +19,10 @@ from pycodex.protocol import NetworkSandboxPolicy, PermissionProfile
 CODEX_LINUX_SANDBOX_ARG0 = "codex-linux-sandbox"
 
 
+def _as_posix_path(value: str | Path) -> str:
+    return str(Path(value).as_posix())
+
+
 def allow_network_for_proxy(enforce_managed_network: bool) -> bool:
     if not isinstance(enforce_managed_network, bool):
         raise TypeError("enforce_managed_network must be a bool")
@@ -41,9 +45,9 @@ def create_linux_sandbox_command_args_for_permission_profile(
         raise TypeError("allow_network_for_proxy must be a bool")
     linux_cmd = [
         "--sandbox-policy-cwd",
-        str(Path(sandbox_policy_cwd)),
+        _as_posix_path(sandbox_policy_cwd),
         "--command-cwd",
-        str(Path(command_cwd)),
+        _as_posix_path(command_cwd),
         "--permission-profile",
         json.dumps(permission_profile.to_mapping(), separators=(",", ":"), ensure_ascii=False),
     ]
@@ -59,7 +63,7 @@ def create_linux_sandbox_command_args_for_permission_profile(
 def linux_sandbox_arg0(codex_linux_sandbox_exe: str | Path) -> str:
     path = Path(codex_linux_sandbox_exe)
     if path.name == CODEX_LINUX_SANDBOX_ARG0:
-        return str(path)
+        return path.as_posix()
     return CODEX_LINUX_SANDBOX_ARG0
 
 

@@ -290,7 +290,12 @@ class ReportAgentJobResultHandler:
         payload = getattr(invocation_or_payload, "payload", invocation_or_payload)
         if not isinstance(payload, ToolPayload) or payload.type != "function":
             raise FunctionCallError.respond_to_model("report_agent_job_result handler received unsupported payload")
-        args = parse_report_agent_job_result_arguments(payload.arguments or "")
+        try:
+            args = parse_report_agent_job_result_arguments(payload.arguments or "")
+        except Exception as err:
+            if isinstance(err, FunctionCallError):
+                raise
+            raise FunctionCallError.respond_to_model(str(err)) from err
         try:
             accepted = self.store.report_agent_job_item_result(
                 args.job_id,

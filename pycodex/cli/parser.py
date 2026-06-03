@@ -5077,7 +5077,7 @@ def _mcp_tool_schema() -> tuple[list[dict[str, object]], list[dict[str, object]]
         "additionalProperties": False,
         "properties": {
             "prompt": {"type": "string", "description": "The *initial user prompt* to start the Codex conversation."},
-            "model": {"type": "string", "description": "Optional override for the model name (e.g. 'gpt-5.2', 'gpt-5.2-codex')."},
+            "model": {"type": "string", "description": "Optional override for the model name (e.g. 'gpt-5.3-codex', 'gpt-5.5')."},
             "cwd": {"type": "string", "description": "Working directory for the session. If relative, it is resolved against the server process's current working directory."},
             "approval-policy": {
                 "type": "string",
@@ -5613,7 +5613,7 @@ def _run_debug_command(
     if subcommand == "models":
         bundled = "--bundled" in command_args[1:]
         payload = {
-            "models": ["gpt-5", "gpt-5-nano", "gpt-4o-mini"],
+            "models": ["gpt-5.3-codex", "gpt-5.5", "gpt-4o-mini"],
             "source": "bundled" if bundled else "online",
         }
         print(json.dumps(payload, indent=2), file=stdout)

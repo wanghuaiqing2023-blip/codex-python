@@ -186,6 +186,8 @@ class ConfigEdit:
 
     @classmethod
     def set_path(cls, segments: Iterable[str], value: Any) -> "ConfigEdit":
+        if isinstance(value, Mapping):
+            value = _ensure_mapping(value, "value")
         return cls(ConfigEditKind.SET_PATH, _segments_tuple(segments), value)
 
     @classmethod
@@ -213,6 +215,71 @@ class ConfigEdit:
     @classmethod
     def replace_mcp_servers(cls, servers: Mapping[str, Any]) -> "ConfigEdit":
         return cls(ConfigEditKind.REPLACE_MCP_SERVERS, ("mcp_servers",), dict(_ensure_mapping(servers, "servers")))
+
+    @classmethod
+    def set_notice_hide_full_access_warning(cls, acknowledged: bool) -> "ConfigEdit":
+        return cls(ConfigEditKind.SET_PATH, ("notice", "hide_full_access_warning"), _ensure_bool(acknowledged, "acknowledged"))
+
+    @classmethod
+    def set_notice_hide_world_writable_warning(cls, acknowledged: bool) -> "ConfigEdit":
+        return cls(ConfigEditKind.SET_PATH, ("notice", "hide_world_writable_warning"), _ensure_bool(acknowledged, "acknowledged"))
+
+    @classmethod
+    def set_notice_hide_rate_limit_model_nudge(cls, acknowledged: bool) -> "ConfigEdit":
+        return cls(ConfigEditKind.SET_PATH, ("notice", "hide_rate_limit_model_nudge"), _ensure_bool(acknowledged, "acknowledged"))
+
+    @classmethod
+    def set_notice_hide_model_migration_prompt(cls, model_prompt_key: str, acknowledged: bool) -> "ConfigEdit":
+        return cls(
+            ConfigEditKind.SET_PATH,
+            ("notice", _ensure_str(model_prompt_key, "model_prompt_key")),
+            _ensure_bool(acknowledged, "acknowledged"),
+        )
+
+    @classmethod
+    def set_notice_hide_external_config_migration_prompt_home(cls, acknowledged: bool) -> "ConfigEdit":
+        return cls(ConfigEditKind.SET_PATH, ("notice", "external_config_migration_prompts", "home"), _ensure_bool(acknowledged, "acknowledged"))
+
+    @classmethod
+    def set_notice_external_config_migration_prompt_home_last_prompted_at(cls, timestamp: int) -> "ConfigEdit":
+        return cls(
+            ConfigEditKind.SET_PATH,
+            ("notice", "external_config_migration_prompts", "home_last_prompted_at"),
+            _ensure_i64(timestamp, "timestamp"),
+        )
+
+    @classmethod
+    def set_notice_hide_external_config_migration_prompt_project(cls, project: str, acknowledged: bool) -> "ConfigEdit":
+        return cls(
+            ConfigEditKind.SET_PATH,
+            ("notice", "external_config_migration_prompts", "projects", _ensure_str(project, "project")),
+            _ensure_bool(acknowledged, "acknowledged"),
+        )
+
+    @classmethod
+    def set_notice_external_config_migration_prompt_project_last_prompted_at(
+        cls,
+        project: str,
+        timestamp: int,
+    ) -> "ConfigEdit":
+        return cls(
+            ConfigEditKind.SET_PATH,
+            (
+                "notice",
+                "external_config_migration_prompts",
+                "project_last_prompted_at",
+                _ensure_str(project, "project"),
+            ),
+            _ensure_i64(timestamp, "timestamp"),
+        )
+
+    @classmethod
+    def record_model_migration_seen(cls, from_model: str, to_model: str) -> "ConfigEdit":
+        return cls(
+            ConfigEditKind.SET_PATH,
+            ("notice", "model_migrations", _ensure_str(from_model, "from_model")),
+            _ensure_str(to_model, "to_model"),
+        )
 
 
 @dataclass

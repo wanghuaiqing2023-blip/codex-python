@@ -17,12 +17,12 @@ interfaces, wire formats, and user-visible behavior stay as close as possible.
 
 ## What this repository contains
 
-- `codex/` ¡ª upstream reference implementation.
-- `pycodex/` ¡ª Python port.
-- `tests/` ¡ª parity-focused unit/integration tests.
-- `porting_notes/` ¡ª implementation notes and turn-by-turn migration log.
-- `PORTING_STATUS.md` ¡ª high-level progress summary.
-- `AGENTS.md` ¡ª repository instructions and active porting priorities.
+- `codex/` â€” upstream reference implementation.
+- `pycodex/` â€” Python port.
+- `tests/` â€” parity-focused unit/integration tests.
+- `porting_notes/` â€” implementation notes and turn-by-turn migration log.
+- `PORTING_STATUS.md` â€” high-level progress summary.
+- `AGENTS.md` â€” repository instructions and active porting priorities.
 
 ## Tech choices
 
@@ -52,6 +52,13 @@ For non-interactive execution:
 
 ```bash
 python -m pycodex exec "echo hello"
+```
+
+To run core-path smoke suites during porting:
+
+```bash
+python -m unittest tests.test_core_smoke_suite tests.test_local_http_core_smoke_suite
+python -m unittest discover -s tests -p "*smoke*.py"
 ```
 
 To run tests:
@@ -105,3 +112,4 @@ Expectations:
 - Request is sent to `/responses` endpoint with `Authorization: Bearer ...` header.
 - `x-codex-installation-id` and `x-codex-window-id` are present in request headers.
 - Output path is parsed from response body and rendered as plain text.
+

@@ -1153,7 +1153,7 @@ from .tool_runtimes import (
     build_proxy_env_exports,
     build_sandbox_command,
     build_unified_exec_sandbox_command,
-    canonicalize_command_for_approval,
+    canonicalize_command_for_approval as canonicalize_command_for_approval_in_runtime,
     commands_for_intercepted_exec_policy as _tool_runtime_commands_for_intercepted_exec_policy,
     disable_powershell_profile_for_elevated_windows_sandbox,
     exec_env_for_sandbox_permissions,
@@ -4025,7 +4025,6 @@ __all__ = [
     "build_proxy_env_exports",
     "build_sandbox_command",
     "build_unified_exec_sandbox_command",
-    "canonicalize_command_for_approval",
     "commands_for_intercepted_exec_policy",
     "disable_powershell_profile_for_elevated_windows_sandbox",
     "exec_command_result_for_stage",
@@ -4476,3 +4475,7 @@ __all__ = [
     "register_session_root",
     "resolve_agent_target",
 ]
+
+import builtins as _builtins
+
+_builtins.remove_snapshot_file = remove_snapshot_file

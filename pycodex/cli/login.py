@@ -431,7 +431,10 @@ def run_chatgpt_login(
             file=stderr,
         )
 
-        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread = threading.Thread(daemon=True)
+        serve_forever = getattr(server, "serve_forever", None)
+        if callable(serve_forever):
+            server_thread = threading.Thread(target=serve_forever, daemon=True)
         server_thread.start()
 
         try:

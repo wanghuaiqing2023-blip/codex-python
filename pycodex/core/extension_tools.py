@@ -78,8 +78,19 @@ class ExtensionToolAdapter:
         return payload.type == "function"
 
     def handle(self, invocation_or_payload: ToolInvocation | ToolPayload) -> Any:
-        invocation = _tool_invocation(invocation_or_payload, self.tool_name())
-        call = to_extension_call(invocation, self.turn_context)
+        if isinstance(invocation_or_payload, ToolInvocation):
+            call = to_extension_call(invocation_or_payload, self.turn_context)
+        elif isinstance(invocation_or_payload, ToolPayload):
+            call = ToolCall(
+                tool_name=self.tool_name(),
+                call_id="",
+                payload=invocation_or_payload,
+                turn_id=self.turn_context.turn_id,
+                truncation_policy=self.turn_context.truncation_policy,
+                conversation_history=self.turn_context.conversation_history,
+            )
+        else:
+            raise TypeError("invocation must be ToolInvocation or ToolPayload")
         return self.executor.handle(call)
 
 
@@ -96,16 +107,6 @@ def to_extension_call(invocation: ToolInvocation, turn_context: ExtensionTurnCon
         truncation_policy=turn_context.truncation_policy,
         conversation_history=turn_context.conversation_history,
     )
-
-
-def _tool_invocation(invocation_or_payload: ToolInvocation | ToolPayload, tool_name: ToolName) -> ToolInvocation:
-    if isinstance(invocation_or_payload, ToolInvocation):
-        invocation = invocation_or_payload
-    elif isinstance(invocation_or_payload, ToolPayload):
-        invocation = ToolInvocation(call_id="", tool_name=tool_name, payload=invocation_or_payload)
-    else:
-        raise TypeError("invocation must be ToolInvocation or ToolPayload")
-    return invocation
 
 
 def _extension_tool_name(executor: Any) -> ToolName:

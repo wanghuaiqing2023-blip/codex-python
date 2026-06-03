@@ -179,7 +179,7 @@ class ToolDispatchTrace:
     ) -> "ToolDispatchTrace":
         if trace_context is None:
             return cls(DisabledToolDispatchTraceContext())
-        starter = getattr(trace_context, "start_tool_dispatch_trace", None)
+        starter = _field_or_attr(trace_context, "start_tool_dispatch_trace")
         if callable(starter):
             context = starter(
                 lambda: tool_dispatch_invocation(
@@ -203,12 +203,12 @@ class ToolDispatchTrace:
         result_payload = tool_dispatch_result(invocation, call_id, payload, result)
         if result_payload is None:
             return
-        recorder = getattr(self.context, "record_completed", None)
+        recorder = _field_or_attr(self.context, "record_completed")
         if callable(recorder):
             recorder(execution_status_for_result(result), result_payload)
 
     def record_failed(self, error: Any) -> None:
-        recorder = getattr(self.context, "record_failed", None)
+        recorder = _field_or_attr(self.context, "record_failed")
         if callable(recorder):
             recorder(error)
 
@@ -280,12 +280,20 @@ def execution_status_for_result(result: Any) -> ExecutionStatus:
 
 
 def _trace_context_is_enabled(context: Any) -> bool:
-    is_enabled = getattr(context, "is_enabled", None)
+    if isinstance(context, bool):
+        return context
+    is_enabled = _field_or_attr(context, "is_enabled")
     if callable(is_enabled):
         return bool(is_enabled())
     if isinstance(is_enabled, bool):
         return is_enabled
     return True
+
+
+def _field_or_attr(value: Any, name: str) -> Any:
+    if isinstance(value, dict):
+        return value.get(name)
+    return getattr(value, name, None)
 
 
 __all__ = [

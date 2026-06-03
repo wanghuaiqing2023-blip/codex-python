@@ -4,6 +4,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from typing import Any
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -116,14 +117,27 @@ class TraceContext:
         self.invocations.append(invocation_factory())
         return self
 
-    def is_enabled(self):
-        return True
-
     def record_completed(self, status, result):
         self.completed.append((status, result))
 
     def record_failed(self, error):
         self.failed.append(error)
+
+
+def _pre_tool_hook_payload(invocation):
+    return PreToolUsePayload(
+        tool_name=HookToolName.new("mapped"),
+        tool_input={"mapped": True},
+    )
+
+
+def _post_tool_hook_payload(invocation, result):
+    return PostToolUsePayload(
+        tool_name=HookToolName.new("mapped"),
+        tool_use_id=invocation.call_id,
+        tool_input={"mapped": True},
+        tool_response="mapped-response",
+    )
 
 
 class CounterTelemetry:
@@ -559,6 +573,55 @@ class ToolRouterTests(unittest.TestCase):
         self.assertEqual(trace.invocations[0].thread_id, "thread-map")
         self.assertEqual(trace.invocations[0].codex_turn_id, "turn-map")
         self.assertEqual(trace.completed[0][0], ExecutionStatus.COMPLETED)
+
+    def test_dispatch_tool_call_supports_mapping_tool_runtimes(self) -> None:
+        pre_calls = []
+
+        def handle(invocation):
+            return FunctionToolOutput.from_text("ok", True)
+
+        tool = {
+            "tool_name": ToolName.plain("mapped"),
+            "handle": handle,
+            "pre_tool_use_payload": _pre_tool_hook_payload,
+            "post_tool_use_payload": _post_tool_hook_payload,
+        }
+        invocation = ToolInvocation(
+            call_id="mapped-call",
+            tool_name=ToolName.plain("mapped"),
+            payload=ToolPayload.function("{}"),
+        )
+
+        result = asyncio.run(
+            dispatch_tool_call(
+                ToolRegistry.from_tools([tool]),
+                invocation,
+                pre_tool_use_hook=lambda payload: (
+                    pre_calls.append(payload),
+                    PreToolUseHookResult.continue_(payload.tool_input),
+                )[1],
+            )
+        )
+
+        self.assertEqual(result.to_response_item().output.to_text(), "ok")
+        self.assertEqual(len(pre_calls), 1)
+        self.assertEqual(pre_calls[0].tool_name, HookToolName.new("mapped"))
+
+    def test_dispatch_tool_call_supports_mapping_keyword_only_tool_handle(self) -> None:
+        invocation = ToolInvocation(
+            call_id="mapped-kw",
+            tool_name=ToolName.plain("mapped_kw"),
+            payload=ToolPayload.function("{}"),
+        )
+
+        def handle(*, invocation: ToolInvocation) -> FunctionToolOutput:
+            return FunctionToolOutput.from_text(f"{invocation.call_id}", True)
+
+        result = asyncio.run(
+            dispatch_tool_call(ToolRegistry.from_tools([{"tool_name": ToolName.plain("mapped_kw"), "handle": handle}]), invocation)
+        )
+
+        self.assertEqual(result.to_response_item().output.to_text(), "mapped-kw")
 
     def test_dispatch_tool_call_increments_active_turn_tool_calls_before_lookup(self) -> None:
         session = SimpleNamespace(
@@ -1188,6 +1251,63 @@ class ToolRouterTests(unittest.TestCase):
         )
 
         self.assertEqual(handler.invocations[0].payload, ToolPayload.function('{"after":true}'))
+
+    def test_dispatch_pre_tool_use_hook_supports_keyword_only_signature(self) -> None:
+        handler = EchoHandler()
+        invocation = ToolInvocation(
+            call_id="call-1",
+            tool_name=ToolName.plain("echo"),
+            payload=ToolPayload.function('{"before":true}'),
+        )
+        observed: dict[str, bool] = {}
+
+        def pre_tool_use_hook(*, payload: PreToolUsePayload, invocation: ToolInvocation) -> dict[str, Any]:
+            observed["called"] = True
+            self.assertEqual(payload.tool_input, {"before": True})
+            return {"type": "continue"}
+
+        result = asyncio.run(
+            dispatch_tool_call(
+                ToolRegistry.from_tools([handler]),
+                invocation,
+                pre_tool_use_hook=pre_tool_use_hook,
+            )
+        )
+
+        self.assertTrue(observed.get("called", False))
+        self.assertEqual(result.to_response_item().output.to_text(), "ok")
+        self.assertEqual(handler.invocations, [invocation])
+
+    def test_dispatch_post_tool_use_hook_supports_keyword_only_signature(self) -> None:
+        invocation = ToolInvocation(
+            call_id="call-1",
+            tool_name=ToolName.plain("json_echo"),
+            payload=ToolPayload.function("{}"),
+        )
+        observed = {}
+
+        def post_tool_use_hook(
+            *, payload: PostToolUsePayload, result: Any
+        ) -> PostToolUseHookOutcome:
+            observed["called"] = True
+            self.assertEqual(payload.tool_name.name, "json_echo")
+            self.assertIn("ok", payload.tool_response)
+            self.assertEqual(result.to_response_item().output.to_text(), "{" + '"ok":true' + "}")
+            return PostToolUseHookOutcome(
+                should_stop=True,
+                feedback_message="keyword-only post hook",
+            )
+
+        result = asyncio.run(
+            dispatch_tool_call(
+                ToolRegistry.from_tools([JsonEchoHandler("json_echo")]),
+                invocation,
+                post_tool_use_hook=post_tool_use_hook,
+            )
+        )
+
+        self.assertTrue(observed.get("called", False))
+        self.assertEqual(result.to_response_item().output.to_text(), "keyword-only post hook")
 
     def test_dispatch_pre_tool_use_hook_uses_handler_specific_input_rewrite(self) -> None:
         class CustomRewriteHandler(EchoHandler):

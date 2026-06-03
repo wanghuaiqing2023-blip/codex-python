@@ -142,6 +142,7 @@ def reject_full_fork_spawn_overrides(
         raise TypeError("reasoning_effort must be a string or None")
     if agent_type is not None or model is not None or reasoning_effort is not None:
         raise FunctionCallError.respond_to_model(
+            "not supported: "
             "Full-history forked agents inherit the parent agent type, model, and reasoning effort; "
             "omit agent_type, model, and reasoning_effort, or spawn without a full-history fork."
         )
