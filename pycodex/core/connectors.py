@@ -763,7 +763,57 @@ def normalize_connector_value(value: str | None) -> str | None:
 
 
 def _coerce_app_info(value: AppInfo | Mapping[str, JsonValue]) -> AppInfo:
-    return value if isinstance(value, AppInfo) else AppInfo.from_mapping(value)
+    if isinstance(value, AppInfo):
+        return value
+    if isinstance(value, Mapping):
+        return AppInfo.from_mapping(value)
+    if hasattr(value, "to_mapping"):
+        try:
+            mapped = value.to_mapping()
+            if isinstance(mapped, Mapping):
+                return AppInfo.from_mapping(mapped)
+        except Exception:
+            pass
+    fields = {}
+    if hasattr(value, "__dict__"):
+        fields.update(value.__dict__)
+    for key in (
+        "id",
+        "name",
+        "description",
+        "labels",
+        "is_accessible",
+        "is_enabled",
+        "plugin_display_names",
+        "install_url",
+        "logo_url",
+        "logo_url_dark",
+        "distribution_channel",
+        "branding",
+        "app_metadata",
+    ):
+        if key not in fields and hasattr(value, key):
+            fields[key] = getattr(value, key)
+    if "id" not in fields:
+        connector_id = None
+        for fallback in ("connector_id", "slug", "path"):
+            if hasattr(value, fallback):
+                connector_id = getattr(value, fallback)
+                break
+        if connector_id is None:
+            connector_id = getattr(value, "__name__", None)
+        if connector_id is not None:
+            fields["id"] = connector_id
+    if "name" not in fields:
+        if "id" in fields:
+            fields["name"] = fields["id"]
+        elif hasattr(value, "__class__"):
+            fields["name"] = value.__class__.__name__
+    if "id" not in fields:
+        raise TypeError("AppInfo mapping must be a mapping")
+    if "name" not in fields:
+        fields["name"] = fields["id"]
+    return AppInfo.from_mapping(fields)
 
 
 def _replace_app_info(connector: AppInfo, **updates: JsonValue) -> AppInfo:

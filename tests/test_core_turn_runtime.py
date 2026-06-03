@@ -14,6 +14,7 @@ from pycodex.core.compact_remote import IMAGE_CONTENT_OMITTED_PLACEHOLDER
 from pycodex.core.features import Feature
 from pycodex.core.hook_runtime import HookRuntimeOutcome
 from pycodex.core.session_runtime import InMemoryCodexSession
+import pycodex.core.turn_runtime as turn_runtime
 from pycodex.core.turn_sampler import sample_with_model_client_session
 from pycodex.core.turn_runtime import (
     build_user_input_op_responses_request_from_session,
@@ -1844,6 +1845,638 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Revise with tests.", hook_prompt.content[0].text)
         self.assertIn("hook-run-1", hook_prompt.content[0].text)
         self.assertEqual(session.history[-1].content[0].text, "final")
+
+    async def test_run_user_turn_sampling_forwards_skill_injection_warnings_as_events(self) -> None:
+        session = Session()
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        original_build = turn_runtime.build_skill_injections
+
+        async def sampler(_request):
+            return [ResponseItem.message("assistant", (ContentItem.output_text("done"),))]
+
+        try:
+            turn_runtime.build_skill_injections = lambda _skills: SimpleNamespace(
+                items=(),
+                warnings=("Detected deprecated skill metadata format.",),
+            )
+            await run_user_turn_sampling_from_session(
+                session,
+                (UserInput.text_input("check"),),
+                client,
+                provider,
+                model_info,
+                sampler,
+                built_tools=lambda _sess, _turn: Router(),
+            )
+        finally:
+            turn_runtime.build_skill_injections = original_build
+
+        warnings = tuple(event.payload.message for event in events_of_type(session, "warning"))
+        self.assertIn("Detected deprecated skill metadata format.", warnings)
+
+    async def test_run_user_turn_sampling_forwards_multiple_skill_injection_warnings_in_order(self) -> None:
+        session = Session()
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        original_build = turn_runtime.build_skill_injections
+        warning_messages = (
+            "Deprecated skill API usage detected.",
+            "Skill metadata is missing optional field `short_description`.",
+        )
+
+        async def sampler(_request):
+            return [ResponseItem.message("assistant", (ContentItem.output_text("done"),))]
+
+        try:
+            turn_runtime.build_skill_injections = lambda _skills: SimpleNamespace(
+                items=(),
+                warnings=warning_messages,
+            )
+            await run_user_turn_sampling_from_session(
+                session,
+                (UserInput.text_input("check"),),
+                client,
+                provider,
+                model_info,
+                sampler,
+                built_tools=lambda _sess, _turn: Router(),
+            )
+        finally:
+            turn_runtime.build_skill_injections = original_build
+
+        warnings = tuple(event.payload.message for event in events_of_type(session, "warning"))
+        self.assertEqual(warnings, warning_messages)
+
+    async def test_run_user_turn_sampling_tracks_explicit_app_and_plugin_mentions_for_analytics(self) -> None:
+        session = Session()
+        session.conversation_id = "thread-123"
+        session.turn_context.model_info = SimpleNamespace(slug="gpt-test")
+        session.turn_context.config = SimpleNamespace(apps_enabled=True)
+        session.turn_context.sub_id = "turn-abc"
+        session.available_connectors = (SimpleNamespace(id="app://weather", name="Weather App", is_enabled=True),)
+
+        class FakeAnalytics:
+            def __init__(self) -> None:
+                self.app_mentions = []
+                self.plugin_used = []
+
+            def track_app_mentioned(self, context, mentions):
+                self.app_mentions.append((context, tuple(mentions)))
+
+            def track_plugin_used(self, context, payload):
+                self.plugin_used.append((context, payload))
+
+        plugin_payload = SimpleNamespace(plugin_id="plugin-weather")
+        mentioned_plugin = SimpleNamespace(
+            display_name="WeatherPlugin",
+            telemetry_metadata=lambda: plugin_payload,
+        )
+        session.services = SimpleNamespace(analytics_events_client=FakeAnalytics())
+
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        original_collect_app_ids = turn_runtime.collect_explicit_app_ids
+        original_collect_plugin_mentions = turn_runtime.collect_explicit_plugin_mentions
+
+        async def sampler(_request):
+            return [ResponseItem.message("assistant", (ContentItem.output_text("done"),))]
+
+        try:
+            turn_runtime.collect_explicit_app_ids = lambda _user_input: ("weather",)
+            turn_runtime.collect_explicit_plugin_mentions = (
+                lambda _user_input, _plugins: (mentioned_plugin,)
+            )
+            await run_user_turn_sampling_from_session(
+                session,
+                (UserInput.text_input("check"),),
+                client,
+                provider,
+                model_info,
+                sampler,
+                built_tools=lambda _sess, _turn: Router(),
+            )
+        finally:
+            turn_runtime.collect_explicit_app_ids = original_collect_app_ids
+            turn_runtime.collect_explicit_plugin_mentions = original_collect_plugin_mentions
+
+        analytics = session.services.analytics_events_client
+        self.assertEqual(len(analytics.app_mentions), 1)
+        app_context, app_mentions = analytics.app_mentions[0]
+        self.assertEqual(len(app_mentions), 1)
+        self.assertEqual(app_context["model"], "gpt-test")
+        self.assertEqual(app_context["conversation_id"], "thread-123")
+        self.assertEqual(app_context["sub_id"], "turn-abc")
+        self.assertEqual(app_mentions[0].connector_id, "weather")
+        self.assertEqual(app_mentions[0].app_name, "Weather App")
+        self.assertEqual(app_mentions[0].invocation_type, "explicit")
+        self.assertEqual(len(analytics.plugin_used), 1)
+        self.assertIs(analytics.plugin_used[0][1], plugin_payload)
+
+    async def test_run_user_turn_sampling_tracks_prefixed_app_mentions_with_normalization(self) -> None:
+        session = Session()
+        session.conversation_id = "thread-456"
+        session.turn_context.model_info = SimpleNamespace(slug="gpt-test")
+        session.turn_context.config = SimpleNamespace(apps_enabled=True)
+        session.turn_context.sub_id = "turn-abc2"
+        session.available_connectors = (
+            SimpleNamespace(id="app://weather", name="Weather App", is_enabled=True),
+        )
+
+        class FakeAnalytics:
+            def __init__(self) -> None:
+                self.app_mentions = []
+
+            def track_app_mentioned(self, context, mentions):
+                self.app_mentions.append((context, tuple(mentions)))
+
+            def track_plugin_used(self, context, payload):
+                pass
+
+        session.services = SimpleNamespace(analytics_events_client=FakeAnalytics())
+
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        original_collect_app_ids = turn_runtime.collect_explicit_app_ids
+        original_collect_plugin_mentions = turn_runtime.collect_explicit_plugin_mentions
+
+        async def sampler(_request):
+            return [ResponseItem.message("assistant", (ContentItem.output_text("done"),))]
+
+        try:
+            turn_runtime.collect_explicit_app_ids = lambda _user_input: ("app://weather",)
+            turn_runtime.collect_explicit_plugin_mentions = lambda _user_input, _plugins: tuple()
+            await run_user_turn_sampling_from_session(
+                session,
+                (UserInput.text_input("check"),),
+                client,
+                provider,
+                model_info,
+                sampler,
+                built_tools=lambda _sess, _turn: Router(),
+            )
+        finally:
+            turn_runtime.collect_explicit_app_ids = original_collect_app_ids
+            turn_runtime.collect_explicit_plugin_mentions = original_collect_plugin_mentions
+
+        analytics = session.services.analytics_events_client
+        self.assertEqual(len(analytics.app_mentions), 1)
+        app_context, app_mentions = analytics.app_mentions[0]
+        self.assertEqual(app_context["conversation_id"], "thread-456")
+        self.assertEqual(len(app_mentions), 1)
+        self.assertEqual(app_mentions[0].connector_id, "weather")
+
+    async def test_run_user_turn_sampling_tracks_turn_resolved_config_for_analytics(self) -> None:
+        session = Session()
+        session.conversation_id = "thread-789"
+        session.turn_context.model_info = SimpleNamespace(slug="gpt-test")
+        session.turn_context.sub_id = "turn-analytics"
+
+        class FakePolicy:
+            def is_enabled(self) -> bool:
+                return True
+
+        captured = []
+
+        class FakeAnalytics:
+            def track_turn_resolved_config(self, context, payload):
+                captured.append((context, payload))
+
+        session.services = SimpleNamespace(analytics_events_client=FakeAnalytics())
+        session.turn_context.config = SimpleNamespace(
+            model_provider_id="openai",
+            service_tier="priority",
+            approval_policy="on-request",
+            approvals_reviewer="reviewer-1",
+            permission_profile="perm-profile",
+            reasoning_effort="high",
+            reasoning_summary="concise",
+            personality="pragmatic",
+            collaboration_mode="collab",
+        )
+
+        thread_config = SimpleNamespace(
+            model_provider_id="openai",
+            service_tier="priority",
+            approval_policy="ask",
+            approvals_reviewer="reviewer-1",
+            permission_profile="perm-profile",
+            ephemeral=True,
+            reasoning_effort="high",
+            reasoning_summary="concise",
+            personality="pragmatic",
+            collaboration_mode="collab",
+            session_source="cli",
+            sandbox_policy=FakePolicy(),
+        )
+
+        async def snapshot():
+            return thread_config
+
+        async def get_next_turn_is_first():
+            return True
+
+        session.thread_config_snapshot = snapshot
+        session.take_next_turn_is_first = get_next_turn_is_first
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+
+        async def sampler(_request):
+            return [ResponseItem.message("assistant", (ContentItem.output_text("done"),))]
+
+        await run_user_turn_sampling_from_session(
+            session,
+            (
+                UserInput.text_input("look"),
+                UserInput.image("data:image/png;base64,AAAA"),
+                UserInput.local_image(Path("photo.png")),
+            ),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(len(captured), 1)
+        analytics_context, payload = captured[0]
+        self.assertEqual(analytics_context["model"], "gpt-test")
+        self.assertEqual(analytics_context["conversation_id"], "thread-789")
+        self.assertEqual(analytics_context["sub_id"], "turn-analytics")
+        self.assertEqual(payload["turn_id"], "turn-analytics")
+        self.assertEqual(payload["thread_id"], "thread-789")
+        self.assertEqual(payload["num_input_images"], 2)
+        self.assertEqual(payload["submission_type"], None)
+        self.assertTrue(payload["ephemeral"])
+        self.assertEqual(payload["session_source"], "cli")
+        self.assertEqual(payload["model"], "gpt-test")
+        self.assertEqual(payload["model_provider"], "openai")
+        self.assertEqual(payload["permission_profile"], "perm-profile")
+        self.assertEqual(payload["approval_policy"], "on-request")
+        self.assertEqual(payload["reasoning_effort"], "high")
+        self.assertEqual(payload["reasoning_summary"], "concise")
+        self.assertEqual(payload["service_tier"], "priority")
+        self.assertEqual(payload["approvals_reviewer"], "reviewer-1")
+        self.assertTrue(payload["sandbox_network_access"])
+        self.assertEqual(payload["collaboration_mode"], "collab")
+        self.assertEqual(payload["personality"], "pragmatic")
+        self.assertTrue(payload["is_first_turn"])
+
+    async def test_run_user_turn_sampling_tracks_turn_resolved_config_from_thread_attr_snapshot(self) -> None:
+        session = Session()
+        session.conversation_id = "thread-790"
+        session.turn_context.model_info = SimpleNamespace(slug="gpt-test")
+        session.turn_context.sub_id = "turn-analytics-thread"
+        session.thread = SimpleNamespace(
+            thread_config_snapshot=SimpleNamespace(
+                model_provider="openai",
+                service_tier="standard",
+                ephemeral=False,
+                permission_profile="thread-profile",
+            )
+        )
+        session.turn_context.config = SimpleNamespace(
+            model_provider_id="openai",
+            service_tier="standard",
+            permission_profile="cfg-perm-profile",
+            approvals_reviewer="cfg-reviewer",
+            approval_policy="on-request",
+            reasoning_effort="minimal",
+            reasoning_summary="auto",
+            personality="none",
+            collaboration_mode="default",
+        )
+
+        captured = []
+
+        class FakeAnalytics:
+            def track_turn_resolved_config(self, context, payload):
+                captured.append((context, payload))
+
+        session.services = SimpleNamespace(analytics_events_client=FakeAnalytics())
+
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+
+        async def sampler(_request):
+            return [ResponseItem.message("assistant", (ContentItem.output_text("done"),))]
+
+        await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("check"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(len(captured), 1)
+        analytics_context, payload = captured[0]
+        self.assertEqual(analytics_context["conversation_id"], "thread-790")
+        self.assertEqual(payload["turn_id"], "turn-analytics-thread")
+        self.assertEqual(payload["thread_id"], "thread-790")
+        self.assertEqual(payload["model_provider"], "openai")
+        self.assertEqual(payload["service_tier"], "standard")
+        self.assertFalse(payload["ephemeral"])
+        self.assertEqual(payload["permission_profile"], "cfg-perm-profile")
+
+    async def test_run_user_turn_sampling_tracks_turn_resolved_config_from_thread_callable_snapshot(self) -> None:
+        session = Session()
+        session.conversation_id = "thread-791"
+        session.turn_context.model_info = SimpleNamespace(slug="gpt-test")
+        session.turn_context.sub_id = "turn-analytics-thread-callable"
+        thread_snapshot = SimpleNamespace(
+            model_provider="openai",
+            service_tier="standard",
+            ephemeral=True,
+            permission_profile="thread-callable-profile",
+        )
+
+        captured = []
+
+        class FakeAnalytics:
+            def track_turn_resolved_config(self, context, payload):
+                captured.append((context, payload))
+
+        session.services = SimpleNamespace(analytics_events_client=FakeAnalytics())
+        session.turn_context.config = SimpleNamespace(
+            model_provider_id="openai",
+            service_tier="standard",
+            permission_profile="cfg-callable-profile",
+            approvals_reviewer="cfg-reviewer",
+            approval_policy="on-request",
+            reasoning_effort="minimal",
+            reasoning_summary="auto",
+            personality="none",
+            collaboration_mode="default",
+        )
+        session.thread = SimpleNamespace(
+            thread_config_snapshot=lambda: thread_snapshot,
+        )
+
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+
+        async def sampler(_request):
+            return [ResponseItem.message("assistant", (ContentItem.output_text("done"),))]
+
+        await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("check"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(len(captured), 1)
+        analytics_context, payload = captured[0]
+        self.assertEqual(analytics_context["conversation_id"], "thread-791")
+        self.assertEqual(payload["turn_id"], "turn-analytics-thread-callable")
+        self.assertEqual(payload["thread_id"], "thread-791")
+        self.assertEqual(payload["model_provider"], "openai")
+        self.assertTrue(payload["ephemeral"])
+        self.assertEqual(payload["permission_profile"], "cfg-callable-profile")
+
+    async def test_run_user_turn_sampling_tracks_turn_resolved_config_from_turn_context_permission_profile(self) -> None:
+        session = Session()
+        session.conversation_id = "thread-792"
+        session.turn_context.model_info = SimpleNamespace(slug="gpt-test")
+        session.turn_context.sub_id = "turn-analytics-turn-profile"
+        thread_config = SimpleNamespace(
+            model_provider_id="openai",
+            service_tier="standard",
+            ephemeral=False,
+            permission_profile="thread-profile",
+            sandbox_policy=SimpleNamespace(enabled=False),
+            session_source="cli",
+        )
+
+        class TurnPermissionProfile:
+            def network_sandbox_policy(self) -> SimpleNamespace:
+                return SimpleNamespace(is_enabled=lambda: True)
+
+            def to_mapping(self) -> str:
+                return "turn-profile"
+
+        captured = []
+
+        class FakeAnalytics:
+            def track_turn_resolved_config(self, context, payload):
+                captured.append((context, payload))
+
+        session.services = SimpleNamespace(analytics_events_client=FakeAnalytics())
+        session.thread = SimpleNamespace(thread_config_snapshot=lambda: thread_config)
+        session.turn_context.config = SimpleNamespace(
+            model_provider_id="openai",
+            service_tier="standard",
+            permission_profile="cfg-profile",
+            approval_policy="on-request",
+            approvals_reviewer="reviewer-1",
+            reasoning_effort="high",
+            reasoning_summary="auto",
+            personality="none",
+            collaboration_mode="default",
+            model_reasoning_effort="high",
+            model_reasoning_summary="auto",
+            model="gpt-test",
+        )
+        session.turn_context.permission_profile = TurnPermissionProfile()
+
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+
+        async def sampler(_request):
+            return [ResponseItem.message("assistant", (ContentItem.output_text("done"),))]
+
+        await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("check"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(len(captured), 1)
+        _analytics_context, payload = captured[0]
+        self.assertEqual(payload["permission_profile"], "turn-profile")
+        self.assertTrue(payload["sandbox_network_access"])
+
+    async def test_run_user_turn_sampling_tracks_turn_resolved_config_from_turn_context_network_sandbox_policy(self) -> None:
+        session = Session()
+        session.conversation_id = "thread-793"
+        session.turn_context.model_info = SimpleNamespace(slug="gpt-test")
+        session.turn_context.sub_id = "turn-analytics-turn-network-policy"
+        thread_snapshot = SimpleNamespace(
+            model_provider_id="openai",
+            service_tier="standard",
+            ephemeral=False,
+            session_source="cli",
+            sandbox_policy=SimpleNamespace(enabled=False),
+        )
+        captured = []
+
+        class FakeAnalytics:
+            def track_turn_resolved_config(self, context, payload):
+                captured.append((context, payload))
+
+        class TurnNetworkPolicy:
+            def is_enabled(self) -> bool:
+                return True
+
+        session.services = SimpleNamespace(analytics_events_client=FakeAnalytics())
+        session.thread = SimpleNamespace(thread_config_snapshot=lambda: thread_snapshot)
+        session.turn_context.config = SimpleNamespace(
+            model_provider_id="openai",
+            service_tier="standard",
+            permission_profile="cfg-profile",
+            approval_policy="on-request",
+            approvals_reviewer="reviewer-1",
+            reasoning_effort="high",
+            reasoning_summary="auto",
+            personality="none",
+            collaboration_mode="default",
+            model_reasoning_effort="high",
+            model_reasoning_summary="auto",
+            model="gpt-test",
+        )
+        session.turn_context.network_sandbox_policy = TurnNetworkPolicy()
+
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+
+        async def sampler(_request):
+            return [ResponseItem.message("assistant", (ContentItem.output_text("done"),))]
+
+        await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("check"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(len(captured), 1)
+        _analytics_context, payload = captured[0]
+        self.assertEqual(payload["permission_profile"], "cfg-profile")
+        self.assertTrue(payload["sandbox_network_access"])
+
+    async def test_run_user_turn_sampling_does_not_track_plugins_without_telemetry_metadata(self) -> None:
+        session = Session()
+        session.conversation_id = "thread-123"
+        session.turn_context.model_info = SimpleNamespace(slug="gpt-test")
+        session.turn_context.config = SimpleNamespace(apps_enabled=True)
+        session.turn_context.sub_id = "turn-no-plugin-metadata"
+        session.available_connectors = ()
+
+        class FakeAnalytics:
+            def __init__(self) -> None:
+                self.app_mentions = []
+                self.plugin_used = []
+
+            def track_app_mentioned(self, context, mentions):
+                self.app_mentions.append((context, tuple(mentions)))
+
+            def track_plugin_used(self, context, payload):
+                self.plugin_used.append((context, payload))
+
+        plugin_without_metadata = SimpleNamespace(display_name="NoMetaPlugin")
+        session.services = SimpleNamespace(analytics_events_client=FakeAnalytics())
+
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        original_collect_app_ids = turn_runtime.collect_explicit_app_ids
+        original_collect_plugin_mentions = turn_runtime.collect_explicit_plugin_mentions
+
+        async def sampler(_request):
+            return [ResponseItem.message("assistant", (ContentItem.output_text("done"),))]
+
+        try:
+            turn_runtime.collect_explicit_app_ids = lambda _user_input: tuple()
+            turn_runtime.collect_explicit_plugin_mentions = (
+                lambda _user_input, _plugins: (plugin_without_metadata,)
+            )
+            await run_user_turn_sampling_from_session(
+                session,
+                (UserInput.text_input("check"),),
+                client,
+                provider,
+                model_info,
+                sampler,
+                built_tools=lambda _sess, _turn: Router(),
+            )
+        finally:
+            turn_runtime.collect_explicit_app_ids = original_collect_app_ids
+            turn_runtime.collect_explicit_plugin_mentions = original_collect_plugin_mentions
+
+        analytics = session.services.analytics_events_client
+        self.assertEqual(len(analytics.plugin_used), 0)
 
     async def test_run_user_turn_sampling_projects_sampler_stream_events(self) -> None:
         session = Session()

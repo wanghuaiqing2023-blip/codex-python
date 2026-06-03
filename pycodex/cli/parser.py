@@ -40,6 +40,7 @@ from urllib.request import Request, urlopen
 
 from pycodex import __version__
 from pycodex.config import CliConfigOverrides, ConfigOverride
+from pycodex.core import maybe_migrate_personality, PersonalityMigrationStatus
 from pycodex.exec import (
     ExecCli,
     ExecCliParseError,
@@ -7047,11 +7048,13 @@ def _request_device_auth_user_code(api_base_url: str, client_id: str) -> dict[st
             raw = response.read().decode("utf-8", errors="replace")
     except HTTPError as exc:
         if exc.code == 404:
+            _drain_http_error(exc)
             raise RuntimeError(
                 "device code login is not enabled for this Codex server. "
                 "Use the browser login or verify the server URL."
             )
         body = exc.read().decode("utf-8", errors="replace")
+        _drain_http_error(exc)
         message = body.strip() or exc.reason
         raise RuntimeError(f"device code request failed with status {exc.code}: {message}")
     except URLError as exc:
@@ -7126,12 +7129,14 @@ def _poll_device_auth_token(
             token_payload = json.loads(body)
         except HTTPError as exc:
             if exc.code in {403, 404}:
+                _drain_http_error(exc)
                 remaining = _DEVICE_AUTH_MAX_WAIT_SECONDS - (time.time() - start)
                 if remaining <= 0:
                     break
                 time.sleep(min(interval, remaining))
                 continue
             body = exc.read().decode("utf-8", errors="replace")
+            _drain_http_error(exc)
             message = body.strip() or exc.reason
             raise RuntimeError(f"device auth token request failed with status {exc.code}: {message}")
         except URLError as exc:
@@ -7185,6 +7190,7 @@ def _exchange_device_auth_code(
             body = response.read().decode("utf-8", errors="replace")
     except HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
+        _drain_http_error(exc)
         message = body.strip() or exc.reason
         raise RuntimeError(f"device auth token exchange failed with status {exc.code}: {message}")
     except URLError as exc:
@@ -7225,6 +7231,22 @@ def _run_logout(*, parsed: "ParsedCli", stdout: TextIO, stderr: TextIO) -> int:
         return 2
     print("Successfully logged out" if removed else "Not logged in", file=stderr)
     return 0
+
+
+def _drain_http_error(error: HTTPError) -> None:
+    fp = getattr(error, "fp", None)
+    if fp is None:
+        return
+    closer = getattr(fp, "close", None)
+    if callable(closer):
+        try:
+            closer()
+        except OSError:
+            pass
+        except Exception:
+            # Best effort; avoid masking the original HTTP error semantics.
+            pass
+    setattr(error, "fp", None)
 
 
 def _run_app_command(
@@ -8173,6 +8195,13 @@ def _run_noninteractive_exec(
     try:
         codex_home = Path(find_codex_home())
         config_toml = read_toml_mapping(codex_home / CONFIG_TOML_FILE)
+        migration_status = maybe_migrate_personality(
+            codex_home,
+            config_toml,
+            override_profile=str(exec_cli.profile) if exec_cli.profile is not None else None,
+        )
+        if migration_status == PersonalityMigrationStatus.APPLIED:
+            config_toml = read_toml_mapping(codex_home / CONFIG_TOML_FILE)
         bootstrap_plan = build_exec_config_bootstrap_plan(exec_cli, config_toml=config_toml)
         plan = prepare_exec_run_plan(
             exec_cli,

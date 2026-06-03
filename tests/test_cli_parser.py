@@ -11,6 +11,7 @@ import socket
 import threading
 import time
 from email.message import Message
+from types import SimpleNamespace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 from urllib.error import HTTPError, URLError
@@ -33,13 +34,14 @@ from pycodex.cli.parser import (
     _run_cloud_command,
     _run_stdio_to_uds,
     _select_cloud_attempt_diff,
+    default_reachability_plan,
     main,
     parse_args,
     reject_remote_mode_for_subcommand,
 )
 from pycodex.cli import DoctorUpdateCheck, NpmRootCheck, UpdateAction
 from pycodex.cli.login import AuthDotJson
-from pycodex.core import Feature, Features
+from pycodex.core import Feature, Features, PersonalityMigrationStatus
 from pycodex.core.rollout import (
     SessionMeta,
     materialize_session_rollout,
@@ -51,6 +53,30 @@ from pycodex.protocol import AskForApproval, ContentItem, ProfileV2Name, Respons
 
 
 class TopLevelCliParserTests(unittest.TestCase):
+    def setUp(self):
+        self._previous_openai_api_key = os.environ.get("OPENAI_API_KEY")
+        if self._testMethodName.startswith("test_main_doctor_") and "OPENAI_API_KEY" not in os.environ:
+            os.environ["OPENAI_API_KEY"] = "sk-doctor-smoke"
+        self._provider_reachability_patch = None
+        if self._testMethodName.startswith("test_main_doctor_"):
+            self._provider_reachability_patch = patch(
+                "pycodex.cli.parser.doctor_provider_reachability_check",
+                return_value=DoctorUpdateCheck(
+                    status="warn",
+                    summary="provider reachability checks are skipped in tests",
+                    details=(f"reachability mode: {default_reachability_plan().description}",),
+                ),
+            ).start()
+
+    def tearDown(self):
+        if self._testMethodName.startswith("test_main_doctor_"):
+            if self._previous_openai_api_key is None:
+                os.environ.pop("OPENAI_API_KEY", None)
+            else:
+                os.environ["OPENAI_API_KEY"] = self._previous_openai_api_key
+            if self._provider_reachability_patch is not None:
+                self._provider_reachability_patch.stop()
+
     def _main_with_local_http_exec_disabled(self, argv, **kwargs):
         with patch.dict(
             os.environ,
@@ -6308,6 +6334,270 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("prepared non-interactive exec plan", stderr.getvalue())
 
+    def test_main_exec_with_profile_triggers_personality_migration_reload(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            read_call_count = 0
+            bootstrap_configs = []
+
+            class SuccessResult:
+                ok = True
+                exit_code = 0
+                error_message = None
+
+            def fake_read_toml_mapping(_path: Path) -> dict[str, object]:
+                nonlocal read_call_count
+                read_call_count += 1
+                if read_call_count == 1:
+                    return {}
+                return {"personality": "pragmatic"}
+
+            def fake_build_bootstrap_plan(
+                _exec_cli: object,
+                *,
+                config_toml: dict[str, object],
+            ) -> object:
+                bootstrap_configs.append(dict(config_toml))
+                return SimpleNamespace(config_cwd=codex_home)
+
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": str(codex_home),
+                    "PYCODEX_EXEC_LOCAL_HTTP": "0",
+                    "PYCODEX_EXEC_CORE": "0",
+                },
+            ):
+                with patch("pycodex.cli.parser.read_toml_mapping", side_effect=fake_read_toml_mapping) as read_toml, patch(
+                    "pycodex.cli.parser.maybe_migrate_personality",
+                    return_value=PersonalityMigrationStatus.APPLIED,
+                ) as migrate, patch(
+                    "pycodex.cli.parser.build_exec_config_bootstrap_plan",
+                    side_effect=fake_build_bootstrap_plan,
+                ), patch(
+                    "pycodex.cli.parser.prepare_exec_run_plan",
+                    return_value=SimpleNamespace(prompt_summary=()),
+                ), patch(
+                    "pycodex.cli.parser.ensure_exec_trusted_directory"
+                ), patch(
+                    "pycodex.cli.parser._resolve_exec_remote_endpoint",
+                    return_value=("local", object(), codex_home),
+                ), patch(
+                    "pycodex.cli.parser._build_exec_session_config",
+                    return_value=SimpleNamespace(),
+                ), patch(
+                    "pycodex.cli.parser._build_noninteractive_exec_event_processor",
+                    return_value=SimpleNamespace(),
+                ), patch(
+                    "pycodex.cli.parser.remote_exec_session_connect_and_run",
+                    return_value=SuccessResult(),
+                ):
+                    code = main(["exec", "--profile", "work", "hello"], stderr=io.StringIO(), stdin="")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(read_toml.call_count, 2)
+        self.assertEqual(len(bootstrap_configs), 1)
+        self.assertEqual(bootstrap_configs[0].get("personality"), "pragmatic")
+        migrate.assert_called_once_with(codex_home, {}, override_profile="work")
+        self.assertEqual(migrate.call_args[0][1], {})
+
+    def test_main_exec_without_migration_applied_uses_original_config(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            bootstrap_configs = []
+
+            class SuccessResult:
+                ok = True
+                exit_code = 0
+                error_message = None
+
+            def fake_read_toml_mapping(_path: Path) -> dict[str, object]:
+                return {"personality": "existing"}
+
+            def fake_build_bootstrap_plan(
+                _exec_cli: object,
+                *,
+                config_toml: dict[str, object],
+            ) -> object:
+                bootstrap_configs.append(dict(config_toml))
+                return SimpleNamespace(config_cwd=codex_home)
+
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": str(codex_home),
+                    "PYCODEX_EXEC_LOCAL_HTTP": "0",
+                    "PYCODEX_EXEC_CORE": "0",
+                },
+            ):
+                with patch(
+                    "pycodex.cli.parser.read_toml_mapping",
+                    side_effect=fake_read_toml_mapping,
+                ) as read_toml, patch(
+                    "pycodex.cli.parser.maybe_migrate_personality",
+                    return_value=PersonalityMigrationStatus.SKIPPED_NO_SESSIONS,
+                ) as migrate, patch(
+                    "pycodex.cli.parser.build_exec_config_bootstrap_plan",
+                    side_effect=fake_build_bootstrap_plan,
+                ), patch(
+                    "pycodex.cli.parser.prepare_exec_run_plan",
+                    return_value=SimpleNamespace(prompt_summary=()),
+                ), patch(
+                    "pycodex.cli.parser.ensure_exec_trusted_directory"
+                ), patch(
+                    "pycodex.cli.parser._resolve_exec_remote_endpoint",
+                    return_value=("local", object(), codex_home),
+                ), patch(
+                    "pycodex.cli.parser._build_exec_session_config",
+                    return_value=SimpleNamespace(),
+                ), patch(
+                    "pycodex.cli.parser._build_noninteractive_exec_event_processor",
+                    return_value=SimpleNamespace(),
+                ), patch(
+                    "pycodex.cli.parser.remote_exec_session_connect_and_run",
+                    return_value=SuccessResult(),
+                ):
+                    code = main(["exec", "hello"], stderr=io.StringIO(), stdin="")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(read_toml.call_count, 1)
+        self.assertEqual(len(bootstrap_configs), 1)
+        self.assertEqual(bootstrap_configs[0].get("personality"), "existing")
+        migrate.assert_called_once_with(codex_home, {"personality": "existing"}, override_profile=None)
+
+    def test_main_review_with_profile_triggers_personality_migration_reload(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            read_call_count = 0
+            bootstrap_configs = []
+
+            class SuccessResult:
+                ok = True
+                exit_code = 0
+                error_message = None
+
+            def fake_read_toml_mapping(_path: Path) -> dict[str, object]:
+                nonlocal read_call_count
+                read_call_count += 1
+                if read_call_count == 1:
+                    return {}
+                return {"personality": "pragmatic"}
+
+            def fake_build_bootstrap_plan(
+                _exec_cli: object,
+                *,
+                config_toml: dict[str, object],
+            ) -> object:
+                bootstrap_configs.append(dict(config_toml))
+                return SimpleNamespace(config_cwd=codex_home)
+
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": str(codex_home),
+                    "PYCODEX_EXEC_LOCAL_HTTP": "0",
+                    "PYCODEX_EXEC_CORE": "0",
+                },
+            ):
+                with patch(
+                    "pycodex.cli.parser.read_toml_mapping",
+                    side_effect=fake_read_toml_mapping,
+                ) as read_toml, patch(
+                    "pycodex.cli.parser.maybe_migrate_personality",
+                    return_value=PersonalityMigrationStatus.APPLIED,
+                ) as migrate, patch(
+                    "pycodex.cli.parser.build_exec_config_bootstrap_plan",
+                    side_effect=fake_build_bootstrap_plan,
+                ), patch(
+                    "pycodex.cli.parser.prepare_exec_run_plan",
+                    return_value=SimpleNamespace(prompt_summary=()),
+                ), patch(
+                    "pycodex.cli.parser.ensure_exec_trusted_directory"
+                ), patch(
+                    "pycodex.cli.parser._resolve_exec_remote_endpoint",
+                    return_value=("local", object(), codex_home),
+                ), patch(
+                    "pycodex.cli.parser._build_exec_session_config",
+                    return_value=SimpleNamespace(),
+                ), patch(
+                    "pycodex.cli.parser._build_noninteractive_exec_event_processor",
+                    return_value=SimpleNamespace(),
+                ), patch(
+                    "pycodex.cli.parser.remote_exec_session_connect_and_run",
+                    return_value=SuccessResult(),
+                ):
+                    code = main(["--profile", "work", "review", "hello"], stderr=io.StringIO(), stdin="")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(read_toml.call_count, 2)
+        self.assertEqual(len(bootstrap_configs), 1)
+        self.assertEqual(bootstrap_configs[0].get("personality"), "pragmatic")
+        migrate.assert_called_once_with(codex_home, {}, override_profile="work")
+
+    def test_main_review_without_migration_applied_uses_original_config(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            bootstrap_configs = []
+
+            class SuccessResult:
+                ok = True
+                exit_code = 0
+                error_message = None
+
+            def fake_read_toml_mapping(_path: Path) -> dict[str, object]:
+                return {"personality": "existing"}
+
+            def fake_build_bootstrap_plan(
+                _exec_cli: object,
+                *,
+                config_toml: dict[str, object],
+            ) -> object:
+                bootstrap_configs.append(dict(config_toml))
+                return SimpleNamespace(config_cwd=codex_home)
+
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": str(codex_home),
+                    "PYCODEX_EXEC_LOCAL_HTTP": "0",
+                    "PYCODEX_EXEC_CORE": "0",
+                },
+            ):
+                with patch(
+                    "pycodex.cli.parser.read_toml_mapping",
+                    side_effect=fake_read_toml_mapping,
+                ) as read_toml, patch(
+                    "pycodex.cli.parser.maybe_migrate_personality",
+                    return_value=PersonalityMigrationStatus.SKIPPED_NO_SESSIONS,
+                ) as migrate, patch(
+                    "pycodex.cli.parser.build_exec_config_bootstrap_plan",
+                    side_effect=fake_build_bootstrap_plan,
+                ), patch(
+                    "pycodex.cli.parser.prepare_exec_run_plan",
+                    return_value=SimpleNamespace(prompt_summary=()),
+                ), patch(
+                    "pycodex.cli.parser.ensure_exec_trusted_directory"
+                ), patch(
+                    "pycodex.cli.parser._resolve_exec_remote_endpoint",
+                    return_value=("local", object(), codex_home),
+                ), patch(
+                    "pycodex.cli.parser._build_exec_session_config",
+                    return_value=SimpleNamespace(),
+                ), patch(
+                    "pycodex.cli.parser._build_noninteractive_exec_event_processor",
+                    return_value=SimpleNamespace(),
+                ), patch(
+                    "pycodex.cli.parser.remote_exec_session_connect_and_run",
+                    return_value=SuccessResult(),
+                ):
+                    code = main(["--profile", "work", "review", "hello"], stderr=io.StringIO(), stdin="")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(read_toml.call_count, 1)
+        self.assertEqual(len(bootstrap_configs), 1)
+        self.assertEqual(bootstrap_configs[0].get("personality"), "existing")
+        migrate.assert_called_once_with(codex_home, {"personality": "existing"}, override_profile="work")
+
     def test_main_exec_local_http_runtime_prints_summary_and_final_message(self):
         previous_enabled = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP")
         previous_shell_tools = os.environ.get("PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS")
@@ -6820,6 +7110,163 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertEqual(seen["auth"], "sk-core")
         self.assertEqual(stdout.getvalue(), "core bare prompt done\n")
         self.assertIn("completed core non-interactive exec execution", stderr.getvalue())
+
+    def test_main_prompt_without_subcommand_with_profile_triggers_noninteractive_migration_reload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            read_call_count = 0
+            bootstrap_configs = []
+
+            class SuccessResult:
+                response_items = ()
+                raw_result = None
+
+            def fake_read_toml_mapping(_path: Path) -> dict[str, object]:
+                nonlocal read_call_count
+                read_call_count += 1
+                if read_call_count == 1:
+                    return {}
+                return {"personality": "pragmatic"}
+
+            def fake_build_bootstrap_plan(
+                _exec_cli: object,
+                *,
+                config_toml: dict[str, object],
+            ) -> object:
+                bootstrap_configs.append(dict(config_toml))
+                return SimpleNamespace(config_cwd=codex_home)
+
+            async def fake_core_run(*_args, **_kwargs) -> SuccessResult:
+                return SuccessResult()
+
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": str(codex_home),
+                    "PYCODEX_EXEC_CORE": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP": "0",
+                },
+            ):
+                with patch(
+                    "pycodex.cli.parser.read_toml_mapping",
+                    side_effect=fake_read_toml_mapping,
+                ) as read_toml, patch(
+                    "pycodex.cli.parser.maybe_migrate_personality",
+                    return_value=PersonalityMigrationStatus.APPLIED,
+                ) as migrate, patch(
+                    "pycodex.cli.parser.build_exec_config_bootstrap_plan",
+                    side_effect=fake_build_bootstrap_plan,
+                ), patch(
+                    "pycodex.cli.parser.prepare_exec_run_plan",
+                    return_value=SimpleNamespace(prompt_summary="hello"),
+                ), patch(
+                    "pycodex.cli.parser.ensure_exec_trusted_directory"
+                ), patch(
+                    "pycodex.cli.parser.build_default_core_exec_runtime",
+                    return_value=(
+                        SimpleNamespace(state=SimpleNamespace(session_id="s", thread_id="t")),
+                        SimpleNamespace(),
+                        SimpleNamespace(slug="codex-test"),
+                        None,
+                    ),
+                ), patch(
+                    "pycodex.cli.parser.run_core_exec_command",
+                    side_effect=fake_core_run,
+                ) as run_core, patch(
+                    "pycodex.cli.parser.emit_core_exec_result",
+                ), patch(
+                    "pycodex.cli.parser.emit_core_exec_config_summary",
+                ), patch(
+                    "pycodex.cli.parser._build_exec_session_config",
+                    return_value=SimpleNamespace(),
+                ), patch(
+                    "pycodex.cli.parser._build_noninteractive_exec_event_processor",
+                    return_value=SimpleNamespace(),
+                ):
+                    code = main(["--profile", "work", "hello"], stdout=io.StringIO(), stderr=io.StringIO())
+
+        self.assertEqual(code, 0)
+        self.assertEqual(read_toml.call_count, 2)
+        self.assertEqual(len(bootstrap_configs), 1)
+        self.assertEqual(bootstrap_configs[0].get("personality"), "pragmatic")
+        self.assertEqual(run_core.call_count, 1)
+        migrate.assert_called_once_with(codex_home, {}, override_profile="work")
+
+    def test_main_prompt_without_subcommand_with_profile_without_migration_uses_original_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            bootstrap_configs = []
+
+            class SuccessResult:
+                response_items = ()
+                raw_result = None
+
+            async def fake_core_run(*_args, **_kwargs) -> SuccessResult:
+                return SuccessResult()
+
+            def fake_read_toml_mapping(_path: Path) -> dict[str, object]:
+                return {"personality": "existing"}
+
+            def fake_build_bootstrap_plan(
+                _exec_cli: object,
+                *,
+                config_toml: dict[str, object],
+            ) -> object:
+                bootstrap_configs.append(dict(config_toml))
+                return SimpleNamespace(config_cwd=codex_home)
+
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": str(codex_home),
+                    "PYCODEX_EXEC_CORE": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP": "0",
+                },
+            ):
+                with patch(
+                    "pycodex.cli.parser.read_toml_mapping",
+                    side_effect=fake_read_toml_mapping,
+                ) as read_toml, patch(
+                    "pycodex.cli.parser.maybe_migrate_personality",
+                    return_value=PersonalityMigrationStatus.SKIPPED_EXPLICIT_PERSONALITY,
+                ) as migrate, patch(
+                    "pycodex.cli.parser.build_exec_config_bootstrap_plan",
+                    side_effect=fake_build_bootstrap_plan,
+                ), patch(
+                    "pycodex.cli.parser.prepare_exec_run_plan",
+                    return_value=SimpleNamespace(prompt_summary="hello"),
+                ), patch(
+                    "pycodex.cli.parser.ensure_exec_trusted_directory"
+                ), patch(
+                    "pycodex.cli.parser.build_default_core_exec_runtime",
+                    return_value=(
+                        SimpleNamespace(state=SimpleNamespace(session_id="s", thread_id="t")),
+                        SimpleNamespace(),
+                        SimpleNamespace(slug="codex-test"),
+                        None,
+                    ),
+                ), patch(
+                    "pycodex.cli.parser.run_core_exec_command",
+                    side_effect=fake_core_run,
+                ) as run_core, patch(
+                    "pycodex.cli.parser.emit_core_exec_result",
+                ), patch(
+                    "pycodex.cli.parser.emit_core_exec_config_summary",
+                ), patch(
+                    "pycodex.cli.parser._build_exec_session_config",
+                    return_value=SimpleNamespace(),
+                ), patch(
+                    "pycodex.cli.parser._build_noninteractive_exec_event_processor",
+                    return_value=SimpleNamespace(),
+                ):
+                    code = main(["--profile", "work", "hello"], stdout=io.StringIO(), stderr=io.StringIO())
+
+        self.assertEqual(code, 0)
+        self.assertEqual(read_toml.call_count, 1)
+        self.assertEqual(len(bootstrap_configs), 1)
+        self.assertEqual(bootstrap_configs[0].get("personality"), "existing")
+        self.assertEqual(run_core.call_count, 1)
+        migrate.assert_called_once_with(codex_home, {"personality": "existing"}, override_profile="work")
 
     def test_main_prompt_without_subcommand_forwards_root_image_to_local_http_exec(self) -> None:
         seen = {}
@@ -12782,6 +13229,8 @@ class TopLevelCliParserTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
 
 
 

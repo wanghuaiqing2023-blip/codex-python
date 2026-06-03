@@ -29,12 +29,16 @@ from pycodex.protocol import (
     FileSystemPath,
     FileSystemSandboxEntry,
     FileSystemSandboxPolicy,
+    FileSystemSandboxKind,
+    ManagedFileSystemPermissions,
     FileSystemSpecialPath,
     FunctionCallOutputContentItem,
     FunctionCallOutputPayload,
     GranularApprovalConfig,
+    NetworkSandboxPolicy,
     NetworkPermissions,
     PermissionGrantScope,
+    PermissionProfile,
     RequestPermissionProfile,
     RequestPermissionsArgs,
     RequestPermissionsResponse,
@@ -127,6 +131,23 @@ def events_of_type(session: InMemoryCodexSession, event_type: str):
 
 
 class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _collect_permissions_prompt_texts(prompt_input: tuple[ResponseItem, ...] | list[ResponseItem]) -> list[str]:
+        assert_prompt_items = [item for item in prompt_input if item.role == "developer" and item.content]
+        if not assert_prompt_items:
+            raise AssertionError("expected developer prompt item for permissions instructions")
+        prompt_texts = [item.content[0].text or "" for item in assert_prompt_items if item.content]
+        return prompt_texts
+
+    @staticmethod
+    def _assert_prompt_input_contains_permissions_instructions(prompt_input: tuple[ResponseItem, ...] | list[ResponseItem]) -> list[str]:
+        texts = SessionRuntimeTests._collect_permissions_prompt_texts(prompt_input)
+        if not any("<permissions instructions>" in text for text in texts):
+            raise AssertionError("expected permissions instructions marker in developer prompt")
+        if not any("Network access is enabled" in text for text in texts):
+            raise AssertionError("expected permissions prompt to include enabled network access text")
+        return texts
+
     async def test_in_memory_session_runs_user_turn_http_sampling(self) -> None:
         seen = {}
 
@@ -176,6 +197,10 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         input_texts = [item["content"][0]["text"] for item in seen["body"]["input"] if item.get("content")]
         self.assertTrue(any("project instructions" in text for text in input_texts))
         self.assertEqual(input_texts[-1], "hello")
+        self.assertGreaterEqual(len(result.request_plans), 1)
+        http_prompt_texts = self._assert_prompt_input_contains_permissions_instructions(
+            result.request_plans[0].prompt.get_formatted_input()
+        )
 
     async def test_in_memory_session_emits_turn_lifecycle_events(self) -> None:
         model_info = type(
@@ -1030,6 +1055,89 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(unchanged.service_tier, SERVICE_TIER_DEFAULT_REQUEST_VALUE)
         self.assertEqual(session.service_tier, SERVICE_TIER_DEFAULT_REQUEST_VALUE)
 
+    async def test_in_memory_session_update_settings_projects_sandbox_policy_to_permission_profile(self) -> None:
+        session = InMemoryCodexSession(cwd="C:/work/project")
+
+        applied = await session.update_settings(
+            SessionSettingsUpdate(sandbox_policy=SandboxPolicy.read_only())
+        )
+
+        self.assertEqual(session.sandbox_policy, SandboxPolicy.read_only())
+        self.assertIsNotNone(session.permission_profile)
+        self.assertEqual(session.permission_profile.type, "managed")
+        self.assertEqual(
+            session.permission_profile.file_system_sandbox_policy().kind,
+            FileSystemSandboxKind.RESTRICTED,
+        )
+        self.assertEqual(
+            session.file_system_sandbox_policy,
+            session.permission_profile.file_system_sandbox_policy(),
+        )
+        self.assertEqual(applied.permission_profile, session.permission_profile)
+        self.assertEqual(applied.file_system_sandbox_policy, session.file_system_sandbox_policy)
+
+    async def test_in_memory_session_update_settings_preserves_deny_entries_when_projecting_sandbox_policy(self) -> None:
+        deny_entry = FileSystemSandboxEntry(
+            FileSystemPath.explicit_path("C:/denied/path"),
+            FileSystemAccessMode.DENY,
+        )
+        base_file_system = FileSystemSandboxPolicy.restricted((deny_entry,))
+        base_profile = PermissionProfile.managed(
+            ManagedFileSystemPermissions.from_sandbox_policy(base_file_system),
+            NetworkSandboxPolicy.RESTRICTED,
+        )
+        session = InMemoryCodexSession(
+            cwd="C:/work/project",
+            permission_profile=base_profile,
+            file_system_sandbox_policy=base_file_system,
+        )
+
+        await session.update_settings(SessionSettingsUpdate(sandbox_policy=SandboxPolicy.read_only()))
+
+        projected = session.permission_profile.file_system_sandbox_policy()
+        self.assertIn(deny_entry, projected.entries)
+        self.assertEqual(session.file_system_sandbox_policy, projected)
+
+    async def test_in_memory_session_preview_settings_projects_sandbox_policy_to_permission_profile(self) -> None:
+        session = InMemoryCodexSession(cwd="C:/work/project")
+
+        preview = await session.preview_settings(
+            SessionSettingsUpdate(sandbox_policy=SandboxPolicy.workspace_write((), False, False))
+        )
+
+        self.assertEqual(preview.sandbox_policy, SandboxPolicy.workspace_write((), False, False))
+        self.assertIsNotNone(preview.permission_profile)
+        self.assertEqual(preview.permission_profile.type, "managed")
+        self.assertEqual(
+            preview.permission_profile.file_system_sandbox_policy().kind,
+            FileSystemSandboxKind.RESTRICTED,
+        )
+        self.assertEqual(preview.file_system_sandbox_policy.kind, FileSystemSandboxKind.RESTRICTED)
+        self.assertEqual(session.sandbox_policy, SandboxPolicy.danger_full_access())
+        self.assertEqual(session.permission_profile, PermissionProfile.disabled())
+
+    async def test_in_memory_session_preview_settings_preserves_deny_entries_when_projecting_sandbox_policy(self) -> None:
+        deny_entry = FileSystemSandboxEntry(
+            FileSystemPath.explicit_path("C:/denied/path"),
+            FileSystemAccessMode.DENY,
+        )
+        base_file_system = FileSystemSandboxPolicy.restricted((deny_entry,))
+        base_profile = PermissionProfile.managed(
+            ManagedFileSystemPermissions.from_sandbox_policy(base_file_system),
+            NetworkSandboxPolicy.RESTRICTED,
+        )
+        session = InMemoryCodexSession(
+            cwd="C:/work/project",
+            permission_profile=base_profile,
+            file_system_sandbox_policy=base_file_system,
+        )
+
+        preview = await session.preview_settings(SessionSettingsUpdate(sandbox_policy=SandboxPolicy.read_only()))
+
+        projected = preview.permission_profile.file_system_sandbox_policy()
+        self.assertIn(deny_entry, projected.entries)
+        self.assertEqual(preview.file_system_sandbox_policy, projected)
+
     async def test_in_memory_session_applies_protocol_thread_settings_overrides(self) -> None:
         session = InMemoryCodexSession(
             cwd="C:/work/project",
@@ -1088,6 +1196,49 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot.reasoning_summary, ReasoningSummary.CONCISE)
         self.assertEqual(snapshot.service_tier, "priority")
         self.assertIs(snapshot.collaboration_mode, collaboration_mode)
+
+    async def test_in_memory_session_thread_config_snapshot_reflects_sandbox_projection(self) -> None:
+        session = InMemoryCodexSession(cwd="C:/work/project")
+        updates = SessionSettingsUpdate(sandbox_policy=SandboxPolicy.read_only())
+
+        applied = await session.update_settings(updates)
+        prior_sandbox = session.sandbox_policy
+        prior_permission_profile = session.permission_profile
+        prior_fs_policy = session.file_system_sandbox_policy
+
+        snapshot = await session.thread_config_snapshot()
+
+        self.assertEqual(snapshot.permission_profile, prior_permission_profile)
+        self.assertIs(snapshot.permission_profile, applied.permission_profile)
+        self.assertEqual(snapshot.sandbox_policy(), prior_sandbox)
+        self.assertEqual(snapshot.permission_profile.file_system_sandbox_policy(), prior_fs_policy)
+        self.assertEqual(session.sandbox_policy, prior_sandbox)
+        self.assertEqual(session.permission_profile, prior_permission_profile)
+        self.assertEqual(session.file_system_sandbox_policy, prior_fs_policy)
+
+    async def test_in_memory_session_thread_config_snapshot_preserves_deny_entries_when_projecting_sandbox_policy(self) -> None:
+        deny_entry = FileSystemSandboxEntry(
+            FileSystemPath.explicit_path("C:/denied/path"),
+            FileSystemAccessMode.DENY,
+        )
+        base_file_system = FileSystemSandboxPolicy.restricted((deny_entry,))
+        base_profile = PermissionProfile.managed(
+            ManagedFileSystemPermissions.from_sandbox_policy(base_file_system),
+            NetworkSandboxPolicy.RESTRICTED,
+        )
+        session = InMemoryCodexSession(
+            cwd="C:/work/project",
+            permission_profile=base_profile,
+            file_system_sandbox_policy=base_file_system,
+        )
+
+        await session.update_settings(SessionSettingsUpdate(sandbox_policy=SandboxPolicy.read_only()))
+        snapshot = await session.thread_config_snapshot()
+
+        projected = snapshot.permission_profile.file_system_sandbox_policy()
+        self.assertIn(deny_entry, projected.entries)
+        self.assertEqual(snapshot.permission_profile, session.permission_profile)
+        self.assertEqual(snapshot.sandbox_policy(), session.sandbox_policy)
 
     async def test_in_memory_session_settings_snapshot_tracks_workspace_roots(self) -> None:
         session = InMemoryCodexSession(
@@ -1175,6 +1326,32 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         reference = await session.reference_context_item()
         self.assertIsNotNone(reference)
         self.assertEqual(reference.summary, "auto")
+
+    async def test_in_memory_session_new_default_turn_reflects_sandbox_projection(self) -> None:
+        deny_entry = FileSystemSandboxEntry(
+            FileSystemPath.explicit_path("C:/denied/path"),
+            FileSystemAccessMode.DENY,
+        )
+        base_file_system = FileSystemSandboxPolicy.restricted((deny_entry,))
+        base_profile = PermissionProfile.managed(
+            ManagedFileSystemPermissions.from_sandbox_policy(base_file_system),
+            NetworkSandboxPolicy.RESTRICTED,
+        )
+        session = InMemoryCodexSession(
+            cwd="C:/work/project",
+            permission_profile=base_profile,
+            file_system_sandbox_policy=base_file_system,
+        )
+
+        await session.update_settings(SessionSettingsUpdate(sandbox_policy=SandboxPolicy.read_only()))
+        snapshot = await session.thread_config_snapshot()
+        turn = await session.new_default_turn()
+
+        self.assertIs(turn.permission_profile, snapshot.permission_profile)
+        self.assertEqual(turn.sandbox_policy, session.sandbox_policy)
+        self.assertEqual(turn.file_system_sandbox_policy, session.file_system_sandbox_policy)
+        self.assertEqual(snapshot.permission_profile.file_system_sandbox_policy(), turn.file_system_sandbox_policy)
+        self.assertIn(deny_entry, turn.file_system_sandbox_policy.entries)
 
     async def test_in_memory_session_reference_context_serializes_reasoning_effort_enum(self) -> None:
         session = InMemoryCodexSession(
@@ -2155,6 +2332,141 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event.type, "token_count")
         self.assertIsNone(event.payload.info)
         self.assertEqual(event.payload.rate_limits, session.latest_rate_limits)
+
+    async def test_in_memory_session_run_user_turn_sampling_tracks_resolved_config_from_settings_projection(self) -> None:
+        captured = []
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        session = InMemoryCodexSession(
+            cwd="C:/work/project",
+            model_info=model_info,
+            thread_id="thread-900",
+            user_instructions="project instructions",
+            base_instructions="base",
+            history=[ResponseItem.message("developer", (ContentItem.input_text("context"),))],
+        )
+
+        await session.update_settings(SessionSettingsUpdate(sandbox_policy=SandboxPolicy.read_only(network_access=True)))
+        thread_snapshot = await session.thread_config_snapshot()
+        expected_permission_profile = thread_snapshot.permission_profile.to_mapping()
+
+        class FakeAnalytics:
+            def track_turn_resolved_config(self, context, payload):
+                captured.append((context, payload))
+
+        session.services = SimpleNamespace(analytics_events_client=FakeAnalytics())
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+
+        async def sampler(_request):
+            return [ResponseItem.message("assistant", (ContentItem.output_text("done"),))]
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            SimpleNamespace(is_azure_responses_endpoint=lambda: False),
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(result.last_agent_message, "done")
+        self.assertEqual(len(captured), 1)
+        _analytics_context, payload = captured[0]
+        self.assertEqual(payload["permission_profile"], expected_permission_profile)
+        self.assertTrue(payload["sandbox_network_access"])
+
+        self.assertGreaterEqual(len(result.request_plans), 1)
+        sampling_prompt_texts = self._assert_prompt_input_contains_permissions_instructions(
+            result.request_plans[0].prompt.get_formatted_input()
+        )
+        self.assertGreaterEqual(len(sampling_prompt_texts), 1)
+        self.assertTrue(any("<permissions instructions>" in text for text in sampling_prompt_texts))
+
+    async def test_in_memory_session_prompt_instructions_injection_consistent_between_sampling_variants(self) -> None:
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        provider = {"base_url": "https://api.example.test/v1"}
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        auth = "sk-test"
+
+        async def build_http_result() -> list[str]:
+            seen = {}
+
+            def opener(request):
+                seen["body"] = json.loads(request.data.decode("utf-8"))
+                return FakeResponse()
+
+            session = InMemoryCodexSession(
+                cwd="C:/work/project",
+                model_info=model_info,
+                user_instructions="project instructions",
+                base_instructions="base",
+                history=[ResponseItem.message("developer", (ContentItem.input_text("context"),))],
+            )
+            session.services = SimpleNamespace(analytics_events_client=None)
+            await session.update_settings(SessionSettingsUpdate(sandbox_policy=SandboxPolicy.read_only(network_access=True)))
+            return self._collect_permissions_prompt_texts(
+                (
+                    await run_user_turn_http_sampling_from_session(
+                        session,
+                        (UserInput.text_input("hello"),),
+                        client,
+                        provider,
+                        model_info,
+                        auth=auth,
+                        opener=opener,
+                        built_tools=lambda _sess, _turn: Router(),
+                    )
+                ).request_plans[0].prompt.get_formatted_input()
+            )
+
+        async def build_sampling_result() -> list[str]:
+            session = InMemoryCodexSession(
+                cwd="C:/work/project",
+                model_info=model_info,
+                thread_id="thread-900",
+                user_instructions="project instructions",
+                base_instructions="base",
+                history=[ResponseItem.message("developer", (ContentItem.input_text("context"),))],
+            )
+            session.services = SimpleNamespace(analytics_events_client=None)
+            await session.update_settings(SessionSettingsUpdate(sandbox_policy=SandboxPolicy.read_only(network_access=True)))
+
+            async def sampler(_request):
+                return [ResponseItem.message("assistant", (ContentItem.output_text("done"),))]
+
+            return self._collect_permissions_prompt_texts(
+                (
+                    await run_user_turn_sampling_from_session(
+                        session,
+                        (UserInput.text_input("hello"),),
+                        client,
+                        SimpleNamespace(is_azure_responses_endpoint=lambda: False),
+                        model_info,
+                        sampler,
+                        built_tools=lambda _sess, _turn: Router(),
+                    )
+                ).request_plans[0].prompt.get_formatted_input()
+            )
+
+        http_texts = await build_http_result()
+        sampling_texts = await build_sampling_result()
+
+        self.assertGreaterEqual(len(http_texts), 1)
+        self.assertGreaterEqual(len(sampling_texts), 1)
+        self.assertEqual(
+            len([text for text in http_texts if "<permissions instructions>" in text]),
+            len([text for text in sampling_texts if "<permissions instructions>" in text]),
+        )
 
     async def test_in_memory_session_rate_limits_default_missing_limit_id_to_codex_after_other_bucket(self) -> None:
         session = InMemoryCodexSession(cwd="C:/work/project")

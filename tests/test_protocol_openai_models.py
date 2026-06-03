@@ -68,6 +68,9 @@ def test_model(spec: ModelMessages | None = None) -> ModelInfo:
     )
 
 
+test_model.__test__ = False
+
+
 class ProtocolOpenAiModelsTests(unittest.TestCase):
     def test_model_instructions_uses_template(self):
         model = test_model(ModelMessages("Hello {{ personality }}", personality_variables()))

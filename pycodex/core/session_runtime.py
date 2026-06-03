@@ -78,6 +78,7 @@ from pycodex.protocol import (
     ModelRerouteReason,
     ModelVerificationEvent,
     RateLimitSnapshot,
+    SandboxEnforcement,
     SandboxPolicy,
     SERVICE_TIER_DEFAULT_REQUEST_VALUE,
     SessionSource,
@@ -445,10 +446,25 @@ class InMemoryCodexSession:
             self.approval_policy = updates.approval_policy
         if getattr(updates, "approvals_reviewer", None) is not None:
             self.approvals_reviewer = updates.approvals_reviewer
-        if getattr(updates, "sandbox_policy", None) is not None:
-            self.sandbox_policy = updates.sandbox_policy
         if getattr(updates, "permission_profile", None) is not None:
             self.permission_profile = updates.permission_profile
+            permission_profile_getter = getattr(self.permission_profile, "file_system_sandbox_policy", None)
+            if callable(permission_profile_getter):
+                self.file_system_sandbox_policy = permission_profile_getter()
+            else:
+                self.file_system_sandbox_policy = FileSystemSandboxPolicy.default()
+            to_legacy_policy = getattr(self.permission_profile, "to_legacy_sandbox_policy", None)
+            if callable(to_legacy_policy):
+                self.sandbox_policy = to_legacy_policy(self.cwd)
+        elif getattr(updates, "sandbox_policy", None) is not None:
+            sandbox_policy = updates.sandbox_policy
+            self.sandbox_policy = sandbox_policy
+            self.permission_profile = _permission_profile_from_sandbox_policy(
+                sandbox_policy,
+                self.permission_profile,
+                self.cwd,
+            )
+            self.file_system_sandbox_policy = self.permission_profile.file_system_sandbox_policy()
         if getattr(updates, "active_permission_profile", None) is not None:
             self.active_permission_profile = updates.active_permission_profile
         if getattr(updates, "collaboration_mode", None) is not None:
@@ -503,6 +519,12 @@ class InMemoryCodexSession:
                 approvals_reviewer = updates.approvals_reviewer
             if getattr(updates, "sandbox_policy", None) is not None:
                 sandbox_policy = updates.sandbox_policy
+                if getattr(updates, "permission_profile", None) is None:
+                    permission_profile = _permission_profile_from_sandbox_policy(
+                        sandbox_policy,
+                        permission_profile,
+                        cwd,
+                    )
             if getattr(updates, "permission_profile", None) is not None:
                 permission_profile = updates.permission_profile
             if getattr(updates, "active_permission_profile", None) is not None:
@@ -1072,6 +1094,35 @@ def _collaboration_mode_with_settings_updates(
 
 def _setting_value(updates: Any, name: str) -> Any:
     return getattr(updates, name, _SETTING_UNSET)
+
+
+def _permission_profile_from_sandbox_policy(
+    sandbox_policy: Any,
+    base_profile: PermissionProfile | None,
+    cwd: Path | str,
+) -> PermissionProfile:
+    if not isinstance(sandbox_policy, SandboxPolicy):
+        if isinstance(sandbox_policy, Mapping):
+            sandbox_policy = SandboxPolicy.from_mapping(sandbox_policy)
+        else:
+            raise TypeError("sandbox_policy must be a SandboxPolicy")
+    base_file_system = FileSystemSandboxPolicy.default()
+    if isinstance(base_profile, PermissionProfile):
+        getter = getattr(base_profile, "file_system_sandbox_policy", None)
+        if callable(getter):
+            base_file_system_profile = getter()
+            if isinstance(base_file_system_profile, FileSystemSandboxPolicy):
+                base_file_system = base_file_system_profile
+    projected_file_system = FileSystemSandboxPolicy.from_legacy_sandbox_policy_preserving_deny_entries(
+        sandbox_policy,
+        Path(cwd),
+        base_file_system,
+    )
+    return PermissionProfile.from_runtime_permissions_with_enforcement(
+        SandboxEnforcement.from_legacy_sandbox_policy(sandbox_policy),
+        projected_file_system,
+        sandbox_policy.network_sandbox_policy(),
+    )
 
 
 def _path_tuple(paths: Any) -> tuple[Path, ...]:

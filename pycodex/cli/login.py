@@ -130,6 +130,7 @@ def _exchange_authorization_code(
             raw = response.read().decode("utf-8", errors="replace")
     except HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
+        _drain_http_error(exc)
         raise RuntimeError(f"token exchange failed with status {exc.code}: {body.strip() or exc.reason}")
     except URLError as exc:
         raise RuntimeError(f"token exchange failed: {exc}")
@@ -152,6 +153,21 @@ def _exchange_authorization_code(
     if isinstance(payload.get("refresh_token"), str) and payload["refresh_token"].strip():
         tokens["refresh_token"] = payload["refresh_token"].strip()
     return tokens
+
+
+def _drain_http_error(error: HTTPError) -> None:
+    fp = getattr(error, "fp", None)
+    if fp is None:
+        return
+    closer = getattr(fp, "close", None)
+    if callable(closer):
+        try:
+            closer()
+        except OSError:
+            pass
+        except Exception:
+            pass
+    setattr(error, "fp", None)
 
 
 def _extract_auth_claims_from_jwt(token: str) -> dict[str, Any]:

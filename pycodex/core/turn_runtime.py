@@ -14,15 +14,38 @@ import contextlib
 import inspect
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from types import SimpleNamespace
 from typing import Any
 
-from pycodex.core.client import ModelClient, SamplingRequestRuntimeHookAdapter, SamplingRuntimeEventApplicationState
+from pycodex.core.client import (
+    ModelClient,
+    SamplingRequestRuntimeHookAdapter,
+    SamplingRuntimeEventApplicationState,
+    _service_tier_for_request,
+)
 from pycodex.core.codex_thread import SessionSettingsUpdate
 from pycodex.core.compact_remote import normalize_history_for_prompt
 from pycodex.core.features import Feature
+from pycodex.core.connectors import (
+    accessible_connectors_from_mcp_tools,
+    connector_name_slug,
+    merge_plugin_connectors_with_accessible,
+    with_app_enabled_state,
+)
+from pycodex.core.context import PluginInstructions, SkillInstructions
 from pycodex.core.hook_runtime import HookRuntimeOutcome, additional_context_messages
+from pycodex.core.app_plugin_rendering import render_explicit_plugin_instructions
+from pycodex.core.plugin_mentions import (
+    app_id_from_path,
+    collect_explicit_app_ids,
+    collect_explicit_plugin_mentions,
+    collect_tool_mentions_from_messages,
+    build_connector_slug_counts,
+)
 from pycodex.core.string_utils import truncate_middle_with_token_budget
 from pycodex.core.original_image_detail import can_request_original_image_detail
+from pycodex.core.skill_mentions import build_skill_name_counts
+from pycodex.core.skills import build_skill_injections, collect_explicit_skill_mentions
 from pycodex.core.responses_retry import (
     ResponsesStreamRequest,
     RetryableResponseStreamAction,
@@ -39,7 +62,16 @@ from pycodex.core.stream_events_utils import sampling_stream_event_apply_plan
 from pycodex.core.stream_events_utils import sampling_stream_event_dispatch_plan
 from pycodex.core.turn_timing import ResponseEvent as TimingResponseEvent
 from pycodex.core.turn_request import TurnResponsesRequestPlan, build_turn_responses_request
-from pycodex.protocol import BaseInstructions, CodexErr, CodexErrorInfo, ContentItem, ErrorEvent, EventMsg, StreamErrorEvent
+from pycodex.protocol import (
+    BaseInstructions,
+    CodexErr,
+    CodexErrorInfo,
+    ContentItem,
+    EventMsg,
+    ErrorEvent,
+    StreamErrorEvent,
+    approval_policy_display_value,
+)
 from pycodex.protocol import FunctionCallOutputContentItem, FunctionCallOutputPayload
 from pycodex.protocol import HookPromptFragment, Op, ResponseInputItem, ResponseItem
 from pycodex.protocol import TurnCompleteEvent, TurnDiffEvent, TurnItem, TurnStartedEvent, UserMessageItem
@@ -52,6 +84,7 @@ DEFAULT_STREAM_MAX_RETRIES = 5
 MAX_STREAM_MAX_RETRIES = 100
 TURN_TTFM_DURATION_METRIC = "codex.turn.ttfm.duration_ms"
 _LAST_AGENT_MESSAGE_UNSET = object()
+_FIELD_VALUE_MISSING = object()
 
 
 BuiltToolsFn = Callable[[Any, Any], Any | Awaitable[Any]]
@@ -940,6 +973,9 @@ async def _prepare_user_turn_request_from_session(
     if additional_context_items:
         await _maybe_await(sess.record_conversation_items(turn_context, additional_context_items))
 
+    built_tools_fn = built_tools or _default_built_tools
+    router = await _maybe_await(built_tools_fn(sess, turn_context))
+
     if user_input and run_user_prompt_submit_hooks:
         if await _record_user_input_with_submit_hook(
             sess,
@@ -956,14 +992,22 @@ async def _prepare_user_turn_request_from_session(
         pre_sampling_pending_input = await _drain_and_record_pending_inputs(sess, turn_context)
         if pre_sampling_pending_input.blocked_without_accepted_user_input:
             raise _UserInputBlocked(turn_context)
+    effective_model_info = getattr(turn_context, "model_info", None) or model_info
+
+    additional_context_items = await _prepare_user_turn_skill_plugin_items(
+        sess,
+        turn_context,
+        user_input,
+        router,
+    )
+    if additional_context_items:
+        await _maybe_await(sess.record_conversation_items(turn_context, additional_context_items))
+    await _track_turn_resolved_config(sess, turn_context, user_input)
+    await _update_previous_turn_and_connectors(sess, turn_context, effective_model_info)
 
     history = await _maybe_await(sess.clone_history())
-    effective_model_info = getattr(turn_context, "model_info", None) or model_info
     input_modalities = getattr(effective_model_info, "input_modalities", None)
     prompt_input = _history_for_prompt(history, input_modalities)
-
-    built_tools_fn = built_tools or _default_built_tools
-    router = await _maybe_await(built_tools_fn(sess, turn_context))
     base_instructions = await _maybe_await(sess.get_base_instructions())
     if not isinstance(base_instructions, BaseInstructions):
         base_instructions = BaseInstructions(str(getattr(base_instructions, "text", base_instructions)))
@@ -1015,6 +1059,644 @@ async def _prepare_user_turn_request_from_session(
         output_schema_strict=output_schema_strict,
         request_plan=request_plan,
     )
+
+
+async def _prepare_user_turn_skill_plugin_items(
+    sess: Any,
+    turn_context: Any,
+    user_input: tuple[UserInput, ...],
+    router: Any,
+) -> tuple[ResponseItem, ...]:
+    mentioned_skills = ()
+    mentioned_plugins = ()
+    explicitly_enabled_connectors: set[str] = set(collect_explicit_app_ids(user_input))
+    available_connectors = _available_connectors(sess, turn_context, router)
+    turn_skills = _turn_skills_outcome(sess, turn_context)
+    connector_slug_counts = build_connector_slug_counts(available_connectors)
+    skill_name_counts_lower: dict[str, int] = {}
+    if turn_skills is not None:
+        skill_items, disabled_paths = turn_skills
+        mentioned_skills = tuple(
+            collect_explicit_skill_mentions(
+                user_input,
+                skill_items,
+                disabled_paths,
+                connector_slug_counts,
+            )
+        )
+        skill_name_counts_lower = build_skill_name_counts(skill_items, disabled_paths)[1]
+    if user_input:
+        mentioned_plugins = tuple(
+            collect_explicit_plugin_mentions(
+                user_input,
+                getattr(sess, "plugins", ()),
+            )
+        )
+        if not mentioned_plugins:
+            mentioned_plugins = tuple(
+                collect_explicit_plugin_mentions(
+                    user_input,
+                    _collect_plugins_from_turn_context(sess, turn_context),
+                )
+            )
+    try:
+        skill_injections = build_skill_injections(mentioned_skills)
+    except Exception as exc:
+        await _send_warning_event(sess, turn_context, f"Failed to build skill injection: {exc}")
+        skill_injections = None
+    else:
+        for warning in tuple(getattr(skill_injections, "warnings", ())):
+            await _send_warning_event(sess, turn_context, warning)
+    skill_items = (
+        SkillInstructions(item.name, item.path, item.contents).into_response_item()
+        for item in tuple(getattr(skill_injections, "items", ()))
+    )
+    plugin_items = _build_plugin_injections(
+        mentioned_plugins,
+        _router_mcp_tools(router),
+        available_connectors,
+    )
+    result = tuple(skill_items) + tuple(plugin_items)
+    if result:
+        explicitly_enabled_connectors.update(
+            _collect_explicit_app_ids_from_skill_items(
+                result,
+                available_connectors,
+                connector_slug_counts,
+                skill_name_counts_lower,
+            )
+        )
+    await _track_explicit_app_mentions(sess, turn_context, explicitly_enabled_connectors, available_connectors)
+    _track_explicit_plugin_mentions(sess, turn_context, mentioned_plugins)
+    await _apply_explicit_connectors(sess, explicitly_enabled_connectors)
+    return result
+
+
+def _collect_explicit_app_ids_from_skill_items(
+    skill_items: tuple[ResponseItem, ...],
+    connectors: tuple[Any, ...],
+    connector_slug_counts: dict[str, int],
+    skill_name_counts_lower: dict[str, int] | None = None,
+) -> set[str]:
+    if not skill_items or not connectors:
+        return set()
+    skill_messages = tuple(
+        message
+        for item in skill_items
+        if (message := _response_item_skill_text(item))
+    )
+    if not skill_messages:
+        return set()
+    mentions = collect_tool_mentions_from_messages(skill_messages)
+    connector_ids = {
+        path
+        for path in mentions.paths
+        if path.startswith("app://")
+    }
+    connector_ids = {
+        path.removeprefix("app://")
+        for path in connector_ids
+        if path.removeprefix("app://")
+    }
+    lowered_mentions = {name.lower() for name in mentions.plain_names}
+    skill_name_counts = dict(skill_name_counts_lower or {})
+    for connector in connectors:
+        connector_id = _field_value(connector, "id", None)
+        if connector_id is None:
+            continue
+        connector_slug = connector_name_slug(str(getattr(connector, "name", connector_id)))
+        connector_count = connector_slug_counts.get(connector_slug, 0)
+        skill_count = skill_name_counts.get(connector_slug, 0)
+        if connector_count == 1 and skill_count == 0 and connector_slug in lowered_mentions:
+            connector_ids.add(str(connector_id))
+    return connector_ids
+
+
+async def _update_previous_turn_and_connectors(
+    sess: Any,
+    turn_context: Any,
+    model_info: Any,
+) -> None:
+    previous_turn_settings = SimpleNamespace(
+        model=getattr(model_info, "slug", None),
+        realtime_active=getattr(turn_context, "realtime_active", None),
+    )
+    setter = getattr(sess, "set_previous_turn_settings", None)
+    if callable(setter):
+        await _maybe_await(setter(previous_turn_settings))
+
+
+def _router_mcp_tools(router: Any) -> tuple[Any, ...]:
+    tools = getattr(router, "mcp_tools", None)
+    if tools is not None:
+        return tuple(tools)
+    return ()
+
+
+def _available_connectors(sess: Any, turn_context: Any, router: Any) -> tuple[Any, ...]:
+    configured_apps = getattr(turn_context, "config", None)
+    apps_enabled = (
+        _bool_config_property(turn_context, "apps_enabled", False)
+        or _bool_config_property(configured_apps, "apps_enabled", False)
+    )
+    if not apps_enabled:
+        return ()
+    raw_connector_collection = _field_value(sess, "available_connectors", ())
+    if isinstance(raw_connector_collection, Mapping):
+        connector_list = _field_value(raw_connector_collection, "connectors", ())
+    else:
+        connector_list = raw_connector_collection
+    if isinstance(connector_list, (str, bytes)) or not isinstance(connector_list, Sequence):
+        connector_list = ((connector_list,) if connector_list else ())
+    connector_list = tuple(connector_list)
+    if not connector_list:
+        plugin_apps = _iter_app_ids_from_plugins(_collect_plugins_from_turn_context(sess, turn_context))
+        accessible = accessible_connectors_from_mcp_tools(_router_mcp_tools(router))
+        if plugin_apps:
+            connector_list = merge_plugin_connectors_with_accessible(plugin_apps, accessible)
+        else:
+            connector_list = tuple(accessible)
+    else:
+        connector_list = tuple(connector_list)
+    if connector_list:
+        with_state = with_app_enabled_state(
+            connector_list,
+            configured_apps,
+            _field_value(sess, "app_requirements", None),
+        )
+        return tuple(with_state)
+    return tuple(connector_list)
+
+
+def _collect_plugins_from_turn_context(sess: Any, turn_context: Any) -> tuple[Any, ...]:
+    plugins = getattr(sess, "plugins", None)
+    if plugins is not None:
+        return tuple(plugins)
+    plugins = _field_value(turn_context, "plugins", ())
+    return tuple(plugins) if plugins else ()
+
+
+async def _apply_explicit_connectors(sess: Any, explicit_connectors: set[str]) -> None:
+    if not explicit_connectors:
+        return
+    merge_method = getattr(sess, "merge_connector_selection", None)
+    if callable(merge_method):
+        try:
+            result = merge_method(frozenset(explicit_connectors))
+            await _maybe_await(result)
+            return
+        except TypeError:
+            pass
+        except Exception:
+            pass
+
+
+async def _track_explicit_app_mentions(
+    sess: Any,
+    turn_context: Any,
+    explicitly_enabled_connectors: set[str],
+    available_connectors: tuple[Any, ...],
+) -> None:
+    analytics = getattr(getattr(sess, "services", None), "analytics_events_client", None)
+    tracker = getattr(analytics, "track_app_mentioned", None)
+    if not callable(tracker):
+        return
+    if not explicitly_enabled_connectors:
+        return
+    connector_names_by_id = {
+        str(_field_value(connector, "id", "")): _field_value(connector, "name", None)
+        for connector in available_connectors
+        if _field_value(connector, "id", None) is not None
+    }
+    for connector_id, connector_name in tuple(connector_names_by_id.items()):
+        unprefixed = app_id_from_path(connector_id)
+        if unprefixed is not None:
+            connector_names_by_id.setdefault(unprefixed, connector_name)
+        if not connector_id.startswith("app://"):
+            connector_names_by_id.setdefault(f"app://{connector_id}", connector_name)
+    mentions = tuple(
+        SimpleNamespace(
+            connector_id=connector_id,
+            app_name=connector_names_by_id.get(connector_id) or connector_names_by_id.get(
+                f"app://{connector_id}",
+            ),
+            invocation_type="explicit",
+        )
+        for connector_id in sorted(_normalize_app_ids(explicitly_enabled_connectors))
+    )
+    try:
+        tracker(_track_analytics_context(sess, turn_context), mentions)
+    except Exception:
+        pass
+
+
+def _normalize_app_ids(values: set[str]) -> tuple[str, ...]:
+    app_ids: list[str] = []
+    for connector_id in values:
+        app_id = app_id_from_path(connector_id)
+        app_ids.append(app_id if app_id is not None else connector_id)
+    return tuple(dict.fromkeys(app_ids))
+
+
+def _track_analytics_context(sess: Any, turn_context: Any) -> dict[str, str]:
+    model_info = getattr(turn_context, "model_info", None)
+    return {
+        "model": str(getattr(model_info, "slug", "")),
+        "conversation_id": str(getattr(sess, "conversation_id", "")),
+        "sub_id": str(getattr(turn_context, "sub_id", "")),
+    }
+
+
+async def _track_turn_resolved_config(
+    sess: Any,
+    turn_context: Any,
+    user_input: tuple[UserInput, ...],
+) -> None:
+    analytics = getattr(getattr(sess, "services", None), "analytics_events_client", None)
+    tracker = getattr(analytics, "track_turn_resolved_config", None)
+    if not callable(tracker):
+        return
+    thread_config = await _current_thread_config_snapshot(sess, turn_context)
+    payload = await _build_turn_resolved_config_payload(sess, turn_context, user_input, thread_config)
+    if payload is None:
+        return
+    try:
+        tracker(_track_analytics_context(sess, turn_context), payload)
+    except Exception:
+        return
+
+
+async def _build_turn_resolved_config_payload(
+    sess: Any,
+    turn_context: Any,
+    user_input: tuple[UserInput, ...],
+    thread_config: Any,
+) -> dict[str, Any] | None:
+    if not isinstance(user_input, tuple):
+        return None
+    model_info = getattr(turn_context, "model_info", None)
+    config = _field_value(turn_context, "config", None)
+    model_provider = _field_value(config, "model_provider_id", None)
+    if model_provider is None:
+        model_provider = _field_value(config, "model_provider", "openai")
+
+    approval_policy = _field_value(turn_context, "approval_policy", None)
+    approval_policy = _call_optional_noargs(approval_policy)
+    if approval_policy is None:
+        approval_policy = _field_value(config, "approval_policy", None)
+    approval_policy = _turn_resolved_approval_policy_display_value(approval_policy)
+
+    service_tier = _field_value(config, "service_tier", None)
+    service_tier = _service_tier_for_request(model_info, service_tier)
+
+    permission_profile = _call_optional_noargs(_field_value(turn_context, "permission_profile", None))
+    if permission_profile is None:
+        permission_profile = _field_value(config, "permission_profile", None)
+
+    sandbox_policy = _call_optional_noargs(_field_value(turn_context, "network_sandbox_policy", None))
+    if sandbox_policy is None and permission_profile is not None:
+        sandbox_policy = _call_optional_noargs(_field_value(permission_profile, "network_sandbox_policy", None))
+    if sandbox_policy is None and thread_config is not None:
+        sandbox_policy = _call_optional_noargs(_field_value(thread_config, "network_sandbox_policy", None))
+    if sandbox_policy is None and thread_config is not None:
+        sandbox_policy = _call_optional_noargs(_field_value(thread_config, "sandbox_policy", None))
+
+    return {
+        "turn_id": _coalesce_field_values(("sub_id", "turn_id"), turn_context, default=""),
+        "thread_id": _coalesce_field_values(("conversation_id", "thread_id"), sess, default=""),
+        "num_input_images": _count_input_images(user_input),
+        "submission_type": None,
+        "ephemeral": bool(_coalesce_field_values(("ephemeral",), thread_config, default=False)),
+        "session_source": _coalesce_session_source(thread_config),
+        "model": str(getattr(model_info, "slug", "")),
+        "model_provider": _coerce_optional_string(model_provider),
+        "permission_profile": _coerce_permission_profile_for_analytics(permission_profile),
+        "approval_policy": approval_policy,
+        "reasoning_effort": _coerce_enum_member_value(_field_value(turn_context, "reasoning_effort", None)),
+        "reasoning_summary": _coerce_enum_member_value(_field_value(turn_context, "reasoning_summary", None)),
+        "service_tier": _coerce_optional_string(service_tier),
+        "approvals_reviewer": _field_value(config, "approvals_reviewer", _field_value(turn_context, "approvals_reviewer", None)),
+        "sandbox_network_access": _sandbox_network_access_enabled(sandbox_policy),
+        "collaboration_mode": _turn_context_collaboration_mode_kind(turn_context),
+        "personality": _coerce_enum_member_value(_field_value(turn_context, "personality", None)),
+        "is_first_turn": bool(await _take_next_turn_is_first(sess, turn_context)),
+    }
+
+
+async def _current_thread_config_snapshot(sess: Any, turn_context: Any) -> Any:
+    resolver = getattr(sess, "thread_config_snapshot", None)
+    if resolver is None:
+        resolver = _field_value(_field_value(sess, "thread", None), "thread_config_snapshot", None)
+    if callable(resolver):
+        try:
+            return await _maybe_await(resolver())
+        except TypeError:
+            return None
+    return resolver
+
+
+def _coalesce_field_values(
+    field_names: tuple[str, ...],
+    *sources: Any,
+    default: Any = None,
+) -> Any:
+    for source in sources:
+        if source is None:
+            continue
+        for name in field_names:
+            if source is None:
+                continue
+            if isinstance(source, Mapping):
+                sentinel = object()
+                value = source.get(name, sentinel)
+                if value is not sentinel and value is not None:
+                    return value
+                continue
+            if hasattr(source, name):
+                value = getattr(source, name)
+                if value is not None:
+                    return value
+                continue
+            value = _field_value(source, name, _FIELD_VALUE_MISSING)
+            if value is not _FIELD_VALUE_MISSING:
+                return value
+    return default
+
+
+def _coalesce_session_source(thread_config: Any) -> str:
+    if thread_config is None:
+        return ""
+    source = _field_value(thread_config, "session_source", "")
+    if isinstance(source, Mapping):
+        return str(source.get("value", source))
+    method = _field_value(source, "value", None)
+    if callable(method):
+        try:
+            source = method()
+        except Exception:
+            pass
+    return str(source) if source is not None else ""
+
+
+def _count_input_images(input_items: tuple[UserInput, ...]) -> int:
+    count = 0
+    for item in input_items:
+        item_type = _field_value(item, "type", "")
+        if item_type in {"image", "local_image"}:
+            count += 1
+    return count
+
+
+def _call_optional_noargs(value: Any) -> Any:
+    if callable(value):
+        try:
+            return value()
+        except Exception:
+            return None
+    return value
+
+
+def _coerce_enum_member_value(value: Any) -> Any:
+    if value is None:
+        return None
+    enum_value = getattr(value, "value", _FIELD_VALUE_MISSING)
+    if enum_value is _FIELD_VALUE_MISSING:
+        return value
+    if callable(enum_value):
+        try:
+            return enum_value()
+        except Exception:
+            return None
+    return enum_value
+
+
+def _coerce_permission_profile_for_analytics(permission_profile: Any) -> Any:
+    if permission_profile is None:
+        return None
+    mapping = _field_value(permission_profile, "to_mapping", None)
+    if callable(mapping):
+        try:
+            return mapping()
+        except Exception:
+            return permission_profile
+    return permission_profile
+
+
+def _turn_resolved_approval_policy_display_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    value = _coerce_enum_member_value(value)
+    try:
+        return approval_policy_display_value(value)
+    except Exception:
+        return str(value)
+
+
+def _sandbox_network_access_enabled(sandbox_policy: Any) -> bool:
+    if sandbox_policy is None:
+        return False
+    method = _field_value(sandbox_policy, "is_enabled", None)
+    if callable(method):
+        try:
+            return bool(method())
+        except Exception:
+            return False
+    if isinstance(sandbox_policy, bool):
+        return sandbox_policy
+    return bool(_field_value(sandbox_policy, "enabled", False))
+
+
+async def _take_next_turn_is_first(sess: Any, turn_context: Any) -> bool:
+    # Avoid raising for older/partial mocks.
+    for value in (
+        getattr(sess, "is_first_turn", None),
+        getattr(turn_context, "is_first_turn", None),
+        getattr(sess, "next_turn_is_first", None),
+    ):
+        if isinstance(value, bool):
+            return value
+    resolver = getattr(sess, "take_next_turn_is_first", None)
+    if callable(resolver):
+        try:
+            value = resolver()
+            if isinstance(value, Awaitable):
+                value = await _maybe_await(value)
+            if isinstance(value, bool):
+                return bool(value)
+        except Exception:
+            return False
+    return False
+
+
+def _track_explicit_plugin_mentions(sess: Any, turn_context: Any, mentioned_plugins: tuple[Any, ...]) -> None:
+    analytics = getattr(getattr(sess, "services", None), "analytics_events_client", None)
+    tracker = getattr(analytics, "track_plugin_used", None)
+    if not callable(tracker):
+        return
+    if not mentioned_plugins:
+        return
+    for plugin in mentioned_plugins:
+        telemetry = getattr(plugin, "telemetry_metadata", None)
+        if telemetry is None:
+            continue
+        if callable(telemetry):
+            try:
+                payload = telemetry()
+            except Exception:
+                payload = None
+        else:
+            payload = telemetry
+        if payload is None:
+            continue
+        try:
+            tracker(_track_analytics_context(sess, turn_context), payload)
+        except Exception:
+            pass
+
+
+def _build_plugin_injections(
+    mentioned_plugins: tuple[Any, ...],
+    mcp_tools: tuple[Any, ...],
+    available_connectors: tuple[Any, ...],
+) -> tuple[ResponseItem, ...]:
+    if not mentioned_plugins:
+        return ()
+    items: list[ResponseItem] = []
+    for plugin in mentioned_plugins:
+        plugin_name = _field_value(plugin, "display_name", "")
+        if not plugin_name:
+            continue
+        plugin_display_name = str(plugin_name)
+        plugin_mcp_servers = set(_string_tuple(_field_value(plugin, "mcp_server_names", ())))
+        plugin_app_ids = set(_string_tuple(_field_value(plugin, "app_connector_ids", ())))
+        available_mcp_servers = sorted(
+            {
+                str(_field_value(tool, "server_name", ""))
+                for tool in mcp_tools
+                if (tool_server_name := str(_field_value(tool, "server_name", "")))
+                and not tool_server_name.startswith("codex_apps")
+                and (
+                    plugin_display_name in _string_tuple(_field_value(tool, "plugin_display_names", ()))
+                    or tool_server_name in plugin_mcp_servers
+                )
+            }
+        )
+        available_apps = sorted(
+            {
+                str(
+                    _field_value(connector, "name", _field_value(connector, "id", ""))
+                )
+                for connector in available_connectors
+                if (
+                    bool(_field_value(connector, "is_enabled", False))
+                    and (
+                        plugin_display_name in _string_tuple(_field_value(connector, "plugin_display_names", ()))
+                        or (
+                            (connector_id := str(_field_value(connector, "id", "")))
+                            and connector_id in plugin_app_ids
+                        )
+                    )
+                )
+            }
+        )
+        available_apps = tuple(x for x in available_apps if x)
+        try:
+            instructions = render_explicit_plugin_instructions(plugin, available_mcp_servers, available_apps)
+        except Exception:
+            instructions = None
+        if instructions is None:
+            continue
+        items.append(PluginInstructions.new(instructions).into_response_item())
+    return tuple(items)
+
+
+def _turn_skills_outcome(sess: Any, turn_context: Any) -> tuple[Any, ...] | None:
+    turn_skills = _field_value(turn_context, "turn_skills", None)
+    outcome = _field_value(turn_skills, "outcome", None)
+    if outcome is None:
+        return None
+    skills = _field_value(outcome, "skills", ())
+    disabled_paths = _field_value(outcome, "disabled_paths", ())
+    return tuple(skills), tuple(disabled_paths)
+
+
+def _response_item_skill_text(item: Any) -> str | None:
+    if _field_value(item, "type", None) != "message":
+        return None
+    content = _field_value(item, "content", None)
+    if content is None:
+        mapping = item.to_mapping() if hasattr(item, "to_mapping") else None
+        content = _field_value(mapping, "content", None) if isinstance(mapping, Mapping) else None
+    if isinstance(content, str) or content is None or not isinstance(content, Sequence):
+        return None
+    texts: list[str] = []
+    for entry in content:
+        item_type = _field_value(entry, "type", None)
+        if item_type is None:
+            continue
+        if item_type not in {"input_text", "InputText"}:
+            continue
+        text = _field_value(entry, "text", None)
+        if isinstance(text, str):
+            texts.append(text)
+    return "\n".join(texts) if texts else None
+
+
+def _iter_app_ids_from_plugins(plugins: tuple[Any, ...]) -> list[str]:
+    app_ids: list[str] = []
+    seen: set[str] = set()
+    for plugin in plugins:
+        for connector_id in _string_tuple(_field_value(plugin, "app_connector_ids", ())):
+            if not connector_id or connector_id in seen:
+                continue
+            seen.add(connector_id)
+            app_ids.append(connector_id)
+    return app_ids
+
+
+def _field_value(value: Any, name: str, default: Any = None) -> Any:
+    if isinstance(value, Mapping):
+        return value.get(name, default)
+    if hasattr(value, name):
+        return getattr(value, name)
+    return default
+
+
+def _string_tuple(value: Any) -> tuple[str, ...]:
+    if isinstance(value, str):
+        return (value,)
+    if value is None:
+        return ()
+    if not isinstance(value, Sequence) or isinstance(value, (bytes, bytearray)):
+        return (str(value),)
+    return tuple(_coerce_str(item) for item in value)
+
+
+def _coerce_str(value: Any) -> str:
+    return str(value) if value is not None else ""
+
+
+def _coerce_optional_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
+def _bool_config_property(target: Any, name: str, default: bool) -> bool:
+    value = _field_value(target, name, default)
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if callable(value):
+        try:
+            resolved = value()
+            return bool(resolved) if isinstance(resolved, bool) else default
+        except Exception:
+            return default
+    return default
 
 
 async def _build_follow_up_request_from_session(

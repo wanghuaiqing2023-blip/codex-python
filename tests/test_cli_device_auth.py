@@ -46,6 +46,9 @@ class _BadResponse:
     def read(self) -> bytes:
         return self._payload.encode("utf-8")
 
+    def close(self) -> None:
+        self._payload = ""
+
 
 class DeviceAuthTests(unittest.TestCase):
     def test_resolve_device_auth_defaults(self) -> None:

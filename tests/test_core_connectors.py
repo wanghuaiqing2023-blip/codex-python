@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 
 from pycodex.core import (
     CODEX_APPS_MCP_SERVER_NAME,
@@ -521,6 +522,17 @@ class ConnectorHelperTests(unittest.TestCase):
         self.assertEqual(
             with_app_enabled_state([app_info("calendar")], user_apps_config=config),
             [app_info("calendar", is_enabled=False)],
+        )
+
+    def test_with_app_enabled_state_accepts_connector_objects(self) -> None:
+        config = AppsConfig(default=AppsDefaultConfig(enabled=False))
+
+        self.assertEqual(
+            with_app_enabled_state(
+                [SimpleNamespace(id="calendar", name="Calendar", is_enabled=True)],
+                user_apps_config=config,
+            ),
+            [app_info("calendar", name="Calendar", is_enabled=False)],
         )
 
     def test_with_app_plugin_sources_replaces_display_names(self) -> None:

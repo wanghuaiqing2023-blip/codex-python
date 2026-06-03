@@ -104,6 +104,31 @@ class PersonalityMigrationTests(unittest.TestCase):
             self.assertEqual(status, PersonalityMigrationStatus.SKIPPED_MARKER)
             self.assertFalse((codex_home / "config.toml").exists())
 
+    def test_marker_takes_precedence_even_with_override_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            write_session_with_user_event(codex_home)
+            (codex_home / PERSONALITY_MIGRATION_FILENAME).write_text("v1\n", encoding="utf-8")
+
+            status = maybe_migrate_personality(
+                codex_home,
+                None,
+                override_profile="default",
+            )
+
+            self.assertEqual(status, PersonalityMigrationStatus.SKIPPED_MARKER)
+            self.assertFalse((codex_home / "config.toml").exists())
+
+    def test_marker_takes_precedence_even_without_config_argument(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            (codex_home / PERSONALITY_MIGRATION_FILENAME).write_text("v1\n", encoding="utf-8")
+
+            status = maybe_migrate_personality(codex_home, None)
+
+            self.assertEqual(status, PersonalityMigrationStatus.SKIPPED_MARKER)
+            self.assertFalse((codex_home / "config.toml").exists())
+
     def test_skips_when_personality_explicit(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             codex_home = Path(tmpdir)
@@ -129,6 +154,256 @@ class PersonalityMigrationTests(unittest.TestCase):
             self.assertEqual(status, PersonalityMigrationStatus.APPLIED)
             self.assertEqual(read_config_toml(codex_home)["personality"], "pragmatic")
             self.assertTrue((codex_home / PERSONALITY_MIGRATION_FILENAME).exists())
+
+    def test_override_profile_personality_blocks_migration(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            write_session_with_user_event(codex_home)
+            config = {
+                "profile": "default",
+                "profiles": {"default": {"personality": "friendly"}},
+            }
+
+            status = maybe_migrate_personality(codex_home, config, override_profile="default")
+
+            self.assertEqual(status, PersonalityMigrationStatus.SKIPPED_EXPLICIT_PERSONALITY)
+            self.assertEqual(read_config_toml(codex_home), {})
+            self.assertTrue((codex_home / PERSONALITY_MIGRATION_FILENAME).exists())
+
+    def test_override_profile_missing_profile_falls_back_to_top_level_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            write_session_with_user_event(codex_home)
+            config = {"personality": "friendly"}
+
+            status = maybe_migrate_personality(
+                codex_home,
+                config,
+                override_profile="missing-profile",
+            )
+
+            self.assertEqual(status, PersonalityMigrationStatus.SKIPPED_EXPLICIT_PERSONALITY)
+            self.assertEqual(read_config_toml(codex_home), {})
+            self.assertTrue((codex_home / PERSONALITY_MIGRATION_FILENAME).exists())
+
+    def test_override_profile_missing_profile_allows_migration_by_top_level_logic(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            write_session_with_user_event(codex_home)
+            config = {}
+
+            status = maybe_migrate_personality(
+                codex_home,
+                config,
+                override_profile="missing-profile",
+            )
+
+            self.assertEqual(status, PersonalityMigrationStatus.APPLIED)
+            self.assertEqual(read_config_toml(codex_home)["personality"], "pragmatic")
+            self.assertTrue((codex_home / PERSONALITY_MIGRATION_FILENAME).exists())
+
+    def test_empty_profile_does_not_block_personality_migration(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            write_session_with_user_event(codex_home)
+            config = {
+                "profile": "default",
+                "profiles": {"default": {}},
+            }
+
+            status = maybe_migrate_personality(codex_home, config, override_profile="default")
+
+            self.assertEqual(status, PersonalityMigrationStatus.APPLIED)
+            self.assertEqual(read_config_toml(codex_home)["personality"], "pragmatic")
+            self.assertTrue((codex_home / PERSONALITY_MIGRATION_FILENAME).exists())
+
+    def test_blank_override_profile_uses_top_level_profile_behavior(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            write_session_with_user_event(codex_home)
+            config = {
+                "profiles": {"default": {"personality": "friendly"}},
+            }
+
+            status = maybe_migrate_personality(
+                codex_home,
+                config,
+                override_profile="",
+            )
+
+            self.assertEqual(status, PersonalityMigrationStatus.APPLIED)
+            self.assertEqual(read_config_toml(codex_home)["personality"], "pragmatic")
+            self.assertTrue((codex_home / PERSONALITY_MIGRATION_FILENAME).exists())
+
+    def test_override_profile_from_disk_config_respects_disk_top_level_personality(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            write_session_with_user_event(codex_home)
+            (codex_home / "config.toml").write_text(
+                'personality = "friendly"\n[profiles.default]\nmodel_provider = "anthropic"\n',
+                encoding="utf-8",
+            )
+
+            status = maybe_migrate_personality(
+                codex_home,
+                None,
+                override_profile="default",
+            )
+
+            self.assertEqual(status, PersonalityMigrationStatus.SKIPPED_EXPLICIT_PERSONALITY)
+            migrated_config = read_config_toml(codex_home)
+            self.assertEqual(migrated_config["personality"], "friendly")
+            self.assertEqual(migrated_config["profiles"]["default"]["model_provider"], "anthropic")
+            self.assertTrue((codex_home / PERSONALITY_MIGRATION_FILENAME).exists())
+
+    def test_model_provider_setting_does_not_block_migration_when_sessions_exist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            write_session_with_user_event(codex_home, model_provider="openai")
+            config = {
+                "model_provider": "anthropic",
+            }
+
+            status = maybe_migrate_personality(codex_home, config)
+
+            self.assertEqual(status, PersonalityMigrationStatus.APPLIED)
+            self.assertEqual(read_config_toml(codex_home)["personality"], "pragmatic")
+            self.assertTrue((codex_home / PERSONALITY_MIGRATION_FILENAME).exists())
+
+    def test_model_provider_setting_respects_no_sessions_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            config = {
+                "model_provider": "anthropic",
+            }
+
+            status = maybe_migrate_personality(codex_home, config)
+
+            self.assertEqual(status, PersonalityMigrationStatus.SKIPPED_NO_SESSIONS)
+            self.assertFalse((codex_home / "config.toml").exists())
+            self.assertTrue((codex_home / PERSONALITY_MIGRATION_FILENAME).exists())
+
+    def test_missing_override_profile_respects_model_provider_without_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            config = {"model_provider": "anthropic"}
+
+            status = maybe_migrate_personality(
+                codex_home,
+                config,
+                override_profile="missing-profile",
+            )
+
+            self.assertEqual(status, PersonalityMigrationStatus.SKIPPED_NO_SESSIONS)
+            self.assertFalse((codex_home / "config.toml").exists())
+            self.assertTrue((codex_home / PERSONALITY_MIGRATION_FILENAME).exists())
+
+    def test_missing_override_profile_respects_model_provider_with_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            write_session_with_user_event(codex_home)
+            config = {"model_provider": "anthropic"}
+
+            status = maybe_migrate_personality(
+                codex_home,
+                config,
+                override_profile="missing-profile",
+            )
+
+            self.assertEqual(status, PersonalityMigrationStatus.APPLIED)
+            self.assertEqual(read_config_toml(codex_home)["personality"], "pragmatic")
+            self.assertTrue((codex_home / PERSONALITY_MIGRATION_FILENAME).exists())
+
+    def test_override_profile_from_disk_config_is_honored(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            write_session_with_user_event(codex_home)
+            (codex_home / "config.toml").write_text(
+                "[profiles.default]\npersonality = \"friendly\"\n",
+                encoding="utf-8",
+            )
+
+            status = maybe_migrate_personality(
+                codex_home,
+                None,
+                override_profile="default",
+            )
+
+            self.assertEqual(status, PersonalityMigrationStatus.SKIPPED_EXPLICIT_PERSONALITY)
+            migrated_config = read_config_toml(codex_home)
+            self.assertNotIn("personality", migrated_config)
+            self.assertEqual(migrated_config["profiles"]["default"]["personality"], "friendly")
+            self.assertTrue((codex_home / PERSONALITY_MIGRATION_FILENAME).exists())
+
+    def test_top_level_personality_blocks_even_with_override_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            write_session_with_user_event(codex_home)
+            (codex_home / "config.toml").write_text(
+                'personality = "friendly"\n[profiles.default]\npersonality = "concise"\n',
+                encoding="utf-8",
+            )
+
+            status = maybe_migrate_personality(
+                codex_home,
+                None,
+                override_profile="default",
+            )
+
+            self.assertEqual(status, PersonalityMigrationStatus.SKIPPED_EXPLICIT_PERSONALITY)
+            migrated_config = read_config_toml(codex_home)
+            self.assertEqual(migrated_config["personality"], "friendly")
+            self.assertEqual(migrated_config["profiles"]["default"]["personality"], "concise")
+            self.assertTrue((codex_home / PERSONALITY_MIGRATION_FILENAME).exists())
+
+    def test_top_level_personality_blocks_blank_override_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            write_session_with_user_event(codex_home)
+            (codex_home / "config.toml").write_text('personality = "friendly"\n', encoding="utf-8")
+
+            status = maybe_migrate_personality(
+                codex_home,
+                read_config_toml(codex_home),
+                override_profile="",
+            )
+
+            self.assertEqual(status, PersonalityMigrationStatus.SKIPPED_EXPLICIT_PERSONALITY)
+            self.assertEqual(read_config_toml(codex_home)["personality"], "friendly")
+            self.assertTrue((codex_home / PERSONALITY_MIGRATION_FILENAME).exists())
+
+    def test_override_profile_missing_profile_still_skips_without_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            config = {}
+
+            status = maybe_migrate_personality(
+                codex_home,
+                config,
+                override_profile="missing-profile",
+            )
+
+            self.assertEqual(status, PersonalityMigrationStatus.SKIPPED_NO_SESSIONS)
+            self.assertFalse((codex_home / "config.toml").exists())
+            self.assertTrue((codex_home / PERSONALITY_MIGRATION_FILENAME).exists())
+
+    def test_config_profile_with_non_mapping_profiles_returns_empty(self) -> None:
+        config = {
+            "profile": "work",
+            "profiles": "not-a-dict",
+        }
+
+        self.assertEqual(config_profile(config), {})
+        self.assertEqual(config_profile(config, "work"), {})
+
+    def test_config_profile_with_non_mapping_profile_entry_returns_empty(self) -> None:
+        config = {
+            "profile": "work",
+            "profiles": {"work": "not-a-dict"},
+        }
+
+        self.assertEqual(config_profile(config), {})
+        self.assertEqual(config_profile(config, "work"), {})
 
     def test_skips_when_no_sessions(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -160,6 +435,14 @@ class PersonalityMigrationTests(unittest.TestCase):
         self.assertEqual(config_profile(config), {"personality": "friendly"})
         self.assertEqual(config_profile(config, "override"), {"model_provider": "anthropic"})
         self.assertEqual(config_profile(config, "missing"), {})
+
+    def test_non_string_override_profile_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            with self.assertRaises(TypeError):
+                config_profile({"profile": "default", "profiles": {}}, 1)  # type: ignore[arg-type]
+            with self.assertRaises(TypeError):
+                maybe_migrate_personality(codex_home, {"profile": "default", "profiles": {}}, override_profile=1)
 
 
     def test_personality_migration_rejects_implicit_coercions(self) -> None:

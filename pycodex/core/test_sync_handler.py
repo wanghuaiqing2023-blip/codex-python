@@ -46,6 +46,8 @@ class BarrierArgs:
 
 @dataclass(frozen=True)
 class TestSyncArgs:
+    __test__ = False
+
     sleep_before_ms: int | None = None
     sleep_after_ms: int | None = None
     barrier: BarrierArgs | None = None

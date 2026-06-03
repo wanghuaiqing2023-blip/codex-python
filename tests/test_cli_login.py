@@ -415,6 +415,9 @@ class ExchangeAuthorizationCodeTests(unittest.TestCase):
             def read(self) -> bytes:
                 return b'{"error":"invalid_grant"}'
 
+            def close(self) -> None:
+                return None
+
         error = HTTPError(
             url="https://auth.example.com/oauth/token",
             code=400,

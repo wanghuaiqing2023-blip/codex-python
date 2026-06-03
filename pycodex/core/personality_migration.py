@@ -59,6 +59,8 @@ def maybe_migrate_personality(
         return PersonalityMigrationStatus.SKIPPED_MARKER
 
     config = dict(_ensure_mapping(config_toml, "config_toml")) if config_toml is not None else read_config_toml(home)
+    if override_profile is not None:
+        config.update(config_profile(config, override_profile))
     if config.get("personality") is not None:
         create_personality_migration_marker(marker_path)
         return PersonalityMigrationStatus.SKIPPED_EXPLICIT_PERSONALITY

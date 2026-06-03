@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
-from inspect import isawaitable
+from inspect import isawaitable, iscoroutinefunction
 from enum import Enum
 from typing import Any, Callable, Mapping, MutableMapping, Sequence
 
@@ -504,12 +504,18 @@ class ModelClient:
                             turn_metadata_header=turn_metadata_header,
                         )
                     )
+                if iscoroutinefunction(header_for_request):
+                    return self._build_websocket_headers_base(turn_state, turn_metadata_header)
                 thread_id = self._coerce_thread_id_for_attestation(self.state.thread_id)
                 if thread_id is None:
                     return self._build_websocket_headers_base(turn_state, turn_metadata_header)
                 result = header_for_request(AttestationContext(thread_id=thread_id))
                 if isawaitable(result):
                     # Can't block here from an active loop; keep behavior safe by omitting attestation.
+                    if hasattr(result, "aclose"):
+                        result.aclose()
+                    elif hasattr(result, "close"):
+                        result.close()
                     return self._build_websocket_headers_base(turn_state, turn_metadata_header)
                 headers = self._build_websocket_headers_base(turn_state, turn_metadata_header)
                 insert_header_if_valid(
