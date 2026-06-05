@@ -14,14 +14,14 @@ from pycodex.protocol import (
     WindowsSandboxLevel,
 )
 
-from .git_info import (
+from pycodex.git_utils import (
     get_git_remote_urls_assume_git_repo,
     get_git_repo_root,
     get_has_changes,
     get_head_commit_hash,
 )
 from .sandbox_tags import permission_profile_sandbox_tag
-from .string_utils import to_ascii_json_string
+from pycodex.utils.string import to_ascii_json_string
 
 MODEL_KEY = "model"
 REASONING_EFFORT_KEY = "reasoning_effort"

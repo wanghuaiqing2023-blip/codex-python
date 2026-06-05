@@ -3,8 +3,8 @@ import time
 import unittest
 from pathlib import Path
 
-from pycodex.core.exec_policy import Decision
-from pycodex.core.network_proxy_loader import (
+from pycodex.execpolicy import Decision
+from pycodex.network_proxy import (
     ConfigLayerEntry,
     ConfigLayerSource,
     LayerMtime,

@@ -1,0 +1,28 @@
+# 非交互 exec 人格迁移重读配置回归测试
+
+- 新增测试：`tests/test_cli_parser.py::TopLevelCliParserTests::test_main_exec_with_profile_triggers_personality_migration_reload`
+- 覆盖点：
+  - `main(["exec", "--profile", ...])` 进入非交互执行路径时，`maybe_migrate_personality` 被 `override_profile` 调用。
+  - 当迁移状态为 `APPLIED` 时，`build_exec_config_bootstrap_plan` 使用了重读后的配置。
+  - 断言 `read_toml_mapping` 在一个执行中出现两次读取，二次读取中包含 `personality=pragmatic`。
+- 测试使用 `remote_exec_session_connect_and_run` 以及本地/核心执行分支 mock，避免远端/运行时真实调用，仅验证核心启动链路行为。
+- 新增反向测试：`tests/test_cli_parser.py::TopLevelCliParserTests::test_main_exec_without_migration_applied_uses_original_config`
+- 覆盖点：
+  - 当 `maybe_migrate_personality` 为非 `APPLIED` 时，`read_toml_mapping` 只触发一次。
+  - `build_exec_config_bootstrap_plan` 使用首次读取的原始配置。
+- 新增交互式裸提示回归：`tests/test_cli_parser.py::TopLevelCliParserTests::test_main_prompt_without_subcommand_with_profile_triggers_noninteractive_migration_reload`
+- 覆盖点：
+  - 当用户输入 `main(["--profile", "work", "hello"])` 的裸提示时，隐式重定向到非交互 `exec`。
+  - 在 `APPLIED` 迁移分支下，`read_toml_mapping` 会发生两次读入，`build_exec_config_bootstrap_plan` 接收重读后的配置。
+- 新增交互式裸提示反向测试：`tests/test_cli_parser.py::TopLevelCliParserTests::test_main_prompt_without_subcommand_with_profile_without_migration_uses_original_config`
+- 覆盖点：
+  - 当 `main(["--profile", "work", "hello"])` 的迁移状态为 `SKIPPED` 时，只读取一次配置。
+  - `build_exec_config_bootstrap_plan` 使用初始读取到的原始配置。
+- 新增 review 命令分支回归：`tests/test_cli_parser.py::TopLevelCliParserTests::test_main_review_with_profile_triggers_personality_migration_reload`
+- 覆盖点：
+  - 当 `main(["review", "--profile", "work", "hello"])` 时，执行 `exec` bootstrap 链路。
+  - `APPLIED` 场景下发生两次 `read_toml_mapping` 且 bootstrap 收到重读后的 `personality=pragmatic`。
+- 新增 review 反向回归：`tests/test_cli_parser.py::TopLevelCliParserTests::test_main_review_without_migration_applied_uses_original_config`
+- 覆盖点：
+  - 当 `main(["review", "--profile", "work", "hello"])` migration 被 `SKIPPED`，仅读取一次配置。
+  - `build_exec_config_bootstrap_plan` 使用初始映射（如 `personality=existing`）。

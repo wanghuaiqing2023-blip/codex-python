@@ -1,4 +1,4 @@
-"""Config override parsing.
+﻿"""Config override parsing.
 
 Ported from ``codex/codex-rs/utils/cli/src/config_override.rs``.
 
@@ -13,7 +13,7 @@ from collections.abc import MutableMapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from pycodex import _toml
+from pycodex.config import toml_compat as _toml
 
 
 UPSTREAM_CONFIG_OVERRIDE = "codex/codex-rs/utils/cli/src/config_override.rs"
@@ -118,3 +118,4 @@ def apply_single_override(target: MutableMapping[str, Any], path: str, value: An
             next_value = {}
             current[part] = next_value
         current = next_value
+

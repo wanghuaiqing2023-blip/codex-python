@@ -1,8 +1,8 @@
-from types import SimpleNamespace
+﻿from types import SimpleNamespace
 
 import pytest
 
-from pycodex.core.agent_resolver import FunctionCallError, resolve_agent_target
+from pycodex.core.agent.agent_resolver import FunctionCallError, resolve_agent_target
 from pycodex.protocol import CodexErr, SessionSource, ThreadId
 
 
@@ -129,3 +129,4 @@ async def test_resolve_agent_target_defaults_turn_session_source_when_missing():
     assert agent_control.resolved == [
         (session.conversation_id, SessionSource.default(), "worker")
     ]
+

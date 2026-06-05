@@ -401,7 +401,7 @@ def unified_exec_sandbox_denial_message(
     if not is_likely_sandbox_denied(sandbox_type, exec_output):
         return None
     if text:
-        from pycodex.core.tool_context import formatted_truncate_text
+        from pycodex.core.tools.context import formatted_truncate_text
         from pycodex.core.unified_exec import UNIFIED_EXEC_OUTPUT_MAX_TOKENS
         from pycodex.protocol import TruncationPolicyConfig
 

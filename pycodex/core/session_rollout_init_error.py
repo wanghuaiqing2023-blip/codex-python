@@ -7,7 +7,7 @@ from pathlib import Path
 
 from pycodex.protocol import CodexErr
 
-from .rollout import SESSIONS_SUBDIR
+from pycodex.rollout import SESSIONS_SUBDIR
 
 
 def map_session_init_error(error: BaseException, codex_home: Path | str) -> CodexErr:

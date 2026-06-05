@@ -1,7 +1,7 @@
 import unittest
 from types import SimpleNamespace
 
-from pycodex.core.code_mode import (
+from pycodex.core.tools.code_mode import (
     CODE_MODE_FREEFORM_GRAMMAR,
     EXEC_MAIN_MODULE_NAME,
     CodeModeExecuteHandler,
@@ -82,7 +82,7 @@ from pycodex.core.code_mode import (
     unsupported_static_import_error,
     value_to_error_text,
 )
-from pycodex.core.tool_context import ToolPayload
+from pycodex.core.tools.context import ToolPayload
 from pycodex.protocol import DEFAULT_IMAGE_DETAIL, FunctionCallOutputContentItem, ImageDetail, ToolName
 
 

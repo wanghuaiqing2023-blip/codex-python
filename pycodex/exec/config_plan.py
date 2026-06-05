@@ -25,11 +25,11 @@ from pycodex.core.agents_md import (
     AgentsMdConfig,
     AgentsMdManager,
 )
-from pycodex.core.features import Feature, FeatureConfigSource, FeatureOverrides, Features, FeaturesToml
-from pycodex.core.git_info import get_git_repo_root
+from pycodex.features import Feature, FeatureConfigSource, FeatureOverrides, Features, FeaturesToml
+from pycodex.git_utils import get_git_repo_root
 from pycodex.core.otel_init import OtelProvider
 from pycodex.core.otel_init import build_provider as build_otel_provider
-from pycodex.core.paths import find_codex_home
+from pycodex.utils.home_dir import find_codex_home
 from pycodex.protocol import AskForApproval, GranularApprovalConfig, PermissionProfile, SandboxMode
 
 from .cli import ExecCli

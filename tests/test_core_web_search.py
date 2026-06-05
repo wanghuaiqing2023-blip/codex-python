@@ -1,10 +1,12 @@
 import unittest
 
 from pycodex.core import (
-    PLUGIN_TEXT_MENTION_SIGIL,
-    TOOL_MENTION_SIGIL,
     web_search_action_detail,
     web_search_detail,
+)
+from pycodex.utils.plugins.mention_syntax import (
+    PLUGIN_TEXT_MENTION_SIGIL,
+    TOOL_MENTION_SIGIL,
 )
 from pycodex.protocol import WebSearchAction
 

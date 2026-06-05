@@ -25,7 +25,7 @@ from pycodex.core.exec import (
     is_likely_sandbox_denied,
     unified_exec_sandbox_denial_message,
 )
-from pycodex.core.string_utils import approx_token_count
+from pycodex.utils.string import approx_token_count
 from pycodex.core.unified_exec import UNIFIED_EXEC_OUTPUT_MAX_TOKENS
 from pycodex.protocol import ExecToolCallOutput, StreamOutput
 

@@ -14,7 +14,6 @@ from pycodex.core import (
     ToolExposure,
     ToolPayload,
     ToolRegistry,
-    ToolSearchInfo,
     flat_tool_name,
     function_hook_tool_input,
     override_tool_exposure,
@@ -22,6 +21,9 @@ from pycodex.core import (
     pre_tool_use_payload,
     unsupported_tool_call_message,
     with_updated_hook_input,
+)
+from pycodex.core.tools.tool_search_entry import (
+    ToolSearchInfo,
 )
 from pycodex.protocol import CallToolResult, FunctionCallOutputContentItem, ToolName, TruncationPolicyConfig
 

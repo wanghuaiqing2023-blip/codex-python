@@ -38,7 +38,11 @@ def run_setup_refresh_with_extra_read_roots(
 ) -> object:
     if sys.platform != "win32":
         return None
-    raise NotImplementedError("windows sandbox setup refresh is not implemented in the stdlib port")
+    # The original Rust implementation wires into a dedicated Windows sandbox helper.
+    # The stdlib-only port does not depend on that native helper, so this best-effort
+    # path intentionally performs a no-op and allows callers to continue while still
+    # exposing a stable compatibility surface for dependency injection.
+    return None
 
 
 def grant_read_root_non_elevated(

@@ -24,7 +24,7 @@ from pycodex.core import (
     plan_inline_network_policy_request,
     protocol_key_label,
 )
-from pycodex.core.network_approval import (
+from pycodex.core.tools.network_approval import (
     ActiveNetworkApprovalCall,
     NetworkApprovalMode,
     NetworkApprovalSpec,
@@ -1009,7 +1009,7 @@ class NetworkApprovalTests(unittest.TestCase):
         self.assertEqual(owner.prompt_reason, "example.com is not in the allowed_domains")
 
     def test_resolve_network_review_decision_maps_user_choices(self) -> None:
-        from pycodex.core.network_approval import resolve_network_review_decision
+        from pycodex.core.tools.network_approval import resolve_network_review_decision
         from pycodex.protocol.approvals import NetworkPolicyAmendment, NetworkPolicyRuleAction, ReviewDecision
 
         self.assertIs(
@@ -1030,7 +1030,7 @@ class NetworkApprovalTests(unittest.TestCase):
         self.assertEqual(denied.outcome, NetworkApprovalOutcome.denied_by_user())
 
     def test_resolve_network_review_decision_maps_timeout_to_policy_denial(self) -> None:
-        from pycodex.core.network_approval import resolve_network_review_decision
+        from pycodex.core.tools.network_approval import resolve_network_review_decision
         from pycodex.protocol.approvals import ReviewDecision
 
         resolved = resolve_network_review_decision(ReviewDecision.timed_out())
@@ -1042,26 +1042,26 @@ class NetworkApprovalTests(unittest.TestCase):
         )
 
     def test_resolve_network_review_decision_rejects_unknown_type(self) -> None:
-        from pycodex.core.network_approval import resolve_network_review_decision
+        from pycodex.core.tools.network_approval import resolve_network_review_decision
 
         with self.assertRaisesRegex(ValueError, "unknown review decision: mystery"):
             resolve_network_review_decision({"mystery": {}})
 
     def test_resolve_network_review_decision_rejects_invalid_shape(self) -> None:
-        from pycodex.core.network_approval import resolve_network_review_decision
+        from pycodex.core.tools.network_approval import resolve_network_review_decision
 
         with self.assertRaisesRegex(TypeError, "review decision must be a mapping, review decision, or string"):
             resolve_network_review_decision(123)  # type: ignore[arg-type]
 
     def test_resolve_network_review_decision_accepts_wire_string_denied(self) -> None:
-        from pycodex.core.network_approval import resolve_network_review_decision
+        from pycodex.core.tools.network_approval import resolve_network_review_decision
 
         resolved = resolve_network_review_decision("denied")
         self.assertIs(resolved.decision, PendingApprovalDecision.DENY)
         self.assertEqual(resolved.outcome, NetworkApprovalOutcome.denied_by_user())
 
     def test_resolve_network_review_decision_accepts_review_decision_instance(self) -> None:
-        from pycodex.core.network_approval import resolve_network_review_decision
+        from pycodex.core.tools.network_approval import resolve_network_review_decision
         from pycodex.protocol.approvals import ReviewDecision
 
         resolved = resolve_network_review_decision(ReviewDecision.approved_for_session())
@@ -1069,13 +1069,13 @@ class NetworkApprovalTests(unittest.TestCase):
         self.assertTrue(resolved.cache_approved_host)
 
     def test_resolve_network_review_decision_accepts_wire_string(self) -> None:
-        from pycodex.core.network_approval import resolve_network_review_decision
+        from pycodex.core.tools.network_approval import resolve_network_review_decision
 
         resolved = resolve_network_review_decision("approved")
         self.assertIs(resolved.decision, PendingApprovalDecision.ALLOW_ONCE)
 
     def test_apply_network_review_decision_type_guards(self) -> None:
-        from pycodex.core.network_approval import apply_network_review_decision
+        from pycodex.core.tools.network_approval import apply_network_review_decision
         from pycodex.protocol.approvals import ReviewDecision
 
         service = NetworkApprovalService()
@@ -1094,7 +1094,7 @@ class NetworkApprovalTests(unittest.TestCase):
             )
 
     def test_apply_network_review_decision_updates_pending_and_session_cache(self) -> None:
-        from pycodex.core.network_approval import apply_network_review_decision
+        from pycodex.core.tools.network_approval import apply_network_review_decision
         from pycodex.protocol.approvals import NetworkPolicyAmendment, NetworkPolicyRuleAction, ReviewDecision
 
         service = NetworkApprovalService()
@@ -1121,7 +1121,7 @@ class NetworkApprovalTests(unittest.TestCase):
         self.assertNotIn(key, service.pending_host_approvals)
 
     def test_apply_network_review_decision_caches_allow_amendment_and_clears_pending(self) -> None:
-        from pycodex.core.network_approval import apply_network_review_decision
+        from pycodex.core.tools.network_approval import apply_network_review_decision
         from pycodex.protocol.approvals import NetworkPolicyAmendment, NetworkPolicyRuleAction, ReviewDecision
 
         service = NetworkApprovalService()
@@ -1144,7 +1144,7 @@ class NetworkApprovalTests(unittest.TestCase):
         self.assertNotIn(key, service.pending_host_approvals)
 
     def test_apply_network_review_decision_records_call_outcome_for_denial(self) -> None:
-        from pycodex.core.network_approval import apply_network_review_decision
+        from pycodex.core.tools.network_approval import apply_network_review_decision
         from pycodex.protocol.approvals import ReviewDecision
 
         service = NetworkApprovalService()
@@ -1164,7 +1164,7 @@ class NetworkApprovalTests(unittest.TestCase):
         )
 
     def test_apply_network_review_decision_allow_does_not_record_outcome(self) -> None:
-        from pycodex.core.network_approval import apply_network_review_decision
+        from pycodex.core.tools.network_approval import apply_network_review_decision
         from pycodex.protocol.approvals import ReviewDecision
 
         service = NetworkApprovalService()
@@ -1181,7 +1181,7 @@ class NetworkApprovalTests(unittest.TestCase):
         self.assertIsNone(service.take_call_outcome("registration-1"))
 
     def test_apply_network_review_decision_updates_session_caches_without_pending(self) -> None:
-        from pycodex.core.network_approval import apply_network_review_decision
+        from pycodex.core.tools.network_approval import apply_network_review_decision
         from pycodex.protocol.approvals import NetworkPolicyAmendment, NetworkPolicyRuleAction, ReviewDecision
 
         service = NetworkApprovalService()

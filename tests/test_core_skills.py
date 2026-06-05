@@ -2,8 +2,8 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from pycodex.core.mcp_skill_dependencies import SkillMetadata
-from pycodex.core.skill_invocation_utils import SkillLoadOutcome
+from pycodex.core_skills.model import SkillMetadata
+from pycodex.core_skills.invocation_utils import SkillLoadOutcome
 from pycodex.core.skills import (
     SkillInvocation,
     SkillsLoadInput,

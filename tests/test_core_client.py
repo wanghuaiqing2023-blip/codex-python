@@ -58,8 +58,8 @@ from pycodex.core import (
 )
 from pycodex.core.client_common import Prompt
 from pycodex.core.client import _item_lifecycle_event
-from pycodex.core.features import Feature
-from pycodex.core.hosted_spec import FreeformToolFormat, ToolSpec
+from pycodex.features import Feature
+from pycodex.core.tools.hosted_spec import FreeformToolFormat, ToolSpec
 from pycodex.core.stream_events_utils import (
     OutputItemResult,
     SamplingMailboxPreemptionPlan,

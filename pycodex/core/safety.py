@@ -14,7 +14,6 @@ from pycodex.protocol import (
     WindowsSandboxLevel,
 )
 
-from .apply_patch import ApplyPatchAction
 from .sandbox_tags import SandboxType, get_platform_sandbox
 from .util import resolve_path
 
@@ -97,7 +96,7 @@ ApprovalPolicy = AskForApproval | GranularApprovalConfig
 
 
 def assess_patch_safety(
-    action: ApplyPatchAction | Mapping[str, object],
+    action: object | Mapping[str, object],
     policy: ApprovalPolicy,
     permission_profile: PermissionProfile,
     file_system_sandbox_policy: FileSystemSandboxPolicy,
@@ -111,6 +110,8 @@ def assess_patch_safety(
         raise TypeError("file_system_sandbox_policy must be a FileSystemSandboxPolicy")
     if not isinstance(windows_sandbox_level, WindowsSandboxLevel):
         raise TypeError("windows_sandbox_level must be a WindowsSandboxLevel")
+    from pycodex.apply_patch import ApplyPatchAction
+
     action = action if isinstance(action, ApplyPatchAction) else ApplyPatchAction.from_mapping(action)
     cwd = Path(_ensure_pathlike(cwd, "cwd"))
 
@@ -180,10 +181,12 @@ def patch_rejection_reason(
 
 
 def is_write_patch_constrained_to_writable_paths(
-    action: ApplyPatchAction,
+    action: object,
     file_system_sandbox_policy: FileSystemSandboxPolicy,
     cwd: Path | str,
 ) -> bool:
+    from pycodex.apply_patch import ApplyPatchAction
+
     if not isinstance(action, ApplyPatchAction):
         raise TypeError("action must be an ApplyPatchAction")
     if not isinstance(file_system_sandbox_policy, FileSystemSandboxPolicy):

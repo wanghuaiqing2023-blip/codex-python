@@ -1,0 +1,73 @@
+"""Canonical package for helpers ported from `codex-rs/tools`."""
+
+from .original_image_detail import (
+    can_request_original_image_detail,
+    normalize_output_image_detail,
+    sanitize_original_image_detail,
+)
+from .tool_discovery import (
+    LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME,
+    REQUEST_PLUGIN_INSTALL_TOOL_NAME,
+    TOOL_SEARCH_DEFAULT_LIMIT,
+    TOOL_SEARCH_TOOL_NAME,
+    TUI_CLIENT_NAME,
+    DiscoverablePluginInfo,
+    DiscoverableTool,
+    DiscoverableToolAction,
+    DiscoverableToolType,
+    ListAvailablePluginsToInstallResult,
+    RequestPluginInstallEntry,
+    ToolSearchSourceInfo,
+    collect_request_plugin_install_entries,
+    filter_request_plugin_install_discoverable_tools_for_client,
+)
+
+from .request_plugin_install import (
+    REQUEST_PLUGIN_INSTALL_APPROVAL_KIND_VALUE,
+    REQUEST_PLUGIN_INSTALL_PERSIST_ALWAYS_VALUE,
+    REQUEST_PLUGIN_INSTALL_PERSIST_KEY,
+    REQUEST_PLUGIN_INSTALL_SUGGEST_TYPE_KEY,
+    REQUEST_PLUGIN_INSTALL_TOOL_ID_KEY,
+    REQUEST_PLUGIN_INSTALL_TOOL_TYPE_KEY,
+    RequestPluginInstallArgs,
+    RequestPluginInstallMeta,
+    RequestPluginInstallResult,
+    all_requested_connectors_picked_up,
+    build_request_plugin_install_elicitation_request,
+    build_request_plugin_install_meta,
+    verified_connector_install_completed,
+)
+
+
+__all__ = [
+    "verified_connector_install_completed",
+    "build_request_plugin_install_meta",
+    "build_request_plugin_install_elicitation_request",
+    "all_requested_connectors_picked_up",
+    "RequestPluginInstallResult",
+    "RequestPluginInstallMeta",
+    "RequestPluginInstallArgs",
+    "REQUEST_PLUGIN_INSTALL_TOOL_TYPE_KEY",
+    "REQUEST_PLUGIN_INSTALL_TOOL_ID_KEY",
+    "REQUEST_PLUGIN_INSTALL_SUGGEST_TYPE_KEY",
+    "REQUEST_PLUGIN_INSTALL_PERSIST_KEY",
+    "REQUEST_PLUGIN_INSTALL_PERSIST_ALWAYS_VALUE",
+    "REQUEST_PLUGIN_INSTALL_APPROVAL_KIND_VALUE",
+    "DiscoverablePluginInfo",
+    "DiscoverableTool",
+    "DiscoverableToolAction",
+    "DiscoverableToolType",
+    "LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME",
+    "ListAvailablePluginsToInstallResult",
+    "REQUEST_PLUGIN_INSTALL_TOOL_NAME",
+    "RequestPluginInstallEntry",
+    "TOOL_SEARCH_DEFAULT_LIMIT",
+    "TOOL_SEARCH_TOOL_NAME",
+    "TUI_CLIENT_NAME",
+    "ToolSearchSourceInfo",
+    "can_request_original_image_detail",
+    "collect_request_plugin_install_entries",
+    "filter_request_plugin_install_discoverable_tools_for_client",
+    "normalize_output_image_detail",
+    "sanitize_original_image_detail",
+]

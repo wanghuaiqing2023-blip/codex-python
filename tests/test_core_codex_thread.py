@@ -1,4 +1,4 @@
-from pathlib import Path
+﻿from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -9,7 +9,7 @@ from pycodex.core.codex_thread import (
     InvalidThreadRequest,
     ThreadConfigSnapshot,
 )
-from pycodex.core.session_runtime import InMemoryCodexSession
+from pycodex.core.session.runtime import InMemoryCodexSession
 from pycodex.protocol import CollaborationMode, ModeKind, Op, ReasoningEffort, SessionSource, Settings
 
 
@@ -176,3 +176,4 @@ async def test_decrement_out_of_band_elicitation_count_rejects_zero():
 
     with pytest.raises(InvalidThreadRequest):
         await thread.decrement_out_of_band_elicitation_count()
+

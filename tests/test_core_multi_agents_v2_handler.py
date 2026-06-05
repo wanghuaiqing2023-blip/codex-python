@@ -1,6 +1,6 @@
 import unittest
 
-from pycodex.core.multi_agents_v2_handler import (
+from pycodex.core.tools.handlers.multi_agents_v2 import (
     CloseAgentArgs,
     CloseAgentHandler,
     FollowupTaskArgs,
@@ -24,9 +24,9 @@ from pycodex.core.multi_agents_v2_handler import (
     message_content,
     successful_empty_message_output,
 )
-from pycodex.core.tool_context import ToolPayload
-from pycodex.core.tool_registry import ToolInvocation
-from pycodex.core.tool_router import FunctionCallError
+from pycodex.core.tools.context import ToolPayload
+from pycodex.core.tools.registry import ToolInvocation
+from pycodex.core.tools.router import FunctionCallError
 from pycodex.protocol import AgentStatus, ToolName
 
 

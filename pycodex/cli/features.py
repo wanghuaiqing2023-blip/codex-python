@@ -1,4 +1,4 @@
-"""Feature-related CLI helpers ported from Codex CLI."""
+﻿"""Feature-related CLI helpers ported from Codex CLI."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ from pathlib import Path
 from typing import Any, Iterable, TextIO
 
 from pycodex.config import CliConfigOverrides
-from pycodex.core.config_edit import CONFIG_TOML_FILE, ConfigEditsBuilder, read_toml_mapping
-from pycodex.core.features import (
+from pycodex.core.config.edit import CONFIG_TOML_FILE, ConfigEditsBuilder, read_toml_mapping
+from pycodex.features import (
     FEATURES,
     Feature,
     FeatureConfigSource,
@@ -21,7 +21,7 @@ from pycodex.core.features import (
     StageKind,
     is_known_feature_key,
 )
-from pycodex.core.paths import find_codex_home
+from pycodex.utils.home_dir import find_codex_home
 
 
 UPSTREAM_CLI_MAIN = "codex/codex-rs/cli/src/main.rs"
@@ -219,3 +219,4 @@ __all__ = [
     "under_development_feature_warning",
     "validate_feature",
 ]
+

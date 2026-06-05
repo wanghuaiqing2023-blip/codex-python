@@ -1,6 +1,6 @@
 import unittest
 
-from pycodex.core.multi_agents_spec import (
+from pycodex.core.tools.handlers.multi_agents_spec import (
     MULTI_AGENT_V1_NAMESPACE,
     SpawnAgentToolOptions,
     WaitAgentTimeoutOptions,

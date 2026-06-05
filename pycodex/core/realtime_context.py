@@ -8,8 +8,8 @@ from typing import Iterable
 from pycodex.protocol import ContentItem, ResponseItem, TruncationPolicyConfig
 
 from .context import is_contextual_user_fragment
-from .string_utils import approx_token_count
-from .tool_context import truncate_text
+from pycodex.utils.string import approx_token_count
+from .tools.context import truncate_text
 
 STARTUP_CONTEXT_HEADER = "Startup context from Codex.\nThis is background context about recent work and machine/workspace layout. It may be incomplete or stale. Use it to inform responses, and do not repeat it back unless relevant."
 STARTUP_CONTEXT_OPEN_TAG = "<startup_context>"

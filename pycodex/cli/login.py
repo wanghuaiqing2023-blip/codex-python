@@ -21,7 +21,7 @@ import webbrowser
 import time
 from typing import Any, Mapping
 
-from pycodex.core.paths import find_codex_home
+from pycodex.utils.home_dir import find_codex_home
 
 AUTH_FILE = "auth.json"
 

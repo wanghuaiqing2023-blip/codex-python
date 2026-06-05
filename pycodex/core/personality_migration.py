@@ -6,10 +6,10 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping
 
-from pycodex import _toml
+from pycodex.config import toml_compat as _toml
 from pycodex.protocol import Personality
 
-from .rollout import (
+from pycodex.rollout import (
     ARCHIVED_SESSIONS_SUBDIR,
     SESSIONS_SUBDIR,
     ThreadListLayout,
@@ -179,3 +179,4 @@ __all__ = [
     "read_config_toml",
     "set_top_level_toml_string",
 ]
+

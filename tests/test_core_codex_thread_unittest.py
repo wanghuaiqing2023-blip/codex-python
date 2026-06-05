@@ -1,8 +1,8 @@
-import unittest
+﻿import unittest
 from types import SimpleNamespace
 
 from pycodex.core.codex_thread import CodexThread, CodexThreadSettingsOverrides, SETTINGS_UNSET
-from pycodex.core.session_runtime import InMemoryCodexSession
+from pycodex.core.session.runtime import InMemoryCodexSession
 from pycodex.protocol import CollaborationMode, ModeKind, ReasoningEffort, Settings, ThreadSettingsOverrides
 
 
@@ -69,3 +69,4 @@ class CodexThreadUnittestTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

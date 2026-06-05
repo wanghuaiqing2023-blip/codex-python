@@ -19,9 +19,9 @@ from pycodex.core.connectors import (
     AppToolApproval,
     ToolAnnotations,
 )
-from pycodex.core.mcp_tool_handler import ToolInfo
-from pycodex.core.string_utils import sanitize_metric_tag_value
-from pycodex.core.tool_sandboxing import ApprovalStore
+from pycodex.core.tools.handlers.mcp import ToolInfo
+from pycodex.utils.string import sanitize_metric_tag_value
+from pycodex.core.tools.sandboxing import ApprovalStore
 from pycodex.protocol import CallToolResult, ElicitationAction, ElicitationRequestEvent
 from pycodex.protocol.approvals import ReviewDecision
 from pycodex.protocol.config_types import ApprovalsReviewer

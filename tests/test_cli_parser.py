@@ -1,4 +1,4 @@
-import unittest
+﻿import unittest
 import io
 import os
 import json
@@ -10,6 +10,7 @@ import tempfile
 import socket
 import threading
 import time
+from dataclasses import replace
 from email.message import Message
 from types import SimpleNamespace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -30,7 +31,9 @@ from pycodex.cli.features import (
 from pycodex.cli.parser import (
     CliParseError,
     _collect_cloud_attempt_diffs,
+    _print_local_app_server_connect_hint,
     _read_responses_api_auth_header,
+    _resolve_exec_remote_endpoint,
     _run_cloud_command,
     _run_stdio_to_uds,
     _select_cloud_attempt_diff,
@@ -41,14 +44,16 @@ from pycodex.cli.parser import (
 )
 from pycodex.cli import DoctorUpdateCheck, NpmRootCheck, UpdateAction
 from pycodex.cli.login import AuthDotJson
+from pycodex.exec.config_plan import build_exec_config_bootstrap_plan
 from pycodex.core import Feature, Features, PersonalityMigrationStatus
-from pycodex.core.rollout import (
+from pycodex.rollout import (
     SessionMeta,
     materialize_session_rollout,
     read_event_msgs_from_rollout,
     read_response_items_from_rollout,
 )
-from pycodex.core.turn_runtime import UserTurnSamplingResult
+from pycodex.exec import app_server_control_socket_path
+from pycodex.core.session.turn.runtime import UserTurnSamplingResult
 from pycodex.protocol import AskForApproval, ContentItem, ProfileV2Name, ResponseItem, SandboxMode
 
 
@@ -7065,6 +7070,157 @@ class TopLevelCliParserTests(unittest.TestCase):
         ]
         self.assertIn("bare prompt", user_texts)
 
+    def test_main_prompt_without_subcommand_normalizes_crlf_for_local_http_exec(self) -> None:
+        seen = {}
+
+        class FakeResponse:
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "output": [
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{"type": "output_text", "text": "ok"}],
+                            }
+                        ]
+                    }
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        def opener(request):
+            seen["body"] = json.loads(request.data.decode("utf-8"))
+            return FakeResponse()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "0",
+                    "OPENAI_API_KEY": "sk-smoke",
+                    "PYCODEX_EXEC_MODEL": "",
+                    "OPENAI_MODEL": "",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(["line1\r\nline2\rline3"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        user_items = [
+            item
+            for item in seen["body"]["input"]
+            if item.get("type") == "message" and item.get("role") == "user"
+        ]
+        user_texts = [
+            content.get("text")
+            for item in user_items
+            for content in item.get("content", ())
+            if isinstance(content, dict)
+        ]
+        self.assertIn("line1\nline2\nline3", user_texts)
+
+    def test_main_exec_command_normalizes_crlf_prompt_for_core(self) -> None:
+        seen = {}
+
+        class FakeResult:
+            response_items = (
+                ResponseItem.from_mapping(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "core exec crlf done"}],
+                    }
+                ),
+            )
+            raw_result = None
+
+        async def fake_run(command, _codex_home, _config, plan, _model_client, _provider, _model_info, **kwargs):
+            seen["command"] = command
+            seen["prompt"] = plan.prompt_summary
+            seen["auth"] = kwargs.get("auth")
+            return FakeResult()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_CORE": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP": "0",
+                    "OPENAI_API_KEY": "sk-core",
+                },
+            ):
+                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.parser.run_core_exec_command", side_effect=fake_run) as run_core:
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(["exec", "line1\r\nline2\rline3"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(run_core.call_count, 1)
+        self.assertIsNone(seen["command"])
+        self.assertEqual(seen["prompt"], "line1\nline2\nline3")
+        self.assertEqual(seen["auth"], "sk-core")
+        self.assertEqual(stdout.getvalue(), "core exec crlf done\n")
+
+    def test_main_prompt_without_subcommand_normalizes_crlf_for_core_exec_when_core_only(self) -> None:
+        seen = {}
+
+        class FakeResult:
+            response_items = (
+                ResponseItem.from_mapping(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "core crlf prompt done"}],
+                    }
+                ),
+            )
+            raw_result = None
+
+        async def fake_run(command, _codex_home, _config, plan, _model_client, _provider, _model_info, **kwargs):
+            seen["command"] = command
+            seen["prompt"] = plan.prompt_summary
+            seen["auth"] = kwargs.get("auth")
+            return FakeResult()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_CORE": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP": "0",
+                    "OPENAI_API_KEY": "sk-core",
+                },
+            ):
+                with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                    with patch("pycodex.cli.parser.run_core_exec_command", side_effect=fake_run) as run_core:
+                        with patch(
+                            "pycodex.cli.parser._run_tui",
+                            side_effect=AssertionError("prompt should run through core exec"),
+                        ):
+                            stdout = io.StringIO()
+                            stderr = io.StringIO()
+                            code = main(["line1\r\nline2\rline3"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(run_core.call_count, 1)
+        self.assertIsNone(seen["command"])
+        self.assertEqual(seen["prompt"], "line1\nline2\nline3")
+        self.assertEqual(seen["auth"], "sk-core")
+        self.assertEqual(stdout.getvalue(), "core crlf prompt done\n")
+
     def test_main_prompt_without_subcommand_uses_core_exec_when_core_only(self) -> None:
         seen = {}
 
@@ -8471,6 +8627,93 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertIn("exit_code: approval_required", tool_outputs[0]["output"])
         self.assertIn("approval_policy: on-request", tool_outputs[0]["output"])
         self.assertIn("blocked-shell.txt", tool_outputs[0]["output"])
+
+    def test_main_exec_local_http_shell_tool_forbidden_by_policy(self) -> None:
+        request_bodies = []
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def read(self) -> bytes:
+                return json.dumps(self._payload).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        responses = [
+            {
+                "output": [
+                    {
+                        "type": "function_call",
+                        "name": "exec_command",
+                        "call_id": "shell-forbidden",
+                        "arguments": json.dumps(
+                            {
+                                "cmd": "rm -rf /important/data",
+                            }
+                        ),
+                    }
+                ]
+            },
+            {
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "blocked"}],
+                    }
+                ]
+            },
+        ]
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return FakeResponse(responses.pop(0))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": tmpdir,
+                    "PYCODEX_EXEC_LOCAL_HTTP": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_SHELL_TOOLS": "1",
+                    "PYCODEX_EXEC_LOCAL_HTTP_MAX_TOOL_ROUNDS": "2",
+                    "OPENAI_API_KEY": "sk-smoke",
+                },
+            ):
+                with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
+                    with patch("pycodex.cli.parser.read_auth_json", return_value=None):
+                        stdout = io.StringIO()
+                        stderr = io.StringIO()
+                        code = main(
+                            [
+                                "exec",
+                                "--ask-for-approval",
+                                "never",
+                                "--cd",
+                                tmpdir,
+                                "--skip-git-repo-check",
+                                "rm -rf /important/data",
+                            ],
+                            stdout=stdout,
+                            stderr=stderr,
+                        )
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        self.assertEqual(len(request_bodies), 2)
+        followup_input = request_bodies[1]["input"]
+        tool_outputs = [item for item in followup_input if item.get("type") == "function_call_output"]
+        self.assertEqual(len(tool_outputs), 1)
+        self.assertEqual(tool_outputs[0]["call_id"], "shell-forbidden")
+        self.assertIs(tool_outputs[0]["success"], False)
+        self.assertIn("exit_code: forbidden", tool_outputs[0]["output"])
+        self.assertIn("approval_policy", tool_outputs[0]["output"])
+        self.assertIn("command:", tool_outputs[0]["output"])
+        self.assertEqual(stdout.getvalue(), "blocked\n")
 
     def test_main_exec_local_http_request_permissions_on_request_returns_cancel_output(self) -> None:
         request_bodies = []
@@ -10239,7 +10482,7 @@ class TopLevelCliParserTests(unittest.TestCase):
                 with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
                     with patch("pycodex.cli.parser.read_auth_json", return_value=None):
                         with patch("pycodex.core.http_transport.http_sampling_stream_max_retries", return_value=0):
-                            with patch("pycodex.core.turn_runtime._provider_stream_max_retries", return_value=0):
+                            with patch("pycodex.core.session.turn.runtime._provider_stream_max_retries", return_value=0):
                                 stdout = io.StringIO()
                                 stderr = io.StringIO()
                                 code = main(["exec", "--json", "prompt"], stdout=stdout, stderr=stderr)
@@ -10307,8 +10550,8 @@ class TopLevelCliParserTests(unittest.TestCase):
             ):
                 with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
                     with patch("pycodex.cli.parser.read_auth_json", return_value=None):
-                        with patch("pycodex.core.turn_runtime._provider_stream_max_retries", return_value=1):
-                            with patch("pycodex.core.turn_runtime._sleep_for_sampling_retry", side_effect=no_retry_sleep):
+                        with patch("pycodex.core.session.turn.runtime._provider_stream_max_retries", return_value=1):
+                            with patch("pycodex.core.session.turn.runtime._sleep_for_sampling_retry", side_effect=no_retry_sleep):
                                 stdout = io.StringIO()
                                 stderr = io.StringIO()
                                 code = main(["exec", "prompt"], stdout=stdout, stderr=stderr)
@@ -10353,7 +10596,7 @@ class TopLevelCliParserTests(unittest.TestCase):
                 with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
                     with patch("pycodex.cli.parser.read_auth_json", return_value=None):
                         with patch("pycodex.core.http_transport.http_sampling_stream_max_retries", return_value=0):
-                            with patch("pycodex.core.turn_runtime._provider_stream_max_retries", return_value=0):
+                            with patch("pycodex.core.session.turn.runtime._provider_stream_max_retries", return_value=0):
                                 stdout = io.StringIO()
                                 stderr = io.StringIO()
                                 code = main(["exec", "prompt"], stdout=stdout, stderr=stderr)
@@ -10398,7 +10641,7 @@ class TopLevelCliParserTests(unittest.TestCase):
                 with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
                     with patch("pycodex.cli.parser.read_auth_json", return_value=None):
                         with patch("pycodex.core.http_transport.http_sampling_stream_max_retries", return_value=0):
-                            with patch("pycodex.core.turn_runtime._provider_stream_max_retries", return_value=0):
+                            with patch("pycodex.core.session.turn.runtime._provider_stream_max_retries", return_value=0):
                                 stdout = io.StringIO()
                                 stderr = io.StringIO()
                                 code = main(["exec", "--json", "prompt"], stdout=stdout, stderr=stderr)
@@ -10431,7 +10674,7 @@ class TopLevelCliParserTests(unittest.TestCase):
                 with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
                     with patch("pycodex.cli.parser.read_auth_json", return_value=None):
                         with patch("pycodex.core.http_transport.http_sampling_stream_max_retries", return_value=0):
-                            with patch("pycodex.core.turn_runtime._provider_stream_max_retries", return_value=0):
+                            with patch("pycodex.core.session.turn.runtime._provider_stream_max_retries", return_value=0):
                                 stdout = io.StringIO()
                                 stderr = io.StringIO()
                                 code = main(["exec", "prompt"], stdout=stdout, stderr=stderr)
@@ -10461,7 +10704,7 @@ class TopLevelCliParserTests(unittest.TestCase):
                 with patch("pycodex.core.http_transport.urlopen", side_effect=opener):
                     with patch("pycodex.cli.parser.read_auth_json", return_value=None):
                         with patch("pycodex.core.http_transport.http_sampling_stream_max_retries", return_value=0):
-                            with patch("pycodex.core.turn_runtime._provider_stream_max_retries", return_value=0):
+                            with patch("pycodex.core.session.turn.runtime._provider_stream_max_retries", return_value=0):
                                 stdout = io.StringIO()
                                 stderr = io.StringIO()
                                 code = main(["exec", "--json", "prompt"], stdout=stdout, stderr=stderr)
@@ -10834,6 +11077,227 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertIn("state says not running", stderr.getvalue())
         self.assertIn("codex app-server daemon bootstrap", stderr.getvalue())
 
+    def test_main_exec_when_no_remote_defaults_to_non_unix_remote_endpoint_prints_remote_hint(self):
+        previous_home = os.environ.get("CODEX_HOME")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.environ["CODEX_HOME"] = tmpdir
+
+            from pycodex.exec.session import RemoteAppServerEndpoint
+
+            fake_endpoint = RemoteAppServerEndpoint.websocket("ws://127.0.0.1:4500")
+
+            class FailedResult:
+                ok = False
+                exit_code = 31
+                error_message = "[Errno 111] Connection refused"
+
+            try:
+                with patch(
+                    "pycodex.cli.parser._resolve_exec_remote_endpoint",
+                    return_value=("ws://127.0.0.1:4500", fake_endpoint, Path(tmpdir)),
+                ):
+                    with patch(
+                        "pycodex.cli.parser.remote_exec_session_connect_and_run",
+                        return_value=FailedResult(),
+                    ):
+                        stderr = io.StringIO()
+                        code = self._main_with_local_http_exec_disabled(
+                            ["exec", "prompt"], stderr=stderr
+                        )
+            finally:
+                if previous_home is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous_home
+
+        self.assertEqual(code, 31)
+        self.assertIn(
+            "no --remote provided; attempting local app-server endpoint ws://127.0.0.1:4500.",
+            stderr.getvalue(),
+        )
+        self.assertIn(
+            "pycodex: failed to connect to remote execution endpoint `ws://127.0.0.1:4500`.",
+            stderr.getvalue(),
+        )
+        self.assertIn("ensure the remote endpoint is reachable and running.", stderr.getvalue())
+        self.assertIn("[Errno 111] Connection refused", stderr.getvalue())
+        self.assertNotIn("local app-server socket not found", stderr.getvalue())
+
+    def test_main_exec_when_remote_arg_set_does_not_print_local_app_server_hint(self):
+        previous_home = os.environ.get("CODEX_HOME")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.environ["CODEX_HOME"] = tmpdir
+
+            from pycodex.exec.session import RemoteAppServerEndpoint
+
+            fake_endpoint = RemoteAppServerEndpoint.websocket("ws://127.0.0.1:4500")
+
+            class FailedResult:
+                ok = False
+                exit_code = 31
+                error_message = "[Errno 111] Connection refused"
+
+            try:
+                with patch(
+                    "pycodex.cli.parser._resolve_exec_remote_endpoint",
+                    return_value=("ws://127.0.0.1:4500", fake_endpoint, Path(tmpdir)),
+                ):
+                    with patch(
+                        "pycodex.cli.parser.remote_exec_session_connect_and_run",
+                        return_value=FailedResult(),
+                    ):
+                        stderr = io.StringIO()
+                        code = self._main_with_local_http_exec_disabled(
+                            ["--remote", "ws://127.0.0.1:4500", "exec", "prompt"],
+                            stderr=stderr,
+                        )
+            finally:
+                if previous_home is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous_home
+
+        self.assertEqual(code, 31)
+        self.assertIn(
+            "pycodex: failed to connect to remote execution endpoint `ws://127.0.0.1:4500`.",
+            stderr.getvalue(),
+        )
+        self.assertIn("[Errno 111] Connection refused", stderr.getvalue())
+        self.assertNotIn("attempting local app-server endpoint", stderr.getvalue())
+        self.assertNotIn("start the local app-server first, for example:", stderr.getvalue())
+
+    def test_main_exec_when_remote_arg_set_unix_socket_does_not_print_local_app_server_hint(self):
+        previous_home = os.environ.get("CODEX_HOME")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.environ["CODEX_HOME"] = tmpdir
+
+            from pycodex.exec.session import RemoteAppServerEndpoint
+
+            endpoint_path = Path(tmpdir) / "explicit-unix.sock"
+            fake_endpoint = RemoteAppServerEndpoint.unix_socket(endpoint_path)
+
+            class FailedResult:
+                ok = False
+                exit_code = 31
+                error_message = "[Errno 2] No such file or directory"
+
+            try:
+                with patch(
+                    "pycodex.cli.parser._resolve_exec_remote_endpoint",
+                    return_value=(f"unix://{endpoint_path}", fake_endpoint, Path(tmpdir)),
+                ):
+                    with patch(
+                        "pycodex.cli.parser.remote_exec_session_connect_and_run",
+                        return_value=FailedResult(),
+                    ):
+                        stderr = io.StringIO()
+                        code = self._main_with_local_http_exec_disabled(
+                            ["--remote", f"unix://{endpoint_path}", "exec", "prompt"],
+                            stderr=stderr,
+                        )
+            finally:
+                if previous_home is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous_home
+
+        self.assertEqual(code, 31)
+        self.assertIn(
+            f"pycodex: failed to connect to remote execution endpoint `unix://{endpoint_path}`.",
+            stderr.getvalue(),
+        )
+        self.assertIn("[Errno 2] No such file or directory", stderr.getvalue())
+        self.assertNotIn("attempting local app-server endpoint", stderr.getvalue())
+        self.assertNotIn("start the local app-server first, for example:", stderr.getvalue())
+
+    def test_main_exec_when_remote_arg_is_invalid_remote_address(self) -> None:
+        previous_home = os.environ.get("CODEX_HOME")
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                os.environ["CODEX_HOME"] = tmpdir
+                stderr = io.StringIO()
+                code = self._main_with_local_http_exec_disabled(
+                    ["--remote", "not-a-remote", "exec", "prompt"],
+                    stderr=stderr,
+                )
+        finally:
+            if previous_home is None:
+                os.environ.pop("CODEX_HOME", None)
+            else:
+                os.environ["CODEX_HOME"] = previous_home
+
+        self.assertEqual(code, 1)
+        self.assertIn("invalid remote address `not-a-remote`", stderr.getvalue())
+        self.assertNotIn("attempting local app-server endpoint", stderr.getvalue())
+        self.assertNotIn("start the local app-server first, for example:", stderr.getvalue())
+
+    def test_main_exec_when_remote_auth_token_env_is_missing_does_not_print_local_app_server_hint(self) -> None:
+        previous_home = os.environ.get("CODEX_HOME")
+        previous_token = os.environ.get("PYCODEX_TEST_REMOTE_AUTH_TOKEN")
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                os.environ["CODEX_HOME"] = tmpdir
+                stderr = io.StringIO()
+                code = self._main_with_local_http_exec_disabled(
+                    [
+                        "--remote",
+                        "ws://127.0.0.1:4500",
+                        "--remote-auth-token-env",
+                        "PYCODEX_TEST_REMOTE_AUTH_TOKEN",
+                        "exec",
+                        "prompt",
+                    ],
+                    stderr=stderr,
+                )
+        finally:
+            if previous_home is None:
+                os.environ.pop("CODEX_HOME", None)
+            else:
+                os.environ["CODEX_HOME"] = previous_home
+            if previous_token is None:
+                os.environ.pop("PYCODEX_TEST_REMOTE_AUTH_TOKEN", None)
+            else:
+                os.environ["PYCODEX_TEST_REMOTE_AUTH_TOKEN"] = previous_token
+
+        self.assertEqual(code, 1)
+        self.assertIn("environment variable `PYCODEX_TEST_REMOTE_AUTH_TOKEN` is not set", stderr.getvalue())
+        self.assertNotIn("attempting local app-server endpoint", stderr.getvalue())
+        self.assertNotIn("start the local app-server first, for example:", stderr.getvalue())
+
+    def test_print_local_app_server_connect_hint_for_websocket_connect_error_variants(self) -> None:
+        previous_home = os.environ.get("CODEX_HOME")
+        try:
+            for connect_error in (None, ""):
+                with self.subTest(connect_error=connect_error):
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        os.environ["CODEX_HOME"] = tmpdir
+                        from pycodex.exec.session import RemoteAppServerEndpoint
+
+                        endpoint = RemoteAppServerEndpoint.websocket("ws://127.0.0.1:4500")
+                        stderr = io.StringIO()
+                        _print_local_app_server_connect_hint(
+                            endpoint,
+                            Path(tmpdir),
+                            connect_error=connect_error,
+                            stderr=stderr,
+                        )
+
+                        self.assertIn(
+                            "pycodex: failed to connect to remote execution endpoint `ws://127.0.0.1:4500`.",
+                            stderr.getvalue(),
+                        )
+                        self.assertIn(
+                            "pycodex: ensure the remote endpoint is reachable and running.",
+                            stderr.getvalue(),
+                        )
+                        self.assertNotIn("local app-server socket", stderr.getvalue())
+                        self.assertNotIn("state file", stderr.getvalue())
+        finally:
+            if previous_home is None:
+                os.environ.pop("CODEX_HOME", None)
+            else:
+                os.environ["CODEX_HOME"] = previous_home
+
     def test_main_exec_when_local_app_server_state_is_invalid_prints_state_read_error(self):
         previous_home = os.environ.get("CODEX_HOME")
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -11070,6 +11534,107 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertIn("state says running", stderr.getvalue())
         self.assertIn("app-server state still reports running; socket may be stale or permission-limited.", stderr.getvalue())
         self.assertIn("local app-server socket not found", stderr.getvalue())
+
+    def test_resolve_exec_remote_endpoint_defaults_to_local_app_server_unix_socket(self):
+        previous_home = os.environ.get("CODEX_HOME")
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                os.environ["CODEX_HOME"] = tmpdir
+                parsed = parse_args(["exec", "prompt"])
+                bootstrap_plan = build_exec_config_bootstrap_plan(
+                    parsed.exec_cli(),
+                    config_toml={},
+                )
+                remote_arg, endpoint, codex_home = _resolve_exec_remote_endpoint(parsed, bootstrap_plan)
+
+                expected_path = app_server_control_socket_path(tmpdir)
+                self.assertEqual(remote_arg, f"unix://{expected_path}")
+                self.assertEqual(endpoint.kind, "unix_socket")
+                self.assertEqual(endpoint.socket_path, expected_path)
+                self.assertEqual(codex_home, Path(tmpdir))
+        finally:
+            if previous_home is None:
+                os.environ.pop("CODEX_HOME", None)
+            else:
+                os.environ["CODEX_HOME"] = previous_home
+
+    def test_resolve_exec_remote_endpoint_relative_unix_path_uses_exec_cwd(self):
+        previous_home = os.environ.get("CODEX_HOME")
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                config_cwd = Path(tmpdir) / "workdir"
+                config_cwd.mkdir()
+                os.environ["CODEX_HOME"] = tmpdir
+                parsed = parse_args(["-C", str(config_cwd), "exec", "prompt"])
+                parsed.remote = "unix://session.sock"
+
+                bootstrap_plan = build_exec_config_bootstrap_plan(
+                    parsed.exec_cli(),
+                    config_toml={},
+                )
+                remote_arg, endpoint, codex_home = _resolve_exec_remote_endpoint(parsed, bootstrap_plan)
+
+                self.assertEqual(remote_arg, "unix://session.sock")
+                self.assertEqual(endpoint.kind, "unix_socket")
+                self.assertEqual(endpoint.socket_path, config_cwd / "session.sock")
+                self.assertEqual(codex_home, Path(tmpdir))
+        finally:
+            if previous_home is None:
+                os.environ.pop("CODEX_HOME", None)
+            else:
+                os.environ["CODEX_HOME"] = previous_home
+
+    def test_resolve_exec_remote_endpoint_invalid_remote_address_raises_value_error(self):
+        previous_home = os.environ.get("CODEX_HOME")
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                os.environ["CODEX_HOME"] = tmpdir
+                parsed = parse_args(["exec", "prompt"])
+                bootstrap_plan = build_exec_config_bootstrap_plan(
+                    parsed.exec_cli(),
+                    config_toml={},
+                )
+                parsed = replace(parsed, remote="not-a-remote")
+
+                with self.assertRaisesRegex(ValueError, "invalid remote address `not-a-remote`"):
+                    _resolve_exec_remote_endpoint(parsed, bootstrap_plan)
+        finally:
+            if previous_home is None:
+                os.environ.pop("CODEX_HOME", None)
+            else:
+                os.environ["CODEX_HOME"] = previous_home
+
+    def test_resolve_exec_remote_endpoint_requires_remote_auth_token_env(self):
+        previous_home = os.environ.get("CODEX_HOME")
+        previous_token = os.environ.get("PYCODEX_TEST_REMOTE_AUTH_TOKEN")
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                os.environ["CODEX_HOME"] = tmpdir
+                parsed = parse_args(["exec", "prompt"])
+                bootstrap_plan = build_exec_config_bootstrap_plan(
+                    parsed.exec_cli(),
+                    config_toml={},
+                )
+                parsed = replace(
+                    parsed,
+                    remote="ws://127.0.0.1:4500",
+                    remote_auth_token_env="PYCODEX_TEST_REMOTE_AUTH_TOKEN",
+                )
+
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "environment variable `PYCODEX_TEST_REMOTE_AUTH_TOKEN` is not set",
+                ):
+                    _resolve_exec_remote_endpoint(parsed, bootstrap_plan)
+        finally:
+            if previous_home is None:
+                os.environ.pop("CODEX_HOME", None)
+            else:
+                os.environ["CODEX_HOME"] = previous_home
+            if previous_token is None:
+                os.environ.pop("PYCODEX_TEST_REMOTE_AUTH_TOKEN", None)
+            else:
+                os.environ["PYCODEX_TEST_REMOTE_AUTH_TOKEN"] = previous_token
 
     def test_main_prompt_without_subcommand_is_interactive_path(self):
         stderr = io.StringIO()
@@ -13229,6 +13794,7 @@ class TopLevelCliParserTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 
 
 

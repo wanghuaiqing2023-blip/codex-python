@@ -2,7 +2,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from pycodex.core.features import Feature, Features
+from pycodex.features import Feature, Features
 from pycodex.core.otel_init import (
     OtelConfig,
     OtelExporterKind,

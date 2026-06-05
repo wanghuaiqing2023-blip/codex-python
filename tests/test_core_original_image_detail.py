@@ -1,6 +1,6 @@
 import unittest
 
-from pycodex.core import (
+from pycodex.tools.original_image_detail import (
     can_request_original_image_detail,
     normalize_output_image_detail,
     sanitize_original_image_detail,

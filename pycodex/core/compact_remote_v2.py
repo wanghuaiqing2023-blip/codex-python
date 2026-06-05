@@ -16,10 +16,10 @@ from pycodex.core.client_common import Prompt
 from pycodex.core.compact import InitialContextInjection
 from pycodex.core.compact_remote import process_compacted_history
 from pycodex.core.compact_remote import should_keep_compacted_history_item
-from pycodex.core.features import Feature
+from pycodex.features import Feature
 from pycodex.core.responses_retry import ResponsesStreamRequest, RetryableResponseStreamDecision, response_stream_retry_decision
-from pycodex.core.string_utils import approx_token_count
-from pycodex.core.tool_context import truncate_text
+from pycodex.utils.string import approx_token_count
+from pycodex.core.tools.context import truncate_text
 from pycodex.protocol import BaseInstructions, CodexErr, CompactedItem, ContentItem, Personality, ResponseItem, TruncationPolicyConfig, TurnContextItem
 
 

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pycodex.core.apply_patch import ApplyPatchAction, ApplyPatchFileChange
+from pycodex.apply_patch import ApplyPatchAction, ApplyPatchFileChange
 from pycodex.core.safety import (
     PATCH_REJECTED_OUTSIDE_PROJECT_REASON,
     PATCH_REJECTED_READ_ONLY_REASON,

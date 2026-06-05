@@ -7,20 +7,22 @@ from types import SimpleNamespace
 from pathlib import Path
 
 from pycodex.core import (
-    REQUEST_PERMISSIONS_TOOL_NAME,
     FunctionCallError,
-    RequestPermissionsHandler,
     ToolCallSource,
     ToolCall,
     ToolInvocation,
     ToolPayload,
     ToolRegistry,
     ToolRouter,
+)
+from pycodex.core.tools.handlers.request_permissions import (
+    REQUEST_PERMISSIONS_TOOL_NAME,
+    RequestPermissionsHandler,
     create_request_permissions_tool,
     normalize_request_permission_paths,
     parse_request_permissions_arguments,
-    request_profile_with_file_system,
     request_permissions_tool_description,
+    request_profile_with_file_system,
     request_profile_with_network,
 )
 from pycodex.protocol import (
@@ -372,7 +374,7 @@ class RequestPermissionsHandlerTests(unittest.TestCase):
             create_request_permissions_tool(1)
 
     def test_normalize_boundary_requires_args(self) -> None:
-        from pycodex.core import normalize_request_permissions_args
+        from pycodex.core.tools.handlers.request_permissions import normalize_request_permissions_args
 
         args = RequestPermissionsArgs(RequestPermissionProfile())
 
@@ -384,7 +386,7 @@ class RequestPermissionsHandlerTests(unittest.TestCase):
             normalize_request_permission_paths({})
 
     def test_normalize_request_permissions_args_matches_rust_empty_and_entry_rules(self) -> None:
-        from pycodex.core import normalize_request_permissions_args
+        from pycodex.core.tools.handlers.request_permissions import normalize_request_permissions_args
 
         duplicate = FileSystemSandboxEntry(
             FileSystemPath.explicit_path(Path.cwd() / "out"),
@@ -431,7 +433,7 @@ class RequestPermissionsHandlerTests(unittest.TestCase):
             )
 
     def test_normalize_request_permissions_args_preserves_deny_globs_and_special_paths(self) -> None:
-        from pycodex.core import normalize_request_permissions_args
+        from pycodex.core.tools.handlers.request_permissions import normalize_request_permissions_args
 
         glob_entry = FileSystemSandboxEntry(
             FileSystemPath.glob_pattern("src/**/*.secret"),
@@ -455,7 +457,7 @@ class RequestPermissionsHandlerTests(unittest.TestCase):
         )
 
     def test_normalize_request_permissions_args_canonicalizes_plain_paths(self) -> None:
-        from pycodex.core import normalize_request_permissions_args
+        from pycodex.core.tools.handlers.request_permissions import normalize_request_permissions_args
 
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)
@@ -488,7 +490,7 @@ class RequestPermissionsHandlerTests(unittest.TestCase):
             )
 
     def test_normalize_request_permissions_args_deduplicates_after_canonicalization(self) -> None:
-        from pycodex.core import normalize_request_permissions_args
+        from pycodex.core.tools.handlers.request_permissions import normalize_request_permissions_args
 
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)
@@ -526,7 +528,7 @@ class RequestPermissionsHandlerTests(unittest.TestCase):
 
     @unittest.skipUnless(hasattr(os, "symlink"), "symlink support is required")
     def test_normalize_request_permissions_args_preserves_nested_symlink_logical_path(self) -> None:
-        from pycodex.core import normalize_request_permissions_args
+        from pycodex.core.tools.handlers.request_permissions import normalize_request_permissions_args
 
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)

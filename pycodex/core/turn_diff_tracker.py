@@ -8,8 +8,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .apply_patch import ApplyPatchAction
-
 JsonValue = Any
 
 ZERO_OID = "0000000000000000000000000000000000000000"
@@ -91,7 +89,7 @@ class AppliedPatchDelta:
     @classmethod
     def from_apply_patch_action(
         cls,
-        action: ApplyPatchAction,
+        action: "ApplyPatchAction",
     ) -> "AppliedPatchDelta":
         changes: list[AppliedPatchChange] = []
         exact = True
@@ -160,7 +158,7 @@ class TurnDiffTracker:
     def with_display_root(cls, display_root: str | Path) -> "TurnDiffTracker":
         return cls(display_root=Path(display_root))
 
-    def track_action(self, action: ApplyPatchAction) -> None:
+    def track_action(self, action: "ApplyPatchAction") -> None:
         self.track_delta(AppliedPatchDelta.from_apply_patch_action(action))
 
     def track_delta(self, delta: AppliedPatchDelta) -> None:

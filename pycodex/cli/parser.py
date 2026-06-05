@@ -1,4 +1,4 @@
-"""Top-level CLI parser for the Python Codex port.
+﻿"""Top-level CLI parser for the Python Codex port.
 
 This module mirrors the top-level command dispatch shape from upstream
 ``codex/codex-rs/cli/src/main.rs`` while keeping command implementations as
@@ -104,8 +104,8 @@ from pycodex.cli.login import (
     write_auth_json,
 )
 
-from .features import FeatureCliError, FeatureToggles, FeaturesCli, parse_features_args, run_features_command
-from .features import FeaturesSubcommand
+from pycodex.cli.features import FeatureCliError, FeatureToggles, FeaturesCli, parse_features_args, run_features_command
+from pycodex.cli.features import FeaturesSubcommand
 from .doctor_updates import (
     default_reachability_plan,
     doctor_background_server_check,
@@ -132,10 +132,10 @@ from .doctor_updates import (
     redacted_doctor_report_mapping,
 )
 from pycodex.tui import run_tui
-from pycodex.core.exec_policy import ExecPolicyPrefixRule
-from pycodex.core.git_info import current_branch_name, default_branch_name
-from pycodex.core.paths import find_codex_home
-from pycodex.core.config_edit import CONFIG_TOML_FILE, read_toml_mapping, write_toml_mapping
+from pycodex.execpolicy import ExecPolicyPrefixRule
+from pycodex.git_utils import current_branch_name, default_branch_name
+from pycodex.utils.home_dir import find_codex_home
+from pycodex.core.config.edit import CONFIG_TOML_FILE, read_toml_mapping, write_toml_mapping
 from .spec import COMMANDS_BY_NAME, UPSTREAM_CLI_MAIN, CommandSpec, visible_commands
 
 
@@ -2202,11 +2202,12 @@ def main(
 
     if parsed.is_interactive:
         if parsed.prompt is not None and (local_http_exec_enabled() or core_exec_enabled()):
+            normalized_prompt = _normalize_tui_prompt(parsed.prompt)
             fallback = replace(
                 parsed,
                 command="exec",
                 command_spec=COMMANDS_BY_NAME.get("exec"),
-                command_args=(parsed.prompt,),
+                command_args=(normalized_prompt,),
                 prompt=None,
             )
             return _run_noninteractive_exec(
@@ -2217,11 +2218,16 @@ def main(
                 stdin_is_terminal=stdin_is_terminal,
             )
         if os.environ.get("PYCODEX_INTERACTIVE_TO_EXEC_FALLBACK", "").strip().lower() in {"1", "true", "yes", "on"}:
+            fallback_prompt = (
+                _normalize_tui_prompt(parsed.prompt)
+                if parsed.prompt is not None
+                else None
+            )
             fallback = replace(
                 parsed,
                 command="exec",
                 command_spec=COMMANDS_BY_NAME.get("exec"),
-                command_args=() if parsed.prompt is None else (parsed.prompt,),
+                command_args=() if fallback_prompt is None else (fallback_prompt,),
                 prompt=None,
             )
             return _run_noninteractive_exec(
@@ -2410,6 +2416,10 @@ def main(
 
 def _run_tui(*, stderr: TextIO) -> int:
     return run_tui(stderr=stderr)
+
+
+def _normalize_tui_prompt(prompt: str) -> str:
+    return prompt.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _read_json_state(path: Path) -> dict[str, Any]:
@@ -8068,11 +8078,11 @@ def _build_noninteractive_exec_event_processor(exec_cli: ExecCli) -> HumanEventP
 def _resolve_exec_remote_endpoint(
     parsed: "ParsedCli", bootstrap_plan: ExecConfigBootstrapPlan
 ) -> tuple[str, RemoteAppServerEndpoint, Path]:
+    codex_home = Path(find_codex_home())
     remote_arg = parsed.remote
     if remote_arg is None:
-        remote_arg = f"unix://{app_server_control_socket_path(find_codex_home())}"
+        remote_arg = f"unix://{app_server_control_socket_path(codex_home)}"
 
-    codex_home = find_codex_home()
     endpoint = resolve_remote_endpoint(
         remote_arg,
         remote_auth_token_env=parsed.remote_auth_token_env,
@@ -8092,6 +8102,13 @@ def _print_local_app_server_connect_hint(
     stderr: TextIO,
 ) -> None:
     if endpoint.kind != "unix_socket" or endpoint.socket_path is None:
+        print(
+            f"pycodex: failed to connect to remote execution endpoint {endpoint.endpoint}.",
+            file=stderr,
+        )
+        if connect_error:
+            print(f"pycodex: {connect_error}", file=stderr)
+        print("pycodex: ensure the remote endpoint is reachable and running.", file=stderr)
         return
 
     state_path = codex_home / _APP_SERVER_STATE_FILE
@@ -8672,3 +8689,6 @@ def _typed_root_value(root: dict[str, object], key: str, expected_type: type):
     if isinstance(value, expected_type):
         return value
     return None
+
+
+

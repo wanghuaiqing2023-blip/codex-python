@@ -16,7 +16,7 @@ from pycodex.core import (
     build_text_message,
     personality_message_for,
 )
-from pycodex.core.features import Feature
+from pycodex.features import Feature
 from pycodex.protocol import ApprovalsReviewer, AskForApproval, PermissionProfile, TurnEnvironmentSelection
 
 

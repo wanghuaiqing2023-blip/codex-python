@@ -1,8 +1,8 @@
-import unittest
+﻿import unittest
 from types import SimpleNamespace
 
 from pycodex.core.client import ModelClient
-from pycodex.core.turn_request import build_turn_responses_request
+from pycodex.core.session.turn.request import build_turn_responses_request
 from pycodex.protocol import BaseInstructions, ContentItem, ResponseItem, SessionSource, SubAgentSource
 
 
@@ -104,3 +104,4 @@ class TurnRequestTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

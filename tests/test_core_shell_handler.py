@@ -5,9 +5,9 @@ from types import SimpleNamespace
 
 from pycodex.core.exec import ExecCapturePolicy
 from pycodex.core.function_tool import FunctionCallError
-from pycodex.core.hook_names import HookToolName
+from pycodex.core.tools.hook_names import HookToolName
 from pycodex.core.shell import Shell, ShellType
-from pycodex.core.shell_handler import (
+from pycodex.core.tools.handlers.shell import (
     ShellCommandBackend,
     ShellCommandBackendConfig,
     ShellCommandHandler,
@@ -15,8 +15,8 @@ from pycodex.core.shell_handler import (
     ShellCommandToolCallParams,
     shell_command_payload_command,
 )
-from pycodex.core.tool_context import FunctionToolOutput, ToolPayload
-from pycodex.core.tool_registry import ToolInvocation
+from pycodex.core.tools.context import FunctionToolOutput, ToolPayload
+from pycodex.core.tools.registry import ToolInvocation
 from pycodex.protocol import CODEX_THREAD_ID_ENV_VAR, SandboxPermissions, ShellEnvironmentPolicy, ShellEnvironmentPolicyInherit, ThreadId, ToolName
 
 

@@ -2,12 +2,14 @@ import json
 import unittest
 
 from pycodex.core import (
-    PLAN_UPDATED_MESSAGE,
-    UPDATE_PLAN_TOOL_NAME,
     FunctionCallError,
+    ToolPayload,
+)
+from pycodex.core.tools.handlers.plan import (
+    PLAN_UPDATED_MESSAGE,
     PlanHandler,
     PlanToolOutput,
-    ToolPayload,
+    UPDATE_PLAN_TOOL_NAME,
     create_update_plan_tool,
     parse_update_plan_arguments,
 )

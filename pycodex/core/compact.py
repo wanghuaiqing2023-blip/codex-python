@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import Sequence
 
 from pycodex.core.event_mapping import parse_turn_item
-from pycodex.core.tool_context import truncate_text
-from pycodex.core.string_utils import approx_token_count
+from pycodex.core.tools.context import truncate_text
+from pycodex.utils.string import approx_token_count
 from pycodex.protocol import ContentItem, ResponseItem, TruncationPolicyConfig
 
 _WORKSPACE_ROOT = Path(__file__).resolve().parents[2]

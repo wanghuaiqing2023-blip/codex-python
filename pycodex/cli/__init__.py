@@ -1,6 +1,6 @@
 """Command-line entry point for the Python Codex port."""
 
-from .features import (
+from pycodex.cli.features import (
     FeatureCliError,
     FeatureSetArgs,
     FeatureToggles,

@@ -1,14 +1,14 @@
 import asyncio
 import unittest
 
-from pycodex.core import tool_parallel as tool_parallel_module
-from pycodex.core.network_approval import CancellationToken
-from pycodex.core.hook_names import HookToolName
+from pycodex.core.tools import parallel as tool_parallel_module
+from pycodex.core.tools.network_approval import CancellationToken
+from pycodex.core.tools.hook_names import HookToolName
 from pycodex.core.hook_runtime import PostToolUseHookOutcome, PreToolUseHookResult
-from pycodex.core.tool_context import FunctionToolOutput, JsonToolOutput, ToolPayload
-from pycodex.core.tool_lifecycle import ToolCallOutcome
-from pycodex.core.tool_lifecycle import ExtensionToolCallSource
-from pycodex.core.tool_parallel import (
+from pycodex.core.tools.context import FunctionToolOutput, JsonToolOutput, ToolPayload
+from pycodex.core.tools.lifecycle import ToolCallOutcome
+from pycodex.core.tools.lifecycle import ExtensionToolCallSource
+from pycodex.core.tools.parallel import (
     TerminalOutcomeFlag,
     ToolCallResult,
     ToolCallRuntime,
@@ -18,8 +18,8 @@ from pycodex.core.tool_parallel import (
     should_return_completed_after_cancellation,
     tool_runtime_decision,
 )
-from pycodex.core.tool_registry import PostToolUsePayload, RegisteredTool, ToolCallSource, ToolInvocation, ToolRegistry
-from pycodex.core.tool_router import FunctionCallError, ToolCall, ToolRouter
+from pycodex.core.tools.registry import PostToolUsePayload, RegisteredTool, ToolCallSource, ToolInvocation, ToolRegistry
+from pycodex.core.tools.router import FunctionCallError, ToolCall, ToolRouter
 from pycodex.protocol import SearchToolCallParams, ToolName
 
 
@@ -1083,7 +1083,7 @@ class ToolParallelTests(unittest.TestCase):
 
         class Router(ToolRouter):
             async def dispatch_tool_call_with_terminal_outcome(self, call, **kwargs):
-                from pycodex.core.tool_lifecycle import ToolCallOutcome, notify_tool_finish
+                from pycodex.core.tools.lifecycle import ToolCallOutcome, notify_tool_finish
 
                 await notify_tool_finish(
                     [BlockingFinishContributor()],
@@ -1152,7 +1152,7 @@ class ToolParallelTests(unittest.TestCase):
 
         class Router(ToolRouter):
             async def dispatch_tool_call_with_terminal_outcome(self, call, **kwargs):
-                from pycodex.core.tool_lifecycle import ToolCallOutcome, notify_tool_finish
+                from pycodex.core.tools.lifecycle import ToolCallOutcome, notify_tool_finish
 
                 await notify_tool_finish(
                     [BlockingFinishContributor()],

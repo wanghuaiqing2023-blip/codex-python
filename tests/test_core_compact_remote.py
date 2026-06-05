@@ -1,4 +1,4 @@
-import json
+﻿import json
 import unittest
 from pathlib import Path
 
@@ -20,7 +20,7 @@ from pycodex.core.compact_remote import (
     strip_images_when_unsupported,
     trim_function_call_history_to_fit_context_window,
 )
-from pycodex.core.session_runtime import InMemoryCodexSession
+from pycodex.core.session.runtime import InMemoryCodexSession
 from pycodex.protocol import (
     AskForApproval,
     ContentItem,
@@ -537,3 +537,4 @@ class CompactRemoteTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

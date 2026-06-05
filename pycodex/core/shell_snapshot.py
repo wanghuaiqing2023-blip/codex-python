@@ -396,7 +396,7 @@ def cleanup_stale_snapshots(
         return []
 
     if rollout_finder is None:
-        from .rollout import find_thread_path_by_id_str
+        from pycodex.rollout import find_thread_path_by_id_str
 
         rollout_finder = find_thread_path_by_id_str
 

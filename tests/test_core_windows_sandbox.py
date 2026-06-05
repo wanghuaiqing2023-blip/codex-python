@@ -1,7 +1,9 @@
 import unittest
+from pathlib import Path
+import tempfile
 from types import SimpleNamespace
 
-from pycodex.core.features import Feature, Features, FeaturesToml
+from pycodex.features import Feature, Features, FeaturesToml
 from pycodex.core.windows_sandbox import (
     ConfigToml,
     WindowsSandboxModeToml,
@@ -77,6 +79,39 @@ class WindowsSandboxTests(unittest.TestCase):
         self.assertEqual(windows_sandbox_setup_mode_tag(WindowsSandboxSetupMode.ELEVATED), "elevated")
         self.assertEqual(windows_sandbox_setup_mode_tag("unelevated"), "unelevated")
         self.assertFalse(sandbox_setup_is_complete("C:/Users/example/.codex"))
+
+    def test_sandbox_setup_is_complete(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            marker_path = codex_home / ".sandbox" / "setup_marker.json"
+            users_path = codex_home / ".sandbox-secrets" / "sandbox_users.json"
+
+            self.assertFalse(sandbox_setup_is_complete(str(codex_home)))
+
+            marker_path.parent.mkdir(parents=True)
+            users_path.parent.mkdir(parents=True)
+            marker_path.write_text('{"version": 4}', encoding="utf-8")
+            users_path.write_text('{"version": 5}', encoding="utf-8")
+            self.assertFalse(sandbox_setup_is_complete(str(codex_home)))
+
+            marker_path.write_text('{"version": 5}', encoding="utf-8")
+            users_path.write_text('{"version": 4}', encoding="utf-8")
+            self.assertFalse(sandbox_setup_is_complete(str(codex_home)))
+
+            users_path.write_text("not-json", encoding="utf-8")
+            self.assertFalse(sandbox_setup_is_complete(str(codex_home)))
+
+            users_path.write_text('{"version": 5}', encoding="utf-8")
+            self.assertTrue(sandbox_setup_is_complete(str(codex_home)))
+
+            marker_path.write_text('{"version": 5.0}', encoding="utf-8")
+            users_path.write_text('{"version": 5}', encoding="utf-8")
+            self.assertFalse(sandbox_setup_is_complete(str(codex_home)))
+
+            marker_path.write_text('{"version": 5}', encoding="utf-8")
+            users_path.write_text('{"version": true}', encoding="utf-8")
+            self.assertFalse(sandbox_setup_is_complete(str(codex_home)))
+            self.assertFalse(sandbox_setup_is_complete(codex_home))
 
 
 if __name__ == "__main__":

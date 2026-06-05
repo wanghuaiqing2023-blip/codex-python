@@ -16,7 +16,7 @@ from pycodex.core.realtime_context import (
     render_tree,
     truncate_realtime_text_to_token_budget,
 )
-from pycodex.core.string_utils import approx_token_count
+from pycodex.utils.string import approx_token_count
 from pycodex.protocol import ContentItem, ResponseItem
 
 

@@ -8,6 +8,12 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+from pycodex.execpolicy import (
+    PROMPT_CONFLICT_REASON,
+    REJECT_RULES_APPROVAL_REASON,
+    REJECT_SANDBOX_APPROVAL_REASON,
+    commands_for_intercepted_exec_policy,
+)
 from pycodex.core import (
     CODEX_PROXY_GIT_SSH_COMMAND_MARKER,
     ESCALATE_SOCKET_ENV_VAR,
@@ -22,9 +28,6 @@ from pycodex.core import (
     GuardianNetworkAccessTrigger,
     NetworkApprovalMode,
     ParsedShellCommand,
-    PROMPT_CONFLICT_REASON,
-    REJECT_RULES_APPROVAL_REASON,
-    REJECT_SANDBOX_APPROVAL_REASON,
     SHELL_ESCALATE_HANDSHAKE_MESSAGE,
     SHELL_SOCKET_MAX_FDS_PER_MESSAGE,
     SHELL_SOCKET_STREAM_MAX_PAYLOAD,
@@ -66,7 +69,6 @@ from pycodex.core import (
     build_override_exports_for_keys,
     build_sandbox_command,
     build_unified_exec_sandbox_command,
-    commands_for_intercepted_exec_policy,
     disable_powershell_profile_for_elevated_windows_sandbox,
     exec_env_for_sandbox_permissions,
     execve_prompt_is_rejected_by_policy,
@@ -150,7 +152,7 @@ from pycodex.core import (
 from pycodex.core import SandboxAttempt
 from pycodex.core import DEFAULT_EXEC_COMMAND_TIMEOUT_MS, ExecCapturePolicy, ExecExpirationKind
 from pycodex.core.exec import CancellationToken
-from pycodex.core.tool_runtimes import flat_tool_name
+from pycodex.core.tools.runtimes import flat_tool_name
 from pycodex.protocol import (
     AskForApproval,
     CODEX_THREAD_ID_ENV_VAR,
@@ -2829,7 +2831,7 @@ class ToolRuntimesTests(unittest.TestCase):
         self.assertIs(kwargs["stdin"], subprocess.DEVNULL)
         self.assertIs(kwargs["stdout"], subprocess.DEVNULL)
         self.assertIs(kwargs["stderr"], subprocess.DEVNULL)
-        with patch("pycodex.core.tool_runtimes.os.dup2") as dup2:
+        with patch("pycodex.core.tools.runtimes.os.dup2") as dup2:
             kwargs["preexec_fn"]()
         self.assertEqual(
             [call.args for call in dup2.call_args_list],
@@ -2931,7 +2933,7 @@ class ToolRuntimesTests(unittest.TestCase):
         self.assertEqual(launched[0]["executable"], "/bin/sh")
         self.assertEqual(launched[0]["cwd"], Path("/work"))
         self.assertEqual(launched[0]["env"], {"A": "B"})
-        with patch("pycodex.core.tool_runtimes.os.dup2") as dup2:
+        with patch("pycodex.core.tools.runtimes.os.dup2") as dup2:
             launched[0]["preexec_fn"]()
         self.assertEqual([call.args for call in dup2.call_args_list], [(10, 0), (11, 1)])
 

@@ -1,6 +1,6 @@
 import unittest
 
-from pycodex.core.shell_spec import (
+from pycodex.core.tools.handlers.shell_spec import (
     CommandToolOptions,
     create_approval_parameters,
     create_exec_command_tool,

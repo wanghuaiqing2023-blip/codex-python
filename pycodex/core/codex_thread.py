@@ -36,6 +36,7 @@ class ThreadConfigSnapshot:
     approvals_reviewer: Any = None
     permission_profile: Any = None
     active_permission_profile: Any = None
+    file_system_sandbox_policy: Any = None
     cwd: Path = field(default_factory=Path.cwd)
     workspace_roots: tuple[Path, ...] = ()
     profile_workspace_roots: tuple[Path, ...] = ()
@@ -59,12 +60,12 @@ class ThreadConfigSnapshot:
             raise TypeError("ephemeral must be a bool")
 
     def sandbox_policy(self) -> Any:
+        method = getattr(self.permission_profile, "to_legacy_sandbox_policy", None)
+        if callable(method):
+            return method(self.cwd)
         method = getattr(self.permission_profile, "sandbox_policy", None)
         if callable(method):
             return method(self.cwd)
-        method = getattr(self.permission_profile, "file_system_sandbox_policy", None)
-        if callable(method):
-            return method()
         return None
 
 

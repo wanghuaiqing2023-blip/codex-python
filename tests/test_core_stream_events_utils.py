@@ -100,7 +100,7 @@ from pycodex.core import (
     unexpected_tool_output_plan,
 )
 from pycodex.core.client import SamplingRequestRuntimeHookAdapter, SamplingRuntimeEventApplicationState
-from pycodex.core.tool_router import ToolRouter
+from pycodex.core.tools.router import ToolRouter
 from pycodex.core.function_tool import FunctionCallError
 from pycodex.protocol import (
     AgentMessageContent,
@@ -711,7 +711,7 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
         )
 
     def test_handle_output_item_done_router_error_records_model_visible_response(self) -> None:
-        from pycodex.core import tool_router
+        from pycodex.core.tools import router as tool_router
 
         class Session:
             def __init__(self):
@@ -746,7 +746,7 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
         self.assertEqual(session.input_queue.accepted, [])
 
     def test_handle_output_item_done_router_fatal_error_raises_without_model_response(self) -> None:
-        from pycodex.core import tool_router
+        from pycodex.core.tools import router as tool_router
 
         class Session:
             def __init__(self):
