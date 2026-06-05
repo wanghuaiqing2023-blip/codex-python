@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from pycodex.core.mcp_resource_handler import (
+from pycodex.core.tools.handlers.mcp_resource import (
     InMemoryMcpResourceProvider,
     ListMcpResourceTemplatesHandler,
     ListMcpResourcesHandler,
@@ -12,8 +12,8 @@ from pycodex.core.mcp_resource_handler import (
     create_list_mcp_resources_tool,
     create_read_mcp_resource_tool,
 )
-from pycodex.core.tool_context import ToolPayload
-from pycodex.core.tool_router import FunctionCallError
+from pycodex.core.tools.context import ToolPayload
+from pycodex.core.tools.router import FunctionCallError
 from pycodex.protocol import Resource, ResourceContent, ResourceTemplate, SearchToolCallParams
 
 

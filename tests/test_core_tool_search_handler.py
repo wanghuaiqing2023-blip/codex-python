@@ -2,14 +2,20 @@ import unittest
 
 from pycodex.core import (
     FunctionCallError,
+    ToolPayload,
+    ToolSearchOutput,
+)
+from pycodex.core.tools.handlers.tool_search import (
+    ToolSearchHandler,
+    create_tool_search_tool,
+)
+from pycodex.core.tools.tool_search_entry import (
+    ToolSearchInfo,
+)
+from pycodex.tools.tool_discovery import (
     TOOL_SEARCH_DEFAULT_LIMIT,
     TOOL_SEARCH_TOOL_NAME,
-    ToolPayload,
-    ToolSearchHandler,
-    ToolSearchInfo,
-    ToolSearchOutput,
     ToolSearchSourceInfo,
-    create_tool_search_tool,
 )
 from pycodex.protocol import SearchToolCallParams, ToolName
 

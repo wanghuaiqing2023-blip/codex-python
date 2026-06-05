@@ -1,10 +1,10 @@
-import asyncio
+﻿import asyncio
 import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from pycodex.core.handler_utils import (
+from pycodex.core.tools.handlers.utils import (
     EffectiveAdditionalPermissions,
     apply_granted_turn_permissions,
     implicit_granted_permissions,
@@ -21,7 +21,7 @@ from pycodex.core.handler_utils import (
     session_strict_auto_review,
     updated_hook_command,
 )
-from pycodex.core.tool_router import FunctionCallError
+from pycodex.core.tools.router import FunctionCallError
 from pycodex.protocol import (
     AdditionalPermissionProfile,
     AskForApproval,
@@ -604,3 +604,4 @@ class HandlerUtilsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

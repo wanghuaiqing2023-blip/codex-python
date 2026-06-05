@@ -15,9 +15,11 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 from pathlib import Path
 
+from pycodex.execpolicy import (
+    ExecPolicyPrefixRule,
+)
 from pycodex.core import (
     ExecApprovalRequirement,
-    ExecPolicyPrefixRule,
     SessionMeta,
     append_thread_name,
     count_session_rollout_files,
@@ -31,7 +33,7 @@ from pycodex.core import (
 from pycodex.core.client import ModelClient
 from pycodex.core.client_common import REVIEW_PROMPT
 from pycodex.core.shell import Shell, ShellType
-from pycodex.core.turn_runtime import UserTurnSamplingResult
+from pycodex.core.session.turn.runtime import UserTurnSamplingResult
 from pycodex.exec.event_processor import HumanEventProcessor, JsonEventProcessor
 from pycodex.exec.local_runtime import (
     build_default_local_http_exec_runtime,
@@ -8468,7 +8470,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     "wall_time_seconds": 0.0,
                     "exit_code": 0,
                     "original_token_count": 3,
-                    "output": "…3 tokens truncated…",
+                    "output": "... tokens truncated...",
                 }, True
 
         manager = FakeSessionManager()
@@ -9748,3 +9750,5 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+

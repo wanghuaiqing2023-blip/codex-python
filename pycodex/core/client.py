@@ -3260,7 +3260,7 @@ def _trace_field(trace: Any | None, name: str) -> str | None:
 
 
 def _feature_responses_websocket_response_processed() -> Any:
-    from pycodex.core.features import Feature
+    from pycodex.features import Feature
 
     return Feature.RESPONSES_WEBSOCKET_RESPONSE_PROCESSED
 

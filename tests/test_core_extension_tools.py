@@ -1,12 +1,12 @@
 import unittest
 
-from pycodex.core.extension_tools import (
+from pycodex.core.tools.handlers.extension_tools import (
     ExtensionToolAdapter,
     ExtensionTurnContext,
     to_extension_call,
 )
-from pycodex.core.tool_context import JsonToolOutput, ToolPayload
-from pycodex.core.tool_registry import ToolExposure, ToolInvocation
+from pycodex.core.tools.context import JsonToolOutput, ToolPayload
+from pycodex.core.tools.registry import ToolExposure, ToolInvocation
 from pycodex.protocol import ResponseItem, ToolName, TruncationPolicyConfig
 
 

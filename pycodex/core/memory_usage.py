@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from pycodex.core.shell import Shell, default_user_shell
-from pycodex.core.shell_handler import ShellCommandToolCallParams
-from pycodex.core.tool_registry import ToolInvocation, flat_tool_name
+from pycodex.core.tools.handlers.shell import ShellCommandToolCallParams
+from pycodex.core.tools.registry import ToolInvocation, flat_tool_name
 
 JsonValue = Any
 MEMORIES_USAGE_METRIC = "codex.memories.usage"
@@ -111,7 +111,7 @@ def shell_command_for_invocation(
         session_shell = default_user_shell()
     if not isinstance(session_shell, Shell):
         raise TypeError("session_shell must be Shell")
-    from pycodex.core.unified_exec_handler import UnifiedExecShellMode, get_command
+    from pycodex.core.tools.handlers.unified_exec import UnifiedExecShellMode, get_command
 
     if unified_exec_shell_mode is None:
         unified_exec_shell_mode = UnifiedExecShellMode.direct()
@@ -179,7 +179,7 @@ def _parse_shell_command(arguments: str) -> ShellCommandToolCallParams | None:
 
 def _parse_exec_command(arguments: str) -> Any:
     try:
-        from pycodex.core.unified_exec_handler import ExecCommandArgs
+        from pycodex.core.tools.handlers.unified_exec import ExecCommandArgs
 
         return ExecCommandArgs.from_json(arguments)
     except (TypeError, ValueError, json.JSONDecodeError):

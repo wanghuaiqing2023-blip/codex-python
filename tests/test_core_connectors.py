@@ -4,7 +4,6 @@ from types import SimpleNamespace
 from pycodex.core import (
     CODEX_APPS_MCP_SERVER_NAME,
     AppConfig,
-    AppInfo,
     AppRequirement,
     AppToolApproval,
     AppToolConfig,
@@ -22,18 +21,23 @@ from pycodex.core import (
     app_tool_policy,
     app_tool_policy_from_apps_config,
     apply_requirements_apps_constraints,
-    connector_install_url,
-    connector_name_slug,
     codex_app_tool_is_enabled,
     managed_app_tool_approval,
+    with_app_enabled_state,
+    with_app_plugin_sources,
+)
+from pycodex.connectors.merge import (
     merge_connectors,
     merge_plugin_connectors,
     merge_plugin_connectors_with_accessible,
     plugin_connector_to_app_info,
-    sanitize_name,
-    with_app_enabled_state,
-    with_app_plugin_sources,
 )
+from pycodex.connectors.metadata import (
+    connector_install_url,
+    connector_name_slug,
+    sanitize_name,
+)
+from pycodex.app_server_protocol.apps import AppInfo
 from pycodex.protocol import Tool
 
 

@@ -13,7 +13,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping
 
-from pycodex.core.features import Feature, Features
+from pycodex.features import Feature, Features
 
 
 class OtelHttpProtocol(str, Enum):

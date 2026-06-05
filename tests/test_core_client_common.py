@@ -9,7 +9,7 @@ from pycodex.core.client_common import (
     Prompt,
     ResponseStream,
 )
-from pycodex.core.network_approval import CancellationToken
+from pycodex.core.tools.network_approval import CancellationToken
 from pycodex.protocol import BaseInstructions, ContentItem, Personality, ResponseItem
 
 

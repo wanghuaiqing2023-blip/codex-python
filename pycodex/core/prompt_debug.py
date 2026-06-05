@@ -1,4 +1,4 @@
-"""Prompt debug input construction boundaries.
+﻿"""Prompt debug input construction boundaries.
 
 Ported from ``codex/codex-rs/core/src/prompt_debug.rs``. The Rust module builds
 a short-lived session/thread and then asks the session to construct the
@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from pycodex.core.client_common import Prompt
-from pycodex.core.turn_prompt import build_turn_prompt, render_turn_user_instructions
+from pycodex.core.session.turn.prompt import build_turn_prompt, render_turn_user_instructions
 from pycodex.protocol import BaseInstructions, ResponseInputItem, ResponseItem, UserInput
 
 
@@ -176,3 +176,4 @@ __all__ = [
     "build_prompt_input_from_session",
     "mark_config_ephemeral",
 ]
+

@@ -12,8 +12,6 @@ from pycodex.core import (
     ToolExposure,
     ToolPayload,
     ToolPlanOptions,
-    ToolSearchHandler,
-    ToolSearchInfo,
     WAIT_TOOL_NAME,
     add_apply_patch_tool_for_turn_context,
     add_apply_patch_tool,
@@ -33,7 +31,11 @@ from pycodex.core import (
     tool_environment_includes_environment_id,
     tool_environment_mode_from_turn_context,
 )
-from pycodex.core.spec_plan import add_request_permissions_tool
+from pycodex.core.tools.handlers.tool_search import ToolSearchHandler
+from pycodex.core.tools.tool_search_entry import (
+    ToolSearchInfo,
+)
+from pycodex.core.tools.spec_plan import add_request_permissions_tool
 from pycodex.protocol import ApplyPatchToolType
 from pycodex.protocol import TurnEnvironmentSelection
 from pycodex.protocol import ToolName, WebSearchMode, WebSearchToolType

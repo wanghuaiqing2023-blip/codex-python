@@ -2,10 +2,12 @@ import json
 import unittest
 
 from pycodex.core import (
-    REQUEST_USER_INPUT_TOOL_NAME,
     FunctionCallError,
-    RequestUserInputHandler,
     ToolPayload,
+)
+from pycodex.core.tools.handlers.request_user_input import (
+    REQUEST_USER_INPUT_TOOL_NAME,
+    RequestUserInputHandler,
     create_request_user_input_tool,
     normalize_request_user_input_args,
     parse_request_user_input_arguments,

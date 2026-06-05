@@ -11,8 +11,8 @@ from pycodex.core.memory_usage import (
     shell_command_for_invocation,
 )
 from pycodex.core.shell import Shell, ShellType
-from pycodex.core.tool_context import ToolPayload
-from pycodex.core.tool_registry import ToolCallSource, ToolInvocation
+from pycodex.core.tools.context import ToolPayload
+from pycodex.core.tools.registry import ToolCallSource, ToolInvocation
 from pycodex.protocol import ToolName
 
 

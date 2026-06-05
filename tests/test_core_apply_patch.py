@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
-from pycodex.core import (
+from pycodex.apply_patch import (
     APPLY_PATCH_FREEFORM_DESCRIPTION,
     APPLY_PATCH_LARK_GRAMMAR,
     APPLY_PATCH_TOOL_NAME,
@@ -17,13 +17,9 @@ from pycodex.core import (
     ApplyPatchFileUpdate,
     ApplyPatchHandler,
     ApplyPatchParseError,
-    ApplyPatchToolOutput,
-    FunctionCallError,
     Hunk,
     MaybeApplyPatch,
     StreamingPatchParser,
-    ToolPayload,
-    ToolInvocation,
     UpdateFileChunk,
     convert_apply_patch_hunks_to_protocol,
     convert_apply_patch_to_protocol,
@@ -37,8 +33,14 @@ from pycodex.core import (
     unified_diff_from_chunks,
     verify_apply_patch_args,
 )
-from pycodex.core.features import Feature
-from pycodex.core.hook_names import HookToolName
+from pycodex.core import (
+    ApplyPatchToolOutput,
+    FunctionCallError,
+    ToolPayload,
+    ToolInvocation,
+)
+from pycodex.features import Feature
+from pycodex.core.tools.hook_names import HookToolName
 from pycodex.protocol import (
     AdditionalPermissionProfile,
     AskForApproval,

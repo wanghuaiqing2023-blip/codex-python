@@ -1,6 +1,6 @@
 import unittest
 
-from pycodex.core.multi_agents_v1_handler import (
+from pycodex.core.tools.handlers.multi_agents import (
     SendInputArgs,
     SendInputHandler,
     SendInputResult,
@@ -16,9 +16,9 @@ from pycodex.core.multi_agents_v1_handler import (
     parse_agent_id_target,
     parse_agent_id_targets,
 )
-from pycodex.core.tool_context import ToolPayload
-from pycodex.core.tool_registry import ToolInvocation
-from pycodex.core.tool_router import FunctionCallError
+from pycodex.core.tools.context import ToolPayload
+from pycodex.core.tools.registry import ToolInvocation
+from pycodex.core.tools.router import FunctionCallError
 from pycodex.protocol import AgentStatus, ToolName
 
 

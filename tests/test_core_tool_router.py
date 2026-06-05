@@ -31,13 +31,13 @@ from pycodex.core import (
     ToolPayload,
     ToolRegistry,
     ToolRouter,
-    ViewImageHandler,
     apply_post_tool_use_feedback,
     build_environment_tool_router_from_turn_context,
     build_tool_call,
     dispatch_tool_call,
     dispatch_tool_call_with_terminal_outcome,
 )
+from pycodex.core.tools.handlers.view_image import ViewImageHandler
 from pycodex.protocol import NetworkSandboxPolicy, PermissionProfile, ResponseItem, SearchToolCallParams, ToolName, TruncationPolicyConfig
 
 

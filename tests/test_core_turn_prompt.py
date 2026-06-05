@@ -1,7 +1,7 @@
-import unittest
+﻿import unittest
 from types import SimpleNamespace
 
-from pycodex.core.turn_prompt import (
+from pycodex.core.session.turn.prompt import (
     build_turn_prompt,
     input_with_user_instructions,
     is_guardian_reviewer_source,
@@ -105,3 +105,4 @@ class TurnPromptTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

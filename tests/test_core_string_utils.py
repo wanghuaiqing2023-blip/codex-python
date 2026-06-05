@@ -3,7 +3,6 @@ import unittest
 
 from pycodex.core import (
     approx_bytes_for_tokens,
-    approx_token_count,
     approx_tokens_from_byte_count,
     find_uuids,
     normalize_markdown_hash_location_suffix,
@@ -12,7 +11,8 @@ from pycodex.core import (
     truncate_middle_chars,
     truncate_middle_with_token_budget,
 )
-from pycodex.core.string_utils import (
+from pycodex.core_skills.rendering import approx_token_count
+from pycodex.utils.string import (
     _split_string,
     sanitize_metric_tag_value,
     truncate_to_char_boundary,

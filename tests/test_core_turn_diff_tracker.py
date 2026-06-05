@@ -3,6 +3,9 @@ import unittest
 import uuid
 from pathlib import Path
 
+from pycodex.apply_patch import (
+    maybe_parse_apply_patch_verified,
+)
 from pycodex.core import (
     DEV_NULL,
     REGULAR_FILE_MODE,
@@ -12,7 +15,6 @@ from pycodex.core import (
     AppliedPatchFileChange,
     TurnDiffTracker,
     git_blob_oid,
-    maybe_parse_apply_patch_verified,
 )
 
 

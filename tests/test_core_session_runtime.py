@@ -1,20 +1,20 @@
-import json
+﻿import json
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
 from pycodex.core.client import ModelClient
-from pycodex.core.handler_utils import apply_granted_turn_permissions, record_granted_request_permissions
+from pycodex.core.tools.handlers.utils import apply_granted_turn_permissions, record_granted_request_permissions
 from pycodex.core.http_transport import run_user_turn_http_sampling_from_session
-from pycodex.core.session_runtime import InMemoryCodexSession
+from pycodex.core.session.runtime import InMemoryCodexSession
 from pycodex.core.codex_thread import SessionSettingsUpdate
-from pycodex.core.features import Feature
-from pycodex.core.tool_context import FunctionToolOutput
-from pycodex.core.tool_orchestrator import build_tool_orchestrator_plan_for_session, OrchestratorApprovalKind
-from pycodex.core.tool_registry import ToolRegistry
-from pycodex.core.tool_router import ToolRouter
-from pycodex.core.tool_sandboxing import ExecApprovalRequirement
-from pycodex.core.turn_runtime import run_user_turn_sampling_from_session
+from pycodex.features import Feature
+from pycodex.core.tools.context import FunctionToolOutput
+from pycodex.core.tools.orchestrator import build_tool_orchestrator_plan_for_session, OrchestratorApprovalKind
+from pycodex.core.tools.registry import ToolRegistry
+from pycodex.core.tools.router import ToolRouter
+from pycodex.core.tools.sandboxing import ExecApprovalRequirement
+from pycodex.core.session.turn.runtime import run_user_turn_sampling_from_session
 from pycodex.protocol import (
     AdditionalPermissionProfile,
     AccountPlanType,
@@ -1105,7 +1105,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
             SessionSettingsUpdate(sandbox_policy=SandboxPolicy.workspace_write((), False, False))
         )
 
-        self.assertEqual(preview.sandbox_policy, SandboxPolicy.workspace_write((), False, False))
+        self.assertEqual(preview.sandbox_policy(), SandboxPolicy.workspace_write((), False, False))
         self.assertIsNotNone(preview.permission_profile)
         self.assertEqual(preview.permission_profile.type, "managed")
         self.assertEqual(
@@ -2517,3 +2517,5 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+

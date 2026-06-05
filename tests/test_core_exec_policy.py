@@ -2,7 +2,7 @@ import os
 import unittest
 from pathlib import Path
 
-from pycodex.core import (
+from pycodex.execpolicy import (
     PROMPT_CONFLICT_REASON,
     REJECT_RULES_APPROVAL_REASON,
     REJECT_SANDBOX_APPROVAL_REASON,

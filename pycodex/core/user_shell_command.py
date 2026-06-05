@@ -10,7 +10,7 @@ from pycodex.protocol import (
 )
 
 from .context import UserShellCommand
-from .tool_context import formatted_truncate_text
+from .tools.context import formatted_truncate_text
 
 
 def format_exec_output_str(
@@ -97,7 +97,7 @@ def _round_duration_seconds_for_model(seconds: float) -> float:
 def _truncate_text(content: str, policy: TruncationPolicyConfig) -> str:
     if len(content.encode("utf-8")) <= _policy_byte_budget(policy):
         return content
-    from .tool_context import truncate_text
+    from .tools.context import truncate_text
 
     return truncate_text(content, policy)
 
@@ -105,7 +105,7 @@ def _truncate_text(content: str, policy: TruncationPolicyConfig) -> str:
 def _policy_byte_budget(policy: TruncationPolicyConfig) -> int:
     if policy.mode.value == "bytes":
         return max(policy.limit, 0)
-    from .string_utils import approx_bytes_for_tokens
+    from pycodex.utils.string import approx_bytes_for_tokens
 
     return approx_bytes_for_tokens(policy.limit)
 

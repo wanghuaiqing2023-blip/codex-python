@@ -13,9 +13,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from pycodex.core.connectors import AppsConfig, codex_app_tool_is_enabled
-from pycodex.core.mcp_tool_handler import ToolInfo
-from pycodex.core.request_plugin_install import CODEX_APPS_MCP_SERVER_NAME
-from pycodex.core.tool_discovery import AppInfo
+from pycodex.core.tools.handlers.mcp import ToolInfo
+from pycodex.core.tools.handlers.request_plugin_install import CODEX_APPS_MCP_SERVER_NAME
+from pycodex.tools.tool_discovery import AppInfo
 
 JsonValue = Any
 

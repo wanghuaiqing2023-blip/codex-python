@@ -6,9 +6,6 @@ from pycodex.core import (
     DEFAULT_MCP_SERVER_ENVIRONMENT_ID,
     McpServerConfig,
     McpServerTransportConfig,
-    SkillDependencies,
-    SkillMetadata,
-    SkillToolDependency,
     canonical_mcp_dependency_key,
     canonical_mcp_key,
     canonical_mcp_server_key,
@@ -16,6 +13,11 @@ from pycodex.core import (
     filter_prompted_mcp_dependencies,
     format_missing_mcp_dependencies,
     mcp_dependency_to_server_config,
+)
+from pycodex.core_skills.model import (
+    SkillDependencies,
+    SkillMetadata,
+    SkillToolDependency,
 )
 
 

@@ -1,4 +1,4 @@
-"""Config lock helpers ported from ``core/src/config_lock.rs``.
+﻿"""Config lock helpers ported from ``core/src/config_lock.rs``.
 
 The Rust implementation serializes comparison values through TOML. Python's
 standard library can parse TOML but cannot emit it, so this module keeps the
@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from pycodex import __version__ as _PYCODEX_VERSION
-from pycodex import _toml
+from pycodex.config import toml_compat as _toml
 
 
 CONFIG_LOCK_VERSION = 1
@@ -384,3 +384,4 @@ __all__ = [
     "validate_config_lock_metadata_shape",
     "validate_config_lock_replay",
 ]
+

@@ -3,12 +3,12 @@ from __future__ import annotations
 import unittest
 
 from pycodex.core import (
-    AppInfo,
     PluginCapabilitySummary,
     render_apps_section,
     render_explicit_plugin_instructions,
     render_plugins_section,
 )
+from pycodex.app_server_protocol.apps import AppInfo
 from pycodex.protocol import (
     APPS_INSTRUCTIONS_CLOSE_TAG,
     APPS_INSTRUCTIONS_OPEN_TAG,

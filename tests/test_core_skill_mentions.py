@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 import unittest
 
-from pycodex.core import (
-    SkillMetadata,
+from pycodex.core_skills.model import SkillMetadata
+from pycodex.core_skills.mentions import (
     build_skill_name_counts,
     collect_explicit_skill_mentions,
     text_mentions_skill,

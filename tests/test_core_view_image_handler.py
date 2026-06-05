@@ -5,10 +5,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from pycodex.core import (
-    VIEW_IMAGE_TOOL_NAME,
-    VIEW_IMAGE_UNSUPPORTED_MESSAGE,
     FunctionCallError,
     ToolPayload,
+)
+from pycodex.core.tools.handlers.view_image import (
+    VIEW_IMAGE_TOOL_NAME,
+    VIEW_IMAGE_UNSUPPORTED_MESSAGE,
     ViewImageHandler,
     ViewImageOutput,
     ViewImageToolOptions,

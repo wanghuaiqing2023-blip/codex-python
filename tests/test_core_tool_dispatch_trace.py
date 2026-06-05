@@ -136,7 +136,7 @@ class ToolDispatchTraceTests(unittest.TestCase):
         requester = ToolDispatchRequester.model("call-1")
         payload = ToolDispatchPayload(type="function", arguments="{}")
         with self.assertRaises(TypeError):
-            from pycodex.core import ToolDispatchInvocation
+from pycodex.core import ToolDispatchInvocation
             ToolDispatchInvocation(
                 thread_id=123,
                 codex_turn_id="turn-1",

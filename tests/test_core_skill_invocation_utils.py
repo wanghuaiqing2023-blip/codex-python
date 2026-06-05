@@ -4,9 +4,9 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from pycodex.core import (
+from pycodex.core_skills.model import SkillMetadata
+from pycodex.core_skills.invocation_utils import (
     SkillLoadOutcome,
-    SkillMetadata,
     SkillPolicy,
     build_implicit_skill_path_indexes,
     canonicalize_if_exists,

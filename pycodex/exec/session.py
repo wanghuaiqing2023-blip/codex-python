@@ -129,7 +129,7 @@ def resolve_remote_addr(
         socket_path = addr.removeprefix("unix://")
         if socket_path == "":
             if codex_home is None:
-                from pycodex.core.paths import find_codex_home
+                from pycodex.utils.home_dir import find_codex_home
 
                 codex_home = find_codex_home()
             return RemoteAppServerEndpoint.unix_socket(app_server_control_socket_path(codex_home))

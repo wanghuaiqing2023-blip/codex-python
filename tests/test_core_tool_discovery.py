@@ -1,11 +1,11 @@
 import json
 import unittest
 
-from pycodex.core import (
+from pycodex.app_server_protocol.apps import AppInfo
+from pycodex.tools.tool_discovery import (
     LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME,
     REQUEST_PLUGIN_INSTALL_TOOL_NAME,
     TUI_CLIENT_NAME,
-    AppInfo,
     DiscoverablePluginInfo,
     DiscoverableTool,
     DiscoverableToolAction,

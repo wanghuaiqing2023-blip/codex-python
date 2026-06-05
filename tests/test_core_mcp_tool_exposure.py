@@ -3,14 +3,14 @@ import unittest
 from pycodex.core import (
     CODEX_APPS_MCP_SERVER_NAME,
     DIRECT_MCP_TOOL_EXPOSURE_THRESHOLD,
-    AppInfo,
     AppsConfig,
     AppsDefaultConfig,
     McpToolExposure,
     ToolInfo,
     build_mcp_tool_exposure,
-    sanitize_name,
 )
+from pycodex.connectors.metadata import sanitize_name
+from pycodex.app_server_protocol.apps import AppInfo
 from pycodex.protocol import Tool, ToolName
 
 

@@ -1,4 +1,4 @@
-"""Delegated sub-agent event bridge ported from ``codex_delegate.rs``.
+﻿"""Delegated sub-agent event bridge ported from ``codex_delegate.rs``.
 
 The Rust module starts a child Codex session, forwards normal events to the
 caller, and intercepts approval/input/permission events so the parent session can
@@ -14,7 +14,7 @@ import inspect
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Mapping, MutableMapping, Sequence
 
-from pycodex.core.handler_utils import normalize_request_permissions_response
+from pycodex.core.tools.handlers.utils import normalize_request_permissions_response
 from pycodex.protocol import (
     Event,
     EventMsg,
@@ -585,3 +585,4 @@ __all__ = [
     "shutdown_delegate",
     "submit_to_codex",
 ]
+

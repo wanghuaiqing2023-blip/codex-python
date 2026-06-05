@@ -1,8 +1,10 @@
 import unittest
 
+from pycodex.execpolicy import (
+    Decision,
+)
 from pycodex.core import (
     BlockedRequest,
-    Decision,
     ExecPolicyNetworkRuleAmendment,
     ExecPolicyNetworkRuleProtocol,
     denied_network_policy_message,

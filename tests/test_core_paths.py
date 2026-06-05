@@ -2,18 +2,18 @@ import unittest
 import uuid
 from pathlib import Path
 
-from pycodex.core import (
+from pycodex.state import (
     GOALS_DB_FILENAME,
     LOGS_DB_FILENAME,
     MEMORIES_DB_FILENAME,
     STATE_DB_FILENAME,
-    find_codex_home,
     goals_db_path,
     logs_db_path,
     memories_db_path,
     runtime_db_paths,
     state_db_path,
 )
+from pycodex.utils.home_dir import find_codex_home
 
 
 def workspace_tempdir():

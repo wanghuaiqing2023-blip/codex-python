@@ -87,6 +87,22 @@ class ExecRunPreparationTests(unittest.TestCase):
             "Summarize",
         )
 
+    def test_resolve_root_prompt_normalizes_carriage_returns_in_prompt_and_stdin(self):
+        stderr = io.StringIO()
+
+        prompt = resolve_root_prompt(
+            "Summarize this\r\nprompt with\rCRLF",
+            stdin=b"stdin text\r\nwith extra\rline",
+            stdin_is_terminal=False,
+            stderr=stderr,
+        )
+
+        self.assertEqual(
+            prompt,
+            "Summarize this\nprompt with\nCRLF\n\n<stdin>\nstdin text\nwith extra\nline\n</stdin>",
+        )
+        self.assertIn("Reading additional input from stdin...", stderr.getvalue())
+
     def test_optional_append_ignores_unreadable_default_stdin(self):
         class UnreadableStdin:
             def isatty(self):
@@ -115,6 +131,18 @@ class ExecRunPreparationTests(unittest.TestCase):
         self.assertEqual(
             resolve_prompt(None, stdin=b"prompt from stdin\n", stdin_is_terminal=False, stderr=stderr),
             "prompt from stdin\n",
+        )
+
+    def test_resolve_prompt_normalizes_carriage_returns(self):
+        self.assertEqual(
+            resolve_prompt("line1\r\nline2\rline3", stdin_is_terminal=True, stderr=io.StringIO()),
+            "line1\nline2\nline3",
+        )
+
+    def test_resolve_prompt_dash_reads_stdin_and_normalizes_crlf(self):
+        self.assertEqual(
+            resolve_prompt("-", stdin=b"line1\r\nline2\r", stdin_is_terminal=False, stderr=io.StringIO()),
+            "line1\nline2\n",
         )
 
     def test_prepare_exec_run_plan_accepts_dash_prompt_from_cli(self):

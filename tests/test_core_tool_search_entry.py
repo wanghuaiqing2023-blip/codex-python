@@ -2,13 +2,15 @@ import unittest
 
 from pycodex.core import (
     FreeformToolFormat,
-    ToolSearchInfo,
-    ToolSearchSourceInfo,
     ToolSpec,
+)
+from pycodex.core.tools.tool_search_entry import (
+    ToolSearchInfo,
     coalesce_loadable_tool_specs,
     default_namespace_description,
     loadable_tool_spec_from_spec,
 )
+from pycodex.tools.tool_discovery import ToolSearchSourceInfo
 
 
 class ToolSearchEntryTests(unittest.TestCase):

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Mapping
+
+from pycodex.core_skills.model import SkillMetadata, SkillToolDependency
 
 
 DEFAULT_MCP_SERVER_ENVIRONMENT_ID = "local"
@@ -13,31 +14,10 @@ MCP_DEPENDENCY_OPTION_INSTALL = "Install"
 MCP_DEPENDENCY_OPTION_SKIP = "Continue anyway"
 
 
-@dataclass(frozen=True)
-class SkillToolDependency:
-    type: str
-    value: str
-    transport: str | None = None
-    url: str | None = None
-    command: str | None = None
 
 
-@dataclass(frozen=True)
-class SkillDependencies:
-    tools: tuple[SkillToolDependency, ...] = ()
 
 
-@dataclass(frozen=True)
-class SkillMetadata:
-    name: str
-    dependencies: SkillDependencies | None = None
-    description: str = ""
-    short_description: str | None = None
-    interface: object | None = None
-    policy: object | None = None
-    path_to_skills_md: Path | str | None = None
-    scope: str = "user"
-    plugin_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -184,9 +164,6 @@ __all__ = [
     "SKILL_MCP_DEPENDENCY_PROMPT_ID",
     "McpServerConfig",
     "McpServerTransportConfig",
-    "SkillDependencies",
-    "SkillMetadata",
-    "SkillToolDependency",
     "canonical_mcp_dependency_key",
     "canonical_mcp_key",
     "canonical_mcp_server_key",

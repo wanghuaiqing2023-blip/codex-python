@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pycodex.core.agent_jobs import (
+from pycodex.core.tools.handlers.agent_jobs import (
     AgentJobItem,
     InMemoryAgentJobStore,
     ReportAgentJobResultHandler,
@@ -21,8 +21,8 @@ from pycodex.core.agent_jobs import (
     render_instruction_template,
     render_job_csv,
 )
-from pycodex.core.tool_context import ToolPayload
-from pycodex.core.tool_router import FunctionCallError
+from pycodex.core.tools.context import ToolPayload
+from pycodex.core.tools.router import FunctionCallError
 
 
 class CoreAgentJobsTests(unittest.TestCase):

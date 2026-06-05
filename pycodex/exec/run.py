@@ -112,6 +112,10 @@ def decode_prompt_bytes(input_bytes: bytes) -> str:
         raise PromptDecodeError("invalid_utf8", valid_up_to=exc.start) from exc
 
 
+def _normalize_prompt_line_endings(prompt: str) -> str:
+    return prompt.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _decode_utf16(input_bytes: bytes, label: str, codec: str) -> str:
     if len(input_bytes) % 2:
         raise PromptDecodeError("invalid_utf16", encoding=label)
@@ -201,7 +205,7 @@ def resolve_prompt(
     stderr: TextIO | None = None,
 ) -> str:
     if prompt_arg is not None and prompt_arg != "-":
-        return prompt_arg
+        return _normalize_prompt_line_endings(prompt_arg)
 
     behavior = StdinPromptBehavior.FORCED if prompt_arg == "-" else StdinPromptBehavior.REQUIRED_IF_PIPED
     prompt = read_prompt_from_stdin(
@@ -212,7 +216,7 @@ def resolve_prompt(
     )
     if prompt is None:
         raise AssertionError("required stdin prompt should produce content")
-    return prompt
+    return _normalize_prompt_line_endings(prompt)
 
 
 def resolve_root_prompt(
@@ -223,6 +227,7 @@ def resolve_root_prompt(
     stderr: TextIO | None = None,
 ) -> str:
     if prompt_arg is not None and prompt_arg != "-":
+        prompt_arg = _normalize_prompt_line_endings(prompt_arg)
         stdin_text = read_prompt_from_stdin(
             StdinPromptBehavior.OPTIONAL_APPEND,
             stdin=stdin,
@@ -230,7 +235,7 @@ def resolve_root_prompt(
             stderr=stderr,
         )
         if stdin_text is not None:
-            return prompt_with_stdin_context(prompt_arg, stdin_text)
+            return prompt_with_stdin_context(prompt_arg, _normalize_prompt_line_endings(stdin_text))
         return prompt_arg
     return resolve_prompt(
         prompt_arg,

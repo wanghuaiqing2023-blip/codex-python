@@ -14,9 +14,17 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from pycodex.core.mcp_tool_handler import ToolInfo
-from pycodex.core.request_plugin_install import CODEX_APPS_MCP_SERVER_NAME
-from pycodex.core.tool_discovery import AppInfo
+from pycodex.core.tools.handlers.mcp import ToolInfo
+from pycodex.core.tools.handlers.request_plugin_install import CODEX_APPS_MCP_SERVER_NAME
+from pycodex.tools.tool_discovery import AppInfo
+from pycodex.connectors.accessible import (
+    AccessibleConnectorTool as _AccessibleConnectorTool,
+    collect_accessible_connectors as _collect_accessible_connectors,
+)
+from pycodex.connectors.metadata import (
+    coerce_app_info as _coerce_app_info,
+    replace_app_info as _replace_app_info,
+)
 
 JsonValue = Any
 
@@ -27,37 +35,6 @@ class AppToolApproval(str, Enum):
     APPROVE = "approve"
 
 
-@dataclass(frozen=True)
-class AccessibleConnectorTool:
-    connector_id: str
-    connector_name: str | None = None
-    connector_description: str | None = None
-    plugin_display_names: tuple[str, ...] = field(default_factory=tuple)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "connector_id", str(self.connector_id))
-        object.__setattr__(self, "connector_name", _optional_str(self.connector_name))
-        object.__setattr__(
-            self,
-            "connector_description",
-            _optional_str(self.connector_description),
-        )
-        object.__setattr__(
-            self,
-            "plugin_display_names",
-            _string_tuple(self.plugin_display_names),
-        )
-
-    @classmethod
-    def from_mapping(cls, value: Mapping[str, JsonValue]) -> "AccessibleConnectorTool":
-        return cls(
-            connector_id=str(value["connector_id"]),
-            connector_name=_optional_str(value.get("connector_name")),
-            connector_description=_optional_str(
-                value.get("connector_description", value.get("namespace_description"))
-            ),
-            plugin_display_names=_string_tuple(value.get("plugin_display_names", ())),
-        )
 
 
 @dataclass(frozen=True)
@@ -233,6 +210,8 @@ class AppsConfig:
     def from_mapping(cls, value: Mapping[str, JsonValue] | None) -> "AppsConfig | None":
         if value is None:
             return None
+        if not isinstance(value, Mapping):
+            return None
         raw_apps = value.get("apps", {})
         if not isinstance(raw_apps, Mapping):
             raw_apps = {}
@@ -353,6 +332,8 @@ class AppsRequirements:
     def from_mapping(cls, value: Mapping[str, JsonValue] | None) -> "AppsRequirements | None":
         if value is None:
             return None
+        if not isinstance(value, Mapping):
+            return None
         raw_apps = value.get("apps", value)
         if not isinstance(raw_apps, Mapping):
             return cls()
@@ -365,79 +346,14 @@ class AppsRequirements:
         )
 
 
-def connector_name_slug(name: str) -> str:
-    normalized = "".join(
-        character.lower() if character.isascii() and character.isalnum() else "-"
-        for character in name
-    ).strip("-")
-    return normalized or "app"
 
 
-def sanitize_name(name: str) -> str:
-    return connector_name_slug(name).replace("-", "_")
 
 
-def connector_install_url(name: str, connector_id: str) -> str:
-    return f"https://chatgpt.com/apps/{connector_name_slug(name)}/{connector_id}"
 
 
-def plugin_connector_to_app_info(connector_id: str) -> AppInfo:
-    name = str(connector_id)
-    return AppInfo(
-        id=name,
-        name=name,
-        description=None,
-        install_url=connector_install_url(name, name),
-        is_accessible=False,
-        is_enabled=True,
-    )
 
 
-def collect_accessible_connectors(
-    tools: Iterable[AccessibleConnectorTool | Mapping[str, JsonValue]],
-) -> list[AppInfo]:
-    connectors: dict[str, tuple[AppInfo, set[str]]] = {}
-    for raw_tool in tools:
-        tool = (
-            raw_tool
-            if isinstance(raw_tool, AccessibleConnectorTool)
-            else AccessibleConnectorTool.from_mapping(raw_tool)
-        )
-        connector_id = tool.connector_id
-        connector_name = normalize_connector_value(tool.connector_name) or connector_id
-        connector_description = normalize_connector_value(tool.connector_description)
-        if connector_id in connectors:
-            existing, plugin_display_names = connectors[connector_id]
-            if existing.name == connector_id and connector_name != connector_id:
-                existing = _replace_app_info(existing, name=connector_name)
-            if existing.description is None and connector_description is not None:
-                existing = _replace_app_info(existing, description=connector_description)
-            plugin_display_names.update(tool.plugin_display_names)
-            connectors[connector_id] = (existing, plugin_display_names)
-            continue
-
-        connectors[connector_id] = (
-            AppInfo(
-                id=connector_id,
-                name=connector_name,
-                description=connector_description,
-                is_accessible=True,
-                is_enabled=True,
-            ),
-            set(tool.plugin_display_names),
-        )
-
-    accessible = []
-    for connector, plugin_display_names in connectors.values():
-        accessible.append(
-            _replace_app_info(
-                connector,
-                install_url=connector_install_url(connector.name, connector.id),
-                plugin_display_names=tuple(sorted(plugin_display_names)),
-            )
-        )
-    accessible.sort(key=lambda connector: (not connector.is_accessible, connector.name, connector.id))
-    return accessible
 
 
 def accessible_connectors_from_mcp_tools(
@@ -451,88 +367,20 @@ def accessible_connectors_from_mcp_tools(
         if tool.connector_id is None:
             continue
         connector_tools.append(
-            AccessibleConnectorTool(
+            _AccessibleConnectorTool(
                 connector_id=tool.connector_id,
                 connector_name=tool.connector_name,
                 connector_description=tool.namespace_description,
                 plugin_display_names=tool.plugin_display_names,
             )
         )
-    return collect_accessible_connectors(connector_tools)
+    return _collect_accessible_connectors(connector_tools)
 
 
-def merge_connectors(
-    connectors: Iterable[AppInfo | Mapping[str, JsonValue]],
-    accessible_connectors: Iterable[AppInfo | Mapping[str, JsonValue]],
-) -> list[AppInfo]:
-    merged: dict[str, AppInfo] = {
-        connector.id: _replace_app_info(connector, is_accessible=False)
-        for connector in (_coerce_app_info(connector) for connector in connectors)
-    }
-    for raw_connector in accessible_connectors:
-        connector = _replace_app_info(_coerce_app_info(raw_connector), is_accessible=True)
-        existing = merged.get(connector.id)
-        if existing is None:
-            merged[connector.id] = connector
-            continue
-        updates: dict[str, JsonValue] = {"is_accessible": True}
-        if existing.name == existing.id and connector.name != connector.id:
-            updates["name"] = connector.name
-        if existing.description is None and connector.description is not None:
-            updates["description"] = connector.description
-        if existing.logo_url is None and connector.logo_url is not None:
-            updates["logo_url"] = connector.logo_url
-        if existing.logo_url_dark is None and connector.logo_url_dark is not None:
-            updates["logo_url_dark"] = connector.logo_url_dark
-        if existing.distribution_channel is None and connector.distribution_channel is not None:
-            updates["distribution_channel"] = connector.distribution_channel
-        plugin_names = tuple(
-            sorted(set(existing.plugin_display_names).union(connector.plugin_display_names))
-        )
-        updates["plugin_display_names"] = plugin_names
-        merged[connector.id] = _replace_app_info(existing, **updates)
-
-    result = []
-    for connector in merged.values():
-        install_url = connector.install_url or connector_install_url(connector.name, connector.id)
-        result.append(
-            _replace_app_info(
-                connector,
-                install_url=install_url,
-                plugin_display_names=tuple(sorted(set(connector.plugin_display_names))),
-            )
-        )
-    result.sort(key=lambda connector: (not connector.is_accessible, connector.name, connector.id))
-    return result
 
 
-def merge_plugin_connectors(
-    connectors: Iterable[AppInfo | Mapping[str, JsonValue]],
-    plugin_app_ids: Iterable[str],
-) -> list[AppInfo]:
-    merged = [_coerce_app_info(connector) for connector in connectors]
-    connector_ids = {connector.id for connector in merged}
-    for connector_id in plugin_app_ids:
-        connector_id = str(connector_id)
-        if connector_id not in connector_ids:
-            connector_ids.add(connector_id)
-            merged.append(plugin_connector_to_app_info(connector_id))
-    merged.sort(key=lambda connector: (not connector.is_accessible, connector.name, connector.id))
-    return merged
 
 
-def merge_plugin_connectors_with_accessible(
-    plugin_app_ids: Iterable[str],
-    accessible_connectors: Iterable[AppInfo | Mapping[str, JsonValue]],
-) -> list[AppInfo]:
-    accessible = [_coerce_app_info(connector) for connector in accessible_connectors]
-    accessible_ids = {connector.id for connector in accessible}
-    plugin_connectors = [
-        plugin_connector_to_app_info(str(connector_id))
-        for connector_id in plugin_app_ids
-        if str(connector_id) in accessible_ids
-    ]
-    return merge_connectors(plugin_connectors, accessible)
 
 
 def app_is_enabled(apps_config: AppsConfig | Mapping[str, JsonValue], connector_id: str | None) -> bool:
@@ -755,71 +603,10 @@ def with_app_plugin_sources(
     ]
 
 
-def normalize_connector_value(value: str | None) -> str | None:
-    if value is None:
-        return None
-    trimmed = value.strip()
-    return trimmed or None
 
 
-def _coerce_app_info(value: AppInfo | Mapping[str, JsonValue]) -> AppInfo:
-    if isinstance(value, AppInfo):
-        return value
-    if isinstance(value, Mapping):
-        return AppInfo.from_mapping(value)
-    if hasattr(value, "to_mapping"):
-        try:
-            mapped = value.to_mapping()
-            if isinstance(mapped, Mapping):
-                return AppInfo.from_mapping(mapped)
-        except Exception:
-            pass
-    fields = {}
-    if hasattr(value, "__dict__"):
-        fields.update(value.__dict__)
-    for key in (
-        "id",
-        "name",
-        "description",
-        "labels",
-        "is_accessible",
-        "is_enabled",
-        "plugin_display_names",
-        "install_url",
-        "logo_url",
-        "logo_url_dark",
-        "distribution_channel",
-        "branding",
-        "app_metadata",
-    ):
-        if key not in fields and hasattr(value, key):
-            fields[key] = getattr(value, key)
-    if "id" not in fields:
-        connector_id = None
-        for fallback in ("connector_id", "slug", "path"):
-            if hasattr(value, fallback):
-                connector_id = getattr(value, fallback)
-                break
-        if connector_id is None:
-            connector_id = getattr(value, "__name__", None)
-        if connector_id is not None:
-            fields["id"] = connector_id
-    if "name" not in fields:
-        if "id" in fields:
-            fields["name"] = fields["id"]
-        elif hasattr(value, "__class__"):
-            fields["name"] = value.__class__.__name__
-    if "id" not in fields:
-        raise TypeError("AppInfo mapping must be a mapping")
-    if "name" not in fields:
-        fields["name"] = fields["id"]
-    return AppInfo.from_mapping(fields)
 
 
-def _replace_app_info(connector: AppInfo, **updates: JsonValue) -> AppInfo:
-    data = connector.to_mapping()
-    data.update(updates)
-    return AppInfo.from_mapping(data)
 
 
 def _coerce_app_tool_config(value: AppToolConfig | Mapping[str, JsonValue]) -> AppToolConfig:
@@ -855,7 +642,6 @@ def _string_tuple(value: JsonValue) -> tuple[str, ...]:
 
 
 __all__ = [
-    "AccessibleConnectorTool",
     "AppConfig",
     "AppRequirement",
     "AppToolApproval",
@@ -873,17 +659,8 @@ __all__ = [
     "app_tool_policy",
     "app_tool_policy_from_apps_config",
     "apply_requirements_apps_constraints",
-    "collect_accessible_connectors",
-    "connector_install_url",
-    "connector_name_slug",
     "codex_app_tool_is_enabled",
     "managed_app_tool_approval",
-    "merge_connectors",
-    "merge_plugin_connectors",
-    "merge_plugin_connectors_with_accessible",
-    "normalize_connector_value",
-    "plugin_connector_to_app_info",
-    "sanitize_name",
     "with_app_enabled_state",
     "with_app_plugin_sources",
 ]

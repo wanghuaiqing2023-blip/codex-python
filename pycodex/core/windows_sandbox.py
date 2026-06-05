@@ -10,13 +10,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+import json
+from pathlib import Path
 from typing import Any, Mapping
 
-from pycodex.core.features import Feature, Features, FeaturesToml
+from pycodex.features import Feature, Features, FeaturesToml
 from pycodex.protocol import WindowsSandboxLevel
 
 
 ELEVATED_SANDBOX_NUX_ENABLED = True
+_WINDOWS_SANDBOX_SETUP_VERSION = 5
 
 
 class WindowsSandboxModeToml(str, Enum):
@@ -159,7 +162,25 @@ def windows_sandbox_setup_mode_tag(mode: WindowsSandboxSetupMode | str) -> str:
 
 
 def sandbox_setup_is_complete(_codex_home: str) -> bool:
-    return False
+    codex_home = Path(_codex_home)
+    marker_version = _read_setup_json_version(codex_home / ".sandbox" / "setup_marker.json")
+    if marker_version != _WINDOWS_SANDBOX_SETUP_VERSION:
+        return False
+    users_version = _read_setup_json_version(codex_home / ".sandbox-secrets" / "sandbox_users.json")
+    return users_version == _WINDOWS_SANDBOX_SETUP_VERSION
+
+
+def _read_setup_json_version(path: Path) -> int | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    version = payload.get("version")
+    if not isinstance(version, int) or isinstance(version, bool):
+        return None
+    return version
 
 
 def _config_toml(value: ConfigToml | Mapping[str, Any]) -> ConfigToml:

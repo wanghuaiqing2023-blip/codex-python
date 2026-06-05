@@ -4,10 +4,10 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from pycodex.core import (
+from pycodex.core_skills.model import SkillMetadata
+from pycodex.core_skills.injections import (
     SkillInjection,
     SkillInjections,
-    SkillMetadata,
     build_skill_injections,
 )
 

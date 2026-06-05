@@ -2,7 +2,7 @@ import json
 import unittest
 from dataclasses import replace
 
-from pycodex.core.goal_handler import (
+from pycodex.core.tools.handlers.goal import (
     COMPLETION_BUDGET_REPORT_MESSAGE,
     UPDATE_GOAL_STATUS_ERROR,
     CreateGoalHandler,
@@ -14,8 +14,8 @@ from pycodex.core.goal_handler import (
     create_update_goal_tool,
     parse_create_goal_arguments,
 )
-from pycodex.core.tool_context import ToolPayload
-from pycodex.core.tool_router import FunctionCallError
+from pycodex.core.tools.context import ToolPayload
+from pycodex.core.tools.router import FunctionCallError
 from pycodex.protocol import SearchToolCallParams, ThreadGoal, ThreadGoalStatus, ThreadId
 
 

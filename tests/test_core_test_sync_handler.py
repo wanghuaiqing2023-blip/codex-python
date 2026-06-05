@@ -3,13 +3,15 @@ import threading
 import unittest
 
 from pycodex.core import (
+    FunctionCallError,
+    ToolPayload,
+)
+from pycodex.core.tools.handlers.test_sync import (
+    BarrierArgs,
     DEFAULT_TEST_SYNC_TIMEOUT_MS,
     TEST_SYNC_TOOL_NAME,
-    BarrierArgs,
-    FunctionCallError,
     TestSyncArgs,
     TestSyncHandler,
-    ToolPayload,
     create_test_sync_tool,
     parse_test_sync_arguments,
     wait_on_barrier,

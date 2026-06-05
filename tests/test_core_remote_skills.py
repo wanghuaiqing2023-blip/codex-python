@@ -6,7 +6,7 @@ import tempfile
 import unittest
 import zipfile
 
-from pycodex.core import (
+from pycodex.core_skills.remote import (
     HttpResponse,
     RemoteSkillAuth,
     RemoteSkillDownloadResult,

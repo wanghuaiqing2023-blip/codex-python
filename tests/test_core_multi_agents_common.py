@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from pycodex.core.multi_agents_common import (
+from pycodex.core.tools.handlers.multi_agents_common import (
     build_wait_agent_statuses,
     function_arguments,
     parse_collab_input,
@@ -10,8 +10,8 @@ from pycodex.core.multi_agents_common import (
     tool_output_json_text,
     tool_output_response_item,
 )
-from pycodex.core.tool_context import ToolPayload
-from pycodex.core.tool_router import FunctionCallError
+from pycodex.core.tools.context import ToolPayload
+from pycodex.core.tools.router import FunctionCallError
 from pycodex.protocol import AgentStatus, CollabAgentRef, ThreadId, UserInput
 
 

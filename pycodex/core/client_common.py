@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from pycodex.core.network_approval import CancellationToken
+from pycodex.core.tools.network_approval import CancellationToken
 from pycodex.protocol import BaseInstructions, Personality, ResponseItem
 
 JsonValue = Any

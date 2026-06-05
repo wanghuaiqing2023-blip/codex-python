@@ -2,7 +2,7 @@ import json
 import unittest
 from pathlib import Path
 
-from pycodex.core.landlock import (
+from pycodex.linux_sandbox import (
     CODEX_LINUX_SANDBOX_ARG0,
     allow_network_for_proxy,
     build_linux_sandbox_spawn_child_request,

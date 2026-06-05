@@ -15,7 +15,7 @@ from pycodex.protocol import (
     NetworkPolicyRuleAction,
 )
 
-from .exec_policy import Decision
+from pycodex.execpolicy import Decision
 
 JsonValue = Any
 

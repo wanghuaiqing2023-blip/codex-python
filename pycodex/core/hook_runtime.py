@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from pycodex.core.context import HookAdditionalContext
-from pycodex.core.hook_names import HookToolName
+from pycodex.core.tools.hook_names import HookToolName
 from pycodex.protocol import ResponseItem
 
 JsonValue = Any

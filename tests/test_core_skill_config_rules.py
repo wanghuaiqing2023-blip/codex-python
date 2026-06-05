@@ -4,16 +4,16 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from pycodex.core import (
+from pycodex.core_skills.model import SkillMetadata
+from pycodex.core_skills.config_rules import (
     SkillConfigRule,
     SkillConfigRuleSelector,
     SkillConfigRules,
-    SkillMetadata,
     resolve_disabled_skill_paths,
     skill_config_rule_selector,
     skill_config_rules_from_stack,
 )
-from pycodex.core.skill_invocation_utils import canonicalize_if_exists
+from pycodex.core_skills.invocation_utils import canonicalize_if_exists
 
 
 def skill(name: str, path: Path | str) -> SkillMetadata:

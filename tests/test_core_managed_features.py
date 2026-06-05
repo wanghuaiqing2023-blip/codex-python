@@ -80,7 +80,7 @@ class CoreManagedFeaturesTests(unittest.TestCase):
 
     def test_parse_feature_requirements_warns_for_legacy_alias_and_unknown_key(self) -> None:
         warnings: list[str] = []
-        with self.assertLogs("pycodex.core.managed_features", level="WARNING"):
+        with self.assertLogs("pycodex.features.managed", level="WARNING"):
             parsed = parse_feature_requirements(
                 FeatureRequirementsToml.from_entries({"collab": True, "made_up_feature": True}),
                 RequirementSource.cloud_requirements(),

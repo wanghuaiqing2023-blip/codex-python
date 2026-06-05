@@ -13,17 +13,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from pycodex.core.mcp_skill_dependencies import SkillMetadata
-from pycodex.core.skill_config_rules import SkillConfigRules
-from pycodex.core.skill_injections import SkillInjections, build_skill_injections
-from pycodex.core.skill_invocation_utils import (
+from pycodex.core_skills.model import SkillMetadata
+from pycodex.core_skills.config_rules import SkillConfigRules
+from pycodex.core_skills.injections import SkillInjections, build_skill_injections
+from pycodex.core_skills.invocation_utils import (
     SkillLoadOutcome,
     SkillPolicy,
     detect_implicit_skill_invocation_for_command,
     filter_skill_load_outcome_for_product,
 )
-from pycodex.core.skill_mentions import build_skill_name_counts, collect_explicit_skill_mentions
-from pycodex.core.skill_rendering import (
+from pycodex.core_skills.mentions import build_skill_name_counts, collect_explicit_skill_mentions
+from pycodex.core_skills.rendering import (
     SkillRenderReport,
     build_available_skills,
     default_skill_metadata_budget,
