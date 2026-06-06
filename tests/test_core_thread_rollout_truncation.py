@@ -51,6 +51,10 @@ def rollback(num_turns: int) -> RolloutItem:
 
 
 class ThreadRolloutTruncationTests(unittest.TestCase):
+    # Rust source:
+    # - codex/codex-rs/core/src/thread_rollout_truncation.rs
+    # - codex/codex-rs/core/src/thread_rollout_truncation_tests.rs
+
     def test_inter_agent_communication_round_trips_through_message_content(self) -> None:
         communication = InterAgentCommunication(
             author=AgentPath.root(),
@@ -156,6 +160,46 @@ class ThreadRolloutTruncationTests(unittest.TestCase):
         self.assertEqual(truncate_rollout_to_last_n_fork_turns(rollout, 2), rollout[1:])
         self.assertEqual(truncate_rollout_to_last_n_fork_turns(rollout, 1), rollout[5:])
 
+    def test_fork_turn_positions_ignore_zero_turn_rollback_markers(self) -> None:
+        # Rust test: fork_turn_positions_ignore_zero_turn_rollback_markers
+        rollout = [
+            response_item(user_msg("u1")),
+            response_item(inter_agent_msg("triggered task", trigger_turn=True)),
+            rollback(0),
+            response_item(user_msg("u2")),
+        ]
+
+        self.assertEqual(fork_turn_positions_in_rollout(rollout), [0, 1, 3])
+
+    def test_truncate_to_last_fork_turns_keeps_full_effective_rollout_after_single_rollback(self) -> None:
+        # Rust test: truncates_rollout_to_last_n_fork_turns_applies_thread_rollback_markers
+        rollout = [
+            response_item(user_msg("u1")),
+            response_item(assistant_msg("a1")),
+            response_item(inter_agent_msg("triggered task", trigger_turn=True)),
+            response_item(assistant_msg("a2")),
+            rollback(1),
+            response_item(user_msg("u2")),
+            response_item(assistant_msg("a3")),
+        ]
+
+        self.assertEqual(fork_turn_positions_in_rollout(rollout), [0, 5])
+        self.assertEqual(truncate_rollout_to_last_n_fork_turns(rollout, 2), rollout)
+
+    def test_truncate_to_last_fork_turns_discards_rolled_back_assistant_instruction_turns(self) -> None:
+        # Rust test: truncates_rollout_to_last_n_fork_turns_discards_rolled_back_assistant_instruction_turns
+        rollout = [
+            response_item(user_msg("u1")),
+            response_item(assistant_msg("a1")),
+            response_item(inter_agent_msg("triggered task 1", trigger_turn=True)),
+            response_item(assistant_msg("a2")),
+            rollback(1),
+            response_item(inter_agent_msg("triggered task 2", trigger_turn=True)),
+            response_item(assistant_msg("a3")),
+        ]
+
+        self.assertEqual(fork_turn_positions_in_rollout(rollout), [0, 5])
+        self.assertEqual(truncate_rollout_to_last_n_fork_turns(rollout, 1), rollout[5:])
 
     def test_truncate_to_last_fork_turns_drops_startup_prefix_even_under_limit(self) -> None:
         startup = response_item(assistant_msg("startup"))
@@ -167,6 +211,17 @@ class ThreadRolloutTruncationTests(unittest.TestCase):
 
         self.assertEqual(truncate_rollout_to_last_n_fork_turns(rollout, 10), rollout[1:])
         self.assertEqual(truncate_rollout_to_last_n_fork_turns([startup], 10), [])
+
+    def test_truncate_to_last_fork_turns_keeps_full_rollout_when_large_n_starts_at_fork_turn(self) -> None:
+        # Rust test: truncates_rollout_to_last_n_fork_turns_keeps_full_rollout_when_n_is_large
+        rollout = [
+            response_item(user_msg("u1")),
+            response_item(assistant_msg("a1")),
+            response_item(inter_agent_msg("triggered task", trigger_turn=True)),
+            response_item(assistant_msg("a2")),
+        ]
+
+        self.assertEqual(truncate_rollout_to_last_n_fork_turns(rollout, 10), rollout)
 
     def test_truncation_counts_reject_non_usize_arguments(self) -> None:
         rollout = [response_item(user_msg("u1"))]

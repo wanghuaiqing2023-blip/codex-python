@@ -60,6 +60,20 @@ class AutoCompactWindowTests(unittest.TestCase):
 
         self.assertEqual(window.snapshot().prefill_input_tokens, 0)
 
+    def test_estimated_prefill_can_update_until_server_observed(self) -> None:
+        # Rust source: AutoCompactWindow::set_estimated_prefill and
+        # ensure_server_observed_prefill_from_usage pre-server-observed branch.
+        window = AutoCompactWindow()
+
+        window.set_estimated_prefill(10)
+        window.set_estimated_prefill(20)
+
+        self.assertEqual(window.snapshot().prefill_input_tokens, 20)
+
+        window.ensure_server_observed_prefill_from_usage(TokenUsage(input_tokens=15))
+
+        self.assertEqual(window.snapshot().prefill_input_tokens, 15)
+
     def test_server_observed_prefill_clamps_negative_values(self) -> None:
         window = AutoCompactWindow()
 

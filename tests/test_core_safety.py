@@ -19,6 +19,7 @@ from pycodex.protocol import (
     FileSystemAccessMode,
     FileSystemPath,
     FileSystemSandboxEntry,
+    FileSystemSandboxKind,
     FileSystemSandboxPolicy,
     FileSystemSpecialPath,
     GranularApprovalConfig,
@@ -30,6 +31,8 @@ from pycodex.protocol import (
 
 class SafetyTests(unittest.TestCase):
     def test_empty_patch_is_rejected(self) -> None:
+        # Rust source: codex-rs/core/src/safety.rs
+        # Behavior anchor: assess_patch_safety rejects empty ApplyPatchAction.
         with tempfile.TemporaryDirectory() as tmpdir:
             cwd = Path(tmpdir)
             profile = PermissionProfile.workspace_write(exclude_tmpdir_env_var=True, exclude_slash_tmp=True)
@@ -47,6 +50,8 @@ class SafetyTests(unittest.TestCase):
             )
 
     def test_writable_roots_constraint(self) -> None:
+        # Rust source: codex-rs/core/src/safety.rs
+        # Rust test: test_writable_roots_constraint.
         with tempfile.TemporaryDirectory() as tmpdir:
             cwd = Path(tmpdir)
             parent = cwd.parent
@@ -84,6 +89,8 @@ class SafetyTests(unittest.TestCase):
             )
 
     def test_update_move_path_must_also_be_writable(self) -> None:
+        # Rust source: codex-rs/core/src/safety.rs
+        # Behavior anchor: Update changes check both source path and move_path.
         with tempfile.TemporaryDirectory() as tmpdir:
             cwd = Path(tmpdir)
             parent = cwd.parent
@@ -103,6 +110,8 @@ class SafetyTests(unittest.TestCase):
             self.assertFalse(is_write_patch_constrained_to_writable_paths(action, policy, cwd))
 
     def test_external_sandbox_auto_approves_inside_writable_root(self) -> None:
+        # Rust source: codex-rs/core/src/safety.rs
+        # Rust test: external_sandbox_auto_approves_in_on_request.
         with tempfile.TemporaryDirectory() as tmpdir:
             cwd = Path(tmpdir)
             action = ApplyPatchAction.new_add_for_test(cwd / "inner.txt", "")
@@ -121,7 +130,49 @@ class SafetyTests(unittest.TestCase):
                 SafetyCheck.auto_approve(SandboxType.NONE),
             )
 
+    def test_granular_all_flags_true_matches_on_request_for_out_of_root_patch(self) -> None:
+        # Rust source: codex-rs/core/src/safety.rs
+        # Rust test: granular_with_all_flags_true_matches_on_request_for_out_of_root_patch.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cwd = Path(tmpdir)
+            parent = cwd.parent
+            action = ApplyPatchAction.new_add_for_test(parent / "outside.txt", "")
+            profile = PermissionProfile.workspace_write(exclude_tmpdir_env_var=True, exclude_slash_tmp=True)
+            policy = profile.file_system_sandbox_policy()
+            granular = GranularApprovalConfig(
+                sandbox_approval=True,
+                rules=True,
+                skill_approval=True,
+                request_permissions=True,
+                mcp_elicitations=True,
+            )
+
+            self.assertEqual(
+                assess_patch_safety(
+                    action,
+                    AskForApproval.ON_REQUEST,
+                    profile,
+                    policy,
+                    cwd,
+                    WindowsSandboxLevel.DISABLED,
+                ),
+                SafetyCheck.ask_user(),
+            )
+            self.assertEqual(
+                assess_patch_safety(
+                    action,
+                    granular,
+                    profile,
+                    policy,
+                    cwd,
+                    WindowsSandboxLevel.DISABLED,
+                ),
+                SafetyCheck.ask_user(),
+            )
+
     def test_granular_sandbox_approval_false_rejects_out_of_root_patch(self) -> None:
+        # Rust source: codex-rs/core/src/safety.rs
+        # Rust test: granular_sandbox_approval_false_rejects_out_of_root_patch.
         with tempfile.TemporaryDirectory() as tmpdir:
             cwd = Path(tmpdir)
             parent = cwd.parent
@@ -148,6 +199,8 @@ class SafetyTests(unittest.TestCase):
             )
 
     def test_read_only_policy_rejects_with_read_only_reason(self) -> None:
+        # Rust source: codex-rs/core/src/safety.rs
+        # Rust test: read_only_policy_rejects_patch_with_read_only_reason.
         with tempfile.TemporaryDirectory() as tmpdir:
             cwd = Path(tmpdir)
             action = ApplyPatchAction.new_add_for_test(cwd / "inside.txt", "")
@@ -168,6 +221,9 @@ class SafetyTests(unittest.TestCase):
             )
 
     def test_unless_trusted_asks_user_before_auto_approval(self) -> None:
+        # Rust source: codex-rs/core/src/safety.rs
+        # Behavior anchor: AskForApproval::UnlessTrusted returns AskUser before
+        # writable-path auto-approval is considered.
         with tempfile.TemporaryDirectory() as tmpdir:
             cwd = Path(tmpdir)
             profile = PermissionProfile.external(NetworkSandboxPolicy.RESTRICTED)
@@ -185,6 +241,8 @@ class SafetyTests(unittest.TestCase):
             )
 
     def test_explicit_unreadable_paths_prevent_auto_approval_for_external_sandbox(self) -> None:
+        # Rust source: codex-rs/core/src/safety.rs
+        # Rust test: explicit_unreadable_paths_prevent_auto_approval_for_external_sandbox.
         with tempfile.TemporaryDirectory() as tmpdir:
             cwd = Path(tmpdir)
             blocked = cwd / "blocked.txt"
@@ -216,6 +274,73 @@ class SafetyTests(unittest.TestCase):
                 SafetyCheck.ask_user(),
             )
 
+    def test_explicit_read_only_subpaths_prevent_auto_approval_for_external_sandbox(self) -> None:
+        # Rust source: codex-rs/core/src/safety.rs
+        # Rust test: explicit_read_only_subpaths_prevent_auto_approval_for_external_sandbox.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cwd = Path(tmpdir)
+            docs = cwd / "docs"
+            blocked = docs / "blocked.txt"
+            action = ApplyPatchAction.new_add_for_test(blocked, "")
+            profile = PermissionProfile.external(NetworkSandboxPolicy.RESTRICTED)
+            policy = FileSystemSandboxPolicy.restricted(
+                (
+                    FileSystemSandboxEntry(
+                        FileSystemPath.special(FileSystemSpecialPath.project_roots()),
+                        FileSystemAccessMode.WRITE,
+                    ),
+                    FileSystemSandboxEntry(
+                        FileSystemPath.explicit_path(docs),
+                        FileSystemAccessMode.READ,
+                    ),
+                )
+            )
+
+            self.assertFalse(is_write_patch_constrained_to_writable_paths(action, policy, cwd))
+            self.assertEqual(
+                assess_patch_safety(
+                    action,
+                    AskForApproval.ON_REQUEST,
+                    profile,
+                    policy,
+                    cwd,
+                    WindowsSandboxLevel.DISABLED,
+                ),
+                SafetyCheck.ask_user(),
+            )
+
+    def test_missing_project_dot_codex_config_requires_approval(self) -> None:
+        # Rust source: codex-rs/core/src/safety.rs
+        # Rust test: missing_project_dot_codex_config_requires_approval.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cwd = Path(tmpdir)
+            action = ApplyPatchAction.new_add_for_test(cwd / ".codex" / "config.toml", "")
+            profile = PermissionProfile.workspace_write(exclude_tmpdir_env_var=True, exclude_slash_tmp=True)
+            base_policy = profile.file_system_sandbox_policy()
+            policy = FileSystemSandboxPolicy(
+                kind=FileSystemSandboxKind.RESTRICTED,
+                entries=base_policy.entries
+                + (
+                    FileSystemSandboxEntry(
+                        FileSystemPath.explicit_path(cwd / ".codex"),
+                        FileSystemAccessMode.READ,
+                    ),
+                ),
+                glob_scan_max_depth=base_policy.glob_scan_max_depth,
+            )
+
+            self.assertFalse(is_write_patch_constrained_to_writable_paths(action, policy, cwd))
+            self.assertEqual(
+                assess_patch_safety(
+                    action,
+                    AskForApproval.ON_REQUEST,
+                    profile,
+                    policy,
+                    cwd,
+                    WindowsSandboxLevel.DISABLED,
+                ),
+                SafetyCheck.ask_user(),
+            )
 
     def test_safety_public_models_reject_implicit_coercions(self) -> None:
         with self.assertRaises(ValueError):
@@ -255,6 +380,9 @@ class SafetyTests(unittest.TestCase):
                 )
 
     def test_managed_inside_patch_uses_platform_sandbox_when_available(self) -> None:
+        # Rust source: codex-rs/core/src/safety.rs
+        # Behavior anchor: managed writable patches auto-approve only when the
+        # platform sandbox can actually be enforced.
         with tempfile.TemporaryDirectory() as tmpdir:
             cwd = Path(tmpdir)
             profile = PermissionProfile.workspace_write(exclude_tmpdir_env_var=True, exclude_slash_tmp=True)

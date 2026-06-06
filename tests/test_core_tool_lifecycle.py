@@ -19,6 +19,7 @@ from pycodex.core import (
     tool_finish_input_parts,
     tool_start_input,
 )
+from pycodex.core.tools.lifecycle import lifecycle_store_context
 from pycodex.protocol import ToolName
 
 
@@ -36,6 +37,8 @@ class RecordingContributor:
 
 class ToolLifecycleTests(unittest.TestCase):
     def test_extension_tool_call_source_maps_direct_and_code_mode(self) -> None:
+        # Rust parity: codex-core::tools::lifecycle
+        # lifecycle.rs::extension_tool_call_source.
         self.assertEqual(
             extension_tool_call_source(ToolCallSource.direct()),
             ExtensionToolCallSource.direct(),
@@ -58,6 +61,8 @@ class ToolLifecycleTests(unittest.TestCase):
             ToolCallOutcome("other")
 
     def test_start_and_finish_inputs_copy_invocation_fields(self) -> None:
+        # Rust parity: codex-core::tools::lifecycle
+        # lifecycle.rs::notify_tool_start and notify_tool_finish payload fields.
         invocation = ToolInvocation(
             call_id="call-1",
             tool_name=ToolName.namespaced("mcp__server__", "query"),
@@ -89,6 +94,9 @@ class ToolLifecycleTests(unittest.TestCase):
         self.assertEqual(finish.outcome, ToolCallOutcome.completed(False))
 
     def test_finish_parts_match_rust_aborted_notification_boundary(self) -> None:
+        # Rust parity: codex-core::tools::lifecycle
+        # lifecycle.rs::notify_tool_aborted delegates to notify_tool_finish_parts
+        # with ToolCallOutcome::Aborted.
         finish = tool_finish_input_parts(
             call_id="call-2",
             tool_name=ToolName.plain("lookup"),
@@ -115,6 +123,9 @@ class ToolLifecycleTests(unittest.TestCase):
         )
 
     def test_notify_helpers_call_sync_and_async_contributors(self) -> None:
+        # Rust source: codex-core/src/tools/lifecycle.rs
+        # Rust contract: notify_tool_start/notify_tool_finish forward invocation
+        # fields and extension source to every lifecycle contributor.
         contributor = RecordingContributor()
         invocation = ToolInvocation(
             call_id="call-1",
@@ -142,6 +153,37 @@ class ToolLifecycleTests(unittest.TestCase):
             contributor.finished[1].source,
             ExtensionToolCallSource.code_mode("cell-1", "runtime-1"),
         )
+
+    def test_lifecycle_store_context_supplies_rust_session_turn_store_fields(self) -> None:
+        # Rust source: codex-core/src/tools/lifecycle.rs
+        # Rust contract: ToolStartInput/ToolFinishInput include session_store,
+        # thread_store, turn_store, and turn_id from session/turn state.
+        contributor = RecordingContributor()
+        invocation = ToolInvocation(
+            call_id="call-store",
+            tool_name=ToolName.plain("lookup"),
+            payload=ToolPayload.function("{}"),
+        )
+
+        with lifecycle_store_context(
+            {
+                "session_store": {"session": True},
+                "thread_store": {"thread": True},
+                "turn_store": {"turn": True},
+                "turn_id": "turn-store",
+            }
+        ):
+            asyncio.run(notify_tool_start([contributor], invocation))
+            asyncio.run(notify_tool_finish([contributor], invocation, ToolCallOutcome.completed(True)))
+
+        self.assertEqual(contributor.started[0].session_store, {"session": True})
+        self.assertEqual(contributor.started[0].thread_store, {"thread": True})
+        self.assertEqual(contributor.started[0].turn_store, {"turn": True})
+        self.assertEqual(contributor.started[0].turn_id, "turn-store")
+        self.assertEqual(contributor.finished[0].session_store, {"session": True})
+        self.assertEqual(contributor.finished[0].thread_store, {"thread": True})
+        self.assertEqual(contributor.finished[0].turn_store, {"turn": True})
+        self.assertEqual(contributor.finished[0].turn_id, "turn-store")
 
     def test_notify_helpers_support_keyword_only_contributor_signatures(self) -> None:
         called = {"start": False, "finish": False}

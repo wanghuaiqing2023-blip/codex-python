@@ -14,6 +14,16 @@ import inspect
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Mapping, MutableMapping, Sequence
 
+from pycodex.core.guardian.review import (
+    GUARDIAN_APPROVAL_REQUEST_SOURCE_DELEGATED_SUBAGENT,
+    GuardianApplyPatchApprovalRequest,
+    GuardianShellApprovalRequest,
+    SANDBOX_PERMISSIONS_USE_DEFAULT,
+    SANDBOX_PERMISSIONS_WITH_ADDITIONAL_PERMISSIONS,
+    apply_patch_files_for_guardian,
+    format_apply_patch_changes_for_guardian,
+    routes_approval_to_guardian,
+)
 from pycodex.core.tools.handlers.utils import normalize_request_permissions_response
 from pycodex.protocol import (
     Event,
@@ -34,8 +44,6 @@ SUBMISSION_CHANNEL_CAPACITY = 1024
 MCP_TOOL_APPROVAL_ACCEPT = "Yes"
 MCP_TOOL_APPROVAL_ACCEPT_FOR_SESSION = "Yes, for this session"
 MCP_TOOL_APPROVAL_DECLINE_SYNTHETIC = "No"
-
-
 class CancellationToken:
     """Small asyncio equivalent of tokio_util's cancellation token."""
 
@@ -268,20 +276,57 @@ async def handle_exec_approval(
     cancel_token: CancellationToken,
 ) -> ReviewDecision:
     approval_id = _effective_approval_id(event)
+    call_id = getattr(event, "call_id", _mapping_get(event, "call_id"))
+    raw_approval_id = getattr(event, "approval_id", _mapping_get(event, "approval_id"))
+    command = getattr(event, "command", _mapping_get(event, "command"))
+    cwd = getattr(event, "cwd", _mapping_get(event, "cwd"))
+    reason = getattr(event, "reason", _mapping_get(event, "reason"))
+    additional_permissions = getattr(event, "additional_permissions", _mapping_get(event, "additional_permissions"))
+    if routes_approval_to_guardian(parent_ctx):
+        reviewer = getattr(parent_session, "review_command_approval", None)
+        if callable(reviewer):
+            review_cancel = cancel_token.child_token()
+            decision = await await_approval_with_cancel(
+                reviewer(
+                    parent_ctx,
+                    GuardianShellApprovalRequest(
+                        id=str(call_id),
+                        command=command,
+                        cwd=cwd,
+                        sandbox_permissions=(
+                            SANDBOX_PERMISSIONS_WITH_ADDITIONAL_PERMISSIONS
+                            if additional_permissions is not None
+                            else SANDBOX_PERMISSIONS_USE_DEFAULT
+                        ),
+                        additional_permissions=additional_permissions,
+                        justification=None,
+                    ),
+                    reason,
+                    GUARDIAN_APPROVAL_REQUEST_SOURCE_DELEGATED_SUBAGENT,
+                    review_cancel,
+                ),
+                parent_session,
+                approval_id,
+                cancel_token,
+                review_cancel,
+            )
+            await submit_to_codex(codex, Op.exec_approval(id=approval_id, turn_id=turn_id, decision=decision))
+            return decision
+
     requester = getattr(parent_session, "request_command_approval", None)
     decision = ReviewDecision.denied()
     if callable(requester):
         decision = await await_approval_with_cancel(
             requester(
                 parent_ctx,
-                getattr(event, "call_id", _mapping_get(event, "call_id")),
-                getattr(event, "approval_id", _mapping_get(event, "approval_id")),
-                getattr(event, "command", _mapping_get(event, "command")),
-                getattr(event, "cwd", _mapping_get(event, "cwd")),
-                getattr(event, "reason", _mapping_get(event, "reason")),
+                call_id,
+                raw_approval_id,
+                command,
+                cwd,
+                reason,
                 getattr(event, "network_approval_context", _mapping_get(event, "network_approval_context")),
                 getattr(event, "proposed_execpolicy_amendment", _mapping_get(event, "proposed_execpolicy_amendment")),
-                getattr(event, "additional_permissions", _mapping_get(event, "additional_permissions")),
+                additional_permissions,
                 getattr(event, "available_decisions", _mapping_get(event, "available_decisions")),
             ),
             parent_session,
@@ -301,15 +346,43 @@ async def handle_patch_approval(
     cancel_token: CancellationToken,
 ) -> ReviewDecision:
     call_id = str(getattr(event, "call_id", _mapping_get(event, "call_id")))
+    changes = getattr(event, "changes", _mapping_get(event, "changes"))
+    reason = getattr(event, "reason", _mapping_get(event, "reason"))
+    grant_root = getattr(event, "grant_root", _mapping_get(event, "grant_root"))
+    if routes_approval_to_guardian(parent_ctx):
+        reviewer = getattr(parent_session, "review_patch_approval", None)
+        if callable(reviewer):
+            review_cancel = cancel_token.child_token()
+            decision = await await_approval_with_cancel(
+                reviewer(
+                    parent_ctx,
+                    GuardianApplyPatchApprovalRequest(
+                        id=call_id,
+                        cwd=getattr(parent_ctx, "cwd", _mapping_get(parent_ctx, "cwd")),
+                        files=apply_patch_files_for_guardian(getattr(parent_ctx, "cwd", _mapping_get(parent_ctx, "cwd")), changes),
+                        patch=format_apply_patch_changes_for_guardian(changes),
+                    ),
+                    reason,
+                    GUARDIAN_APPROVAL_REQUEST_SOURCE_DELEGATED_SUBAGENT,
+                    review_cancel,
+                ),
+                parent_session,
+                call_id,
+                cancel_token,
+                review_cancel,
+            )
+            await submit_to_codex(codex, Op.patch_approval(id=call_id, decision=decision))
+            return decision
+
     requester = getattr(parent_session, "request_patch_approval", None)
     decision = ReviewDecision.denied()
     if callable(requester):
         decision_rx = requester(
             parent_ctx,
             call_id,
-            getattr(event, "changes", _mapping_get(event, "changes")),
-            getattr(event, "reason", _mapping_get(event, "reason")),
-            getattr(event, "grant_root", _mapping_get(event, "grant_root")),
+            changes,
+            reason,
+            grant_root,
         )
         decision = await await_approval_with_cancel(decision_rx, parent_session, call_id, cancel_token)
     await submit_to_codex(codex, Op.patch_approval(id=call_id, decision=decision))
@@ -358,10 +431,7 @@ async def maybe_auto_review_mcp_request_user_input(
 ) -> RequestUserInputResponse | None:
     """Programmatically answer delegated MCP approval prompts when possible."""
 
-    routes = getattr(parent_ctx, "routes_approval_to_guardian", False)
-    if callable(routes):
-        routes = routes()
-    if not routes:
+    if not routes_approval_to_guardian(parent_ctx):
         return None
 
     questions = tuple(getattr(event, "questions", _mapping_get(event, "questions", ())))
@@ -458,8 +528,11 @@ async def await_approval_with_cancel(
     parent_session: Any,
     approval_id: str,
     cancel_token: CancellationToken,
+    review_cancel_token: CancellationToken | None = None,
 ) -> ReviewDecision:
     async def on_cancel() -> ReviewDecision:
+        if review_cancel_token is not None:
+            review_cancel_token.cancel()
         notifier = getattr(parent_session, "notify_approval", None)
         if callable(notifier):
             await _maybe_await(notifier(approval_id, ReviewDecision.abort()))
@@ -564,7 +637,11 @@ __all__ = [
     "SUBMISSION_CHANNEL_CAPACITY",
     "CancellationToken",
     "CodexDelegateIo",
+    "GUARDIAN_APPROVAL_REQUEST_SOURCE_DELEGATED_SUBAGENT",
+    "GuardianShellApprovalRequest",
     "RunCodexThreadOptions",
+    "SANDBOX_PERMISSIONS_USE_DEFAULT",
+    "SANDBOX_PERMISSIONS_WITH_ADDITIONAL_PERMISSIONS",
     "await_approval_with_cancel",
     "await_request_permissions_with_cancel",
     "await_user_input_with_cancel",
@@ -580,6 +657,7 @@ __all__ = [
     "is_mcp_tool_approval_question_id",
     "mcp_selected_label_for_decision",
     "maybe_auto_review_mcp_request_user_input",
+    "routes_approval_to_guardian",
     "run_codex_thread_interactive",
     "run_codex_thread_one_shot",
     "shutdown_delegate",

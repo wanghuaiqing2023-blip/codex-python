@@ -150,6 +150,8 @@ class CounterTelemetry:
 
 class ToolRouterTests(unittest.TestCase):
     def test_build_tool_call_uses_namespace_for_registry_name(self) -> None:
+        # Rust parity: codex-core::tools::router
+        # router_tests.rs::build_tool_call_uses_namespace_for_registry_name.
         call = ToolRouter.build_tool_call(
             ResponseItem.function_call(
                 name="create_event",
@@ -350,6 +352,8 @@ class ToolRouterTests(unittest.TestCase):
             )
 
     def test_build_tool_call_parses_client_tool_search_calls(self) -> None:
+        # Rust parity: codex-core::tools::router
+        # router.rs::ToolRouter::build_tool_call ToolSearchCall client arm.
         call = build_tool_call(
             ResponseItem.tool_search_call(
                 SearchToolCallParams("calendar", limit=3),
@@ -363,6 +367,8 @@ class ToolRouterTests(unittest.TestCase):
         self.assertEqual(call.payload, ToolPayload.tool_search(SearchToolCallParams("calendar", 3)))
 
     def test_build_tool_call_ignores_server_or_missing_id_tool_search_calls(self) -> None:
+        # Rust parity: codex-core::tools::router
+        # router.rs::ToolRouter::build_tool_call ignores non-client or id-less tool_search calls.
         self.assertIsNone(
             build_tool_call(
                 ResponseItem.tool_search_call(
@@ -395,6 +401,8 @@ class ToolRouterTests(unittest.TestCase):
         self.assertIn("failed to parse tool_search arguments", str(caught.exception))
 
     def test_build_tool_call_handles_custom_tool_calls(self) -> None:
+        # Rust parity: codex-core::tools::router
+        # router.rs::ToolRouter::build_tool_call CustomToolCall arm.
         call = build_tool_call(
             ResponseItem.from_mapping(
                 {

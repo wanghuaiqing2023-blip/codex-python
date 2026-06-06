@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 import tempfile
 import time
 import unittest
@@ -18,6 +20,7 @@ from pycodex.core import (
     cleanup_stale_snapshots,
     excluded_exports_regex,
     powershell_snapshot_script,
+    remove_snapshot_file,
     sh_snapshot_script,
     shell_snapshot_extension,
     shell_snapshot_paths,
@@ -178,6 +181,88 @@ class ShellSnapshotTests(unittest.TestCase):
             removed = cleanup_stale_snapshots(Path(tmpdir), str(uuid.uuid4()))
 
             self.assertEqual(removed, [])
+
+    def test_cleanup_stale_snapshots_skips_non_file_entries(self) -> None:
+        # Rust source: codex-rs/core/src/shell_snapshot.rs
+        # Rust contract: cleanup_stale_snapshots ignores entries whose file_type is not a file.
+        # Behavior anchor: directories under shell_snapshots are ignored, not deleted.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            nested_dir = codex_home / SNAPSHOT_DIR / f"{uuid.uuid4()}.123.sh"
+            nested_dir.mkdir(parents=True)
+
+            removed = cleanup_stale_snapshots(codex_home, str(uuid.uuid4()))
+
+            self.assertEqual(removed, [])
+            self.assertTrue(nested_dir.exists())
+
+    def test_cleanup_stale_snapshots_keeps_snapshot_when_rollout_metadata_fails(self) -> None:
+        # Rust source: codex-rs/core/src/shell_snapshot.rs
+        # Rust contract: cleanup_stale_snapshots logs and continues if rollout metadata cannot be read.
+        # Behavior anchor: a rollout path that disappears before stat does not cause snapshot removal.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            snapshot_dir = codex_home / SNAPSHOT_DIR
+            snapshot_dir.mkdir()
+            session_id = str(uuid.uuid4())
+            snapshot_path = snapshot_dir / f"{session_id}.123.sh"
+            missing_rollout = codex_home / "sessions" / "missing.jsonl"
+            snapshot_path.write_text("snapshot", encoding="utf-8")
+
+            removed = cleanup_stale_snapshots(
+                codex_home,
+                str(uuid.uuid4()),
+                rollout_finder=lambda _home, _session_id: missing_rollout,
+            )
+
+            self.assertEqual(removed, [])
+            self.assertTrue(snapshot_path.exists())
+
+    @unittest.skipUnless(os.name == "posix" and shutil.which("bash"), "bash snapshot execution is Unix-specific upstream")
+    def test_bash_snapshot_filters_invalid_and_preserves_multiline_exports(self) -> None:
+        # Rust source: codex-rs/core/src/shell_snapshot.rs
+        # Rust tests: bash_snapshot_filters_invalid_exports and bash_snapshot_preserves_multiline_exports.
+        # Behavior anchor: generated bash snapshot script filters invalid exports and remains sourceable.
+        multiline_cert = "-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----"
+        bash = shutil.which("bash") or "bash"
+        output = subprocess.run(
+            [bash, "-c", bash_snapshot_script()],
+            env={
+                **os.environ,
+                "BASH_ENV": "/dev/null",
+                "VALID_NAME": "ok",
+                "PWD": "/tmp/stale",
+                "NEXTEST_BIN_EXE_codex-write-config-schema": "/path/to/bin",
+                "BAD-NAME": "broken",
+                "MULTILINE_CERT": multiline_cert,
+            },
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+            text=True,
+        )
+        stdout = output.stdout
+
+        self.assertIn("VALID_NAME", stdout)
+        self.assertIn("MULTILINE_CERT", stdout)
+        self.assertNotIn("PWD=/tmp/stale", stdout)
+        self.assertNotIn("NEXTEST_BIN_EXE_codex-write-config-schema", stdout)
+        self.assertNotIn("BAD-NAME", stdout)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            snapshot_path = Path(tmpdir) / "snapshot.sh"
+            snapshot_path.write_text(stdout, encoding="utf-8")
+            validate = subprocess.run(
+                [bash, "-c", 'set -e; . "$1"', "bash", str(snapshot_path)],
+                env={**os.environ, "BASH_ENV": "/dev/null"},
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(validate.returncode, 0, validate.stderr)
 
 
 if __name__ == "__main__":

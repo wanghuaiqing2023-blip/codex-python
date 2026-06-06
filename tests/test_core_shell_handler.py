@@ -13,11 +13,24 @@ from pycodex.core.tools.handlers.shell import (
     ShellCommandHandler,
     ShellCommandHandlerOptions,
     ShellCommandToolCallParams,
+    build_shell_request,
     shell_command_payload_command,
 )
+from pycodex.core.tools.handlers.utils import EffectiveAdditionalPermissions
 from pycodex.core.tools.context import FunctionToolOutput, ToolPayload
 from pycodex.core.tools.registry import ToolInvocation
-from pycodex.protocol import CODEX_THREAD_ID_ENV_VAR, SandboxPermissions, ShellEnvironmentPolicy, ShellEnvironmentPolicyInherit, ThreadId, ToolName
+from pycodex.protocol import (
+    CODEX_THREAD_ID_ENV_VAR,
+    AskForApproval,
+    FileSystemSandboxPolicy,
+    GranularApprovalConfig,
+    PermissionProfile,
+    SandboxPermissions,
+    ShellEnvironmentPolicy,
+    ShellEnvironmentPolicyInherit,
+    ThreadId,
+    ToolName,
+)
 
 
 class CoreShellHandlerTests(unittest.TestCase):
@@ -34,6 +47,9 @@ class CoreShellHandlerTests(unittest.TestCase):
         self.assertEqual(shell_command_payload_command(payload), "printf shell command")
 
     def test_resolve_use_login_shell_rejects_disallowed_explicit_login(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/shell/shell_command.rs
+        # Rust tests: shell_command_handler_rejects_login_when_disallowed and
+        # shell_command_handler_defaults_to_non_login_when_disallowed.
         with self.assertRaisesRegex(FunctionCallError, "login shell is disabled by config") as err:
             ShellCommandHandler.resolve_use_login_shell(True, False)
         self.assertTrue(err.exception.is_model_response)
@@ -41,10 +57,14 @@ class CoreShellHandlerTests(unittest.TestCase):
         self.assertTrue(ShellCommandHandler.resolve_use_login_shell(None, True))
 
     def test_base_command_uses_shell_exec_args(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/shell/shell_command.rs
+        # Rust test: shell_command_handler_respects_explicit_login_flag.
         command = ShellCommandHandler.base_command(Shell(ShellType.BASH, "/bin/bash"), "echo hi", True)
         self.assertEqual(command, ("/bin/bash", "-lc", "echo hi"))
 
     def test_to_exec_params_uses_session_shell_and_turn_context(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/shell/shell_command.rs
+        # Rust test: shell_command_handler_to_exec_params_uses_session_shell_and_turn_context.
         thread_id = ThreadId.new()
         policy = ShellEnvironmentPolicy(
             inherit=ShellEnvironmentPolicyInherit.NONE,
@@ -88,6 +108,62 @@ class CoreShellHandlerTests(unittest.TestCase):
         self.assertEqual(exec_params.justification, "because tests")
         self.assertIsNone(exec_params.arg0)
 
+    def test_build_shell_request_uses_default_exec_policy_sandbox_for_preapproved_permissions(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/shell.rs
+        # Behavior anchor: run_exec_like passes SandboxPermissions::UseDefault
+        # into ExecApprovalRequest when effective additional permissions are
+        # already preapproved, while ShellRequest retains the effective runtime
+        # sandbox permissions.
+        thread_id = ThreadId.new()
+        exec_params = ShellCommandHandler.to_exec_params(
+            ShellCommandToolCallParams(command="echo hello"),
+            SimpleNamespace(user_shell=lambda: Shell(ShellType.BASH, "/bin/bash")),
+            SimpleNamespace(cwd=Path("/repo"), shell_environment_policy=ShellEnvironmentPolicy.default()),
+            thread_id,
+            allow_login_shell=False,
+        )
+        granular = GranularApprovalConfig(
+            sandbox_approval=False,
+            rules=True,
+            skill_approval=True,
+            request_permissions=True,
+            mcp_elicitations=True,
+        )
+
+        preapproved = build_shell_request(
+            exec_params,
+            hook_command="echo hello",
+            shell_type=ShellType.BASH,
+            effective_additional_permissions=EffectiveAdditionalPermissions(
+                SandboxPermissions.REQUIRE_ESCALATED,
+                permissions_preapproved=True,
+            ),
+            normalized_additional_permissions=None,
+            approval_policy=granular,
+            permission_profile=PermissionProfile.workspace_write(),
+            file_system_sandbox_policy=FileSystemSandboxPolicy.workspace_write(()),
+            sandbox_cwd=Path("/repo"),
+        )
+        not_preapproved = build_shell_request(
+            exec_params,
+            hook_command="echo hello",
+            shell_type=ShellType.BASH,
+            effective_additional_permissions=EffectiveAdditionalPermissions(
+                SandboxPermissions.REQUIRE_ESCALATED,
+                permissions_preapproved=False,
+            ),
+            normalized_additional_permissions=None,
+            approval_policy=granular,
+            permission_profile=PermissionProfile.workspace_write(),
+            file_system_sandbox_policy=FileSystemSandboxPolicy.workspace_write(()),
+            sandbox_cwd=Path("/repo"),
+        )
+
+        self.assertEqual(preapproved.sandbox_permissions, SandboxPermissions.REQUIRE_ESCALATED)
+        self.assertTrue(preapproved.additional_permissions_preapproved)
+        self.assertEqual(preapproved.exec_approval_requirement.type, "skip")
+        self.assertEqual(not_preapproved.exec_approval_requirement.type, "forbidden")
+
     def test_handler_backend_and_spec(self) -> None:
         handler = ShellCommandHandler(
             ShellCommandHandlerOptions(
@@ -104,6 +180,8 @@ class CoreShellHandlerTests(unittest.TestCase):
         self.assertTrue(handler.waits_for_runtime_cancellation())
 
     def test_pre_tool_use_payload_uses_bash_hook(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/shell/shell_command.rs
+        # Rust test: shell_command_pre_tool_use_payload_uses_raw_command.
         invocation = ToolInvocation(
             call_id="call-42",
             tool_name=ToolName.plain("shell_command"),
@@ -148,6 +226,8 @@ class CoreShellHandlerTests(unittest.TestCase):
         self.assertTrue(bad_command.exception.is_model_response)
 
     def test_post_tool_use_payload_uses_tool_output_wire_value(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/shell/shell_command.rs
+        # Rust test: build_post_tool_use_payload_uses_tool_output_wire_value.
         invocation = ToolInvocation(
             call_id="call-42",
             tool_name=ToolName.plain("shell_command"),

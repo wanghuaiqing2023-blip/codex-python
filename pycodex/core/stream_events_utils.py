@@ -18,13 +18,15 @@ from pycodex.core.tools.router import ToolCall, ToolRouter
 from pycodex.core.util import error_or_panic
 from pycodex.protocol import AgentMessageContent, AgentMessageItem, ImageGenerationItem, MessagePhase, ResponseInputItem, ResponseItem, ToolName, TurnItem
 from pycodex.protocol import MemoryCitation, MemoryCitationEntry
+from pycodex.utils.stream_parser import AssistantTextChunk as _UtilsAssistantTextChunk
+from pycodex.utils.stream_parser import AssistantTextStreamParser as _UtilsAssistantTextStreamParser
+from pycodex.utils.stream_parser import ProposedPlanSegment, ProposedPlanSegmentKind
+from pycodex.utils.stream_parser import extract_proposed_plan_text as _utils_extract_proposed_plan_text
+from pycodex.utils.stream_parser import strip_citations as _utils_strip_citations
+from pycodex.utils.stream_parser import strip_proposed_plan_blocks as _utils_strip_proposed_plan_blocks
 
 
 GENERATED_IMAGE_ARTIFACTS_DIR = "generated_images"
-CITATION_OPEN = "<oai-mem-citation>"
-CITATION_CLOSE = "</oai-mem-citation>"
-PROPOSED_PLAN_OPEN = "<proposed_plan>"
-PROPOSED_PLAN_CLOSE = "</proposed_plan>"
 
 
 def _sanitize_image_artifact_component(value: str) -> str:
@@ -105,37 +107,14 @@ def realtime_text_for_event(event: object) -> str | None:
 
 def _strip_citations(text: str) -> str:
     _ensure_str(text, "text")
-    visible: list[str] = []
-    position = 0
-    while True:
-        start = text.find(CITATION_OPEN, position)
-        if start == -1:
-            visible.append(text[position:])
-            break
-        visible.append(text[position:start])
-        content_start = start + len(CITATION_OPEN)
-        end = text.find(CITATION_CLOSE, content_start)
-        if end == -1:
-            break
-        position = end + len(CITATION_CLOSE)
-    return "".join(visible)
+    visible, _citations = _utils_strip_citations(text)
+    return visible
 
 
 def _citation_payloads(text: str) -> tuple[str, ...]:
     _ensure_str(text, "text")
-    payloads: list[str] = []
-    position = 0
-    while True:
-        start = text.find(CITATION_OPEN, position)
-        if start == -1:
-            break
-        content_start = start + len(CITATION_OPEN)
-        end = text.find(CITATION_CLOSE, content_start)
-        if end == -1:
-            break
-        payloads.append(text[content_start:end])
-        position = end + len(CITATION_CLOSE)
-    return tuple(payloads)
+    _visible, citations = _utils_strip_citations(text)
+    return tuple(citations)
 
 
 def _tag_body(text: str, tag: str) -> str | None:
@@ -207,40 +186,9 @@ def _memory_citation_from_text(text: str) -> MemoryCitation | None:
     return None
 
 
-def _is_line_start(text: str, position: int) -> bool:
-    _ensure_str(text, "text")
-    _ensure_non_negative_int(position, "position")
-    return position == 0 or text[position - 1] == "\n"
-
-
 def _strip_proposed_plan_blocks(text: str) -> str:
     _ensure_str(text, "text")
-    visible: list[str] = []
-    position = 0
-    while True:
-        start = text.find(PROPOSED_PLAN_OPEN, position)
-        while start != -1 and not _is_line_start(text, start):
-            start = text.find(PROPOSED_PLAN_OPEN, start + len(PROPOSED_PLAN_OPEN))
-        if start == -1:
-            visible.append(text[position:])
-            break
-
-        visible.append(text[position:start])
-        content_start = start + len(PROPOSED_PLAN_OPEN)
-        if content_start < len(text) and text[content_start] not in {"\n", "\r"}:
-            visible.append(PROPOSED_PLAN_OPEN)
-            position = content_start
-            continue
-
-        end = text.find(PROPOSED_PLAN_CLOSE, content_start)
-        if end == -1:
-            break
-        position = end + len(PROPOSED_PLAN_CLOSE)
-        if position < len(text) and text[position] == "\r":
-            position += 1
-        if position < len(text) and text[position] == "\n":
-            position += 1
-    return "".join(visible)
+    return _utils_strip_proposed_plan_blocks(text)
 
 
 def strip_hidden_assistant_markup(text: str, plan_mode: bool) -> str:
@@ -2781,7 +2729,7 @@ def _finish_tool_argument_diff_consumer_event(
 
 def _extract_proposed_plan_text(text: str) -> str | None:
     _ensure_str(text, "text")
-    return _tag_body(text, "proposed_plan")
+    return _utils_extract_proposed_plan_text(text)
 
 
 def _parsed_field(parsed: object, name: str, default: object) -> object:
@@ -2862,194 +2810,33 @@ class AssistantMessageStreamParsers:
 
 class _AssistantTextStreamParser:
     def __init__(self, plan_mode: bool) -> None:
-        self._plan_mode = plan_mode
-        self._citations = _CitationStreamParser()
-        self._plan = _ProposedPlanStreamParser()
+        self._inner = _UtilsAssistantTextStreamParser(plan_mode)
 
     def push_str(self, chunk: str) -> dict[str, object]:
-        citation_chunk = self._citations.push_str(chunk)
-        parsed = self._parse_visible_text(citation_chunk["visible_text"])
-        parsed["citations"] = citation_chunk["citations"]
-        return parsed
+        return _assistant_text_chunk_to_dict(self._inner.push_str(chunk))
 
     def finish(self) -> dict[str, object]:
-        citation_chunk = self._citations.finish()
-        parsed = self._parse_visible_text(citation_chunk["visible_text"])
-        if self._plan_mode:
-            tail = self._plan.finish()
-            parsed["visible_text"] += tail["visible_text"]
-            parsed["plan_segments"] = tuple(parsed["plan_segments"]) + tuple(tail["plan_segments"])
-        parsed["citations"] = citation_chunk["citations"]
-        return parsed
-
-    def _parse_visible_text(self, visible_text: str) -> dict[str, object]:
-        if not self._plan_mode:
-            return {"visible_text": visible_text, "citations": (), "plan_segments": ()}
-        plan_chunk = self._plan.push_str(visible_text)
-        return {
-            "visible_text": plan_chunk["visible_text"],
-            "citations": (),
-            "plan_segments": plan_chunk["plan_segments"],
-        }
+        return _assistant_text_chunk_to_dict(self._inner.finish())
 
 
-class _CitationStreamParser:
-    def __init__(self) -> None:
-        self._pending = ""
-        self._inside = False
-        self._content = ""
-
-    def push_str(self, chunk: str) -> dict[str, object]:
-        text = self._pending + chunk
-        self._pending = ""
-        visible: list[str] = []
-        citations: list[str] = []
-        position = 0
-        while position < len(text):
-            if self._inside:
-                end = text.find(CITATION_CLOSE, position)
-                if end == -1:
-                    suffix_start = _hidden_tag_suffix_start(text, position, CITATION_CLOSE)
-                    self._content += text[position:suffix_start]
-                    self._pending = text[suffix_start:]
-                    return _assistant_citation_chunk("".join(visible), citations)
-                self._content += text[position:end]
-                citations.append(self._content)
-                self._content = ""
-                self._inside = False
-                position = end + len(CITATION_CLOSE)
-                continue
-
-            start = text.find(CITATION_OPEN, position)
-            if start != -1:
-                visible.append(text[position:start])
-                self._inside = True
-                position = start + len(CITATION_OPEN)
-                continue
-
-            suffix_start = _hidden_tag_suffix_start(text, position, CITATION_OPEN)
-            visible.append(text[position:suffix_start])
-            self._pending = text[suffix_start:]
-            break
-        return _assistant_citation_chunk("".join(visible), citations)
-
-    def finish(self) -> dict[str, object]:
-        if self._inside:
-            citation = self._content
-            if self._pending:
-                citation += self._pending
-            self._pending = ""
-            self._content = ""
-            self._inside = False
-            return _assistant_citation_chunk("", [citation])
-        pending = self._pending
-        self._pending = ""
-        return _assistant_citation_chunk(pending, [])
+def _assistant_text_chunk_to_dict(chunk: _UtilsAssistantTextChunk) -> dict[str, object]:
+    return {
+        "visible_text": chunk.visible_text,
+        "citations": tuple(chunk.citations),
+        "plan_segments": tuple(_proposed_plan_segment_to_tuple(segment) for segment in chunk.plan_segments),
+    }
 
 
-class _ProposedPlanStreamParser:
-    def __init__(self) -> None:
-        self._pending = ""
-        self._inside = False
-
-    def push_str(self, chunk: str) -> dict[str, object]:
-        self._pending += chunk
-        visible: list[str] = []
-        segments: list[tuple[str, str]] = []
-        while self._pending:
-            line_end = self._line_end_index(self._pending)
-            if line_end is None:
-                if self._pending_still_possible_tag():
-                    break
-                self._emit_text(self._pending, visible, segments)
-                self._pending = ""
-                break
-            line = self._pending[:line_end]
-            self._pending = self._pending[line_end:]
-            self._process_line(line, visible, segments)
-        return {"visible_text": "".join(visible), "plan_segments": tuple(segments)}
-
-    def finish(self) -> dict[str, object]:
-        visible: list[str] = []
-        segments: list[tuple[str, str]] = []
-        if self._pending:
-            if self._inside and _line_without_newline_matches_tag(self._pending, PROPOSED_PLAN_CLOSE):
-                segments.append(("proposed_plan_end", ""))
-                self._inside = False
-            elif not self._inside and _line_without_newline_matches_tag(self._pending, PROPOSED_PLAN_OPEN):
-                segments.append(("proposed_plan_start", ""))
-                segments.append(("proposed_plan_end", ""))
-            else:
-                self._emit_text(self._pending, visible, segments)
-            self._pending = ""
-        if self._inside:
-            segments.append(("proposed_plan_end", ""))
-            self._inside = False
-        return {"visible_text": "".join(visible), "plan_segments": tuple(segments)}
-
-    @staticmethod
-    def _line_end_index(text: str) -> int | None:
-        newline = text.find("\n")
-        if newline == -1:
-            return None
-        return newline + 1
-
-    def _pending_still_possible_tag(self) -> bool:
-        if self._inside:
-            return PROPOSED_PLAN_CLOSE.startswith(self._pending)
-        return PROPOSED_PLAN_OPEN.startswith(self._pending) or self._pending == PROPOSED_PLAN_OPEN
-
-    def _process_line(
-        self,
-        line: str,
-        visible: list[str],
-        segments: list[tuple[str, str]],
-    ) -> None:
-        if self._inside:
-            if _line_matches_tag(line, PROPOSED_PLAN_CLOSE):
-                segments.append(("proposed_plan_end", ""))
-                self._inside = False
-            else:
-                segments.append(("proposed_plan_delta", line))
-            return
-        if _line_matches_tag(line, PROPOSED_PLAN_OPEN):
-            segments.append(("proposed_plan_start", ""))
-            self._inside = True
-            return
-        self._emit_text(line, visible, segments)
-
-    def _emit_text(
-        self,
-        text: str,
-        visible: list[str],
-        segments: list[tuple[str, str]],
-    ) -> None:
-        if self._inside:
-            segments.append(("proposed_plan_delta", text))
-        else:
-            visible.append(text)
-            segments.append(("normal", text))
-
-
-def _hidden_tag_suffix_start(text: str, start: int, tag_open: str) -> int:
-    max_len = min(len(tag_open) - 1, len(text) - start)
-    for length in range(max_len, 0, -1):
-        suffix = text[len(text) - length :]
-        if tag_open.startswith(suffix):
-            return len(text) - length
-    return len(text)
-
-
-def _line_matches_tag(line: str, tag: str) -> bool:
-    return line in {f"{tag}\n", f"{tag}\r\n"}
-
-
-def _line_without_newline_matches_tag(line: str, tag: str) -> bool:
-    return line == tag or line == f"{tag}\r"
-
-
-def _assistant_citation_chunk(visible_text: str, citations: Sequence[str]) -> dict[str, object]:
-    return {"visible_text": visible_text, "citations": tuple(citations)}
+def _proposed_plan_segment_to_tuple(segment: ProposedPlanSegment) -> tuple[str, str]:
+    if segment.kind is ProposedPlanSegmentKind.NORMAL:
+        return ("normal", segment.text)
+    if segment.kind is ProposedPlanSegmentKind.PROPOSED_PLAN_START:
+        return ("proposed_plan_start", "")
+    if segment.kind is ProposedPlanSegmentKind.PROPOSED_PLAN_DELTA:
+        return ("proposed_plan_delta", segment.text)
+    if segment.kind is ProposedPlanSegmentKind.PROPOSED_PLAN_END:
+        return ("proposed_plan_end", "")
+    raise ValueError(f"unknown proposed plan segment kind: {segment.kind!r}")
 
 
 def _empty_assistant_text_chunk() -> dict[str, object]:

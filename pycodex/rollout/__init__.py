@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from pycodex.protocol.models import ResponseItem
-from pycodex.protocol.protocol import USER_MESSAGE_BEGIN, CompactedItem, EventMsg, ThreadRolledBackEvent
+from pycodex.protocol.protocol import USER_MESSAGE_BEGIN, CompactedItem, EventMsg, ThreadRolledBackEvent, TurnContextItem
 
 
 SESSIONS_SUBDIR = "sessions"
@@ -26,6 +26,35 @@ SESSION_INDEX_FILE = "session_index.jsonl"
 HEAD_RECORD_LIMIT = 10
 USER_EVENT_SCAN_LIMIT = 200
 MAX_SCAN_FILES = 10000
+
+
+@dataclass(frozen=True)
+class PreviousTurnSettings:
+    model: str
+    realtime_active: bool | None = None
+
+
+@dataclass(frozen=True)
+class RolloutReconstruction:
+    history: tuple[ResponseItem, ...]
+    previous_turn_settings: PreviousTurnSettings | None = None
+    reference_context_item: TurnContextItem | None = None
+
+
+@dataclass(frozen=True)
+class _ParsedRolloutItem:
+    type: str
+    payload: object
+
+
+@dataclass
+class _ActiveReplaySegment:
+    turn_id: str | None = None
+    counts_as_user_turn: bool = False
+    previous_turn_settings: PreviousTurnSettings | None = None
+    reference_context_kind: str = "never"
+    reference_context_item: TurnContextItem | None = None
+    base_replacement_history: tuple[ResponseItem, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -642,10 +671,20 @@ def read_event_msgs_from_rollout(path: Path, *, max_items: int | None = None) ->
     return tuple(events)
 
 
+def read_rollout_reconstruction_from_rollout(path: Path) -> RolloutReconstruction:
+    """Reconstruct model-visible history and resume metadata from a rollout JSONL."""
+
+    return _reconstruct_rollout_items(_read_reconstruction_rollout_items(path))
+
+
 def read_model_history_from_rollout(path: Path) -> tuple[ResponseItem, ...]:
     """Reconstruct model-visible history from a rollout JSONL for resume."""
 
-    history: list[ResponseItem] = []
+    return read_rollout_reconstruction_from_rollout(path).history
+
+
+def _read_reconstruction_rollout_items(path: Path) -> tuple[_ParsedRolloutItem, ...]:
+    items: list[_ParsedRolloutItem] = []
     try:
         file = Path(path).open("r", encoding="utf-8")
     except OSError:
@@ -669,18 +708,186 @@ def read_model_history_from_rollout(path: Path) -> tuple[ResponseItem, ...]:
                 if item_type == "response_item":
                     item = _response_item_from_rollout_payload(payload)
                     if item is not None:
-                        history.append(item)
+                        items.append(_ParsedRolloutItem("response_item", item))
                 elif item_type == "compacted":
-                    replacement = _compacted_replacement_history(payload)
-                    if replacement is not None:
-                        history = list(replacement)
+                    compacted = _compacted_item_from_payload(payload)
+                    if compacted is not None:
+                        items.append(_ParsedRolloutItem("compacted", compacted))
                 elif item_type == "event_msg":
-                    rollback_turns = _thread_rollback_turn_count(payload)
-                    if rollback_turns is not None:
-                        _drop_last_user_turns_from_history(history, rollback_turns)
+                    event = _event_msg_from_rollout_payload(payload)
+                    if event is not None:
+                        items.append(_ParsedRolloutItem("event_msg", event))
+                elif item_type == "turn_context":
+                    turn_context_item = _turn_context_item_from_rollout_payload(payload)
+                    if turn_context_item is not None:
+                        items.append(_ParsedRolloutItem("turn_context", turn_context_item))
     except UnicodeDecodeError:
         return ()
-    return tuple(history)
+    return tuple(items)
+
+
+def _reconstruct_rollout_items(items: Sequence[_ParsedRolloutItem]) -> RolloutReconstruction:
+    base_replacement_history: tuple[ResponseItem, ...] | None = None
+    previous_turn_settings: PreviousTurnSettings | None = None
+    reference_context_kind = "never"
+    reference_context_item: TurnContextItem | None = None
+    pending_rollback_turns = 0
+    rollout_suffix: Sequence[_ParsedRolloutItem] = items
+    active_segment: _ActiveReplaySegment | None = None
+
+    for index in range(len(items) - 1, -1, -1):
+        item = items[index]
+        if item.type == "compacted" and isinstance(item.payload, CompactedItem):
+            active_segment = active_segment or _ActiveReplaySegment()
+            if active_segment.reference_context_kind == "never":
+                active_segment.reference_context_kind = "cleared"
+                active_segment.reference_context_item = None
+            if active_segment.base_replacement_history is None:
+                replacement = _replacement_history_from_compacted(item.payload)
+                if replacement is not None:
+                    active_segment.base_replacement_history = replacement
+                    rollout_suffix = items[index + 1 :]
+        elif item.type == "event_msg" and isinstance(item.payload, EventMsg):
+            event = item.payload
+            rollback_turns = _thread_rollback_turn_count_from_event(event)
+            if rollback_turns is not None:
+                pending_rollback_turns = _saturating_add_usize(pending_rollback_turns, rollback_turns)
+            elif event.type in {"task_complete", "turn_complete"}:
+                active_segment = active_segment or _ActiveReplaySegment()
+                if active_segment.turn_id is None:
+                    active_segment.turn_id = _event_turn_id(event)
+            elif event.type == "turn_aborted":
+                turn_id = _event_turn_id(event)
+                if active_segment is not None:
+                    if active_segment.turn_id is None:
+                        active_segment.turn_id = turn_id
+                elif turn_id is not None:
+                    active_segment = _ActiveReplaySegment(turn_id=turn_id)
+            elif event.type == "user_message":
+                active_segment = active_segment or _ActiveReplaySegment()
+                active_segment.counts_as_user_turn = True
+            elif event.type in {"task_started", "turn_started"}:
+                turn_id = _event_turn_id(event)
+                if active_segment is not None and _turn_ids_are_compatible(active_segment.turn_id, turn_id):
+                    (
+                        base_replacement_history,
+                        previous_turn_settings,
+                        reference_context_kind,
+                        reference_context_item,
+                        pending_rollback_turns,
+                    ) = _finalize_active_segment(
+                        active_segment,
+                        base_replacement_history,
+                        previous_turn_settings,
+                        reference_context_kind,
+                        reference_context_item,
+                        pending_rollback_turns,
+                    )
+                    active_segment = None
+        elif item.type == "turn_context" and isinstance(item.payload, TurnContextItem):
+            ctx = item.payload
+            active_segment = active_segment or _ActiveReplaySegment()
+            if active_segment.turn_id is None:
+                active_segment.turn_id = ctx.turn_id
+            if _turn_ids_are_compatible(active_segment.turn_id, ctx.turn_id):
+                active_segment.previous_turn_settings = PreviousTurnSettings(
+                    model=ctx.model,
+                    realtime_active=ctx.realtime_active,
+                )
+                if active_segment.reference_context_kind == "never":
+                    active_segment.reference_context_kind = "latest"
+                    active_segment.reference_context_item = ctx
+        elif item.type == "response_item" and isinstance(item.payload, ResponseItem):
+            active_segment = active_segment or _ActiveReplaySegment()
+            active_segment.counts_as_user_turn = active_segment.counts_as_user_turn or _is_rollout_user_turn_boundary(
+                item.payload
+            )
+
+        if (
+            base_replacement_history is not None
+            and previous_turn_settings is not None
+            and reference_context_kind != "never"
+        ):
+            break
+
+    if active_segment is not None:
+        (
+            base_replacement_history,
+            previous_turn_settings,
+            reference_context_kind,
+            reference_context_item,
+            pending_rollback_turns,
+        ) = _finalize_active_segment(
+            active_segment,
+            base_replacement_history,
+            previous_turn_settings,
+            reference_context_kind,
+            reference_context_item,
+            pending_rollback_turns,
+        )
+
+    history: list[ResponseItem] = list(base_replacement_history or ())
+    saw_legacy_compaction_without_replacement_history = False
+    for item in rollout_suffix:
+        if item.type == "response_item" and isinstance(item.payload, ResponseItem):
+            history.append(item.payload)
+        elif item.type == "compacted" and isinstance(item.payload, CompactedItem):
+            replacement = _replacement_history_from_compacted(item.payload)
+            if replacement is not None:
+                history = list(replacement)
+            else:
+                saw_legacy_compaction_without_replacement_history = True
+                history = list(_legacy_compacted_history(history, item.payload.message))
+        elif item.type == "event_msg" and isinstance(item.payload, EventMsg):
+            rollback_turns = _thread_rollback_turn_count_from_event(item.payload)
+            if rollback_turns is not None:
+                _drop_last_user_turns_from_history(history, rollback_turns)
+
+    if reference_context_kind != "latest" or saw_legacy_compaction_without_replacement_history:
+        reference_context_item = None
+
+    return RolloutReconstruction(
+        history=tuple(history),
+        previous_turn_settings=previous_turn_settings,
+        reference_context_item=reference_context_item,
+    )
+
+
+def _finalize_active_segment(
+    active_segment: _ActiveReplaySegment,
+    base_replacement_history: tuple[ResponseItem, ...] | None,
+    previous_turn_settings: PreviousTurnSettings | None,
+    reference_context_kind: str,
+    reference_context_item: TurnContextItem | None,
+    pending_rollback_turns: int,
+) -> tuple[tuple[ResponseItem, ...] | None, PreviousTurnSettings | None, str, TurnContextItem | None, int]:
+    if pending_rollback_turns > 0:
+        if active_segment.counts_as_user_turn:
+            pending_rollback_turns -= 1
+        return (
+            base_replacement_history,
+            previous_turn_settings,
+            reference_context_kind,
+            reference_context_item,
+            pending_rollback_turns,
+        )
+
+    if base_replacement_history is None and active_segment.base_replacement_history is not None:
+        base_replacement_history = active_segment.base_replacement_history
+    if previous_turn_settings is None and active_segment.counts_as_user_turn:
+        previous_turn_settings = active_segment.previous_turn_settings
+    if reference_context_kind == "never" and (
+        active_segment.counts_as_user_turn or active_segment.reference_context_kind == "cleared"
+    ):
+        reference_context_kind = active_segment.reference_context_kind
+        reference_context_item = active_segment.reference_context_item
+    return (
+        base_replacement_history,
+        previous_turn_settings,
+        reference_context_kind,
+        reference_context_item,
+        pending_rollback_turns,
+    )
 
 
 def _response_item_from_rollout_payload(payload: Mapping[str, Any]) -> ResponseItem | None:
@@ -690,11 +897,35 @@ def _response_item_from_rollout_payload(payload: Mapping[str, Any]) -> ResponseI
         return None
 
 
-def _compacted_replacement_history(payload: Mapping[str, Any]) -> tuple[ResponseItem, ...] | None:
+def _event_msg_from_rollout_payload(payload: Mapping[str, Any]) -> EventMsg | None:
     try:
-        compacted = CompactedItem.from_mapping(payload)
+        return EventMsg.from_mapping(payload)
     except (KeyError, TypeError, ValueError):
         return None
+
+
+def _turn_context_item_from_rollout_payload(payload: Mapping[str, Any]) -> TurnContextItem | None:
+    try:
+        return TurnContextItem.from_mapping(payload)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _compacted_item_from_payload(payload: Mapping[str, Any]) -> CompactedItem | None:
+    try:
+        return CompactedItem.from_mapping(payload)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _compacted_replacement_history(payload: Mapping[str, Any]) -> tuple[ResponseItem, ...] | None:
+    compacted = _compacted_item_from_payload(payload)
+    if compacted is None:
+        return None
+    return _replacement_history_from_compacted(compacted)
+
+
+def _replacement_history_from_compacted(compacted: CompactedItem) -> tuple[ResponseItem, ...] | None:
     if compacted.replacement_history is None:
         return None
     items: list[ResponseItem] = []
@@ -705,6 +936,20 @@ def _compacted_replacement_history(payload: Mapping[str, Any]) -> tuple[Response
         if item is not None:
             items.append(item)
     return tuple(items)
+
+
+def _legacy_compacted_history(history: Sequence[ResponseItem], message: str) -> tuple[ResponseItem, ...]:
+    compacted_history = [item for item in history if _is_rollout_user_turn_boundary(item)]
+    summary = _response_item_from_rollout_payload(
+        {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": message}],
+        }
+    )
+    if summary is not None:
+        compacted_history.append(summary)
+    return tuple(compacted_history)
 
 
 def _thread_rollback_turn_count(payload: Mapping[str, Any]) -> int | None:
@@ -723,6 +968,44 @@ def _thread_rollback_turn_count(payload: Mapping[str, Any]) -> int | None:
         except (KeyError, TypeError, ValueError):
             return None
     return None
+
+
+def _thread_rollback_turn_count_from_event(event: EventMsg) -> int | None:
+    if event.type != "thread_rolled_back":
+        return None
+    rollback = event.payload
+    if isinstance(rollback, ThreadRolledBackEvent):
+        return rollback.num_turns
+    if isinstance(rollback, Mapping):
+        try:
+            return int(rollback["num_turns"])
+        except (KeyError, TypeError, ValueError):
+            return None
+    return None
+
+
+def _event_turn_id(event: EventMsg) -> str | None:
+    payload = event.payload
+    if isinstance(payload, Mapping):
+        value = payload.get("turn_id")
+        return str(value) if value is not None else None
+    value = getattr(payload, "turn_id", None)
+    return str(value) if value is not None else None
+
+
+def _turn_ids_are_compatible(active_turn_id: str | None, item_turn_id: str | None) -> bool:
+    return active_turn_id is None or item_turn_id is None or active_turn_id == item_turn_id
+
+
+def _is_rollout_user_turn_boundary(item: ResponseItem) -> bool:
+    from pycodex.core.thread_rollout_truncation import is_user_turn_boundary
+
+    return is_user_turn_boundary(item)
+
+
+def _saturating_add_usize(left: int, right: int) -> int:
+    value = left + right
+    return value if value >= 0 else left
 
 
 def _drop_last_user_turns_from_history(history: list[ResponseItem], num_turns: int) -> None:

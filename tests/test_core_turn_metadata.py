@@ -7,7 +7,15 @@ from pathlib import Path
 from unittest.mock import patch
 
 from pycodex.core import (
+    COMPACTION_KEY,
+    FORKED_FROM_THREAD_ID_KEY,
     USER_INPUT_REQUESTED_DURING_TURN_KEY,
+    WINDOW_ID_KEY,
+    CompactionImplementation,
+    CompactionPhase,
+    CompactionReason,
+    CompactionTrigger,
+    CompactionTurnMetadata,
     McpTurnMetadataContext,
     TurnMetadataState,
     build_turn_metadata_header,
@@ -97,7 +105,21 @@ class CoreTurnMetadataTests(unittest.TestCase):
         ):
             header = build_turn_metadata_header(self.workspace_tempdir(), "none")
 
-        self.assertEqual(json.loads(header), {"sandbox": "none"})
+        self.assertEqual(json.loads(header), {"request_kind": "memory", "sandbox": "none"})
+
+    def test_build_turn_metadata_header_marks_memory_without_workspace_metadata(self) -> None:
+        # Rust source: codex-rs/core/src/turn_metadata.rs
+        # Rust test: build_turn_metadata_header_marks_memory_without_workspace_metadata.
+        # Behavior anchor: detached memory requests always emit request_kind=memory.
+        with (
+            patch("pycodex.core.turn_metadata.get_git_repo_root", return_value=None),
+            patch("pycodex.core.turn_metadata.get_head_commit_hash", return_value=None),
+            patch("pycodex.core.turn_metadata.get_git_remote_urls_assume_git_repo", return_value=None),
+            patch("pycodex.core.turn_metadata.get_has_changes", return_value=None),
+        ):
+            header = build_turn_metadata_header(self.workspace_tempdir())
+
+        self.assertEqual(json.loads(header), {"request_kind": "memory"})
 
     def test_turn_metadata_state_uses_platform_sandbox_tag(self) -> None:
         state, permission_profile = self.make_state()
@@ -123,6 +145,30 @@ class CoreTurnMetadataTests(unittest.TestCase):
 
         self.assertEqual(parsed["thread_source"], "subagent")
         self.assertNotIn("session_source", parsed)
+
+    def test_turn_metadata_state_includes_root_fork_lineage(self) -> None:
+        # Rust source: codex-rs/core/src/turn_metadata.rs
+        # Rust test: turn_metadata_state_includes_root_fork_lineage.
+        # Behavior anchor: base turn metadata preserves forked_from_thread_id.
+        permission_profile = PermissionProfile.read_only()
+        state = TurnMetadataState.new(
+            "session-a",
+            "thread-a",
+            "11111111-1111-4111-8111-111111111111",
+            ThreadSource.USER,
+            "turn-a",
+            self.workspace_tempdir(),
+            permission_profile,
+            WindowsSandboxLevel.DISABLED,
+            False,
+        )
+
+        parsed = json.loads(state.current_header_value())
+
+        self.assertEqual(
+            parsed[FORKED_FROM_THREAD_ID_KEY],
+            "11111111-1111-4111-8111-111111111111",
+        )
 
     def test_turn_metadata_state_includes_turn_started_at_unix_ms_after_start(self) -> None:
         state, _permission_profile = self.make_state()
@@ -181,7 +227,18 @@ class CoreTurnMetadataTests(unittest.TestCase):
         self.assertNotIn("turn_started_at_unix_ms", parsed)
 
     def test_turn_metadata_state_merges_client_metadata_without_replacing_reserved_fields(self) -> None:
-        state, _permission_profile = self.make_state()
+        permission_profile = PermissionProfile.read_only()
+        state = TurnMetadataState.new(
+            "session-a",
+            "thread-a",
+            "44444444-4444-4444-8444-444444444444",
+            ThreadSource.USER,
+            "turn-a",
+            self.workspace_tempdir(),
+            permission_profile,
+            WindowsSandboxLevel.DISABLED,
+            False,
+        )
         origin = "\u6771\u4eac"
 
         state.set_responsesapi_client_metadata(
@@ -217,16 +274,63 @@ class CoreTurnMetadataTests(unittest.TestCase):
         self.assertEqual(parsed["thread_source"], "user")
         self.assertEqual(parsed["turn_id"], "turn-a")
         self.assertEqual(parsed["turn_started_at_unix_ms"], 1_700_000_000_123)
-        self.assertNotIn("forked_from_thread_id", parsed)
+        self.assertEqual(parsed["forked_from_thread_id"], "44444444-4444-4444-8444-444444444444")
         self.assertNotIn("request_kind", parsed)
         self.assertNotIn("compaction", parsed)
         self.assertNotIn("window_id", parsed)
+
+        model_request_header = state.current_header_value_for_model_request("thread-a:1")
+        model_request_json = json.loads(model_request_header)
+        self.assertEqual(model_request_json["request_kind"], "turn")
+        self.assertEqual(model_request_json[WINDOW_ID_KEY], "thread-a:1")
 
         meta = state.current_meta_value_for_mcp_request(
             McpTurnMetadataContext("gpt-5.4", ReasoningEffort.HIGH)
         )
         self.assertEqual(meta["model"], "gpt-5.4")
         self.assertEqual(meta["reasoning_effort"], "high")
+        self.assertNotIn(WINDOW_ID_KEY, meta)
+
+    def test_turn_metadata_state_overlays_request_kind_and_compaction(self) -> None:
+        # Rust source: codex-rs/core/src/turn_metadata.rs
+        # Rust test: turn_metadata_state_overlays_compaction_only_on_compaction_requests.
+        state, _permission_profile = self.make_state()
+        state.set_responsesapi_client_metadata({COMPACTION_KEY: "client-supplied"})
+
+        prewarm_json = json.loads(state.current_header_value_for_prewarm("thread-a:0"))
+        self.assertEqual(prewarm_json["request_kind"], "prewarm")
+        self.assertEqual(prewarm_json[WINDOW_ID_KEY], "thread-a:0")
+        self.assertNotIn(COMPACTION_KEY, prewarm_json)
+
+        compact_json = json.loads(
+            state.current_header_value_for_compaction(
+                "thread-a:2",
+                CompactionTurnMetadata(
+                    CompactionTrigger.AUTO,
+                    CompactionReason.CONTEXT_LIMIT,
+                    CompactionImplementation.RESPONSES_COMPACTION_V2,
+                    CompactionPhase.MID_TURN,
+                ),
+            )
+        )
+
+        self.assertEqual(compact_json["request_kind"], "compaction")
+        self.assertEqual(compact_json[WINDOW_ID_KEY], "thread-a:2")
+        self.assertEqual(
+            compact_json[COMPACTION_KEY],
+            {
+                "trigger": "auto",
+                "reason": "context_limit",
+                "implementation": "responses_compaction_v2",
+                "phase": "mid_turn",
+                "strategy": "memento",
+            },
+        )
+
+        regular_json = json.loads(state.current_header_value_for_model_request("thread-a:3"))
+        self.assertEqual(regular_json["request_kind"], "turn")
+        self.assertEqual(regular_json[WINDOW_ID_KEY], "thread-a:3")
+        self.assertNotIn(COMPACTION_KEY, regular_json)
 
     def test_state_git_enrichment_adds_workspace_metadata(self) -> None:
         repo = self.make_repo()

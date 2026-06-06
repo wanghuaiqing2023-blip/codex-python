@@ -1901,13 +1901,15 @@ class SandboxPolicy:
                 ),
             }
         if self.type == "workspace-write":
-            return {
+            data: dict[str, JsonValue] = {
                 "type": self.type,
-                "writable_roots": [str(path) for path in self.writable_roots],
                 "network_access": bool(self.network_access),
                 "exclude_tmpdir_env_var": self.exclude_tmpdir_env_var,
                 "exclude_slash_tmp": self.exclude_slash_tmp,
             }
+            if self.writable_roots:
+                data["writable_roots"] = [str(path) for path in self.writable_roots]
+            return data
         return {"type": self.type}
 
 

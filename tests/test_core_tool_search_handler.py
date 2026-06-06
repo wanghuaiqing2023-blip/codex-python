@@ -41,6 +41,9 @@ def namespace_spec(namespace: str, tool_name: str, description: str) -> dict[str
 
 class ToolSearchHandlerTests(unittest.TestCase):
     def test_tool_search_spec_deduplicates_and_renders_sources(self) -> None:
+        # Rust parity:
+        # codex-core::tools::handlers::tool_search_spec
+        # tool_search_spec.rs::tests::create_tool_search_tool_deduplicates_and_renders_enabled_sources.
         spec = create_tool_search_tool(
             [
                 ToolSearchSourceInfo(
@@ -55,8 +58,17 @@ class ToolSearchHandlerTests(unittest.TestCase):
 
         self.assertEqual(spec["type"], "tool_search")
         self.assertEqual(spec["execution"], "client")
-        self.assertIn("- Google Drive: Use Google Drive", spec["description"])
-        self.assertIn("- docs", spec["description"])
+        self.assertEqual(
+            spec["description"],
+            "# Tool discovery\n\n"
+            "Searches over deferred tool metadata with BM25 and exposes matching tools for the next model call.\n\n"
+            "You have access to tools from the following sources:\n"
+            "- Google Drive: Use Google Drive as the single entrypoint for Drive, Docs, Sheets, and Slides work.\n"
+            "- docs\n"
+            "Some of the tools may not have been provided to you upfront, and you should use this tool "
+            "(`tool_search`) to search for the required tools. For MCP tool discovery, always use "
+            "`tool_search` instead of `list_mcp_resources` or `list_mcp_resource_templates`.",
+        )
         self.assertEqual(
             spec["parameters"],
             {
@@ -77,6 +89,8 @@ class ToolSearchHandlerTests(unittest.TestCase):
         )
 
     def test_tool_search_spec_reports_no_enabled_sources(self) -> None:
+        # Rust source contract:
+        # tool_search_spec.rs::render_source_descriptions emits this sentinel for an empty source set.
         self.assertIn("None currently enabled.", create_tool_search_tool([])["description"])
 
     def test_handler_metadata_matches_upstream_tool_contract(self) -> None:

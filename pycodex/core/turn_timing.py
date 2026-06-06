@@ -5,9 +5,13 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from datetime import timedelta
+from inspect import isawaitable
+from typing import Any
 
 from pycodex.core.stream_events_utils import raw_assistant_output_text_from_item
 from pycodex.protocol import ResponseItem, TurnItem
+
+TURN_TTFM_DURATION_METRIC = "codex.turn.ttfm.duration_ms"
 
 
 @dataclass(frozen=True)
@@ -158,6 +162,42 @@ def now_unix_timestamp_ms() -> int:
     return int(time.time() * 1000)
 
 
+async def record_turn_ttft_metric(turn_context: Any, event: ResponseEvent) -> timedelta | None:
+    timing_state = getattr(turn_context, "turn_timing_state", None)
+    recorder = getattr(timing_state, "record_ttft_for_response_event", None)
+    if not callable(recorder):
+        return None
+    duration = await _maybe_await(recorder(event))
+    if duration is None:
+        return None
+    telemetry = getattr(turn_context, "session_telemetry", None)
+    telemetry_recorder = getattr(telemetry, "record_turn_ttft", None)
+    if callable(telemetry_recorder):
+        await _maybe_await(telemetry_recorder(duration))
+    return duration
+
+
+async def record_turn_ttfm_metric(turn_context: Any, item: TurnItem) -> timedelta | None:
+    timing_state = getattr(turn_context, "turn_timing_state", None)
+    recorder = getattr(timing_state, "record_ttfm_for_turn_item", None)
+    if not callable(recorder):
+        return None
+    duration = await _maybe_await(recorder(item))
+    if duration is None:
+        return None
+    telemetry = getattr(turn_context, "session_telemetry", None)
+    telemetry_recorder = getattr(telemetry, "record_duration", None)
+    if callable(telemetry_recorder):
+        await _maybe_await(telemetry_recorder(TURN_TTFM_DURATION_METRIC, duration, ()))
+    return duration
+
+
+async def _maybe_await(value: Any) -> Any:
+    if isawaitable(value):
+        return await value
+    return value
+
+
 def response_event_records_turn_ttft(event: ResponseEvent) -> bool:
     if not isinstance(event, ResponseEvent):
         raise TypeError("event must be a ResponseEvent")
@@ -210,9 +250,12 @@ def response_item_records_turn_ttft(item: ResponseItem) -> bool:
 
 __all__ = [
     "ResponseEvent",
+    "TURN_TTFM_DURATION_METRIC",
     "TurnTimingState",
     "now_unix_timestamp_ms",
     "now_unix_timestamp_secs",
+    "record_turn_ttft_metric",
+    "record_turn_ttfm_metric",
     "response_event_records_turn_ttft",
     "response_item_records_turn_ttft",
 ]

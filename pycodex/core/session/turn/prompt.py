@@ -8,15 +8,13 @@ instructions, model-visible tool specs, and base instructions.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from typing import Any
 
 from pycodex.core.client_common import Prompt
 from pycodex.core.context import UserInstructions
-from pycodex.protocol import BaseInstructions, ResponseItem, SessionSource, SubAgentSource
-
-
-GUARDIAN_REVIEWER_NAME = "guardian"
+from pycodex.core.guardian.review import is_guardian_reviewer_source
+from pycodex.protocol import BaseInstructions, ResponseItem
 
 
 def build_turn_prompt(
@@ -78,32 +76,6 @@ def _output_schema_strict_for_turn(turn_context: Any, output_schema_strict: bool
             raise TypeError("output_schema_strict must be a bool or None")
         return output_schema_strict
     return not is_guardian_reviewer_source(getattr(turn_context, "session_source", None))
-
-
-def is_guardian_reviewer_source(session_source: Any) -> bool:
-    if isinstance(session_source, SessionSource):
-        return _is_guardian_subagent_source(session_source.subagent_source) if session_source.type == "subagent" else False
-    if isinstance(session_source, Mapping):
-        if "subagent" in session_source:
-            return _is_guardian_subagent_source(session_source["subagent"])
-        if session_source.get("type") == "subagent":
-            return _is_guardian_subagent_source(
-                session_source.get("subagent_source", session_source.get("subagentSource"))
-            )
-        return False
-    return False
-
-
-def _is_guardian_subagent_source(source: Any) -> bool:
-    if isinstance(source, SubAgentSource):
-        return source.type == "other" and source.other == GUARDIAN_REVIEWER_NAME
-    if isinstance(source, Mapping):
-        if "other" in source:
-            return source["other"] == GUARDIAN_REVIEWER_NAME
-        return source.get("type") == "other" and source.get("other") == GUARDIAN_REVIEWER_NAME
-    if isinstance(source, str):
-        return source == GUARDIAN_REVIEWER_NAME
-    return False
 
 
 __all__ = [

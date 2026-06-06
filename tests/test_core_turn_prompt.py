@@ -4,9 +4,9 @@ from types import SimpleNamespace
 from pycodex.core.session.turn.prompt import (
     build_turn_prompt,
     input_with_user_instructions,
-    is_guardian_reviewer_source,
     render_turn_user_instructions,
 )
+from pycodex.core.guardian.review import is_guardian_reviewer_source
 from pycodex.protocol import BaseInstructions, ContentItem, Personality, ResponseItem, SessionSource, SubAgentSource
 
 
@@ -84,6 +84,20 @@ class TurnPromptTests(unittest.TestCase):
 
         self.assertFalse(prompt.output_schema_strict)
         self.assertTrue(is_guardian_reviewer_source(context.session_source))
+
+    def test_is_guardian_reviewer_source_matches_rust_subagent_other_guardian_only(self) -> None:
+        # Rust source: codex/codex-rs/core/src/guardian/review.rs::is_guardian_reviewer_source
+        self.assertTrue(is_guardian_reviewer_source(SessionSource.subagent(SubAgentSource.other_source("guardian"))))
+        self.assertFalse(is_guardian_reviewer_source(SessionSource.subagent(SubAgentSource.review())))
+        self.assertFalse(is_guardian_reviewer_source(SessionSource.cli()))
+        self.assertFalse(is_guardian_reviewer_source(SessionSource.subagent(SubAgentSource.other_source("worker"))))
+
+    def test_is_guardian_reviewer_source_accepts_python_mapping_compatibility_shapes(self) -> None:
+        # Compatibility for Python app-server/test-double payload shapes while preserving
+        # the Rust guardian reviewer identity: SubAgent(Other("guardian")).
+        self.assertTrue(is_guardian_reviewer_source({"subagent": {"other": "guardian"}}))
+        self.assertTrue(is_guardian_reviewer_source({"type": "subagent", "subagentSource": "guardian"}))
+        self.assertFalse(is_guardian_reviewer_source({"type": "subagent", "subagentSource": {"other": "worker"}}))
 
     def test_build_turn_prompt_allows_explicit_output_schema_strict_override(self) -> None:
         context = SimpleNamespace(

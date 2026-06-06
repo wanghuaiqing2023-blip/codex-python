@@ -21,6 +21,7 @@ from pycodex.core.tools.handlers.utils import (
     session_strict_auto_review,
     updated_hook_command,
 )
+from pycodex.core.tools import handlers as handler_package
 from pycodex.core.tools.router import FunctionCallError
 from pycodex.protocol import (
     AdditionalPermissionProfile,
@@ -41,19 +42,44 @@ from pycodex.protocol import (
 
 class HandlerUtilsTests(unittest.TestCase):
     def test_parse_arguments_wraps_json_errors_for_model(self):
+        # Rust source: codex-core/src/tools/handlers/mod.rs
+        # Rust contract: parse_arguments maps JSON errors to RespondToModel.
         with self.assertRaisesRegex(FunctionCallError, "failed to parse function arguments"):
             parse_arguments("{")
 
     def test_updated_hook_command_matches_rust_error_surface(self):
+        # Rust source: codex-core/src/tools/handlers/mod.rs
+        # Rust contract: updated_hook_command requires string field `command`.
         self.assertEqual(updated_hook_command({"command": "pwd"}), "pwd")
         with self.assertRaisesRegex(FunctionCallError, "updatedInput without string field `command`"):
             updated_hook_command({"command": 1})
 
     def test_rewrite_function_string_argument_requires_object(self):
+        # Rust source: codex-core/src/tools/handlers/mod.rs
+        # Rust contract: rewrite_function_string_argument rewrites object fields only.
         rewritten = rewrite_function_string_argument('{"cmd":"old","keep":true}', "exec_command", "cmd", "new")
         self.assertEqual(json.loads(rewritten), {"cmd": "new", "keep": True})
         with self.assertRaisesRegex(FunctionCallError, "exec_command arguments must be an object"):
             rewrite_function_string_argument("[]", "exec_command", "cmd", "new")
+
+    def test_handler_package_reexports_shared_mod_helpers(self):
+        # Rust source: codex-core/src/tools/handlers/mod.rs
+        # Python coordinate: pycodex.core.tools.handlers package exposes this shared mod surface.
+        self.assertIs(handler_package.parse_arguments, parse_arguments)
+        self.assertIs(handler_package.updated_hook_command, updated_hook_command)
+        self.assertIs(handler_package.rewrite_function_string_argument, rewrite_function_string_argument)
+
+    def test_shell_and_unified_exec_reuse_shared_updated_hook_command(self):
+        # Direct adjacent smoke: concrete handlers should not keep a duplicate
+        # implementation of Rust handlers/mod.rs updated_hook_command.
+        from pycodex.core.tools.handlers import shell, unified_exec
+
+        self.assertEqual(shell.updated_hook_command({"command": "pwd"}), "pwd")
+        self.assertEqual(unified_exec.updated_hook_command({"command": "pwd"}), "pwd")
+        with self.assertRaisesRegex(FunctionCallError, "updatedInput without string field `command`"):
+            shell.updated_hook_command({"command": 1})
+        with self.assertRaisesRegex(FunctionCallError, "updatedInput without string field `command`"):
+            unified_exec.updated_hook_command({"command": 1})
 
     def test_resolve_workdir_base_path_uses_default_for_missing_or_empty(self):
         cwd = Path("/workspace")
@@ -80,6 +106,9 @@ class HandlerUtilsTests(unittest.TestCase):
             resolve_tool_environment(Turn(), "missing")
 
     def test_additional_permissions_validation_matches_feature_gates(self):
+        # Rust source: codex-core/src/tools/handlers/mod.rs
+        # Rust contract: fresh inline additional permissions require the
+        # exec-permission-approvals feature and with_additional_permissions mode.
         profile = AdditionalPermissionProfile(network=NetworkPermissions(enabled=True))
         self.assertEqual(
             normalize_and_validate_additional_permissions(
@@ -111,7 +140,33 @@ class HandlerUtilsTests(unittest.TestCase):
                 Path("/workspace"),
             )
 
+    def test_preapproved_permissions_work_when_exec_permission_approvals_disabled(self):
+        # Rust source: codex-core/src/tools/handlers/mod.rs
+        # Rust test: preapproved_permissions_work_when_request_permissions_tool_is_enabled_without_exec_permission_approvals_feature
+        profile = AdditionalPermissionProfile(network=NetworkPermissions(enabled=True))
+        policy = GranularApprovalConfig(
+            sandbox_approval=True,
+            rules=True,
+            skill_approval=True,
+            request_permissions=False,
+            mcp_elicitations=True,
+        )
+
+        normalized = normalize_and_validate_additional_permissions(
+            False,
+            policy,
+            SandboxPermissions.WITH_ADDITIONAL_PERMISSIONS,
+            profile,
+            True,
+            Path("/workspace"),
+        )
+
+        self.assertEqual(normalized, profile)
+
     def test_additional_permissions_rejects_unapproved_granular_policy_like_rust(self):
+        # Rust source: codex-core/src/tools/handlers/mod.rs
+        # Rust contract: non-preapproved inline permissions require OnRequest
+        # approval policy even when the feature gate is enabled.
         profile = AdditionalPermissionProfile(network=NetworkPermissions(enabled=True))
         policy = GranularApprovalConfig(
             sandbox_approval=True,
@@ -142,6 +197,9 @@ class HandlerUtilsTests(unittest.TestCase):
         )
 
     def test_implicit_granted_permissions_only_apply_to_default_requests(self):
+        # Rust source: codex-core/src/tools/handlers/mod.rs
+        # Rust tests: implicit_sticky_grants_bypass_inline_permission_validation
+        # and explicit_inline_permissions_do_not_use_implicit_sticky_grant_path
         profile = AdditionalPermissionProfile(network=NetworkPermissions(enabled=True))
         effective = EffectiveAdditionalPermissions(
             SandboxPermissions.WITH_ADDITIONAL_PERMISSIONS,
@@ -153,6 +211,8 @@ class HandlerUtilsTests(unittest.TestCase):
         self.assertIsNone(implicit_granted_permissions(SandboxPermissions.USE_DEFAULT, profile, effective))
 
     def test_permissions_are_preapproved_after_relative_path_materialization(self):
+        # Rust source: codex-core/src/tools/handlers/mod.rs
+        # Rust contract: preapproval compares materialized effective permissions.
         with tempfile.TemporaryDirectory() as tmp:
             cwd = Path(tmp)
             requested = AdditionalPermissionProfile(
@@ -171,6 +231,8 @@ class HandlerUtilsTests(unittest.TestCase):
             self.assertTrue(permissions_are_preapproved(requested, granted, cwd))
 
     def test_relative_deny_glob_grants_remain_preapproved_after_materialization(self):
+        # Rust source: codex-core/src/tools/handlers/mod.rs
+        # Rust test: relative_deny_glob_grants_remain_preapproved_after_materialization
         with tempfile.TemporaryDirectory() as tmp:
             cwd = Path(tmp)
             requested = AdditionalPermissionProfile(

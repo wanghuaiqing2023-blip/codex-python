@@ -8,6 +8,7 @@ login-shell decision, command derivation, and hook payload shaping.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
@@ -21,7 +22,17 @@ from pycodex.core.shell import Shell
 from pycodex.core.tools.handlers.shell_spec import CommandToolOptions, create_shell_command_tool
 from pycodex.core.tools.context import ToolPayload
 from pycodex.core.tools.registry import PostToolUsePayload, PreToolUsePayload, ToolInvocation
-from pycodex.protocol import AdditionalPermissionProfile, SandboxPermissions, ShellEnvironmentPolicy, ThreadId, ToolName
+from pycodex.protocol import (
+    AdditionalPermissionProfile,
+    AskForApproval,
+    FileSystemSandboxPolicy,
+    GranularApprovalConfig,
+    PermissionProfile,
+    SandboxPermissions,
+    ShellEnvironmentPolicy,
+    ThreadId,
+    ToolName,
+)
 
 JsonValue = Any
 
@@ -250,6 +261,69 @@ class ShellCommandHandler:
     def shell_runtime_backend(self) -> ShellCommandBackend:
         return self.backend
 
+    @staticmethod
+    def build_shell_request(
+        exec_params: ExecParams,
+        *,
+        hook_command: str,
+        shell_type: ShellType | str | None,
+        cancellation_token: Any = None,
+        explicit_env_overrides: Mapping[str, str] | None = None,
+        effective_additional_permissions: Any,
+        normalized_additional_permissions: AdditionalPermissionProfile | None,
+        approval_policy: AskForApproval | GranularApprovalConfig,
+        permission_profile: PermissionProfile,
+        file_system_sandbox_policy: FileSystemSandboxPolicy,
+        sandbox_cwd: Path | str,
+        prefix_rule: Sequence[str] | None = None,
+        matched_rules: Sequence[object] = (),
+    ) -> Any:
+        # Rust source: codex-rs/core/src/tools/handlers/shell.rs
+        # Behavior anchor: run_exec_like builds ExecApprovalRequest with
+        # UseDefault sandbox permissions for preapproved turn permissions, but
+        # keeps the effective sandbox permissions on the ShellRequest.
+        from pycodex.core.tools.runtimes import ShellRequest
+        from pycodex.core.tools.handlers.utils import EffectiveAdditionalPermissions
+        from pycodex.execpolicy import ExecApprovalRequest, create_exec_approval_requirement_for_command
+
+        if not isinstance(exec_params, ExecParams):
+            raise TypeError("exec_params must be ExecParams")
+        if not isinstance(effective_additional_permissions, EffectiveAdditionalPermissions):
+            raise TypeError("effective_additional_permissions must be EffectiveAdditionalPermissions")
+        approval_sandbox_permissions = (
+            SandboxPermissions.USE_DEFAULT
+            if effective_additional_permissions.permissions_preapproved
+            else effective_additional_permissions.sandbox_permissions
+        )
+        exec_approval_requirement = create_exec_approval_requirement_for_command(
+            ExecApprovalRequest(
+                command=exec_params.command,
+                approval_policy=approval_policy,
+                permission_profile=permission_profile,
+                file_system_sandbox_policy=file_system_sandbox_policy,
+                sandbox_cwd=Path(sandbox_cwd),
+                sandbox_permissions=approval_sandbox_permissions,
+                prefix_rule=tuple(prefix_rule) if prefix_rule is not None else None,
+                matched_rules=tuple(matched_rules),
+            )
+        )
+        return ShellRequest(
+            command=exec_params.command,
+            shell_type=shell_type,
+            hook_command=hook_command,
+            cwd=exec_params.cwd,
+            timeout_ms=exec_params.expiration.timeout_ms(),
+            cancellation_token=cancellation_token,
+            env=dict(exec_params.env),
+            explicit_env_overrides=dict(explicit_env_overrides or {}),
+            network=exec_params.network,
+            sandbox_permissions=effective_additional_permissions.sandbox_permissions,
+            additional_permissions=normalized_additional_permissions,
+            justification=exec_params.justification,
+            exec_approval_requirement=exec_approval_requirement,
+            additional_permissions_preapproved=effective_additional_permissions.permissions_preapproved,
+        )
+
     def pre_tool_use_payload(self, invocation: ToolInvocation) -> PreToolUsePayload | None:
         command = shell_command_payload_command(invocation.payload)
         if command is None:
@@ -295,11 +369,9 @@ def shell_command_payload_command(payload: ToolPayload) -> str | None:
 
 
 def updated_hook_command(updated_input: JsonValue) -> str:
-    data = _mapping(updated_input, "updated hook input")
-    command = data.get("command")
-    if not isinstance(command, str):
-        raise TypeError("updated hook input command must be a string")
-    return command
+    from pycodex.core.tools.handlers.utils import updated_hook_command as shared_updated_hook_command
+
+    return shared_updated_hook_command(updated_input)
 
 
 def _session_user_shell(session: Any) -> Shell:
@@ -337,6 +409,11 @@ __all__ = [
     "ShellCommandHandler",
     "ShellCommandHandlerOptions",
     "ShellCommandToolCallParams",
+    "build_shell_request",
     "shell_command_payload_command",
     "updated_hook_command",
 ]
+
+
+def build_shell_request(*args: Any, **kwargs: Any) -> Any:
+    return ShellCommandHandler.build_shell_request(*args, **kwargs)

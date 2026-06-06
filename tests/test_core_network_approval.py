@@ -1,6 +1,8 @@
 import threading
 import unittest
+from pathlib import Path
 
+from pycodex.core.guardian.approval_request import GuardianNetworkAccessTrigger
 from pycodex.core import (
     NETWORK_APPROVAL_DENY_REASON_NOT_ALLOWED,
     ActiveNetworkApproval,
@@ -29,15 +31,26 @@ from pycodex.core.tools.network_approval import (
     NetworkApprovalMode,
     NetworkApprovalSpec,
 )
+from pycodex.core.guardian.review import guardian_timeout_message
 from pycodex.protocol import (
     AskForApproval,
     NetworkApprovalProtocol,
     NetworkSandboxPolicy,
     PermissionProfile,
+    SandboxPermissions,
 )
 
 
 class NetworkApprovalTests(unittest.TestCase):
+    def network_trigger(self) -> GuardianNetworkAccessTrigger:
+        return GuardianNetworkAccessTrigger(
+            "call-1",
+            "shell",
+            ("curl", "https://example.com"),
+            Path("/repo"),
+            SandboxPermissions.USE_DEFAULT,
+        )
+
     def test_host_approval_key_normalizes_host_and_protocol_labels(self) -> None:
         key = HostApprovalKey.from_request(
             {"host": "Example.COM", "port": 443},
@@ -222,9 +235,11 @@ class NetworkApprovalTests(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "denied_by_policy message must be a string"):
             NetworkApprovalOutcome.denied_by_policy(123)  # type: ignore[arg-type]
         with self.assertRaisesRegex(TypeError, "command must be a string"):
-            NetworkApprovalSpec(None, NetworkApprovalMode.IMMEDIATE, {}, 123)  # type: ignore[arg-type]
+            NetworkApprovalSpec(None, NetworkApprovalMode.IMMEDIATE, self.network_trigger(), 123)  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "trigger must be GuardianNetworkAccessTrigger"):
+            NetworkApprovalSpec(None, NetworkApprovalMode.IMMEDIATE, {}, "curl")  # type: ignore[arg-type]
 
-        self.assertIs(NetworkApprovalSpec(None, "deferred", {}, "curl").mode, NetworkApprovalMode.DEFERRED)
+        self.assertIs(NetworkApprovalSpec(None, "deferred", self.network_trigger(), "curl").mode, NetworkApprovalMode.DEFERRED)
 
         with self.assertRaisesRegex(TypeError, "cancellation_token must be a CancellationToken"):
             ActiveNetworkApprovalCall("reg", "turn", {}, "curl", object())  # type: ignore[arg-type]
@@ -370,7 +385,7 @@ class NetworkApprovalTests(unittest.TestCase):
         spec = NetworkApprovalSpec(
             network={"proxy": True},
             mode=NetworkApprovalMode.IMMEDIATE,
-            trigger={"kind": "command"},
+            trigger=self.network_trigger(),
             command="curl https://example.com",
         )
 
@@ -380,7 +395,7 @@ class NetworkApprovalTests(unittest.TestCase):
                 service,
                 "turn-1",
                 True,
-                NetworkApprovalSpec(None, NetworkApprovalMode.IMMEDIATE, {}, "curl"),
+                NetworkApprovalSpec(None, NetworkApprovalMode.IMMEDIATE, self.network_trigger(), "curl"),
             )
         )
         active = begin_network_approval(
@@ -401,7 +416,7 @@ class NetworkApprovalTests(unittest.TestCase):
             service,
             "turn-1",
             True,
-            NetworkApprovalSpec({"proxy": True}, NetworkApprovalMode.IMMEDIATE, {}, "curl https://example.com"),
+            NetworkApprovalSpec({"proxy": True}, NetworkApprovalMode.IMMEDIATE, self.network_trigger(), "curl https://example.com"),
             registration_id="registration-1",
         )
 
@@ -409,7 +424,7 @@ class NetworkApprovalTests(unittest.TestCase):
             service,
             "turn-2",
             True,
-            NetworkApprovalSpec({"proxy": True}, NetworkApprovalMode.IMMEDIATE, {}, "curl https://example.org"),
+            NetworkApprovalSpec({"proxy": True}, NetworkApprovalMode.IMMEDIATE, self.network_trigger(), "curl https://example.org"),
             registration_id="registration-1",
         )
 
@@ -438,7 +453,7 @@ class NetworkApprovalTests(unittest.TestCase):
             service,
             "turn-1",
             True,
-            NetworkApprovalSpec({"proxy": True}, NetworkApprovalMode.IMMEDIATE, {}, "curl"),
+            NetworkApprovalSpec({"proxy": True}, NetworkApprovalMode.IMMEDIATE, self.network_trigger(), "curl"),
             registration_id="registration-1",
         )
         service.record_call_outcome(
@@ -463,7 +478,7 @@ class NetworkApprovalTests(unittest.TestCase):
             service,
             "turn-1",
             True,
-            NetworkApprovalSpec({"proxy": True}, NetworkApprovalMode.DEFERRED, {}, "curl"),
+            NetworkApprovalSpec({"proxy": True}, NetworkApprovalMode.DEFERRED, self.network_trigger(), "curl"),
             registration_id="registration-1",
         )
         deferred = active.into_deferred()
@@ -962,7 +977,7 @@ class NetworkApprovalTests(unittest.TestCase):
 
     def test_begin_network_approval_rejects_invalid_arguments(self) -> None:
         service = NetworkApprovalService()
-        spec = NetworkApprovalSpec({"proxy": True}, NetworkApprovalMode.IMMEDIATE, {}, "curl https://example.com")
+        spec = NetworkApprovalSpec({"proxy": True}, NetworkApprovalMode.IMMEDIATE, self.network_trigger(), "curl https://example.com")
 
         with self.assertRaisesRegex(TypeError, "service must be a NetworkApprovalService"):
             begin_network_approval(123, "turn-1", True, spec)  # type: ignore[arg-type]
@@ -1038,7 +1053,7 @@ class NetworkApprovalTests(unittest.TestCase):
         self.assertIs(resolved.decision, PendingApprovalDecision.DENY)
         self.assertEqual(
             resolved.outcome,
-            NetworkApprovalOutcome.denied_by_policy("Network approval request timed out."),
+            NetworkApprovalOutcome.denied_by_policy(guardian_timeout_message()),
         )
 
     def test_resolve_network_review_decision_rejects_unknown_type(self) -> None:
@@ -1106,6 +1121,9 @@ class NetworkApprovalTests(unittest.TestCase):
         self.assertIs(pending.decision, PendingApprovalDecision.ALLOW_FOR_SESSION)
         self.assertIn(key, service.session_approved_hosts)
         self.assertNotIn(key, service.session_denied_hosts)
+        self.assertNotIn(key, service.pending_host_approvals)
+
+        pending, _ = service.get_or_create_pending_approval(key)
 
         apply_network_review_decision(
             service,

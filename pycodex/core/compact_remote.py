@@ -8,26 +8,32 @@ from __future__ import annotations
 
 import inspect
 import json
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any, Callable, Sequence
 
 from pycodex.core.compact import (
     InitialContextInjection,
     insert_initial_context_before_last_real_user_or_summary,
 )
+from pycodex.core.context_manager.history import (
+    TotalTokenUsageBreakdown,
+    estimate_response_item_model_visible_bytes,
+)
+from pycodex.core.context_manager.normalize import (
+    IMAGE_CONTENT_OMITTED_PLACEHOLDER,
+    ensure_call_outputs_present,
+    normalize_call_outputs,
+    remove_corresponding_for as _normalize_remove_corresponding_for,
+    remove_orphan_outputs,
+    strip_images_when_unsupported,
+)
 from pycodex.core.event_mapping import parse_turn_item
 from pycodex.protocol import (
     BaseInstructions,
     CompactedItem,
-    ContentItem,
-    FunctionCallOutputContentItem,
-    FunctionCallOutputPayload,
     ResponseItem,
     TurnContextItem,
 )
-
-
-IMAGE_CONTENT_OMITTED_PLACEHOLDER = "image content omitted because you do not support image input"
 
 
 def should_keep_compacted_history_item(item: ResponseItem) -> bool:
@@ -60,72 +66,11 @@ def process_compacted_history(
     return insert_initial_context_before_last_real_user_or_summary(filtered, context)
 
 
-def ensure_call_outputs_present(history: Sequence[ResponseItem]) -> tuple[ResponseItem, ...]:
-    items = _response_items(history, "history")
-    missing: list[tuple[int, ResponseItem]] = []
-    for index, item in enumerate(items):
-        call_id = item.call_id
-        if item.type == "function_call" and isinstance(call_id, str):
-            if not any(candidate.type == "function_call_output" and candidate.call_id == call_id for candidate in items):
-                missing.append((index, _function_call_output(call_id)))
-        elif item.type == "tool_search_call" and isinstance(call_id, str):
-            if not any(candidate.type == "tool_search_output" and candidate.call_id == call_id for candidate in items):
-                missing.append((index, _tool_search_output(call_id)))
-        elif item.type == "custom_tool_call" and isinstance(call_id, str):
-            if not any(candidate.type == "custom_tool_call_output" and candidate.call_id == call_id for candidate in items):
-                missing.append((index, _custom_tool_call_output(call_id)))
-        elif item.type == "local_shell_call" and isinstance(call_id, str):
-            if not any(candidate.type == "function_call_output" and candidate.call_id == call_id for candidate in items):
-                missing.append((index, _function_call_output(call_id)))
-    for index, output in reversed(missing):
-        items.insert(index + 1, output)
-    return tuple(items)
-
-
-def remove_orphan_outputs(history: Sequence[ResponseItem]) -> tuple[ResponseItem, ...]:
-    items = _response_items(history, "history")
-    function_call_ids = {item.call_id for item in items if item.type == "function_call" and isinstance(item.call_id, str)}
-    local_shell_call_ids = {item.call_id for item in items if item.type == "local_shell_call" and isinstance(item.call_id, str)}
-    tool_search_call_ids = {item.call_id for item in items if item.type == "tool_search_call" and isinstance(item.call_id, str)}
-    custom_tool_call_ids = {item.call_id for item in items if item.type == "custom_tool_call" and isinstance(item.call_id, str)}
-    kept: list[ResponseItem] = []
-    for item in items:
-        call_id = item.call_id
-        if item.type == "function_call_output":
-            if call_id in function_call_ids or call_id in local_shell_call_ids:
-                kept.append(item)
-            continue
-        if item.type == "custom_tool_call_output":
-            if call_id in custom_tool_call_ids:
-                kept.append(item)
-            continue
-        if item.type == "tool_search_output":
-            if item.execution == "server" or call_id is None or call_id in tool_search_call_ids:
-                kept.append(item)
-            continue
-        kept.append(item)
-    return tuple(kept)
-
-
-def normalize_call_outputs(history: Sequence[ResponseItem]) -> tuple[ResponseItem, ...]:
-    return remove_orphan_outputs(ensure_call_outputs_present(history))
-
-
 def normalize_history_for_prompt(
     history: Sequence[ResponseItem],
     input_modalities: Sequence[Any] | None = None,
 ) -> tuple[ResponseItem, ...]:
     return strip_images_when_unsupported(input_modalities, normalize_call_outputs(history))
-
-
-def strip_images_when_unsupported(
-    input_modalities: Sequence[Any] | None,
-    history: Sequence[ResponseItem],
-) -> tuple[ResponseItem, ...]:
-    items = _response_items(history, "history")
-    if _input_modalities_support_images(input_modalities):
-        return tuple(items)
-    return tuple(_strip_images_from_item(item) for item in items)
 
 
 @dataclass(frozen=True)
@@ -217,6 +162,35 @@ class CompactRequestLogData:
 
 
 @dataclass(frozen=True)
+class RemoteCompactFailureLogData:
+    turn_id: str
+    last_api_response_total_tokens: int
+    all_history_items_model_visible_bytes: int
+    estimated_tokens_of_items_added_since_last_successful_api_response: int
+    estimated_bytes_of_items_added_since_last_successful_api_response: int
+    model_context_window_tokens: int | None
+    failing_compaction_request_model_visible_bytes: int
+    compact_error: str
+    message: str = "remote compaction failed"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.turn_id, str):
+            raise TypeError("turn_id must be a string")
+        if not isinstance(self.compact_error, str):
+            raise TypeError("compact_error must be a string")
+        if self.model_context_window_tokens is not None:
+            _ensure_non_negative_int(self.model_context_window_tokens, "model_context_window_tokens")
+        for name in (
+            "last_api_response_total_tokens",
+            "all_history_items_model_visible_bytes",
+            "estimated_tokens_of_items_added_since_last_successful_api_response",
+            "estimated_bytes_of_items_added_since_last_successful_api_response",
+            "failing_compaction_request_model_visible_bytes",
+        ):
+            _ensure_non_negative_int(getattr(self, name), name)
+
+
+@dataclass(frozen=True)
 class TrimFunctionCallHistoryResult:
     items: tuple[ResponseItem, ...]
     deleted_items: int
@@ -250,10 +224,32 @@ def build_compact_request_log_data(
     return CompactRequestLogData(total)
 
 
-def estimate_response_item_model_visible_bytes(item: ResponseItem) -> int:
-    if not isinstance(item, ResponseItem):
-        raise TypeError("item must be a ResponseItem")
-    return len(json.dumps(item.to_mapping(), ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+def build_remote_compact_failure_log_data(
+    turn_id: str,
+    compact_request_log_data: CompactRequestLogData,
+    total_usage_breakdown: TotalTokenUsageBreakdown,
+    compact_error: object,
+    *,
+    model_context_window_tokens: int | None = None,
+) -> RemoteCompactFailureLogData:
+    if not isinstance(compact_request_log_data, CompactRequestLogData):
+        raise TypeError("compact_request_log_data must be CompactRequestLogData")
+    if not isinstance(total_usage_breakdown, TotalTokenUsageBreakdown):
+        raise TypeError("total_usage_breakdown must be TotalTokenUsageBreakdown")
+    return RemoteCompactFailureLogData(
+        turn_id=turn_id,
+        last_api_response_total_tokens=total_usage_breakdown.last_api_response_total_tokens,
+        all_history_items_model_visible_bytes=total_usage_breakdown.all_history_items_model_visible_bytes,
+        estimated_tokens_of_items_added_since_last_successful_api_response=(
+            total_usage_breakdown.estimated_tokens_of_items_added_since_last_successful_api_response
+        ),
+        estimated_bytes_of_items_added_since_last_successful_api_response=(
+            total_usage_breakdown.estimated_bytes_of_items_added_since_last_successful_api_response
+        ),
+        model_context_window_tokens=model_context_window_tokens,
+        failing_compaction_request_model_visible_bytes=compact_request_log_data.failing_compaction_request_model_visible_bytes,
+        compact_error=str(compact_error),
+    )
 
 
 def is_codex_generated_item(item: ResponseItem) -> bool:
@@ -301,93 +297,7 @@ def trim_function_call_history_to_fit_context_window(
 
 
 def _remove_corresponding_for(items: list[ResponseItem], removed: ResponseItem) -> None:
-    call_id = removed.call_id
-    if not isinstance(call_id, str):
-        return
-    if removed.type == "function_call_output":
-        counterpart_types = {"function_call", "local_shell_call"}
-    elif removed.type == "function_call":
-        counterpart_types = {"function_call_output"}
-    elif removed.type == "tool_search_output":
-        counterpart_types = {"tool_search_call"}
-    elif removed.type == "tool_search_call":
-        counterpart_types = {"tool_search_output"}
-    elif removed.type == "custom_tool_call_output":
-        counterpart_types = {"custom_tool_call"}
-    elif removed.type == "custom_tool_call":
-        counterpart_types = {"custom_tool_call_output"}
-    elif removed.type == "local_shell_call":
-        counterpart_types = {"function_call_output"}
-    else:
-        return
-    for index, item in enumerate(items):
-        if item.type in counterpart_types and item.call_id == call_id:
-            del items[index]
-            return
-
-
-def _function_call_output(call_id: str) -> ResponseItem:
-    return ResponseItem(
-        type="function_call_output",
-        call_id=call_id,
-        output=FunctionCallOutputPayload.from_text("aborted"),
-    )
-
-
-def _custom_tool_call_output(call_id: str) -> ResponseItem:
-    return ResponseItem(
-        type="custom_tool_call_output",
-        call_id=call_id,
-        output=FunctionCallOutputPayload.from_text("aborted"),
-    )
-
-
-def _tool_search_output(call_id: str) -> ResponseItem:
-    return ResponseItem(
-        type="tool_search_output",
-        call_id=call_id,
-        status="completed",
-        execution="client",
-        tools=(),
-    )
-
-
-def _input_modalities_support_images(input_modalities: Sequence[Any] | None) -> bool:
-    if input_modalities is None:
-        return False
-    return any(getattr(modality, "value", modality) == "image" for modality in input_modalities)
-
-
-def _strip_images_from_item(item: ResponseItem) -> ResponseItem:
-    if item.type == "message":
-        content = tuple(_strip_message_content_image(content_item) for content_item in item.content)
-        return replace(item, content=content)
-    if item.type in {"function_call_output", "custom_tool_call_output"} and isinstance(item.output, FunctionCallOutputPayload):
-        output = _strip_function_output_images(item.output)
-        return replace(item, output=output)
-    if item.type == "image_generation_call":
-        return replace(item, result="")
-    return item
-
-
-def _strip_message_content_image(item: ContentItem) -> ContentItem:
-    if item.type == "input_image":
-        return ContentItem.input_text(IMAGE_CONTENT_OMITTED_PLACEHOLDER)
-    return item
-
-
-def _strip_function_output_images(output: FunctionCallOutputPayload) -> FunctionCallOutputPayload:
-    content_items = output.content_items
-    if content_items is None:
-        return output
-    normalized = tuple(_strip_function_output_content_image(item) for item in content_items)
-    return FunctionCallOutputPayload.from_content_items(normalized, success=output.success)
-
-
-def _strip_function_output_content_image(item: FunctionCallOutputContentItem) -> FunctionCallOutputContentItem:
-    if item.type == "input_image":
-        return FunctionCallOutputContentItem.input_text(IMAGE_CONTENT_OMITTED_PLACEHOLDER)
-    return item
+    _normalize_remove_corresponding_for(items, removed)
 
 
 def _response_items(value: Sequence[ResponseItem], label: str) -> list[ResponseItem]:
@@ -398,13 +308,23 @@ def _response_items(value: Sequence[ResponseItem], label: str) -> list[ResponseI
     return list(value)
 
 
+def _ensure_non_negative_int(value: int, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer")
+    if value < 0:
+        raise ValueError(f"{name} must be non-negative")
+    return value
+
+
 __all__ = [
     "CompactRequestLogData",
     "IMAGE_CONTENT_OMITTED_PLACEHOLDER",
     "RemoteCompactionInstallPlan",
+    "RemoteCompactFailureLogData",
     "TrimFunctionCallHistoryResult",
     "apply_remote_compaction_install_plan",
     "build_compact_request_log_data",
+    "build_remote_compact_failure_log_data",
     "build_remote_compaction_install_plan",
     "build_remote_compaction_success_plan",
     "ensure_call_outputs_present",

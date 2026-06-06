@@ -149,6 +149,8 @@ class CoreApplyPatchTests(unittest.TestCase):
             ApplyPatchFileChange(type="chmod")
 
     def test_create_apply_patch_freeform_tool_matches_default_grammar(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/apply_patch_spec.rs
+        # Rust test: create_apply_patch_freeform_tool_matches_expected_spec
         tool = create_apply_patch_freeform_tool(False)
 
         self.assertEqual(
@@ -166,6 +168,8 @@ class CoreApplyPatchTests(unittest.TestCase):
         )
 
     def test_create_apply_patch_freeform_tool_can_accept_environment_id(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/apply_patch_spec.rs
+        # Rust test: create_apply_patch_freeform_tool_includes_environment_id_when_requested
         definition = create_apply_patch_freeform_tool(True).to_mapping()["format"]["definition"]
 
         self.assertIn(
@@ -237,6 +241,36 @@ class CoreApplyPatchTests(unittest.TestCase):
         self.assertEqual(event.payload.call_id, "patch-1")
         self.assertEqual(event.payload.changes, {Path("streamed.txt"): FileChange.add("hello\n")})
         self.assertIsNone(consumer.finish())
+
+    def test_apply_patch_argument_diff_consumer_streams_incremental_changes_like_rust(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/apply_patch.rs
+        # Rust test: apply_patch_tests.rs::diff_consumer_streams_apply_patch_changes.
+        class Features:
+            def enabled(self, feature) -> bool:
+                return feature is Feature.APPLY_PATCH_STREAMING_EVENTS
+
+        turn = SimpleNamespace(features=Features())
+        consumer = ApplyPatchArgumentDiffConsumer()
+
+        self.assertIsNone(consumer.consume_diff(turn, "call-1", "*** Begin Patch\n"))
+
+        event = consumer.consume_diff(
+            turn,
+            "call-1",
+            "*** Add File: hello.txt\n+hello",
+        )
+        self.assertIsNotNone(event)
+        self.assertEqual(event.payload.call_id, "call-1")
+        self.assertEqual(event.payload.changes, {Path("hello.txt"): FileChange.add("")})
+
+        self.assertIsNone(consumer.consume_diff(turn, "call-1", "\n+world"))
+        self.assertIsNone(consumer.consume_diff(turn, "call-1", "\n*** End Patch"))
+
+        event = consumer.finish()
+
+        self.assertIsNotNone(event)
+        self.assertEqual(event.payload.call_id, "call-1")
+        self.assertEqual(event.payload.changes, {Path("hello.txt"): FileChange.add("hello\nworld\n")})
 
     def test_apply_patch_argument_diff_consumer_respects_streaming_feature_gate(self) -> None:
         consumer = ApplyPatchArgumentDiffConsumer()

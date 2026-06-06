@@ -263,6 +263,8 @@ class SpecPlanTests(unittest.TestCase):
         self.assertEqual(descriptions["mcp__calendar__"].description, "Calendar tools")
 
     def test_hosted_model_tool_specs_follow_provider_and_standalone_web_run(self) -> None:
+        # Rust parity: codex-core::tools::spec_plan
+        # spec_plan_tests.rs::hosted_tools_follow_provider_auth_model_and_config_gates.
         options = ToolPlanOptions(
             provider_web_search=True,
             web_search_mode=WebSearchMode.LIVE,
@@ -286,6 +288,15 @@ class SpecPlanTests(unittest.TestCase):
                 ToolPlanOptions(
                     provider_web_search=True,
                     standalone_web_run_available=True,
+                    web_search_mode=WebSearchMode.LIVE,
+                )
+            ),
+            (),
+        )
+        self.assertEqual(
+            hosted_model_tool_specs(
+                ToolPlanOptions(
+                    provider_web_search=False,
                     web_search_mode=WebSearchMode.LIVE,
                 )
             ),

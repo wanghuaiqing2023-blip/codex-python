@@ -15,6 +15,8 @@ from pycodex.tools.tool_discovery import ToolSearchSourceInfo
 
 class ToolSearchEntryTests(unittest.TestCase):
     def test_function_specs_become_deferred_loadable_tools(self) -> None:
+        # Rust parity: codex-core::tools::tool_search_entry
+        # tool_search_entry.rs::ToolSearchInfo::from_spec Function arm.
         spec = {
             "type": "function",
             "name": "lookup_order",
@@ -42,6 +44,8 @@ class ToolSearchEntryTests(unittest.TestCase):
         self.assertIn("output_schema", spec)
 
     def test_namespace_specs_default_description_and_defer_child_tools(self) -> None:
+        # Rust parity: codex-core::tools::tool_search_entry
+        # tool_search_entry.rs::ToolSearchInfo::from_spec Namespace arm.
         spec = {
             "type": "namespace",
             "name": "mcp__calendar__",
@@ -82,8 +86,12 @@ class ToolSearchEntryTests(unittest.TestCase):
         )
 
     def test_hosted_or_freeform_specs_are_not_tool_search_loadable(self) -> None:
+        # Rust parity: codex-core::tools::tool_search_entry
+        # tool_search_entry.rs::ToolSearchInfo::from_spec unsupported ToolSpec arms.
         self.assertIsNone(loadable_tool_spec_from_spec(ToolSpec.image_generation("png")))
+        self.assertIsNone(ToolSearchInfo.from_spec("image", ToolSpec.image_generation("png")))
         self.assertIsNone(loadable_tool_spec_from_spec({"type": "web_search"}))
+        self.assertIsNone(ToolSearchInfo.from_spec("web", {"type": "web_search"}))
         self.assertIsNone(
             loadable_tool_spec_from_spec(
                 ToolSpec.freeform(
@@ -94,6 +102,19 @@ class ToolSearchEntryTests(unittest.TestCase):
                         definition='start: "patch"',
                     ),
                 )
+            )
+        )
+        self.assertIsNone(
+            ToolSearchInfo.from_spec(
+                "patch",
+                ToolSpec.freeform(
+                    name="patch",
+                    description="Patch files",
+                    format=FreeformToolFormat.grammar(
+                        syntax="lark",
+                        definition='start: "patch"',
+                    ),
+                ),
             )
         )
 

@@ -24,9 +24,19 @@ from pycodex.protocol import (
     WritableRoot,
     format_allow_prefixes,
 )
+from pycodex.core.context import PermissionsInstructions as ContextPermissionsInstructions
 
 
 class CorePermissionsInstructionsTests(unittest.TestCase):
+    # Rust source:
+    # - codex/codex-rs/core/src/context/permissions_instructions.rs
+    # - codex/codex-rs/core/src/context/permissions_instructions_tests.rs
+
+    def test_context_package_reexports_rust_pub_use_anchor(self):
+        # Rust module boundary: codex/codex-rs/core/src/context/mod.rs
+        # exposes `pub use permissions_instructions::PermissionsInstructions`.
+        self.assertIs(ContextPermissionsInstructions, PermissionsInstructions)
+
     def test_renders_sandbox_mode_text(self):
         self.assertEqual(
             sandbox_text(SandboxMode.WORKSPACE_WRITE, NetworkAccess.RESTRICTED),
@@ -99,6 +109,11 @@ class CorePermissionsInstructionsTests(unittest.TestCase):
             ApprovalsReviewer.USER,
             request_permissions_tool_enabled=True,
         )
+        on_failure = approval_text(
+            AskForApproval.ON_FAILURE,
+            ApprovalsReviewer.USER,
+            request_permissions_tool_enabled=True,
+        )
         on_request = approval_text(
             AskForApproval.ON_REQUEST,
             ApprovalsReviewer.USER,
@@ -108,6 +123,8 @@ class CorePermissionsInstructionsTests(unittest.TestCase):
 
         self.assertIn("`approval_policy` is `unless-trusted`", unless_trusted)
         self.assertIn("# request_permissions Tool", unless_trusted)
+        self.assertIn("`approval_policy` is `on-failure`", on_failure)
+        self.assertIn("# request_permissions Tool", on_failure)
         self.assertIn("with_additional_permissions", on_request)
         self.assertIn(request_permissions_tool_prompt_section(), on_request)
 
@@ -160,6 +177,37 @@ class CorePermissionsInstructionsTests(unittest.TestCase):
             ),
         )
 
+    def test_granular_policy_includes_shell_permission_instructions_only_when_sandbox_can_prompt(self):
+        allowed = approval_text(
+            GranularApprovalConfig(
+                sandbox_approval=True,
+                rules=True,
+                skill_approval=True,
+                request_permissions=True,
+                mcp_elicitations=True,
+            ),
+            ApprovalsReviewer.USER,
+            exec_permission_approvals_enabled=True,
+            request_permissions_tool_enabled=False,
+        )
+        rejected = approval_text(
+            GranularApprovalConfig(
+                sandbox_approval=False,
+                rules=True,
+                skill_approval=True,
+                request_permissions=True,
+                mcp_elicitations=True,
+            ),
+            ApprovalsReviewer.USER,
+            exec_permission_approvals_enabled=True,
+            request_permissions_tool_enabled=False,
+        )
+
+        self.assertIn("with_additional_permissions", allowed)
+        self.assertIn("additional_permissions", allowed)
+        self.assertNotIn("with_additional_permissions", rejected)
+        self.assertNotIn("additional_permissions", rejected)
+
     def test_granular_policy_includes_request_permissions_tool_only_when_allowed(self):
         allowed = approval_text(
             GranularApprovalConfig(
@@ -189,6 +237,23 @@ class CorePermissionsInstructionsTests(unittest.TestCase):
         self.assertIn("# request_permissions Tool", allowed)
         self.assertIn("- `request_permissions`", rejected)
         self.assertNotIn("# request_permissions Tool", rejected)
+
+    def test_granular_policy_hides_request_permissions_category_when_tool_unavailable(self):
+        text = approval_text(
+            GranularApprovalConfig(
+                sandbox_approval=False,
+                rules=False,
+                skill_approval=False,
+                request_permissions=True,
+                mcp_elicitations=False,
+            ),
+            ApprovalsReviewer.USER,
+            exec_permission_approvals_enabled=True,
+            request_permissions_tool_enabled=False,
+        )
+
+        self.assertNotIn("- `request_permissions`", text)
+        self.assertNotIn("# request_permissions Tool", text)
 
     def test_writable_roots_text_and_prefix_formatting(self):
         first = WritableRoot(Path("/a"))

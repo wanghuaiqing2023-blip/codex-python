@@ -3704,22 +3704,54 @@ def test_build_responses_request_state_verbosity_overrides_model_default():
 
 
 def test_create_text_param_for_request_matches_rust_shapes():
+    # Rust source: codex/codex-rs/core/src/client_common_tests.rs
+    # Rust tests: serializes_text_verbosity_when_set,
+    # serializes_text_schema_with_strict_format,
+    # serializes_text_schema_with_non_strict_format, omits_text_when_not_set.
     assert create_text_param_for_request(None, None, True) is None
+    assert create_text_param_for_request("low", None, True) == {"verbosity": "low"}
 
-    schema = {"type": "object", "properties": {"answer": {"type": "string"}}}
-    text = create_text_param_for_request(None, schema, False)
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+    }
+    strict_text = create_text_param_for_request(None, schema, True)
 
-    assert text == {
+    assert strict_text == {
+        "format": {
+            "type": "json_schema",
+            "strict": True,
+            "schema": schema,
+            "name": "codex_output_schema",
+        }
+    }
+    assert "verbosity" not in strict_text
+
+    non_strict_schema = {
+        "type": "object",
+        "properties": {
+            "answer": {"type": "string"},
+            "rationale": {"type": "string"},
+        },
+        "required": ["answer"],
+        "additionalProperties": False,
+    }
+    non_strict_text = create_text_param_for_request(None, non_strict_schema, False)
+
+    assert non_strict_text == {
         "format": {
             "type": "json_schema",
             "strict": False,
-            "schema": schema,
+            "schema": non_strict_schema,
             "name": "codex_output_schema",
         }
     }
 
 
 def test_build_responses_request_omits_text_controls_when_unset():
+    # Rust source: codex/codex-rs/core/src/client_common_tests.rs
+    # Rust test: omits_text_when_not_set.
     client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
     provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
     model_info = SimpleNamespace(
@@ -3731,6 +3763,7 @@ def test_build_responses_request_omits_text_controls_when_unset():
     request = client.build_responses_request(provider, Prompt.default(), model_info)
 
     assert request["text"] is None
+    assert "text" not in serialize_responses_request(request)
 
 
 def test_build_responses_request_records_ignored_model_verbosity_when_unsupported():
@@ -3874,6 +3907,8 @@ def test_build_responses_request_keeps_empty_reasoning_object_when_model_support
 
 
 def test_build_responses_request_normalizes_service_tier_request_values():
+    # Rust source: codex/codex-rs/core/src/client_common_tests.rs
+    # Rust test: serializes_flex_service_tier_when_set.
     client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
     provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
     model_info = SimpleNamespace(
@@ -3895,9 +3930,17 @@ def test_build_responses_request_normalizes_service_tier_request_values():
         model_info,
         service_tier="fast",
     )
+    flex_request = client.build_responses_request(
+        provider,
+        Prompt.default(),
+        model_info,
+        service_tier="flex",
+    )
 
     assert fast_request["service_tier"] == "priority"
     assert legacy_fast_request["service_tier"] == "priority"
+    assert flex_request["service_tier"] == "flex"
+    assert serialize_responses_request(flex_request)["service_tier"] == "flex"
 
 
 def test_serialize_responses_request_matches_rust_skip_rules():

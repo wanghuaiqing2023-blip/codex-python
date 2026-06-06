@@ -4,9 +4,12 @@ from pathlib import Path
 from pycodex.protocol import (
     USER_INSTRUCTIONS_CLOSE_TAG,
     USER_INSTRUCTIONS_OPEN_TAG,
+    AgentMessageEvent,
     AgentPath,
     AccountPlanType,
     ActivePermissionProfile,
+    AdditionalContextEntry,
+    AdditionalContextKind,
     AdditionalPermissionProfile,
     ApplyPatchApprovalRequestEvent,
     approval_policy_display_value,
@@ -37,6 +40,7 @@ from pycodex.protocol import (
     DynamicToolCallOutputContentItem,
     DynamicToolCallRequest,
     DynamicToolResponse,
+    DeprecationNoticeEvent,
     ElicitationAction,
     ElicitationRequest,
     ElicitationRequestEvent,
@@ -51,6 +55,7 @@ from pycodex.protocol import (
     ExecPolicyAmendment,
     ExecOutputStream,
     ExitedReviewModeEvent,
+    TerminalInteractionEvent,
     FileSystemAccessMode,
     FileSystemPath,
     FileSystemPermissions,
@@ -89,6 +94,7 @@ from pycodex.protocol import (
     McpStartupUpdateEvent,
     McpToolCallBeginEvent,
     McpToolCallEndEvent,
+    MessagePhase,
     InternalSessionSource,
     ModeKind,
     ModelRerouteEvent,
@@ -132,7 +138,9 @@ from pycodex.protocol import (
     RealtimeOutputModality,
     RealtimeVoice,
     RealtimeVoicesList,
+    ReasoningContentDeltaEvent,
     ReasoningEffort,
+    ReasoningRawContentDeltaEvent,
     ReasoningSummary,
     ResumedHistory,
     RolloutItem,
@@ -154,6 +162,8 @@ from pycodex.protocol import (
     SessionNetworkProxyRuntime,
     SessionSource,
     Settings,
+    StreamErrorEvent,
+    StreamInfoEvent,
     SubAgentSource,
     Submission,
     ThreadGoal,
@@ -161,6 +171,7 @@ from pycodex.protocol import (
     ThreadGoalUpdatedEvent,
     ThreadId,
     ThreadMemoryMode,
+    ThreadRolledBackEvent,
     ThreadSource,
     ThreadSettingsAppliedEvent,
     ThreadSettingsOverrides,
@@ -172,6 +183,7 @@ from pycodex.protocol import (
     TurnAbortReason,
     TurnContextItem,
     TurnContextNetworkItem,
+    TurnDiffEvent,
     TurnEnvironmentSelection,
     TurnStartedEvent,
     UserInput,
@@ -313,8 +325,21 @@ class ProtocolProtocolTests(unittest.TestCase):
                 "mcp_elicitations": True,
             },
         )
+        self.assertEqual(
+            ThreadSettingsOverrides.from_mapping(
+                {"approval_policy": {"granular": decoded.to_mapping()}}
+            ).approval_policy,
+            decoded,
+        )
+        with self.assertRaisesRegex(ValueError, "approval policy must be a string"):
+            ThreadSettingsOverrides.from_mapping(
+                {"approval_policy": {"granular": decoded.to_mapping(), "never": {}}}
+            )
 
     def test_approval_policy_display_value_matches_rust_labels(self):
+        # Rust source: codex-rs/protocol/src/protocol.rs
+        # Behavior anchor: AskForApproval derives Display with kebab-case labels,
+        # while Granular(GranularApprovalConfig) displays as "granular".
         granular = GranularApprovalConfig(
             sandbox_approval=True,
             rules=False,
@@ -339,6 +364,58 @@ class ProtocolProtocolTests(unittest.TestCase):
 
         elicitation = Op.resolve_elicitation("server", RequestId.integer(7), "accept", content={"ok": True})
         self.assertEqual(elicitation.to_mapping()["request_id"], 7)
+
+    def test_conversation_start_params_match_upstream_protocol_contract(self):
+        # Rust source: codex-rs/protocol/src/protocol.rs
+        # Behavior anchors:
+        # - ConversationStartParams prompt uses serde_with double_option.
+        # - ConversationStartTransport is an internally tagged enum with
+        #   websocket and webrtc { sdp } variants.
+        omitted_prompt = ConversationStartParams(output_modality=RealtimeOutputModality.TEXT)
+        null_prompt = ConversationStartParams(output_modality=RealtimeOutputModality.TEXT, prompt=None)
+        text_prompt = ConversationStartParams(
+            output_modality=RealtimeOutputModality.AUDIO,
+            prompt="be helpful",
+            realtime_session_id="conv_1",
+            transport=ConversationStartTransport.websocket(),
+            voice=RealtimeVoice.COVE,
+        )
+        webrtc_prompt = ConversationStartParams(
+            output_modality=RealtimeOutputModality.AUDIO,
+            transport=ConversationStartTransport.webrtc("v=offer\r\n"),
+        )
+
+        self.assertEqual(omitted_prompt.to_mapping(), {"output_modality": "text"})
+        self.assertEqual(null_prompt.to_mapping(), {"output_modality": "text", "prompt": None})
+        self.assertEqual(
+            text_prompt.to_mapping(),
+            {
+                "output_modality": "audio",
+                "prompt": "be helpful",
+                "realtime_session_id": "conv_1",
+                "transport": {"type": "websocket"},
+                "voice": "cove",
+            },
+        )
+        self.assertEqual(
+            webrtc_prompt.to_mapping(),
+            {"output_modality": "audio", "transport": {"type": "webrtc", "sdp": "v=offer\r\n"}},
+        )
+        self.assertEqual(ConversationStartParams.from_mapping(text_prompt.to_mapping()), text_prompt)
+        self.assertEqual(
+            Op.realtime_conversation_start(webrtc_prompt).to_mapping(),
+            {
+                "type": "realtime_conversation_start",
+                "output_modality": "audio",
+                "transport": {"type": "webrtc", "sdp": "v=offer\r\n"},
+            },
+        )
+        with self.assertRaisesRegex(TypeError, "prompt must be a string or null"):
+            ConversationStartParams.from_mapping({"output_modality": "text", "prompt": 123})
+        with self.assertRaisesRegex(TypeError, "webrtc transport sdp must be a string"):
+            ConversationStartTransport("webrtc")
+        with self.assertRaisesRegex(ValueError, "unknown conversation start transport type"):
+            ConversationStartTransport.from_mapping({"type": "rtc"})
 
     def test_realtime_conversation_ops_serialize_as_unnested_variants(self):
         start = Op.realtime_conversation_start(
@@ -458,6 +535,52 @@ class ProtocolProtocolTests(unittest.TestCase):
         )
         self.assertEqual(Op.from_mapping(with_metadata.to_mapping()), with_metadata)
         self.assertEqual(Op.from_mapping(with_additional_context.to_mapping()), with_additional_context)
+
+    def test_additional_context_entry_matches_upstream_protocol_contract(self):
+        entry = AdditionalContextEntry("context", AdditionalContextKind.APPLICATION)
+        parsed = AdditionalContextEntry.from_mapping({"kind": "untrusted", "value": "browser"})
+        op = Op.user_input((), additional_context={"app": entry})
+
+        self.assertEqual(entry.to_mapping(), {"value": "context", "kind": "application"})
+        self.assertEqual(parsed, AdditionalContextEntry("browser", AdditionalContextKind.UNTRUSTED))
+        self.assertIsInstance(op.fields["additional_context"]["app"], AdditionalContextEntry)
+        self.assertEqual(
+            op.to_mapping(),
+            {
+                "type": "user_input",
+                "items": [],
+                "additional_context": {"app": {"value": "context", "kind": "application"}},
+            },
+        )
+
+    def test_turn_environment_selection_matches_upstream_protocol_contract(self):
+        # Rust source: codex-rs/protocol/src/protocol.rs
+        # Behavior anchor: TurnEnvironmentSelection carries environment_id plus
+        # an AbsolutePathBuf cwd, and Op::UserInput preserves the list shape.
+        cwd = Path.cwd()
+        selection = TurnEnvironmentSelection.from_mapping(
+            {"environment_id": "env-1", "cwd": str(cwd)}
+        )
+        op = Op.user_input(
+            (UserInput.text_input("hello"),),
+            environments=({"environment_id": "env-1", "cwd": str(cwd)},),
+        )
+
+        self.assertEqual(selection.environment_id, "env-1")
+        self.assertEqual(selection.cwd, cwd)
+        self.assertEqual(selection.to_mapping(), {"environment_id": "env-1", "cwd": str(cwd)})
+        self.assertEqual(op.fields["environments"], (selection,))
+        self.assertEqual(
+            op.to_mapping(),
+            {
+                "type": "user_input",
+                "items": [{"type": "text", "text": "hello", "text_elements": []}],
+                "environments": [{"environment_id": "env-1", "cwd": str(cwd)}],
+            },
+        )
+        self.assertEqual(Op.from_mapping(op.to_mapping()), op)
+        with self.assertRaisesRegex(ValueError, "cwd must be an absolute path"):
+            TurnEnvironmentSelection.from_mapping({"environment_id": "env-1", "cwd": "relative/repo"})
 
     def test_user_input_op_flattens_thread_settings_overrides(self):
         thread_settings = ThreadSettingsOverrides(
@@ -923,6 +1046,10 @@ class ProtocolProtocolTests(unittest.TestCase):
             ModelVerificationEvent((ModelVerification.TRUSTED_ACCESS_FOR_CYBER,)),
         )
         self.assertEqual(EventMsg.from_mapping(compacted_payload).payload, ContextCompactedEvent())
+        # Rust source: codex-rs/protocol/src/protocol.rs
+        # Behavior anchor: AgentReasoningSectionBreakEvent has #[serde(default)]
+        # on item_id and summary_index. Missing fields default, but explicit null
+        # is not accepted for the non-Option String/i64 fields.
         self.assertEqual(
             EventMsg.from_mapping(reasoning_section_break_payload).payload,
             AgentReasoningSectionBreakEvent(item_id="reason-1", summary_index=2),
@@ -931,6 +1058,10 @@ class ProtocolProtocolTests(unittest.TestCase):
             EventMsg.from_mapping(reasoning_section_break_legacy_payload).payload,
             AgentReasoningSectionBreakEvent(),
         )
+        with self.assertRaisesRegex(TypeError, "item_id must be a string"):
+            EventMsg.from_mapping({"type": "agent_reasoning_section_break", "item_id": None})
+        with self.assertRaisesRegex(TypeError, "summary_index must be an integer"):
+            EventMsg.from_mapping({"type": "agent_reasoning_section_break", "summary_index": None})
         self.assertEqual(EventMsg.from_mapping(reroute_payload).to_mapping(), reroute_payload)
         self.assertEqual(EventMsg.from_mapping(verification_payload).to_mapping(), verification_payload)
         self.assertEqual(EventMsg.from_mapping(compacted_payload).to_mapping(), compacted_payload)
@@ -938,6 +1069,187 @@ class ProtocolProtocolTests(unittest.TestCase):
             EventMsg.from_mapping(reasoning_section_break_payload).to_mapping(),
             reasoning_section_break_payload,
         )
+
+    def test_agent_reasoning_section_break_event_matches_upstream_protocol_contract(self):
+        # Rust source: codex-rs/protocol/src/protocol.rs
+        # Behavior anchor: AgentReasoningSectionBreakEvent has #[serde(default)]
+        # on item_id and summary_index. Missing fields default, but explicit null
+        # is not accepted for the non-Option String/i64 fields.
+        payload = {
+            "type": "agent_reasoning_section_break",
+            "item_id": "reason-1",
+            "summary_index": 2,
+        }
+
+        self.assertEqual(
+            EventMsg.from_mapping(payload).payload,
+            AgentReasoningSectionBreakEvent(item_id="reason-1", summary_index=2),
+        )
+        self.assertEqual(EventMsg.from_mapping(payload).to_mapping(), payload)
+        self.assertEqual(
+            EventMsg.from_mapping({"type": "agent_reasoning_section_break"}).payload,
+            AgentReasoningSectionBreakEvent(),
+        )
+        with self.assertRaisesRegex(TypeError, "item_id must be a string"):
+            EventMsg.from_mapping({"type": "agent_reasoning_section_break", "item_id": None})
+        with self.assertRaisesRegex(TypeError, "summary_index must be an integer"):
+            EventMsg.from_mapping({"type": "agent_reasoning_section_break", "summary_index": None})
+
+    def test_reasoning_delta_events_match_upstream_protocol_contract(self):
+        # Rust source: codex-rs/protocol/src/protocol.rs
+        # Behavior anchor: ReasoningContentDeltaEvent.summary_index and
+        # ReasoningRawContentDeltaEvent.content_index are non-Option i64 fields
+        # with #[serde(default)]. Missing fields default, but explicit null or
+        # JSON strings are not accepted.
+        content_payload = {
+            "type": "reasoning_content_delta",
+            "thread_id": "thread-1",
+            "turn_id": "turn-1",
+            "item_id": "item-1",
+            "delta": "thinking",
+            "summary_index": 2,
+        }
+        raw_payload = {
+            "type": "reasoning_raw_content_delta",
+            "thread_id": "thread-1",
+            "turn_id": "turn-1",
+            "item_id": "item-1",
+            "delta": "raw",
+            "content_index": 3,
+        }
+
+        self.assertEqual(
+            EventMsg.from_mapping(content_payload).payload,
+            ReasoningContentDeltaEvent("thread-1", "turn-1", "item-1", "thinking", summary_index=2),
+        )
+        self.assertEqual(EventMsg.from_mapping(content_payload).to_mapping(), content_payload)
+        self.assertEqual(
+            EventMsg.from_mapping({k: v for k, v in content_payload.items() if k != "summary_index"}).payload,
+            ReasoningContentDeltaEvent("thread-1", "turn-1", "item-1", "thinking"),
+        )
+        self.assertEqual(
+            EventMsg.from_mapping(raw_payload).payload,
+            ReasoningRawContentDeltaEvent("thread-1", "turn-1", "item-1", "raw", content_index=3),
+        )
+        self.assertEqual(EventMsg.from_mapping(raw_payload).to_mapping(), raw_payload)
+        self.assertEqual(
+            EventMsg.from_mapping({k: v for k, v in raw_payload.items() if k != "content_index"}).payload,
+            ReasoningRawContentDeltaEvent("thread-1", "turn-1", "item-1", "raw"),
+        )
+        with self.assertRaisesRegex(TypeError, "summary_index must be an integer"):
+            EventMsg.from_mapping({**content_payload, "summary_index": None})
+        with self.assertRaisesRegex(TypeError, "summary_index must be an integer"):
+            EventMsg.from_mapping({**content_payload, "summary_index": "2"})
+        with self.assertRaisesRegex(TypeError, "content_index must be an integer"):
+            EventMsg.from_mapping({**raw_payload, "content_index": None})
+        with self.assertRaisesRegex(TypeError, "content_index must be an integer"):
+            EventMsg.from_mapping({**raw_payload, "content_index": "3"})
+
+    def test_deprecation_notice_event_matches_upstream_protocol_contract(self):
+        # Rust source: codex-rs/protocol/src/protocol.rs
+        # Behavior anchor: DeprecationNoticeEvent.summary is a required String,
+        # and details is an Option<String> with skip_serializing_if.
+        minimal = {"type": "deprecation_notice", "summary": "legacy flag is deprecated"}
+        with_details = {
+            "type": "deprecation_notice",
+            "summary": "legacy flag is deprecated",
+            "details": "Use the replacement setting instead.",
+        }
+
+        self.assertEqual(
+            EventMsg.from_mapping(minimal).payload,
+            DeprecationNoticeEvent("legacy flag is deprecated"),
+        )
+        self.assertEqual(EventMsg.from_mapping(minimal).to_mapping(), minimal)
+        self.assertEqual(
+            EventMsg.from_mapping(with_details).payload,
+            DeprecationNoticeEvent("legacy flag is deprecated", "Use the replacement setting instead."),
+        )
+        self.assertEqual(EventMsg.from_mapping(with_details).to_mapping(), with_details)
+        with self.assertRaisesRegex(TypeError, "summary must be a string"):
+            EventMsg.from_mapping({"type": "deprecation_notice", "summary": None})
+        with self.assertRaisesRegex(TypeError, "details must be a string"):
+            EventMsg.from_mapping({**minimal, "details": 123})
+
+    def test_thread_rolled_back_event_matches_upstream_protocol_contract(self):
+        # Rust source: codex-rs/protocol/src/protocol.rs
+        # Behavior anchor: ThreadRolledBackEvent.num_turns is a u32. JSON
+        # values must be non-bool integers within the unsigned 32-bit range.
+        payload = {"type": "thread_rolled_back", "num_turns": 2}
+
+        self.assertEqual(EventMsg.from_mapping(payload).payload, ThreadRolledBackEvent(2))
+        self.assertEqual(EventMsg.from_mapping(payload).to_mapping(), payload)
+        self.assertEqual(
+            EventMsg.from_mapping({"type": "thread_rolled_back", "num_turns": 0}).payload,
+            ThreadRolledBackEvent(0),
+        )
+        self.assertEqual(
+            EventMsg.from_mapping({"type": "thread_rolled_back", "num_turns": 0xFFFF_FFFF}).payload,
+            ThreadRolledBackEvent(0xFFFF_FFFF),
+        )
+        with self.assertRaisesRegex(ValueError, "num_turns must be an unsigned 32-bit integer"):
+            EventMsg.from_mapping({"type": "thread_rolled_back", "num_turns": -1})
+        with self.assertRaisesRegex(ValueError, "num_turns must be an unsigned 32-bit integer"):
+            EventMsg.from_mapping({"type": "thread_rolled_back", "num_turns": 0x1_0000_0000})
+        with self.assertRaisesRegex(TypeError, "num_turns must be an integer"):
+            EventMsg.from_mapping({"type": "thread_rolled_back", "num_turns": True})
+
+    def test_stream_error_event_matches_upstream_protocol_contract(self):
+        # Rust source: codex-rs/protocol/src/protocol.rs
+        # Behavior anchor: StreamErrorEvent.codex_error_info and
+        # additional_details are Option fields with #[serde(default)] and no
+        # skip_serializing_if, so missing inputs default to None but serialize
+        # back as explicit null fields.
+        minimal = {"type": "stream_error", "message": "network failed"}
+        explicit_nulls = {
+            "type": "stream_error",
+            "message": "network failed",
+            "codex_error_info": None,
+            "additional_details": None,
+        }
+
+        self.assertEqual(EventMsg.from_mapping(minimal).payload, StreamErrorEvent("network failed"))
+        self.assertEqual(EventMsg.from_mapping(minimal).to_mapping(), explicit_nulls)
+        self.assertEqual(EventMsg.from_mapping(explicit_nulls).to_mapping(), explicit_nulls)
+        self.assertEqual(
+            EventMsg.from_mapping({**explicit_nulls, "additional_details": "retry exhausted"}).to_mapping(),
+            {**explicit_nulls, "additional_details": "retry exhausted"},
+        )
+        with self.assertRaisesRegex(TypeError, "additional_details must be a string"):
+            EventMsg.from_mapping({**minimal, "additional_details": 123})
+
+    def test_stream_info_event_matches_upstream_protocol_contract(self):
+        # Rust source: codex-rs/protocol/src/protocol.rs
+        # Behavior anchor: StreamInfoEvent has one required String field:
+        # message.
+        payload = {"type": "stream_info", "message": "Retrying stream..."}
+
+        self.assertEqual(EventMsg.from_mapping(payload).payload, StreamInfoEvent("Retrying stream..."))
+        self.assertEqual(EventMsg.from_mapping(payload).to_mapping(), payload)
+        with self.assertRaisesRegex(TypeError, "message must be a string"):
+            EventMsg.from_mapping({"type": "stream_info", "message": None})
+        with self.assertRaises(KeyError):
+            EventMsg.from_mapping({"type": "stream_info"})
+
+    def test_turn_diff_event_matches_upstream_protocol_contract(self):
+        # Rust source: codex-rs/protocol/src/protocol.rs
+        # Behavior anchor: TurnDiffEvent has one required String field:
+        # unified_diff. Diff generation/tracking is handled by core's
+        # turn_diff_tracker and is outside this protocol payload boundary.
+        payload = {
+            "type": "turn_diff",
+            "unified_diff": "diff --git a/a.txt b/a.txt\n+hello\n",
+        }
+
+        self.assertEqual(
+            EventMsg.from_mapping(payload).payload,
+            TurnDiffEvent("diff --git a/a.txt b/a.txt\n+hello\n"),
+        )
+        self.assertEqual(EventMsg.from_mapping(payload).to_mapping(), payload)
+        with self.assertRaisesRegex(TypeError, "unified_diff must be a string"):
+            EventMsg.from_mapping({"type": "turn_diff", "unified_diff": None})
+        with self.assertRaises(KeyError):
+            EventMsg.from_mapping({"type": "turn_diff"})
 
     def test_guardian_assessment_event_roundtrips(self):
         payload = {
@@ -1152,15 +1464,34 @@ class ProtocolProtocolTests(unittest.TestCase):
         )
 
     def test_submission_and_event_transport_shape(self):
+        # Rust source: codex-rs/protocol/src/protocol.rs
+        # Behavior anchors:
+        # - Submission has id, op, and optional trace.
+        # - W3cTraceContext has optional traceparent/tracestate string fields
+        #   that are omitted when absent.
         submission = Submission(
             "sub-1",
             Op.simple("compact"),
-            trace=W3cTraceContext(traceparent="00-abc-def-01"),
+            trace=W3cTraceContext(traceparent="00-abc-def-01", tracestate="vendor=value"),
         )
         event = Event("sub-1", EventMsg.with_payload("warning", {"message": "careful"}))
+        payload = submission.to_mapping()
 
-        self.assertEqual(submission.to_mapping()["op"]["type"], "compact")
-        self.assertEqual(submission.to_mapping()["trace"]["traceparent"], "00-abc-def-01")
+        self.assertEqual(payload["op"]["type"], "compact")
+        self.assertEqual(
+            payload["trace"],
+            {"traceparent": "00-abc-def-01", "tracestate": "vendor=value"},
+        )
+        self.assertEqual(Submission.from_mapping(payload), submission)
+        self.assertEqual(
+            Submission.from_mapping({"id": "sub-2", "op": {"type": "compact"}}).to_mapping(),
+            {"id": "sub-2", "op": {"type": "compact"}},
+        )
+        self.assertEqual(W3cTraceContext().to_mapping(), {})
+        with self.assertRaisesRegex(TypeError, "w3c trace context must be a mapping"):
+            Submission.from_mapping({"id": "sub-3", "op": {"type": "compact"}, "trace": "bad"})
+        with self.assertRaisesRegex(TypeError, "traceparent must be a string"):
+            W3cTraceContext.from_mapping({"traceparent": 123})
         self.assertEqual(event.to_mapping(), {"id": "sub-1", "msg": {"type": "warning", "message": "careful"}})
 
     def test_event_msg_aliases_and_payload_parsing(self):
@@ -1188,6 +1519,9 @@ class ProtocolProtocolTests(unittest.TestCase):
         self.assertEqual(msg.to_mapping()["type"], "task_started")
 
     def test_token_usage_helpers_and_final_output_display(self):
+        # Rust source: codex-rs/protocol/src/protocol.rs
+        # Behavior anchor: TokenUsage helper methods clamp cached/non-cached
+        # input and display blended non-cached input plus output.
         usage = TokenUsage(
             input_tokens=15000,
             cached_input_tokens=5000,
@@ -1203,6 +1537,116 @@ class ProtocolProtocolTests(unittest.TestCase):
         self.assertEqual(usage.percent_of_context_window_remaining(20000), 25)
         self.assertEqual(info.last_token_usage, usage)
         self.assertEqual(str(FinalOutput(usage)), "Token usage: total=11,200 input=10,000 (+ 5,000 cached) output=1,200 (reasoning 200)")
+
+    def test_token_usage_info_matches_upstream_accumulation_contract(self):
+        # Rust source: codex-rs/protocol/src/protocol.rs
+        # Behavior anchors:
+        # - TokenUsageInfo::new_or_append returns None when both inputs are absent.
+        # - append_last_usage adds last usage into total usage.
+        # - fill_to_context_window replaces total with the context window and
+        #   records only the positive delta as last usage.
+        first = TokenUsage(input_tokens=100, cached_input_tokens=150, output_tokens=-5, total_tokens=120)
+        second = TokenUsage(input_tokens=50, cached_input_tokens=10, output_tokens=20, total_tokens=80)
+
+        self.assertIsNone(TokenUsageInfo.new_or_append(None, None, 16_000))
+        self.assertEqual(first.cached_input(), 150)
+        self.assertEqual(first.non_cached_input(), 0)
+        self.assertEqual(first.blended_total(), 0)
+        self.assertEqual(first.percent_of_context_window_remaining(2_000), 0)
+
+        info = TokenUsageInfo.new_or_append(None, first, 16_000)
+        self.assertEqual(info.total_token_usage, first)
+        self.assertEqual(info.last_token_usage, first)
+        self.assertEqual(info.model_context_window, 16_000)
+
+        updated = TokenUsageInfo.new_or_append(info, second, 32_000)
+        self.assertEqual(updated.total_token_usage, first.add(second))
+        self.assertEqual(updated.last_token_usage, second)
+        self.assertEqual(updated.model_context_window, 32_000)
+
+        filled = updated.fill_to_context_window(500)
+        self.assertEqual(filled.total_token_usage, TokenUsage(total_tokens=500))
+        self.assertEqual(filled.last_token_usage, TokenUsage(total_tokens=300))
+        self.assertEqual(filled.model_context_window, 500)
+
+        overfilled = updated.fill_to_context_window(100)
+        self.assertEqual(overfilled.total_token_usage, TokenUsage(total_tokens=100))
+        self.assertEqual(overfilled.last_token_usage, TokenUsage(total_tokens=0))
+        self.assertEqual(TokenUsageInfo.full_context_window(4096), TokenUsageInfo(TokenUsage(total_tokens=4096), TokenUsage(total_tokens=4096), 4096))
+
+    def test_agent_message_event_matches_upstream_protocol_contract(self):
+        # Rust source: codex-rs/protocol/src/protocol.rs
+        # Behavior anchor: AgentMessageEvent has message plus defaulted optional
+        # phase and memory_citation fields. These Option fields are not marked
+        # skip_serializing_if, so missing inputs serialize back as null.
+        direct = AgentMessageEvent("done", phase="final_answer")
+        parsed = EventMsg.from_mapping(
+            {"type": "agent_message", "message": "done", "phase": "final_answer"}
+        )
+        defaulted = EventMsg.from_mapping({"type": "agent_message", "message": "thinking"})
+
+        self.assertIs(direct.phase, MessagePhase.FINAL_ANSWER)
+        self.assertIs(parsed.payload.phase, MessagePhase.FINAL_ANSWER)
+        self.assertEqual(
+            parsed.to_mapping(),
+            {
+                "type": "agent_message",
+                "message": "done",
+                "phase": "final_answer",
+                "memory_citation": None,
+            },
+        )
+        self.assertEqual(
+            defaulted.to_mapping(),
+            {
+                "type": "agent_message",
+                "message": "thinking",
+                "phase": None,
+                "memory_citation": None,
+            },
+        )
+        with self.assertRaisesRegex(TypeError, "phase must be a string"):
+            EventMsg.from_mapping({"type": "agent_message", "message": "done", "phase": 123})
+
+    def test_user_message_event_matches_upstream_protocol_contract(self):
+        # Rust source: codex-rs/protocol/src/protocol.rs
+        # Behavior anchor: UserMessageEvent has an optional images Vec, defaulted
+        # detail/local/text vectors, and text_elements as Vec<TextElement>. The
+        # local_images and text_elements fields are not skip-serialized, so
+        # missing inputs serialize back as empty lists.
+        local_image = str(Path("/repo/local.png"))
+        payload = {
+            "type": "user_message",
+            "message": "hello link",
+            "images": ["https://example.test/image.png"],
+            "image_details": ["high", None],
+            "local_images": [local_image],
+            "local_image_details": [None, "low"],
+            "text_elements": [
+                {
+                    "byte_range": {"start": 6, "end": 10},
+                    "placeholder": "link",
+                }
+            ],
+        }
+
+        parsed = EventMsg.from_mapping(payload)
+
+        self.assertEqual(parsed.payload.text_elements[0].placeholder_for_conversion_only(), "link")
+        self.assertEqual(parsed.to_mapping(), payload)
+        self.assertEqual(
+            EventMsg.from_mapping({"type": "user_message", "message": "hello"}).to_mapping(),
+            {
+                "type": "user_message",
+                "message": "hello",
+                "local_images": [],
+                "text_elements": [],
+            },
+        )
+        with self.assertRaisesRegex(TypeError, "images must be a list"):
+            EventMsg.from_mapping({"type": "user_message", "message": "hello", "images": "https://example.test/image.png"})
+        with self.assertRaisesRegex(TypeError, "text_elements must be a list"):
+            EventMsg.from_mapping({"type": "user_message", "message": "hello", "text_elements": "link"})
 
     def test_token_count_event_parses_rate_limit_snapshot(self):
         payload = {
@@ -1248,6 +1692,61 @@ class ProtocolProtocolTests(unittest.TestCase):
             RateLimitReachedType.WORKSPACE_OWNER_USAGE_LIMIT_REACHED,
         )
         self.assertEqual(msg.to_mapping(), payload)
+
+    def test_rate_limit_snapshot_matches_upstream_protocol_contract(self):
+        # Rust source: codex-rs/protocol/src/protocol.rs
+        # Behavior anchors:
+        # - RateLimitReachedType uses snake_case values.
+        # - RateLimitSnapshot carries optional windows, credits, plan_type, and
+        #   rate_limit_reached_type without silently accepting malformed enums.
+        reached_values = (
+            "rate_limit_reached",
+            "workspace_owner_credits_depleted",
+            "workspace_member_credits_depleted",
+            "workspace_owner_usage_limit_reached",
+            "workspace_member_usage_limit_reached",
+        )
+
+        for value in reached_values:
+            with self.subTest(value=value):
+                self.assertEqual(RateLimitReachedType.parse(value).value, value)
+
+        snapshot = RateLimitSnapshot(
+            limit_id="rl-1",
+            limit_name="primary",
+            primary=RateLimitWindow(87.5, 300, 1_700_000_000),
+            secondary=RateLimitWindow(12.0, None, None),
+            credits=CreditsSnapshot(True, False, "42"),
+            plan_type=AccountPlanType.TEAM,
+            rate_limit_reached_type=RateLimitReachedType.WORKSPACE_OWNER_USAGE_LIMIT_REACHED,
+        )
+        payload = {
+            "limit_id": "rl-1",
+            "limit_name": "primary",
+            "primary": {"used_percent": 87.5, "window_minutes": 300, "resets_at": 1_700_000_000},
+            "secondary": {"used_percent": 12.0, "window_minutes": None, "resets_at": None},
+            "credits": {"has_credits": True, "unlimited": False, "balance": "42"},
+            "plan_type": "team",
+            "rate_limit_reached_type": "workspace_owner_usage_limit_reached",
+        }
+
+        self.assertEqual(snapshot.to_mapping(), payload)
+        self.assertEqual(RateLimitSnapshot.from_mapping(payload), snapshot)
+        self.assertEqual(RateLimitSnapshot().to_mapping(), {
+            "limit_id": None,
+            "limit_name": None,
+            "primary": None,
+            "secondary": None,
+            "credits": None,
+            "plan_type": None,
+            "rate_limit_reached_type": None,
+        })
+        with self.assertRaisesRegex(ValueError, "unknown rate limit reached type: later"):
+            RateLimitReachedType.parse("later")
+        with self.assertRaisesRegex(TypeError, "rate_limit_reached_type must be a string"):
+            RateLimitSnapshot.from_mapping({"rate_limit_reached_type": 123})
+        with self.assertRaisesRegex(TypeError, "plan_type must be a string"):
+            RateLimitSnapshot.from_mapping({"plan_type": 123})
 
     def test_token_count_event_serializes_null_optional_fields(self):
         event = TokenCountEvent(
@@ -1458,6 +1957,9 @@ class ProtocolProtocolTests(unittest.TestCase):
         self.assertEqual(TurnContextItem.from_mapping(payload).file_system_sandbox_policy, fs_policy)
 
     def test_turn_context_item_round_trips_granular_approval_policy(self):
+        # Rust source: codex-rs/protocol/src/protocol.rs
+        # Behavior anchor: serde externally tagged
+        # AskForApproval::Granular(GranularApprovalConfig) JSON shape.
         granular = GranularApprovalConfig(
             sandbox_approval=True,
             rules=False,
@@ -1523,6 +2025,9 @@ class ProtocolProtocolTests(unittest.TestCase):
         self.assertEqual(reparsed.permission_profile, configured.permission_profile)
 
     def test_session_configured_event_round_trips_granular_approval_policy(self):
+        # Rust source: codex-rs/protocol/src/protocol.rs
+        # Behavior anchor: SessionConfiguredEvent carries AskForApproval,
+        # including granular approval config, through protocol JSON.
         session_id = SessionId.from_string("33333333-3333-4333-8333-333333333333")
         granular = GranularApprovalConfig(
             sandbox_approval=True,
@@ -1621,6 +2126,9 @@ class ProtocolProtocolTests(unittest.TestCase):
         self.assertEqual(ThreadSettingsAppliedEvent.from_mapping(event.to_mapping()), event)
 
     def test_thread_settings_round_trips_granular_approval_policy(self):
+        # Rust source: codex-rs/protocol/src/protocol.rs
+        # Behavior anchor: ThreadSettingsOverrides/Snapshot carry
+        # AskForApproval through the same protocol JSON contract.
         granular = GranularApprovalConfig(
             sandbox_approval=True,
             rules=False,
@@ -1821,6 +2329,47 @@ class ProtocolProtocolTests(unittest.TestCase):
         self.assertEqual(delta.to_mapping(), {"call_id": "call21", "stream": "stdout", "chunk": "AQIDBAU="})
         self.assertEqual(ExecCommandOutputDeltaEvent.from_mapping(delta.to_mapping()), delta)
 
+    def test_exec_command_output_delta_matches_upstream_base64_contract(self):
+        # Rust unit test: codex-rs/protocol/src/protocol.rs
+        # `vec_u8_as_base64_serialization_and_deserialization`.
+        # Behavior anchor: ExecCommandOutputDeltaEvent.chunk serializes Vec<u8>
+        # as standard base64 and rejects invalid base64 on deserialization.
+        payload = {
+            "type": "exec_command_output_delta",
+            "call_id": "call21",
+            "stream": "stdout",
+            "chunk": "AQIDBAU=",
+        }
+
+        parsed = EventMsg.from_mapping(payload)
+
+        self.assertEqual(parsed.payload, ExecCommandOutputDeltaEvent("call21", ExecOutputStream.STDOUT, bytes([1, 2, 3, 4, 5])))
+        self.assertEqual(parsed.to_mapping(), payload)
+        with self.assertRaisesRegex(ValueError, "chunk must be valid base64"):
+            EventMsg.from_mapping({**payload, "chunk": "!!!!"})
+        with self.assertRaisesRegex(TypeError, "chunk must be a string"):
+            EventMsg.from_mapping({**payload, "chunk": 123})
+
+    def test_terminal_interaction_event_matches_upstream_protocol_contract(self):
+        # Rust source: codex-rs/protocol/src/protocol.rs
+        # Behavior anchor: TerminalInteractionEvent has three required String
+        # fields: call_id, process_id, and stdin.
+        payload = {
+            "type": "terminal_interaction",
+            "call_id": "call-1",
+            "process_id": "pty-1",
+            "stdin": "yes\n",
+        }
+
+        self.assertEqual(EventMsg.from_mapping(payload).payload, TerminalInteractionEvent("call-1", "pty-1", "yes\n"))
+        self.assertEqual(EventMsg.from_mapping(payload).to_mapping(), payload)
+        with self.assertRaisesRegex(TypeError, "process_id must be a string"):
+            EventMsg.from_mapping({**payload, "process_id": 123})
+        with self.assertRaisesRegex(TypeError, "stdin must be a string"):
+            EventMsg.from_mapping({**payload, "stdin": None})
+        with self.assertRaises(KeyError):
+            EventMsg.from_mapping({k: v for k, v in payload.items() if k != "call_id"})
+
     def test_event_msg_parses_exec_command_payloads(self):
         msg = EventMsg.from_mapping(
             {
@@ -1867,6 +2416,50 @@ class ProtocolProtocolTests(unittest.TestCase):
             }
         )
         self.assertEqual(parsed.payload, end)
+
+    def test_patch_apply_events_match_upstream_defaulted_turn_id_contract(self):
+        # Rust source: codex-rs/protocol/src/protocol.rs
+        # Behavior anchor: PatchApplyBeginEvent.turn_id and
+        # PatchApplyEndEvent.turn_id are non-Option String fields with
+        # #[serde(default)]. Missing fields default, but explicit null or
+        # non-string JSON values are not accepted.
+        changes = {"new.txt": {"type": "add", "content": "hello"}}
+        begin_payload = {
+            "type": "patch_apply_begin",
+            "call_id": "patch-1",
+            "turn_id": "turn-1",
+            "auto_approved": True,
+            "changes": changes,
+        }
+        end_payload = {
+            "type": "patch_apply_end",
+            "call_id": "patch-1",
+            "turn_id": "turn-1",
+            "stdout": "Done!",
+            "stderr": "",
+            "success": True,
+            "changes": changes,
+            "status": "completed",
+        }
+
+        self.assertEqual(EventMsg.from_mapping(begin_payload).to_mapping(), begin_payload)
+        self.assertEqual(EventMsg.from_mapping(end_payload).to_mapping(), end_payload)
+        self.assertEqual(
+            EventMsg.from_mapping({k: v for k, v in begin_payload.items() if k != "turn_id"}).payload.turn_id,
+            "",
+        )
+        self.assertEqual(
+            EventMsg.from_mapping({k: v for k, v in end_payload.items() if k != "turn_id"}).payload.turn_id,
+            "",
+        )
+        with self.assertRaisesRegex(TypeError, "turn_id must be a string"):
+            EventMsg.from_mapping({**begin_payload, "turn_id": None})
+        with self.assertRaisesRegex(TypeError, "turn_id must be a string"):
+            EventMsg.from_mapping({**begin_payload, "turn_id": 123})
+        with self.assertRaisesRegex(TypeError, "turn_id must be a string"):
+            EventMsg.from_mapping({**end_payload, "turn_id": None})
+        with self.assertRaisesRegex(TypeError, "turn_id must be a string"):
+            EventMsg.from_mapping({**end_payload, "turn_id": 123})
 
     def test_mcp_tool_call_events_and_success_logic(self):
         invocation = McpInvocation("server", "tool", {"arg": "value"})

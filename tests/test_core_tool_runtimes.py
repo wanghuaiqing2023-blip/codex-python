@@ -14,6 +14,9 @@ from pycodex.execpolicy import (
     REJECT_SANDBOX_APPROVAL_REASON,
     commands_for_intercepted_exec_policy,
 )
+from pycodex.core.guardian.approval_request import (
+    GuardianNetworkAccessTrigger as CanonicalGuardianNetworkAccessTrigger,
+)
 from pycodex.core import (
     CODEX_PROXY_GIT_SSH_COMMAND_MARKER,
     ESCALATE_SOCKET_ENV_VAR,
@@ -58,6 +61,7 @@ from pycodex.core import (
     SandboxCommand,
     SandboxType,
     ToolRuntimeError,
+    UnifiedExecDirectRunPlan,
     UnifiedExecOptions,
     UnifiedExecRequest,
     approval_sandbox_permissions,
@@ -144,6 +148,7 @@ from pycodex.core import (
     shell_socket_send_stream_frame_with_fds,
     shell_socket_validate_fds_for_message,
     unified_exec_approval_keys,
+    unified_exec_direct_run_plan,
     unified_exec_network_approval_spec,
     unified_exec_options,
     unified_exec_permission_request_payload,
@@ -152,6 +157,11 @@ from pycodex.core import (
 from pycodex.core import SandboxAttempt
 from pycodex.core import DEFAULT_EXEC_COMMAND_TIMEOUT_MS, ExecCapturePolicy, ExecExpirationKind
 from pycodex.core.exec import CancellationToken
+from pycodex.core.tools.network_approval import (
+    NetworkApprovalService,
+    NetworkApprovalSpec as CanonicalNetworkApprovalSpec,
+    begin_network_approval,
+)
 from pycodex.core.tools.runtimes import flat_tool_name
 from pycodex.protocol import (
     AskForApproval,
@@ -600,6 +610,11 @@ class ToolRuntimesTests(unittest.TestCase):
             shell_escalate_request_from_client("bin/tool", ["tool"], workdir="/work", env={"A": 1})
 
     def test_apply_patch_runtime_boundaries_shape_keys_and_permission_payload(self) -> None:
+        # Rust source: codex-rs/core/src/tools/runtimes/apply_patch.rs
+        # Rust tests: approval_keys_include_environment_id,
+        # permission_request_payload_uses_apply_patch_hook_name_and_aliases,
+        # sandbox_cwd_uses_patch_action_cwd, and
+        # wants_no_sandbox_approval_granular_respects_sandbox_flag.
         class Env:
             environment_id = "local"
 
@@ -621,7 +636,9 @@ class ToolRuntimesTests(unittest.TestCase):
         self.assertEqual(apply_patch_permission_request_payload(req).tool_name.matcher_aliases, ("Write", "Edit"))
         self.assertEqual(apply_patch_sandbox_cwd(req), Path("/repo"))
         self.assertFalse(apply_patch_wants_no_sandbox_approval(AskForApproval.NEVER))
+        self.assertTrue(apply_patch_wants_no_sandbox_approval(AskForApproval.ON_FAILURE))
         self.assertTrue(apply_patch_wants_no_sandbox_approval(AskForApproval.ON_REQUEST))
+        self.assertTrue(apply_patch_wants_no_sandbox_approval(AskForApproval.UNLESS_TRUSTED))
         self.assertFalse(
             apply_patch_wants_no_sandbox_approval(
                 GranularApprovalConfig(
@@ -633,8 +650,21 @@ class ToolRuntimesTests(unittest.TestCase):
                 )
             )
         )
+        self.assertTrue(
+            apply_patch_wants_no_sandbox_approval(
+                GranularApprovalConfig(
+                    sandbox_approval=True,
+                    rules=True,
+                    skill_approval=True,
+                    request_permissions=True,
+                    mcp_elicitations=True,
+                )
+            )
+        )
 
     def test_apply_patch_file_system_sandbox_context_uses_active_attempt(self) -> None:
+        # Rust source: codex-rs/core/src/tools/runtimes/apply_patch.rs
+        # Rust test: file_system_sandbox_context_uses_active_attempt.
         class Env:
             environment_id = "local"
 
@@ -684,6 +714,8 @@ class ToolRuntimesTests(unittest.TestCase):
         self.assertIn(read_entry, context.permissions.file_system_sandbox_policy().entries)
 
     def test_apply_patch_no_sandbox_attempt_has_no_file_system_context(self) -> None:
+        # Rust source: codex-rs/core/src/tools/runtimes/apply_patch.rs
+        # Rust test: no_sandbox_attempt_has_no_file_system_context.
         class Env:
             environment_id = "local"
 
@@ -795,6 +827,11 @@ class ToolRuntimesTests(unittest.TestCase):
         self.assertIsNone(effective.glob_scan_max_depth)
 
     def test_shell_runtime_boundaries_shape_keys_payload_and_network_spec(self) -> None:
+        # Rust source: codex-rs/core/src/tools/runtimes/shell.rs
+        # Behavior anchors: Approvable<ShellRequest>::approval_keys,
+        # exec_approval_requirement, permission_request_payload,
+        # sandbox_permissions, and ToolRuntime<ShellRequest>::network_approval_spec.
+        approval_requirement = ExecApprovalRequirement.needs_approval()
         req = ShellRequest(
             command=("/bin/bash", "-lc", "echo ok"),
             shell_type=ShellType.BASH,
@@ -808,21 +845,88 @@ class ToolRuntimesTests(unittest.TestCase):
             sandbox_permissions=SandboxPermissions.USE_DEFAULT,
             additional_permissions=None,
             justification="because",
-            exec_approval_requirement=ExecApprovalRequirement.needs_approval(),
+            exec_approval_requirement=approval_requirement,
         )
 
-        self.assertEqual(shell_approval_keys(req)[0].command, req.command)
+        key = shell_approval_keys(req)[0]
+        self.assertEqual(key.command, ("echo", "ok"))
+        self.assertEqual(key.cwd, Path("/repo"))
+        self.assertEqual(key.sandbox_permissions, SandboxPermissions.USE_DEFAULT)
+        self.assertIsNone(key.additional_permissions)
+        self.assertIs(req.exec_approval_requirement, approval_requirement)
+        self.assertEqual(shell_permission_request_payload(req).tool_input["command"], "echo ok")
         self.assertEqual(shell_permission_request_payload(req).tool_input["description"], "because")
         self.assertFalse(req.additional_permissions_preapproved)
         self.assertEqual(req.approval_sandbox_permissions(), SandboxPermissions.USE_DEFAULT)
         spec = shell_network_approval_spec(req, call_id="call-1", tool_name=ToolName.plain("shell_command"))
+        self.assertIsInstance(spec, CanonicalNetworkApprovalSpec)
         self.assertEqual(spec.mode, NetworkApprovalMode.IMMEDIATE)
         self.assertEqual(spec.command, "echo ok")
         self.assertIsInstance(spec.trigger, GuardianNetworkAccessTrigger)
+        self.assertIs(type(spec.trigger), CanonicalGuardianNetworkAccessTrigger)
+        self.assertEqual(spec.trigger.call_id, "call-1")
+        self.assertEqual(spec.trigger.tool_name, "shell_command")
+        self.assertEqual(spec.trigger.command, req.command)
+        self.assertEqual(spec.trigger.cwd, Path("/repo"))
+        self.assertEqual(spec.trigger.sandbox_permissions, SandboxPermissions.USE_DEFAULT)
+        self.assertIsNone(spec.trigger.additional_permissions)
+        self.assertEqual(spec.trigger.justification, "because")
         self.assertIsNone(spec.trigger.tty)
+        service = NetworkApprovalService()
+        active = begin_network_approval(service, "turn-1", True, spec, registration_id="shell-network")
+        self.assertIsNotNone(active)
+        self.assertIn("shell-network", service.active_calls)
         self.assertEqual(ShellRuntimeBackend.SHELL_COMMAND_CLASSIC.value, "shell_command_classic")
 
+    def test_shell_runtime_approval_keys_canonicalize_shell_wrappers_for_cache(self) -> None:
+        # Rust source: codex-rs/core/src/tools/runtimes/shell.rs
+        # Rust helper source: codex-rs/core/src/command_canonicalization.rs
+        # Rust tests: canonicalizes_word_only_shell_scripts_to_inner_command
+        # and canonicalizes_heredoc_scripts_to_stable_script_key.
+        approval_requirement = ExecApprovalRequirement.needs_approval()
+
+        def request(command: tuple[str, ...]) -> ShellRequest:
+            return ShellRequest(
+                command=command,
+                shell_type=ShellType.BASH,
+                hook_command=command[-1],
+                cwd=Path("/repo"),
+                timeout_ms=None,
+                cancellation_token=None,
+                env={},
+                explicit_env_overrides={},
+                network=None,
+                sandbox_permissions=SandboxPermissions.USE_DEFAULT,
+                additional_permissions=None,
+                justification=None,
+                exec_approval_requirement=approval_requirement,
+            )
+
+        command_a = request(("/bin/bash", "-lc", "cargo test -p codex-core"))
+        command_b = request(("bash", "-lc", "cargo   test   -p codex-core"))
+
+        self.assertEqual(
+            shell_approval_keys(command_a)[0].command,
+            ("cargo", "test", "-p", "codex-core"),
+        )
+        self.assertEqual(shell_approval_keys(command_a)[0].command, shell_approval_keys(command_b)[0].command)
+
+        script = "python3 <<'PY'\nprint('hello')\nPY"
+        heredoc = request(("/bin/zsh", "-lc", script))
+
+        self.assertEqual(
+            shell_approval_keys(heredoc)[0].command,
+            ("__codex_shell_script__", "-lc", script),
+        )
+
     def test_unified_exec_runtime_boundaries_shape_keys_payload_and_deferred_network_spec(self) -> None:
+        # Rust source: codex-rs/core/src/tools/runtimes/unified_exec.rs
+        # Rust test: unified_exec_uses_the_trusted_sandbox_cwd.
+        # Behavior anchors: Approvable<UnifiedExecRequest>::approval_keys,
+        # exec_approval_requirement, permission_request_payload,
+        # sandbox_permissions, sandbox_cwd, and
+        # ToolRuntime<UnifiedExecRequest>::network_approval_spec.
+        approval_requirement = ExecApprovalRequirement.skip()
         req = UnifiedExecRequest(
             command=("pwd",),
             shell_type=ShellType.SH,
@@ -839,24 +943,91 @@ class ToolRuntimesTests(unittest.TestCase):
             sandbox_permissions=SandboxPermissions.USE_DEFAULT,
             additional_permissions=None,
             justification=None,
-            exec_approval_requirement=ExecApprovalRequirement.skip(),
+            exec_approval_requirement=approval_requirement,
             additional_permissions_preapproved=True,
         )
 
-        self.assertTrue(unified_exec_approval_keys(req)[0].tty)
+        key = unified_exec_approval_keys(req)[0]
+        self.assertEqual(key.command, req.command)
+        self.assertEqual(key.cwd, Path("/repo"))
+        self.assertTrue(key.tty)
+        self.assertEqual(key.sandbox_permissions, SandboxPermissions.USE_DEFAULT)
+        self.assertIsNone(key.additional_permissions)
+        self.assertIs(req.exec_approval_requirement, approval_requirement)
         self.assertTrue(req.additional_permissions_preapproved)
         self.assertEqual(req.approval_sandbox_permissions(), SandboxPermissions.USE_DEFAULT)
         self.assertEqual(unified_exec_permission_request_payload(req).tool_input["command"], "pwd")
+        self.assertNotIn("description", unified_exec_permission_request_payload(req).tool_input)
         self.assertEqual(unified_exec_sandbox_cwd(req), Path("/sandbox"))
         spec = unified_exec_network_approval_spec(req, call_id="call-2", tool_name="unified_exec")
+        self.assertIsInstance(spec, CanonicalNetworkApprovalSpec)
         self.assertEqual(spec.mode, NetworkApprovalMode.DEFERRED)
+        self.assertEqual(spec.command, "pwd")
+        self.assertIs(type(spec.trigger), CanonicalGuardianNetworkAccessTrigger)
+        self.assertEqual(spec.trigger.call_id, "call-2")
+        self.assertEqual(spec.trigger.tool_name, "unified_exec")
+        self.assertEqual(spec.trigger.command, req.command)
+        self.assertEqual(spec.trigger.cwd, Path("/repo"))
+        self.assertEqual(spec.trigger.sandbox_permissions, SandboxPermissions.USE_DEFAULT)
+        self.assertIsNone(spec.trigger.additional_permissions)
+        self.assertIsNone(spec.trigger.justification)
         self.assertTrue(spec.trigger.tty)
+        service = NetworkApprovalService()
+        active = begin_network_approval(service, "turn-2", True, spec, registration_id="unified-network")
+        self.assertIsNotNone(active)
+        self.assertIn("unified-network", service.active_calls)
         self.assertEqual(flat_tool_name(ToolName.namespaced("mcp__", "tool")), "mcp__tool")
         self.assertEqual(flat_tool_name("shell_command"), "shell_command")
         with self.assertRaises(TypeError):
             flat_tool_name(123)
         with self.assertRaises(TypeError):
             flat_tool_name("")
+
+    def test_unified_exec_runtime_approval_keys_canonicalize_command_and_keep_tty_scope(self) -> None:
+        # Rust source: codex-rs/core/src/tools/runtimes/unified_exec.rs
+        # Rust helper source: codex-rs/core/src/command_canonicalization.rs
+        # Behavior anchors: Approvable<UnifiedExecRequest>::approval_keys
+        # uses canonicalize_command_for_approval and includes tty in the key.
+        approval_requirement = ExecApprovalRequirement.needs_approval()
+
+        def request(command: tuple[str, ...], *, tty: bool) -> UnifiedExecRequest:
+            return UnifiedExecRequest(
+                command=command,
+                shell_type=ShellType.BASH,
+                hook_command=command[-1],
+                process_id=1000,
+                cwd=Path("/repo"),
+                sandbox_cwd=Path("/sandbox"),
+                environment=object(),
+                env={},
+                exec_server_env_config=None,
+                explicit_env_overrides={},
+                network=None,
+                tty=tty,
+                sandbox_permissions=SandboxPermissions.USE_DEFAULT,
+                additional_permissions=None,
+                justification=None,
+                exec_approval_requirement=approval_requirement,
+            )
+
+        plain_a = request(("/bin/bash", "-lc", "cargo test -p codex-core"), tty=True)
+        plain_b = request(("bash", "-lc", "cargo   test   -p codex-core"), tty=True)
+        non_tty = request(("bash", "-lc", "cargo   test   -p codex-core"), tty=False)
+
+        self.assertEqual(
+            unified_exec_approval_keys(plain_a)[0].command,
+            ("cargo", "test", "-p", "codex-core"),
+        )
+        self.assertEqual(
+            unified_exec_approval_keys(plain_a)[0].command,
+            unified_exec_approval_keys(plain_b)[0].command,
+        )
+        self.assertTrue(unified_exec_approval_keys(plain_a)[0].tty)
+        self.assertFalse(unified_exec_approval_keys(non_tty)[0].tty)
+        self.assertNotEqual(
+            unified_exec_approval_keys(plain_a)[0],
+            unified_exec_approval_keys(non_tty)[0],
+        )
 
     def test_unified_exec_options_combines_default_timeout_with_network_denial_cancellation(self) -> None:
         cancellation = CancellationToken()
@@ -868,6 +1039,53 @@ class ToolRuntimesTests(unittest.TestCase):
         self.assertEqual(options.expiration.kind, ExecExpirationKind.TIMEOUT_OR_CANCELLATION)
         self.assertEqual(options.expiration.timeout_ms(), DEFAULT_EXEC_COMMAND_TIMEOUT_MS)
         self.assertIs(options.expiration.cancellation, cancellation)
+
+    def test_unified_exec_direct_run_plan_preserves_process_manager_inputs(self) -> None:
+        # Rust source: codex-rs/core/src/tools/runtimes/unified_exec.rs
+        # Behavior anchor: UnifiedExecRuntime::run direct fallback passes the
+        # request process id, tty flag, environment, copied
+        # exec_server_env_config, sandbox command, unified options, and
+        # NoopSpawnLifecycle into UnifiedExecProcessManager.
+        cancellation = CancellationToken()
+        env_config = object()
+        environment = object()
+        req = UnifiedExecRequest(
+            command=("python", "-c", "print('ok')"),
+            shell_type=ShellType.SH,
+            hook_command="python -c print",
+            process_id=77,
+            cwd=Path("/repo"),
+            sandbox_cwd=Path("/sandbox"),
+            environment=environment,
+            env={"BASE": "1"},
+            exec_server_env_config=env_config,
+            explicit_env_overrides={},
+            network=None,
+            tty=False,
+            sandbox_permissions=SandboxPermissions.USE_DEFAULT,
+            additional_permissions=None,
+            justification=None,
+            exec_approval_requirement=ExecApprovalRequirement.skip(),
+        )
+
+        plan = unified_exec_direct_run_plan(
+            req,
+            network_denial_cancellation_token=cancellation,
+        )
+
+        self.assertIsInstance(plan, UnifiedExecDirectRunPlan)
+        self.assertEqual(plan.process_id, 77)
+        self.assertEqual(plan.sandbox_command.program, "python")
+        self.assertEqual(plan.sandbox_command.args, ("-c", "print('ok')"))
+        self.assertEqual(plan.sandbox_command.cwd, Path("/repo"))
+        self.assertEqual(plan.sandbox_command.env["BASE"], "1")
+        self.assertEqual(plan.options.capture_policy, ExecCapturePolicy.SHELL_TOOL)
+        self.assertIs(plan.options.expiration.cancellation, cancellation)
+        self.assertFalse(plan.tty)
+        self.assertIs(plan.environment, environment)
+        self.assertIs(plan.exec_server_env_config, env_config)
+        self.assertIsNone(plan.managed_network)
+        self.assertEqual(plan.spawn_lifecycle, "noop")
 
     def test_unified_exec_empty_command_maps_to_missing_pty_line(self) -> None:
         with self.assertRaises(ToolRuntimeError) as ctx:

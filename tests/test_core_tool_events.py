@@ -13,6 +13,7 @@ from pycodex.core import (
     ToolEventStage,
     TurnDiffTracker,
     TurnDiffTrackerUpdate,
+    apply_turn_diff_tracker_update,
     build_command_execution_begin_item,
     build_command_execution_end_item,
     build_command_execution_item_from_guardian_event,
@@ -380,6 +381,40 @@ class ToolEventsTests(unittest.TestCase):
         self.assertEqual(declined.status, ExecCommandStatus.DECLINED)
         self.assertEqual(declined.stderr, "no")
 
+    def test_exec_output_failure_emits_failed_end_event_with_output_metadata(self) -> None:
+        # Rust source: codex-rs/core/src/tools/events.rs
+        # Behavior anchor: ToolEventStage::Success and
+        # ToolEventFailure::Output share the ExecCommandResult path; non-zero
+        # output failures emit ExecCommandEnd with status Failed while preserving
+        # stdout, stderr, aggregated_output, and formatted_output.
+        ctx = ToolEventCtx.new(None, _Turn(), "call-output-failure")
+        exec_input = ExecCommandInput.new(
+            ["python", "-m", "pytest"],
+            Path("/tmp/project"),
+            source=ExecCommandSource.USER_SHELL,
+        )
+        output = ExecToolCallOutput(
+            exit_code=1,
+            stdout=StreamOutput.new(""),
+            stderr=StreamOutput.new("FAILED\n"),
+            aggregated_output=StreamOutput.new("FAILED\n"),
+            duration=timedelta(milliseconds=1250),
+        )
+
+        (event,) = build_exec_stage_events(
+            ctx,
+            exec_input,
+            ToolEventStage.failure(ToolEventFailure.output_failure(output)),
+            timestamp_ms=30,
+        )
+
+        self.assertEqual(event.type, "exec_command_end")
+        self.assertEqual(event.payload.status, ExecCommandStatus.FAILED)
+        self.assertEqual(event.payload.exit_code, 1)
+        self.assertEqual(event.payload.stderr, "FAILED\n")
+        self.assertEqual(event.payload.aggregated_output, "FAILED\n")
+        self.assertEqual(event.payload.formatted_output, "FAILED\n")
+
     def test_patch_begin_and_success_end_items_match_file_change_turn_items(self) -> None:
         ctx = ToolEventCtx.new(None, _Turn(), "patch-1")
         changes = {Path("a.txt"): FileChange.add("after")}
@@ -429,6 +464,8 @@ class ToolEventsTests(unittest.TestCase):
         )
 
     def test_patch_failure_statuses_and_tracker_updates_match_rust(self) -> None:
+        # Rust parity: codex-core::tools::events
+        # events.rs::tracker_update_for_known_delta and patch failure status arms.
         failed_output = ExecToolCallOutput(exit_code=1)
         non_empty_delta = AppliedPatchDelta.new(
             [AppliedPatchChange(Path("out.txt"), AppliedPatchFileChange.add("after\n"))],
@@ -441,6 +478,8 @@ class ToolEventsTests(unittest.TestCase):
         self.assertEqual(tracker_update_for_known_delta(non_empty_delta).type, "track")
 
     def test_apply_patch_emitter_emits_turn_diff_when_tracker_changes(self) -> None:
+        # Rust parity: codex-core::tools::events
+        # events.rs inline test rejected_apply_patch_tracks_committed_delta.
         ctx = ToolEventCtx.new(None, _Turn(), "patch-2", TurnDiffTracker())
         emitter = ToolEmitter.apply_patch({Path("out.txt"): FileChange.add("after\n")}, auto_approved=False)
         delta = AppliedPatchDelta.new(
@@ -454,6 +493,70 @@ class ToolEventsTests(unittest.TestCase):
         self.assertEqual(events[0].item.status, PatchApplyStatus.COMPLETED)
         self.assertEqual(events[1].type, "turn_diff")
         self.assertIn("out.txt", events[1].payload.unified_diff)
+
+    def test_denied_apply_patch_with_committed_delta_emits_failed_item_and_turn_diff(self) -> None:
+        # Rust parity: codex-core::tools::events
+        # events.rs inline test denied_apply_patch_tracks_committed_delta.
+        ctx = ToolEventCtx.new(None, _Turn(), "patch-denied", TurnDiffTracker())
+        emitter = ToolEmitter.apply_patch({Path("out.txt"): FileChange.add("after\n")}, auto_approved=False)
+        delta = AppliedPatchDelta.new(
+            [AppliedPatchChange(Path("out.txt"), AppliedPatchFileChange.add("after\n"))],
+            exact=True,
+        )
+        output = ExecToolCallOutput(
+            exit_code=1,
+            stdout=StreamOutput.new(""),
+            stderr=StreamOutput.new("denied\n"),
+            aggregated_output=StreamOutput.new("denied\n"),
+        )
+
+        result, events = emitter.finish(ctx, output, delta)
+
+        self.assertIsInstance(result, FunctionCallError)
+        self.assertEqual(events[0].item.status, PatchApplyStatus.FAILED)
+        self.assertEqual(events[0].item.stderr, "denied\n")
+        self.assertEqual(events[1].type, "turn_diff")
+        self.assertIn("out.txt", events[1].payload.unified_diff)
+        self.assertIn("+after", events[1].payload.unified_diff)
+
+    def test_rejected_apply_patch_with_committed_delta_emits_declined_item_and_turn_diff(self) -> None:
+        # Rust parity: codex-core::tools::events
+        # events.rs inline test rejected_apply_patch_tracks_committed_delta.
+        ctx = ToolEventCtx.new(None, _Turn(), "patch-3", TurnDiffTracker())
+        emitter = ToolEmitter.apply_patch({Path("out.txt"): FileChange.add("after\n")}, auto_approved=False)
+        delta = AppliedPatchDelta.new(
+            [AppliedPatchChange(Path("out.txt"), AppliedPatchFileChange.add("after\n"))],
+            exact=True,
+        )
+
+        events = emitter.emit(
+            ctx,
+            ToolEventStage.failure(ToolEventFailure.rejected("patch rejected by user", delta)),
+        )
+
+        self.assertEqual(events[0].item.status, PatchApplyStatus.DECLINED)
+        self.assertEqual(events[0].item.stderr, "patch rejected by user")
+        self.assertEqual(events[1].type, "turn_diff")
+        self.assertIn("out.txt", events[1].payload.unified_diff)
+
+    def test_turn_diff_tracker_invalidation_emits_empty_diff_when_previous_diff_existed(self) -> None:
+        # Rust source: codex-rs/core/src/tools/events.rs
+        # Behavior anchor: emit_patch_end records previous_diff, applies
+        # TurnDiffTrackerUpdate::Invalidate, and emits TurnDiffEvent with
+        # unified_diff.unwrap_or_default() when the previous diff existed.
+        tracker = TurnDiffTracker()
+        tracker.track_delta(
+            AppliedPatchDelta.new(
+                [AppliedPatchChange(Path("out.txt"), AppliedPatchFileChange.add("after\n"))],
+                exact=True,
+            )
+        )
+
+        event = apply_turn_diff_tracker_update(tracker, TurnDiffTrackerUpdate.invalidate())
+
+        self.assertIsNotNone(event)
+        self.assertEqual(event.type, "turn_diff")
+        self.assertEqual(event.payload.unified_diff, "")
 
     def test_rejected_by_user_is_normalized_by_emitter_finish(self) -> None:
         ctx = ToolEventCtx.new(None, _Turn(), "call-3")

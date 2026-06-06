@@ -3,6 +3,7 @@ from datetime import timedelta
 from pathlib import Path
 
 from pycodex.core import (
+    CONTEXTUAL_USER_FRAGMENTS,
     ApprovedCommandPrefixSaved,
     AppsInstructions,
     AvailablePluginsInstructions,
@@ -10,6 +11,7 @@ from pycodex.core import (
     CollaborationModeInstructions,
     EnvironmentContext,
     EnvironmentContextEnvironment,
+    FragmentRegistrationProxy,
     GoalContext,
     GuardianFollowupReviewReminder,
     HookAdditionalContext,
@@ -48,6 +50,10 @@ from pycodex.protocol import (
 
 
 class CoreContextualUserMessageTests(unittest.TestCase):
+    # Rust source:
+    # - codex/codex-rs/core/src/context/contextual_user_message.rs
+    # - codex/codex-rs/core/src/context/contextual_user_message_tests.rs
+
     def test_detects_standard_contextual_user_fragments(self):
         environment = EnvironmentContext.new((EnvironmentContextEnvironment("local", Path("/repo"), "bash"),))
         instructions = UserInstructions("/repo", "prefer stdlib")
@@ -58,6 +64,32 @@ class CoreContextualUserMessageTests(unittest.TestCase):
         self.assertTrue(is_standard_contextual_user_text(skill.render()))
         self.assertFalse(is_standard_contextual_user_text("regular user text"))
 
+    def test_detects_raw_environment_and_agents_instruction_fragments(self):
+        # Rust tests: detects_environment_context_fragment and detects_agents_instructions_fragment
+        self.assertTrue(
+            is_contextual_user_fragment(
+                ContentItem.input_text("<environment_context>\n<cwd>/tmp</cwd>\n</environment_context>")
+            )
+        )
+        self.assertTrue(
+            is_contextual_user_fragment(
+                ContentItem.input_text(
+                    "# AGENTS.md instructions for /tmp\n\n<INSTRUCTIONS>\nbody\n</INSTRUCTIONS>"
+                )
+            )
+        )
+
+    def test_standard_contextual_user_fragments_use_registration_proxies(self):
+        self.assertTrue(CONTEXTUAL_USER_FRAGMENTS)
+        self.assertTrue(all(isinstance(fragment, FragmentRegistrationProxy) for fragment in CONTEXTUAL_USER_FRAGMENTS))
+        self.assertTrue(
+            any(
+                fragment.matches_text("<environment_context>\n<cwd>/tmp</cwd>\n</environment_context>")
+                for fragment in CONTEXTUAL_USER_FRAGMENTS
+            )
+        )
+        self.assertFalse(any(fragment.matches_text("regular user text") for fragment in CONTEXTUAL_USER_FRAGMENTS))
+
     def test_detects_subagent_notification_case_insensitively(self):
         notification = SubagentNotification.new("agent-a", AgentStatus.running())
 
@@ -66,6 +98,10 @@ class CoreContextualUserMessageTests(unittest.TestCase):
             '<subagent_notification>\n{"agent_path":"agent-a","status":"running"}\n</subagent_notification>',
         )
         self.assertTrue(is_standard_contextual_user_text(notification.render().upper()))
+        self.assertTrue(SubagentNotification.matches_text("<SUBAGENT_NOTIFICATION>{}</subagent_notification>"))
+        self.assertTrue(
+            is_contextual_user_fragment(ContentItem.input_text("<SUBAGENT_NOTIFICATION>{}</subagent_notification>"))
+        )
 
     def test_detects_goal_context_and_keeps_response_conversions(self):
         goal = GoalContext("keep porting upstream Codex")
@@ -97,6 +133,37 @@ class CoreContextualUserMessageTests(unittest.TestCase):
         self.assertEqual(parsed.id, "visible-id")
         self.assertEqual(parsed.fragments, (fragment,))
 
+    def test_visible_hook_prompt_parse_returns_none_for_only_standard_context(self):
+        # Rust source: parse_visible_hook_prompt_message returns None when no hook fragments are present.
+        environment = EnvironmentContext.new((EnvironmentContextEnvironment("local", Path("/repo"), "bash"),))
+        instructions = UserInstructions("/repo", "prefer stdlib")
+
+        self.assertIsNone(
+            parse_visible_hook_prompt_message(
+                "visible-id",
+                (
+                    ContentItem.input_text(environment.render()),
+                    ContentItem.input_text(instructions.render()),
+                ),
+            )
+        )
+
+    def test_detects_hook_prompt_fragment_and_roundtrips_escaping(self):
+        # Rust test: detects_hook_prompt_fragment_and_roundtrips_escaping
+        fragment = HookPromptFragment.from_single_hook('Retry with "waves" & <tides>', "hook-run-1")
+        hook_message = build_hook_prompt_message((fragment,))
+        self.assertIsNotNone(hook_message)
+        assert hook_message is not None
+        (content_item,) = hook_message.content
+
+        self.assertTrue(is_contextual_user_fragment(content_item))
+
+        parsed = parse_visible_hook_prompt_message(None, hook_message.content)
+        self.assertIsNotNone(parsed)
+        assert parsed is not None
+        self.assertEqual(parsed.fragments, (fragment,))
+        self.assertNotIn('&quot;waves&quot; & <tides>', content_item.text or "")
+
     def test_visible_hook_prompt_parse_rejects_mixed_regular_content(self):
         fragment = HookPromptFragment.from_single_hook("hello", "run-1")
         hook_message = build_hook_prompt_message((fragment,))
@@ -109,6 +176,12 @@ class CoreContextualUserMessageTests(unittest.TestCase):
             parse_visible_hook_prompt_message(
                 "visible-id",
                 hook_message.content + (ContentItem.input_image("https://example.com/image.png"),),
+            )
+        )
+        self.assertIsNone(
+            parse_visible_hook_prompt_message(
+                "visible-id",
+                hook_message.content + (ContentItem.output_text("assistant-shaped text"),),
             )
         )
 

@@ -10,6 +10,7 @@ import time
 from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass
+from dataclasses import field
 from typing import Any, TypeVar
 
 from pycodex.protocol import ExecToolCallOutput
@@ -27,6 +28,8 @@ UNIFIED_EXEC_OUTPUT_MAX_TOKENS = UNIFIED_EXEC_OUTPUT_MAX_BYTES // 4
 UNIFIED_EXEC_OUTPUT_DELTA_MAX_BYTES = 8192
 MAX_EXEC_OUTPUT_DELTAS_PER_CALL = 10_000
 MAX_UNIFIED_EXEC_PROCESSES = 64
+NETWORK_ACCESS_DENIED_MESSAGE = "Network access was denied by the Codex sandbox network proxy."
+LATE_NETWORK_DENIAL_GRACE_PERIOD_MS = 100
 UNIFIED_EXEC_ENV = (
     ("NO_COLOR", "1"),
     ("TERM", "dumb"),
@@ -40,6 +43,91 @@ UNIFIED_EXEC_ENV = (
     ("CODEX_CI", "1"),
 )
 _T = TypeVar("_T")
+
+
+@dataclass(frozen=True)
+class UnifiedExecContext:
+    session: Any
+    turn: Any
+    call_id: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.call_id, str):
+            raise TypeError("call_id must be a string")
+
+
+@dataclass(frozen=True)
+class ExecCommandRequest:
+    command: tuple[str, ...]
+    shell_type: Any = None
+    hook_command: str = ""
+    process_id: int = 0
+    yield_time_ms: int = MIN_YIELD_TIME_MS
+    max_output_tokens: int | None = None
+    cwd: Any = None
+    sandbox_cwd: Any = None
+    environment: Any = None
+    network: Any = None
+    tty: bool = True
+    sandbox_permissions: Any = None
+    additional_permissions: Any = None
+    additional_permissions_preapproved: bool = False
+    justification: str | None = None
+    prefix_rule: tuple[str, ...] | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "command", tuple(str(part) for part in self.command))
+        if not isinstance(self.hook_command, str):
+            raise TypeError("hook_command must be a string")
+        if isinstance(self.process_id, bool) or not isinstance(self.process_id, int):
+            raise TypeError("process_id must be an integer")
+        if isinstance(self.yield_time_ms, bool) or not isinstance(self.yield_time_ms, int):
+            raise TypeError("yield_time_ms must be an integer")
+        if self.max_output_tokens is not None and (
+            isinstance(self.max_output_tokens, bool)
+            or not isinstance(self.max_output_tokens, int)
+        ):
+            raise TypeError("max_output_tokens must be an integer or None")
+        if not isinstance(self.tty, bool):
+            raise TypeError("tty must be a bool")
+        if not isinstance(self.additional_permissions_preapproved, bool):
+            raise TypeError("additional_permissions_preapproved must be a bool")
+        if self.justification is not None and not isinstance(self.justification, str):
+            raise TypeError("justification must be a string or None")
+        if self.prefix_rule is not None:
+            object.__setattr__(self, "prefix_rule", tuple(str(part) for part in self.prefix_rule))
+
+
+@dataclass(frozen=True)
+class WriteStdinRequest:
+    process_id: int
+    input: str
+    yield_time_ms: int = MIN_YIELD_TIME_MS
+    max_output_tokens: int | None = None
+    truncation_policy: Any = None
+
+    def __post_init__(self) -> None:
+        if isinstance(self.process_id, bool) or not isinstance(self.process_id, int):
+            raise TypeError("process_id must be an integer")
+        if not isinstance(self.input, str):
+            raise TypeError("input must be a string")
+        if isinstance(self.yield_time_ms, bool) or not isinstance(self.yield_time_ms, int):
+            raise TypeError("yield_time_ms must be an integer")
+        if self.max_output_tokens is not None and (
+            isinstance(self.max_output_tokens, bool)
+            or not isinstance(self.max_output_tokens, int)
+        ):
+            raise TypeError("max_output_tokens must be an integer or None")
+
+
+@dataclass
+class ProcessStore:
+    processes: dict[int, Any] = field(default_factory=dict)
+    reserved_process_ids: set[int] = field(default_factory=set)
+
+    def remove(self, process_id: int) -> Any | None:
+        self.reserved_process_ids.discard(process_id)
+        return self.processes.pop(process_id, None)
 
 
 def clamp_yield_time(yield_time_ms: int) -> int:
@@ -110,6 +198,134 @@ def resolve_failed_aggregated_output(stdout: str, message: str) -> str:
     return f"{stdout}\n{message}"
 
 
+@dataclass(frozen=True)
+class UnifiedExecEndEventPlan:
+    call_id: str
+    command: tuple[str, ...]
+    cwd: Any
+    process_id: str | None
+    source: str
+    status: str
+    exit_code: int
+    stdout: str
+    stderr: str
+    aggregated_output: str
+    duration_ms: int
+    timed_out: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.call_id, str):
+            raise TypeError("call_id must be a string")
+        if not isinstance(self.command, tuple):
+            raise TypeError("command must be a tuple")
+        if self.process_id is not None and not isinstance(self.process_id, str):
+            raise TypeError("process_id must be a string or None")
+        if not isinstance(self.source, str):
+            raise TypeError("source must be a string")
+        if not isinstance(self.status, str):
+            raise TypeError("status must be a string")
+        if isinstance(self.exit_code, bool) or not isinstance(self.exit_code, int):
+            raise TypeError("exit_code must be an integer")
+        if not isinstance(self.stdout, str):
+            raise TypeError("stdout must be a string")
+        if not isinstance(self.stderr, str):
+            raise TypeError("stderr must be a string")
+        if not isinstance(self.aggregated_output, str):
+            raise TypeError("aggregated_output must be a string")
+        if isinstance(self.duration_ms, bool) or not isinstance(self.duration_ms, int):
+            raise TypeError("duration_ms must be an integer")
+        if not isinstance(self.timed_out, bool):
+            raise TypeError("timed_out must be a bool")
+
+
+def _unified_exec_end_event_common(
+    *,
+    call_id: str,
+    command: Iterable[str],
+    cwd: Any,
+    process_id: str | int | None,
+    status: str,
+    exit_code: int,
+    stdout: str,
+    stderr: str,
+    aggregated_output: str,
+    duration_ms: int = 0,
+) -> UnifiedExecEndEventPlan:
+    return UnifiedExecEndEventPlan(
+        call_id=call_id,
+        command=tuple(str(part) for part in command),
+        cwd=cwd,
+        process_id=None if process_id is None else str(process_id),
+        source="unified_exec_startup",
+        status=status,
+        exit_code=exit_code,
+        stdout=stdout,
+        stderr=stderr,
+        aggregated_output=aggregated_output,
+        duration_ms=duration_ms,
+        timed_out=False,
+    )
+
+
+def unified_exec_success_end_event_plan(
+    *,
+    call_id: str,
+    command: Iterable[str],
+    cwd: Any,
+    process_id: str | int | None,
+    transcript: "HeadTailBuffer",
+    fallback_output: str,
+    exit_code: int,
+    duration_ms: int = 0,
+) -> UnifiedExecEndEventPlan:
+    aggregated_output = resolve_aggregated_output(transcript, fallback_output)
+    return _unified_exec_end_event_common(
+        call_id=call_id,
+        command=command,
+        cwd=cwd,
+        process_id=process_id,
+        status="success",
+        exit_code=exit_code,
+        stdout=aggregated_output,
+        stderr="",
+        aggregated_output=aggregated_output,
+        duration_ms=duration_ms,
+    )
+
+
+def unified_exec_failed_end_event_plan(
+    *,
+    call_id: str,
+    command: Iterable[str],
+    cwd: Any,
+    process_id: str | int | None,
+    transcript: "HeadTailBuffer",
+    fallback_output: str,
+    message: str,
+    duration_ms: int = 0,
+) -> UnifiedExecEndEventPlan:
+    if not isinstance(message, str):
+        raise TypeError("message must be a string")
+    stdout = (
+        fallback_output
+        if fallback_output
+        else resolve_aggregated_output(transcript, fallback_output)
+    )
+    aggregated_output = resolve_failed_aggregated_output(stdout, message)
+    return _unified_exec_end_event_common(
+        call_id=call_id,
+        command=command,
+        cwd=cwd,
+        process_id=process_id,
+        status="failed",
+        exit_code=-1,
+        stdout=stdout,
+        stderr=message,
+        aggregated_output=aggregated_output,
+        duration_ms=duration_ms,
+    )
+
+
 def should_emit_terminal_interaction(stdin: str, response_process_id: int | None) -> bool:
     if not isinstance(stdin, str):
         raise TypeError("stdin must be a string")
@@ -162,6 +378,40 @@ def apply_unified_exec_env(env: dict[str, str]) -> dict[str, str]:
     return merged
 
 
+@dataclass(frozen=True)
+class ExecServerEnvConfig:
+    policy: Any | None
+    local_policy_env: dict[str, str]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.local_policy_env, dict):
+            raise TypeError("local_policy_env must be a dict")
+
+
+@dataclass(frozen=True)
+class ExecServerParams:
+    process_id: str
+    argv: tuple[str, ...]
+    cwd: Any
+    env_policy: Any | None
+    env: dict[str, str]
+    tty: bool
+    pipe_stdin: bool = False
+    arg0: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.process_id, str):
+            raise TypeError("process_id must be a string")
+        if not isinstance(self.argv, tuple):
+            raise TypeError("argv must be a tuple")
+        if not isinstance(self.env, dict):
+            raise TypeError("env must be a dict")
+        if not isinstance(self.tty, bool):
+            raise TypeError("tty must be a bool")
+        if not isinstance(self.pipe_stdin, bool):
+            raise TypeError("pipe_stdin must be a bool")
+
+
 def env_overlay_for_exec_server(
     request_env: dict[str, str],
     local_policy_env: dict[str, str],
@@ -173,8 +423,117 @@ def env_overlay_for_exec_server(
     }
 
 
+def _request_env_mapping(request: Any) -> dict[str, str]:
+    env = getattr(request, "env", None)
+    if env is None:
+        env = getattr(request, "environment", None)
+    if env is None:
+        return {}
+    if not isinstance(env, dict):
+        raise TypeError("request env must be a dict")
+    return {str(key): str(value) for key, value in env.items()}
+
+
+def _exec_server_env_config_fields(config: Any) -> tuple[Any | None, dict[str, str]]:
+    if isinstance(config, dict):
+        policy = config.get("policy")
+        local_policy_env = config.get("local_policy_env", {})
+    else:
+        policy = getattr(config, "policy", None)
+        local_policy_env = getattr(config, "local_policy_env", {})
+    if not isinstance(local_policy_env, dict):
+        raise TypeError("exec_server_env_config.local_policy_env must be a dict")
+    return policy, {str(key): str(value) for key, value in local_policy_env.items()}
+
+
+def exec_server_env_for_request(request: Any) -> tuple[Any | None, dict[str, str]]:
+    request_env = _request_env_mapping(request)
+    config = getattr(request, "exec_server_env_config", None)
+    if config is None:
+        return None, request_env
+    policy, local_policy_env = _exec_server_env_config_fields(config)
+    return policy, env_overlay_for_exec_server(request_env, local_policy_env)
+
+
 def exec_server_process_id(process_id: int) -> str:
     return str(process_id)
+
+
+def exec_server_params_for_request(
+    process_id: int,
+    request: Any,
+    tty: bool,
+) -> ExecServerParams:
+    if isinstance(process_id, bool) or not isinstance(process_id, int):
+        raise TypeError("process_id must be an integer")
+    command = tuple(str(part) for part in (getattr(request, "command", ()) or ()))
+    env_policy, env = exec_server_env_for_request(request)
+    return ExecServerParams(
+        process_id=exec_server_process_id(process_id),
+        argv=command,
+        cwd=getattr(request, "cwd", None),
+        env_policy=env_policy,
+        env=env,
+        tty=bool(tty),
+        pipe_stdin=False,
+        arg0=getattr(request, "arg0", None),
+    )
+
+
+def _cancellation_token_is_cancelled(token: Any) -> bool:
+    if token is None:
+        return False
+    for name in ("is_cancelled", "is_set"):
+        value = getattr(token, name, None)
+        if callable(value):
+            return bool(value())
+    value = getattr(token, "cancelled", None)
+    if callable(value):
+        return bool(value())
+    if value is not None:
+        return bool(value)
+    return bool(token)
+
+
+def wait_for_late_network_denial(
+    network_cancelled: Any,
+    *,
+    grace_period_ms: int = LATE_NETWORK_DENIAL_GRACE_PERIOD_MS,
+) -> bool:
+    if network_cancelled is None:
+        return False
+    if _cancellation_token_is_cancelled(network_cancelled):
+        return True
+    if isinstance(grace_period_ms, bool) or not isinstance(grace_period_ms, int):
+        raise TypeError("grace_period_ms must be an integer")
+    if grace_period_ms <= 0:
+        return _cancellation_token_is_cancelled(network_cancelled)
+
+    deadline = time.monotonic() + (grace_period_ms / 1000.0)
+    while time.monotonic() < deadline:
+        if _cancellation_token_is_cancelled(network_cancelled):
+            return True
+        remaining = deadline - time.monotonic()
+        time.sleep(min(0.01, max(remaining, 0.0)))
+    return _cancellation_token_is_cancelled(network_cancelled)
+
+
+def network_denial_message_for_session(
+    session: Any | None = None,
+    deferred: Any | None = None,
+) -> str:
+    if session is None:
+        return NETWORK_ACCESS_DENIED_MESSAGE
+    finish = getattr(session, "finish_deferred_network_approval", None)
+    if not callable(finish):
+        return NETWORK_ACCESS_DENIED_MESSAGE
+    try:
+        result = finish(deferred)
+    except Exception as err:
+        return str(err)
+    if isinstance(result, str) and result:
+        return result
+    return NETWORK_ACCESS_DENIED_MESSAGE
 
 
 def process_id_to_prune_from_meta(meta: Iterable[tuple[int, _T, bool]]) -> int | None:
@@ -696,6 +1055,73 @@ class ProcessState:
         )
 
 
+class UnifiedExecRemoteProcessModel:
+    """Pure state model for Rust ``unified_exec/process.rs`` remote process edges."""
+
+    def __init__(
+        self,
+        *,
+        state: ProcessState | None = None,
+    ) -> None:
+        if state is not None and not isinstance(state, ProcessState):
+            raise TypeError("state must be ProcessState or None")
+        self.state = state or ProcessState()
+        self.cancelled = False
+        self.terminated = False
+
+    def has_exited(self) -> bool:
+        return self.state.has_exited
+
+    def exit_code(self) -> int | None:
+        return self.state.exit_code
+
+    def failure_message(self) -> str | None:
+        return self.state.failure_message
+
+    def signal_exit(self, exit_code: int | None) -> None:
+        self.state = self.state.exited(exit_code)
+        self.cancelled = True
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.cancelled = True
+
+    def fail_and_terminate(self, message: str) -> None:
+        if self.state.failure_message is None:
+            self.state = self.state.failed(message)
+        self.terminate()
+
+    def apply_write_status(self, status: str) -> None:
+        if not isinstance(status, str):
+            raise TypeError("status must be a string")
+        if exec_server_write_status_accepted(status):
+            return
+        if exec_server_write_status_marks_exited(status):
+            self.state = self.state.exited(self.state.exit_code)
+            self.cancelled = True
+            raise UnifiedExecError.write_to_stdin()
+        if status == "Starting":
+            raise UnifiedExecError.write_to_stdin()
+        raise UnifiedExecError.write_to_stdin()
+
+    def apply_read_response(
+        self,
+        *,
+        exited: bool,
+        exit_code: int | None = None,
+        failure: str | None = None,
+        closed: bool = False,
+    ) -> None:
+        if failure is not None:
+            self.state = self.state.failed(failure)
+            self.cancelled = True
+            return
+        if exited:
+            self.state = self.state.exited(exit_code)
+        if closed:
+            self.cancelled = True
+
+
 @dataclass(frozen=True)
 class ProcessOutputChunk:
     transcript_chunk: bytes
@@ -833,30 +1259,43 @@ __all__ = [
     "DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS",
     "DEFAULT_MAX_OUTPUT_TOKENS",
     "EARLY_EXIT_GRACE_PERIOD_MS",
+    "ExecCommandRequest",
+    "ExecServerEnvConfig",
+    "ExecServerParams",
     "HeadTailBuffer",
+    "LATE_NETWORK_DENIAL_GRACE_PERIOD_MS",
     "MAX_EXEC_OUTPUT_DELTAS_PER_CALL",
     "MAX_UNIFIED_EXEC_PROCESSES",
     "MAX_YIELD_TIME_MS",
     "MIN_EMPTY_YIELD_TIME_MS",
     "MIN_YIELD_TIME_MS",
+    "NETWORK_ACCESS_DENIED_MESSAGE",
     "ProcessState",
     "ProcessEntry",
     "ProcessOutputChunk",
+    "ProcessStore",
     "UNIFIED_EXEC_OUTPUT_DELTA_MAX_BYTES",
     "UNIFIED_EXEC_OUTPUT_MAX_BYTES",
     "UNIFIED_EXEC_OUTPUT_MAX_TOKENS",
     "UNIFIED_EXEC_ENV",
     "TRAILING_OUTPUT_GRACE_MS",
     "UnifiedExecError",
+    "UnifiedExecEndEventPlan",
+    "UnifiedExecContext",
     "UnifiedExecProcessManager",
+    "UnifiedExecRemoteProcessModel",
+    "WriteStdinRequest",
     "apply_unified_exec_env",
     "clamp_yield_time",
     "env_overlay_for_exec_server",
     "exec_server_after_seq",
+    "exec_server_env_for_request",
+    "exec_server_params_for_request",
     "exec_server_process_id",
     "exec_server_write_status_accepted",
     "exec_server_write_status_marks_exited",
     "generate_chunk_id",
+    "network_denial_message_for_session",
     "process_id_to_prune_from_meta",
     "process_output_chunk",
     "resolve_aggregated_output",
@@ -868,4 +1307,7 @@ __all__ = [
     "split_valid_utf8_prefix",
     "split_valid_utf8_prefix_with_max",
     "terminal_interaction_process_id",
+    "unified_exec_failed_end_event_plan",
+    "unified_exec_success_end_event_plan",
+    "wait_for_late_network_denial",
 ]

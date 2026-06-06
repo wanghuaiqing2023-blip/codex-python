@@ -1,7 +1,11 @@
 import unittest
 
 from pycodex.core import (
+    AnyToolResult,
+    CodeModeWaitHandler,
     MULTI_AGENT_V1_NAMESPACE,
+    FunctionCallError,
+    FunctionCallErrorKind,
     FunctionToolOutput,
     HookToolName,
     JsonToolOutput,
@@ -22,6 +26,7 @@ from pycodex.core import (
     unsupported_tool_call_message,
     with_updated_hook_input,
 )
+from pycodex.core.tools.handlers.unified_exec import WriteStdinHandler
 from pycodex.core.tools.tool_search_entry import (
     ToolSearchInfo,
 )
@@ -266,6 +271,83 @@ class ToolRegistryRegistrationTests(unittest.TestCase):
         self.assertTrue(registry.waits_for_runtime_cancellation(ToolName.plain("exec_command")))
         self.assertFalse(registry.waits_for_runtime_cancellation(ToolName.plain("plan")))
 
+    def test_dispatch_any_runs_matching_handler_and_wraps_result(self) -> None:
+        # Rust source: codex-core/src/tools/registry.rs
+        # Rust contract: ToolRegistry::dispatch_any + handle_any_tool wrap handler output
+        class EchoTool(RegisteredTool):
+            def handle(self, invocation):
+                return FunctionToolOutput.from_text(f"echo {invocation.call_id}", True)
+
+        registry = ToolRegistry.from_tools([EchoTool(name=ToolName.plain("echo"))])
+        invocation = ToolInvocation(
+            call_id="call-1",
+            tool_name=ToolName.plain("echo"),
+            payload=ToolPayload.function('{"message":"hello"}'),
+        )
+
+        result = registry.dispatch_any(invocation)
+
+        self.assertIsInstance(result, AnyToolResult)
+        self.assertEqual(result.call_id, "call-1")
+        self.assertEqual(result.payload, ToolPayload.function('{"message":"hello"}'))
+        self.assertEqual(result.into_response().output.to_text(), "echo call-1")
+        self.assertEqual(result.code_mode_result(), "echo call-1")
+        self.assertEqual(
+            result.post_tool_use_payload,
+            PostToolUsePayload(
+                tool_name=HookToolName.new("echo"),
+                tool_use_id="call-1",
+                tool_input={"message": "hello"},
+                tool_response="echo call-1",
+            ),
+        )
+
+    def test_dispatch_any_reports_unsupported_tool_to_model(self) -> None:
+        # Rust source: codex-core/src/tools/registry.rs
+        # Rust contract: missing tool returns FunctionCallError::RespondToModel
+        registry = ToolRegistry.empty()
+        invocation = ToolInvocation(
+            call_id="missing-call",
+            tool_name=ToolName.plain("missing"),
+            payload=ToolPayload.function("{}"),
+        )
+
+        with self.assertRaises(FunctionCallError) as caught:
+            registry.dispatch_any(invocation)
+
+        self.assertEqual(caught.exception.kind, FunctionCallErrorKind.RESPOND_TO_MODEL)
+        self.assertEqual(str(caught.exception), "unsupported call: missing")
+
+    def test_dispatch_any_rejects_incompatible_payload_as_fatal(self) -> None:
+        # Rust source: codex-core/src/tools/registry.rs
+        # Rust contract: existing tool with incompatible payload is fatal
+        class FunctionOnlyTool(RegisteredTool):
+            def handle(self, _invocation):
+                return FunctionToolOutput.from_text("should not run", True)
+
+        registry = ToolRegistry.from_tools(
+            [
+                FunctionOnlyTool(
+                    name=ToolName.plain("function_only"),
+                    payload_types=("function",),
+                )
+            ]
+        )
+        invocation = ToolInvocation(
+            call_id="custom-call",
+            tool_name=ToolName.plain("function_only"),
+            payload=ToolPayload.custom("raw custom input"),
+        )
+
+        with self.assertRaises(FunctionCallError) as caught:
+            registry.dispatch_any(invocation)
+
+        self.assertEqual(caught.exception.kind, FunctionCallErrorKind.FATAL)
+        self.assertEqual(
+            str(caught.exception),
+            "Fatal error: tool function_only invoked with incompatible payload",
+        )
+
     def test_unsupported_tool_call_message_distinguishes_custom_tools(self) -> None:
         self.assertEqual(
             unsupported_tool_call_message(
@@ -307,6 +389,8 @@ class ToolRegistryHookTests(unittest.TestCase):
             flat_tool_name("echo")
 
     def test_function_tools_expose_default_hook_payloads_and_rewrites(self) -> None:
+        # Rust parity: codex-core::tools::registry
+        # registry_tests.rs::function_tools_expose_default_hook_payloads_and_rewrites.
         invocation = ToolInvocation(
             call_id="call-1",
             tool_name=ToolName.namespaced("functions.", "echo"),
@@ -342,6 +426,8 @@ class ToolRegistryHookTests(unittest.TestCase):
             with_updated_hook_input(object(), {})
 
     def test_function_hook_input_defaults_empty_arguments_to_object(self) -> None:
+        # Rust parity: codex-core::tools::registry
+        # registry_tests.rs::function_hook_input_defaults_empty_arguments_to_object.
         invocation = ToolInvocation(
             call_id="call-1",
             tool_name=ToolName.plain("echo"),
@@ -374,6 +460,8 @@ class ToolRegistryHookTests(unittest.TestCase):
         )
 
     def test_spawn_agent_function_tools_use_agent_matcher_alias(self) -> None:
+        # Rust parity: codex-core::tools::registry
+        # registry_tests.rs::spawn_agent_function_tools_use_agent_matcher_alias.
         output = FunctionToolOutput.from_text("accepted", True)
         hook_payloads = [
             pre_tool_use_payload(
@@ -437,6 +525,28 @@ class ToolRegistryHookTests(unittest.TestCase):
         self.assertIsNone(post_tool_use_payload(invocation, output))
         with self.assertRaisesRegex(ValueError, "unsupported function tool payload"):
             with_updated_hook_input(invocation, {"message": "rewritten"})
+
+    def test_runtime_overrides_can_suppress_default_hook_payloads(self) -> None:
+        # Rust parity: codex-core::tools::registry
+        # registry_tests.rs::code_mode_wait_does_not_expose_default_hook_payloads
+        # and write_stdin_does_not_expose_default_pre_tool_use_payload.
+        output = FunctionToolOutput.from_text("ok", True)
+        wait = CodeModeWaitHandler()
+        wait_invocation = ToolInvocation(
+            call_id="wait-call",
+            tool_name=wait.tool_name(),
+            payload=ToolPayload.function("{}"),
+        )
+        write_stdin = WriteStdinHandler()
+        write_invocation = ToolInvocation(
+            call_id="write-stdin-call",
+            tool_name=write_stdin.tool_name(),
+            payload=ToolPayload.function('{"session_id":45}'),
+        )
+
+        self.assertIsNone(wait.pre_tool_use_payload(wait_invocation))
+        self.assertIsNone(wait.post_tool_use_payload(wait_invocation, output))
+        self.assertIsNone(write_stdin.pre_tool_use_payload(write_invocation))
 
     def test_post_tool_use_payload_prefers_output_overrides(self) -> None:
         class StableHookOutput:

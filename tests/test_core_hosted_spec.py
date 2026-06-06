@@ -45,6 +45,8 @@ class HostedSpecTests(unittest.TestCase):
         )
 
     def test_image_generation_tool_matches_expected_spec(self) -> None:
+        # Rust parity: codex-core::tools::hosted_spec
+        # hosted_spec_tests.rs::image_generation_tool_matches_expected_spec.
         self.assertEqual(
             create_image_generation_tool("png"),
             ToolSpec.image_generation("png"),
@@ -58,6 +60,8 @@ class HostedSpecTests(unittest.TestCase):
             create_image_generation_tool(123)  # type: ignore[arg-type]
 
     def test_web_search_tool_preserves_configured_options(self) -> None:
+        # Rust parity: codex-core::tools::hosted_spec
+        # hosted_spec_tests.rs::web_search_tool_preserves_configured_options.
         tool = create_web_search_tool(
             WebSearchToolOptions(
                 web_search_mode=WebSearchMode.LIVE,
@@ -125,6 +129,8 @@ class HostedSpecTests(unittest.TestCase):
         )
 
     def test_web_search_tool_is_absent_when_disabled_or_missing(self) -> None:
+        # Rust parity: codex-core::tools::hosted_spec
+        # hosted_spec_tests.rs::web_search_tool_is_absent_when_disabled.
         self.assertIsNone(
             create_web_search_tool(
                 WebSearchToolOptions(

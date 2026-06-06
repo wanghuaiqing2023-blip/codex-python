@@ -784,11 +784,9 @@ class WriteStdinHandler:
 
 
 def updated_hook_command(updated_input: JsonValue) -> str:
-    data = _mapping(updated_input, "updated hook input")
-    command = data.get("command")
-    if not isinstance(command, str):
-        raise TypeError("updated hook input command must be a string")
-    return command
+    from pycodex.core.tools.handlers.utils import updated_hook_command as shared_updated_hook_command
+
+    return shared_updated_hook_command(updated_input)
 
 
 def _sandbox_denied_tool_output(

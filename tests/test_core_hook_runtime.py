@@ -236,8 +236,22 @@ class HookRuntimeTests(unittest.TestCase):
         )
 
     def test_hook_permission_mode_maps_never_to_bypass(self) -> None:
+        """Rust source contract: ``hook_runtime::hook_permission_mode`` maps only `Never` to bypass."""
+
+        class ValuePolicy:
+            def value(self) -> str:
+                return "never"
+
+        class NamedPolicy:
+            name = "Never"
+
         self.assertEqual(hook_permission_mode("never"), "bypassPermissions")
+        self.assertEqual(hook_permission_mode(ValuePolicy()), "bypassPermissions")
+        self.assertEqual(hook_permission_mode(NamedPolicy()), "bypassPermissions")
         self.assertEqual(hook_permission_mode("on-request"), "default")
+        self.assertEqual(hook_permission_mode("on-failure"), "default")
+        self.assertEqual(hook_permission_mode("unless-trusted"), "default")
+        self.assertEqual(hook_permission_mode("granular"), "default")
 
     def test_pre_tool_use_continue_and_updated_input(self) -> None:
         result = pre_tool_use_result_from_outcome(
@@ -322,6 +336,8 @@ class HookRuntimeTests(unittest.TestCase):
         self.assertEqual(post_compact_outcome_from_hook(True), PostCompactHookOutcome.stopped())
 
     def test_additional_context_messages_are_developer_messages_in_order(self) -> None:
+        """Rust unit test: ``hook_runtime::additional_context_messages_stay_separate_and_ordered``."""
+
         messages = additional_context_messages(["first tide note", "second tide note"])
 
         self.assertEqual([message.role for message in messages], ["developer", "developer"])

@@ -8,8 +8,8 @@ can be layered on later without changing the request/sampling path.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
-import math
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from datetime import datetime, timezone as utc_timezone
 from enum import Enum
@@ -49,7 +49,12 @@ from pycodex.core.codex_thread import (
     ThreadConfigSnapshot,
 )
 from pycodex.core.compact_remote import normalize_history_for_prompt
-from pycodex.core.tools.context import truncate_function_output_payload
+from pycodex.core.context_manager.history import (
+    process_history_item as _context_manager_process_history_item,
+    process_history_items as _context_manager_process_history_items,
+)
+from pycodex.core.state.session import SessionState
+from pycodex.core.state.turn import PendingRequestPermissions
 from pycodex.core.session.turn.prompt import is_guardian_reviewer_source
 from pycodex.core.unified_exec import UnifiedExecProcessManager
 from pycodex.protocol import (
@@ -64,10 +69,12 @@ from pycodex.protocol import (
     FunctionCallOutputContentItem,
     FunctionCallOutputPayload,
     GranularApprovalConfig,
+    InterAgentCommunication,
     ModeKind,
     PermissionProfile,
     RequestPermissionProfile,
     RequestPermissionsArgs,
+    RequestPermissionsEvent,
     RequestPermissionsResponse,
     ResponseInputItem,
     ResponseItem,
@@ -151,6 +158,7 @@ class InMemoryHistory:
 @dataclass
 class InMemoryActiveTurnState:
     tool_calls: int = 0
+    pending_request_permissions: dict[str, PendingRequestPermissions] = field(default_factory=dict)
 
 
 @dataclass
@@ -163,19 +171,175 @@ class InMemoryInputQueue:
     """Turn-local pending input queue for the in-memory session runtime."""
 
     items: list[Any] = field(default_factory=list)
+    mailbox_pending_mails: list[InterAgentCommunication] = field(default_factory=list)
+    mailbox_subscribers: list[Any] = field(default_factory=list)
 
     async def extend_pending_input(self, items: Any) -> None:
         if isinstance(items, (str, bytes)) or not isinstance(items, (list, tuple)):
             raise TypeError("pending input must be a list or tuple")
         self.items.extend(items)
 
-    async def get_pending_input(self, _active_turn: Any = None) -> tuple[Any, ...]:
-        items = tuple(self.items)
-        self.items.clear()
+    async def enqueue_mailbox_communication(self, communication: InterAgentCommunication) -> None:
+        if not isinstance(communication, InterAgentCommunication):
+            communication = InterAgentCommunication.from_mapping(communication)
+        self.mailbox_pending_mails.append(communication)
+        for subscriber in tuple(self.mailbox_subscribers):
+            subscriber.mark_changed()
+
+    async def subscribe_mailbox(self) -> Any:
+        subscriber = _InMemoryMailboxSubscription()
+        self.mailbox_subscribers.append(subscriber)
+        if self.mailbox_pending_mails:
+            subscriber.mark_changed()
+        return subscriber
+
+    async def has_pending_mailbox_items(self) -> bool:
+        return bool(self.mailbox_pending_mails)
+
+    async def has_trigger_turn_mailbox_items(self) -> bool:
+        return any(mail.trigger_turn for mail in self.mailbox_pending_mails)
+
+    async def drain_mailbox_input_items(self) -> tuple[ResponseItem, ...]:
+        pending = tuple(self.mailbox_pending_mails)
+        self.mailbox_pending_mails.clear()
+        return tuple(ResponseItem.from_response_input_item(mail.to_response_input_item()) for mail in pending)
+
+    async def accept_mailbox_delivery_for_turn_state(self, turn_state: Any) -> None:
+        accept = getattr(turn_state, "accept_mailbox_delivery_for_current_turn")
+        accept()
+
+    async def extend_pending_input_for_turn_state(self, turn_state: Any, items: Any) -> None:
+        if isinstance(items, (str, bytes)) or not isinstance(items, (list, tuple)):
+            raise TypeError("pending input must be a list or tuple")
+        pending = _turn_state_pending_input_items(turn_state)
+        pending.extend(items)
+
+    async def extend_pending_input_and_accept_mailbox_delivery_for_turn_state(self, turn_state: Any, items: Any) -> None:
+        await self.extend_pending_input_for_turn_state(turn_state, items)
+        await self.accept_mailbox_delivery_for_turn_state(turn_state)
+
+    async def take_pending_input_for_turn_state(self, turn_state: Any) -> tuple[Any, ...]:
+        pending = _turn_state_pending_input_items(turn_state)
+        items = tuple(pending)
+        pending.clear()
         return items
 
-    async def has_pending_input(self, _active_turn: Any = None) -> bool:
-        return bool(self.items)
+    async def turn_state_for_sub_id(self, active_turn: Any, sub_id: str) -> Any | None:
+        active = _active_turn_value(active_turn)
+        if active is None:
+            return None
+        task = getattr(active, "task", None)
+        turn_context = getattr(task, "turn_context", None)
+        if getattr(turn_context, "sub_id", None) != sub_id:
+            return None
+        return getattr(active, "turn_state", None)
+
+    async def clear_pending(self, active_turn: Any) -> None:
+        active = _active_turn_value(active_turn)
+        if active is None:
+            return
+        turn_state = getattr(active, "turn_state", None)
+        if turn_state is None:
+            return
+        clear_pending_waiters = getattr(turn_state, "clear_pending_waiters", None)
+        if callable(clear_pending_waiters):
+            clear_pending_waiters()
+        _turn_state_pending_input_items(turn_state).clear()
+
+    async def defer_mailbox_delivery_to_next_turn(self, active_turn: Any, sub_id: str) -> None:
+        turn_state = await self.turn_state_for_sub_id(active_turn, sub_id)
+        if turn_state is None:
+            return
+        if _turn_state_pending_input_items(turn_state):
+            return
+        setter = getattr(turn_state, "set_mailbox_delivery_phase", None)
+        if callable(setter):
+            setter("next_turn")
+
+    async def accept_mailbox_delivery_for_current_turn(self, active_turn: Any, sub_id: str) -> None:
+        turn_state = await self.turn_state_for_sub_id(active_turn, sub_id)
+        if turn_state is not None:
+            await self.accept_mailbox_delivery_for_turn_state(turn_state)
+
+    async def get_pending_input(self, active_turn: Any = None) -> tuple[Any, ...]:
+        turn_state = _active_turn_state(active_turn)
+        if turn_state is None:
+            items = tuple(self.items)
+            self.items.clear()
+            if self.mailbox_pending_mails:
+                items = items + tuple(await self.drain_mailbox_input_items())
+            return items
+
+        pending = _turn_state_pending_input_items(turn_state)
+        items = tuple(pending)
+        pending.clear()
+        accepts_mailbox = _accepts_mailbox_delivery_for_current_turn(turn_state)
+        if accepts_mailbox and self.mailbox_pending_mails:
+            items = items + tuple(await self.drain_mailbox_input_items())
+        return items
+
+    async def has_pending_input(self, active_turn: Any = None) -> bool:
+        turn_state = _active_turn_state(active_turn)
+        if turn_state is None:
+            return bool(self.items) or bool(self.mailbox_pending_mails)
+        pending = _turn_state_pending_input_items(turn_state)
+        if pending:
+            return True
+        return _accepts_mailbox_delivery_for_current_turn(turn_state) and bool(self.mailbox_pending_mails)
+
+
+def _turn_state_pending_input_items(turn_state: Any) -> list[Any]:
+    pending_input = getattr(turn_state, "pending_input", None)
+    if pending_input is None:
+        pending_input = SimpleNamespace(items=[])
+        setattr(turn_state, "pending_input", pending_input)
+    items = getattr(pending_input, "items", None)
+    if items is None:
+        items = []
+        setattr(pending_input, "items", items)
+    if not isinstance(items, list):
+        raise TypeError("turn_state.pending_input.items must be a list")
+    return items
+
+
+class _InMemoryMailboxSubscription:
+    def __init__(self) -> None:
+        self._changed = asyncio.Event()
+
+    def mark_changed(self) -> None:
+        self._changed.set()
+
+    async def changed(self) -> None:
+        await self._changed.wait()
+        self._changed.clear()
+
+    def has_changed(self) -> bool:
+        return self._changed.is_set()
+
+
+def _active_turn_state(active_turn: Any) -> Any | None:
+    active_turn = _active_turn_value(active_turn)
+    if active_turn is None:
+        return None
+    if hasattr(active_turn, "turn_state"):
+        return getattr(active_turn, "turn_state")
+    return active_turn
+
+
+def _active_turn_value(active_turn: Any) -> Any | None:
+    if active_turn is None:
+        return None
+    value = getattr(active_turn, "value", active_turn)
+    if callable(value):
+        value = value()
+    return value
+
+
+def _accepts_mailbox_delivery_for_current_turn(turn_state: Any) -> bool:
+    accepts = getattr(turn_state, "accepts_mailbox_delivery_for_current_turn", None)
+    if callable(accepts):
+        return bool(accepts())
+    return True
 
 
 @dataclass(frozen=True)
@@ -207,6 +371,7 @@ class InMemoryCodexSession:
     context_updates_recorded: int = 0
     recorded_batches: list[tuple[ResponseItem, ...]] = field(default_factory=list)
     request_permissions_callback: Any = None
+    request_permissions_event_roundtrip_enabled: bool = False
     shell: Any = None
     approval_policy: Any = AskForApproval.ON_REQUEST
     approvals_reviewer: ApprovalsReviewer = ApprovalsReviewer.USER
@@ -236,6 +401,7 @@ class InMemoryCodexSession:
     _granted_turn_permissions: AdditionalPermissionProfile | None = None
     _reference_context_item: TurnContextItem | None = None
     _previous_turn_settings: Any = None
+    _next_turn_is_first: bool = True
     _pending_turn_environments: Any = None
     strict_auto_review_enabled: bool = False
     flush_rollout_count: int = 0
@@ -278,6 +444,8 @@ class InMemoryCodexSession:
             raise TypeError("strict_auto_review_enabled must be a bool")
         if self.request_permissions_callback is not None and not callable(self.request_permissions_callback):
             raise TypeError("request_permissions_callback must be callable or None")
+        if not isinstance(self.request_permissions_event_roundtrip_enabled, bool):
+            raise TypeError("request_permissions_event_roundtrip_enabled must be a bool")
         if not isinstance(self.approvals_reviewer, ApprovalsReviewer):
             raise TypeError("approvals_reviewer must be ApprovalsReviewer")
         if not isinstance(self.permission_profile, PermissionProfile):
@@ -577,10 +745,23 @@ class InMemoryCodexSession:
         self._reference_context_item = item
 
     async def previous_turn_settings(self) -> Any:
-        return self._previous_turn_settings
+        return self._session_state_snapshot().previous_turn_settings()
 
     async def set_previous_turn_settings(self, previous_turn_settings: Any | None) -> None:
-        self._previous_turn_settings = previous_turn_settings
+        state = self._session_state_snapshot()
+        state.set_previous_turn_settings(previous_turn_settings)
+        self._previous_turn_settings = state.previous_turn_settings()
+
+    async def set_next_turn_is_first(self, value: bool) -> None:
+        state = self._session_state_snapshot()
+        state.set_next_turn_is_first(value)
+        self._next_turn_is_first = value
+
+    async def take_next_turn_is_first(self) -> bool:
+        state = self._session_state_snapshot()
+        is_first_turn = state.take_next_turn_is_first()
+        self._next_turn_is_first = False
+        return is_first_turn
 
     async def inject_no_new_turn(
         self,
@@ -692,6 +873,18 @@ class InMemoryCodexSession:
         await self.emit_turn_item_started(turn_context, turn_item)
         await self.emit_turn_item_completed(turn_context, turn_item)
 
+    def _session_state_snapshot(self) -> SessionState:
+        state = SessionState.new()
+        state.replace_history(tuple(self.history), self._reference_context_item)
+        state.set_token_info(self.token_usage_info)
+        state.latest_rate_limits = self.latest_rate_limits
+        state.set_server_reasoning_included(self.server_reasoning_included)
+        state.set_previous_turn_settings(self._previous_turn_settings)
+        state.set_next_turn_is_first(self._next_turn_is_first)
+        if self._granted_session_permissions is not None:
+            state.record_granted_permissions(self._granted_session_permissions)
+        return state
+
     async def clone_history(self) -> InMemoryHistory:
         return InMemoryHistory(list(self.history))
 
@@ -755,25 +948,41 @@ class InMemoryCodexSession:
 
     async def record_token_usage_info(self, turn_context: InMemoryTurnContext, token_usage: TokenUsage | None) -> None:
         model_context_window = _turn_model_context_window(turn_context)
-        self.token_usage_info = TokenUsageInfo.new_or_append(
-            self.token_usage_info,
-            token_usage,
-            model_context_window,
-        )
+        if token_usage is None:
+            self.token_usage_info = TokenUsageInfo.new_or_append(
+                self.token_usage_info,
+                None,
+                model_context_window,
+            )
+            return
+        state = self._session_state_snapshot()
+        state.update_token_info_from_usage(token_usage, model_context_window)
+        self.token_usage_info = state.token_info()
 
     async def set_total_tokens_full(self, turn_context: InMemoryTurnContext) -> None:
         context_window = _turn_model_context_window(turn_context)
         if context_window is not None:
-            if self.token_usage_info is None:
-                self.token_usage_info = TokenUsageInfo.full_context_window(context_window)
-            else:
-                self.token_usage_info = self.token_usage_info.fill_to_context_window(context_window)
+            state = self._session_state_snapshot()
+            state.set_token_usage_full(context_window)
+            self.token_usage_info = state.token_info()
         await self.send_token_count_event(turn_context)
+
+    async def get_total_token_usage(self) -> int:
+        return self._session_state_snapshot().get_total_token_usage(self.server_reasoning_included)
+
+    async def get_total_token_usage_breakdown(self) -> Any:
+        return self._session_state_snapshot().get_total_token_usage_breakdown()
+
+    async def total_token_usage(self) -> TokenUsage | None:
+        info = self._session_state_snapshot().token_info()
+        return info.total_token_usage if info is not None else None
 
     async def record_rate_limits_info(self, new_rate_limits: RateLimitSnapshot) -> None:
         if not isinstance(new_rate_limits, RateLimitSnapshot):
             raise TypeError("new_rate_limits must be RateLimitSnapshot")
-        self.latest_rate_limits = _merge_rate_limit_fields(self.latest_rate_limits, new_rate_limits)
+        state = self._session_state_snapshot()
+        state.set_rate_limits(new_rate_limits)
+        self.latest_rate_limits = state.latest_rate_limits
 
     async def update_rate_limits(
         self,
@@ -831,7 +1040,7 @@ class InMemoryCodexSession:
         )
 
     async def granted_session_permissions(self) -> AdditionalPermissionProfile | None:
-        return self._granted_session_permissions
+        return self._session_state_snapshot().granted_permissions()
 
     async def granted_turn_permissions(self) -> AdditionalPermissionProfile | None:
         return self._granted_turn_permissions
@@ -839,10 +1048,9 @@ class InMemoryCodexSession:
     async def record_granted_permissions(self, permissions: AdditionalPermissionProfile) -> None:
         if not isinstance(permissions, AdditionalPermissionProfile):
             raise TypeError("permissions must be AdditionalPermissionProfile")
-        self._granted_session_permissions = merge_permission_profiles(
-            self._granted_session_permissions,
-            permissions,
-        )
+        state = self._session_state_snapshot()
+        state.record_granted_permissions(permissions)
+        self._granted_session_permissions = state.granted_permissions()
 
     async def record_granted_turn_permissions(self, permissions: AdditionalPermissionProfile) -> None:
         if not isinstance(permissions, AdditionalPermissionProfile):
@@ -858,6 +1066,22 @@ class InMemoryCodexSession:
     async def strict_auto_review(self) -> bool:
         return self.strict_auto_review_enabled
 
+    async def request_permissions(
+        self,
+        parent_ctx: Any,
+        call_id: str,
+        args: RequestPermissionsArgs,
+        cancel_token: Any = None,
+    ) -> RequestPermissionsResponse:
+        request_cwd = getattr(parent_ctx, "cwd", None)
+        return await self.request_permissions_for_cwd(
+            parent_ctx,
+            call_id,
+            args,
+            request_cwd if request_cwd is not None else self.cwd,
+            cancel_token,
+        )
+
     async def request_permissions_for_cwd(
         self,
         parent_ctx: Any,
@@ -872,6 +1096,14 @@ class InMemoryCodexSession:
         if _request_permissions_auto_denied_by_policy(approval_policy):
             return RequestPermissionsResponse(RequestPermissionProfile())
         if self.request_permissions_callback is None:
+            if self.request_permissions_event_roundtrip_enabled:
+                return await self._request_permissions_via_event_roundtrip(
+                    parent_ctx,
+                    call_id,
+                    args,
+                    cwd,
+                    cancel_token,
+                )
             return RequestPermissionsResponse(RequestPermissionProfile())
         effective_cwd = Path(cwd) if cwd is not None else self.cwd
         response = self.request_permissions_callback(parent_ctx, call_id, args, effective_cwd, cancel_token)
@@ -885,6 +1117,78 @@ class InMemoryCodexSession:
         await record_granted_request_permissions(normalized, session=self, turn_state=self)
         return normalized
 
+    async def notify_request_permissions_response(
+        self,
+        call_id: str,
+        response: RequestPermissionsResponse | Mapping[str, Any],
+    ) -> None:
+        if not isinstance(call_id, str):
+            raise TypeError("call_id must be a string")
+        if not isinstance(response, RequestPermissionsResponse):
+            response = RequestPermissionsResponse.from_mapping(response)
+        entry = self.active_turn.turn_state.pending_request_permissions.pop(call_id, None)
+        if entry is None:
+            return
+        normalized = normalize_request_permissions_response(
+            entry.requested_permissions,
+            response,
+            entry.cwd,
+        )
+        await record_granted_request_permissions(normalized, session=self, turn_state=self)
+        tx_response = entry.tx_response
+        if isinstance(tx_response, asyncio.Future):
+            if not tx_response.done():
+                tx_response.set_result(normalized)
+        elif callable(tx_response):
+            tx_response(normalized)
+        elif isinstance(tx_response, dict):
+            tx_response["value"] = normalized
+
+    async def _request_permissions_via_event_roundtrip(
+        self,
+        parent_ctx: Any,
+        call_id: str,
+        args: RequestPermissionsArgs,
+        cwd: Path | str | None,
+        cancel_token: Any = None,
+    ) -> RequestPermissionsResponse | None:
+        effective_cwd = Path(cwd) if cwd is not None else self.cwd
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[RequestPermissionsResponse] = loop.create_future()
+        self.active_turn.turn_state.pending_request_permissions[call_id] = PendingRequestPermissions(
+            future,
+            args.permissions,
+            effective_cwd,
+        )
+        await self.send_event(
+            parent_ctx,
+            EventMsg.with_payload(
+                "request_permissions",
+                RequestPermissionsEvent(
+                    call_id=call_id,
+                    turn_id=getattr(parent_ctx, "turn_id", None)
+                    or getattr(parent_ctx, "sub_id", "")
+                    or "",
+                    started_at_ms=int(datetime.now(utc_timezone.utc).timestamp() * 1000),
+                    reason=args.reason,
+                    permissions=args.permissions,
+                    cwd=effective_cwd,
+                ),
+            ),
+        )
+        try:
+            return await _await_request_permissions_response_or_cancel(
+                future,
+                cancel_token,
+                lambda: self.active_turn.turn_state.pending_request_permissions.pop(
+                    call_id,
+                    None,
+                ),
+            )
+        except asyncio.CancelledError:
+            self.active_turn.turn_state.pending_request_permissions.pop(call_id, None)
+            raise
+
 
 __all__ = [
     "InMemoryActiveTurn",
@@ -894,6 +1198,42 @@ __all__ = [
     "InMemoryInputQueue",
     "InMemoryTurnContext",
 ]
+
+
+async def _await_request_permissions_response_or_cancel(
+    response_future: asyncio.Future[RequestPermissionsResponse],
+    cancel_token: Any,
+    on_cancel: Any,
+) -> RequestPermissionsResponse | None:
+    if cancel_token is None:
+        return await response_future
+    is_cancelled = getattr(cancel_token, "is_cancelled", None)
+    if callable(is_cancelled) and is_cancelled():
+        on_cancel()
+        return None
+    cancelled = getattr(cancel_token, "cancelled", None)
+    if not callable(cancelled):
+        return await response_future
+    cancel_task = asyncio.create_task(cancelled())
+    done, pending = await asyncio.wait(
+        {response_future, cancel_task},
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    if cancel_task in done:
+        on_cancel()
+        if not response_future.done():
+            response_future.cancel()
+        return None
+    cancel_task.cancel()
+    await _drain_cancelled_request_permissions_task(cancel_task)
+    return response_future.result()
+
+
+async def _drain_cancelled_request_permissions_task(task: asyncio.Task[Any]) -> None:
+    try:
+        await task
+    except asyncio.CancelledError:
+        return
 
 
 class _NoFeatures:
@@ -1004,27 +1344,12 @@ def _turn_truncation_policy_from_context(turn_context: Any) -> TruncationPolicyC
     return _turn_truncation_policy(getattr(turn_context, "model_info", None))
 
 
-def _scaled_truncation_policy(policy: TruncationPolicyConfig, scale: float) -> TruncationPolicyConfig:
-    limit = max(1, math.ceil(policy.limit * scale))
-    if policy.mode.value == "bytes":
-        return TruncationPolicyConfig.bytes(limit)
-    return TruncationPolicyConfig.tokens(limit)
-
-
 def _process_history_items(items: tuple[ResponseItem, ...], policy: TruncationPolicyConfig) -> tuple[ResponseItem, ...]:
-    return tuple(_process_history_item(item, policy) for item in items)
+    return _context_manager_process_history_items(items, policy)
 
 
 def _process_history_item(item: ResponseItem, policy: TruncationPolicyConfig) -> ResponseItem:
-    if item.type not in {"function_call_output", "custom_tool_call_output"}:
-        return item
-    output = item.output
-    if output is None:
-        return item
-    return replace(
-        item,
-        output=truncate_function_output_payload(output, _scaled_truncation_policy(policy, 1.2)),
-    )
+    return _context_manager_process_history_item(item, policy)
 
 
 def _default_collaboration_mode(model_info: Any, reasoning_effort: Any = None) -> CollaborationMode:
@@ -1204,22 +1529,6 @@ def _turn_model_context_window(turn_context: Any) -> int | None:
     if isinstance(percent, bool) or not isinstance(percent, int):
         percent = 95
     return max((resolved * max(percent, 0)) // 100, 0)
-
-
-def _merge_rate_limit_fields(
-    previous: RateLimitSnapshot | None,
-    snapshot: RateLimitSnapshot,
-) -> RateLimitSnapshot:
-    limit_id = snapshot.limit_id or "codex"
-    credits = snapshot.credits
-    if credits is None and previous is not None:
-        credits = previous.credits
-    plan_type = snapshot.plan_type
-    if plan_type is None and previous is not None:
-        plan_type = previous.plan_type
-    if limit_id == snapshot.limit_id and credits is snapshot.credits and plan_type is snapshot.plan_type:
-        return snapshot
-    return replace(snapshot, limit_id=limit_id, credits=credits, plan_type=plan_type)
 
 
 def _retarget_workspace_roots(roots: tuple[Path, ...], old_cwd: Path, new_cwd: Path) -> tuple[Path, ...]:

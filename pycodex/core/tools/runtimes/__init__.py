@@ -30,11 +30,17 @@ from pycodex.core.exec import (
     ExecExpiration,
     is_likely_sandbox_denied,
 )
+from pycodex.core.command_canonicalization import (
+    canonicalize_command_for_approval as _canonicalize_command_for_approval,
+)
+from pycodex.core.guardian.approval_request import GuardianNetworkAccessTrigger
 from pycodex.core.sandbox_tags import SandboxType
 from pycodex.core.shell import Shell, ShellType
 from pycodex.core.tools.hook_names import HookToolName
+from pycodex.core.tools.network_approval import NetworkApprovalMode, NetworkApprovalSpec
 from pycodex.core.tools.sandboxing import ExecApprovalRequirement, PermissionRequestPayload, SandboxAttempt, ToolError
 from pycodex.shell_command import parse_shell_lc_plain_commands, parse_shell_lc_single_command_prefix
+from pycodex.utils.path_utils import paths_match_after_normalization
 from pycodex.protocol import (
     AdditionalPermissionProfile,
     AskForApproval,
@@ -83,11 +89,6 @@ class ShellRuntimeBackend(str, Enum):
     SHELL_COMMAND_ZSH_FORK = "shell_command_zsh_fork"
 
 
-class NetworkApprovalMode(str, Enum):
-    IMMEDIATE = "immediate"
-    DEFERRED = "deferred"
-
-
 class DecisionSource(str, Enum):
     PREFIX_RULE = "prefix_rule"
     UNMATCHED_COMMAND_FALLBACK = "unmatched_command_fallback"
@@ -128,51 +129,6 @@ class ToolRuntimeError(Exception):
             raise TypeError("error must be ToolError")
         self.error = error
         super().__init__(error.message if error.message is not None else str(error.error))
-
-
-@dataclass(frozen=True)
-class GuardianNetworkAccessTrigger:
-    call_id: str
-    tool_name: str
-    command: tuple[str, ...]
-    cwd: Path
-    sandbox_permissions: SandboxPermissions
-    additional_permissions: AdditionalPermissionProfile | None = None
-    justification: str | None = None
-    tty: bool | None = None
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.call_id, str) or not self.call_id:
-            raise TypeError("call_id must be a non-empty string")
-        if not isinstance(self.tool_name, str) or not self.tool_name:
-            raise TypeError("tool_name must be a non-empty string")
-        object.__setattr__(self, "command", _string_tuple(self.command, "command"))
-        if not isinstance(self.cwd, Path):
-            object.__setattr__(self, "cwd", Path(self.cwd))
-        if not isinstance(self.sandbox_permissions, SandboxPermissions):
-            object.__setattr__(self, "sandbox_permissions", SandboxPermissions(self.sandbox_permissions))
-        if self.additional_permissions is not None and not isinstance(self.additional_permissions, AdditionalPermissionProfile):
-            raise TypeError("additional_permissions must be AdditionalPermissionProfile or None")
-        if self.justification is not None and not isinstance(self.justification, str):
-            raise TypeError("justification must be a string or None")
-        if self.tty is not None and not isinstance(self.tty, bool):
-            raise TypeError("tty must be a bool or None")
-
-
-@dataclass(frozen=True)
-class NetworkApprovalSpec:
-    network: Any
-    mode: NetworkApprovalMode
-    trigger: GuardianNetworkAccessTrigger
-    command: str
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.mode, NetworkApprovalMode):
-            object.__setattr__(self, "mode", NetworkApprovalMode(self.mode))
-        if not isinstance(self.trigger, GuardianNetworkAccessTrigger):
-            raise TypeError("trigger must be GuardianNetworkAccessTrigger")
-        if not isinstance(self.command, str):
-            raise TypeError("command must be a string")
 
 
 @dataclass(frozen=True)
@@ -1943,6 +1899,30 @@ class UnifiedExecOptions:
             object.__setattr__(self, "capture_policy", ExecCapturePolicy(self.capture_policy))
 
 
+@dataclass(frozen=True)
+class UnifiedExecDirectRunPlan:
+    process_id: int
+    sandbox_command: SandboxCommand
+    options: UnifiedExecOptions
+    tty: bool
+    environment: Any
+    exec_server_env_config: Any | None
+    managed_network: Any | None
+    spawn_lifecycle: str = "noop"
+
+    def __post_init__(self) -> None:
+        if isinstance(self.process_id, bool) or not isinstance(self.process_id, int):
+            raise TypeError("process_id must be an int")
+        if not isinstance(self.sandbox_command, SandboxCommand):
+            raise TypeError("sandbox_command must be SandboxCommand")
+        if not isinstance(self.options, UnifiedExecOptions):
+            raise TypeError("options must be UnifiedExecOptions")
+        if not isinstance(self.tty, bool):
+            raise TypeError("tty must be a bool")
+        if self.spawn_lifecycle != "noop":
+            raise ValueError("spawn_lifecycle must be noop")
+
+
 def build_sandbox_command(
     command: tuple[str, ...] | list[str],
     cwd: str | Path,
@@ -2481,6 +2461,39 @@ def build_unified_exec_sandbox_command(
         raise
 
 
+def unified_exec_direct_run_plan(
+    req: UnifiedExecRequest,
+    *,
+    network_denial_cancellation_token: CancellationToken | None = None,
+) -> UnifiedExecDirectRunPlan:
+    # Rust source: codex-rs/core/src/tools/runtimes/unified_exec.rs
+    # Behavior anchor: UnifiedExecRuntime::run direct fallback builds the
+    # sandbox command, attaches unified_exec_options, copies
+    # exec_server_env_config, and opens the process with NoopSpawnLifecycle.
+    if not isinstance(req, UnifiedExecRequest):
+        raise TypeError("req must be UnifiedExecRequest")
+    env = exec_env_for_sandbox_permissions(req.env, req.sandbox_permissions)
+    managed_network = managed_network_for_runtime(req.network, req.sandbox_permissions)
+    apply_to_env = getattr(managed_network, "apply_to_env", None)
+    if callable(apply_to_env):
+        apply_to_env(env)
+    sandbox_command = build_unified_exec_sandbox_command(
+        req.command,
+        req.cwd,
+        env,
+        req.additional_permissions,
+    )
+    return UnifiedExecDirectRunPlan(
+        process_id=req.process_id,
+        sandbox_command=sandbox_command,
+        options=unified_exec_options(network_denial_cancellation_token),
+        tty=req.tty,
+        environment=req.environment,
+        exec_server_env_config=req.exec_server_env_config,
+        managed_network=managed_network,
+    )
+
+
 def unified_exec_network_approval_spec(req: UnifiedExecRequest, *, call_id: str, tool_name: ToolName | str) -> NetworkApprovalSpec | None:
     if not isinstance(req, UnifiedExecRequest):
         raise TypeError("req must be UnifiedExecRequest")
@@ -2503,7 +2516,7 @@ def managed_network_for_runtime(network: Any | None, sandbox_permissions: Sandbo
 
 
 def canonicalize_command_for_approval(command: tuple[str, ...] | list[str]) -> tuple[str, ...]:
-    return _string_tuple(command, "command")
+    return tuple(_canonicalize_command_for_approval(_string_tuple(command, "command")))
 
 
 def flat_tool_name(tool_name: ToolName | str) -> str:
@@ -2594,7 +2607,7 @@ def maybe_wrap_shell_lc_with_snapshot(
     if not snapshot_path.exists():
         return command_tuple
     cwd_path = Path(cwd)
-    if not _paths_match_after_normalization(snapshot_cwd, cwd_path):
+    if not paths_match_after_normalization(snapshot_cwd, cwd_path):
         return command_tuple
     if len(command_tuple) < 3 or command_tuple[1] != "-lc":
         return command_tuple
@@ -2695,13 +2708,6 @@ def shell_single_quote(input: str) -> str:
     return input.replace("'", "'\"'\"'")
 
 
-def _paths_match_after_normalization(left: Path, right: Path) -> bool:
-    try:
-        return left.resolve() == right.resolve()
-    except OSError:
-        return left.absolute() == right.absolute()
-
-
 def _string_tuple(value: tuple[str, ...] | list[str], field_name: str) -> tuple[str, ...]:
     if not isinstance(value, (tuple, list)):
         raise TypeError(f"{field_name} must be a tuple or list")
@@ -2784,6 +2790,7 @@ __all__ = [
     "ShellRuntimeBackend",
     "ToolRuntimeError",
     "UnifiedExecApprovalKey",
+    "UnifiedExecDirectRunPlan",
     "UnifiedExecOptions",
     "UnifiedExecRequest",
     "approval_sandbox_permissions",
@@ -2877,6 +2884,7 @@ __all__ = [
     "shell_network_approval_spec",
     "shell_permission_request_payload",
     "unified_exec_approval_keys",
+    "unified_exec_direct_run_plan",
     "unified_exec_network_approval_spec",
     "unified_exec_options",
     "unified_exec_permission_request_payload",

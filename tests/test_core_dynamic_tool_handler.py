@@ -66,6 +66,8 @@ class DynamicToolHandlerTests(unittest.TestCase):
         )
 
     def test_handler_uses_namespace_exposure_and_search_metadata(self) -> None:
+        # Rust parity: codex-core::tools::handlers::dynamic
+        # dynamic_tests.rs::search_info_uses_dynamic_tool_metadata_and_parameter_names.
         handler = DynamicToolHandler.new(dynamic_spec())
 
         self.assertIsNotNone(handler)
@@ -100,6 +102,10 @@ class DynamicToolHandlerTests(unittest.TestCase):
             "automation_update automation update Create or update automations. codex_app mode timezone",
         )
         self.assertEqual(search_info.source_info.name, "Dynamic tools")
+        self.assertEqual(
+            search_info.source_info.description,
+            "Tools provided by the current Codex thread.",
+        )
 
     def test_direct_dynamic_tools_are_model_visible_without_tool_search(self) -> None:
         handler = DynamicToolHandler.new(dynamic_spec(defer_loading=False, namespace=None))

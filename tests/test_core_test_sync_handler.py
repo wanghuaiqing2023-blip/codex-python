@@ -21,19 +21,61 @@ from pycodex.protocol import ToolName
 
 class TestSyncHandlerTests(unittest.TestCase):
     def test_test_sync_tool_matches_expected_spec(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/test_sync_spec.rs
+        # Rust test: test_sync_tool_matches_expected_spec
         spec = create_test_sync_tool()
 
         self.assertEqual(spec["type"], "function")
         self.assertEqual(spec["name"], TEST_SYNC_TOOL_NAME)
-        self.assertFalse(spec["strict"])
-        self.assertIn("sleep_before_ms", spec["parameters"]["properties"])
-        self.assertIn("sleep_after_ms", spec["parameters"]["properties"])
         self.assertEqual(
-            spec["parameters"]["properties"]["barrier"]["required"],
+            spec["description"],
+            "Internal synchronization helper used by Codex integration tests.",
+        )
+        self.assertFalse(spec["strict"])
+        self.assertFalse(spec["parameters"]["additionalProperties"])
+        self.assertIsNone(spec["parameters"].get("required"))
+        self.assertEqual(
+            spec["parameters"]["properties"]["sleep_before_ms"],
+            {
+                "type": "number",
+                "description": "Optional delay in milliseconds before any other action",
+            },
+        )
+        self.assertEqual(
+            spec["parameters"]["properties"]["sleep_after_ms"],
+            {
+                "type": "number",
+                "description": "Optional delay in milliseconds after completing the barrier",
+            },
+        )
+        barrier = spec["parameters"]["properties"]["barrier"]
+        self.assertEqual(barrier["type"], "object")
+        self.assertFalse(barrier["additionalProperties"])
+        self.assertEqual(
+            barrier["required"],
             ["id", "participants"],
+        )
+        self.assertEqual(
+            barrier["properties"],
+            {
+                "id": {
+                    "type": "string",
+                    "description": "Identifier shared by concurrent calls that should rendezvous",
+                },
+                "participants": {
+                    "type": "number",
+                    "description": "Number of tool calls that must arrive before the barrier opens",
+                },
+                "timeout_ms": {
+                    "type": "number",
+                    "description": "Maximum time in milliseconds to wait at the barrier",
+                },
+            },
         )
 
     def test_parse_test_sync_arguments(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/test_sync.rs
+        # Rust contract: omitted barrier timeout defaults to DEFAULT_TEST_SYNC_TIMEOUT_MS.
         args = parse_test_sync_arguments(
             json.dumps(
                 {
@@ -52,6 +94,8 @@ class TestSyncHandlerTests(unittest.TestCase):
         )
 
     def test_handler_returns_ok_and_supports_parallel(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/test_sync.rs
+        # Rust contract: handler returns successful "ok" output and supports parallel tool calls.
         handler = TestSyncHandler()
 
         output = handler.handle(
@@ -66,6 +110,8 @@ class TestSyncHandlerTests(unittest.TestCase):
         self.assertEqual(output.into_text(), "ok")
 
     def test_barrier_validation_matches_rust_messages(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/test_sync.rs
+        # Rust contract: invalid barrier participants/timeouts surface model-visible FunctionCallError messages.
         with self.assertRaises(FunctionCallError) as zero_participants:
             wait_on_barrier(BarrierArgs("zero-participants", 0))
         self.assertIn("participants must be greater than zero", str(zero_participants.exception))
@@ -86,6 +132,8 @@ class TestSyncHandlerTests(unittest.TestCase):
         self.assertIn("already registered with 2 participants", str(existing.exception))
 
     def test_barrier_timeout_does_not_break_registered_barrier(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/test_sync.rs
+        # Rust contract: timed-out waiters do not permanently poison a reusable barrier id.
         with self.assertRaises(FunctionCallError) as timeout:
             wait_on_barrier(BarrierArgs("reusable-after-timeout", 2, 1))
         self.assertEqual(str(timeout.exception), "test_sync_tool barrier wait timed out")

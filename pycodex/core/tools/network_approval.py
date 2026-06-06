@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from pycodex.core.guardian.approval_request import GuardianNetworkAccessTrigger
+from pycodex.core.guardian.review import guardian_timeout_message
 from pycodex.protocol import (
     AskForApproval,
     NetworkApprovalProtocol,
@@ -46,11 +48,13 @@ def _validate_u16_port(port: int, *, label: str = "port") -> int:
 class NetworkApprovalSpec:
     network: JsonValue | None
     mode: NetworkApprovalMode
-    trigger: JsonValue
+    trigger: GuardianNetworkAccessTrigger
     command: str
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "mode", NetworkApprovalMode(self.mode))
+        if not isinstance(self.trigger, GuardianNetworkAccessTrigger):
+            raise TypeError("trigger must be GuardianNetworkAccessTrigger")
         if not isinstance(self.command, str):
             raise TypeError("command must be a string")
 
@@ -706,7 +710,7 @@ def resolve_network_review_decision(review_decision: JsonValue) -> NetworkReview
     if decision.type == "timed_out":
         return NetworkReviewDecisionResolution(
             PendingApprovalDecision.DENY,
-            outcome=NetworkApprovalOutcome.denied_by_policy("Network approval request timed out."),
+            outcome=NetworkApprovalOutcome.denied_by_policy(guardian_timeout_message()),
         )
     raise ValueError(f"unknown network review decision type: {decision.type}")
 
@@ -733,12 +737,9 @@ def apply_network_review_decision(
         service.session_approved_hosts.discard(key)
         service.session_denied_hosts.add(key)
 
-    pending = service.pending_host_approvals.get(key)
+    pending = service.pending_host_approvals.pop(key, None)
     if pending is not None:
         pending.set_decision(resolution.decision)
-
-    if resolution.policy_amendment is not None:
-        service.pending_host_approvals.pop(key, None)
 
     if registration_id is not None and resolution.outcome is not None:
         service.record_call_outcome(registration_id, resolution.outcome)

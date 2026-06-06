@@ -52,6 +52,8 @@ def network_args_json() -> str:
 
 class RequestPermissionsHandlerTests(unittest.TestCase):
     def test_request_permissions_tool_schema_matches_upstream_shape(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/shell_spec.rs::create_request_permissions_tool
+        # Rust test: shell_spec_tests.rs::request_permissions_tool_includes_full_permission_schema
         description = request_permissions_tool_description()
         spec = create_request_permissions_tool(description)
 
@@ -63,11 +65,52 @@ class RequestPermissionsHandlerTests(unittest.TestCase):
         self.assertIsNone(spec["output_schema"])
         self.assertEqual(spec["parameters"]["required"], ["permissions"])
         self.assertFalse(spec["parameters"]["additionalProperties"])
+        self.assertEqual(
+            spec["parameters"]["properties"]["reason"],
+            {
+                "type": "string",
+                "description": "Optional short explanation for why additional permissions are needed.",
+            },
+        )
         permissions = spec["parameters"]["properties"]["permissions"]
-        self.assertIn("network", permissions["properties"])
-        self.assertIn("file_system", permissions["properties"])
+        self.assertEqual(permissions["type"], "object")
+        self.assertFalse(permissions["additionalProperties"])
+        self.assertEqual(
+            permissions["properties"]["network"],
+            {
+                "type": "object",
+                "properties": {
+                    "enabled": {
+                        "type": "boolean",
+                        "description": "Set to true to request network access.",
+                    },
+                },
+                "additionalProperties": False,
+            },
+        )
+        self.assertEqual(
+            permissions["properties"]["file_system"],
+            {
+                "type": "object",
+                "properties": {
+                    "read": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Absolute paths to grant read access to.",
+                    },
+                    "write": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Absolute paths to grant write access to.",
+                    },
+                },
+                "additionalProperties": False,
+            },
+        )
 
     def test_parse_request_permissions_arguments(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/request_permissions.rs
+        # Rust contract: handler parses RequestPermissionsArgs and normalizes additional permissions.
         args = parse_request_permissions_arguments(network_args_json())
 
         self.assertEqual(args.reason, "Need network")
@@ -105,6 +148,8 @@ class RequestPermissionsHandlerTests(unittest.TestCase):
             )
 
     def test_handler_requests_permissions_and_serializes_response(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/request_permissions.rs::RequestPermissionsHandler::handle
+        # Rust contract: granted client response is serialized as successful FunctionToolOutput text.
         captured = {}
 
         def callback(call_id, args):
@@ -134,6 +179,8 @@ class RequestPermissionsHandlerTests(unittest.TestCase):
         )
 
     def test_handler_uses_invocation_call_id_and_turn_cwd_like_rust(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/request_permissions.rs
+        # Rust contract: function payload arguments are parsed relative to the turn cwd.
         with tempfile.TemporaryDirectory() as tmp:
             cwd = Path(tmp)
             captured = {}
@@ -173,6 +220,60 @@ class RequestPermissionsHandlerTests(unittest.TestCase):
                         "read": [str(cwd / "relative.txt")],
                     }
                 },
+                "scope": "turn",
+            },
+        )
+
+    def test_handler_prefers_rust_style_session_request_permissions_entrypoint(self) -> None:
+        # Rust behavior source:
+        # codex/codex-rs/core/src/tools/handlers/request_permissions.rs
+        # RequestPermissionsHandler::handle calls session.request_permissions(&turn, call_id, args, cancellation_token).
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp)
+            captured = {}
+
+            class Session:
+                async def request_permissions(self, parent_ctx, call_id, args, cancel_token):
+                    captured["entrypoint"] = "request_permissions"
+                    captured["parent_ctx"] = parent_ctx
+                    captured["call_id"] = call_id
+                    captured["args"] = args
+                    captured["cancel_token"] = cancel_token
+                    return RequestPermissionsResponse(
+                        permissions=args.permissions,
+                        scope=PermissionGrantScope.TURN,
+                    )
+
+                async def request_permissions_for_cwd(self, parent_ctx, call_id, args, request_cwd, cancel_token):
+                    captured["entrypoint"] = "request_permissions_for_cwd"
+                    return RequestPermissionsResponse(
+                        permissions=args.permissions,
+                        scope=PermissionGrantScope.SESSION,
+                    )
+
+            turn = SimpleNamespace(cwd=cwd)
+            cancel_token = object()
+            invocation = ToolInvocation(
+                session=Session(),
+                turn=turn,
+                cancellation_token=cancel_token,
+                tracker=None,
+                call_id="call-rust-session",
+                tool_name=REQUEST_PERMISSIONS_TOOL_NAME,
+                source=ToolCallSource.direct(),
+                payload=ToolPayload.function(network_args_json()),
+            )
+            output = asyncio.run(RequestPermissionsHandler().handle(invocation))
+
+        self.assertEqual(captured["entrypoint"], "request_permissions")
+        self.assertIs(captured["parent_ctx"], turn)
+        self.assertEqual(captured["call_id"], "call-rust-session")
+        self.assertEqual(captured["args"].permissions, request_profile_with_network())
+        self.assertIs(captured["cancel_token"], cancel_token)
+        self.assertEqual(
+            json.loads(output.into_text()),
+            {
+                "permissions": {"network": {"enabled": True}},
                 "scope": "turn",
             },
         )
@@ -350,6 +451,8 @@ class RequestPermissionsHandlerTests(unittest.TestCase):
         )
 
     def test_handler_rejects_empty_cancelled_and_bad_payloads(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/request_permissions.rs
+        # Rust contract: unsupported payloads, empty permission requests, bad JSON, and cancelled responses are model-visible errors.
         handler = RequestPermissionsHandler()
 
         with self.assertRaises(FunctionCallError):

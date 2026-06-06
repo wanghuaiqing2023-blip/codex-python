@@ -24,7 +24,13 @@ from pycodex.protocol import (
 
 
 class CoreNetworkPolicyDecisionTests(unittest.TestCase):
+    # Rust source:
+    # codex/codex-rs/core/src/network_policy_decision.rs
+    # Rust tests:
+    # codex/codex-rs/core/src/network_policy_decision_tests.rs
+
     def test_network_approval_context_requires_ask_from_decider(self) -> None:
+        # Rust test: network_approval_context_requires_ask_from_decider
         payload = NetworkPolicyDecisionPayload(
             decision=NetworkPolicyDecision.DENY,
             source=NetworkDecisionSource.DECIDER,
@@ -37,6 +43,7 @@ class CoreNetworkPolicyDecisionTests(unittest.TestCase):
         self.assertIsNone(network_approval_context_from_payload(payload))
 
     def test_network_approval_context_maps_http_https_and_socks_protocols(self) -> None:
+        # Rust test: network_approval_context_maps_http_https_and_socks_protocols
         for protocol in (
             NetworkApprovalProtocol.HTTP,
             NetworkApprovalProtocol.HTTPS,
@@ -56,6 +63,26 @@ class CoreNetworkPolicyDecisionTests(unittest.TestCase):
                 self.assertEqual(
                     network_approval_context_from_payload(payload),
                     NetworkApprovalContext(host="example.com", protocol=protocol),
+                )
+
+    def test_network_policy_decision_payload_deserializes_proxy_protocol_aliases(self) -> None:
+        # Rust test: network_policy_decision_payload_deserializes_proxy_protocol_aliases
+        for protocol_alias in ("https_connect", "http-connect"):
+            with self.subTest(protocol_alias=protocol_alias):
+                context = network_approval_context_from_payload(
+                    {
+                        "decision": "ask",
+                        "source": "decider",
+                        "protocol": protocol_alias,
+                        "host": "example.com",
+                        "reason": "not_allowed",
+                        "port": 443,
+                    }
+                )
+
+                self.assertEqual(
+                    context,
+                    NetworkApprovalContext("example.com", NetworkApprovalProtocol.HTTPS),
                 )
 
     def test_network_approval_context_rejects_missing_protocol_or_host(self) -> None:
@@ -83,6 +110,7 @@ class CoreNetworkPolicyDecisionTests(unittest.TestCase):
             parse_network_policy_decision(1)  # type: ignore[arg-type]
 
     def test_execpolicy_network_rule_amendment_maps_protocol_action_and_justification(self) -> None:
+        # Rust test: execpolicy_network_rule_amendment_maps_protocol_action_and_justification
         amendment = NetworkPolicyAmendment("example.com", NetworkPolicyRuleAction.DENY)
         context = NetworkApprovalContext(
             host="example.com",
@@ -115,6 +143,7 @@ class CoreNetworkPolicyDecisionTests(unittest.TestCase):
         )
 
     def test_denied_network_policy_message_requires_deny_decision(self) -> None:
+        # Rust test: denied_network_policy_message_requires_deny_decision
         blocked = BlockedRequest(
             host="example.com",
             reason="not_allowed",
@@ -128,6 +157,9 @@ class CoreNetworkPolicyDecisionTests(unittest.TestCase):
         self.assertIsNone(denied_network_policy_message(blocked))
 
     def test_denied_network_policy_message_for_known_reasons(self) -> None:
+        # Rust tests:
+        # - denied_network_policy_message_for_denylist_block_is_explicit
+        # - source behavior in denied_network_policy_message
         cases = {
             "denied": "domain is explicitly denied by policy and cannot be approved from this prompt",
             "not_allowed": "domain is not on the allowlist for the current sandbox mode",
