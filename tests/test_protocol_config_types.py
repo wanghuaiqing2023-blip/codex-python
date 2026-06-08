@@ -50,6 +50,18 @@ class ProtocolConfigTypeTests(unittest.TestCase):
             SandboxMode.parse("workspace_write")
 
     def test_approval_cli_values_map_to_protocol_values(self):
+        # Rust sources:
+        # - codex-rs/protocol/src/protocol.rs: AskForApproval serde/strum kebab-case values.
+        # - codex-rs/utils/cli/src/approval_mode_cli_arg.rs:
+        #   ApprovalModeCliArg -> AskForApproval mapping.
+        self.assertEqual(AskForApproval.UNLESS_TRUSTED.to_json(), "untrusted")
+        self.assertEqual(AskForApproval.ON_FAILURE.to_json(), "on-failure")
+        self.assertEqual(AskForApproval.ON_REQUEST.to_json(), "on-request")
+        self.assertEqual(AskForApproval.NEVER.to_json(), "never")
+        self.assertIs(AskForApproval.parse("untrusted"), AskForApproval.UNLESS_TRUSTED)
+        self.assertIs(AskForApproval.parse("on-failure"), AskForApproval.ON_FAILURE)
+        self.assertIs(AskForApproval.parse("on-request"), AskForApproval.ON_REQUEST)
+        self.assertIs(AskForApproval.parse("never"), AskForApproval.NEVER)
         self.assertIs(AskForApproval.parse_cli("untrusted"), AskForApproval.UNLESS_TRUSTED)
         self.assertIs(AskForApproval.parse_cli("on-failure"), AskForApproval.ON_FAILURE)
         self.assertIs(AskForApproval.parse_cli("on-request"), AskForApproval.ON_REQUEST)
@@ -57,8 +69,13 @@ class ProtocolConfigTypeTests(unittest.TestCase):
         self.assertIs(AskForApproval.default(), AskForApproval.ON_REQUEST)
 
     def test_approval_cli_rejects_granular_because_cli_arg_does_not_expose_it(self):
+        # Rust source: codex-rs/utils/cli/src/approval_mode_cli_arg.rs
+        # has no Granular CLI variant. Granular approval is a protocol JSON
+        # shape, not a plain CLI approval-mode value.
         with self.assertRaisesRegex(ConfigTypeParseError, "invalid AskForApproval"):
             AskForApproval.parse_cli("granular")
+        with self.assertRaisesRegex(ConfigTypeParseError, "invalid AskForApproval"):
+            AskForApproval.parse("granular")
 
     def test_windows_sandbox_level_values_match_upstream_kebab_case(self):
         self.assertEqual(WindowsSandboxLevel.DISABLED.to_json(), "disabled")

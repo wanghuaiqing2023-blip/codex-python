@@ -2,15 +2,19 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from pycodex.core import (
+from pycodex.core.tools.hook_names import HookToolName
+from pycodex.core.tools.sandboxing import (
+    Approvable,
+    ApprovalCtx,
     ApprovalStore,
     ExecApprovalRequirement,
-    HookToolName,
     PermissionRequestPayload,
     SandboxAttempt,
     SandboxOverride,
+    Sandboxable,
     ToolCtx,
     ToolError,
+    ToolRuntime,
     default_exec_approval_requirement,
     managed_network_for_sandbox_permissions,
     sandbox_override_for_first_attempt,
@@ -36,12 +40,16 @@ from pycodex.protocol import (
 
 class ToolSandboxingTests(unittest.TestCase):
     def test_bash_permission_request_payload_omits_missing_description(self) -> None:
+        # Rust source: codex-rs/core/src/tools/sandboxing.rs
+        # Rust test: bash_permission_request_payload_omits_missing_description.
         self.assertEqual(
             PermissionRequestPayload.bash("echo hi"),
             PermissionRequestPayload(tool_name=HookToolName.bash(), tool_input={"command": "echo hi"}),
         )
 
     def test_bash_permission_request_payload_includes_description_when_present(self) -> None:
+        # Rust source: codex-rs/core/src/tools/sandboxing.rs
+        # Rust test: bash_permission_request_payload_includes_description_when_present.
         self.assertEqual(
             PermissionRequestPayload.bash("echo hi", "network-access example.com"),
             PermissionRequestPayload(
@@ -54,6 +62,8 @@ class ToolSandboxingTests(unittest.TestCase):
         )
 
     def test_permission_request_payload_rejects_non_rust_shapes(self) -> None:
+        # Rust source: codex-rs/core/src/tools/sandboxing.rs::PermissionRequestPayload
+        # Python boundary: constructor/type guards keep the Rust payload shape explicit.
         with self.assertRaises(TypeError):
             PermissionRequestPayload("Bash", {})  # type: ignore[arg-type]
         with self.assertRaises(TypeError):
@@ -64,6 +74,8 @@ class ToolSandboxingTests(unittest.TestCase):
             PermissionRequestPayload.bash("echo hi", 123)  # type: ignore[arg-type]
 
     def test_external_sandbox_skips_exec_approval_on_request(self) -> None:
+        # Rust source: codex-rs/core/src/tools/sandboxing.rs
+        # Rust test: external_sandbox_skips_exec_approval_on_request.
         self.assertEqual(
             default_exec_approval_requirement(
                 AskForApproval.ON_REQUEST,
@@ -73,6 +85,8 @@ class ToolSandboxingTests(unittest.TestCase):
         )
 
     def test_restricted_sandbox_requires_exec_approval_on_request(self) -> None:
+        # Rust source: codex-rs/core/src/tools/sandboxing.rs
+        # Rust test: restricted_sandbox_requires_exec_approval_on_request.
         self.assertEqual(
             default_exec_approval_requirement(
                 AskForApproval.ON_REQUEST,
@@ -81,7 +95,21 @@ class ToolSandboxingTests(unittest.TestCase):
             ExecApprovalRequirement.needs_approval(),
         )
 
+    def test_unrestricted_sandbox_skips_exec_approval_on_request(self) -> None:
+        # Rust source: codex-rs/core/src/tools/sandboxing.rs::default_exec_approval_requirement
+        # Rust contract: OnRequest asks only when the filesystem sandbox is restricted.
+        self.assertEqual(
+            default_exec_approval_requirement(
+                AskForApproval.ON_REQUEST,
+                FileSystemSandboxPolicy.unrestricted(),
+            ),
+            ExecApprovalRequirement.skip(),
+        )
+
     def test_default_exec_approval_requirement_rejects_sandbox_prompt_when_granular_disables_it(self) -> None:
+        # Rust source: codex-rs/core/src/tools/sandboxing.rs
+        # Rust test:
+        # default_exec_approval_requirement_rejects_sandbox_prompt_when_granular_disables_it.
         policy = GranularApprovalConfig(
             sandbox_approval=False,
             rules=True,
@@ -95,7 +123,27 @@ class ToolSandboxingTests(unittest.TestCase):
             ExecApprovalRequirement.forbidden("approval policy disallowed sandbox approval prompt"),
         )
 
+    def test_granular_without_sandbox_approval_still_skips_when_sandbox_policy_does_not_prompt(self) -> None:
+        # Rust source: codex-rs/core/src/tools/sandboxing.rs
+        # Rust contract: granular sandbox approval is checked only after the
+        # filesystem sandbox policy actually requires an approval prompt.
+        policy = GranularApprovalConfig(
+            sandbox_approval=False,
+            rules=True,
+            skill_approval=True,
+            request_permissions=True,
+            mcp_elicitations=True,
+        )
+
+        self.assertEqual(
+            default_exec_approval_requirement(policy, FileSystemSandboxPolicy.external_sandbox()),
+            ExecApprovalRequirement.skip(),
+        )
+
     def test_default_exec_approval_requirement_keeps_prompt_when_granular_allows_sandbox_approval(self) -> None:
+        # Rust source: codex-rs/core/src/tools/sandboxing.rs
+        # Rust test:
+        # default_exec_approval_requirement_keeps_prompt_when_granular_allows_sandbox_approval.
         policy = GranularApprovalConfig(
             sandbox_approval=True,
             rules=False,
@@ -110,6 +158,9 @@ class ToolSandboxingTests(unittest.TestCase):
         )
 
     def test_never_and_on_failure_skip_default_exec_approval(self) -> None:
+        # Rust source: codex-rs/core/src/tools/sandboxing.rs
+        # Behavior anchor: default_exec_approval_requirement treats Never and
+        # OnFailure as no-prompt policies.
         for policy in (AskForApproval.NEVER, AskForApproval.ON_FAILURE):
             with self.subTest(policy=policy):
                 self.assertEqual(
@@ -118,6 +169,9 @@ class ToolSandboxingTests(unittest.TestCase):
                 )
 
     def test_unless_trusted_always_requires_default_exec_approval(self) -> None:
+        # Rust source: codex-rs/core/src/tools/sandboxing.rs
+        # Behavior anchor: default_exec_approval_requirement always prompts for
+        # UnlessTrusted, independent of filesystem sandbox kind.
         self.assertEqual(
             default_exec_approval_requirement(
                 AskForApproval.UNLESS_TRUSTED,
@@ -127,6 +181,8 @@ class ToolSandboxingTests(unittest.TestCase):
         )
 
     def test_additional_permissions_allow_bypass_sandbox_first_attempt_when_execpolicy_skips(self) -> None:
+        # Rust source: codex-rs/core/src/tools/sandboxing.rs
+        # Rust test: additional_permissions_allow_bypass_sandbox_first_attempt_when_execpolicy_skips.
         self.assertEqual(
             sandbox_override_for_first_attempt(
                 SandboxPermissions.WITH_ADDITIONAL_PERMISSIONS,
@@ -137,6 +193,8 @@ class ToolSandboxingTests(unittest.TestCase):
         )
 
     def test_guardian_bypasses_sandbox_for_explicit_escalation_on_first_attempt(self) -> None:
+        # Rust source: codex-rs/core/src/tools/sandboxing.rs
+        # Rust test: guardian_bypasses_sandbox_for_explicit_escalation_on_first_attempt.
         self.assertEqual(
             sandbox_override_for_first_attempt(
                 SandboxPermissions.REQUIRE_ESCALATED,
@@ -147,6 +205,8 @@ class ToolSandboxingTests(unittest.TestCase):
         )
 
     def test_deny_read_blocks_explicit_escalation_but_preserves_policy_bypass(self) -> None:
+        # Rust source: codex-rs/core/src/tools/sandboxing.rs
+        # Rust test: deny_read_blocks_explicit_escalation_but_preserves_policy_bypass.
         file_system_policy = FileSystemSandboxPolicy.restricted(
             (
                 FileSystemSandboxEntry(
@@ -174,6 +234,9 @@ class ToolSandboxingTests(unittest.TestCase):
         )
 
     def test_exec_approval_requirement_exposes_proposed_amendment_for_skip_and_prompt(self) -> None:
+        # Rust source: codex-rs/core/src/tools/sandboxing.rs
+        # Behavior anchor: ExecApprovalRequirement::proposed_execpolicy_amendment
+        # returns amendments for Skip and NeedsApproval, but not Forbidden.
         amendment = ExecPolicyAmendment.new(["git", "status"])
         self.assertEqual(
             ExecApprovalRequirement.skip(proposed_execpolicy_amendment=amendment).proposed_amendment(),
@@ -204,6 +267,9 @@ class ToolSandboxingTests(unittest.TestCase):
             ExecApprovalRequirement.skip(proposed_execpolicy_amendment=object())  # type: ignore[arg-type]
 
     def test_cached_approval_skips_fetch_only_when_all_keys_are_approved_for_session(self) -> None:
+        # Rust source: codex-rs/core/src/tools/sandboxing.rs
+        # Behavior anchor: with_cached_approval skips prompting only when all
+        # serialized approval keys are already approved for session.
         store = ApprovalStore()
         calls: list[str] = []
 
@@ -223,6 +289,8 @@ class ToolSandboxingTests(unittest.TestCase):
         self.assertEqual(calls, ["fetch"])
 
     def test_cached_approval_empty_keys_and_denials_do_not_cache(self) -> None:
+        # Rust source: codex-rs/core/src/tools/sandboxing.rs::with_cached_approval
+        # Rust contract: empty approval keys skip cache lookup; only ApprovedForSession is cached.
         store = ApprovalStore()
         calls: list[str] = []
 
@@ -239,7 +307,59 @@ class ToolSandboxingTests(unittest.TestCase):
         self.assertEqual(with_cached_approval(store, ["apply.patch"], fetch_denied), ReviewDecision.denied())
         self.assertEqual(calls, ["approved", "denied", "denied"])
 
+    def test_approval_ctx_and_runtime_trait_defaults_match_rust_interfaces(self) -> None:
+        # Rust source: codex-rs/core/src/tools/sandboxing.rs
+        # Behavior anchors: ApprovalCtx, Approvable default methods,
+        # Sandboxable::escalate_on_failure, and ToolRuntime default hooks.
+        ctx = ApprovalCtx(
+            session={"session": True},
+            turn={"turn": True},
+            call_id="call-1",
+            guardian_review_id="review-1",
+            retry_reason="retry",
+            network_approval_context={"host": "example.com"},
+        )
+
+        class Runtime(ToolRuntime):
+            def approval_keys(self, req):
+                return [req]
+
+            async def start_approval_async(self, req, ctx):
+                return ReviewDecision.approved()
+
+            def sandbox_preference(self):
+                return "default"
+
+            async def run(self, req, attempt, ctx):
+                return {"ok": True}
+
+        runtime = Runtime()
+
+        self.assertEqual(ctx.call_id, "call-1")
+        self.assertEqual(runtime.approval_keys("key"), ["key"])
+        self.assertEqual(runtime.sandbox_permissions("req"), SandboxPermissions.USE_DEFAULT)
+        self.assertTrue(runtime.should_bypass_approval(AskForApproval.NEVER, False))
+        self.assertFalse(runtime.should_bypass_approval(AskForApproval.ON_REQUEST, False))
+        self.assertIsNone(runtime.exec_approval_requirement("req"))
+        self.assertIsNone(runtime.permission_request_payload("req"))
+        self.assertTrue(runtime.wants_no_sandbox_approval(AskForApproval.ON_FAILURE))
+        self.assertEqual(runtime.sandbox_preference(), "default")
+        self.assertTrue(runtime.escalate_on_failure())
+        self.assertIsNone(runtime.network_approval_spec("req", ToolCtx(object(), object(), "call-1", ToolName.plain("x"))))
+        self.assertIsNone(runtime.sandbox_cwd("req"))
+        self.assertIsInstance(runtime, Approvable)
+        self.assertIsInstance(runtime, Sandboxable)
+
+        with self.assertRaises(TypeError):
+            ApprovalCtx(object(), object(), 123)  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            ApprovalCtx(object(), object(), "call", guardian_review_id=123)  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            ApprovalCtx(object(), object(), "call", retry_reason=123)  # type: ignore[arg-type]
+
     def test_managed_network_is_removed_for_explicit_escalation_only(self) -> None:
+        # Rust source: codex-rs/core/src/tools/sandboxing.rs
+        # Behavior anchor: managed_network_for_sandbox_permissions.
         network = object()
         self.assertIs(
             managed_network_for_sandbox_permissions(network, SandboxPermissions.USE_DEFAULT),
@@ -327,11 +447,15 @@ class ToolSandboxingTests(unittest.TestCase):
             attempt_without_transform.env_for(["echo", "hi"])
 
     def test_should_bypass_approval_matches_appovable_default(self) -> None:
+        # Rust source: codex-rs/core/src/tools/sandboxing.rs::Approvable::should_bypass_approval
+        # Rust contract: already-approved requests and Never policy bypass approval.
         self.assertTrue(should_bypass_approval(AskForApproval.ON_REQUEST, True))
         self.assertTrue(should_bypass_approval(AskForApproval.NEVER, False))
         self.assertFalse(should_bypass_approval(AskForApproval.ON_REQUEST, False))
 
     def test_wants_no_sandbox_approval_matches_appovable_default(self) -> None:
+        # Rust source: codex-rs/core/src/tools/sandboxing.rs
+        # Behavior anchor: Approvable::wants_no_sandbox_approval default implementation.
         self.assertTrue(wants_no_sandbox_approval(AskForApproval.ON_FAILURE))
         self.assertTrue(wants_no_sandbox_approval(AskForApproval.UNLESS_TRUSTED))
         self.assertFalse(wants_no_sandbox_approval(AskForApproval.NEVER))

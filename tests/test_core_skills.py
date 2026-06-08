@@ -2,12 +2,18 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from pycodex.core_skills.model import SkillMetadata
+from pycodex.core_skills.model import SkillError, SkillMetadata
 from pycodex.core_skills.invocation_utils import SkillLoadOutcome
+from pycodex.core_skills.rendering import (
+    SKILLS_INTRO_WITH_ABSOLUTE_PATHS,
+    SkillRenderSideEffects,
+)
 from pycodex.core.skills import (
     SkillInvocation,
     SkillsLoadInput,
     maybe_emit_implicit_skill_invocation,
+    render,
+    render_available_skills_body,
     skills_load_input_from_config,
 )
 
@@ -50,6 +56,29 @@ class SkillsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             skills_load_input_from_config({"cwd": "/work"}, ()),
             SkillsLoadInput(Path("/work"), (), None, True),
+        )
+
+    def test_core_skills_facade_reexports_rust_public_surface(self) -> None:
+        # Rust: codex-core/src/skills.rs re-exports model/render/remote names from codex_core_skills.
+        self.assertEqual(SkillError("/skills/bad/SKILL.md", "bad").path, Path("/skills/bad/SKILL.md"))
+        self.assertIs(render.SkillRenderSideEffects, SkillRenderSideEffects)
+        self.assertEqual(render.SKILLS_INTRO_WITH_ABSOLUTE_PATHS, SKILLS_INTRO_WITH_ABSOLUTE_PATHS)
+        self.assertTrue(render_available_skills_body((), ()).startswith("\n## Skills\n"))
+
+        from pycodex.core import skills as core_skills
+
+        self.assertIs(core_skills.model.SkillMetadata, SkillMetadata)
+        self.assertIs(core_skills.remote.list_remote_skills, core_skills.remote.list_remote_skills)
+        self.assertIs(core_skills.render.render_available_skills_body, render_available_skills_body)
+
+    def test_skill_render_side_effects_matches_rust_variants(self) -> None:
+        # Rust: SkillRenderSideEffects::{None, ThreadStart { session_telemetry }}.
+        telemetry = object()
+
+        self.assertEqual(SkillRenderSideEffects.none(), SkillRenderSideEffects("none"))
+        self.assertEqual(
+            SkillRenderSideEffects.thread_start(telemetry),
+            SkillRenderSideEffects("thread_start", telemetry),
         )
 
     async def test_maybe_emit_implicit_skill_invocation_records_once(self) -> None:

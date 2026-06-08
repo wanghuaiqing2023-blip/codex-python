@@ -1,7 +1,9 @@
 import sys
+import threading
 import time
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from pycodex.core import (
     DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS,
@@ -43,11 +45,23 @@ from pycodex.core import (
     split_valid_utf8_prefix_with_max,
     terminal_interaction_process_id,
 )
+from pycodex.core.unified_exec import (
+    LATE_NETWORK_DENIAL_GRACE_PERIOD_MS,
+    NETWORK_ACCESS_DENIED_MESSAGE,
+    ExecServerEnvConfig,
+    UnifiedExecRemoteProcessModel,
+    exec_server_env_for_request,
+    exec_server_params_for_request,
+    network_denial_message_for_session,
+    wait_for_late_network_denial,
+)
 from pycodex.protocol import ExecToolCallOutput, StreamOutput, TruncationPolicyConfig
 
 
 class CoreUnifiedExecHeadTailBufferTests(unittest.TestCase):
     def test_keeps_prefix_and_suffix_when_over_budget(self) -> None:
+        # Rust source: codex-rs/core/src/unified_exec/head_tail_buffer.rs
+        # Rust test: keeps_prefix_and_suffix_when_over_budget.
         buffer = HeadTailBuffer.new(10)
 
         buffer.push_chunk(b"0123456789")
@@ -60,6 +74,8 @@ class CoreUnifiedExecHeadTailBufferTests(unittest.TestCase):
         self.assertTrue(rendered.endswith("89ab"))
 
     def test_max_bytes_zero_drops_everything(self) -> None:
+        # Rust source: codex-rs/core/src/unified_exec/head_tail_buffer.rs
+        # Rust test: max_bytes_zero_drops_everything.
         buffer = HeadTailBuffer.new(0)
         buffer.push_chunk(b"abc")
 
@@ -69,6 +85,8 @@ class CoreUnifiedExecHeadTailBufferTests(unittest.TestCase):
         self.assertEqual(buffer.snapshot_chunks(), [])
 
     def test_head_budget_zero_keeps_only_last_byte_in_tail(self) -> None:
+        # Rust source: codex-rs/core/src/unified_exec/head_tail_buffer.rs
+        # Rust test: head_budget_zero_keeps_only_last_byte_in_tail.
         buffer = HeadTailBuffer.new(1)
         buffer.push_chunk(b"abc")
 
@@ -77,6 +95,8 @@ class CoreUnifiedExecHeadTailBufferTests(unittest.TestCase):
         self.assertEqual(buffer.to_bytes(), b"c")
 
     def test_draining_resets_state(self) -> None:
+        # Rust source: codex-rs/core/src/unified_exec/head_tail_buffer.rs
+        # Rust test: draining_resets_state.
         buffer = HeadTailBuffer.new(10)
         buffer.push_chunk(b"0123456789")
         buffer.push_chunk(b"ab")
@@ -89,6 +109,8 @@ class CoreUnifiedExecHeadTailBufferTests(unittest.TestCase):
         self.assertEqual(buffer.to_bytes(), b"")
 
     def test_chunk_larger_than_tail_budget_keeps_only_tail_end(self) -> None:
+        # Rust source: codex-rs/core/src/unified_exec/head_tail_buffer.rs
+        # Rust test: chunk_larger_than_tail_budget_keeps_only_tail_end.
         buffer = HeadTailBuffer.new(10)
         buffer.push_chunk(b"0123456789")
         buffer.push_chunk(b"ABCDEFGHIJK")
@@ -99,6 +121,8 @@ class CoreUnifiedExecHeadTailBufferTests(unittest.TestCase):
         self.assertGreater(buffer.omitted_bytes(), 0)
 
     def test_fills_head_then_tail_across_multiple_chunks(self) -> None:
+        # Rust source: codex-rs/core/src/unified_exec/head_tail_buffer.rs
+        # Rust test: fills_head_then_tail_across_multiple_chunks.
         buffer = HeadTailBuffer.new(10)
 
         buffer.push_chunk(b"01")
@@ -112,6 +136,23 @@ class CoreUnifiedExecHeadTailBufferTests(unittest.TestCase):
 
         buffer.push_chunk(b"a")
         self.assertEqual(buffer.to_bytes(), b"012346789a")
+        self.assertEqual(buffer.omitted_bytes(), 1)
+
+    def test_snapshot_chunks_returns_head_then_tail_order(self) -> None:
+        # Rust source: codex-rs/core/src/unified_exec/head_tail_buffer.rs
+        # Behavior anchor: HeadTailBuffer::snapshot_chunks returns head chunks
+        # first, then tail chunks, with omitted middle bytes absent.
+        buffer = HeadTailBuffer.new(10)
+
+        buffer.push_chunk(b"01")
+        buffer.push_chunk(b"234")
+        buffer.push_chunk(b"567")
+        buffer.push_chunk(b"89")
+        buffer.push_chunk(b"a")
+
+        self.assertEqual(buffer.snapshot_chunks(), [b"01", b"234", b"67", b"89", b"a"])
+        self.assertEqual(buffer.to_bytes(), b"012346789a")
+        self.assertEqual(buffer.retained_bytes(), 10)
         self.assertEqual(buffer.omitted_bytes(), 1)
 
     def test_default_matches_unified_exec_output_constants(self) -> None:
@@ -251,13 +292,27 @@ class CoreUnifiedExecHeadTailBufferTests(unittest.TestCase):
         self.assertTrue(all(ch in "0123456789abcdef" for ch in chunk_id))
 
     def test_process_state_defaults_to_running_without_exit_data(self) -> None:
+        # Rust source: codex-rs/core/src/unified_exec/process_state.rs
+        # Behavior anchor: ProcessState derives Default with false/None fields.
         state = ProcessState()
 
         self.assertFalse(state.has_exited)
         self.assertIsNone(state.exit_code)
         self.assertIsNone(state.failure_message)
 
+    def test_process_state_equality_matches_rust_derived_partial_eq(self) -> None:
+        # Rust source: codex-rs/core/src/unified_exec/process_state.rs
+        # Behavior anchor: ProcessState derives Eq + PartialEq.
+        self.assertEqual(ProcessState(), ProcessState())
+        self.assertEqual(
+            ProcessState(has_exited=True, exit_code=1, failure_message="failed"),
+            ProcessState(has_exited=True, exit_code=1, failure_message="failed"),
+        )
+        self.assertNotEqual(ProcessState(exit_code=1), ProcessState(exit_code=2))
+
     def test_process_state_exited_preserves_failure_message(self) -> None:
+        # Rust source: codex-rs/core/src/unified_exec/process_state.rs
+        # Behavior anchor: ProcessState::exited preserves failure_message.
         state = ProcessState(failure_message="stderr reader failed")
 
         exited = state.exited(7)
@@ -268,6 +323,8 @@ class CoreUnifiedExecHeadTailBufferTests(unittest.TestCase):
         self.assertFalse(state.has_exited)
 
     def test_process_state_failed_preserves_exit_code(self) -> None:
+        # Rust source: codex-rs/core/src/unified_exec/process_state.rs
+        # Behavior anchor: ProcessState::failed preserves exit_code.
         state = ProcessState(exit_code=2)
 
         failed = state.failed("process crashed")
@@ -275,6 +332,66 @@ class CoreUnifiedExecHeadTailBufferTests(unittest.TestCase):
         self.assertTrue(failed.has_exited)
         self.assertEqual(failed.exit_code, 2)
         self.assertEqual(failed.failure_message, "process crashed")
+
+    def test_remote_write_unknown_process_marks_process_exited(self) -> None:
+        # Rust source: codex-rs/core/src/unified_exec/process.rs
+        # Rust test: remote_write_unknown_process_marks_process_exited.
+        process = UnifiedExecRemoteProcessModel()
+
+        with self.assertRaises(UnifiedExecError) as caught:
+            process.apply_write_status("UnknownProcess")
+
+        self.assertEqual(caught.exception.kind, UnifiedExecError.WRITE_TO_STDIN)
+        self.assertTrue(process.has_exited())
+        self.assertTrue(process.cancelled)
+
+    def test_remote_write_closed_stdin_marks_process_exited(self) -> None:
+        # Rust source: codex-rs/core/src/unified_exec/process.rs
+        # Rust test: remote_write_closed_stdin_marks_process_exited.
+        process = UnifiedExecRemoteProcessModel()
+
+        with self.assertRaises(UnifiedExecError) as caught:
+            process.apply_write_status("StdinClosed")
+
+        self.assertEqual(caught.exception.kind, UnifiedExecError.WRITE_TO_STDIN)
+        self.assertTrue(process.has_exited())
+        self.assertTrue(process.cancelled)
+
+    def test_remote_write_starting_fails_without_marking_exited(self) -> None:
+        # Rust source: codex-rs/core/src/unified_exec/process.rs
+        # Behavior anchor: UnifiedExecProcess::write maps WriteStatus::Starting
+        # to WriteToStdin without changing state to exited.
+        process = UnifiedExecRemoteProcessModel()
+
+        with self.assertRaises(UnifiedExecError) as caught:
+            process.apply_write_status("Starting")
+
+        self.assertEqual(caught.exception.kind, UnifiedExecError.WRITE_TO_STDIN)
+        self.assertFalse(process.has_exited())
+        self.assertFalse(process.cancelled)
+
+    def test_fail_and_terminate_preserves_failure_message(self) -> None:
+        # Rust source: codex-rs/core/src/unified_exec/process.rs
+        # Rust test: fail_and_terminate_preserves_failure_message.
+        process = UnifiedExecRemoteProcessModel()
+
+        process.fail_and_terminate("network denied")
+        process.fail_and_terminate("second failure")
+
+        self.assertTrue(process.has_exited())
+        self.assertTrue(process.terminated)
+        self.assertEqual(process.failure_message(), "network denied")
+
+    def test_remote_process_waits_for_early_exit_event(self) -> None:
+        # Rust source: codex-rs/core/src/unified_exec/process.rs
+        # Rust test: remote_process_waits_for_early_exit_event.
+        process = UnifiedExecRemoteProcessModel()
+
+        process.apply_read_response(exited=True, exit_code=17, closed=True)
+
+        self.assertTrue(process.has_exited())
+        self.assertEqual(process.exit_code(), 17)
+        self.assertTrue(process.cancelled)
 
     def test_unified_exec_error_factories_match_upstream_messages(self) -> None:
         cases = (
@@ -313,6 +430,8 @@ class CoreUnifiedExecHeadTailBufferTests(unittest.TestCase):
         self.assertEqual(env["PATH"], "/usr/bin")
 
     def test_env_overlay_for_exec_server_keeps_runtime_changes_only(self) -> None:
+        # Rust source: codex-rs/core/src/unified_exec/process_manager.rs
+        # Rust test: env_overlay_for_exec_server_keeps_runtime_changes_only.
         local_policy_env = {
             "HOME": "/client-home",
             "PATH": "/client-path",
@@ -335,8 +454,102 @@ class CoreUnifiedExecHeadTailBufferTests(unittest.TestCase):
             },
         )
 
+    def test_exec_server_env_for_request_uses_full_env_without_config(self) -> None:
+        # Rust source: codex-rs/core/src/unified_exec/process_manager.rs
+        # Behavior anchor: exec_server_env_for_request returns request.env when
+        # exec_server_env_config is absent.
+        request = SimpleNamespace(
+            env={
+                "HOME": "/client-home",
+                "PATH": "/sandbox-path",
+                "CODEX_THREAD_ID": "thread-1",
+            },
+            exec_server_env_config=None,
+        )
+
+        policy, env = exec_server_env_for_request(request)
+
+        self.assertIsNone(policy)
+        self.assertEqual(
+            env,
+            {
+                "HOME": "/client-home",
+                "PATH": "/sandbox-path",
+                "CODEX_THREAD_ID": "thread-1",
+            },
+        )
+
+    def test_exec_server_params_use_env_policy_overlay_contract(self) -> None:
+        # Rust source: codex-rs/core/src/unified_exec/process_manager.rs
+        # Rust test: exec_server_params_use_env_policy_overlay_contract.
+        policy = SimpleNamespace(inherit="core")
+        request = SimpleNamespace(
+            command=("bash", "-lc", "true"),
+            cwd="/repo",
+            env={
+                "HOME": "/client-home",
+                "PATH": "/sandbox-path",
+                "CODEX_THREAD_ID": "thread-1",
+            },
+            exec_server_env_config=ExecServerEnvConfig(
+                policy=policy,
+                local_policy_env={
+                    "HOME": "/client-home",
+                    "PATH": "/client-path",
+                },
+            ),
+            arg0=None,
+        )
+
+        params = exec_server_params_for_request(123, request, True)
+
+        self.assertEqual(params.process_id, "123")
+        self.assertEqual(params.argv, ("bash", "-lc", "true"))
+        self.assertEqual(params.cwd, "/repo")
+        self.assertIs(params.env_policy, policy)
+        self.assertEqual(
+            params.env,
+            {
+                "PATH": "/sandbox-path",
+                "CODEX_THREAD_ID": "thread-1",
+            },
+        )
+        self.assertTrue(params.tty)
+        self.assertFalse(params.pipe_stdin)
+
     def test_exec_server_process_id_matches_unified_exec_process_id(self) -> None:
+        # Rust source: codex-rs/core/src/unified_exec/process_manager.rs
+        # Rust test: exec_server_process_id_matches_unified_exec_process_id.
         self.assertEqual(exec_server_process_id(4321), "4321")
+
+    def test_network_denial_fallback_message_names_sandbox_network_proxy(self) -> None:
+        # Rust source: codex-rs/core/src/unified_exec/process_manager.rs
+        # Rust test: network_denial_fallback_message_names_sandbox_network_proxy.
+        self.assertEqual(
+            network_denial_message_for_session(None, None),
+            NETWORK_ACCESS_DENIED_MESSAGE,
+        )
+
+    def test_late_network_denial_grace_observes_cancellation_after_exit(self) -> None:
+        # Rust source: codex-rs/core/src/unified_exec/process_manager.rs
+        # Rust test: late_network_denial_grace_observes_cancellation_after_exit.
+        cancelled = threading.Event()
+
+        def cancel_later() -> None:
+            time.sleep(0.01)
+            cancelled.set()
+
+        thread = threading.Thread(target=cancel_later)
+        thread.start()
+        try:
+            self.assertTrue(
+                wait_for_late_network_denial(
+                    cancelled,
+                    grace_period_ms=LATE_NETWORK_DENIAL_GRACE_PERIOD_MS,
+                )
+            )
+        finally:
+            thread.join()
 
     def test_exec_server_after_seq_matches_checked_sub_boundary(self) -> None:
         self.assertIsNone(exec_server_after_seq(None))
@@ -359,6 +572,10 @@ class CoreUnifiedExecHeadTailBufferTests(unittest.TestCase):
             exec_server_write_status_accepted(None)  # type: ignore[arg-type]
 
     def test_process_pruning_prefers_exited_processes_outside_recently_used(self) -> None:
+        # Rust source: codex-rs/core/src/unified_exec/process_manager.rs
+        # Rust test: pruning_prefers_exited_processes_outside_recently_used.
+        # Behavior anchor: process_id_to_prune_from_meta protects the 8 most
+        # recent processes, then prefers an exited process outside that set.
         meta = [
             (1, 10, False),
             (2, 20, True),
@@ -375,6 +592,10 @@ class CoreUnifiedExecHeadTailBufferTests(unittest.TestCase):
         self.assertEqual(process_id_to_prune_from_meta(meta), 2)
 
     def test_process_pruning_falls_back_to_lru_when_no_exited(self) -> None:
+        # Rust source: codex-rs/core/src/unified_exec/process_manager.rs
+        # Rust test: pruning_falls_back_to_lru_when_no_exited.
+        # Behavior anchor: process_id_to_prune_from_meta falls back to the
+        # least recently used process outside the protected recent set.
         meta = [
             (1, 10, False),
             (2, 20, False),
@@ -391,6 +612,10 @@ class CoreUnifiedExecHeadTailBufferTests(unittest.TestCase):
         self.assertEqual(process_id_to_prune_from_meta(meta), 1)
 
     def test_process_pruning_protects_recent_processes_even_if_exited(self) -> None:
+        # Rust source: codex-rs/core/src/unified_exec/process_manager.rs
+        # Rust test: pruning_protects_recent_processes_even_if_exited.
+        # Behavior anchor: an exited process among the 8 most recent processes
+        # stays protected, so pruning falls back to an older unprotected entry.
         meta = [
             (1, 10, False),
             (2, 20, False),
@@ -407,10 +632,15 @@ class CoreUnifiedExecHeadTailBufferTests(unittest.TestCase):
         self.assertEqual(process_id_to_prune_from_meta(meta), 1)
 
     def test_process_pruning_empty_or_all_protected_has_no_candidate(self) -> None:
+        # Rust source: codex-rs/core/src/unified_exec/process_manager.rs
+        # Behavior anchor: empty metadata or metadata smaller than the protected
+        # recent set has no pruning candidate.
         self.assertIsNone(process_id_to_prune_from_meta([]))
         self.assertIsNone(process_id_to_prune_from_meta([(1, 10, True), (2, 20, False)]))
 
     def test_unified_exec_process_manager_allocates_deterministic_ids(self) -> None:
+        # Rust source: codex-rs/core/src/unified_exec/process_manager.rs
+        # Behavior anchor: allocate_process_id uses deterministic ids in test mode.
         manager = UnifiedExecProcessManager()
 
         first = manager.allocate_process_id()
@@ -420,7 +650,25 @@ class CoreUnifiedExecHeadTailBufferTests(unittest.TestCase):
         self.assertEqual(second, 1001)
         self.assertEqual(manager.reserved_process_ids(), frozenset({1000, 1001}))
 
+    def test_unified_exec_process_manager_random_ids_retry_reserved_collisions(self) -> None:
+        # Rust source: codex-rs/core/src/unified_exec/process_manager.rs
+        # Behavior anchor: allocate_process_id loops when a generated process id
+        # already exists in reserved_process_ids.
+        manager = UnifiedExecProcessManager(deterministic_process_ids=False)
+
+        with patch("pycodex.core.unified_exec.random.randrange", side_effect=[1000, 1000, 1001]):
+            first = manager.allocate_process_id()
+            second = manager.allocate_process_id()
+
+        self.assertEqual(first, 1000)
+        self.assertEqual(second, 1001)
+        self.assertEqual(manager.reserved_process_ids(), frozenset({1000, 1001}))
+
     def test_unified_exec_process_manager_release_removes_reserved_and_entry(self) -> None:
+        # Rust source: codex-rs/core/src/unified_exec/mod.rs
+        # Rust source: codex-rs/core/src/unified_exec/process_manager.rs
+        # Behavior anchors: ProcessStore::remove and release_process_id remove
+        # both the reserved id and any stored process entry.
         manager = UnifiedExecProcessManager()
         process_id = manager.allocate_process_id()
         process = FakeUnifiedExecProcess(False)
@@ -431,6 +679,18 @@ class CoreUnifiedExecHeadTailBufferTests(unittest.TestCase):
         self.assertIsInstance(entry, ProcessEntry)
         self.assertIs(entry.process, process)
         self.assertIsNone(manager.get_process(process_id))
+        self.assertEqual(manager.reserved_process_ids(), frozenset())
+
+    def test_unified_exec_process_manager_release_reserved_without_entry(self) -> None:
+        # Rust source: codex-rs/core/src/unified_exec/mod.rs
+        # Behavior anchor: ProcessStore::remove always clears reserved ids even
+        # when no process entry was stored for that id.
+        manager = UnifiedExecProcessManager()
+        process_id = manager.allocate_process_id()
+
+        entry = manager.release_process_id(process_id)
+
+        self.assertIsNone(entry)
         self.assertEqual(manager.reserved_process_ids(), frozenset())
 
     def test_unified_exec_process_manager_prunes_exited_process_when_full(self) -> None:

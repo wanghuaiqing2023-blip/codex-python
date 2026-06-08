@@ -8,6 +8,11 @@ class StateDbBridgeTests(unittest.IsolatedAsyncioTestCase):
     async def test_init_state_db_returns_none_without_initializer(self) -> None:
         self.assertIsNone(await init_state_db(SimpleNamespace()))
 
+    async def test_init_state_db_returns_none_when_initializer_returns_none(self) -> None:
+        # Rust rollout::state_db::init returns Option<StateDbHandle> and maps
+        # initialization failures to None.
+        self.assertIsNone(await init_state_db({}, initializer=lambda _cfg: None))
+
     async def test_init_state_db_wraps_sync_initializer_result(self) -> None:
         config = {"path": "state.db"}
 
@@ -34,6 +39,10 @@ class StateDbBridgeTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(await init_state_db(config), StateDbHandle({"service": "ok"}))
+
+    def test_state_db_handle_rejects_none_inner_value(self) -> None:
+        with self.assertRaises(ValueError):
+            StateDbHandle(None)
 
 
 if __name__ == "__main__":

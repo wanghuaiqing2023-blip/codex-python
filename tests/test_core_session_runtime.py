@@ -7,6 +7,10 @@ from pycodex.core.client import ModelClient
 from pycodex.core.tools.handlers.utils import apply_granted_turn_permissions, record_granted_request_permissions
 from pycodex.core.http_transport import run_user_turn_http_sampling_from_session
 from pycodex.core.session.runtime import InMemoryCodexSession
+from pycodex.core.context_manager.history import (
+    estimate_item_token_count,
+    estimate_response_item_model_visible_bytes,
+)
 from pycodex.core.codex_thread import SessionSettingsUpdate
 from pycodex.features import Feature
 from pycodex.core.tools.context import FunctionToolOutput
@@ -57,6 +61,7 @@ from pycodex.protocol import (
     Settings,
     SubAgentSource,
     TextElement,
+    TokenUsage,
     TurnItem,
     ThreadSettingsOverrides,
     ToolName,
@@ -402,6 +407,27 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pending[0], UserInput.text_input("queued steer"))
         self.assertEqual(pending[1].content[0].text, "queued item")
         self.assertFalse(await session.input_queue.has_pending_input(session.active_turn))
+
+    async def test_in_memory_session_inject_if_running_returns_items_without_active_turn(self) -> None:
+        # Rust source: codex-core/src/session/inject.rs inject_if_running None branch.
+        session = InMemoryCodexSession(cwd="C:/work/project", active_turn=None)
+        item = ResponseItem.message("user", (ContentItem.input_text("outside turn"),))
+
+        result = await session.inject_if_running([item])
+
+        self.assertEqual(result, (item,))
+        self.assertFalse(await session.input_queue.has_pending_input(None))
+
+    async def test_in_memory_session_inject_no_new_turn_queues_when_active_turn_exists(self) -> None:
+        # Rust source: codex-core/src/session/inject.rs inject_no_new_turn first tries active injection.
+        session = InMemoryCodexSession(cwd="C:/work/project")
+        item = ResponseItem.message("user", (ContentItem.input_text("active turn"),))
+
+        await session.inject_no_new_turn([item], None)
+
+        self.assertEqual(session.recorded_batches, [])
+        pending = await session.input_queue.get_pending_input(session.active_turn)
+        self.assertEqual(pending, (item,))
 
     async def test_in_memory_session_record_user_prompt_emits_turn_item_events(self) -> None:
         session = InMemoryCodexSession(cwd="C:/work/project", thread_id="thread-1", turn_id="turn-1")
@@ -1656,6 +1682,19 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("<realtime_conversation>", developer_sections[1])
         self.assertIn("Realtime conversation ended.", developer_sections[1])
 
+    async def test_in_memory_session_next_turn_is_first_is_consumed_like_session_state(self) -> None:
+        session = InMemoryCodexSession(cwd="C:/work/project")
+
+        self.assertTrue(await session.take_next_turn_is_first())
+        self.assertFalse(await session.take_next_turn_is_first())
+
+        await session.set_next_turn_is_first(True)
+        self.assertTrue(await session.take_next_turn_is_first())
+        self.assertFalse(await session.take_next_turn_is_first())
+
+        await session.set_next_turn_is_first(False)
+        self.assertFalse(await session.take_next_turn_is_first())
+
     async def test_in_memory_session_initial_context_includes_personality_spec(self) -> None:
         model_info = type(
             "ModelInfo",
@@ -1827,7 +1866,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.compacted_items[0].replacement_history, (replacement,))
 
     async def test_in_memory_session_inject_no_new_turn_records_items_and_flushes(self) -> None:
-        session = InMemoryCodexSession(cwd="C:/work/project")
+        session = InMemoryCodexSession(cwd="C:/work/project", active_turn=None)
         item = {
             "type": "message",
             "role": "user",
@@ -2307,6 +2346,63 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(event.type, "token_count")
         self.assertEqual(event.payload.info, session.token_usage_info)
         self.assertIsNone(event.payload.rate_limits)
+
+    async def test_in_memory_session_total_token_usage_delegates_to_state_history_tail_accounting(self) -> None:
+        model_info = SimpleNamespace(slug="gpt-test")
+        session = InMemoryCodexSession(cwd="C:/work/project", model_info=model_info)
+        turn_context = await session.new_default_turn()
+        counted = ResponseItem.message("assistant", (ContentItem.output_text("already counted by API"),))
+        added_user = ResponseItem.message("user", (ContentItem.input_text("new user message"),))
+        added_tool_output = ResponseItem(
+            type="custom_tool_call_output",
+            call_id="tool-tail",
+            output=FunctionCallOutputPayload.from_text("new tool output"),
+        )
+
+        await session.record_conversation_items(turn_context, (counted,))
+        await session.record_token_usage_info(turn_context, TokenUsage(total_tokens=100))
+        await session.record_conversation_items(turn_context, (added_user, added_tool_output))
+
+        self.assertEqual(
+            await session.get_total_token_usage(),
+            100 + estimate_item_token_count(added_user) + estimate_item_token_count(added_tool_output),
+        )
+        total_usage = await session.total_token_usage()
+        self.assertIsNotNone(total_usage)
+        self.assertEqual(total_usage.total_tokens, 100)
+
+    async def test_in_memory_session_total_token_usage_breakdown_delegates_to_state_history(self) -> None:
+        model_info = SimpleNamespace(slug="gpt-test")
+        session = InMemoryCodexSession(cwd="C:/work/project", model_info=model_info)
+        turn_context = await session.new_default_turn()
+        counted = ResponseItem.message("assistant", (ContentItem.output_text("already counted by API"),))
+        added_user = ResponseItem.message("user", (ContentItem.input_text("new user message"),))
+        added_tool_output = ResponseItem(
+            type="custom_tool_call_output",
+            call_id="tool-tail",
+            output=FunctionCallOutputPayload.from_text("new tool output"),
+        )
+
+        await session.record_conversation_items(turn_context, (counted,))
+        await session.record_token_usage_info(turn_context, TokenUsage(total_tokens=100))
+        await session.record_conversation_items(turn_context, (added_user, added_tool_output))
+
+        breakdown = await session.get_total_token_usage_breakdown()
+
+        self.assertEqual(breakdown.last_api_response_total_tokens, 100)
+        self.assertEqual(
+            breakdown.all_history_items_model_visible_bytes,
+            sum(estimate_response_item_model_visible_bytes(item) for item in (counted, added_user, added_tool_output)),
+        )
+        self.assertEqual(
+            breakdown.estimated_tokens_of_items_added_since_last_successful_api_response,
+            estimate_item_token_count(added_user) + estimate_item_token_count(added_tool_output),
+        )
+        self.assertEqual(
+            breakdown.estimated_bytes_of_items_added_since_last_successful_api_response,
+            estimate_response_item_model_visible_bytes(added_user)
+            + estimate_response_item_model_visible_bytes(added_tool_output),
+        )
 
     async def test_in_memory_session_update_rate_limits_merges_and_emits_token_count(self) -> None:
         session = InMemoryCodexSession(cwd="C:/work/project")

@@ -31,6 +31,21 @@ Do not collapse these into a single mainline. Execution mainlines are validation
 
 The regular minimum alignment and acceptance unit is a `module-scoped behavior contract`.
 
+### Module boundary and dependency handling
+
+Module-scoped porting should focus on the selected Rust module's own behavior contract, not on completing every upstream or downstream dependency at the same time.
+
+Use dependency relationships to understand the selected module's inputs, outputs, types, invariants, call semantics, and runtime anchors. Do not let dependency relationships silently expand the acceptance unit beyond the selected module.
+
+This keeps module porting independent and parallelizable: separate modules can be implemented, audited, or promoted without waiting for all neighboring modules to be complete.
+
+When validating a module:
+
+- Treat dependent modules as interface constraints for the current module, not as additional implementation scope.
+- A module can be considered complete when its own public APIs, important internal items, trait impls, runtime registration points, and Rust tests/fixtures are mirrored or intentionally adapted in Python.
+- Missing or partial Python implementations of neighboring modules should be handled with existing facades, lightweight shims, focused test doubles, or documented follow-up debt when that is enough to verify the selected module.
+- Do not block module completion merely because downstream runtime orchestration, transport, UI, persistence, or extension behavior is incomplete.
+
 In practical terms:
 
 - Crate decides ownership and dependency context.

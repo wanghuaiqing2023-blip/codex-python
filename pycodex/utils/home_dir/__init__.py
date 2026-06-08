@@ -6,15 +6,16 @@ Ported from ``codex/codex-rs/utils/home-dir/src/lib.rs``.
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from pathlib import Path
 
 CODEX_HOME_ENV = "CODEX_HOME"
 
 
-def find_codex_home(env: dict[str, str] | None = None, home: Path | str | None = None) -> Path:
+def find_codex_home(env: Mapping[str, str] | None = None, home: Path | str | None = None) -> Path:
     """Return ``CODEX_HOME`` or ``~/.codex`` using upstream validation rules."""
 
-    if env is not None and not isinstance(env, dict):
+    if env is not None and not isinstance(env, Mapping):
         raise TypeError("env must be a mapping or None")
     environ = os.environ if env is None else env
     raw = environ.get(CODEX_HOME_ENV)

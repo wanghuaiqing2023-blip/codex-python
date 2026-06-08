@@ -35,6 +35,16 @@ class RealtimeConversationTests(unittest.TestCase):
 
         self.assertEqual(realtime_text_from_handoff_request(handoff), "user: hello")
 
+    def test_extracts_input_transcript_if_active_transcript_missing(self) -> None:
+        handoff = RealtimeHandoffRequested(
+            handoff_id="handoff_1",
+            item_id="item_1",
+            input_transcript="ignored",
+            active_transcript=(),
+        )
+
+        self.assertEqual(realtime_text_from_handoff_request(handoff), "ignored")
+
     def test_wraps_handoff_with_transcript_delta(self) -> None:
         handoff = RealtimeHandoffRequested(
             handoff_id="handoff_1",
@@ -64,12 +74,28 @@ class RealtimeConversationTests(unittest.TestCase):
 
         self.assertIsNone(realtime_text_from_handoff_request(handoff))
 
+    def test_wraps_realtime_delegation_input_without_transcript(self) -> None:
+        self.assertEqual(
+            wrap_realtime_delegation_input("hello"),
+            "<realtime_delegation>\n"
+            "  <input>hello</input>\n"
+            "</realtime_delegation>",
+        )
+
     def test_wraps_realtime_delegation_input_with_xml_escaping(self) -> None:
         self.assertEqual(
             wrap_realtime_delegation_input("use a < b && c > d", "saw <that>"),
             "<realtime_delegation>\n"
             "  <input>use a &lt; b &amp;&amp; c &gt; d</input>\n"
             "  <transcript_delta>saw &lt;that&gt;</transcript_delta>\n"
+            "</realtime_delegation>",
+        )
+
+    def test_wraps_realtime_delegation_input_with_xml_escaping_without_transcript(self) -> None:
+        self.assertEqual(
+            wrap_realtime_delegation_input("use a < b && c > d"),
+            "<realtime_delegation>\n"
+            "  <input>use a &lt; b &amp;&amp; c &gt; d</input>\n"
             "</realtime_delegation>",
         )
 

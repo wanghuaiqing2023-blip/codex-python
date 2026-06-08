@@ -33,7 +33,9 @@ from pycodex.connectors.merge import (
     plugin_connector_to_app_info,
 )
 from pycodex.connectors.metadata import (
+    connector_display_label,
     connector_install_url,
+    connector_mention_slug,
     connector_name_slug,
     sanitize_name,
 )
@@ -106,6 +108,9 @@ class ConnectorHelperTests(unittest.TestCase):
         self.assertEqual(connector_name_slug("Google Calendar"), "google-calendar")
         self.assertEqual(connector_name_slug(" -- "), "app")
         self.assertEqual(sanitize_name("Google Calendar"), "google_calendar")
+        connector = app_info("calendar", name="Google Calendar")
+        self.assertEqual(connector_display_label(connector), "Google Calendar")
+        self.assertEqual(connector_mention_slug(connector), "google-calendar")
         self.assertEqual(
             connector_install_url("Google Calendar", "calendar"),
             "https://chatgpt.com/apps/google-calendar/calendar",
@@ -285,6 +290,47 @@ class ConnectorHelperTests(unittest.TestCase):
         self.assertEqual(
             app_tool_policy_from_apps_config(config, "calendar", "events/list"),
             AppToolPolicy(enabled=False, approval=AppToolApproval.AUTO),
+        )
+
+    def test_app_tool_policy_allows_per_app_enable_when_default_is_disabled(self) -> None:
+        # Rust: connectors_tests::app_tool_policy_allows_per_app_enable_when_default_is_disabled.
+        config = AppsConfig(
+            default=AppsDefaultConfig(enabled=False),
+            apps={"calendar": AppConfig(enabled=True)},
+        )
+
+        self.assertEqual(
+            app_tool_policy_from_apps_config(
+                config,
+                "calendar",
+                "events/list",
+                annotations=ToolAnnotations(),
+            ),
+            AppToolPolicy(enabled=True, approval=AppToolApproval.AUTO),
+        )
+
+    def test_app_tool_policy_per_tool_enabled_true_overrides_app_level_disable_flags(self) -> None:
+        # Rust: connectors_tests::app_tool_policy_per_tool_enabled_true_overrides_app_level_disable_flags.
+        config = AppsConfig(
+            apps={
+                "calendar": AppConfig(
+                    destructive_enabled=False,
+                    open_world_enabled=False,
+                    tools=AppToolsConfig(
+                        {"events/create": AppToolConfig(enabled=True)}
+                    ),
+                )
+            }
+        )
+
+        self.assertEqual(
+            app_tool_policy_from_apps_config(
+                config,
+                "calendar",
+                "events/create",
+                annotations=ToolAnnotations(destructive_hint=True, open_world_hint=True),
+            ),
+            AppToolPolicy(enabled=True, approval=AppToolApproval.AUTO),
         )
 
     def test_app_tool_policy_uses_managed_approval_without_apps_config(self) -> None:

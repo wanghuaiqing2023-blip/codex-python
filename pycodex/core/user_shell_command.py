@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import sys
+from collections.abc import Mapping
+
 from pycodex.protocol import (
     ContentItem,
     ExecToolCallOutput,
@@ -71,6 +74,35 @@ def user_shell_command_record_item(
     return ResponseItem.message("user", (ContentItem.input_text(fragment.render()),))
 
 
+def env_for_user_shell_command(
+    env: Mapping[str, str],
+    *,
+    target_os: str | None = None,
+) -> dict[str, str]:
+    """Return the environment used by the explicit user-shell escape hatch."""
+
+    from .tools.runtimes import (
+        CODEX_PROXY_GIT_SSH_COMMAND_MARKER,
+        PROXY_ACTIVE_ENV_KEY,
+        PROXY_ENV_KEYS,
+        PROXY_GIT_SSH_COMMAND_ENV_KEY,
+    )
+
+    result = _env_dict(env)
+    if PROXY_ACTIVE_ENV_KEY not in result:
+        return result
+
+    for key in PROXY_ENV_KEYS:
+        result.pop(key, None)
+
+    if _is_macos_target(target_os):
+        git_ssh_command = result.get(PROXY_GIT_SSH_COMMAND_ENV_KEY)
+        if git_ssh_command is not None and git_ssh_command.startswith(CODEX_PROXY_GIT_SSH_COMMAND_MARKER):
+            result.pop(PROXY_GIT_SSH_COMMAND_ENV_KEY, None)
+
+    return result
+
+
 def _user_shell_command_fragment(
     command: str,
     exec_output: ExecToolCallOutput,
@@ -92,6 +124,25 @@ def _round_duration_seconds_for_model(seconds: float) -> float:
     if seconds >= 0:
         return int(seconds * 10 + 0.5) / 10
     return int(seconds * 10 - 0.5) / 10
+
+
+def _env_dict(env: Mapping[str, str]) -> dict[str, str]:
+    if not isinstance(env, Mapping):
+        raise TypeError("env must be a mapping")
+    result: dict[str, str] = {}
+    for key, value in env.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            raise TypeError("env keys and values must be strings")
+        result[key] = value
+    return result
+
+
+def _is_macos_target(target_os: str | None = None) -> bool:
+    if target_os is None:
+        target_os = sys.platform
+    if not isinstance(target_os, str):
+        raise TypeError("target_os must be a string or None")
+    return target_os.lower() in {"darwin", "macos", "mac", "osx"}
 
 
 def _truncate_text(content: str, policy: TruncationPolicyConfig) -> str:
@@ -126,6 +177,7 @@ def _ensure_truncation_policy(truncation_policy: TruncationPolicyConfig) -> None
 
 
 __all__ = [
+    "env_for_user_shell_command",
     "format_exec_output_for_model",
     "format_exec_output_str",
     "format_user_shell_command_record",

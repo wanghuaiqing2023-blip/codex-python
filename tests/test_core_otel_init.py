@@ -73,6 +73,35 @@ class OtelInitTests(unittest.TestCase):
         self.assertEqual(provider.settings.span_attributes, {"app": "codex"})
         self.assertEqual(provider.settings.tracestate, {"vendor": {"k": "v"}})
 
+    def test_build_provider_maps_grpc_exporter_and_originator_service_name(self) -> None:
+        config = {
+            "otel": {
+                "environment": "stage",
+                "exporter": {
+                    "kind": "otlp-grpc",
+                    "endpoint": "https://otel.example:4317",
+                    "headers": {"authorization": "token"},
+                    "tls": {"client_certificate": "/client.pem", "client_private_key": "/key.pem"},
+                },
+                "trace_exporter": "none",
+                "metrics_exporter": "none",
+            },
+            "analytics_enabled": None,
+            "features": Features.with_defaults(),
+            "codex_home": "/tmp/codex",
+        }
+
+        provider = build_provider(config, "2.0", None, default_analytics_enabled=False, originator="codex-cli")
+
+        self.assertIsNotNone(provider)
+        assert provider is not None
+        self.assertEqual(provider.settings.service_name, "codex-cli")
+        self.assertEqual(provider.settings.environment, "stage")
+        self.assertEqual(provider.settings.exporter.kind, "otlp-grpc")
+        self.assertEqual(provider.settings.exporter.headers, {"authorization": "token"})
+        self.assertEqual(provider.settings.exporter.tls.client_certificate, Path("/client.pem"))
+        self.assertEqual(provider.settings.metrics_exporter.kind, "none")
+
     def test_codex_export_filter_matches_codex_otel_targets(self) -> None:
         self.assertTrue(codex_export_filter("codex_otel::metrics"))
         self.assertFalse(codex_export_filter("codex_core"))

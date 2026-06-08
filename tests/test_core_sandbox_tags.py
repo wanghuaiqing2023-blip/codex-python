@@ -1,5 +1,6 @@
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from pycodex.core import (
     get_platform_sandbox,
@@ -91,6 +92,35 @@ class CoreSandboxTagsTests(unittest.TestCase):
             "none",
         )
 
+    def test_root_write_with_deny_carveout_still_uses_platform_sandbox(self) -> None:
+        # Rust source: codex-rs/sandboxing/src/policy_transforms.rs
+        # Rust test: root_write_policy_with_carveouts_still_uses_platform_sandbox.
+        blocked = Path.cwd() / "blocked"
+        profile = PermissionProfile.managed(
+            ManagedFileSystemPermissions.restricted(
+                (
+                    FileSystemSandboxEntry(
+                        FileSystemPath.special(FileSystemSpecialPath.root()),
+                        FileSystemAccessMode.WRITE,
+                    ),
+                    FileSystemSandboxEntry(
+                        FileSystemPath.explicit_path(blocked),
+                        FileSystemAccessMode.DENY,
+                    ),
+                )
+            ),
+            NetworkSandboxPolicy.ENABLED,
+        )
+
+        self.assertEqual(
+            permission_profile_sandbox_tag(
+                profile,
+                WindowsSandboxLevel.DISABLED,
+                enforce_managed_network=False,
+            ),
+            self.expected_platform_tag(False),
+        )
+
     def test_managed_network_enforcement_tags_unrestricted_profiles_as_sandboxed(self) -> None:
         profile = PermissionProfile.managed(
             ManagedFileSystemPermissions.unrestricted(),
@@ -105,6 +135,35 @@ class CoreSandboxTagsTests(unittest.TestCase):
             ),
             self.expected_platform_tag(False),
         )
+
+    def test_windows_elevated_sandbox_tag_has_priority_on_windows(self) -> None:
+        # Rust source: codex-rs/core/src/sandbox_tags.rs checks the Windows
+        # Elevated level before falling back to get_platform_sandbox.
+        with patch("pycodex.core.sandbox_tags.sys.platform", "win32"):
+            self.assertEqual(
+                permission_profile_sandbox_tag(
+                    PermissionProfile.read_only(),
+                    WindowsSandboxLevel.ELEVATED,
+                    enforce_managed_network=False,
+                ),
+                "windows_elevated",
+            )
+            self.assertEqual(
+                permission_profile_sandbox_tag(
+                    PermissionProfile.read_only(),
+                    WindowsSandboxLevel.RESTRICTED_TOKEN,
+                    enforce_managed_network=False,
+                ),
+                "windows_sandbox",
+            )
+            self.assertEqual(
+                permission_profile_sandbox_tag(
+                    PermissionProfile.read_only(),
+                    WindowsSandboxLevel.DISABLED,
+                    enforce_managed_network=False,
+                ),
+                "none",
+            )
 
     def test_should_require_platform_sandbox_matches_network_and_filesystem_rules(self) -> None:
         self.assertTrue(

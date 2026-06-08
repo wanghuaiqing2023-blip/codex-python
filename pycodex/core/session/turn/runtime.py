@@ -32,9 +32,13 @@ from pycodex.core.connectors import (
 )
 from pycodex.connectors.merge import merge_plugin_connectors_with_accessible
 from pycodex.connectors.metadata import connector_name_slug
-from pycodex.core.context import PluginInstructions, SkillInstructions
+from pycodex.core.context import SkillInstructions
 from pycodex.core.hook_runtime import HookRuntimeOutcome, additional_context_messages
-from pycodex.core.plugins.render import render_explicit_plugin_instructions
+from pycodex.core.state.additional_context import (
+    AdditionalContextEntry,
+    AdditionalContextStore,
+)
+from pycodex.core.plugins.injection import build_plugin_injections as _build_plugin_injections
 from pycodex.core.plugins.mentions import (
     app_id_from_path,
     collect_explicit_app_ids,
@@ -60,7 +64,11 @@ from pycodex.core.stream_events_utils import handle_non_tool_response_item
 from pycodex.core.stream_events_utils import last_assistant_message_from_item
 from pycodex.core.stream_events_utils import sampling_stream_event_apply_plan
 from pycodex.core.stream_events_utils import sampling_stream_event_dispatch_plan
-from pycodex.core.turn_timing import ResponseEvent as TimingResponseEvent
+from pycodex.core.turn_timing import (
+    ResponseEvent as TimingResponseEvent,
+    record_turn_ttft_metric,
+    record_turn_ttfm_metric,
+)
 from pycodex.core.session.turn.request import TurnResponsesRequestPlan, build_turn_responses_request
 from pycodex.protocol import (
     BaseInstructions,
@@ -74,6 +82,8 @@ from pycodex.protocol import (
 )
 from pycodex.protocol import FunctionCallOutputContentItem, FunctionCallOutputPayload
 from pycodex.protocol import HookPromptFragment, Op, ResponseInputItem, ResponseItem
+
+_I64_MAX = 2**63 - 1
 from pycodex.protocol import TurnCompleteEvent, TurnDiffEvent, TurnItem, TurnStartedEvent, UserMessageItem
 from pycodex.protocol import ThreadSettingsOverrides, TokenUsage, UsageLimitReachedError, UserInput, WarningEvent
 from pycodex.protocol import build_hook_prompt_message
@@ -82,7 +92,6 @@ from pycodex.protocol import build_hook_prompt_message
 MAX_ADDITIONAL_CONTEXT_TOKENS = 1000
 DEFAULT_STREAM_MAX_RETRIES = 5
 MAX_STREAM_MAX_RETRIES = 100
-TURN_TTFM_DURATION_METRIC = "codex.turn.ttfm.duration_ms"
 _LAST_AGENT_MESSAGE_UNSET = object()
 _FIELD_VALUE_MISSING = object()
 
@@ -1572,62 +1581,6 @@ def _track_explicit_plugin_mentions(sess: Any, turn_context: Any, mentioned_plug
             pass
 
 
-def _build_plugin_injections(
-    mentioned_plugins: tuple[Any, ...],
-    mcp_tools: tuple[Any, ...],
-    available_connectors: tuple[Any, ...],
-) -> tuple[ResponseItem, ...]:
-    if not mentioned_plugins:
-        return ()
-    items: list[ResponseItem] = []
-    for plugin in mentioned_plugins:
-        plugin_name = _field_value(plugin, "display_name", "")
-        if not plugin_name:
-            continue
-        plugin_display_name = str(plugin_name)
-        plugin_mcp_servers = set(_string_tuple(_field_value(plugin, "mcp_server_names", ())))
-        plugin_app_ids = set(_string_tuple(_field_value(plugin, "app_connector_ids", ())))
-        available_mcp_servers = sorted(
-            {
-                str(_field_value(tool, "server_name", ""))
-                for tool in mcp_tools
-                if (tool_server_name := str(_field_value(tool, "server_name", "")))
-                and not tool_server_name.startswith("codex_apps")
-                and (
-                    plugin_display_name in _string_tuple(_field_value(tool, "plugin_display_names", ()))
-                    or tool_server_name in plugin_mcp_servers
-                )
-            }
-        )
-        available_apps = sorted(
-            {
-                str(
-                    _field_value(connector, "name", _field_value(connector, "id", ""))
-                )
-                for connector in available_connectors
-                if (
-                    bool(_field_value(connector, "is_enabled", False))
-                    and (
-                        plugin_display_name in _string_tuple(_field_value(connector, "plugin_display_names", ()))
-                        or (
-                            (connector_id := str(_field_value(connector, "id", "")))
-                            and connector_id in plugin_app_ids
-                        )
-                    )
-                )
-            }
-        )
-        available_apps = tuple(x for x in available_apps if x)
-        try:
-            instructions = render_explicit_plugin_instructions(plugin, available_mcp_servers, available_apps)
-        except Exception:
-            instructions = None
-        if instructions is None:
-            continue
-        items.append(PluginInstructions.new(instructions).into_response_item())
-    return tuple(items)
-
-
 def _turn_skills_outcome(sess: Any, turn_context: Any) -> tuple[Any, ...] | None:
     turn_skills = _field_value(turn_context, "turn_skills", None)
     outcome = _field_value(turn_skills, "outcome", None)
@@ -2186,40 +2139,34 @@ def _additional_context_response_items(sess: Any, value: Mapping[str, Any] | Non
     if not isinstance(value, Mapping):
         raise TypeError("additional_context must be a mapping")
     normalized = _normalize_additional_context(value)
-    previous = getattr(sess, "_additional_context_values", {})
-    items: list[ResponseItem] = []
-    for key in sorted(normalized):
-        kind, context_value = normalized[key]
-        if previous.get(key) == (kind, context_value):
-            continue
-        if kind == "untrusted":
-            items.append(
-                ResponseItem.message(
-                    "user",
-                    (ContentItem.input_text(f"<external_{key}>{context_value}</external_{key}>"),),
-                )
-            )
-        elif kind == "application":
-            items.append(
-                ResponseItem.message(
-                    "developer",
-                    (ContentItem.input_text(f"<{key}>{context_value}</{key}>"),),
-                )
-            )
-        else:
-            raise ValueError(f"unknown additional_context kind: {kind}")
+    store = getattr(sess, "_additional_context_store", None)
+    if not isinstance(store, AdditionalContextStore):
+        store = AdditionalContextStore(_legacy_additional_context_values(getattr(sess, "_additional_context_values", {})))
+        try:
+            setattr(sess, "_additional_context_store", store)
+        except Exception:
+            pass
+    input_items = store.merge(normalized)
+    items = tuple(ResponseItem.from_response_input_item(item) for item in input_items)
     try:
-        setattr(sess, "_additional_context_values", normalized)
+        setattr(
+            sess,
+            "_additional_context_values",
+            {key: (entry.kind.value, entry.value) for key, entry in store.values.items()},
+        )
     except Exception:
         pass
-    return tuple(items)
+    return items
 
 
-def _normalize_additional_context(value: Mapping[str, Any]) -> dict[str, tuple[str, str]]:
-    normalized: dict[str, tuple[str, str]] = {}
+def _normalize_additional_context(value: Mapping[str, Any]) -> dict[str, AdditionalContextEntry]:
+    normalized: dict[str, AdditionalContextEntry] = {}
     for key, entry in value.items():
         if not isinstance(key, str):
             raise TypeError("additional_context keys must be strings")
+        if isinstance(entry, AdditionalContextEntry):
+            normalized[key] = entry
+            continue
         if not isinstance(entry, Mapping):
             raise TypeError("additional_context entries must be mappings")
         kind = entry.get("kind")
@@ -2228,8 +2175,24 @@ def _normalize_additional_context(value: Mapping[str, Any]) -> dict[str, tuple[s
             raise TypeError("additional_context entry kind must be a string")
         if not isinstance(context_value, str):
             raise TypeError("additional_context entry value must be a string")
-        context_value = truncate_middle_with_token_budget(context_value, MAX_ADDITIONAL_CONTEXT_TOKENS)[0]
-        normalized[key] = (kind, context_value)
+        normalized[key] = AdditionalContextEntry(kind=kind, value=context_value)
+    return normalized
+
+
+def _legacy_additional_context_values(value: Any) -> dict[str, AdditionalContextEntry]:
+    if not isinstance(value, Mapping):
+        return {}
+    normalized: dict[str, AdditionalContextEntry] = {}
+    for key, entry in value.items():
+        if not isinstance(key, str):
+            continue
+        if isinstance(entry, AdditionalContextEntry):
+            normalized[key] = entry
+            continue
+        if isinstance(entry, tuple) and len(entry) == 2:
+            kind, context_value = entry
+            if isinstance(kind, str) and isinstance(context_value, str):
+                normalized[key] = AdditionalContextEntry(kind=kind, value=context_value)
     return normalized
 
 
@@ -2324,14 +2287,17 @@ async def _record_stream_events_turn_ttft(
     stream_events: Sequence[Any],
 ) -> None:
     timing_state = getattr(turn_context, "turn_timing_state", None) or getattr(sess, "turn_timing_state", None)
-    recorder = getattr(timing_state, "record_ttft_for_response_event", None)
-    if not callable(recorder):
+    if timing_state is None:
         return
+    timing_context = SimpleNamespace(
+        turn_timing_state=timing_state,
+        session_telemetry=_session_telemetry(sess, turn_context),
+    )
     for event in stream_events:
         timing_event = _timing_response_event_from_stream_event(event)
         if timing_event is None:
             continue
-        recorded = await _maybe_await(recorder(timing_event))
+        recorded = await record_turn_ttft_metric(timing_context, timing_event)
         if recorded is None:
             continue
         await _sync_turn_timing_first_token_ms(turn_context, timing_state)
@@ -3302,6 +3268,18 @@ class _AutoCompactResult:
     compacted: bool = False
 
 
+@dataclass(frozen=True)
+class _AutoCompactTokenStatus:
+    active_context_tokens: int
+    auto_compact_scope_tokens: int
+    auto_compact_scope_limit: int
+    full_context_window_limit: int | None
+    auto_compact_window_ordinal: int | None
+    auto_compact_window_prefill_tokens: int | None
+    full_context_window_limit_reached: bool
+    token_limit_reached: bool
+
+
 async def _maybe_run_mid_turn_auto_compact_result(sess: Any, turn_context: Any) -> _AutoCompactResult:
     try:
         compacted = await _run_auto_compact_if_needed(
@@ -3329,6 +3307,8 @@ async def _maybe_run_pre_sampling_auto_compact(sess: Any, turn_context: Any) -> 
             reason="model_downshift",
             phase="pre_turn",
         )
+    else:
+        await _maybe_run_previous_model_inline_compact(sess, turn_context)
     await _run_auto_compact_if_needed(
         sess,
         turn_context,
@@ -3336,6 +3316,111 @@ async def _maybe_run_pre_sampling_auto_compact(sess: Any, turn_context: Any) -> 
         reason="context_limit",
         phase="pre_turn",
     )
+
+
+async def _maybe_run_previous_model_inline_compact(sess: Any, turn_context: Any) -> bool:
+    previous_turn_settings = await _session_previous_turn_settings(sess)
+    if previous_turn_settings is None:
+        return False
+    previous_model = _field_value(previous_turn_settings, "model")
+    if previous_model is None:
+        return False
+    previous_model_turn_context = await _turn_context_with_model(sess, turn_context, previous_model)
+    if previous_model_turn_context is None:
+        return False
+    old_context_window = _turn_context_model_context_window(previous_model_turn_context)
+    if old_context_window is None:
+        return False
+    new_context_window = _turn_context_model_context_window(turn_context)
+    if new_context_window is None:
+        return False
+    active_context_tokens = await _session_total_token_usage(sess)
+    if active_context_tokens is None:
+        return False
+
+    if _auto_compact_scope_is_body_after_prefix(turn_context):
+        previous_model_limit_reached = active_context_tokens >= new_context_window
+    else:
+        new_auto_compact_limit = _model_auto_compact_token_limit(turn_context)
+        previous_model_limit_reached = (
+            (new_auto_compact_limit is not None and active_context_tokens > new_auto_compact_limit)
+            or active_context_tokens >= new_context_window
+        )
+    should_run = (
+        previous_model_limit_reached
+        and _turn_context_model_slug(previous_model_turn_context) != _turn_context_model_slug(turn_context)
+        and old_context_window > new_context_window
+    )
+    if not should_run:
+        return False
+
+    compact = _mapping_or_attr(sess, "run_auto_compact")
+    if not callable(compact):
+        compact = _mapping_or_attr(sess, "auto_compact")
+    if not callable(compact):
+        return False
+    await _call_auto_compact(
+        compact,
+        previous_model_turn_context,
+        initial_context_injection="do_not_inject",
+        reason="model_downshift",
+        phase="pre_turn",
+    )
+    return True
+
+
+async def _session_previous_turn_settings(sess: Any) -> Any:
+    value = _mapping_or_attr(sess, "previous_turn_settings")
+    if callable(value):
+        return await _maybe_await(value())
+    return value
+
+
+async def _session_total_token_usage(sess: Any) -> int | None:
+    value = _mapping_or_attr(sess, "get_total_token_usage")
+    if callable(value):
+        value = await _maybe_await(value())
+    elif value is None:
+        value = _mapping_or_attr(sess, "total_token_usage")
+        if callable(value):
+            value = await _maybe_await(value())
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+async def _turn_context_with_model(sess: Any, turn_context: Any, model: Any) -> Any:
+    with_model = _mapping_or_attr(turn_context, "with_model")
+    if not callable(with_model):
+        return None
+    models_manager = _mapping_or_attr(_mapping_or_attr(sess, "services"), "models_manager")
+    try:
+        return await _maybe_await(with_model(model, models_manager))
+    except TypeError:
+        return await _maybe_await(with_model(model))
+
+
+def _turn_context_model_slug(turn_context: Any) -> Any:
+    model_info = _mapping_or_attr(turn_context, "model_info")
+    slug = _field_value(model_info, "slug")
+    if slug is not None:
+        return slug
+    return _field_value(turn_context, "model")
+
+
+def _model_auto_compact_token_limit(turn_context: Any) -> int | None:
+    model_info = _mapping_or_attr(turn_context, "model_info")
+    value = _field_value(model_info, "auto_compact_token_limit")
+    if callable(value):
+        value = value()
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _auto_compact_scope_is_body_after_prefix(turn_context: Any) -> bool:
+    config = _mapping_or_attr(turn_context, "config")
+    value = _field_value(config, "model_auto_compact_token_limit_scope", "total")
+    value = getattr(value, "value", value)
+    value = getattr(value, "name", value)
+    normalized = str(value).replace("-", "_").lower()
+    return normalized in {"body_after_prefix", "bodyafterprefix"}
 
 
 async def _run_auto_compact_if_needed(
@@ -3350,8 +3435,11 @@ async def _run_auto_compact_if_needed(
     if not callable(status_provider):
         status_provider = _mapping_or_attr(sess, "get_auto_compact_token_status")
     if not callable(status_provider):
-        return
-    status = await _call_optional_turn_context(status_provider, turn_context)
+        status = await _auto_compact_token_status(sess, turn_context)
+    else:
+        status = await _call_optional_turn_context(status_provider, turn_context)
+    if status is None:
+        return False
     if not _auto_compact_token_limit_reached(status):
         return False
     compact = _mapping_or_attr(sess, "run_auto_compact")
@@ -3382,6 +3470,74 @@ def _auto_compact_token_limit_reached(status: Any) -> bool:
     if isinstance(status, Mapping):
         return bool(status.get("token_limit_reached", False))
     return bool(getattr(status, "token_limit_reached", False))
+
+
+async def _auto_compact_token_status(sess: Any, turn_context: Any) -> _AutoCompactTokenStatus | None:
+    active_context_tokens = await _session_total_token_usage(sess)
+    if active_context_tokens is None:
+        return None
+    auto_compact_window_ordinal = None
+    auto_compact_window_prefill_tokens = None
+    full_context_window_limit = None
+
+    if _auto_compact_scope_is_body_after_prefix(turn_context):
+        window = await _session_auto_compact_window_snapshot(sess)
+        if window is not None:
+            ordinal = _field_value(window, "ordinal")
+            if isinstance(ordinal, int) and not isinstance(ordinal, bool):
+                auto_compact_window_ordinal = ordinal
+            prefill = _field_value(window, "prefill_input_tokens")
+            if isinstance(prefill, int) and not isinstance(prefill, bool):
+                auto_compact_window_prefill_tokens = prefill
+        baseline = (
+            auto_compact_window_prefill_tokens
+            if auto_compact_window_prefill_tokens is not None
+            else active_context_tokens
+        )
+        auto_compact_scope_tokens = max(active_context_tokens - baseline, 0)
+        auto_compact_scope_limit = (
+            _config_auto_compact_token_limit(turn_context)
+            or _model_auto_compact_token_limit(turn_context)
+            or _I64_MAX
+        )
+        full_context_window_limit = _turn_context_model_context_window(turn_context)
+    else:
+        auto_compact_scope_tokens = active_context_tokens
+        auto_compact_scope_limit = _model_auto_compact_token_limit(turn_context) or _I64_MAX
+
+    full_context_window_limit_reached = (
+        full_context_window_limit is not None
+        and active_context_tokens >= full_context_window_limit
+    )
+    token_limit_reached = (
+        auto_compact_scope_tokens >= auto_compact_scope_limit
+        or full_context_window_limit_reached
+    )
+    return _AutoCompactTokenStatus(
+        active_context_tokens=active_context_tokens,
+        auto_compact_scope_tokens=auto_compact_scope_tokens,
+        auto_compact_scope_limit=auto_compact_scope_limit,
+        full_context_window_limit=full_context_window_limit,
+        auto_compact_window_ordinal=auto_compact_window_ordinal,
+        auto_compact_window_prefill_tokens=auto_compact_window_prefill_tokens,
+        full_context_window_limit_reached=full_context_window_limit_reached,
+        token_limit_reached=token_limit_reached,
+    )
+
+
+async def _session_auto_compact_window_snapshot(sess: Any) -> Any:
+    snapshot = _mapping_or_attr(sess, "auto_compact_window_snapshot")
+    if callable(snapshot):
+        return await _maybe_await(snapshot())
+    return snapshot
+
+
+def _config_auto_compact_token_limit(turn_context: Any) -> int | None:
+    config = _mapping_or_attr(turn_context, "config")
+    value = _field_value(config, "model_auto_compact_token_limit")
+    if callable(value):
+        value = value()
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 async def _call_auto_compact(
@@ -3568,21 +3724,13 @@ async def _record_stream_runtime_event_turn_ttfm(sess: Any, turn_context: Any, e
 
 async def _record_turn_item_ttfm(sess: Any, turn_context: Any, item: TurnItem) -> None:
     timing_state = _turn_timing_state(sess, turn_context)
-    recorder = getattr(timing_state, "record_ttfm_for_turn_item", None)
-    if not callable(recorder):
+    if timing_state is None:
         return
-    duration = await _maybe_await(recorder(item))
-    if duration is None:
-        return
-    await _record_turn_ttfm_duration_metric(sess, turn_context, duration)
-
-
-async def _record_turn_ttfm_duration_metric(sess: Any, turn_context: Any, duration: Any) -> None:
-    telemetry = _session_telemetry(sess, turn_context)
-    recorder = getattr(telemetry, "record_duration", None)
-    if not callable(recorder):
-        return
-    await _maybe_await(recorder(TURN_TTFM_DURATION_METRIC, duration, ()))
+    timing_context = SimpleNamespace(
+        turn_timing_state=timing_state,
+        session_telemetry=_session_telemetry(sess, turn_context),
+    )
+    await record_turn_ttfm_metric(timing_context, item)
 
 
 def _session_telemetry(sess: Any, turn_context: Any) -> Any:

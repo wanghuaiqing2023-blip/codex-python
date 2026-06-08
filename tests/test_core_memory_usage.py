@@ -73,6 +73,39 @@ class MemoryUsageTests(unittest.TestCase):
             (MemoriesUsageKind.RAW_MEMORIES,),
         )
 
+    def test_memory_usage_kinds_search_uses_path_not_query(self) -> None:
+        # Rust source: codex-rs/memories/read/src/usage.rs maps only
+        # ParsedCommand::Search.path through get_memory_kind, not the query.
+        self.assertEqual(
+            memory_usage_kinds_from_command(("bash", "-lc", "rg memories/MEMORY.md /tmp/project")),
+            (),
+        )
+        self.assertEqual(
+            memory_usage_kinds_from_command(("bash", "-lc", "rg TODO /home/me/memories/skills/python.md")),
+            (MemoriesUsageKind.SKILLS,),
+        )
+
+    def test_memory_usage_kinds_rejects_unsafe_compound_shell(self) -> None:
+        # Rust source: codex-rs/memories/read/src/usage.rs first calls
+        # is_known_safe_command before parse_command, so unsafe compounds emit no
+        # memory usage metric even if one stage mentions a memory path.
+        self.assertEqual(
+            memory_usage_kinds_from_command(("bash", "-lc", "cat /home/me/memories/MEMORY.md && rm -rf /tmp/x")),
+            (),
+        )
+        self.assertEqual(
+            memory_usage_kinds_from_command(("bash", "-lc", "find /tmp -delete && cat /home/me/memories/MEMORY.md")),
+            (),
+        )
+
+    def test_memory_usage_kinds_tracks_cd_then_read(self) -> None:
+        # Rust parse_command tests cover cd-prefix handling, and usage.rs then
+        # classifies ParsedCommand::Read.path.
+        self.assertEqual(
+            memory_usage_kinds_from_command(("bash", "-lc", "cd /home/me/memories && cat MEMORY.md")),
+            (MemoriesUsageKind.MEMORY_MD,),
+        )
+
     def test_shell_command_for_invocation_extracts_shell_command(self) -> None:
         item = invocation(
             "shell_command",

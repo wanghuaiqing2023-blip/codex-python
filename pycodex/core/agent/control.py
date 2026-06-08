@@ -18,6 +18,7 @@ from pycodex.protocol import (
     ThreadId,
 )
 from pycodex.protocol.user_input import UserInput
+from pycodex.core.config.agent_roles import DEFAULT_ROLE_NAME, AgentRoleConfig, resolve_role_config
 
 
 AGENT_NAMES = """Euclid
@@ -129,6 +130,20 @@ def default_agent_nickname_list() -> list[str]:
     """Return the embedded default agent nickname list."""
 
     return [name.strip() for name in AGENT_NAMES.splitlines() if name.strip()]
+
+
+def agent_nickname_candidates(
+    config_or_roles: Any,
+    role_name: str | None = None,
+) -> list[str]:
+    """Return role-specific nickname candidates or the default nickname list."""
+
+    resolved_role_name = role_name or DEFAULT_ROLE_NAME
+    roles = _agent_roles_mapping(config_or_roles)
+    role = resolve_role_config(roles, resolved_role_name)
+    if role is not None and role.nickname_candidates is not None:
+        return list(role.nickname_candidates)
+    return default_agent_nickname_list()
 
 
 def keep_forked_rollout_item(
@@ -264,6 +279,15 @@ def _response_item(item: ResponseItem | Mapping[str, Any]) -> ResponseItem:
     return item if isinstance(item, ResponseItem) else ResponseItem.from_mapping(item)
 
 
+def _agent_roles_mapping(config_or_roles: Any) -> Mapping[str, AgentRoleConfig]:
+    if isinstance(config_or_roles, Mapping):
+        return config_or_roles
+    roles = getattr(config_or_roles, "agent_roles", None)
+    if isinstance(roles, Mapping):
+        return roles
+    raise TypeError("config_or_roles must be a mapping or expose agent_roles")
+
+
 def _filter_compacted_replacement_history(item: RolloutItem, usage_hint_texts: tuple[str, ...]) -> RolloutItem:
     compacted = item.payload if isinstance(item.payload, CompactedItem) else CompactedItem.from_mapping(item.payload)
     if compacted.replacement_history is None:
@@ -281,10 +305,26 @@ def _filter_compacted_replacement_history(item: RolloutItem, usage_hint_texts: t
     )
 
 
+class AgentControl:
+    """Rust-coordinate facade for pure ``codex-core::agent::control`` helpers."""
+
+    agent_matches_prefix = staticmethod(agent_matches_prefix)
+    agent_nickname_candidates = staticmethod(agent_nickname_candidates)
+    default_agent_nickname_list = staticmethod(default_agent_nickname_list)
+    filter_forked_rollout_items = staticmethod(filter_forked_rollout_items)
+    is_multi_agent_v2_usage_hint_message = staticmethod(is_multi_agent_v2_usage_hint_message)
+    keep_forked_rollout_item = staticmethod(keep_forked_rollout_item)
+    render_input_preview = staticmethod(render_input_preview)
+    thread_spawn_depth = staticmethod(thread_spawn_depth)
+    thread_spawn_parent_thread_id = staticmethod(thread_spawn_parent_thread_id)
+
+
 __all__ = [
     "AGENT_NAMES",
+    "AgentControl",
     "ROOT_LAST_TASK_MESSAGE",
     "agent_matches_prefix",
+    "agent_nickname_candidates",
     "default_agent_nickname_list",
     "filter_forked_rollout_items",
     "is_multi_agent_v2_usage_hint_message",

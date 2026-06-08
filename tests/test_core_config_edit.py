@@ -388,6 +388,18 @@ class CoreConfigEditTests(unittest.TestCase):
             },
         )
 
+    def test_status_line_empty_list_persists_as_explicit_empty_array(self) -> None:
+        # Rust source: codex-rs/core/src/config/edit.rs::status_line_items_edit.
+        # Rust contract: an empty array means "hide the status line", not "unset".
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir)
+
+            changed = ConfigEditsBuilder.new(home).with_edits([status_line_items_edit([])]).apply_blocking()
+
+            self.assertTrue(changed)
+            self.assertEqual(read_toml_mapping(home / "config.toml"), {"tui": {"status_line": []}})
+            self.assertEqual((home / "config.toml").read_text(encoding="utf-8"), "[tui]\nstatus_line = []\n")
+
     def test_keymap_binding_helpers_use_root_tui_keymap_paths(self) -> None:
         config = {"profiles": {"team": {"tui": {"keymap": {"composer": {"submit": "shift-enter"}}}}}}
 

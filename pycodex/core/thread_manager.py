@@ -14,7 +14,21 @@ import inspect
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable, Mapping, MutableMapping, Sequence
+
+from pycodex.core.environment_selection import (
+    default_thread_environment_selections as _default_environment_selections_from_manager,
+    resolve_environment_selections as _resolve_environment_selections_from_manager,
+)
+from pycodex.protocol import (
+    CodexErr,
+    InitialHistory,
+    ResumedHistory,
+    RolloutItem,
+    ThreadId,
+    TurnEnvironmentSelection,
+)
 
 
 THREAD_CREATED_CHANNEL_CAPACITY = 1024
@@ -108,6 +122,85 @@ class ThreadNotFoundError(KeyError):
     """Raised when a requested thread id is not managed by this instance."""
 
 
+@dataclass(frozen=True, slots=True)
+class StoredThreadHistory:
+    items: tuple[RolloutItem, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "items",
+            tuple(RolloutItem.from_mapping(item) for item in self.items),
+        )
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "StoredThreadHistory":
+        items = value.get("items")
+        if isinstance(items, str) or not isinstance(items, Iterable) or isinstance(items, Mapping):
+            raise TypeError("stored thread history items must be a list")
+        return cls(tuple(RolloutItem.from_mapping(item) for item in items))
+
+
+@dataclass(frozen=True, slots=True)
+class StoredThread:
+    thread_id: ThreadId
+    history: StoredThreadHistory | None = None
+    rollout_path: Path | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.thread_id, ThreadId):
+            object.__setattr__(self, "thread_id", ThreadId.from_string(str(self.thread_id)))
+        if self.history is not None and not isinstance(self.history, StoredThreadHistory):
+            if isinstance(self.history, Mapping):
+                object.__setattr__(self, "history", StoredThreadHistory.from_mapping(self.history))
+            else:
+                object.__setattr__(self, "history", StoredThreadHistory(tuple(self.history)))
+        if self.rollout_path is not None and not isinstance(self.rollout_path, Path):
+            object.__setattr__(self, "rollout_path", Path(str(self.rollout_path)))
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "StoredThread":
+        history = value.get("history")
+        return cls(
+            thread_id=ThreadId.from_string(str(value["thread_id"])),
+            history=StoredThreadHistory.from_mapping(history) if isinstance(history, Mapping) else history,
+            rollout_path=value.get("rollout_path"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ThreadStoreError:
+    kind: str
+    thread_id: ThreadId | None = None
+    message: str | None = None
+    operation: str | None = None
+
+    @classmethod
+    def thread_not_found(cls, thread_id: ThreadId | str) -> "ThreadStoreError":
+        return cls("thread_not_found", thread_id=thread_id if isinstance(thread_id, ThreadId) else ThreadId.from_string(str(thread_id)))
+
+    @classmethod
+    def invalid_request(cls, message: str) -> "ThreadStoreError":
+        return cls("invalid_request", message=message)
+
+    @classmethod
+    def unsupported(cls, operation: str) -> "ThreadStoreError":
+        return cls("unsupported", operation=operation)
+
+    @classmethod
+    def other(cls, message: str) -> "ThreadStoreError":
+        return cls("other", message=message)
+
+    def __str__(self) -> str:
+        if self.kind == "thread_not_found" and self.thread_id is not None:
+            return f"thread not found: {self.thread_id}"
+        if self.kind == "invalid_request" and self.message is not None:
+            return self.message
+        if self.kind == "unsupported" and self.operation is not None:
+            return f"unsupported operation: {self.operation}"
+        return self.message or self.kind
+
+
 @dataclass(slots=True)
 class ManagedThread:
     """Default lightweight thread object used when no factory is provided."""
@@ -181,14 +274,20 @@ class ThreadManager:
     def models_manager(self) -> Any:
         return self._models_manager
 
-    def default_environment_selections(self) -> dict[str, Any]:
-        return dict(self._default_environment_selections)
+    def default_environment_selections(self, cwd: Path | str) -> list[TurnEnvironmentSelection]:
+        """Resolve default environment selections for a given working directory."""
 
-    def validate_environment_selections(self, environment_ids: Iterable[str]) -> list[str]:
-        """Return ids not present in the configured default environment map."""
+        if self._environment_manager is None:
+            raise TypeError("environment_manager must be available to resolve defaults")
+        return _default_environment_selections_from_manager(self._environment_manager, cwd)
 
-        known = set(self._default_environment_selections)
-        return [environment_id for environment_id in environment_ids if environment_id not in known]
+    def validate_environment_selections(self, environment_ids: Iterable[TurnEnvironmentSelection]) -> None:
+        """Validate selections through the manager-owned environment catalog."""
+
+        if self._environment_manager is None:
+            raise TypeError("environment_manager must be available to validate selections")
+        _resolve_environment_selections_from_manager(self._environment_manager, environment_ids)
+        return None
 
     def subscribe_thread_created(self) -> asyncio.Queue[str]:
         queue: asyncio.Queue[str] = asyncio.Queue(maxsize=THREAD_CREATED_CHANNEL_CAPACITY)
@@ -313,6 +412,55 @@ def _coerce_new_thread(value: Any) -> NewThread:
     )
 
 
+def stored_thread_to_initial_history(stored_thread: StoredThread | Mapping[str, Any], rollout_path: str | Path | None = None) -> InitialHistory:
+    """Convert a thread-store row into Rust's ``InitialHistory::Resumed``."""
+
+    if isinstance(stored_thread, Mapping):
+        stored_thread = StoredThread.from_mapping(stored_thread)
+    if not isinstance(stored_thread, StoredThread):
+        raise TypeError("stored_thread must be StoredThread or mapping")
+    if stored_thread.history is None:
+        raise CodexErr.fatal(f"thread {stored_thread.thread_id} did not include persisted history")
+    resolved_rollout_path = Path(rollout_path) if rollout_path is not None else stored_thread.rollout_path
+    return InitialHistory.resumed_history(
+        ResumedHistory(
+            conversation_id=stored_thread.thread_id,
+            history=stored_thread.history.items,
+            rollout_path=resolved_rollout_path,
+        )
+    )
+
+
+def thread_store_rollout_read_error(err: ThreadStoreError) -> CodexErr:
+    """Map thread-store rollout reads to Rust-shaped ``CodexErr`` values."""
+
+    if not isinstance(err, ThreadStoreError):
+        raise TypeError("err must be ThreadStoreError")
+    if err.kind == "thread_not_found" and err.thread_id is not None:
+        return CodexErr.thread_not_found(str(err.thread_id))
+    if err.kind == "invalid_request" and err.message is not None:
+        return CodexErr.invalid_request(err.message)
+    return CodexErr.fatal(f"failed to read thread by rollout path: {err}")
+
+
+def thread_store_metadata_update_error(thread_id: ThreadId | str, err: ThreadStoreError) -> CodexErr:
+    """Map thread metadata update failures like Rust ``thread_store_metadata_update_error``."""
+
+    if not isinstance(thread_id, ThreadId):
+        thread_id = ThreadId.from_string(str(thread_id))
+    if not isinstance(err, ThreadStoreError):
+        raise TypeError("err must be ThreadStoreError")
+    if err.kind == "thread_not_found" and err.thread_id is not None:
+        return CodexErr.thread_not_found(str(err.thread_id))
+    if err.kind == "invalid_request" and err.message is not None:
+        return CodexErr.invalid_request(err.message)
+    if err.kind == "unsupported" and err.operation is not None:
+        return CodexErr.unsupported_operation(
+            f"thread metadata update is not supported by this store: {err.operation}"
+        )
+    return CodexErr.fatal(f"failed to update thread metadata {thread_id}: {err}")
+
+
 __all__ = [
     "THREAD_CREATED_CHANNEL_CAPACITY",
     "ForkSnapshot",
@@ -320,10 +468,16 @@ __all__ = [
     "ManagedThread",
     "NewThread",
     "StartThreadOptions",
+    "StoredThread",
+    "StoredThreadHistory",
     "ThreadFactory",
     "ThreadManager",
     "ThreadNotFoundError",
     "ThreadShutdownReport",
+    "ThreadStoreError",
     "set_thread_manager_test_mode_for_tests",
     "should_use_test_thread_manager_behavior",
+    "stored_thread_to_initial_history",
+    "thread_store_metadata_update_error",
+    "thread_store_rollout_read_error",
 ]

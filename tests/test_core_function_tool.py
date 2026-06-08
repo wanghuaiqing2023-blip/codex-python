@@ -17,3 +17,18 @@ def test_function_call_error_fatal_renders_prefixed_message():
     assert error.is_model_response is False
     assert error.is_fatal is True
     assert str(error) == "Fatal error: tool payload mismatch"
+
+
+def test_function_call_error_normalizes_kind_and_rejects_unknown_kind():
+    # Rust source: codex-tools::FunctionCallError has only RespondToModel and Fatal.
+    error = FunctionCallError("respond_to_model", "bad arguments")
+
+    assert error.kind is FunctionCallErrorKind.RESPOND_TO_MODEL
+    assert str(error) == "bad arguments"
+
+    try:
+        FunctionCallError("other", "bad arguments")
+    except ValueError as exc:
+        assert "unknown FunctionCallError kind" in str(exc)
+    else:
+        raise AssertionError("expected unknown kind to be rejected")

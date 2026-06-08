@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 import time
 from dataclasses import dataclass, replace
 from typing import Any, Protocol
@@ -282,6 +283,7 @@ def create_update_goal_tool() -> dict[str, JsonValue]:
 class GetGoalHandler:
     def __init__(self, store: GoalStore | None = None) -> None:
         self.store = store or InMemoryGoalStore()
+        self._store_provided = store is not None
 
     def tool_name(self) -> ToolName:
         return ToolName.plain(GET_GOAL_TOOL_NAME)
@@ -297,17 +299,29 @@ class GetGoalHandler:
             raise TypeError("payload must be ToolPayload")
         return payload.type in {"function", "tool_search"}
 
-    def handle(self, invocation_or_payload: Any) -> FunctionToolOutput:
+    def handle(self, invocation_or_payload: Any) -> FunctionToolOutput | Any:
         payload = _payload(invocation_or_payload)
         if payload.type != "function":
             raise FunctionCallError.respond_to_model("get_goal handler received unsupported payload")
-        goal = _call_goal_store(self.store.get_thread_goal)
+        session = getattr(invocation_or_payload, "session", None)
+        getter = getattr(session, "get_thread_goal", None)
+        if callable(getter) and not self._store_provided:
+            try:
+                goal = getter()
+            except Exception as err:
+                raise FunctionCallError.respond_to_model(_format_goal_error(err)) from err
+            if inspect.isawaitable(goal):
+                return _await_goal_response(goal, include_completion_budget_report=False)
+            goal = _checked_goal_result(goal)
+        else:
+            goal = _call_goal_store(self.store.get_thread_goal)
         return goal_response(goal, include_completion_budget_report=False)
 
 
 class CreateGoalHandler:
     def __init__(self, store: GoalStore | None = None) -> None:
         self.store = store or InMemoryGoalStore()
+        self._store_provided = store is not None
 
     def tool_name(self) -> ToolName:
         return ToolName.plain(CREATE_GOAL_TOOL_NAME)
@@ -323,13 +337,29 @@ class CreateGoalHandler:
             raise TypeError("payload must be ToolPayload")
         return payload.type in {"function", "tool_search"}
 
-    def handle(self, invocation_or_payload: Any) -> FunctionToolOutput:
+    def handle(self, invocation_or_payload: Any) -> FunctionToolOutput | Any:
         payload = _payload(invocation_or_payload)
         if payload.type != "function" or payload.arguments is None:
             raise FunctionCallError.respond_to_model("goal handler received unsupported payload")
         args = parse_create_goal_arguments(payload.arguments)
+        request = CreateGoalRequest(args.objective, args.token_budget)
+        session = getattr(invocation_or_payload, "session", None)
+        creator = getattr(session, "create_thread_goal", None)
+        if callable(creator) and not self._store_provided:
+            try:
+                goal = creator(getattr(invocation_or_payload, "turn", None), request)
+            except Exception as err:
+                message = _format_goal_error(err)
+                if "already has a goal" in message:
+                    raise FunctionCallError.respond_to_model(
+                        "cannot create a new goal because this thread already has a goal; use update_goal only when the existing goal is complete"
+                    ) from err
+                raise FunctionCallError.respond_to_model(message) from err
+            if inspect.isawaitable(goal):
+                return _await_create_goal_response(goal)
+            return goal_response(_checked_goal_result(goal), include_completion_budget_report=False)
         try:
-            goal = self.store.create_thread_goal(CreateGoalRequest(args.objective, args.token_budget))
+            goal = self.store.create_thread_goal(request)
         except Exception as err:
             message = _format_goal_error(err)
             if "already has a goal" in message:
@@ -343,6 +373,7 @@ class CreateGoalHandler:
 class UpdateGoalHandler:
     def __init__(self, store: GoalStore | None = None) -> None:
         self.store = store or InMemoryGoalStore()
+        self._store_provided = store is not None
 
     def tool_name(self) -> ToolName:
         return ToolName.plain(UPDATE_GOAL_TOOL_NAME)
@@ -358,16 +389,20 @@ class UpdateGoalHandler:
             raise TypeError("payload must be ToolPayload")
         return payload.type in {"function", "tool_search"}
 
-    def handle(self, invocation_or_payload: Any) -> FunctionToolOutput:
+    def handle(self, invocation_or_payload: Any) -> FunctionToolOutput | Any:
         payload = _payload(invocation_or_payload)
         if payload.type != "function" or payload.arguments is None:
             raise FunctionCallError.respond_to_model("update_goal handler received unsupported payload")
         args = parse_update_goal_arguments(payload.arguments)
         if args.status not in (ThreadGoalStatus.COMPLETE, ThreadGoalStatus.BLOCKED):
             raise FunctionCallError.respond_to_model(UPDATE_GOAL_STATUS_ERROR)
+        request = SetGoalRequest(status=args.status)
+        session = getattr(invocation_or_payload, "session", None)
+        if not self._store_provided and callable(getattr(session, "set_thread_goal", None)):
+            return _handle_update_goal_with_session(invocation_or_payload, session, request, args.status)
         try:
             self.store.goal_runtime_tool_completed_goal()
-            goal = self.store.set_thread_goal(SetGoalRequest(status=args.status))
+            goal = self.store.set_thread_goal(request)
         except Exception as err:
             raise FunctionCallError.respond_to_model(_format_goal_error(err)) from err
         return goal_response(goal, include_completion_budget_report=args.status is ThreadGoalStatus.COMPLETE)
@@ -395,6 +430,77 @@ def goal_response(goal: ThreadGoal | None, *, include_completion_budget_report: 
     return GoalToolResponse.new(goal, include_completion_budget_report=include_completion_budget_report).to_output()
 
 
+async def _await_goal_response(response: Any, *, include_completion_budget_report: bool) -> FunctionToolOutput:
+    try:
+        goal = await response
+    except Exception as err:
+        raise FunctionCallError.respond_to_model(_format_goal_error(err)) from err
+    return goal_response(_checked_goal_result(goal), include_completion_budget_report=include_completion_budget_report)
+
+
+async def _await_create_goal_response(response: Any) -> FunctionToolOutput:
+    try:
+        goal = await response
+    except Exception as err:
+        message = _format_goal_error(err)
+        if "already has a goal" in message:
+            raise FunctionCallError.respond_to_model(
+                "cannot create a new goal because this thread already has a goal; use update_goal only when the existing goal is complete"
+            ) from err
+        raise FunctionCallError.respond_to_model(message) from err
+    return goal_response(_checked_goal_result(goal), include_completion_budget_report=False)
+
+
+def _handle_update_goal_with_session(
+    invocation_or_payload: Any,
+    session: Any,
+    request: SetGoalRequest,
+    status: ThreadGoalStatus,
+) -> FunctionToolOutput | Any:
+    apply = getattr(session, "goal_runtime_apply", None)
+    if callable(apply):
+        try:
+            applied = apply({"type": "tool_completed_goal", "turn_context": getattr(invocation_or_payload, "turn", None)})
+        except Exception as err:
+            raise FunctionCallError.respond_to_model(_format_goal_error(err)) from err
+        if inspect.isawaitable(applied):
+            return _await_update_goal_with_session(applied, invocation_or_payload, session, request, status)
+    setter = getattr(session, "set_thread_goal")
+    try:
+        goal = setter(getattr(invocation_or_payload, "turn", None), request)
+    except Exception as err:
+        raise FunctionCallError.respond_to_model(_format_goal_error(err)) from err
+    if inspect.isawaitable(goal):
+        return _await_goal_response(
+            goal,
+            include_completion_budget_report=status is ThreadGoalStatus.COMPLETE,
+        )
+    return goal_response(
+        _checked_goal_result(goal),
+        include_completion_budget_report=status is ThreadGoalStatus.COMPLETE,
+    )
+
+
+async def _await_update_goal_with_session(
+    applied: Any,
+    invocation_or_payload: Any,
+    session: Any,
+    request: SetGoalRequest,
+    status: ThreadGoalStatus,
+) -> FunctionToolOutput:
+    try:
+        await applied
+        goal = session.set_thread_goal(getattr(invocation_or_payload, "turn", None), request)
+        if inspect.isawaitable(goal):
+            goal = await goal
+    except Exception as err:
+        raise FunctionCallError.respond_to_model(_format_goal_error(err)) from err
+    return goal_response(
+        _checked_goal_result(goal),
+        include_completion_budget_report=status is ThreadGoalStatus.COMPLETE,
+    )
+
+
 def completion_budget_report(goal: ThreadGoal) -> str | None:
     if not isinstance(goal, ThreadGoal):
         raise TypeError("goal must be ThreadGoal")
@@ -415,6 +521,10 @@ def _call_goal_store(func: Any) -> ThreadGoal | None:
         result = func()
     except Exception as err:
         raise FunctionCallError.respond_to_model(_format_goal_error(err)) from err
+    return _checked_goal_result(result)
+
+
+def _checked_goal_result(result: Any) -> ThreadGoal | None:
     if result is not None and not isinstance(result, ThreadGoal):
         raise TypeError("goal store returned a non-ThreadGoal value")
     return result

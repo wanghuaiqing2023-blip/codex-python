@@ -57,6 +57,9 @@ class SpawnChildRequest:
 
     def effective_env(self) -> dict[str, str]:
         env = dict(self.env)
+        apply_to_env = getattr(self.network, "apply_to_env", None)
+        if callable(apply_to_env):
+            apply_to_env(env)
         if not self.network_sandbox_policy.is_enabled():
             env[CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR] = "1"
         return env

@@ -7,6 +7,7 @@ This module mirrors the policy-independent helpers in
 from __future__ import annotations
 
 import json
+from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum
@@ -72,6 +73,24 @@ class ApprovalStore:
             self._map[cache_key] = value
 
 
+@dataclass(frozen=True)
+class ApprovalCtx:
+    session: Any
+    turn: Any
+    call_id: str
+    guardian_review_id: str | None = None
+    retry_reason: str | None = None
+    network_approval_context: Any = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.call_id, str):
+            raise TypeError("call_id must be a string")
+        if self.guardian_review_id is not None and not isinstance(self.guardian_review_id, str):
+            raise TypeError("guardian_review_id must be a string or None")
+        if self.retry_reason is not None and not isinstance(self.retry_reason, str):
+            raise TypeError("retry_reason must be a string or None")
+
+
 def with_cached_approval(
     store: ApprovalStore,
     keys: Iterable[Any],
@@ -90,6 +109,52 @@ def with_cached_approval(
         for key in approval_keys:
             store.put(key, approved_for_session)
     return decision
+
+
+class Approvable(ABC):
+    @abstractmethod
+    def approval_keys(self, req: Any) -> list[Any]:
+        raise NotImplementedError
+
+    def sandbox_permissions(self, req: Any) -> SandboxPermissions:
+        return SandboxPermissions.USE_DEFAULT
+
+    def should_bypass_approval(self, policy: AskForApproval | str, already_approved: bool) -> bool:
+        return should_bypass_approval(policy, already_approved)
+
+    def exec_approval_requirement(self, req: Any) -> ExecApprovalRequirement | None:
+        return None
+
+    def permission_request_payload(self, req: Any) -> PermissionRequestPayload | None:
+        return None
+
+    def wants_no_sandbox_approval(self, policy: AskForApproval | GranularApprovalConfig | str) -> bool:
+        return wants_no_sandbox_approval(policy)
+
+    @abstractmethod
+    async def start_approval_async(self, req: Any, ctx: ApprovalCtx) -> ReviewDecision:
+        raise NotImplementedError
+
+
+class Sandboxable(ABC):
+    @abstractmethod
+    def sandbox_preference(self) -> Any:
+        raise NotImplementedError
+
+    def escalate_on_failure(self) -> bool:
+        return True
+
+
+class ToolRuntime(Approvable, Sandboxable):
+    def network_approval_spec(self, req: Any, ctx: "ToolCtx") -> Any:
+        return None
+
+    def sandbox_cwd(self, req: Any) -> Path | None:
+        return None
+
+    @abstractmethod
+    async def run(self, req: Any, attempt: "SandboxAttempt", ctx: "ToolCtx") -> Any:
+        raise NotImplementedError
 
 
 @dataclass(frozen=True)
@@ -339,13 +404,17 @@ def _json_approval_key(value: Any) -> Any:
 
 
 __all__ = [
+    "Approvable",
+    "ApprovalCtx",
     "ApprovalStore",
     "ExecApprovalRequirement",
     "PermissionRequestPayload",
     "SandboxOverride",
     "SandboxAttempt",
+    "Sandboxable",
     "ToolCtx",
     "ToolError",
+    "ToolRuntime",
     "default_exec_approval_requirement",
     "managed_network_for_sandbox_permissions",
     "sandbox_override_for_first_attempt",

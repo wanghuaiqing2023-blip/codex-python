@@ -4,8 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+import inspect
+from typing import Any, Mapping
 
+from pycodex.core.guardian.review import (
+    guardian_rejection_message as _guardian_rejection_message,
+    guardian_timeout_message as _guardian_timeout_message,
+)
 from pycodex.core.tools.handlers.utils import session_strict_auto_review
 from pycodex.core.tools.sandboxing import (
     ExecApprovalRequirement,
@@ -28,7 +33,7 @@ from pycodex.protocol import (
 
 ApprovalPolicy = AskForApproval | GranularApprovalConfig
 
-GUARDIAN_TIMEOUT_MESSAGE = "automated review timed out"
+GUARDIAN_TIMEOUT_MESSAGE = _guardian_timeout_message()
 DEFAULT_SANDBOX_DENIAL_RETRY_REASON = "command failed; retry without sandbox?"
 
 
@@ -76,6 +81,28 @@ class ApprovalStepDecision:
                 raise TypeError(f"{field_name} must be a bool")
         if self.error is not None and not isinstance(self.error, ToolError):
             raise TypeError("error must be ToolError or None")
+
+
+@dataclass(frozen=True)
+class ApprovalRequestOutcome:
+    decision: ReviewDecision | None = None
+    error: ToolError | None = None
+    decision_source: str | None = None
+    used_permission_request_hook: bool = False
+
+    def __post_init__(self) -> None:
+        if self.decision is not None and not isinstance(self.decision, ReviewDecision):
+            object.__setattr__(self, "decision", ReviewDecision.from_mapping(self.decision))
+        if self.error is not None and not isinstance(self.error, ToolError):
+            raise TypeError("error must be ToolError or None")
+        if self.decision is None and self.error is None:
+            raise ValueError("approval request outcome must include a decision or error")
+        if self.decision is not None and self.error is not None:
+            raise ValueError("approval request outcome cannot include both decision and error")
+        if self.decision_source is not None and not isinstance(self.decision_source, str):
+            raise TypeError("decision_source must be a string or None")
+        if not isinstance(self.used_permission_request_hook, bool):
+            raise TypeError("used_permission_request_hook must be a bool")
 
 
 @dataclass(frozen=True)
@@ -233,6 +260,73 @@ async def build_tool_orchestrator_plan_for_session(
     )
 
 
+async def request_approval(
+    tool: Any,
+    req: Any,
+    permission_request_run_id: str,
+    approval_ctx: Any,
+    tool_ctx: Any,
+    *,
+    evaluate_permission_request_hooks: bool,
+    run_permission_request_hooks: Any = None,
+    telemetry: Any = None,
+) -> ApprovalRequestOutcome:
+    """Rust-shaped approval request helper.
+
+    Rust source: ``codex-rs/core/src/tools/orchestrator.rs``.
+    Behavior anchor: ``ToolOrchestrator::request_approval`` gives
+    PermissionRequest hooks top precedence. A hook ``Allow`` becomes
+    ``ReviewDecision::Approved``; a hook ``Deny { message }`` becomes
+    ``ToolError::Rejected(message)``. Without a hook decision, the normal
+    guardian/user approval path is used.
+    """
+
+    if not isinstance(permission_request_run_id, str):
+        raise TypeError("permission_request_run_id must be a string")
+    if not isinstance(evaluate_permission_request_hooks, bool):
+        raise TypeError("evaluate_permission_request_hooks must be a bool")
+
+    if evaluate_permission_request_hooks:
+        payload = await _permission_request_payload(tool, req)
+        if payload is not None:
+            runner = run_permission_request_hooks or _field(approval_ctx, "run_permission_request_hooks")
+            if callable(runner):
+                hook_decision = await _maybe_await(
+                    runner(
+                        _field(approval_ctx, "session"),
+                        _field(approval_ctx, "turn"),
+                        permission_request_run_id,
+                        payload,
+                    )
+                )
+                normalized = _permission_request_hook_decision(hook_decision)
+                if normalized is not None:
+                    kind, message = normalized
+                    if kind == "allow":
+                        decision = ReviewDecision.approved()
+                        await _emit_tool_decision(telemetry, tool_ctx, decision, "config")
+                        return ApprovalRequestOutcome(
+                            decision=decision,
+                            decision_source="config",
+                            used_permission_request_hook=True,
+                        )
+                    decision = ReviewDecision.denied()
+                    await _emit_tool_decision(telemetry, tool_ctx, decision, "config")
+                    return ApprovalRequestOutcome(
+                        error=ToolError.rejected(message or "rejected by permission request hook"),
+                        decision_source="config",
+                        used_permission_request_hook=True,
+                    )
+
+    starter = getattr(tool, "start_approval_async", None)
+    if not callable(starter):
+        raise TypeError("tool must provide start_approval_async")
+    decision = ReviewDecision.from_mapping(await _maybe_await(starter(req, approval_ctx)))
+    source = "automated_reviewer" if _field(approval_ctx, "guardian_review_id") is not None else "user"
+    await _emit_tool_decision(telemetry, tool_ctx, decision, source)
+    return ApprovalRequestOutcome(decision=decision, decision_source=source)
+
+
 def initial_attempt_plan(
     sandbox_permissions: SandboxPermissions,
     requirement: ExecApprovalRequirement,
@@ -263,20 +357,20 @@ def reject_if_not_approved(
     *,
     guardian_review_id: str | None = None,
     guardian_rejection_message: str | None = None,
-    guardian_timeout_message: str = GUARDIAN_TIMEOUT_MESSAGE,
+    guardian_timeout_message: str | None = None,
 ) -> ToolError | None:
     decision = ReviewDecision.from_mapping(decision)
     if guardian_review_id is not None and not isinstance(guardian_review_id, str):
         raise TypeError("guardian_review_id must be a string or None")
     if guardian_rejection_message is not None and not isinstance(guardian_rejection_message, str):
         raise TypeError("guardian_rejection_message must be a string or None")
-    if not isinstance(guardian_timeout_message, str):
-        raise TypeError("guardian_timeout_message must be a string")
+    if guardian_timeout_message is not None and not isinstance(guardian_timeout_message, str):
+        raise TypeError("guardian_timeout_message must be a string or None")
     if decision.kind in {"denied", "abort"}:
         reason = guardian_rejection_message if guardian_review_id is not None else "rejected by user"
         return ToolError.rejected(reason or "rejected by user")
     if decision.kind == "timed_out":
-        return ToolError.rejected(guardian_timeout_message)
+        return ToolError.rejected(guardian_timeout_message or GUARDIAN_TIMEOUT_MESSAGE)
     if decision.kind in {"approved", "approved_for_session", "approved_execpolicy_amendment"}:
         return None
     if decision.kind == "network_policy_amendment":
@@ -285,6 +379,109 @@ def reject_if_not_approved(
             return None
         return ToolError.rejected("rejected by user")
     raise ValueError(f"unsupported review decision kind: {decision.kind}")
+
+
+async def reject_if_not_approved_for_tool_ctx(
+    tool_ctx: Any,
+    guardian_review_id: str | None,
+    decision: ReviewDecision | str | dict[str, Any],
+) -> ToolError | None:
+    """Rust-shaped async wrapper for ``reject_if_not_approved``.
+
+    Rust source: ``codex-rs/core/src/tools/orchestrator.rs``.
+    Behavior anchor: ``ToolOrchestrator::reject_if_not_approved`` calls
+    ``guardian_rejection_message(tool_ctx.session, review_id).await`` for
+    guardian denied/abort decisions and ``guardian_timeout_message()`` for
+    timed-out decisions.
+    """
+
+    if guardian_review_id is not None and not isinstance(guardian_review_id, str):
+        raise TypeError("guardian_review_id must be a string or None")
+    decision = ReviewDecision.from_mapping(decision)
+    guardian_message: str | None = None
+    if decision.kind in {"denied", "abort"} and guardian_review_id is not None:
+        session = _tool_ctx_session(tool_ctx)
+        guardian_message = await _guardian_rejection_message(session, guardian_review_id)
+    return reject_if_not_approved(
+        decision,
+        guardian_review_id=guardian_review_id,
+        guardian_rejection_message=guardian_message,
+    )
+
+
+def _tool_ctx_session(tool_ctx: Any) -> Any:
+    if isinstance(tool_ctx, Mapping):
+        return tool_ctx.get("session")
+    return getattr(tool_ctx, "session", None)
+
+
+async def _permission_request_payload(tool: Any, req: Any) -> Any | None:
+    payload_factory = getattr(tool, "permission_request_payload", None)
+    if not callable(payload_factory):
+        return None
+    return await _maybe_await(payload_factory(req))
+
+
+def _permission_request_hook_decision(value: Any) -> tuple[str, str | None] | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        normalized = value.lower()
+        if normalized in {"allow", "allowed", "approve", "approved"}:
+            return ("allow", None)
+        if normalized in {"deny", "denied", "decline", "rejected"}:
+            return ("deny", None)
+        raise ValueError(f"unknown permission request hook decision: {value}")
+    behavior = _field(value, "behavior", None)
+    if behavior is None:
+        behavior = _field(value, "type", None)
+    if behavior is None:
+        behavior = _field(value, "kind", None)
+    message = _field(value, "message", None)
+    if behavior is None:
+        return None
+    normalized = str(behavior).lower()
+    if normalized in {"allow", "allowed", "approve", "approved"}:
+        return ("allow", None)
+    if normalized in {"deny", "denied", "decline", "rejected"}:
+        if message is not None and not isinstance(message, str):
+            raise TypeError("permission request deny message must be a string or None")
+        return ("deny", message)
+    raise ValueError(f"unknown permission request hook decision: {behavior}")
+
+
+async def _emit_tool_decision(telemetry: Any, tool_ctx: Any, decision: ReviewDecision, source: str) -> None:
+    if telemetry is None:
+        return
+    emitter = getattr(telemetry, "tool_decision", None)
+    if not callable(emitter):
+        return
+    await _maybe_await(emitter(_flat_tool_name_value(_field(tool_ctx, "tool_name")), _field(tool_ctx, "call_id"), decision, source))
+
+
+def _flat_tool_name_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        return ".".join(str(item) for item in value)
+    name = getattr(value, "name", None)
+    if isinstance(name, str):
+        return name
+    return str(value)
+
+
+def _field(value: Any, key: str, default: Any = None) -> Any:
+    if value is None:
+        return default
+    if isinstance(value, Mapping):
+        return value.get(key, default)
+    return getattr(value, key, default)
+
+
+async def _maybe_await(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
 def build_denial_reason_from_output(output: ExecToolCallOutput) -> str:
@@ -362,6 +559,7 @@ def retry_decision_for_sandbox_denial(
 
 __all__ = [
     "ApprovalPolicy",
+    "ApprovalRequestOutcome",
     "ApprovalStepDecision",
     "DEFAULT_SANDBOX_DENIAL_RETRY_REASON",
     "GUARDIAN_TIMEOUT_MESSAGE",
@@ -376,6 +574,8 @@ __all__ = [
     "build_tool_orchestrator_plan_for_session",
     "initial_attempt_plan",
     "reject_if_not_approved",
+    "reject_if_not_approved_for_tool_ctx",
+    "request_approval",
     "retry_decision_for_sandbox_denial",
 ]
 

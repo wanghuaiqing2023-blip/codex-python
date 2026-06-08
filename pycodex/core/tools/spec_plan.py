@@ -16,6 +16,8 @@ from typing import Any
 from pycodex.core.tools.code_mode import (
     CodeModeExecuteHandler,
     CodeModeWaitHandler,
+    PUBLIC_TOOL_NAME,
+    WAIT_TOOL_NAME,
     ToolNamespaceDescription,
     augment_tool_spec_for_code_mode,
     code_mode_name_for_tool_name,
@@ -31,6 +33,7 @@ from pycodex.core.tools.hosted_spec import (
     create_web_search_tool,
 )
 from pycodex.core.tools.handlers.mcp import McpHandler, McpToolRequestCallback
+from pycodex.core.tools.handlers.extension_tools import ExtensionToolAdapter
 from pycodex.core.tools.handlers.request_plugin_install import (
     ListAvailablePluginsToInstallHandler,
     RequestPluginInstallCallback,
@@ -44,7 +47,7 @@ from pycodex.tools.tool_discovery import (
 from pycodex.core.tools.registry import ToolExposure, ToolRegistry, override_tool_exposure
 from pycodex.core.tools.router import ToolRouter
 from pycodex.core.tools.tool_search_entry import default_namespace_description
-from pycodex.core.tools.handlers.tool_search import ToolSearchHandler
+from pycodex.core.tools.handlers.tool_search import TOOL_SEARCH_TOOL_NAME, ToolSearchHandler
 from pycodex.core.tools.handlers.unified_exec import ExecCommandHandler, ExecCommandHandlerOptions, WriteStdinHandler
 from pycodex.core.tools.handlers.view_image import ViewImageHandler, ViewImageToolOptions
 from pycodex.protocol import ToolName, WebSearchConfig, WebSearchMode, WebSearchToolType
@@ -116,6 +119,28 @@ def build_tool_router_from_plan(
 ) -> ToolRouter:
     model_visible_specs, registry = build_model_visible_specs_and_registry(planned_tools, options)
     return ToolRouter.from_parts(registry, model_visible_specs)
+
+
+def build_tool_router(
+    turn_context: Any,
+    params: Any,
+    options: ToolPlanOptions | None = None,
+) -> ToolRouter:
+    planned_tools = PlannedTools()
+    add_environment_tools_for_turn_context(planned_tools, turn_context)
+    add_mcp_tools(
+        planned_tools,
+        getattr(params, "mcp_tools", None) or (),
+        getattr(params, "deferred_mcp_tools", None) or (),
+    )
+    add_discoverable_install_tools(planned_tools, getattr(params, "discoverable_tools", None))
+    add_dynamic_tools(planned_tools, getattr(params, "dynamic_tools", ()) or ())
+    add_extension_tools(
+        planned_tools,
+        getattr(params, "extension_tool_executors", ()) or (),
+        options,
+    )
+    return build_tool_router_from_plan(planned_tools, options)
 
 
 def build_model_visible_specs_and_registry(
@@ -255,6 +280,32 @@ def add_mcp_tools(
             McpHandler.new(tool_info, request_callback=request_callback),
             ToolExposure.DEFERRED,
         )
+
+
+def add_extension_tools(
+    planned_tools: PlannedTools,
+    executors: Iterable[Any],
+    options: ToolPlanOptions | None = None,
+) -> None:
+    options = options or ToolPlanOptions()
+    reserved_tool_names = {_runtime_tool_name(runtime) for runtime in planned_tools.runtimes}
+    if options.code_mode_enabled:
+        reserved_tool_names.add(ToolName.plain(PUBLIC_TOOL_NAME))
+        reserved_tool_names.add(ToolName.plain(WAIT_TOOL_NAME))
+    if (
+        options.search_tool_enabled
+        and options.namespace_tools_enabled
+        and any(_runtime_exposure(runtime) is ToolExposure.DEFERRED for runtime in planned_tools.runtimes)
+    ):
+        reserved_tool_names.add(ToolName.plain(TOOL_SEARCH_TOOL_NAME))
+
+    for executor in executors:
+        adapter = ExtensionToolAdapter.new(executor)
+        tool_name = adapter.tool_name()
+        if tool_name in reserved_tool_names:
+            continue
+        reserved_tool_names.add(tool_name)
+        planned_tools.add(adapter)
 
 
 def add_apply_patch_tool(
@@ -601,6 +652,7 @@ __all__ = [
     "add_apply_patch_tool_for_turn_context",
     "add_dynamic_tools",
     "add_environment_tools_for_turn_context",
+    "add_extension_tools",
     "add_hosted_model_tools",
     "add_mcp_tools",
     "add_request_permissions_tool",
@@ -608,6 +660,7 @@ __all__ = [
     "add_view_image_tool_for_turn_context",
     "append_tool_search_executor",
     "build_model_visible_specs_and_registry",
+    "build_tool_router",
     "build_environment_tool_router_from_turn_context",
     "build_tool_router_from_plan",
     "code_mode_namespace_descriptions",

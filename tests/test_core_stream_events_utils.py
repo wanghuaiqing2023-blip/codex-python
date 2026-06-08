@@ -48,6 +48,7 @@ from pycodex.core import (
     completed_item_defers_mailbox_delivery_to_next_turn,
     completed_response_item_recording_plan,
     finalize_non_tool_response_item,
+    finalize_non_tool_response_item_with_contributors,
     finalized_turn_item_facts,
     function_call_error_output_result,
     function_call_error_to_response_input,
@@ -58,6 +59,7 @@ from pycodex.core import (
     image_generation_artifact_path,
     last_assistant_message_from_item,
     memory_citation_from_response_item,
+    raw_assistant_output_text_from_item,
     realtime_text_for_event,
     record_completed_response_item_with_finalized_facts,
     response_input_to_response_item,
@@ -135,7 +137,12 @@ class ResponseSequence(Sequence):
 
 
 class CoreStreamEventsUtilsTests(unittest.TestCase):
+    # Rust source:
+    # - codex/codex-rs/core/src/stream_events_utils.rs
+    # - codex/codex-rs/core/src/stream_events_utils_tests.rs
+
     def test_external_context_pollution_items_include_web_search_and_tool_search(self) -> None:
+        """Rust unit test: ``external_context_pollution_items_include_web_search_and_tool_search``."""
         polluting_items = (
             ResponseItem.web_search_call(status="completed"),
             ResponseItem.tool_search_call({"query": "calendar"}, call_id="search-1", execution="client"),
@@ -147,6 +154,7 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
         self.assertTrue(all(response_item_may_include_external_context(item) for item in polluting_items))
 
     def test_external_context_pollution_items_exclude_local_tool_calls(self) -> None:
+        """Rust unit test: ``external_context_pollution_items_exclude_local_tool_calls``."""
         non_polluting_items = (
             ResponseItem.function_call("shell", "{}", "call-1"),
             ResponseItem.from_response_input_item(ResponseInputItem.function_call_output("call-1", "ok")),
@@ -159,7 +167,40 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
 
         self.assertFalse(any(response_item_may_include_external_context(item) for item in non_polluting_items))
 
+    def test_raw_assistant_output_text_concatenates_only_assistant_output_text_like_rust(self) -> None:
+        # Rust source: stream_events_utils.rs raw_assistant_output_text_from_item
+        item = ResponseItem.message(
+            "assistant",
+            (
+                ContentItem.output_text("hello "),
+                ContentItem.input_text("ignored input text"),
+                ContentItem.output_text("world"),
+            ),
+            id="msg-1",
+        )
+
+        self.assertEqual(raw_assistant_output_text_from_item(item), "hello world")
+        self.assertIsNone(
+            raw_assistant_output_text_from_item(
+                ResponseItem.message("user", (ContentItem.output_text("not assistant"),), id="msg-2")
+            )
+        )
+        self.assertIsNone(raw_assistant_output_text_from_item(ResponseItem.function_call("shell", "{}", "call-1")))
+
+    def test_input_text_only_assistant_message_has_no_visible_output_text_for_deferral(self) -> None:
+        # Rust source: raw_assistant_output_text_from_item filters only OutputText content.
+        item = ResponseItem.message(
+            "assistant",
+            (ContentItem.input_text("backward-compatible metadata only"),),
+            id="msg-input-only",
+        )
+
+        self.assertEqual(raw_assistant_output_text_from_item(item), "")
+        self.assertIsNone(last_assistant_message_from_item(item, plan_mode=False))
+        self.assertFalse(completed_item_defers_mailbox_delivery_to_next_turn(item, plan_mode=False))
+
     def test_last_assistant_message_from_item_strips_citations_and_plan_blocks(self) -> None:
+        """Rust unit test: ``last_assistant_message_from_item_strips_citations_and_plan_blocks``."""
         item = assistant_output_text(
             "before<oai-mem-citation>doc1</oai-mem-citation>\n"
             "<proposed_plan>\n- x\n</proposed_plan>\n"
@@ -231,14 +272,48 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
         self.assertEqual(citation.entries[0].line_end, 2)
         self.assertEqual(citation.rollout_ids, ("019cc2ea-1dff-7902-8d40-c8f6e5d83cc4",))
 
+    def test_handle_non_tool_response_item_strips_citations_from_assistant_message(self) -> None:
+        """Rust unit test: ``handle_non_tool_response_item_strips_citations_from_assistant_message``."""
+
+        item = assistant_output_text(
+            "hello<oai-mem-citation><citation_entries>\n"
+            "MEMORY.md:1-2|note=[x]\n"
+            "</citation_entries>\n"
+            "<rollout_ids>\n"
+            "019cc2ea-1dff-7902-8d40-c8f6e5d83cc4\n"
+            "</rollout_ids></oai-mem-citation> world"
+        )
+
+        turn_item = handle_non_tool_response_item(item, False)
+
+        self.assertIsNotNone(turn_item)
+        assert turn_item is not None
+        self.assertEqual(turn_item.type, "AgentMessage")
+        self.assertEqual(agent_message_text(turn_item.item), "hello world")
+        self.assertIsInstance(turn_item.item.memory_citation, MemoryCitation)
+        assert turn_item.item.memory_citation is not None
+        self.assertEqual(turn_item.item.memory_citation.entries[0].path, "MEMORY.md")
+        self.assertEqual(turn_item.item.memory_citation.entries[0].line_start, 1)
+        self.assertEqual(turn_item.item.memory_citation.entries[0].line_end, 2)
+        self.assertEqual(turn_item.item.memory_citation.rollout_ids, ("019cc2ea-1dff-7902-8d40-c8f6e5d83cc4",))
+
     def test_hidden_markup_strips_unterminated_citation_but_keeps_non_line_plan_tag(self) -> None:
         self.assertEqual(strip_hidden_assistant_markup("x<oai-mem-citation>source", False), "x")
         self.assertEqual(
             strip_hidden_assistant_markup("  <proposed_plan> extra\n", True),
             "  <proposed_plan> extra\n",
         )
+        self.assertEqual(
+            strip_hidden_assistant_markup("before\n  <proposed_plan>\n- hidden\n  </proposed_plan>\nafter", True),
+            "before\nafter",
+        )
+        self.assertEqual(
+            strip_hidden_assistant_markup("before\n<proposed_plan>\n- hidden\n", True),
+            "before\n",
+        )
 
     def test_last_assistant_message_from_item_returns_none_for_hidden_only_text(self) -> None:
+        """Rust unit tests: citation-only and plan-only hidden assistant messages."""
         self.assertIsNone(
             last_assistant_message_from_item(
                 assistant_output_text("<oai-mem-citation>doc1</oai-mem-citation>"),
@@ -248,6 +323,27 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
         self.assertIsNone(
             last_assistant_message_from_item(
                 assistant_output_text("<proposed_plan>\n- x\n</proposed_plan>"),
+                plan_mode=True,
+            )
+        )
+
+    def test_completed_item_does_not_defer_for_user_or_hidden_only_assistant_text(self) -> None:
+        # Rust source: stream_events_utils.rs completed_item_defers_mailbox_delivery_to_next_turn
+        self.assertFalse(
+            completed_item_defers_mailbox_delivery_to_next_turn(
+                ResponseItem.message("user", (ContentItem.output_text("visible"),), id="msg-user"),
+                plan_mode=False,
+            )
+        )
+        self.assertFalse(
+            completed_item_defers_mailbox_delivery_to_next_turn(
+                assistant_output_text("<oai-mem-citation>doc1</oai-mem-citation>"),
+                plan_mode=False,
+            )
+        )
+        self.assertFalse(
+            completed_item_defers_mailbox_delivery_to_next_turn(
+                assistant_output_text("<proposed_plan>\n- hidden\n</proposed_plan>"),
                 plan_mode=True,
             )
         )
@@ -295,6 +391,7 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
         self.assertEqual(get_last_assistant_message_from_turn(responses), "latest")
 
     def test_completed_item_defers_mailbox_delivery_for_unknown_phase_messages(self) -> None:
+        """Rust unit test: ``completed_item_defers_mailbox_delivery_for_unknown_phase_messages``."""
         self.assertTrue(
             completed_item_defers_mailbox_delivery_to_next_turn(
                 assistant_output_text("final answer"),
@@ -303,6 +400,7 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
         )
 
     def test_completed_item_keeps_mailbox_delivery_open_for_commentary_messages(self) -> None:
+        """Rust unit test: ``completed_item_keeps_mailbox_delivery_open_for_commentary_messages``."""
         self.assertFalse(
             completed_item_defers_mailbox_delivery_to_next_turn(
                 assistant_output_text("still working", MessagePhase.COMMENTARY),
@@ -311,6 +409,7 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
         )
 
     def test_completed_item_defers_mailbox_delivery_for_image_generation_calls(self) -> None:
+        """Rust unit test: ``completed_item_defers_mailbox_delivery_for_image_generation_calls``."""
         self.assertTrue(
             completed_item_defers_mailbox_delivery_to_next_turn(
                 ResponseItem.image_generation_call("ig-1", "completed", "Zm9v"),
@@ -319,17 +418,23 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
         )
 
     def test_image_generation_artifact_path_sanitizes_components(self) -> None:
+        """Rust unit test: ``save_image_generation_result_sanitizes_call_id_for_codex_home_output_path``."""
         path = image_generation_artifact_path(Path("home"), "", "../ig/..")
 
         self.assertEqual(
             path,
             Path("home") / GENERATED_IMAGE_ARTIFACTS_DIR / "generated_image" / "___ig___.png",
         )
+        self.assertEqual(
+            image_generation_artifact_path(Path("home"), "s/../id", "../ig/.."),
+            Path("home") / GENERATED_IMAGE_ARTIFACTS_DIR / "s____id" / "___ig___.png",
+        )
 
         with self.assertRaisesRegex(TypeError, "session_id must be a string"):
             image_generation_artifact_path(Path("home"), 123, "ig")  # type: ignore[arg-type]
 
     def test_save_image_generation_result_saves_base64_to_png_in_codex_home(self) -> None:
+        """Rust unit test: ``save_image_generation_result_saves_base64_to_png_in_codex_home``."""
         with tempfile.TemporaryDirectory() as temp_dir:
             codex_home = Path(temp_dir)
             expected_path = image_generation_artifact_path(codex_home, "session-1", "ig_save_base64")
@@ -340,6 +445,7 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
             self.assertEqual(saved_path.read_bytes(), b"foo")
 
     def test_save_image_generation_result_overwrites_existing_file(self) -> None:
+        """Rust unit test: ``save_image_generation_result_overwrites_existing_file``."""
         with tempfile.TemporaryDirectory() as temp_dir:
             codex_home = Path(temp_dir)
             existing_path = image_generation_artifact_path(codex_home, "session-1", "ig_overwrite")
@@ -352,6 +458,7 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
             self.assertEqual(saved_path.read_bytes(), b"foo")
 
     def test_save_image_generation_result_rejects_data_url_and_urlsafe_payloads(self) -> None:
+        """Rust unit tests: data-url and non-standard base64 rejection cases."""
         with tempfile.TemporaryDirectory() as temp_dir:
             codex_home = Path(temp_dir)
 
@@ -490,11 +597,71 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
         self.assertIsNotNone(turn_item)
         self.assertIs(turn_item.item.memory_citation, existing)
 
+    def test_finalize_non_tool_response_item_defers_mailbox_for_contributed_visible_text(self) -> None:
+        """Rust unit test: ``finalized_turn_item_defers_mailbox_for_contributed_visible_text``."""
+
+        class Contributor:
+            async def contribute(self, _thread_extension_data, _turn_store, item):
+                agent_message = item.item
+                return TurnItem.agent_message(
+                    AgentMessageItem(
+                        id=agent_message.id,
+                        content=(AgentMessageContent.text_content("contributed assistant text"),),
+                        phase=agent_message.phase,
+                        memory_citation=agent_message.memory_citation,
+                    )
+                )
+
+        item = assistant_output_text("<oai-mem-citation>hidden only</oai-mem-citation>")
+
+        finalized = _run_async(
+            finalize_non_tool_response_item_with_contributors(
+                SimpleNamespace(turn_item_contributors=lambda: (Contributor(),)),
+                SimpleNamespace(),
+                SimpleNamespace(),
+                item,
+                False,
+            )
+        )
+
+        self.assertIsNotNone(finalized)
+        self.assertEqual(finalized.facts.last_agent_message, "contributed assistant text")
+        self.assertTrue(finalized.facts.defers_mailbox_delivery_to_next_turn)
+
     def test_finalize_non_tool_response_item_keeps_commentary_from_deferring_mailbox(self) -> None:
         finalized = finalize_non_tool_response_item(assistant_output_text("working", MessagePhase.COMMENTARY), False)
 
         self.assertIsNotNone(finalized)
         self.assertEqual(finalized.facts.last_agent_message, "working")
+        self.assertFalse(finalized.facts.defers_mailbox_delivery_to_next_turn)
+
+    def test_finalize_non_tool_response_item_keeps_contributed_commentary_open(self) -> None:
+        """Rust unit test: ``finalized_turn_item_keeps_mailbox_open_for_commentary_text``."""
+
+        class Contributor:
+            async def contribute(self, _thread_extension_data, _turn_store, item):
+                agent_message = item.item
+                return TurnItem.agent_message(
+                    AgentMessageItem(
+                        id=agent_message.id,
+                        content=(AgentMessageContent.text_content("contributed assistant text"),),
+                        phase=agent_message.phase,
+                        memory_citation=agent_message.memory_citation,
+                    )
+                )
+
+        finalized = _run_async(
+            finalize_non_tool_response_item_with_contributors(
+                SimpleNamespace(turn_item_contributors=lambda: (Contributor(),)),
+                SimpleNamespace(),
+                SimpleNamespace(),
+                assistant_output_text("still working", MessagePhase.COMMENTARY),
+                False,
+            )
+        )
+
+        self.assertIsNotNone(finalized)
+        self.assertEqual(finalized.facts.last_agent_message, "contributed assistant text")
         self.assertFalse(finalized.facts.defers_mailbox_delivery_to_next_turn)
 
     def test_finalize_non_tool_response_item_defers_image_generation(self) -> None:
@@ -508,6 +675,8 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
         self.assertIsNone(handle_non_tool_response_item(ResponseItem.function_call("shell", "{}", "call-1"), False))
 
     def test_handle_non_tool_response_item_with_contributors_runs_before_markup_normalization(self) -> None:
+        """Rust unit test: ``handle_non_tool_response_item_runs_turn_item_contributors_only_when_requested``."""
+
         class Contributor:
             async def contribute(self, thread_extension_data, turn_store, item):
                 self.seen = (thread_extension_data, turn_store, item.type)
@@ -617,6 +786,52 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
         self.assertEqual(session.recorded[0].type, "message")
         self.assertEqual(session.started[0].type, "AgentMessage")
         self.assertEqual(session.completed[0].type, "AgentMessage")
+
+    def test_handle_output_item_done_returns_contributed_last_agent_message(self) -> None:
+        """Rust unit test: ``handle_output_item_done_returns_contributed_last_agent_message``."""
+
+        class Contributor:
+            async def contribute(self, _thread_extension_data, _turn_store, item):
+                agent_message = item.item
+                return TurnItem.agent_message(
+                    AgentMessageItem(
+                        id=agent_message.id,
+                        content=(AgentMessageContent.text_content("contributed assistant text"),),
+                        phase=agent_message.phase,
+                        memory_citation=agent_message.memory_citation,
+                    )
+                )
+
+        class Session:
+            def __init__(self):
+                self.recorded = []
+                self.started = []
+                self.completed = []
+
+            def turn_item_contributors(self):
+                return (Contributor(),)
+
+            async def record_conversation_items(self, turn_context, items):
+                self.recorded.extend(items)
+
+            async def emit_turn_item_started(self, turn_context, item):
+                self.started.append(item)
+
+            async def emit_turn_item_completed(self, turn_context, item):
+                self.completed.append(item)
+
+        session = Session()
+        ctx = HandleOutputCtx(
+            session,
+            SimpleNamespace(collaboration_mode=SimpleNamespace(mode="default"), sub_id="sub"),
+            turn_store=SimpleNamespace(),
+        )
+
+        result = _run_async(handle_output_item_done(ctx, assistant_output_text("original assistant text"), None))
+
+        self.assertEqual(result.last_agent_message, "contributed assistant text")
+        self.assertEqual(session.started[0].item.content[0].text, "contributed assistant text")
+        self.assertEqual(session.completed[0].item.content[0].text, "contributed assistant text")
 
     def test_handle_output_item_done_tool_call_sets_follow_up_and_future(self) -> None:
         class Cancellation:
@@ -2289,7 +2504,7 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
             )
 
     def test_sampling_plan_mode_assistant_done_plan_completes_embedded_plan_text(self) -> None:
-        item = assistant_output_text("<proposed_plan>- step</proposed_plan>")
+        item = assistant_output_text("<proposed_plan>\n- step\n</proposed_plan>")
 
         plan = sampling_plan_mode_assistant_done_plan(
             item,
@@ -2302,13 +2517,22 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
             plan.proposed_plan_completion_plan,
             SamplingProposedPlanCompletionPlan(
                 plan_item_id="turn-1-plan",
-                plan_text="- step",
+                plan_text="- step\n",
                 should_start_plan_item=True,
                 should_complete_plan_item=True,
                 plan_item_started_after=True,
                 plan_item_completed_after=True,
             ),
         )
+
+        inline = sampling_plan_mode_assistant_done_plan(
+            assistant_output_text("<proposed_plan>- step</proposed_plan>"),
+            plan_item_id="turn-1-plan",
+            plan_item_started=False,
+            plan_item_completed=False,
+        )
+
+        self.assertIsNone(inline.proposed_plan_completion_plan)
 
     def test_sampling_plan_segments_plan_buffers_leading_whitespace_and_emits_normal_text(self) -> None:
         buffered = sampling_plan_segments_plan(
@@ -2415,7 +2639,7 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
             plan,
             SamplingProposedPlanCompletionPlan(
                 plan_item_id="turn-1-plan",
-                plan_text="\n- Step 1\n\n- Step 2\n",
+                plan_text="- Step 1\n\n- Step 2\n",
                 should_start_plan_item=True,
                 should_complete_plan_item=True,
                 plan_item_started_after=True,
@@ -2452,7 +2676,7 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
             completed,
             SamplingProposedPlanCompletionPlan(
                 plan_item_id="turn-1-plan",
-                plan_text="\n- Step\n",
+                plan_text="- Step\n",
                 should_start_plan_item=False,
                 should_complete_plan_item=False,
                 plan_item_started_after=True,

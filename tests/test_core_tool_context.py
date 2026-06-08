@@ -37,6 +37,8 @@ from pycodex.protocol import (
 
 class ToolContextTests(unittest.TestCase):
     def test_tool_call_source_matches_rust_direct_and_code_mode_variants(self) -> None:
+        # Rust source: codex-rs/core/src/tools/context.rs::ToolCallSource
+        # Rust contract: tool calls originate either directly from the model or from code-mode runtime cells.
         direct = ToolCallSource.direct()
         code_mode = ToolCallSource.code_mode("cell-1", "runtime-call-2")
 
@@ -60,6 +62,8 @@ class ToolContextTests(unittest.TestCase):
             ToolCallSource("other")
 
     def test_tool_invocation_wraps_runtime_context_and_payload(self) -> None:
+        # Rust source: codex-rs/core/src/tools/context.rs::ToolInvocation
+        # Rust contract: invocation carries session, turn, tracker, call id, tool name, source, and payload.
         invocation = ToolInvocation(
             session=object(),
             turn=object(),
@@ -153,6 +157,8 @@ class ToolContextTests(unittest.TestCase):
             boxed_tool_output(object())  # type: ignore[arg-type]
 
     def test_custom_tool_calls_should_roundtrip_as_custom_outputs(self) -> None:
+        # Rust source: codex-rs/core/src/tools/context.rs::function_tool_response
+        # Rust test: custom_tool_calls_should_roundtrip_as_custom_outputs
         response = FunctionToolOutput.from_text("patched", True).to_response_item(
             "call-42",
             ToolPayload.custom("patch"),
@@ -194,6 +200,8 @@ class ToolContextTests(unittest.TestCase):
             )
 
     def test_function_payloads_remain_function_outputs(self) -> None:
+        # Rust source: codex-rs/core/src/tools/context.rs::function_tool_response
+        # Rust test: function_payloads_remain_function_outputs
         response = FunctionToolOutput.from_text("ok", True).to_response_item(
             "fn-1",
             ToolPayload.function("{}"),
@@ -232,7 +240,22 @@ class ToolContextTests(unittest.TestCase):
         self.assertFalse(output.success_for_logging())
         self.assertEqual(output.log_preview(), '["failed"]')
 
+    def test_function_tool_output_log_preview_uses_content_items_when_plain_text_missing(self) -> None:
+        # Rust source: codex-core/src/tools/context_tests.rs
+        # Rust test: log_preview_uses_content_items_when_plain_text_is_missing
+        output = FunctionToolOutput.from_content(
+            (
+                FunctionCallOutputContentItem.input_text("preview"),
+            ),
+            True,
+        )
+
+        self.assertEqual(output.log_preview(), "preview")
+        self.assertEqual(output.into_text(), "preview")
+
     def test_custom_tool_calls_can_derive_text_from_content_items(self) -> None:
+        # Rust source: codex-rs/core/src/tools/context.rs::function_tool_response
+        # Rust test: custom_tool_calls_can_derive_text_from_content_items
         content = (
             FunctionCallOutputContentItem.input_text("line 1"),
             FunctionCallOutputContentItem.input_image("data:image/png;base64,AAA", DEFAULT_IMAGE_DETAIL),
@@ -250,6 +273,8 @@ class ToolContextTests(unittest.TestCase):
         self.assertTrue(response.output.success)
 
     def test_tool_search_payloads_roundtrip_as_tool_search_outputs(self) -> None:
+        # Rust source: codex-rs/core/src/tools/context.rs::ToolSearchOutput::to_response_item
+        # Rust test: tool_search_payloads_roundtrip_as_tool_search_outputs
         payload = ToolPayload.tool_search(SearchToolCallParams("calendar"))
         response = ToolSearchOutput(
             (
@@ -294,6 +319,8 @@ class ToolContextTests(unittest.TestCase):
         self.assertEqual(feedback.code_mode_result(ToolPayload.function("{}")), "original")
 
     def test_mcp_tool_output_response_item_includes_wall_time(self) -> None:
+        # Rust source: codex-rs/core/src/tools/context.rs::McpToolOutput::response_payload
+        # Rust test: mcp_tool_output_response_item_includes_wall_time
         output = McpToolOutput(
             result=CallToolResult(
                 content=({"type": "text", "text": "done"},),
@@ -318,7 +345,38 @@ class ToolContextTests(unittest.TestCase):
             '[{"type":"text","text":"done"}]',
         )
 
+    def test_mcp_code_mode_result_serializes_full_call_tool_result(self) -> None:
+        # Rust source: codex-core/src/tools/context_tests.rs
+        # Rust test: mcp_code_mode_result_serializes_full_call_tool_result
+        output = McpToolOutput(
+            result=CallToolResult(
+                content=({"type": "text", "text": "ignored"},),
+                structured_content={"threadId": "thread_123", "content": "done"},
+                is_error=False,
+                meta={"source": "mcp"},
+            ),
+            tool_input={},
+            wall_time_seconds=1.25,
+            original_image_detail_supported=False,
+            truncation_policy=TruncationPolicyConfig.bytes(64),
+        )
+
+        self.assertEqual(
+            output.code_mode_result(ToolPayload.function("{}")),
+            {
+                "content": [{"type": "text", "text": "ignored"}],
+                "structuredContent": {
+                    "threadId": "thread_123",
+                    "content": "done",
+                },
+                "isError": False,
+                "_meta": {"source": "mcp"},
+            },
+        )
+
     def test_mcp_tool_output_prefers_structured_content_and_truncates(self) -> None:
+        # Rust source: codex-rs/core/src/tools/context.rs::McpToolOutput::response_payload
+        # Rust test: mcp_tool_output_response_item_truncates_large_structured_content
         output = McpToolOutput(
             result=CallToolResult(
                 content=({"type": "text", "text": "ignored when structured content is present"},),
@@ -338,6 +396,8 @@ class ToolContextTests(unittest.TestCase):
         self.assertNotIn("ignored when structured content is present", text)
 
     def test_mcp_tool_output_preserves_image_content_items(self) -> None:
+        # Rust source: codex-rs/core/src/tools/context.rs::McpToolOutput::response_payload
+        # Rust test: mcp_tool_output_response_item_preserves_content_items
         output = McpToolOutput(
             result=CallToolResult(
                 content=(
@@ -368,6 +428,38 @@ class ToolContextTests(unittest.TestCase):
                 FunctionCallOutputContentItem.input_image("data:image/png;base64,AAA", DEFAULT_IMAGE_DETAIL),
             ),
         )
+
+    def test_mcp_tool_output_image_only_content_items_get_wall_time_header(self) -> None:
+        # Rust source: codex-rs/core/src/tools/context.rs::McpToolOutput::response_payload
+        # Rust test: mcp_tool_output_response_item_preserves_content_items
+        output = McpToolOutput(
+            result=CallToolResult(
+                content=(
+                    {
+                        "type": "image",
+                        "mimeType": "image/png",
+                        "data": "AAA",
+                    },
+                ),
+                structured_content=None,
+                is_error=False,
+            ),
+            tool_input={},
+            wall_time_seconds=0.5,
+            original_image_detail_supported=False,
+            truncation_policy=TruncationPolicyConfig.bytes(1024),
+        )
+
+        response = output.to_response_item("mcp-call-image-only", ToolPayload.function("{}"))
+
+        self.assertEqual(
+            response.output.content_items,
+            (
+                FunctionCallOutputContentItem.input_text("Wall time: 0.5000 seconds\nOutput:"),
+                FunctionCallOutputContentItem.input_image("data:image/png;base64,AAA", DEFAULT_IMAGE_DETAIL),
+            ),
+        )
+        self.assertEqual(response.output.to_text(), "Wall time: 0.5000 seconds\nOutput:")
 
     def test_mcp_tool_output_truncates_content_items_after_header(self) -> None:
         image = FunctionCallOutputContentItem.input_image("data:image/png;base64,AAA", DEFAULT_IMAGE_DETAIL)
@@ -425,6 +517,29 @@ class ToolContextTests(unittest.TestCase):
         self.assertEqual(output.post_tool_use_input(ToolPayload.function("{}")), {"path": "image.png"})
         self.assertEqual(output.post_tool_use_response("mcp-call-original", ToolPayload.function("{}"))["isError"], False)
 
+    def test_mcp_code_mode_result_stays_raw_when_model_response_is_truncated(self) -> None:
+        # Rust source: codex-core/src/tools/context_tests.rs
+        # Rust test: mcp_tool_output_code_mode_result_stays_raw_call_tool_result
+        large_content = "large structured value " * 1_000
+        output = McpToolOutput(
+            result=CallToolResult(
+                content=({"type": "text", "text": "ignored"},),
+                structured_content={"content": large_content},
+                is_error=False,
+            ),
+            tool_input={},
+            wall_time_seconds=1.25,
+            original_image_detail_supported=False,
+            truncation_policy=TruncationPolicyConfig.bytes(64),
+        )
+
+        model_text = output.to_response_item("mcp-large", ToolPayload.function("{}")).output.to_text()
+        code_mode_result = output.code_mode_result(ToolPayload.function("{}"))
+
+        self.assertIn("chars truncated", model_text)
+        self.assertEqual(code_mode_result["structuredContent"]["content"], large_content)
+        self.assertNotIn("chars truncated", code_mode_result["structuredContent"]["content"])
+
     def test_mcp_image_detail_meta_accepts_all_upstream_detail_values(self) -> None:
         for raw_detail, expected_detail in (
             ("auto", ImageDetail.AUTO),
@@ -454,6 +569,8 @@ class ToolContextTests(unittest.TestCase):
             self.assertEqual(response.output.content_items[1].detail, expected_detail)
 
     def test_aborted_tool_search_returns_empty_completed_search_output(self) -> None:
+        # Rust source: codex-rs/core/src/tools/context.rs::AbortedToolOutput::to_response_item
+        # Rust contract: aborted tool-search calls still return a completed client search output with no tools.
         response = AbortedToolOutput("cancelled").to_response_item(
             "search-abort",
             ToolPayload.tool_search(SearchToolCallParams("calendar")),
@@ -463,6 +580,8 @@ class ToolContextTests(unittest.TestCase):
         self.assertEqual(response.tools, ())
 
     def test_apply_patch_tool_output_keeps_model_and_hook_payloads(self) -> None:
+        # Rust source: codex-rs/core/src/tools/context.rs::ApplyPatchToolOutput
+        # Rust contract: apply_patch model output succeeds, post-tool-use response is text, code-mode value is empty object.
         output = ApplyPatchToolOutput.from_text("Done!")
         response = output.to_response_item("patch-call", ToolPayload.function("{}"))
 
@@ -472,9 +591,13 @@ class ToolContextTests(unittest.TestCase):
         self.assertEqual(output.code_mode_result(ToolPayload.function("{}")), {})
 
     def test_telemetry_preview_returns_original_within_limits(self) -> None:
+        # Rust source: codex-rs/core/src/tools/context.rs::telemetry_preview
+        # Rust test: telemetry_preview_returns_original_within_limits
         self.assertEqual(telemetry_preview("short output"), "short output")
 
     def test_telemetry_preview_truncates_by_bytes(self) -> None:
+        # Rust source: codex-rs/core/src/tools/context.rs::telemetry_preview
+        # Rust test: telemetry_preview_truncates_by_bytes
         preview = telemetry_preview("x" * (TELEMETRY_PREVIEW_MAX_BYTES + 8))
 
         self.assertIn(TELEMETRY_PREVIEW_TRUNCATION_NOTICE, preview)
@@ -484,6 +607,8 @@ class ToolContextTests(unittest.TestCase):
         )
 
     def test_telemetry_preview_truncates_by_lines(self) -> None:
+        # Rust source: codex-rs/core/src/tools/context.rs::telemetry_preview
+        # Rust test: telemetry_preview_truncates_by_lines
         preview = telemetry_preview("\n".join(f"line {idx}" for idx in range(TELEMETRY_PREVIEW_MAX_LINES + 5)))
 
         lines = preview.splitlines()
@@ -605,6 +730,8 @@ class ToolContextTests(unittest.TestCase):
         self.assertEqual(approx_tokens_from_byte_count_i64(5), 2)
 
     def test_exec_command_tool_output_formats_truncated_response(self) -> None:
+        # Rust source: codex-rs/core/src/tools/context.rs::ExecCommandToolOutput::response_text
+        # Rust test: exec_command_tool_output_formats_truncated_response
         output = ExecCommandToolOutput(
             event_call_id="call-42",
             chunk_id="abc123",

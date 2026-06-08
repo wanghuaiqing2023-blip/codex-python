@@ -486,7 +486,10 @@ def hook_permission_mode(approval_policy: Any) -> str:
     if hasattr(value, "value"):
         candidate = value.value
         value = candidate() if callable(candidate) else candidate
-    if isinstance(value, str) and value.lower() == "never":
+    normalized = value
+    if not isinstance(normalized, str):
+        normalized = getattr(value, "name", value)
+    if isinstance(normalized, str) and normalized.replace("_", "-").lower() == "never":
         return "bypassPermissions"
     return "default"
 

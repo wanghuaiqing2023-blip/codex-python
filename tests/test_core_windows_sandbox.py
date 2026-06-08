@@ -8,6 +8,7 @@ from pycodex.core.windows_sandbox import (
     ConfigToml,
     WindowsSandboxModeToml,
     WindowsSandboxSetupMode,
+    WindowsSandboxSetupRequest,
     WindowsToml,
     legacy_windows_sandbox_mode_from_entries,
     resolve_windows_sandbox_mode,
@@ -79,6 +80,30 @@ class WindowsSandboxTests(unittest.TestCase):
         self.assertEqual(windows_sandbox_setup_mode_tag(WindowsSandboxSetupMode.ELEVATED), "elevated")
         self.assertEqual(windows_sandbox_setup_mode_tag("unelevated"), "unelevated")
         self.assertFalse(sandbox_setup_is_complete("C:/Users/example/.codex"))
+
+    def test_windows_sandbox_setup_request_normalizes_pathbuf_fields(self) -> None:
+        # Rust source: codex-rs/core/src/windows_sandbox.rs WindowsSandboxSetupRequest.
+        request = WindowsSandboxSetupRequest(
+            mode=WindowsSandboxSetupMode.ELEVATED,
+            permission_profile=object(),
+            permission_profile_cwd=Path("C:/workspace"),
+            command_cwd="C:/workspace/subdir",
+            codex_home=Path("C:/Users/example/.codex"),
+            env_map={"A": "B"},
+        )
+
+        self.assertEqual(request.permission_profile_cwd, Path("C:/workspace"))
+        self.assertEqual(request.command_cwd, Path("C:/workspace/subdir"))
+        self.assertEqual(request.codex_home, Path("C:/Users/example/.codex"))
+
+        with self.assertRaisesRegex(TypeError, "permission_profile_cwd must be a string or Path"):
+            WindowsSandboxSetupRequest(
+                mode=WindowsSandboxSetupMode.UNELEVATED,
+                permission_profile=object(),
+                permission_profile_cwd=1,
+                command_cwd=Path("C:/workspace"),
+                codex_home=Path("C:/Users/example/.codex"),
+            )
 
     def test_sandbox_setup_is_complete(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

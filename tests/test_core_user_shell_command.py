@@ -4,10 +4,16 @@ import unittest
 from datetime import timedelta
 
 from pycodex.core.user_shell_command import (
+    env_for_user_shell_command,
     format_exec_output_for_model,
     format_exec_output_str,
     format_user_shell_command_record,
     user_shell_command_record_item,
+)
+from pycodex.core.tools.runtimes import (
+    PROXY_ACTIVE_ENV_KEY,
+    PROXY_ENV_KEYS,
+    PROXY_GIT_SSH_COMMAND_ENV_KEY,
 )
 from pycodex.protocol import (
     ContentItem,
@@ -108,6 +114,24 @@ class UserShellCommandTests(unittest.TestCase):
             "command timed out after 1250 milliseconds\npartial output",
         )
 
+    def test_format_exec_output_for_model_reports_total_lines_when_truncated(self) -> None:
+        # Rust source: codex-rs/core/src/tools/mod.rs
+        # Behavior anchor: format_exec_output_for_model compares the original
+        # content line count with the truncated output line count and includes
+        # `Total output lines` when truncation removed lines.
+        exec_output = ExecToolCallOutput(
+            exit_code=1,
+            aggregated_output=StreamOutput.new("line\n" * 100),
+            duration=timedelta(milliseconds=1250),
+        )
+
+        formatted = format_exec_output_for_model(exec_output, TruncationPolicyConfig.bytes(16))
+
+        self.assertTrue(formatted.startswith("Exit code: 1\nWall time: 1.3 seconds\n"))
+        self.assertIn("Total output lines: 100\n", formatted)
+        self.assertIn("\nOutput:\n", formatted)
+        self.assertIn("truncated", formatted)
+
     def test_output_is_truncated_before_record_rendering(self) -> None:
         exec_output = ExecToolCallOutput(
             exit_code=0,
@@ -126,6 +150,42 @@ class UserShellCommandTests(unittest.TestCase):
         self.assertIn("chars truncated", record)
         self.assertIn("<user_shell_command>", record)
         self.assertIn("</user_shell_command>", record)
+
+    def test_user_shell_env_removes_managed_proxy_when_active(self) -> None:
+        # Rust source: codex-rs/core/src/tasks/user_shell.rs
+        # Rust test: user_shell_commands_do_not_inherit_managed_network_proxy.
+        env = {key: "managed" for key in PROXY_ENV_KEYS}
+        env["CUSTOM"] = "kept"
+
+        cleaned = env_for_user_shell_command(env, target_os="linux")
+
+        self.assertEqual(cleaned, {"CUSTOM": "kept"})
+        self.assertIn(PROXY_ACTIVE_ENV_KEY, env)
+
+    def test_user_shell_env_keeps_user_proxy_without_active_marker(self) -> None:
+        env = {
+            "CUSTOM": "kept",
+            "HTTP_PROXY": "http://user.proxy",
+            PROXY_GIT_SSH_COMMAND_ENV_KEY: "ssh -i user-key",
+        }
+
+        self.assertEqual(env_for_user_shell_command(env, target_os="darwin"), env)
+
+    def test_user_shell_env_removes_codex_git_ssh_proxy_only_on_macos(self) -> None:
+        env = {
+            PROXY_ACTIVE_ENV_KEY: "1",
+            PROXY_GIT_SSH_COMMAND_ENV_KEY: "codex-proxy-git-ssh --proxy",
+            "CUSTOM": "kept",
+        }
+
+        self.assertEqual(env_for_user_shell_command(env, target_os="darwin"), {"CUSTOM": "kept"})
+        self.assertEqual(
+            env_for_user_shell_command(env, target_os="linux"),
+            {
+                PROXY_GIT_SSH_COMMAND_ENV_KEY: "codex-proxy-git-ssh --proxy",
+                "CUSTOM": "kept",
+            },
+        )
 
     def test_rejects_non_string_command(self) -> None:
         exec_output = ExecToolCallOutput(
@@ -163,6 +223,14 @@ class UserShellCommandTests(unittest.TestCase):
                 exec_output,
                 object(),
             )
+
+    def test_user_shell_env_rejects_invalid_shapes(self) -> None:
+        with self.assertRaisesRegex(TypeError, "env must be a mapping"):
+            env_for_user_shell_command([])  # type: ignore[arg-type]
+        with self.assertRaisesRegex(TypeError, "env keys and values must be strings"):
+            env_for_user_shell_command({"A": 1})  # type: ignore[dict-item]
+        with self.assertRaisesRegex(TypeError, "target_os must be a string or None"):
+            env_for_user_shell_command({PROXY_ACTIVE_ENV_KEY: "1"}, target_os=object())  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":

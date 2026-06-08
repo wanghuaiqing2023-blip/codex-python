@@ -387,7 +387,35 @@ def parse_powershell_script(executable: str, script: str) -> list[list[str]] | N
 
 
 def _powershell_script_has_unsupported_construct(script: str) -> bool:
-    return any(marker in script for marker in (">", "<", "$(", "@(", "--%"))
+    return any(marker in script for marker in (">", "<", "$(", "@(", "--%")) or _powershell_script_has_dynamic_argument(script)
+
+
+def _powershell_script_has_dynamic_argument(script: str) -> bool:
+    in_single_quote = False
+    in_double_quote = False
+    index = 0
+    while index < len(script):
+        char = script[index]
+        if char == "`":
+            index += 2
+            continue
+        if char == "'" and not in_double_quote:
+            if in_single_quote and index + 1 < len(script) and script[index + 1] == "'":
+                index += 2
+                continue
+            in_single_quote = not in_single_quote
+            index += 1
+            continue
+        if char == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
+            index += 1
+            continue
+        if char == "$" and not in_single_quote:
+            next_char = script[index + 1] if index + 1 < len(script) else ""
+            if next_char == "{" or next_char == "_" or next_char.isalpha():
+                return True
+        index += 1
+    return False
 
 
 def _powershell_split(script: str) -> list[str] | None:

@@ -13,8 +13,9 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any
 
+from pycodex.core.function_tool import FunctionCallError
 from pycodex.core.tools.hook_names import HookToolName
-from pycodex.core.tools.context import ToolPayload
+from pycodex.core.tools.context import ToolPayload, response_input_to_code_mode_result
 from pycodex.protocol import FunctionCallOutputPayload, ResponseInputItem, ToolName
 
 JsonValue = Any
@@ -84,6 +85,36 @@ class CoreToolRuntime:
 
     def create_diff_consumer(self) -> Any:
         return None
+
+
+@dataclass(frozen=True)
+class AnyToolResult:
+    call_id: str
+    payload: ToolPayload
+    result: Any
+    post_tool_use_payload: "PostToolUsePayload | None" = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.call_id, str):
+            raise TypeError("call_id must be a string")
+        if not isinstance(self.payload, ToolPayload):
+            raise TypeError("payload must be ToolPayload")
+        if not callable(getattr(self.result, "to_response_item", None)):
+            raise TypeError("result must expose to_response_item(call_id, payload)")
+        if self.post_tool_use_payload is not None and not isinstance(self.post_tool_use_payload, PostToolUsePayload):
+            raise TypeError("post_tool_use_payload must be PostToolUsePayload or None")
+
+    def into_response(self) -> ResponseInputItem:
+        response = self.result.to_response_item(self.call_id, self.payload)
+        if not isinstance(response, ResponseInputItem):
+            raise TypeError("to_response_item must return ResponseInputItem")
+        return response
+
+    def code_mode_result(self) -> JsonValue:
+        method = getattr(self.result, "code_mode_result", None)
+        if callable(method):
+            return method(self.payload)
+        return response_input_to_code_mode_result(self.into_response())
 
 
 @dataclass(frozen=True)
@@ -316,6 +347,31 @@ class ToolRegistry:
             if search_info is not None
         )
 
+    def dispatch_any(self, invocation: "ToolInvocation") -> AnyToolResult:
+        return self.dispatch_any_with_terminal_outcome(invocation)
+
+    def dispatch_any_with_terminal_outcome(
+        self,
+        invocation: "ToolInvocation",
+        terminal_outcome_reached: Any = None,
+    ) -> AnyToolResult:
+        del terminal_outcome_reached
+        if not isinstance(invocation, ToolInvocation):
+            raise TypeError("invocation must be ToolInvocation")
+
+        tool = self.tool(invocation.tool_name)
+        if tool is None:
+            raise FunctionCallError.respond_to_model(
+                unsupported_tool_call_message(invocation.payload, invocation.tool_name)
+            )
+
+        if not _runtime_matches_kind(tool, invocation.payload):
+            raise FunctionCallError.fatal(
+                f"tool {invocation.tool_name} invoked with incompatible payload"
+            )
+
+        return handle_any_tool(tool, invocation)
+
 
 @dataclass(frozen=True)
 class ToolCallSource:
@@ -474,6 +530,18 @@ def post_tool_use_payload(invocation: ToolInvocation, result: Any) -> PostToolUs
         tool_use_id=_post_tool_use_id(result, invocation.call_id),
         tool_input=tool_input,
         tool_response=tool_response,
+    )
+
+
+def handle_any_tool(tool: Any, invocation: ToolInvocation) -> AnyToolResult:
+    if not isinstance(invocation, ToolInvocation):
+        raise TypeError("invocation must be ToolInvocation")
+    output = _runtime_handle(tool, invocation)
+    return AnyToolResult(
+        call_id=invocation.call_id,
+        payload=invocation.payload,
+        result=output,
+        post_tool_use_payload=_runtime_post_tool_use_payload(tool, invocation, output),
     )
 
 
@@ -697,6 +765,7 @@ def _string_tuple(value: Any, field_name: str) -> tuple[str, ...]:
 
 
 __all__ = [
+    "AnyToolResult",
     "CoreToolRuntime",
     "ExposureOverride",
     "MULTI_AGENT_V1_NAMESPACE",
@@ -710,6 +779,7 @@ __all__ = [
     "flat_tool_name",
     "function_hook_tool_input",
     "function_hook_tool_name",
+    "handle_any_tool",
     "override_tool_exposure",
     "post_tool_use_payload",
     "pre_tool_use_payload",

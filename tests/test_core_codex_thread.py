@@ -10,7 +10,7 @@ from pycodex.core.codex_thread import (
     ThreadConfigSnapshot,
 )
 from pycodex.core.session.runtime import InMemoryCodexSession
-from pycodex.protocol import CollaborationMode, ModeKind, Op, ReasoningEffort, SessionSource, Settings
+from pycodex.protocol import CollaborationMode, ModeKind, NetworkSandboxPolicy, Op, PermissionProfile, ReasoningEffort, SandboxPolicy, SessionSource, Settings
 
 
 class DummySession:
@@ -69,6 +69,38 @@ def test_thread_config_snapshot_normalizes_paths():
 
     assert isinstance(snapshot.cwd, Path)
     assert snapshot.workspace_roots == (Path("."),)
+
+
+def test_thread_config_snapshot_sandbox_policy_uses_permission_profile():
+    # Rust source: codex-rs/core/src/codex_thread.rs
+    # Behavior anchor: ThreadConfigSnapshot::sandbox_policy derives the legacy
+    # SandboxPolicy from the required PermissionProfile and cwd.
+    profile = PermissionProfile.workspace_write(
+        (Path("C:/work/project"),),
+        network=NetworkSandboxPolicy.ENABLED,
+    )
+    snapshot = ThreadConfigSnapshot(
+        model="gpt-5",
+        model_provider_id="openai",
+        cwd=Path("C:/work/project/subdir"),
+        permission_profile=profile,
+        session_source=SessionSource.cli(),
+    )
+
+    assert snapshot.sandbox_policy() == profile.to_legacy_sandbox_policy(snapshot.cwd)
+    assert snapshot.sandbox_policy() == SandboxPolicy.workspace_write((Path("C:/work/project"),), network_access=True)
+
+
+def test_thread_config_snapshot_sandbox_policy_requires_permission_profile():
+    snapshot = ThreadConfigSnapshot(
+        model="gpt-5",
+        model_provider_id="openai",
+        cwd=Path("C:/work/project"),
+        session_source=SessionSource.cli(),
+    )
+
+    with pytest.raises(TypeError, match="permission_profile is required"):
+        snapshot.sandbox_policy()
 
 
 @pytest.mark.asyncio

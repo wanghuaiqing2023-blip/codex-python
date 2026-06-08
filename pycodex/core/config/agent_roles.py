@@ -262,6 +262,179 @@ def parse_agent_role_file_contents(
     )
 
 
+def load_agent_roles_from_layers(
+    layers: Iterable[Any],
+    startup_warnings: MutableSequence[str] | None = None,
+) -> dict[str, AgentRoleConfig]:
+    """Load agent roles from config layers in Rust precedence order."""
+
+    warnings = startup_warnings if startup_warnings is not None else []
+    roles: dict[str, AgentRoleConfig] = {}
+    for layer in layers:
+        if getattr(layer, "enabled", True) is False:
+            continue
+        layer_roles: dict[str, AgentRoleConfig] = {}
+        declared_role_files: set[Path] = set()
+        config = getattr(layer, "config", None)
+        if config is None:
+            config = layer.get("config", {}) if isinstance(layer, Mapping) else {}
+        if not isinstance(config, Mapping):
+            push_agent_role_warning(warnings, AgentRoleError("agent role layer config must be a mapping"))
+            continue
+
+        config_folder = _layer_config_folder(layer)
+        agents_toml = config.get("agents")
+        if agents_toml is not None:
+            if not isinstance(agents_toml, Mapping):
+                push_agent_role_warning(warnings, AgentRoleError("agents must be a mapping"))
+            else:
+                declared_roles = agents_toml.get("roles", agents_toml)
+                if not isinstance(declared_roles, Mapping):
+                    push_agent_role_warning(warnings, AgentRoleError("agents.roles must be a mapping"))
+                else:
+                    for declared_role_name, role_toml in declared_roles.items():
+                        try:
+                            role_name, role = read_declared_role_from_mapping(
+                                str(declared_role_name),
+                                role_toml,
+                                config_folder,
+                            )
+                        except (OSError, AgentRoleError, TypeError) as exc:
+                            push_agent_role_warning(warnings, exc)
+                            continue
+                        if role.config_file is not None:
+                            declared_role_files.add(role.config_file.resolve())
+                        if role_name in layer_roles:
+                            push_agent_role_warning(
+                                warnings,
+                                AgentRoleError(
+                                    f"duplicate agent role name `{role_name}` declared in the same config layer"
+                                ),
+                            )
+                            continue
+                        layer_roles[role_name] = role
+
+        if config_folder is not None:
+            for role_name, role in discover_agent_roles_in_dir(
+                config_folder / "agents",
+                declared_role_files=declared_role_files,
+                startup_warnings=warnings,
+            ).items():
+                if role_name in layer_roles:
+                    push_agent_role_warning(
+                        warnings,
+                        AgentRoleError(
+                            f"duplicate agent role name `{role_name}` declared in the same config layer"
+                        ),
+                    )
+                    continue
+                layer_roles[role_name] = role
+
+        for role_name, role in layer_roles.items():
+            merged_role = merge_missing_role_fields(role, roles[role_name]) if role_name in roles else role
+            try:
+                validate_required_agent_role_description(role_name, merged_role.description)
+            except AgentRoleError as exc:
+                push_agent_role_warning(warnings, exc)
+                continue
+            roles[role_name] = merged_role
+    return roles
+
+
+def load_agent_roles_from_config(config: Mapping[str, Any]) -> dict[str, AgentRoleConfig]:
+    """Load declared agent roles without layer warning recovery."""
+
+    if not isinstance(config, Mapping):
+        raise TypeError("config must be a mapping")
+    roles: dict[str, AgentRoleConfig] = {}
+    agents_toml = config.get("agents")
+    if agents_toml is None:
+        return roles
+    if not isinstance(agents_toml, Mapping):
+        raise AgentRoleError("agents must be a mapping")
+    declared_roles = agents_toml.get("roles", agents_toml)
+    if not isinstance(declared_roles, Mapping):
+        raise AgentRoleError("agents.roles must be a mapping")
+    for declared_role_name, role_toml in declared_roles.items():
+        role_name, role = read_declared_role_from_mapping(str(declared_role_name), role_toml, None)
+        validate_required_agent_role_description(role_name, role.description)
+        if role_name in roles:
+            raise AgentRoleError(f"duplicate agent role name `{role_name}` declared in config")
+        roles[role_name] = role
+    return roles
+
+
+def read_declared_role_from_mapping(
+    declared_role_name: str,
+    role_toml: Mapping[str, Any],
+    config_base_dir: str | Path | None = None,
+) -> tuple[str, AgentRoleConfig]:
+    """Resolve one declared role, optionally loading its config file."""
+
+    role = agent_role_config_from_mapping(declared_role_name, role_toml, config_base_dir)
+    role_name = declared_role_name
+    if role.config_file is not None:
+        parsed = parse_agent_role_file_contents(
+            role.config_file.read_text(encoding="utf-8"),
+            role.config_file,
+            role.config_file.parent,
+            role_name_hint=declared_role_name,
+        )
+        role_name = parsed.role_name
+        role = AgentRoleConfig(
+            description=parsed.description or role.description,
+            config_file=role.config_file,
+            nickname_candidates=parsed.nickname_candidates or role.nickname_candidates,
+        )
+    return role_name, role
+
+
+def agent_role_config_from_mapping(
+    role_name: str,
+    role_toml: Mapping[str, Any],
+    config_base_dir: str | Path | None = None,
+) -> AgentRoleConfig:
+    """Normalize a declared ``[agents.roles.<name>]`` mapping."""
+
+    if not isinstance(role_name, str):
+        raise TypeError("role_name must be a string")
+    if not isinstance(role_toml, Mapping):
+        raise TypeError("role_toml must be a mapping")
+    config_file = role_toml.get("config_file")
+    if config_file is not None:
+        if not isinstance(config_file, str):
+            raise AgentRoleError(f"agents.{role_name}.config_file must be a string")
+        path = Path(config_file)
+        if not path.is_absolute() and config_base_dir is not None:
+            path = Path(config_base_dir) / path
+        if not path.exists():
+            raise AgentRoleError(
+                f"agents.{role_name}.config_file must point to an existing file at {path}: file not found"
+            )
+        if not path.is_file():
+            raise AgentRoleError(f"agents.{role_name}.config_file must point to a file: {path}")
+        config_file_path = path
+    else:
+        config_file_path = None
+
+    description = normalize_agent_role_description(
+        f"agents.{role_name}.description",
+        _metadata_str(role_toml, "description", f"agents.{role_name}.description"),
+    )
+    raw_candidates = role_toml.get("nickname_candidates")
+    if raw_candidates is not None and not _is_string_list(raw_candidates):
+        raise AgentRoleError(f"agents.{role_name}.nickname_candidates must be a list of strings")
+    nickname_candidates = normalize_agent_role_nickname_candidates(
+        f"agents.{role_name}.nickname_candidates",
+        raw_candidates,
+    )
+    return AgentRoleConfig(
+        description=description,
+        config_file=config_file_path,
+        nickname_candidates=nickname_candidates,
+    )
+
+
 def merge_missing_role_fields(role: AgentRoleConfig, fallback: AgentRoleConfig) -> AgentRoleConfig:
     """Fill missing metadata fields from a lower-precedence role."""
 
@@ -520,6 +693,25 @@ def _is_string_list(value: Any) -> bool:
     return isinstance(value, list) and all(isinstance(item, str) for item in value)
 
 
+def _layer_config_folder(layer: Any) -> Path | None:
+    name = getattr(layer, "name", None)
+    if isinstance(layer, Mapping):
+        name = layer.get("name", name)
+    if name is None:
+        return None
+    dot_codex_folder = getattr(name, "dot_codex_folder", None)
+    if dot_codex_folder is not None:
+        return Path(dot_codex_folder)
+    file = getattr(name, "file", None)
+    if file is not None:
+        return Path(file).parent
+    config_folder = getattr(layer, "config_folder", None)
+    if callable(config_folder):
+        value = config_folder()
+        return None if value is None else Path(value)
+    return None
+
+
 __all__ = [
     "AGENT_TYPE_UNAVAILABLE_ERROR",
     "AWAITER_TOML",
@@ -528,6 +720,7 @@ __all__ = [
     "AgentRoleConfig",
     "AgentRoleError",
     "ResolvedAgentRoleFile",
+    "agent_role_config_from_mapping",
     "build_spawn_agent_tool_description",
     "built_in_agent_role_config_file_contents",
     "built_in_agent_role_configs",
@@ -535,12 +728,15 @@ __all__ = [
     "discover_agent_roles_in_dir",
     "format_agent_nickname",
     "format_role_for_spawn_tool",
+    "load_agent_roles_from_config",
+    "load_agent_roles_from_layers",
     "locked_settings_note_for_role",
     "merge_missing_role_fields",
     "normalize_agent_role_description",
     "normalize_agent_role_nickname_candidates",
     "parse_agent_role_file_contents",
     "push_agent_role_warning",
+    "read_declared_role_from_mapping",
     "resolve_role_config",
     "validate_agent_role_file_developer_instructions",
     "validate_required_agent_role_description",

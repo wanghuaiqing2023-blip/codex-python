@@ -9,6 +9,7 @@ from pycodex.core import (
     ToolDispatchRequester,
     ToolDispatchResult,
     ToolDispatchTrace,
+    ToolDispatchInvocation,
     ToolInvocation,
     ToolPayload,
     execution_status_for_result,
@@ -21,6 +22,8 @@ from pycodex.protocol import SearchToolCallParams, ToolName
 
 class ToolDispatchTraceTests(unittest.TestCase):
     def test_dispatch_invocation_records_direct_model_requester(self) -> None:
+        # Rust source: codex-rs/core/src/tools/tool_dispatch_trace.rs::tool_dispatch_invocation
+        # Rust test: dispatch_lifecycle_trace_records_direct_and_code_mode_requesters
         invocation = ToolInvocation(
             call_id="direct-call",
             tool_name=ToolName.namespaced("mcp__server__", "query"),
@@ -42,6 +45,8 @@ class ToolDispatchTraceTests(unittest.TestCase):
         self.assertEqual(trace.payload, ToolDispatchPayload(type="function", arguments="{}"))
 
     def test_dispatch_invocation_records_code_mode_requester(self) -> None:
+        # Rust source: codex-rs/core/src/tools/tool_dispatch_trace.rs::tool_dispatch_invocation
+        # Rust test: dispatch_lifecycle_trace_records_direct_and_code_mode_requesters
         invocation = ToolInvocation(
             call_id="code-mode-call",
             tool_name=ToolName.plain("test_tool"),
@@ -61,6 +66,8 @@ class ToolDispatchTraceTests(unittest.TestCase):
         )
 
     def test_dispatch_payload_maps_function_tool_search_and_custom_shapes(self) -> None:
+        # Rust source: codex-rs/core/src/tools/tool_dispatch_trace.rs::tool_dispatch_payload
+        # Rust contract: Function, ToolSearch, and Custom payload variants preserve their raw payload fields.
         search_args = SearchToolCallParams("calendar", limit=2)
 
         self.assertEqual(
@@ -84,6 +91,8 @@ class ToolDispatchTraceTests(unittest.TestCase):
         )
 
     def test_dispatch_result_records_direct_response_item(self) -> None:
+        # Rust source: codex-rs/core/src/tools/tool_dispatch_trace.rs::tool_dispatch_result
+        # Rust test: dispatch_lifecycle_trace_records_direct_and_code_mode_requesters
         invocation = ToolInvocation(
             call_id="direct-call",
             tool_name=ToolName.plain("test_tool"),
@@ -98,6 +107,8 @@ class ToolDispatchTraceTests(unittest.TestCase):
         self.assertEqual(result.response_item.output.to_text(), "ok")
 
     def test_dispatch_result_records_code_mode_result_value(self) -> None:
+        # Rust source: codex-rs/core/src/tools/tool_dispatch_trace.rs::tool_dispatch_result
+        # Rust test: dispatch_lifecycle_trace_records_direct_and_code_mode_requesters
         invocation = ToolInvocation(
             call_id="code-call",
             tool_name=ToolName.plain("apply_patch"),
@@ -111,8 +122,9 @@ class ToolDispatchTraceTests(unittest.TestCase):
             ToolDispatchResult.code_mode_response({}),
         )
 
-
     def test_dispatch_trace_variants_reject_invalid_shapes(self) -> None:
+        # Rust source: codex-rs/core/src/tools/tool_dispatch_trace.rs
+        # Python boundary: dataclass constructors enforce the rollout trace schema shape.
         with self.assertRaises(ValueError):
             ToolDispatchRequester(type="other")
         with self.assertRaises(TypeError):
@@ -133,10 +145,11 @@ class ToolDispatchTraceTests(unittest.TestCase):
             ToolDispatchResult.code_mode_response(object())
 
     def test_dispatch_invocation_rejects_invalid_boundary_fields(self) -> None:
+        # Rust source: codex-rs/core/src/tools/tool_dispatch_trace.rs::ToolDispatchInvocation
+        # Python boundary: trace invocation ids and names must remain string-shaped.
         requester = ToolDispatchRequester.model("call-1")
         payload = ToolDispatchPayload(type="function", arguments="{}")
         with self.assertRaises(TypeError):
-from pycodex.core import ToolDispatchInvocation
             ToolDispatchInvocation(
                 thread_id=123,
                 codex_turn_id="turn-1",
@@ -148,6 +161,8 @@ from pycodex.core import ToolDispatchInvocation
             )
 
     def test_execution_status_follows_result_logging_success(self) -> None:
+        # Rust source: codex-rs/core/src/tools/tool_dispatch_trace.rs::ToolDispatchTrace::record_completed
+        # Rust contract: success_for_logging chooses Completed vs Failed execution status.
         self.assertEqual(
             execution_status_for_result(FunctionToolOutput.from_text("ok", True)),
             ExecutionStatus.COMPLETED,
@@ -158,6 +173,8 @@ from pycodex.core import ToolDispatchInvocation
         )
 
     def test_trace_facade_starts_and_records_completed_or_failed(self) -> None:
+        # Rust source: codex-rs/core/src/tools/tool_dispatch_trace.rs::ToolDispatchTrace
+        # Rust tests: unsupported/incompatible dispatch paths still record failed trace endings.
         class TraceService:
             def __init__(self):
                 self.invocations = []
@@ -204,6 +221,8 @@ from pycodex.core import ToolDispatchInvocation
         self.assertEqual(str(service.failed[0]), "boom")
 
     def test_trace_facade_supports_mapping_trace_context(self) -> None:
+        # Rust source: codex-rs/core/src/tools/tool_dispatch_trace.rs::ToolDispatchTrace
+        # Python adaptation: mapping contexts stand in for rollout trace service objects in stdlib tests.
         state = {
             "invocations": [],
             "completed": [],
@@ -252,6 +271,8 @@ from pycodex.core import ToolDispatchInvocation
         self.assertEqual(str(state["failed"][0]), "boom")
 
     def test_trace_facade_mapping_context_respects_disabled_flag(self) -> None:
+        # Rust source: codex-rs/core/src/tools/tool_dispatch_trace.rs::ToolDispatchTrace::record_completed
+        # Rust contract: disabled trace contexts skip completed-result recording.
         state = {
             "invocations": [],
             "completed": [],
@@ -292,6 +313,8 @@ from pycodex.core import ToolDispatchInvocation
         self.assertEqual(len(state["completed"]), 0)
 
     def test_trace_facade_skips_completed_record_when_disabled_or_unmappable(self) -> None:
+        # Rust source: codex-rs/core/src/tools/tool_dispatch_trace.rs::ToolDispatchTrace::record_completed
+        # Rust contract: record_completed is a no-op when tracing is disabled or result mapping is unavailable.
         class DisabledTraceContext:
             def __init__(self):
                 self.completed = []

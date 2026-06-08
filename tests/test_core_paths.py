@@ -1,5 +1,6 @@
 import unittest
 import uuid
+from collections import UserDict
 from pathlib import Path
 
 from pycodex.state import (
@@ -25,32 +26,58 @@ def workspace_tempdir():
 
 
 class CorePathTests(unittest.TestCase):
+    # Source: rust_test_migrated
+    # Rust crate: codex-utils-home-dir
+    # Rust module: src/lib.rs
+    # Rust test: find_codex_home_env_valid_directory_canonicalizes
+    # Contract: utils.home_dir.env_valid_directory
     def test_find_codex_home_env_valid_directory_canonicalizes(self):
         raw = workspace_tempdir()
         resolved = find_codex_home(env={"CODEX_HOME": str(raw)})
 
         self.assertEqual(resolved, raw.resolve())
 
+    # Source: rust_test_migrated
+    # Rust crate: codex-utils-home-dir
+    # Rust module: src/lib.rs
+    # Rust test: find_codex_home_env_missing_path_is_fatal
+    # Contract: utils.home_dir.env_missing_path
     def test_find_codex_home_env_missing_path_is_fatal(self):
         raw = workspace_tempdir()
         missing = str(raw / "missing-codex-home")
 
-        with self.assertRaises(FileNotFoundError):
+        with self.assertRaisesRegex(FileNotFoundError, "CODEX_HOME"):
             find_codex_home(env={"CODEX_HOME": missing})
 
+    # Source: rust_test_migrated
+    # Rust crate: codex-utils-home-dir
+    # Rust module: src/lib.rs
+    # Rust test: find_codex_home_env_file_path_is_fatal
+    # Contract: utils.home_dir.env_file_path
     def test_find_codex_home_env_file_path_is_fatal(self):
         raw = workspace_tempdir()
         file_path = raw / "codex-home.txt"
         file_path.write_text("not a directory", encoding="utf-8")
 
-        with self.assertRaises(NotADirectoryError):
+        with self.assertRaisesRegex(NotADirectoryError, "not a directory"):
             find_codex_home(env={"CODEX_HOME": str(file_path)})
 
+    # Source: rust_test_migrated
+    # Rust crate: codex-utils-home-dir
+    # Rust module: src/lib.rs
+    # Rust test: find_codex_home_without_env_uses_default_home_dir
+    # Contract: utils.home_dir.default_home
     def test_find_codex_home_without_env_uses_default_home_dir(self):
         home = Path("C:/Users/example")
 
         self.assertEqual(find_codex_home(env={}, home=home), home / ".codex")
+        self.assertEqual(find_codex_home(env={"CODEX_HOME": ""}, home=home), home / ".codex")
+        self.assertEqual(find_codex_home(env=UserDict(), home=home), home / ".codex")
 
+    # Source: python_regression
+    # Rust crate: codex-utils-home-dir
+    # Rust module: src/lib.rs
+    # Contract: utils.home_dir.python_shape_guard
     def test_find_codex_home_rejects_non_rust_shapes(self):
         with self.assertRaisesRegex(TypeError, "env must be a mapping or None"):
             find_codex_home(env=[])  # type: ignore[arg-type]

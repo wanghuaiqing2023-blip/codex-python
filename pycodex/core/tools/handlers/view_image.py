@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import inspect
 import json
 import mimetypes
 from dataclasses import dataclass
@@ -16,8 +17,11 @@ from pycodex.protocol import (
     DEFAULT_IMAGE_DETAIL,
     FunctionCallOutputContentItem,
     ImageDetail,
+    ImageViewItem,
+    InputModality,
     ResponseInputItem,
     ToolName,
+    TurnItem,
 )
 
 JsonValue = Any
@@ -192,7 +196,8 @@ class ViewImageHandler:
         return payload.type == "function"
 
     def handle(self, invocation_or_payload: Any) -> ViewImageOutput:
-        if not self.supports_image_inputs:
+        turn = getattr(invocation_or_payload, "turn", None)
+        if not self.supports_image_inputs or not _turn_supports_image_inputs(turn):
             raise FunctionCallError.respond_to_model(VIEW_IMAGE_UNSUPPORTED_MESSAGE)
         payload = getattr(invocation_or_payload, "payload", invocation_or_payload)
         if not isinstance(payload, ToolPayload) or payload.type != "function":
@@ -239,7 +244,58 @@ class ViewImageHandler:
             raise FunctionCallError.respond_to_model(
                 f"unable to process image at `{path}`: {err}"
             ) from err
-        return ViewImageOutput(image_url=image_url, image_detail=image_detail)
+        output = ViewImageOutput(image_url=image_url, image_detail=image_detail)
+        event_result = _emit_image_view_turn_item(invocation_or_payload, path)
+        if inspect.isawaitable(event_result):
+            return _await_view_image_events(event_result, output)
+        return output
+
+
+async def _await_view_image_events(result: Any, output: ViewImageOutput) -> ViewImageOutput:
+    await result
+    return output
+
+
+async def _emit_image_view_turn_item_async(
+    started_result: Any,
+    completed: Any,
+    turn: Any,
+    item: TurnItem,
+) -> None:
+    if inspect.isawaitable(started_result):
+        await started_result
+    completed_result = completed(turn, item)
+    if inspect.isawaitable(completed_result):
+        await completed_result
+
+
+def _emit_image_view_turn_item(invocation_or_payload: Any, path: Path) -> Any | None:
+    session = getattr(invocation_or_payload, "session", None)
+    turn = getattr(invocation_or_payload, "turn", None)
+    call_id = getattr(invocation_or_payload, "call_id", None)
+    if session is None or turn is None or not isinstance(call_id, str):
+        return None
+    started = getattr(session, "emit_turn_item_started", None)
+    completed = getattr(session, "emit_turn_item_completed", None)
+    if not callable(started) or not callable(completed):
+        return None
+    item = TurnItem.image_view(ImageViewItem(call_id, path))
+    started_result = started(turn, item)
+    if inspect.isawaitable(started_result):
+        return _emit_image_view_turn_item_async(started_result, completed, turn, item)
+    completed_result = completed(turn, item)
+    if inspect.isawaitable(completed_result):
+        return completed_result
+    return None
+
+
+def _turn_supports_image_inputs(turn: Any) -> bool:
+    if turn is None:
+        return True
+    modalities = getattr(getattr(turn, "model_info", None), "input_modalities", None)
+    if modalities is None:
+        return True
+    return any(getattr(modality, "value", modality) == InputModality.IMAGE.value for modality in modalities)
 
 
 def parse_view_image_arguments(arguments: str) -> ViewImageArgs:

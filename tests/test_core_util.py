@@ -91,6 +91,30 @@ class UtilTests(unittest.TestCase):
         self.assertEqual(tags["auth_401_error"], "")
         self.assertEqual(tags["auth_401_error_code"], "")
 
+    def test_emit_feedback_auth_recovery_tags_preserves_401_specific_fields(self) -> None:
+        tags = emit_feedback_auth_recovery_tags(
+            "managed",
+            "refresh_token",
+            "recovery_succeeded",
+            "req-401",
+            "ray-401",
+            "missing_authorization_header",
+            "token_expired",
+        )
+
+        self.assertEqual(
+            tags,
+            {
+                "auth_recovery_mode": "managed",
+                "auth_recovery_phase": "refresh_token",
+                "auth_recovery_outcome": "recovery_succeeded",
+                "auth_401_request_id": "req-401",
+                "auth_401_cf_ray": "ray-401",
+                "auth_401_error": "missing_authorization_header",
+                "auth_401_error_code": "token_expired",
+            },
+        )
+
     def test_error_or_panic_raises_in_debug_and_logs_otherwise(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "boom"):
             error_or_panic("boom", debug_assertions=True)

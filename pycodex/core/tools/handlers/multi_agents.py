@@ -34,6 +34,11 @@ from pycodex.core.tools.handlers.multi_agents_spec import (
     create_spawn_agent_tool_v1,
     create_wait_agent_tool_v1,
 )
+from pycodex.core.tools.handlers.multi_agents_v2 import (
+    ResumeAgentArgs,
+    ResumeAgentHandler,
+    ResumeAgentResult,
+)
 from pycodex.core.tools.context import ToolPayload
 from pycodex.core.tools.registry import ToolInvocation
 from pycodex.core.tools.tool_search_entry import ToolSearchInfo
@@ -502,6 +507,9 @@ class V1WaitAgentHandler:
 __all__ = [
     "MULTI_AGENT_TOOL_SEARCH_SOURCE_DESCRIPTION",
     "MULTI_AGENT_TOOL_SEARCH_SOURCE_NAME",
+    "ResumeAgentArgs",
+    "ResumeAgentHandler",
+    "ResumeAgentResult",
     "SendInputArgs",
     "SendInputHandler",
     "SendInputResult",

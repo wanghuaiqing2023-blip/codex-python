@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import time
+from dataclasses import dataclass, field
+
 from pycodex.protocol import (
     ModeKind,
     ResponseInputItem,
     ThreadGoal,
+    ThreadGoalStatus,
     TokenUsage,
 )
+from pycodex.state import ThreadGoal as StateThreadGoal
+from pycodex.state import ThreadGoalStatus as StateThreadGoalStatus
 
 from .context import GoalContext
 
@@ -122,6 +128,34 @@ def goal_token_delta_for_usage(usage: TokenUsage) -> int:
     return usage.non_cached_input() + max(usage.output_tokens, 0)
 
 
+@dataclass
+class GoalWallClockAccountingSnapshot:
+    last_accounted_at: float = field(default_factory=time.monotonic)
+    active_goal_id: str | None = None
+
+    def time_delta_since_last_accounting(self) -> int:
+        return max(0, int(time.monotonic() - self.last_accounted_at))
+
+    def mark_accounted(self, accounted_seconds: int) -> None:
+        _ensure_i64(accounted_seconds, "accounted_seconds")
+        if accounted_seconds <= 0:
+            return
+        self.last_accounted_at += accounted_seconds
+
+    def reset_baseline(self) -> None:
+        self.last_accounted_at = time.monotonic()
+
+    def mark_active_goal(self, goal_id: str) -> None:
+        _ensure_str(goal_id, "goal_id")
+        if self.active_goal_id != goal_id:
+            self.reset_baseline()
+            self.active_goal_id = goal_id
+
+    def clear_active_goal(self) -> None:
+        self.active_goal_id = None
+        self.reset_baseline()
+
+
 def escape_xml_text(value: str) -> str:
     _ensure_str(value, "value")
     return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -162,6 +196,47 @@ def budget_limit_steering_item(goal: ThreadGoal) -> ResponseInputItem:
 def goal_context_input_item(prompt: str) -> ResponseInputItem:
     _ensure_str(prompt, "prompt")
     return GoalContext(prompt).into_response_input_item()
+
+
+def protocol_goal_from_state(goal: StateThreadGoal) -> ThreadGoal:
+    if not isinstance(goal, StateThreadGoal):
+        raise TypeError("goal must be a state ThreadGoal")
+    return ThreadGoal(
+        thread_id=goal.thread_id,
+        objective=goal.objective,
+        status=protocol_goal_status_from_state(goal.status),
+        token_budget=goal.token_budget,
+        tokens_used=goal.tokens_used,
+        time_used_seconds=goal.time_used_seconds,
+        created_at=int(goal.created_at.timestamp()),
+        updated_at=int(goal.updated_at.timestamp()),
+    )
+
+
+def protocol_goal_status_from_state(status: StateThreadGoalStatus) -> ThreadGoalStatus:
+    if not isinstance(status, StateThreadGoalStatus):
+        status = StateThreadGoalStatus(status)
+    return {
+        StateThreadGoalStatus.ACTIVE: ThreadGoalStatus.ACTIVE,
+        StateThreadGoalStatus.PAUSED: ThreadGoalStatus.PAUSED,
+        StateThreadGoalStatus.BLOCKED: ThreadGoalStatus.BLOCKED,
+        StateThreadGoalStatus.USAGE_LIMITED: ThreadGoalStatus.USAGE_LIMITED,
+        StateThreadGoalStatus.BUDGET_LIMITED: ThreadGoalStatus.BUDGET_LIMITED,
+        StateThreadGoalStatus.COMPLETE: ThreadGoalStatus.COMPLETE,
+    }[status]
+
+
+def state_goal_status_from_protocol(status: ThreadGoalStatus) -> StateThreadGoalStatus:
+    if not isinstance(status, ThreadGoalStatus):
+        status = ThreadGoalStatus(status)
+    return {
+        ThreadGoalStatus.ACTIVE: StateThreadGoalStatus.ACTIVE,
+        ThreadGoalStatus.PAUSED: StateThreadGoalStatus.PAUSED,
+        ThreadGoalStatus.BLOCKED: StateThreadGoalStatus.BLOCKED,
+        ThreadGoalStatus.USAGE_LIMITED: StateThreadGoalStatus.USAGE_LIMITED,
+        ThreadGoalStatus.BUDGET_LIMITED: StateThreadGoalStatus.BUDGET_LIMITED,
+        ThreadGoalStatus.COMPLETE: StateThreadGoalStatus.COMPLETE,
+    }[status]
 
 
 def _render_goal_template(
@@ -213,6 +288,7 @@ def _ensure_thread_goal(goal: object) -> None:
 __all__ = [
     "BUDGET_LIMIT_PROMPT_TEMPLATE",
     "CONTINUATION_PROMPT_TEMPLATE",
+    "GoalWallClockAccountingSnapshot",
     "OBJECTIVE_UPDATED_PROMPT_TEMPLATE",
     "budget_limit_prompt",
     "budget_limit_steering_item",
@@ -221,6 +297,9 @@ __all__ = [
     "goal_context_input_item",
     "goal_token_delta_for_usage",
     "objective_updated_prompt",
+    "protocol_goal_from_state",
+    "protocol_goal_status_from_state",
     "should_ignore_goal_for_mode",
+    "state_goal_status_from_protocol",
     "validate_goal_budget",
 ]

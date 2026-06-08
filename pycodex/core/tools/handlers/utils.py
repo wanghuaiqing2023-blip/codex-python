@@ -238,11 +238,7 @@ async def apply_granted_turn_permissions(
     granted_session_permissions = await _maybe_await(_call_attr(session, "granted_session_permissions"))
     granted_turn_permissions = await _maybe_await(_call_attr(session, "granted_turn_permissions"))
     granted_permissions = merge_permission_profiles(granted_session_permissions, granted_turn_permissions)
-    effective_permissions = (
-        normalize_additional_permissions(additional_permissions)
-        if additional_permissions is not None
-        else granted_permissions
-    )
+    effective_permissions = merge_permission_profiles(additional_permissions, granted_permissions)
     permissions_preapproved = (
         permissions_are_preapproved(effective_permissions, granted_permissions, cwd)
         if effective_permissions is not None and granted_permissions is not None

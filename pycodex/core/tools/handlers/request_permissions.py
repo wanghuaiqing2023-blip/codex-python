@@ -125,15 +125,24 @@ class RequestPermissionsHandler:
             response = self._request_callback(call_id, args)
         else:
             session = getattr(invocation_or_payload, "session", None)
-            requester = getattr(session, "request_permissions_for_cwd", None)
+            requester = getattr(session, "request_permissions", None)
             if callable(requester):
                 response = requester(
                     getattr(invocation_or_payload, "turn", None),
                     call_id,
                     args,
-                    effective_cwd,
                     getattr(invocation_or_payload, "cancellation_token", None),
                 )
+            else:
+                requester = getattr(session, "request_permissions_for_cwd", None)
+                if callable(requester):
+                    response = requester(
+                        getattr(invocation_or_payload, "turn", None),
+                        call_id,
+                        args,
+                        effective_cwd,
+                        getattr(invocation_or_payload, "cancellation_token", None),
+                    )
         if inspect.isawaitable(response):
             return _await_request_permissions_response(response, args, effective_cwd)
         if response is None:

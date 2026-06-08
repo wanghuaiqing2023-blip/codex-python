@@ -32,8 +32,12 @@ from pycodex.protocol import (
     TurnContextItem,
     parse_hook_prompt_fragment,
 )
+from pycodex.utils.string import truncate_middle_with_token_budget
 
 CODEX_APPS_MCP_SERVER_NAME = "codex_apps"
+MAX_ADDITIONAL_CONTEXT_VALUE_TOKENS = 1_000
+ADDITIONAL_CONTEXT_START_MARKER_PREFIX = "<external_"
+ADDITIONAL_CONTEXT_END_MARKER_SUFFIX = ">"
 
 REALTIME_START_INSTRUCTIONS = """Realtime conversation started.
 
@@ -105,6 +109,30 @@ class ContextualUserFragment(Protocol):
     def into_response_input_item(self) -> ResponseInputItem: ...
 
     def into_response_item(self) -> ResponseItem: ...
+
+
+class FragmentRegistration(Protocol):
+    def matches_text(self, text: str) -> bool: ...
+
+
+@dataclass(frozen=True)
+class FragmentRegistrationProxy:
+    fragment_type: type[Any]
+
+    @classmethod
+    def new(cls, fragment_type: type[Any]) -> "FragmentRegistrationProxy":
+        return cls(fragment_type)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.fragment_type, type):
+            raise TypeError("fragment_type must be a type")
+        if not callable(getattr(self.fragment_type, "matches_text", None)):
+            raise TypeError("fragment_type must provide matches_text")
+
+    def matches_text(self, text: str) -> bool:
+        if not isinstance(text, str):
+            raise TypeError("text must be a string")
+        return bool(self.fragment_type.matches_text(text))
 
 
 def matches_marked_text(start_marker: str, end_marker: str, text: str) -> bool:
@@ -412,6 +440,10 @@ class TurnAborted(ContextualUserFragmentBase):
     )
 
     @classmethod
+    def new(cls, guidance: str) -> "TurnAborted":
+        return cls(guidance)
+
+    @classmethod
     def type_markers(cls) -> tuple[str, str]:
         return "<turn_aborted>", "</turn_aborted>"
 
@@ -441,6 +473,10 @@ class SubagentNotification(ContextualUserFragmentBase):
 @dataclass(frozen=True)
 class GoalContext(ContextualUserFragmentBase):
     prompt: str
+
+    @classmethod
+    def new(cls, prompt: str) -> "GoalContext":
+        return cls(prompt)
 
     @classmethod
     def type_markers(cls) -> tuple[str, str]:
@@ -488,6 +524,53 @@ class NetworkRuleSaved(ContextualUserFragmentBase):
             ("Allowed", "allowlist") if self.action is NetworkPolicyRuleAction.ALLOW else ("Denied", "denylist")
         )
         return f"{action} network rule saved in execpolicy ({list_name}): {self.host}"
+
+
+@dataclass(frozen=True)
+class AdditionalContextUserFragment(ContextualUserFragmentBase):
+    key: str
+    value: str
+
+    @classmethod
+    def new(cls, key: str, value: str) -> "AdditionalContextUserFragment":
+        return cls(key, value)
+
+    @classmethod
+    def type_markers(cls) -> tuple[str, str]:
+        return ADDITIONAL_CONTEXT_START_MARKER_PREFIX, ADDITIONAL_CONTEXT_END_MARKER_SUFFIX
+
+    @classmethod
+    def matches_text(cls, text: str) -> bool:
+        trimmed = text.strip()
+        if not trimmed.startswith(ADDITIONAL_CONTEXT_START_MARKER_PREFIX):
+            return False
+        rest = trimmed[len(ADDITIONAL_CONTEXT_START_MARKER_PREFIX) :]
+        key, separator, value_and_close = rest.partition(ADDITIONAL_CONTEXT_END_MARKER_SUFFIX)
+        if not separator:
+            return False
+        return value_and_close.endswith(f"</external_{key}>")
+
+    def body(self) -> str:
+        value = truncate_middle_with_token_budget(self.value, MAX_ADDITIONAL_CONTEXT_VALUE_TOKENS)[0]
+        return f"{self.key}>{value}</external_{self.key}"
+
+
+@dataclass(frozen=True)
+class AdditionalContextDeveloperFragment(ContextualUserFragmentBase):
+    key: str
+    value: str
+
+    @classmethod
+    def new(cls, key: str, value: str) -> "AdditionalContextDeveloperFragment":
+        return cls(key, value)
+
+    @classmethod
+    def role(cls) -> str:
+        return "developer"
+
+    def body(self) -> str:
+        value = truncate_middle_with_token_budget(self.value, MAX_ADDITIONAL_CONTEXT_VALUE_TOKENS)[0]
+        return f"<{self.key}>{value}</{self.key}>"
 
 
 class GuardianFollowupReviewReminder(ContextualUserFragmentBase):
@@ -878,6 +961,7 @@ class LegacyModelMismatchWarning(ContextualUserFragmentBase):
 CONTEXTUAL_USER_FRAGMENT_TYPES = (
     UserInstructions,
     EnvironmentContext,
+    AdditionalContextUserFragment,
     SkillInstructions,
     UserShellCommand,
     TurnAborted,
@@ -888,10 +972,12 @@ CONTEXTUAL_USER_FRAGMENT_TYPES = (
     LegacyModelMismatchWarning,
 )
 STANDARD_CONTEXTUAL_USER_FRAGMENT_TYPES = CONTEXTUAL_USER_FRAGMENT_TYPES
+CONTEXTUAL_USER_FRAGMENTS = tuple(FragmentRegistrationProxy.new(fragment_type) for fragment_type in CONTEXTUAL_USER_FRAGMENT_TYPES)
+STANDARD_CONTEXTUAL_USER_FRAGMENTS = CONTEXTUAL_USER_FRAGMENTS
 
 
 def is_standard_contextual_user_text(text: str) -> bool:
-    return any(fragment_type.matches_text(text) for fragment_type in CONTEXTUAL_USER_FRAGMENT_TYPES)
+    return any(fragment.matches_text(text) for fragment in CONTEXTUAL_USER_FRAGMENTS)
 
 
 def is_contextual_user_fragment(content_item: ContentItem) -> bool:
@@ -919,10 +1005,21 @@ def parse_visible_hook_prompt_message(id: str | None, content: Iterable[ContentI
     return HookPromptItem.from_fragments(id, tuple(fragments))
 
 
+from .permissions_instructions import PermissionsInstructions
+
+
 __all__ = [
     "CONTEXTUAL_USER_FRAGMENT_TYPES",
+    "CONTEXTUAL_USER_FRAGMENTS",
+    "ADDITIONAL_CONTEXT_END_MARKER_SUFFIX",
+    "ADDITIONAL_CONTEXT_START_MARKER_PREFIX",
+    "MAX_ADDITIONAL_CONTEXT_VALUE_TOKENS",
+    "AdditionalContextDeveloperFragment",
+    "AdditionalContextUserFragment",
     "ContextualUserFragment",
     "ContextualUserFragmentBase",
+    "FragmentRegistration",
+    "FragmentRegistrationProxy",
     "EnvironmentContext",
     "EnvironmentContextEnvironment",
     "EnvironmentContextEnvironments",
@@ -942,6 +1039,7 @@ __all__ = [
     "NetworkContext",
     "NetworkRuleSaved",
     "PersonalitySpecInstructions",
+    "PermissionsInstructions",
     "PluginCapabilitySummary",
     "PluginInstructions",
     "RealtimeEndInstructions",
@@ -949,6 +1047,7 @@ __all__ = [
     "RealtimeStartWithInstructions",
     "SkillInstructions",
     "STANDARD_CONTEXTUAL_USER_FRAGMENT_TYPES",
+    "STANDARD_CONTEXTUAL_USER_FRAGMENTS",
     "SubagentNotification",
     "TurnAborted",
     "UserInstructions",

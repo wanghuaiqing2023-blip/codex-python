@@ -8,11 +8,12 @@ used by rollout, app-server, and agent orchestration ports.
 from __future__ import annotations
 
 import base64
+import binascii
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from .account import PlanType as AccountPlanType
@@ -119,6 +120,13 @@ def _required_int(value: Mapping[str, JsonValue], key: str) -> int:
     return raw
 
 
+def _required_u32(value: Mapping[str, JsonValue], key: str) -> int:
+    raw = _required_int(value, key)
+    if raw < 0 or raw > 0xFFFF_FFFF:
+        raise ValueError(f"{key} must be an unsigned 32-bit integer")
+    return raw
+
+
 def _required_number(value: Mapping[str, JsonValue], key: str) -> float:
     if key not in value:
         raise KeyError(key)
@@ -154,6 +162,23 @@ def _path_tuple(value: JsonValue, label: str) -> tuple[Path, ...]:
     if isinstance(value, str) or not isinstance(value, Iterable):
         raise TypeError(f"{label} must be a list of paths")
     return tuple(Path(str(item)) for item in value)
+
+
+def _is_absolute_protocol_path(path: Path) -> bool:
+    raw = str(path)
+    return (
+        Path(raw).is_absolute()
+        or PurePosixPath(raw).is_absolute()
+        or PureWindowsPath(raw).is_absolute()
+        or raw.startswith(("/", "\\"))
+    )
+
+
+def _required_absolute_path(value: Mapping[str, JsonValue], key: str) -> Path:
+    path = Path(_required_str(value, key))
+    if not _is_absolute_protocol_path(path):
+        raise ValueError(f"{key} must be an absolute path")
+    return path
 
 
 def _required_bool(value: Mapping[str, JsonValue], key: str, default: bool | None = None) -> bool:
@@ -211,10 +236,18 @@ class TurnEnvironmentSelection:
     environment_id: str
     cwd: Path
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.environment_id, str):
+            raise TypeError("environment_id must be a string")
+        cwd = self.cwd if isinstance(self.cwd, Path) else Path(str(self.cwd))
+        if not _is_absolute_protocol_path(cwd):
+            raise ValueError("cwd must be an absolute path")
+        object.__setattr__(self, "cwd", cwd)
+
     @classmethod
     def from_mapping(cls, value: JsonValue) -> "TurnEnvironmentSelection":
         data = _mapping(value, "turn environment selection")
-        return cls(environment_id=_required_str(data, "environment_id"), cwd=Path(_required_str(data, "cwd")))
+        return cls(environment_id=_required_str(data, "environment_id"), cwd=_required_absolute_path(data, "cwd"))
 
     def to_mapping(self) -> dict[str, JsonValue]:
         return {"environment_id": self.environment_id, "cwd": str(self.cwd)}
@@ -239,6 +272,20 @@ class GitSha:
 class W3cTraceContext:
     traceparent: str | None = None
     tracestate: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.traceparent is not None and not isinstance(self.traceparent, str):
+            raise TypeError("traceparent must be a string")
+        if self.tracestate is not None and not isinstance(self.tracestate, str):
+            raise TypeError("tracestate must be a string")
+
+    @classmethod
+    def from_mapping(cls, value: JsonValue) -> "W3cTraceContext":
+        data = _mapping(value, "w3c trace context")
+        return cls(
+            traceparent=_optional_str(data, "traceparent"),
+            tracestate=_optional_str(data, "tracestate"),
+        )
 
     def to_mapping(self) -> dict[str, str]:
         data: dict[str, str] = {}
@@ -370,7 +417,7 @@ class Submission:
         return cls(
             id=_required_str(data, "id"),
             op=Op.from_mapping(data["op"]),
-            trace=W3cTraceContext(**trace) if isinstance(trace, Mapping) else None,
+            trace=W3cTraceContext.from_mapping(trace) if trace is not None else None,
         )
 
     def to_mapping(self) -> dict[str, JsonValue]:
@@ -378,6 +425,47 @@ class Submission:
         if self.trace is not None:
             data["trace"] = self.trace.to_mapping()
         return data
+
+
+class AdditionalContextKind(str, Enum):
+    UNTRUSTED = "untrusted"
+    APPLICATION = "application"
+
+
+@dataclass(frozen=True)
+class AdditionalContextEntry:
+    value: str
+    kind: AdditionalContextKind
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.value, str):
+            raise TypeError("value must be a string")
+        if not isinstance(self.kind, AdditionalContextKind):
+            object.__setattr__(self, "kind", AdditionalContextKind(str(self.kind)))
+
+    @classmethod
+    def from_mapping(cls, value: JsonValue) -> "AdditionalContextEntry":
+        if isinstance(value, cls):
+            return value
+        data = _mapping(value, "additional_context entry")
+        return cls(
+            value=_required_str(data, "value"),
+            kind=AdditionalContextKind(_required_str(data, "kind")),
+        )
+
+    @classmethod
+    def from_value(cls, value: "AdditionalContextEntry | Mapping[str, Any] | Any") -> "AdditionalContextEntry":
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, Mapping):
+            return cls.from_mapping(value)
+        return cls(
+            value=_required_str({"value": getattr(value, "value")}, "value"),
+            kind=AdditionalContextKind(str(getattr(value, "kind"))),
+        )
+
+    def to_mapping(self) -> dict[str, JsonValue]:
+        return {"value": self.value, "kind": self.kind.value}
 
 
 @dataclass(frozen=True)
@@ -413,7 +501,7 @@ class Op:
                 final_output_json_schema=data.get("final_output_json_schema"),
                 responsesapi_client_metadata=_parse_client_metadata(data.get("responsesapi_client_metadata")),
                 additional_context=(
-                    _additional_context_mapping(data["additional_context"])
+                    _parse_additional_context_mapping(data["additional_context"])
                     if data.get("additional_context") is not None
                     else None
                 ),
@@ -509,7 +597,7 @@ class Op:
         if responsesapi_client_metadata is not None:
             fields["responsesapi_client_metadata"] = dict(responsesapi_client_metadata)
         if additional_context is not None:
-            fields["additional_context"] = dict(additional_context)
+            fields["additional_context"] = _parse_additional_context_mapping(additional_context)
         return cls("user_input", fields)
 
     @classmethod
@@ -668,11 +756,17 @@ def _additional_context_mapping(value: JsonValue) -> dict[str, JsonValue]:
     for key, item in data.items():
         if not isinstance(key, str):
             raise TypeError("additional_context keys must be strings")
-        entry = _mapping(item, "additional_context entry")
-        parsed[key] = {
-            "value": _required_str(entry, "value"),
-            "kind": _required_str(entry, "kind"),
-        }
+        parsed[key] = AdditionalContextEntry.from_value(item).to_mapping()
+    return parsed
+
+
+def _parse_additional_context_mapping(value: JsonValue) -> dict[str, AdditionalContextEntry]:
+    data = _mapping(value, "additional_context")
+    parsed: dict[str, AdditionalContextEntry] = {}
+    for key, item in data.items():
+        if not isinstance(key, str):
+            raise TypeError("additional_context keys must be strings")
+        parsed[key] = AdditionalContextEntry.from_value(item)
     return parsed
 
 
@@ -1060,7 +1154,7 @@ def _parse_approval_policy_value(value: JsonValue) -> AskForApproval | GranularA
     if isinstance(value, str):
         return AskForApproval.parse(value)
     data = _mapping(value, "approval policy")
-    if "granular" in data:
+    if len(data) == 1 and "granular" in data:
         return GranularApprovalConfig.from_mapping(data["granular"])
     raise ValueError("approval policy must be a string or {'granular': {...}}")
 
@@ -1958,6 +2052,17 @@ class ConversationStartTransport:
     type: str
     sdp: str | None = None
 
+    def __post_init__(self) -> None:
+        if self.type == "websocket":
+            if self.sdp is not None:
+                raise ValueError("websocket transport must not include sdp")
+            return
+        if self.type == "webrtc":
+            if not isinstance(self.sdp, str):
+                raise TypeError("webrtc transport sdp must be a string")
+            return
+        raise ValueError(f"unknown conversation start transport type: {self.type}")
+
     @classmethod
     def websocket(cls) -> "ConversationStartTransport":
         return cls("websocket")
@@ -2382,7 +2487,10 @@ class RateLimitReachedType(str, Enum):
 
     @classmethod
     def parse(cls, value: str) -> "RateLimitReachedType":
-        return cls(value)
+        try:
+            return cls(value)
+        except ValueError:
+            raise ValueError(f"unknown rate limit reached type: {value}") from None
 
 
 @dataclass(frozen=True)
@@ -2444,16 +2552,22 @@ class RateLimitSnapshot:
     @classmethod
     def from_mapping(cls, value: JsonValue) -> "RateLimitSnapshot":
         data = _mapping(value, "rate limit snapshot")
+        plan_type = data.get("plan_type")
+        if plan_type is not None and not isinstance(plan_type, str):
+            raise TypeError("plan_type must be a string")
+        reached_type = data.get("rate_limit_reached_type")
+        if reached_type is not None and not isinstance(reached_type, str):
+            raise TypeError("rate_limit_reached_type must be a string")
         return cls(
             limit_id=_optional_str(data, "limit_id"),
             limit_name=_optional_str(data, "limit_name"),
             primary=RateLimitWindow.from_mapping(data["primary"]) if data.get("primary") is not None else None,
             secondary=RateLimitWindow.from_mapping(data["secondary"]) if data.get("secondary") is not None else None,
             credits=CreditsSnapshot.from_mapping(data["credits"]) if data.get("credits") is not None else None,
-            plan_type=AccountPlanType.parse(data["plan_type"]) if isinstance(data.get("plan_type"), str) else None,
+            plan_type=AccountPlanType.parse(plan_type) if plan_type is not None else None,
             rate_limit_reached_type=(
-                RateLimitReachedType.parse(data["rate_limit_reached_type"])
-                if isinstance(data.get("rate_limit_reached_type"), str)
+                RateLimitReachedType.parse(reached_type)
+                if reached_type is not None
                 else None
             ),
         )
@@ -2519,8 +2633,136 @@ class FinalOutput:
 @dataclass(frozen=True)
 class AgentMessageEvent:
     message: str
-    phase: JsonValue | None = None
+    phase: MessagePhase | None = None
     memory_citation: MemoryCitation | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.message, str):
+            raise TypeError("message must be a string")
+        if self.phase is not None and not isinstance(self.phase, MessagePhase):
+            if not isinstance(self.phase, str):
+                raise TypeError("phase must be a string")
+            object.__setattr__(self, "phase", MessagePhase(self.phase))
+
+    def to_mapping(self) -> dict[str, JsonValue]:
+        return {
+            "message": self.message,
+            "phase": self.phase.value if self.phase is not None else None,
+            "memory_citation": (
+                self.memory_citation.to_mapping()
+                if self.memory_citation is not None
+                else None
+            ),
+        }
+
+
+def _sequence_tuple(value: object, field_name: str, *, allow_none: bool = False) -> tuple[object, ...] | None:
+    if value is None:
+        if allow_none:
+            return None
+        raise TypeError(f"{field_name} must be a list")
+    if isinstance(value, str) or not isinstance(value, (list, tuple)):
+        raise TypeError(f"{field_name} must be a list")
+    return tuple(value)
+
+
+def _optional_str_tuple(value: object, field_name: str) -> tuple[str, ...] | None:
+    values = _sequence_tuple(value, field_name, allow_none=True)
+    if values is None:
+        return None
+    normalized: list[str] = []
+    for item in values:
+        if not isinstance(item, str):
+            raise TypeError(f"{field_name} entries must be strings")
+        normalized.append(item)
+    return tuple(normalized)
+
+
+def _optional_image_detail_tuple(value: object, field_name: str) -> tuple[JsonValue | None, ...]:
+    values = _sequence_tuple(value, field_name)
+    assert values is not None
+    normalized: list[JsonValue | None] = []
+    for item in values:
+        if item is None:
+            normalized.append(None)
+        elif isinstance(item, str):
+            normalized.append(item)
+        elif isinstance(getattr(item, "value", None), str):
+            normalized.append(getattr(item, "value"))
+        else:
+            raise TypeError(f"{field_name} entries must be strings or None")
+    return tuple(normalized)
+
+
+def _path_tuple(value: object, field_name: str) -> tuple[Path, ...]:
+    values = _sequence_tuple(value, field_name)
+    assert values is not None
+    paths: list[Path] = []
+    for item in values:
+        if not isinstance(item, (str, Path)):
+            raise TypeError(f"{field_name} entries must be paths")
+        paths.append(Path(item))
+    return tuple(paths)
+
+
+def _text_element_tuple(value: object, field_name: str) -> tuple[TextElement, ...]:
+    values = _sequence_tuple(value, field_name)
+    assert values is not None
+    elements: list[TextElement] = []
+    for item in values:
+        if isinstance(item, TextElement):
+            elements.append(item)
+        else:
+            elements.append(TextElement.from_mapping(item))
+    return tuple(elements)
+
+
+def _parse_agent_reasoning_section_break(data: Mapping[str, JsonValue]) -> "AgentReasoningSectionBreakEvent":
+    return AgentReasoningSectionBreakEvent(
+        item_id=_required_str(data, "item_id") if "item_id" in data else "",
+        summary_index=_required_int(data, "summary_index") if "summary_index" in data else 0,
+    )
+
+
+def _parse_reasoning_content_delta(data: Mapping[str, JsonValue]) -> "ReasoningContentDeltaEvent":
+    return ReasoningContentDeltaEvent(
+        thread_id=_required_str(data, "thread_id"),
+        turn_id=_required_str(data, "turn_id"),
+        item_id=_required_str(data, "item_id"),
+        delta=_required_str(data, "delta"),
+        summary_index=_required_int(data, "summary_index") if "summary_index" in data else 0,
+    )
+
+
+def _parse_reasoning_raw_content_delta(data: Mapping[str, JsonValue]) -> "ReasoningRawContentDeltaEvent":
+    return ReasoningRawContentDeltaEvent(
+        thread_id=_required_str(data, "thread_id"),
+        turn_id=_required_str(data, "turn_id"),
+        item_id=_required_str(data, "item_id"),
+        delta=_required_str(data, "delta"),
+        content_index=_required_int(data, "content_index") if "content_index" in data else 0,
+    )
+
+
+def _parse_patch_apply_begin(data: Mapping[str, JsonValue]) -> "PatchApplyBeginEvent":
+    return PatchApplyBeginEvent(
+        call_id=_required_str(data, "call_id"),
+        turn_id=_required_str(data, "turn_id") if "turn_id" in data else "",
+        auto_approved=_required_bool(data, "auto_approved"),
+        changes=_file_changes_from_mapping(data["changes"]),
+    )
+
+
+def _parse_patch_apply_end(data: Mapping[str, JsonValue]) -> "PatchApplyEndEvent":
+    return PatchApplyEndEvent(
+        call_id=_required_str(data, "call_id"),
+        turn_id=_required_str(data, "turn_id") if "turn_id" in data else "",
+        stdout=_required_str(data, "stdout"),
+        stderr=_required_str(data, "stderr"),
+        success=_required_bool(data, "success"),
+        changes=_file_changes_from_mapping(data.get("changes", {})),
+        status=PatchApplyStatus(_required_str(data, "status")),
+    )
 
 
 @dataclass(frozen=True)
@@ -2533,10 +2775,17 @@ class UserMessageEvent:
     text_elements: tuple[TextElement, ...] = ()
 
     def __post_init__(self) -> None:
-        for field_name in ("images", "image_details", "local_images", "local_image_details", "text_elements"):
-            value = getattr(self, field_name)
-            if value is not None and not isinstance(value, tuple):
-                object.__setattr__(self, field_name, tuple(value))
+        if not isinstance(self.message, str):
+            raise TypeError("message must be a string")
+        object.__setattr__(self, "images", _optional_str_tuple(self.images, "images"))
+        object.__setattr__(self, "image_details", _optional_image_detail_tuple(self.image_details, "image_details"))
+        object.__setattr__(self, "local_images", _path_tuple(self.local_images, "local_images"))
+        object.__setattr__(
+            self,
+            "local_image_details",
+            _optional_image_detail_tuple(self.local_image_details, "local_image_details"),
+        )
+        object.__setattr__(self, "text_elements", _text_element_tuple(self.text_elements, "text_elements"))
 
     def to_mapping(self) -> dict[str, JsonValue]:
         data: dict[str, JsonValue] = {"message": self.message}
@@ -2655,6 +2904,13 @@ class ReasoningContentDeltaEvent:
     delta: str
     summary_index: int = 0
 
+    def __post_init__(self) -> None:
+        for field_name in ("thread_id", "turn_id", "item_id", "delta"):
+            if not isinstance(getattr(self, field_name), str):
+                raise TypeError(f"{field_name} must be a string")
+        if isinstance(self.summary_index, bool) or not isinstance(self.summary_index, int):
+            raise TypeError("summary_index must be an integer")
+
     def as_legacy_events(self, show_raw_agent_reasoning: bool = False) -> list["EventMsg"]:
         return []
 
@@ -2666,6 +2922,13 @@ class ReasoningRawContentDeltaEvent:
     item_id: str
     delta: str
     content_index: int = 0
+
+    def __post_init__(self) -> None:
+        for field_name in ("thread_id", "turn_id", "item_id", "delta"):
+            if not isinstance(getattr(self, field_name), str):
+                raise TypeError(f"{field_name} must be a string")
+        if isinstance(self.content_index, bool) or not isinstance(self.content_index, int):
+            raise TypeError("content_index must be an integer")
 
     def as_legacy_events(self, show_raw_agent_reasoning: bool = False) -> list["EventMsg"]:
         return []
@@ -3947,6 +4210,13 @@ class ExecOutputStream(str, Enum):
     STDERR = "stderr"
 
 
+def _decode_base64_chunk(value: str) -> bytes:
+    try:
+        return base64.b64decode(value, validate=True)
+    except binascii.Error as exc:
+        raise ValueError("chunk must be valid base64") from exc
+
+
 @dataclass(frozen=True)
 class ExecCommandOutputDeltaEvent:
     call_id: str
@@ -3959,7 +4229,7 @@ class ExecCommandOutputDeltaEvent:
         return cls(
             call_id=_required_str(data, "call_id"),
             stream=ExecOutputStream(_required_str(data, "stream")),
-            chunk=base64.b64decode(_required_str(data, "chunk")),
+            chunk=_decode_base64_chunk(_required_str(data, "chunk")),
         )
 
     def to_mapping(self) -> dict[str, JsonValue]:
@@ -3976,16 +4246,33 @@ class TerminalInteractionEvent:
     process_id: str
     stdin: str
 
+    def __post_init__(self) -> None:
+        for field_name in ("call_id", "process_id", "stdin"):
+            if not isinstance(getattr(self, field_name), str):
+                raise TypeError(f"{field_name} must be a string")
+
 
 @dataclass(frozen=True)
 class DeprecationNoticeEvent:
     summary: str
     details: str | None = None
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.summary, str):
+            raise TypeError("summary must be a string")
+        if self.details is not None and not isinstance(self.details, str):
+            raise TypeError("details must be a string or None")
+
 
 @dataclass(frozen=True)
 class ThreadRolledBackEvent:
     num_turns: int
+
+    def __post_init__(self) -> None:
+        if isinstance(self.num_turns, bool) or not isinstance(self.num_turns, int):
+            raise TypeError("num_turns must be an integer")
+        if self.num_turns < 0 or self.num_turns > 0xFFFF_FFFF:
+            raise ValueError("num_turns must be an unsigned 32-bit integer")
 
 
 @dataclass(frozen=True)
@@ -3995,13 +4282,28 @@ class StreamErrorEvent:
     additional_details: str | None = None
 
     def __post_init__(self) -> None:
+        if not isinstance(self.message, str):
+            raise TypeError("message must be a string")
         if self.codex_error_info is not None and not isinstance(self.codex_error_info, CodexErrorInfo):
             object.__setattr__(self, "codex_error_info", CodexErrorInfo.from_mapping(self.codex_error_info))
+        if self.additional_details is not None and not isinstance(self.additional_details, str):
+            raise TypeError("additional_details must be a string or None")
+
+    def to_mapping(self) -> dict[str, JsonValue]:
+        return {
+            "message": self.message,
+            "codex_error_info": _to_json(self.codex_error_info),
+            "additional_details": self.additional_details,
+        }
 
 
 @dataclass(frozen=True)
 class StreamInfoEvent:
     message: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.message, str):
+            raise TypeError("message must be a string")
 
 
 class PatchApplyStatus(str, Enum):
@@ -4060,6 +4362,10 @@ class PatchApplyEndEvent:
 @dataclass(frozen=True)
 class TurnDiffEvent:
     unified_diff: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.unified_diff, str):
+            raise TypeError("unified_diff must be a string")
 
 
 @dataclass(frozen=True)
@@ -4654,6 +4960,15 @@ def _parse_memory_citation(value: JsonValue) -> MemoryCitation | None:
     return MemoryCitation.from_mapping(value)
 
 
+def _parse_message_phase_field(data: Mapping[str, JsonValue], key: str) -> MessagePhase | None:
+    raw = data.get(key)
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise TypeError(f"{key} must be a string")
+    return MessagePhase(raw)
+
+
 def _parse_parsed_commands(value: JsonValue) -> tuple[JsonValue, ...]:
     if value is None:
         return ()
@@ -4698,23 +5013,20 @@ _EVENT_PAYLOAD_PARSERS = {
     ),
     "agent_message": lambda data: AgentMessageEvent(
         message=_required_str(data, "message"),
-        phase=data.get("phase"),
+        phase=_parse_message_phase_field(data, "phase"),
         memory_citation=_parse_memory_citation(data.get("memory_citation")),
     ),
     "user_message": lambda data: UserMessageEvent(
         message=_required_str(data, "message"),
         images=data.get("images"),
-        image_details=tuple(data.get("image_details", ())),
-        local_images=tuple(Path(path) for path in data.get("local_images", ())),
-        local_image_details=tuple(data.get("local_image_details", ())),
-        text_elements=tuple(data.get("text_elements", ())),
+        image_details=data.get("image_details", ()),
+        local_images=data.get("local_images", ()),
+        local_image_details=data.get("local_image_details", ()),
+        text_elements=data.get("text_elements", ()),
     ),
     "agent_reasoning": lambda data: AgentReasoningEvent(text=_required_str(data, "text")),
     "agent_reasoning_raw_content": lambda data: AgentReasoningRawContentEvent(text=_required_str(data, "text")),
-    "agent_reasoning_section_break": lambda data: AgentReasoningSectionBreakEvent(
-        item_id=_optional_str(data, "item_id") or "",
-        summary_index=_optional_int(data, "summary_index") or 0,
-    ),
+    "agent_reasoning_section_break": _parse_agent_reasoning_section_break,
     "raw_response_item": lambda data: RawResponseItemEvent(item=data["item"]),
     "item_started": lambda data: ItemStartedEvent(
         thread_id=_parse_thread_id(data["thread_id"]),
@@ -4757,20 +5069,8 @@ _EVENT_PAYLOAD_PARSERS = {
     "exited_review_mode": ExitedReviewModeEvent.from_mapping,
     "hook_started": HookStartedEvent.from_mapping,
     "hook_completed": HookCompletedEvent.from_mapping,
-    "reasoning_content_delta": lambda data: ReasoningContentDeltaEvent(
-        thread_id=_required_str(data, "thread_id"),
-        turn_id=_required_str(data, "turn_id"),
-        item_id=_required_str(data, "item_id"),
-        delta=_required_str(data, "delta"),
-        summary_index=int(data.get("summary_index", 0)),
-    ),
-    "reasoning_raw_content_delta": lambda data: ReasoningRawContentDeltaEvent(
-        thread_id=_required_str(data, "thread_id"),
-        turn_id=_required_str(data, "turn_id"),
-        item_id=_required_str(data, "item_id"),
-        delta=_required_str(data, "delta"),
-        content_index=int(data.get("content_index", 0)),
-    ),
+    "reasoning_content_delta": _parse_reasoning_content_delta,
+    "reasoning_raw_content_delta": _parse_reasoning_raw_content_delta,
     "exec_command_begin": _parse_exec_begin,
     "exec_command_end": _parse_exec_end,
     "exec_command_output_delta": ExecCommandOutputDeltaEvent.from_mapping,
@@ -4792,25 +5092,12 @@ _EVENT_PAYLOAD_PARSERS = {
         call_id=_required_str(data, "call_id"),
         path=Path(_required_str(data, "path")),
     ),
-    "patch_apply_begin": lambda data: PatchApplyBeginEvent(
-        call_id=_required_str(data, "call_id"),
-        turn_id=str(data.get("turn_id", "")),
-        auto_approved=_required_bool(data, "auto_approved"),
-        changes=_file_changes_from_mapping(data["changes"]),
-    ),
+    "patch_apply_begin": _parse_patch_apply_begin,
     "patch_apply_updated": lambda data: PatchApplyUpdatedEvent(
         call_id=_required_str(data, "call_id"),
         changes=_file_changes_from_mapping(data["changes"]),
     ),
-    "patch_apply_end": lambda data: PatchApplyEndEvent(
-        call_id=_required_str(data, "call_id"),
-        turn_id=str(data.get("turn_id", "")),
-        stdout=_required_str(data, "stdout"),
-        stderr=_required_str(data, "stderr"),
-        success=_required_bool(data, "success"),
-        changes=_file_changes_from_mapping(data.get("changes", {})),
-        status=PatchApplyStatus(_required_str(data, "status")),
-    ),
+    "patch_apply_end": _parse_patch_apply_end,
     "mcp_tool_call_begin": _parse_mcp_tool_call_begin,
     "mcp_tool_call_end": _parse_mcp_tool_call_end,
     "mcp_startup_update": lambda data: McpStartupUpdateEvent(
@@ -4836,7 +5123,7 @@ _EVENT_PAYLOAD_PARSERS = {
         summary=_required_str(data, "summary"),
         details=_optional_str(data, "details"),
     ),
-    "thread_rolled_back": lambda data: ThreadRolledBackEvent(num_turns=_required_int(data, "num_turns")),
+    "thread_rolled_back": lambda data: ThreadRolledBackEvent(num_turns=_required_u32(data, "num_turns")),
     "stream_error": lambda data: StreamErrorEvent(
         message=_required_str(data, "message"),
         codex_error_info=data.get("codex_error_info"),

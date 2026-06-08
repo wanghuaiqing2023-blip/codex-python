@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
-from pycodex.core.tools.sandboxing import ExecApprovalRequirement
 from pycodex.protocol import (
     AskForApproval,
     ExecPolicyAmendment,
@@ -277,6 +276,8 @@ def exec_approval_requirement_for_decision(
     forbidden_reason: str,
     prompt_reason: str | None = None,
 ) -> ExecApprovalRequirement:
+    from pycodex.core.tools.sandboxing import ExecApprovalRequirement
+
     decision = Decision(decision)
     if decision is Decision.FORBIDDEN:
         return ExecApprovalRequirement.forbidden(forbidden_reason)
@@ -288,6 +289,8 @@ def exec_approval_requirement_for_decision(
 def create_exec_approval_requirement_for_command(
     request: ExecApprovalRequest | Mapping[str, object],
 ) -> ExecApprovalRequirement:
+    from pycodex.core.tools.sandboxing import ExecApprovalRequirement
+
     if not isinstance(request, ExecApprovalRequest):
         request = ExecApprovalRequest(**dict(request))  # type: ignore[arg-type]
     parsed = commands_for_exec_policy(request.command)
@@ -323,7 +326,7 @@ def create_exec_approval_requirement_for_command(
     if decision is Decision.FORBIDDEN:
         return ExecApprovalRequirement.forbidden(derive_forbidden_reason(request.command, request.matched_rules))
     if decision is Decision.PROMPT:
-        prompt_is_rule = any(_is_policy_match(rule) for rule in request.matched_rules)
+        prompt_is_rule = any(_policy_match_decision(rule) is Decision.PROMPT for rule in request.matched_rules)
         rejected_reason = prompt_is_rejected_by_policy(request.approval_policy, prompt_is_rule)
         if rejected_reason is not None:
             return ExecApprovalRequirement.forbidden(rejected_reason)

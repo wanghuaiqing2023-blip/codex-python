@@ -16,6 +16,8 @@ from pycodex.core import (
     collect_agent_role_files,
     discover_agent_roles_in_dir,
     format_agent_nickname,
+    load_agent_roles_from_config,
+    load_agent_roles_from_layers,
     locked_settings_note_for_role,
     merge_missing_role_fields,
     normalize_agent_role_description,
@@ -25,6 +27,7 @@ from pycodex.core import (
     validate_agent_role_file_developer_instructions,
     validate_required_agent_role_description,
 )
+from pycodex.network_proxy import ConfigLayerEntry, ConfigLayerSource
 
 
 class AgentRolesTests(unittest.TestCase):
@@ -146,6 +149,93 @@ model = "gpt-5"
         self.assertEqual(merged.description, "Fallback")
         self.assertEqual(merged.config_file, Path("role.toml"))
         self.assertEqual(merged.nickname_candidates, ("Ada",))
+
+    def test_load_agent_roles_from_layers_merges_missing_fields_from_lower_precedence(self) -> None:
+        # Rust source: codex-rs/core/src/config/agent_roles.rs::load_agent_roles.
+        lower = ConfigLayerEntry(
+            ConfigLayerSource.session_flags(),
+            {
+                "agents": {
+                    "roles": {
+                        "reviewer": {
+                            "description": "Review carefully",
+                            "nickname_candidates": [" Ada "],
+                        }
+                    }
+                }
+            },
+        )
+        higher = ConfigLayerEntry(
+            ConfigLayerSource.session_flags(),
+            {"agents": {"roles": {"reviewer": {}}}},
+        )
+
+        warnings: list[str] = []
+        roles = load_agent_roles_from_layers([lower, higher], warnings)
+
+        self.assertEqual(warnings, [])
+        self.assertEqual(roles["reviewer"].description, "Review carefully")
+        self.assertEqual(roles["reviewer"].nickname_candidates, ("Ada",))
+
+    def test_load_agent_roles_from_layers_resolves_declared_config_file_and_renamed_role(self) -> None:
+        # Rust source: codex-rs/core/src/config/agent_roles.rs::read_declared_role.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            role_file = root / "reviewer.toml"
+            role_file.write_text(
+                'name = "specialist"\n'
+                'description = "File description"\n'
+                'nickname_candidates = [" FileNick "]\n'
+                'developer_instructions = "Focus"\n',
+                encoding="utf-8",
+            )
+            layer = ConfigLayerEntry(
+                ConfigLayerSource.user(root / "config.toml"),
+                {
+                    "agents": {
+                        "roles": {
+                            "reviewer": {
+                                "description": "Inline description",
+                                "config_file": "reviewer.toml",
+                            }
+                        }
+                    }
+                },
+            )
+
+            roles = load_agent_roles_from_layers([layer], [])
+
+        self.assertEqual(set(roles), {"specialist"})
+        self.assertEqual(roles["specialist"].description, "File description")
+        self.assertEqual(roles["specialist"].nickname_candidates, ("FileNick",))
+        self.assertEqual(roles["specialist"].config_file.name, "reviewer.toml")
+
+    def test_load_agent_roles_from_layers_warns_and_skips_same_layer_duplicates(self) -> None:
+        # Rust source: codex-rs/core/src/config/agent_roles.rs::load_agent_roles duplicate handling.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            agents = root / "agents"
+            agents.mkdir()
+            (agents / "duplicate.toml").write_text(
+                'name = "reviewer"\ndescription = "Discovered"\ndeveloper_instructions = "D"\n',
+                encoding="utf-8",
+            )
+            layer = ConfigLayerEntry(
+                ConfigLayerSource.user(root / "config.toml"),
+                {"agents": {"roles": {"reviewer": {"description": "Declared"}}}},
+            )
+            warnings: list[str] = []
+
+            roles = load_agent_roles_from_layers([layer], warnings)
+
+        self.assertEqual(roles["reviewer"].description, "Declared")
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("duplicate agent role name `reviewer` declared in the same config layer", warnings[0])
+
+    def test_load_agent_roles_from_config_errors_without_layer_warning_recovery(self) -> None:
+        # Rust source: codex-rs/core/src/config/agent_roles.rs::load_agent_roles_without_layers.
+        with self.assertRaisesRegex(AgentRoleError, "agent role `reviewer` must define a description"):
+            load_agent_roles_from_config({"agents": {"roles": {"reviewer": {}}}})
 
     def test_agent_role_config_rejects_non_rust_field_shapes(self) -> None:
         with self.assertRaisesRegex(TypeError, "description must be a string"):

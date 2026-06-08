@@ -39,6 +39,12 @@ def blob_oid(content: str) -> str:
 
 
 class CoreTurnDiffTrackerTests(unittest.TestCase):
+    # Rust crate/module: codex-core::turn_diff_tracker.
+    # Rust source: codex/codex-rs/core/src/turn_diff_tracker.rs.
+    # Rust tests: codex/codex-rs/core/src/turn_diff_tracker_tests.rs.
+    # These tests mirror the Rust module-scoped behavior contract for net turn
+    # diffs from exact apply_patch deltas without rereading the workspace for
+    # diff reconstruction.
     def setUp(self) -> None:
         self.root = workspace_tempdir()
         self.addCleanup(lambda: shutil.rmtree(self.root, ignore_errors=True))
@@ -47,6 +53,7 @@ class CoreTurnDiffTrackerTests(unittest.TestCase):
         return self.root / relative
 
     def test_accumulates_add_then_update_as_single_add(self) -> None:
+        # Rust test: accumulates_add_then_update_as_single_add.
         tracker = TurnDiffTracker.with_display_root(self.root)
 
         tracker.track_delta(delta(change(self.path("a.txt"), AppliedPatchFileChange.add("foo\n"))))
@@ -73,6 +80,7 @@ class CoreTurnDiffTrackerTests(unittest.TestCase):
         self.assertEqual(tracker.get_unified_diff(), expected)
 
     def test_invalidated_tracker_suppresses_existing_diff(self) -> None:
+        # Rust test: invalidated_tracker_suppresses_existing_diff.
         tracker = TurnDiffTracker.with_display_root(self.root)
         tracker.track_delta(delta(change(self.path("a.txt"), AppliedPatchFileChange.add("foo\n"))))
 
@@ -81,6 +89,8 @@ class CoreTurnDiffTrackerTests(unittest.TestCase):
         self.assertIsNone(tracker.get_unified_diff())
 
     def test_non_exact_delta_invalidates_tracker(self) -> None:
+        # Rust source contract: TurnDiffTracker::track_delta invalidates on
+        # non-exact AppliedPatchDelta.
         tracker = TurnDiffTracker.with_display_root(self.root)
 
         tracker.track_delta(delta(change(self.path("a.txt"), AppliedPatchFileChange.add("foo\n")), exact=False))
@@ -88,6 +98,7 @@ class CoreTurnDiffTrackerTests(unittest.TestCase):
         self.assertIsNone(tracker.get_unified_diff())
 
     def test_accumulates_delete(self) -> None:
+        # Rust test: accumulates_delete.
         tracker = TurnDiffTracker.with_display_root(self.root)
 
         tracker.track_delta(delta(change(self.path("b.txt"), AppliedPatchFileChange.delete("x\n"))))
@@ -105,6 +116,7 @@ class CoreTurnDiffTrackerTests(unittest.TestCase):
         self.assertEqual(tracker.get_unified_diff(), expected)
 
     def test_accumulates_move_and_update(self) -> None:
+        # Rust test: accumulates_move_and_update.
         tracker = TurnDiffTracker.with_display_root(self.root)
 
         tracker.track_delta(
@@ -134,6 +146,7 @@ class CoreTurnDiffTrackerTests(unittest.TestCase):
         self.assertEqual(tracker.get_unified_diff(), expected)
 
     def test_pure_rename_yields_no_diff(self) -> None:
+        # Rust test: pure_rename_yields_no_diff.
         tracker = TurnDiffTracker.with_display_root(self.root)
 
         tracker.track_delta(
@@ -152,6 +165,7 @@ class CoreTurnDiffTrackerTests(unittest.TestCase):
         self.assertIsNone(tracker.get_unified_diff())
 
     def test_add_over_existing_file_becomes_update(self) -> None:
+        # Rust test: add_over_existing_file_becomes_update.
         tracker = TurnDiffTracker.with_display_root(self.root)
 
         tracker.track_delta(
@@ -177,6 +191,7 @@ class CoreTurnDiffTrackerTests(unittest.TestCase):
         self.assertEqual(tracker.get_unified_diff(), expected)
 
     def test_delete_then_readd_same_path_becomes_update(self) -> None:
+        # Rust test: delete_then_readd_same_path_becomes_update.
         tracker = TurnDiffTracker.with_display_root(self.root)
 
         tracker.track_delta(delta(change(self.path("cycle.txt"), AppliedPatchFileChange.delete("before\n"))))
@@ -196,6 +211,7 @@ class CoreTurnDiffTrackerTests(unittest.TestCase):
         self.assertEqual(tracker.get_unified_diff(), expected)
 
     def test_move_over_existing_destination_without_content_change_deletes_source_only(self) -> None:
+        # Rust test: move_over_existing_destination_without_content_change_deletes_source_only.
         tracker = TurnDiffTracker.with_display_root(self.root)
 
         tracker.track_delta(
@@ -225,6 +241,7 @@ class CoreTurnDiffTrackerTests(unittest.TestCase):
         self.assertEqual(tracker.get_unified_diff(), expected)
 
     def test_move_over_existing_destination_with_content_change_deletes_source_and_updates_destination(self) -> None:
+        # Rust test: move_over_existing_destination_with_content_change_deletes_source_and_updates_destination.
         tracker = TurnDiffTracker.with_display_root(self.root)
 
         tracker.track_delta(
@@ -263,6 +280,7 @@ class CoreTurnDiffTrackerTests(unittest.TestCase):
         self.assertEqual(tracker.get_unified_diff(), expected)
 
     def test_preserves_committed_change_order_with_delete_then_move_overwrite(self) -> None:
+        # Rust test: preserves_committed_change_order_with_delete_then_move_overwrite.
         tracker = TurnDiffTracker.with_display_root(self.root)
 
         tracker.track_delta(delta(change(self.path("b.txt"), AppliedPatchFileChange.delete("existing\n"))))
@@ -301,6 +319,9 @@ class CoreTurnDiffTrackerTests(unittest.TestCase):
         self.assertEqual(tracker.get_unified_diff(), expected)
 
     def test_can_track_verified_apply_patch_action_without_rereading_for_diff(self) -> None:
+        # Rust source contract: TurnDiffTracker tracks exact AppliedPatchDelta
+        # content carried by apply_patch, so turn diff rendering does not need
+        # to reread workspace files.
         (self.path("dup.txt")).write_text("before\n", encoding="utf-8")
         result = maybe_parse_apply_patch_verified(
             (

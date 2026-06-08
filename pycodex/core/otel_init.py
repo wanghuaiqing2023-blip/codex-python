@@ -133,6 +133,7 @@ class OtelExporterKind:
 
 @dataclass(frozen=True)
 class OtelConfig:
+    log_user_prompt: bool = False
     environment: str = "dev"
     exporter: OtelExporterKind = field(default_factory=OtelExporterKind.none)
     trace_exporter: OtelExporterKind = field(default_factory=OtelExporterKind.none)
@@ -141,6 +142,8 @@ class OtelConfig:
     tracestate: dict[str, dict[str, str]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        if not isinstance(self.log_user_prompt, bool):
+            raise TypeError("log_user_prompt must be a bool")
         if not isinstance(self.environment, str):
             raise TypeError("environment must be a string")
         for field_name in ("exporter", "trace_exporter", "metrics_exporter"):
@@ -249,6 +252,7 @@ def _otel_config(config: Any) -> OtelConfig:
         return value
     if isinstance(value, Mapping):
         return OtelConfig(
+            log_user_prompt=value.get("log_user_prompt", False),
             environment=value.get("environment", "dev"),
             exporter=OtelExporterKind.from_mapping(value.get("exporter")),
             trace_exporter=OtelExporterKind.from_mapping(value.get("trace_exporter")),

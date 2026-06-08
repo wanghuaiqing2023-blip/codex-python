@@ -2152,6 +2152,31 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["personality"], "pragmatic")
         self.assertTrue(payload["is_first_turn"])
 
+    async def test_turn_resolved_config_consumes_session_next_turn_is_first(self) -> None:
+        """Rust source contract: ``session::turn`` consumes ``SessionState::take_next_turn_is_first``."""
+
+        session = InMemoryCodexSession(cwd="C:/work/project")
+        turn_context = await session.new_default_turn()
+        user_input = (UserInput.text_input("hello"),)
+
+        first_payload = await turn_runtime._build_turn_resolved_config_payload(
+            session,
+            turn_context,
+            user_input,
+            SimpleNamespace(),
+        )
+        second_payload = await turn_runtime._build_turn_resolved_config_payload(
+            session,
+            turn_context,
+            user_input,
+            SimpleNamespace(),
+        )
+
+        self.assertIsNotNone(first_payload)
+        self.assertIsNotNone(second_payload)
+        self.assertTrue(first_payload["is_first_turn"])
+        self.assertFalse(second_payload["is_first_turn"])
+
     async def test_run_user_turn_sampling_tracks_turn_resolved_config_from_thread_attr_snapshot(self) -> None:
         session = Session()
         session.conversation_id = "thread-790"
@@ -3220,7 +3245,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         plan_events = non_lifecycle_events(session)
         self.assertEqual(plan_events[0].payload.item.id(), "turn-1-plan")
         self.assertEqual(plan_events[1].payload.delta, "- step\n")
-        self.assertEqual(plan_events[2].payload.item.item.text, "\n- step\n")
+        self.assertEqual(plan_events[2].payload.item.item.text, "- step\n")
         self.assertTrue(result.stream_runtime_state_summary["plan_item_completed"])
 
     async def test_run_user_turn_sampling_completes_plan_mode_item_without_plan_deltas(self) -> None:
@@ -3267,8 +3292,62 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(str(plan_events[0].payload.thread_id), thread_id)
         self.assertEqual(plan_events[0].payload.turn_id, "turn-1")
         self.assertEqual(plan_events[0].payload.item.id(), "turn-1-plan")
-        self.assertEqual(plan_events[1].payload.item.item.text, "\n- final\n")
+        self.assertEqual(plan_events[1].payload.item.item.text, "- final\n")
         self.assertTrue(result.stream_runtime_state_summary["plan_item_completed"])
+
+    async def test_run_user_turn_sampling_keeps_inline_proposed_plan_as_agent_text(self) -> None:
+        session = Session()
+        session.turn_context.turn_id = "turn-1"
+        session.turn_context.collaboration_mode = SimpleNamespace(mode="plan")
+        client = ModelClient(
+            session_id="session",
+            thread_id="019e7f56-8d12-7a72-bc3a-50921c618fe7",
+            installation_id="install",
+        )
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        inline_text = "<proposed_plan>- inline</proposed_plan>"
+        assistant = ResponseItem.message(
+            "assistant",
+            (ContentItem.output_text(inline_text),),
+            id="msg-1",
+        )
+
+        async def sampler(_request):
+            return SimpleNamespace(
+                response_items=(assistant,),
+                stream_events=(
+                    {"type": "output_item_added", "item": ResponseItem.message("assistant", (), id="msg-1")},
+                    {"type": "output_text_delta", "delta": inline_text},
+                    {"type": "output_item_done", "item": assistant},
+                    {"type": "completed", "response_id": "resp-1", "end_turn": True},
+                ),
+            )
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        events = non_lifecycle_events(session)
+        self.assertEqual(
+            tuple(event.type for event in events),
+            ("item_started", "agent_message_content_delta", "item_completed"),
+        )
+        self.assertEqual(events[1].payload.delta, inline_text)
+        self.assertEqual(events[2].payload.item.item.content[0].text, inline_text)
+        self.assertFalse(result.stream_runtime_state_summary["plan_item_started"])
+        self.assertFalse(result.stream_runtime_state_summary["plan_item_completed"])
 
     async def test_run_user_turn_sampling_emits_non_agent_output_text_deltas(self) -> None:
         session = Session()
@@ -3326,6 +3405,8 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(delta_events[0].payload.delta, "thinking")
 
     async def test_run_user_turn_sampling_marks_context_window_full_on_terminal_error(self) -> None:
+        """Rust source contract: ``session::turn::run_sampling_request`` records full context window."""
+
         session = Session()
         client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
@@ -3357,6 +3438,8 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(events_of_type(session, "task_complete")[-1].payload.last_agent_message)
 
     async def test_run_user_turn_sampling_records_usage_limit_rate_limits_on_terminal_error(self) -> None:
+        """Rust source contract: ``session::turn::run_sampling_request`` records usage-limit rate limits."""
+
         session = Session()
         client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
@@ -3393,6 +3476,8 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(events_of_type(session, "task_complete")[-1].payload.last_agent_message)
 
     async def test_run_user_turn_sampling_goal_runtime_usage_limit_errors_are_best_effort(self) -> None:
+        """Rust source contract: usage-limit goal runtime updates are best-effort side effects."""
+
         session = Session()
         client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
@@ -3427,6 +3512,8 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events_of_type(session, "error")[-1].payload.codex_error_info.type, "usage_limit_exceeded")
 
     async def test_run_user_turn_sampling_retries_retryable_stream_error(self) -> None:
+        """Rust source contract: retryable stream errors notify, sleep, and retry below max retries."""
+
         session = Session()
         client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
         provider = SimpleNamespace(
@@ -3469,6 +3556,8 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tuple(event.type for event in session.emitted_events), ("task_started", "task_complete"))
 
     async def test_run_user_turn_sampling_falls_back_to_http_after_retry_limit(self) -> None:
+        """Rust source contract: after max retries, successful fallback emits warning and retries."""
+
         session = Session()
 
         class FallbackModelClient:
@@ -3527,6 +3616,61 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         warnings = events_of_type(session, "warning")
         self.assertEqual(len(warnings), 1)
         self.assertIn("Falling back from WebSockets to HTTPS transport.", warnings[0].payload.message)
+
+    async def test_run_user_turn_sampling_fallback_switch_failure_surfaces_stream_error_without_warning(self) -> None:
+        """Rust source contract: fallback branch requires `try_switch_fallback_transport` to succeed."""
+
+        session = Session()
+
+        class FailedFallbackModelClient:
+            def __init__(self) -> None:
+                self.fallback_calls = []
+
+            def responses_websocket_enabled(self) -> bool:
+                return True
+
+            def force_http_fallback(self, session_telemetry=None, model_info=None) -> bool:
+                self.fallback_calls.append((session_telemetry, model_info))
+                return False
+
+        fallback_client = FailedFallbackModelClient()
+        session.services = SimpleNamespace(model_client=fallback_client)
+        session.turn_context.session_telemetry = SimpleNamespace(counter=lambda *_args: None)
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(
+            is_azure_responses_endpoint=lambda: False,
+            info=lambda: SimpleNamespace(stream_max_retries=lambda: 0),
+        )
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        session.turn_context.model_info = model_info
+        attempts = []
+
+        async def sampler(request):
+            attempts.append(request)
+            raise CodexErr.stream("websocket dropped", retry_after=0)
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(len(attempts), 1)
+        self.assertIsNone(result.last_agent_message)
+        self.assertEqual(fallback_client.fallback_calls, [(session.turn_context.session_telemetry, model_info)])
+        self.assertEqual(session.retry_sleeps, [])
+        self.assertEqual(session.stream_errors, [])
+        self.assertEqual(events_of_type(session, "warning"), ())
+        self.assertEqual(tuple(event.type for event in session.emitted_events), ("task_started", "error", "task_complete"))
 
     async def test_run_user_turn_sampling_dispatches_and_records_tool_outputs(self) -> None:
         session = Session()
@@ -3819,6 +3963,291 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(session.context_recorded)
 
+    async def test_previous_model_inline_compact_runs_on_total_scope_model_downshift(self) -> None:
+        """Rust source contract: ``session::turn::maybe_run_previous_model_inline_compact``.
+
+        Under ``AutoCompactTokenLimitScope::Total``, Rust compacts with the previous
+        model when active context tokens exceed the new model's auto-compact limit
+        or reach its context window, and the previous model has a larger window.
+        """
+
+        previous_context = SimpleNamespace(
+            model_info=SimpleNamespace(slug="gpt-large", context_window=200),
+        )
+        current_context = SimpleNamespace(
+            model_info=SimpleNamespace(
+                slug="gpt-small",
+                context_window=100,
+                auto_compact_token_limit=lambda: 90,
+            ),
+            config=SimpleNamespace(model_auto_compact_token_limit_scope="total"),
+        )
+
+        async def with_model(model, _models_manager):
+            self.assertEqual(model, "gpt-large")
+            return previous_context
+
+        current_context.with_model = with_model
+        compact_calls = []
+
+        async def run_auto_compact(turn_context, *, initial_context_injection, reason, phase):
+            compact_calls.append((turn_context, initial_context_injection, reason, phase))
+
+        session = SimpleNamespace(
+            services=SimpleNamespace(models_manager=object()),
+            previous_turn_settings=lambda: SimpleNamespace(model="gpt-large", realtime_active=False),
+            get_total_token_usage=lambda: 95,
+            run_auto_compact=run_auto_compact,
+        )
+
+        compacted = await turn_runtime._maybe_run_previous_model_inline_compact(session, current_context)
+
+        self.assertTrue(compacted)
+        self.assertEqual(compact_calls, [(previous_context, "do_not_inject", "model_downshift", "pre_turn")])
+
+    async def test_previous_model_inline_compact_skips_without_model_downshift(self) -> None:
+        """Rust source contract: previous-model compact requires a smaller new context window."""
+
+        previous_context = SimpleNamespace(
+            model_info=SimpleNamespace(slug="gpt-large", context_window=100),
+        )
+        current_context = SimpleNamespace(
+            model_info=SimpleNamespace(
+                slug="gpt-small",
+                context_window=100,
+                auto_compact_token_limit=lambda: 90,
+            ),
+            config=SimpleNamespace(model_auto_compact_token_limit_scope="total"),
+        )
+        current_context.with_model = lambda _model, _models_manager: previous_context
+        compact_calls = []
+        session = SimpleNamespace(
+            services=SimpleNamespace(models_manager=object()),
+            previous_turn_settings=lambda: SimpleNamespace(model="gpt-large", realtime_active=False),
+            get_total_token_usage=lambda: 95,
+            run_auto_compact=lambda turn_context, **kwargs: compact_calls.append((turn_context, kwargs)),
+        )
+
+        compacted = await turn_runtime._maybe_run_previous_model_inline_compact(session, current_context)
+
+        self.assertFalse(compacted)
+        self.assertEqual(compact_calls, [])
+
+    async def test_previous_model_inline_compact_body_after_prefix_uses_context_window_threshold(self) -> None:
+        """Rust source contract: ``BodyAfterPrefix`` checks active tokens against the new window."""
+
+        previous_context = SimpleNamespace(
+            model_info=SimpleNamespace(slug="gpt-large", context_window=200),
+        )
+        current_context = SimpleNamespace(
+            model_info=SimpleNamespace(
+                slug="gpt-small",
+                context_window=100,
+                auto_compact_token_limit=lambda: 1,
+            ),
+            config=SimpleNamespace(model_auto_compact_token_limit_scope="body_after_prefix"),
+        )
+        current_context.with_model = lambda _model, _models_manager: previous_context
+        compact_calls = []
+        session = SimpleNamespace(
+            services=SimpleNamespace(models_manager=object()),
+            previous_turn_settings=lambda: SimpleNamespace(model="gpt-large", realtime_active=False),
+            get_total_token_usage=lambda: 99,
+            run_auto_compact=lambda turn_context, **kwargs: compact_calls.append((turn_context, kwargs)),
+        )
+
+        compacted_before_window = await turn_runtime._maybe_run_previous_model_inline_compact(session, current_context)
+        session.get_total_token_usage = lambda: 100
+        compacted_at_window = await turn_runtime._maybe_run_previous_model_inline_compact(session, current_context)
+
+        self.assertFalse(compacted_before_window)
+        self.assertTrue(compacted_at_window)
+        self.assertEqual(len(compact_calls), 1)
+        self.assertIs(compact_calls[0][0], previous_context)
+        self.assertEqual(
+            compact_calls[0][1],
+            {
+                "initial_context_injection": "do_not_inject",
+                "reason": "model_downshift",
+                "phase": "pre_turn",
+            },
+        )
+
+    async def test_auto_compact_token_status_total_scope_matches_rust_threshold(self) -> None:
+        """Rust source contract: ``session::turn::auto_compact_token_status`` total scope.
+
+        Under ``AutoCompactTokenLimitScope::Total``, Rust compares active context
+        tokens against the model auto-compact limit using ``>=``.
+        """
+
+        turn_context = SimpleNamespace(
+            model_info=SimpleNamespace(auto_compact_token_limit=lambda: 100),
+            config=SimpleNamespace(model_auto_compact_token_limit_scope="total"),
+        )
+        session = SimpleNamespace(get_total_token_usage=lambda: 100)
+
+        status = await turn_runtime._auto_compact_token_status(session, turn_context)
+
+        self.assertEqual(status.active_context_tokens, 100)
+        self.assertEqual(status.auto_compact_scope_tokens, 100)
+        self.assertEqual(status.auto_compact_scope_limit, 100)
+        self.assertIsNone(status.full_context_window_limit)
+        self.assertFalse(status.full_context_window_limit_reached)
+        self.assertTrue(status.token_limit_reached)
+
+    async def test_auto_compact_token_status_body_after_prefix_uses_snapshot_and_full_window(self) -> None:
+        """Rust source contract: ``BodyAfterPrefix`` subtracts the auto-compact window baseline."""
+
+        turn_context = SimpleNamespace(
+            model_info=SimpleNamespace(context_window=200, auto_compact_token_limit=lambda: 50),
+            config=SimpleNamespace(
+                model_auto_compact_token_limit_scope="body_after_prefix",
+                model_auto_compact_token_limit=30,
+            ),
+        )
+        session = SimpleNamespace(
+            get_total_token_usage=lambda: 130,
+            auto_compact_window_snapshot=lambda: SimpleNamespace(ordinal=7, prefill_input_tokens=100),
+        )
+
+        status = await turn_runtime._auto_compact_token_status(session, turn_context)
+
+        self.assertEqual(status.active_context_tokens, 130)
+        self.assertEqual(status.auto_compact_scope_tokens, 30)
+        self.assertEqual(status.auto_compact_scope_limit, 30)
+        self.assertEqual(status.full_context_window_limit, 200)
+        self.assertEqual(status.auto_compact_window_ordinal, 7)
+        self.assertEqual(status.auto_compact_window_prefill_tokens, 100)
+        self.assertFalse(status.full_context_window_limit_reached)
+        self.assertTrue(status.token_limit_reached)
+
+    async def test_auto_compact_token_status_body_after_prefix_saturates_at_zero_and_checks_full_window(self) -> None:
+        """Rust source contract: body-after-prefix uses saturating subtraction plus full-window fallback."""
+
+        turn_context = SimpleNamespace(
+            model_info=SimpleNamespace(context_window=120, auto_compact_token_limit=lambda: 10),
+            config=SimpleNamespace(model_auto_compact_token_limit_scope="body_after_prefix"),
+        )
+        session = SimpleNamespace(
+            get_total_token_usage=lambda: 120,
+            auto_compact_window_snapshot=lambda: SimpleNamespace(ordinal=8, prefill_input_tokens=150),
+        )
+
+        status = await turn_runtime._auto_compact_token_status(session, turn_context)
+
+        self.assertEqual(status.auto_compact_scope_tokens, 0)
+        self.assertEqual(status.auto_compact_scope_limit, 10)
+        self.assertEqual(status.full_context_window_limit, 120)
+        self.assertTrue(status.full_context_window_limit_reached)
+        self.assertTrue(status.token_limit_reached)
+
+    async def test_run_auto_compact_if_needed_uses_default_token_status_provider(self) -> None:
+        """Rust source contract: pre-sampling compact reads token status from session state."""
+
+        turn_context = SimpleNamespace(
+            model_info=SimpleNamespace(auto_compact_token_limit=lambda: 100),
+            config=SimpleNamespace(model_auto_compact_token_limit_scope="total"),
+        )
+        compact_calls = []
+        session = SimpleNamespace(
+            get_total_token_usage=lambda: 100,
+            run_auto_compact=lambda turn_context, **kwargs: compact_calls.append((turn_context, kwargs)),
+        )
+
+        compacted = await turn_runtime._run_auto_compact_if_needed(
+            session,
+            turn_context,
+            initial_context_injection="do_not_inject",
+            reason="context_limit",
+            phase="pre_turn",
+        )
+
+        self.assertTrue(compacted)
+        self.assertEqual(
+            compact_calls,
+            [
+                (
+                    turn_context,
+                    {
+                        "initial_context_injection": "do_not_inject",
+                        "reason": "context_limit",
+                        "phase": "pre_turn",
+                    },
+                )
+            ],
+        )
+
+    async def test_pre_sampling_compact_runs_previous_model_before_context_limit(self) -> None:
+        """Rust source contract: ``run_pre_sampling_compact`` runs downshift before context-limit compact."""
+
+        previous_context = SimpleNamespace(
+            model_info=SimpleNamespace(slug="gpt-large", context_window=200),
+        )
+        current_context = SimpleNamespace(
+            model_info=SimpleNamespace(
+                slug="gpt-small",
+                context_window=100,
+                auto_compact_token_limit=lambda: 90,
+            ),
+            config=SimpleNamespace(model_auto_compact_token_limit_scope="total"),
+        )
+        current_context.with_model = lambda _model, _models_manager: previous_context
+        compact_calls = []
+
+        async def run_auto_compact(turn_context, *, initial_context_injection, reason, phase):
+            compact_calls.append((turn_context, initial_context_injection, reason, phase))
+
+        session = SimpleNamespace(
+            services=SimpleNamespace(models_manager=object()),
+            previous_turn_settings=lambda: SimpleNamespace(model="gpt-large", realtime_active=False),
+            get_total_token_usage=lambda: 95,
+            run_auto_compact=run_auto_compact,
+        )
+
+        await turn_runtime._maybe_run_pre_sampling_auto_compact(session, current_context)
+
+        self.assertEqual(
+            compact_calls,
+            [
+                (previous_context, "do_not_inject", "model_downshift", "pre_turn"),
+                (current_context, "do_not_inject", "context_limit", "pre_turn"),
+            ],
+        )
+
+    async def test_pre_sampling_compact_previous_model_error_short_circuits_context_limit(self) -> None:
+        """Rust source contract: previous-model compact failure returns before context-limit compact."""
+
+        previous_context = SimpleNamespace(
+            model_info=SimpleNamespace(slug="gpt-large", context_window=200),
+        )
+        current_context = SimpleNamespace(
+            model_info=SimpleNamespace(
+                slug="gpt-small",
+                context_window=100,
+                auto_compact_token_limit=lambda: 90,
+            ),
+            config=SimpleNamespace(model_auto_compact_token_limit_scope="total"),
+        )
+        current_context.with_model = lambda _model, _models_manager: previous_context
+        compact_reasons = []
+
+        async def run_auto_compact(_turn_context, *, reason, **_kwargs):
+            compact_reasons.append(reason)
+            if reason == "model_downshift":
+                raise RuntimeError("previous compact failed")
+
+        session = SimpleNamespace(
+            services=SimpleNamespace(models_manager=object()),
+            previous_turn_settings=lambda: SimpleNamespace(model="gpt-large", realtime_active=False),
+            get_total_token_usage=lambda: 95,
+            run_auto_compact=run_auto_compact,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "previous compact failed"):
+            await turn_runtime._maybe_run_pre_sampling_auto_compact(session, current_context)
+
+        self.assertEqual(compact_reasons, ["model_downshift"])
+
     async def test_run_user_turn_sampling_pre_sampling_auto_compact_error_completes_before_input_recording(self) -> None:
         session = Session()
         client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
@@ -3962,6 +4391,100 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn({"type": "usage_limit_reached", "turn_context": session.turn_context}, session.goal_runtime_events)
         self.assertEqual(tuple(event.type for event in session.emitted_events), ("task_started", "task_complete"))
         self.assertIsNone(events_of_type(session, "task_complete")[-1].payload.last_agent_message)
+
+    async def test_mid_turn_auto_compact_model_followup_defers_pending_input_until_continuation_finishes(self) -> None:
+        """Rust source contract: after mid-turn compact, model follow-up resumes before pending input."""
+
+        session = Session()
+        session.input_queue = PendingInputQueue()
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        seen_requests = []
+        compact_calls = []
+        token_statuses = [
+            SimpleNamespace(token_limit_reached=False),
+            SimpleNamespace(token_limit_reached=True),
+            SimpleNamespace(token_limit_reached=False),
+        ]
+        continuation_done = ResponseItem.message(
+            "assistant",
+            (ContentItem.output_text("continuation done"),),
+            id="msg-continuation",
+        )
+        pending_done = ResponseItem.message(
+            "assistant",
+            (ContentItem.output_text("pending handled"),),
+            id="msg-pending",
+        )
+
+        async def auto_compact_token_status(_turn_context):
+            return token_statuses.pop(0)
+
+        async def run_auto_compact(turn_context, *, initial_context_injection, reason, phase):
+            compact_calls.append((turn_context, initial_context_injection, reason, phase))
+
+        async def sampler(request):
+            seen_requests.append(request)
+            if len(seen_requests) == 1:
+                session.input_queue.items.append(UserInput.text_input("pending steer"))
+                return SimpleNamespace(
+                    response_items=(),
+                    stream_events=(
+                        {"type": "completed", "response_id": "resp-1", "end_turn": False},
+                    ),
+                )
+            if len(seen_requests) == 2:
+                return SimpleNamespace(
+                    response_items=(continuation_done,),
+                    stream_events=(
+                        {"type": "completed", "response_id": "resp-2", "end_turn": True},
+                    ),
+                )
+            return SimpleNamespace(
+                response_items=(pending_done,),
+                stream_events=(
+                    {"type": "completed", "response_id": "resp-3", "end_turn": True},
+                ),
+            )
+
+        session.auto_compact_token_status = auto_compact_token_status
+        session.run_auto_compact = run_auto_compact
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(
+            compact_calls,
+            [(session.turn_context, "before_last_user_message", "context_limit", "mid_turn")],
+        )
+        self.assertEqual(len(seen_requests), 3)
+        second_request_texts = [
+            item.content[0].text
+            for item in seen_requests[1].request_plan.request["input"]
+            if getattr(item, "type", None) == "message" and getattr(item, "content", None)
+        ]
+        third_request_texts = [
+            item.content[0].text
+            for item in seen_requests[2].request_plan.request["input"]
+            if getattr(item, "type", None) == "message" and getattr(item, "content", None)
+        ]
+        self.assertNotIn("pending steer", second_request_texts)
+        self.assertIn("pending steer", third_request_texts)
+        self.assertEqual(result.response_items, (continuation_done, pending_done))
+        self.assertEqual(result.last_agent_message, "pending handled")
 
     async def test_run_user_turn_sampling_maps_fatal_tool_error_to_codex_err(self) -> None:
         session = Session()
@@ -4801,6 +5324,41 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("accepted steer", followup_texts)
         self.assertNotIn("blocked steer", followup_texts)
         self.assertEqual(result.last_agent_message, "second")
+
+    async def test_record_pending_inputs_with_hooks_preserves_rust_mixed_input_loop_semantics(self) -> None:
+        """Rust source contract: ``session::turn::run_hooks_and_record_inputs`` mixed pending loop."""
+
+        session = Session()
+        hook_prompts = []
+        injected_item = ResponseItem.message("user", (ContentItem.input_text("mailbox context"),))
+
+        def hook(prompt):
+            hook_prompts.append(prompt)
+            if prompt == "blocked steer":
+                return HookRuntimeOutcome(should_stop=True, additional_contexts=("blocked context",))
+            return HookRuntimeOutcome()
+
+        session.run_user_prompt_submit_hook = hook
+
+        result = await turn_runtime._record_pending_inputs_with_hooks(
+            session,
+            session.turn_context,
+            (
+                {"type": "user_input", "items": ({"type": "text", "text": "blocked steer"},)},
+                {"type": "response_item", "item": injected_item},
+                {"type": "UserInput", "content": ({"type": "text", "text": "accepted steer"},)},
+            ),
+        )
+
+        self.assertEqual(hook_prompts, ["blocked steer", "accepted steer"])
+        self.assertFalse(result.blocked_without_accepted_user_input)
+        self.assertTrue(result.accepted_user_input)
+        recorded_texts = [
+            item.content[0].text
+            for item in result.recorded_items
+            if getattr(item, "type", None) == "message" and getattr(item, "content", None)
+        ]
+        self.assertEqual(recorded_texts, ["blocked context", "mailbox context", "accepted steer"])
 
     async def test_run_user_turn_sampling_follows_stream_completed_end_turn_false(self) -> None:
         session = Session()

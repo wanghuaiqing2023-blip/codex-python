@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 from pycodex.protocol import ContentItem, ResponseItem, TruncationPolicyConfig
 
@@ -19,6 +19,10 @@ RECENT_WORK_SECTION_TOKEN_BUDGET = 2_200
 WORKSPACE_SECTION_TOKEN_BUDGET = 1_600
 NOTES_SECTION_TOKEN_BUDGET = 300
 REALTIME_TURN_TOKEN_BUDGET = 300
+MAX_RECENT_WORK_GROUPS = 8
+MAX_CURRENT_CWD_ASKS = 8
+MAX_OTHER_CWD_ASKS = 5
+MAX_ASK_CHARS = 240
 TREE_MAX_DEPTH = 2
 DIR_ENTRY_LIMIT = 20
 NOISY_DIR_NAMES = frozenset(
@@ -35,6 +39,47 @@ NOISY_DIR_NAMES = frozenset(
         "target",
     }
 )
+
+
+def build_realtime_startup_context(
+    current_thread_items: Iterable[ResponseItem | dict[str, object]] = (),
+    recent_threads: Iterable[object] = (),
+    cwd: Path | str | None = None,
+    user_root: Path | str | None = None,
+    budget_tokens: int = 0,
+) -> str | None:
+    """Build the startup context blob assembled by Rust ``build_realtime_startup_context``.
+
+    The Rust implementation gathers these inputs from ``Session``.  The Python
+    port keeps the same section ordering and per-section budgets while accepting
+    already-loaded inputs so callers can wire in session/thread-store state
+    incrementally.
+    """
+
+    del budget_tokens  # Rust currently logs the requested budget but applies fixed per-section caps.
+    current_thread_section = build_current_thread_section(current_thread_items)
+    cwd_path = Path(cwd) if cwd is not None else None
+    recent_work_section = build_recent_work_section(cwd_path, recent_threads) if cwd_path is not None else None
+    workspace_section = build_workspace_section_with_user_root(cwd_path, user_root) if cwd_path is not None else None
+
+    if current_thread_section is None and recent_work_section is None and workspace_section is None:
+        return None
+
+    parts = [STARTUP_CONTEXT_HEADER]
+    for title, body, budget in (
+        ("Current Thread", current_thread_section, CURRENT_THREAD_SECTION_TOKEN_BUDGET),
+        ("Recent Work", recent_work_section, RECENT_WORK_SECTION_TOKEN_BUDGET),
+        ("Machine / Workspace Map", workspace_section, WORKSPACE_SECTION_TOKEN_BUDGET),
+        (
+            "Notes",
+            "Built at realtime startup from the current thread history, local thread metadata, and a bounded local workspace scan. This excludes repo memory instructions, AGENTS files, project-doc prompt blends, and memory summaries.",
+            NOTES_SECTION_TOKEN_BUDGET,
+        ),
+    ):
+        section = format_section(title, body, budget)
+        if section is not None:
+            parts.append(section)
+    return format_startup_context_blob("\n\n".join(parts))
 
 
 def build_current_thread_section(items: Iterable[ResponseItem | dict[str, object]]) -> str | None:
@@ -127,6 +172,33 @@ def truncate_realtime_text_to_token_budget(text: str, budget_tokens: int) -> str
         truncation_budget = next_budget
 
 
+def build_recent_work_section(cwd: Path | str, recent_threads: Iterable[object]) -> str | None:
+    cwd_path = Path(cwd)
+    current_group = _resolve_git_root(cwd_path) or cwd_path
+    groups: dict[Path, list[object]] = {}
+    for thread in recent_threads:
+        thread_cwd = Path(_get_thread_field(thread, "cwd", ""))
+        group = _resolve_git_root(thread_cwd) or thread_cwd
+        groups.setdefault(group, []).append(thread)
+
+    sorted_groups = sorted(
+        groups.items(),
+        key=lambda item: (
+            item[0] != current_group,
+            _reverse_sort_value(max((_get_thread_field(entry, "updated_at", "") for entry in item[1]), default="")),
+            str(item[0]),
+        ),
+    )
+
+    sections: list[str] = []
+    for group, entries in sorted_groups[:MAX_RECENT_WORK_GROUPS]:
+        entries = sorted(entries, key=lambda entry: _reverse_sort_value(_get_thread_field(entry, "updated_at", "")))
+        section = _format_thread_group(current_group, group, entries)
+        if section is not None:
+            sections.append(section)
+    return "\n\n".join(sections) if sections else None
+
+
 def build_workspace_section_with_user_root(cwd: Path | str, user_root: Path | str | None = None) -> str | None:
     cwd_path = Path(cwd)
     git_root = _resolve_git_root(cwd_path)
@@ -197,6 +269,45 @@ def format_startup_context_blob(body: str) -> str:
     return f"{STARTUP_CONTEXT_OPEN_TAG}\n{body}\n{STARTUP_CONTEXT_CLOSE_TAG}"
 
 
+def _format_thread_group(current_group: Path, group: Path, entries: list[object]) -> str | None:
+    if not entries:
+        return None
+    latest = entries[0]
+    group_label = f"### Git repo: {group}" if (group / ".git").exists() else f"### Directory: {group}"
+    lines = [
+        group_label,
+        f"Recent sessions: {len(entries)}",
+        f"Latest activity: {_format_updated_at(_get_thread_field(latest, 'updated_at', ''))}",
+    ]
+
+    branch = _git_branch(latest)
+    if branch:
+        lines.append(f"Latest branch: {branch}")
+
+    lines.append("")
+    lines.append("User asks:")
+    seen: set[str] = set()
+    max_asks = MAX_CURRENT_CWD_ASKS if group == current_group else MAX_OTHER_CWD_ASKS
+
+    for entry in entries:
+        first_user_message = _get_thread_field(entry, "first_user_message", None)
+        if not isinstance(first_user_message, str):
+            continue
+        ask = " ".join(first_user_message.split())
+        entry_cwd = Path(_get_thread_field(entry, "cwd", ""))
+        dedupe_key = f"{entry_cwd}:{ask}"
+        if not ask or dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        if len(ask) > MAX_ASK_CHARS:
+            ask = ask[: max(MAX_ASK_CHARS - 3, 0)] + "..."
+        lines.append(f"- {entry_cwd}: {ask}")
+        if len(seen) == max_asks:
+            break
+
+    return "\n".join(lines) if len(lines) > 5 else None
+
+
 def _collect_tree_lines(directory: Path, depth: int, lines: list[str]) -> None:
     if depth >= TREE_MAX_DEPTH:
         return
@@ -241,6 +352,39 @@ def _file_name_string(path: Path) -> str:
     return path.name or str(path)
 
 
+def _get_thread_field(thread: object, name: str, default: object = None) -> object:
+    if isinstance(thread, dict):
+        return thread.get(name, default)
+    return getattr(thread, name, default)
+
+
+def _reverse_sort_value(value: object) -> tuple[int, object]:
+    if isinstance(value, (int, float)):
+        return (0, -value)
+    timestamp = getattr(value, "timestamp", None)
+    if callable(timestamp):
+        try:
+            return (0, -timestamp())
+        except (OverflowError, OSError, ValueError):
+            pass
+    return (1, str(value))
+
+
+def _format_updated_at(value: object) -> str:
+    formatter = getattr(value, "isoformat", None)
+    if callable(formatter):
+        return formatter()
+    return str(value)
+
+
+def _git_branch(thread: object) -> str | None:
+    git_info = _get_thread_field(thread, "git_info", None)
+    if git_info is None:
+        return None
+    branch = git_info.get("branch") if isinstance(git_info, dict) else getattr(git_info, "branch", None)
+    return branch if isinstance(branch, str) and branch else None
+
+
 def _content_items_to_text(content: Iterable[ContentItem | dict[str, object]]) -> str | None:
     parts: list[str] = []
     for item in content:
@@ -257,6 +401,10 @@ def _is_contextual_user_message_content(content: Iterable[ContentItem]) -> bool:
 __all__ = [
     "CURRENT_THREAD_SECTION_TOKEN_BUDGET",
     "DIR_ENTRY_LIMIT",
+    "MAX_ASK_CHARS",
+    "MAX_CURRENT_CWD_ASKS",
+    "MAX_OTHER_CWD_ASKS",
+    "MAX_RECENT_WORK_GROUPS",
     "NOISY_DIR_NAMES",
     "NOTES_SECTION_TOKEN_BUDGET",
     "REALTIME_TURN_TOKEN_BUDGET",
@@ -267,6 +415,8 @@ __all__ = [
     "TREE_MAX_DEPTH",
     "WORKSPACE_SECTION_TOKEN_BUDGET",
     "build_current_thread_section",
+    "build_recent_work_section",
+    "build_realtime_startup_context",
     "build_workspace_section_with_user_root",
     "format_section",
     "format_startup_context_blob",

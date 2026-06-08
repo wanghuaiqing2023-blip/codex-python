@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timezone
 
 from pycodex.core import (
+    GoalWallClockAccountingSnapshot,
     budget_limit_prompt,
     budget_limit_steering_item,
     continuation_prompt,
@@ -10,7 +12,10 @@ from pycodex.core import (
     goal_context_input_item,
     goal_token_delta_for_usage,
     objective_updated_prompt,
+    protocol_goal_from_state,
+    protocol_goal_status_from_state,
     should_ignore_goal_for_mode,
+    state_goal_status_from_protocol,
     validate_goal_budget,
 )
 from pycodex.protocol import (
@@ -22,6 +27,8 @@ from pycodex.protocol import (
     ThreadId,
     TokenUsage,
 )
+from pycodex.state import ThreadGoal as StateThreadGoal
+from pycodex.state import ThreadGoalStatus as StateThreadGoalStatus
 
 
 def make_goal(
@@ -83,6 +90,90 @@ class CoreGoalsTests(unittest.TestCase):
 
         with self.assertRaisesRegex(TypeError, "usage must be a TokenUsage"):
             goal_token_delta_for_usage(object())  # type: ignore[arg-type]
+
+    def test_state_goal_status_matches_codex_state_strings(self) -> None:
+        # Rust: codex-state/src/model/thread_goal.rs::ThreadGoalStatus::as_str.
+        self.assertEqual(StateThreadGoalStatus.ACTIVE.value, "active")
+        self.assertEqual(StateThreadGoalStatus.PAUSED.value, "paused")
+        self.assertEqual(StateThreadGoalStatus.BLOCKED.value, "blocked")
+        self.assertEqual(StateThreadGoalStatus.USAGE_LIMITED.value, "usage_limited")
+        self.assertEqual(StateThreadGoalStatus.BUDGET_LIMITED.value, "budget_limited")
+        self.assertEqual(StateThreadGoalStatus.COMPLETE.value, "complete")
+        self.assertTrue(StateThreadGoalStatus.ACTIVE.is_active())
+        self.assertFalse(StateThreadGoalStatus.PAUSED.is_active())
+        self.assertTrue(StateThreadGoalStatus.BUDGET_LIMITED.is_terminal())
+        self.assertTrue(StateThreadGoalStatus.COMPLETE.is_terminal())
+        self.assertFalse(StateThreadGoalStatus.BLOCKED.is_terminal())
+
+    def test_goal_protocol_state_status_conversion_uses_rust_mapping(self) -> None:
+        # Rust: goals.rs protocol_goal_status_from_state/state_goal_status_from_protocol.
+        pairs = (
+            (StateThreadGoalStatus.ACTIVE, ThreadGoalStatus.ACTIVE),
+            (StateThreadGoalStatus.PAUSED, ThreadGoalStatus.PAUSED),
+            (StateThreadGoalStatus.BLOCKED, ThreadGoalStatus.BLOCKED),
+            (StateThreadGoalStatus.USAGE_LIMITED, ThreadGoalStatus.USAGE_LIMITED),
+            (StateThreadGoalStatus.BUDGET_LIMITED, ThreadGoalStatus.BUDGET_LIMITED),
+            (StateThreadGoalStatus.COMPLETE, ThreadGoalStatus.COMPLETE),
+        )
+        for state_status, protocol_status in pairs:
+            with self.subTest(status=state_status):
+                self.assertEqual(protocol_goal_status_from_state(state_status), protocol_status)
+                self.assertEqual(state_goal_status_from_protocol(protocol_status), state_status)
+
+        self.assertEqual(protocol_goal_status_from_state("usage_limited"), ThreadGoalStatus.USAGE_LIMITED)
+        self.assertEqual(state_goal_status_from_protocol("budgetLimited"), StateThreadGoalStatus.BUDGET_LIMITED)
+
+    def test_protocol_goal_from_state_drops_goal_id_and_uses_epoch_seconds(self) -> None:
+        # Rust: goals.rs::protocol_goal_from_state maps codex_state::ThreadGoal to protocol::ThreadGoal.
+        thread_id = ThreadId.new()
+        state_goal = StateThreadGoal(
+            thread_id=thread_id,
+            goal_id="goal-1",
+            objective="finish the stack",
+            status=StateThreadGoalStatus.USAGE_LIMITED,
+            token_budget=500,
+            tokens_used=123,
+            time_used_seconds=45,
+            created_at=datetime.fromtimestamp(1_700_000_000, tz=timezone.utc),
+            updated_at=datetime.fromtimestamp(1_700_000_123, tz=timezone.utc),
+        )
+
+        protocol_goal = protocol_goal_from_state(state_goal)
+
+        self.assertEqual(
+            protocol_goal,
+            ThreadGoal(
+                thread_id=thread_id,
+                objective="finish the stack",
+                status=ThreadGoalStatus.USAGE_LIMITED,
+                token_budget=500,
+                tokens_used=123,
+                time_used_seconds=45,
+                created_at=1_700_000_000,
+                updated_at=1_700_000_123,
+            ),
+        )
+        self.assertNotIn("goalId", protocol_goal.to_mapping())
+
+    def test_protocol_goal_from_state_rejects_non_state_goal(self) -> None:
+        with self.assertRaisesRegex(TypeError, "goal must be a state ThreadGoal"):
+            protocol_goal_from_state(object())  # type: ignore[arg-type]
+
+    def test_wall_clock_accounting_advances_by_persisted_seconds(self) -> None:
+        # Rust: goals::tests::wall_clock_accounting_advances_by_persisted_seconds.
+        snapshot = GoalWallClockAccountingSnapshot()
+        original = snapshot.last_accounted_at - 1.5
+        snapshot.last_accounted_at = original
+
+        snapshot.mark_accounted(1)
+        self.assertEqual(snapshot.last_accounted_at, original + 1)
+
+        token_only_original = snapshot.last_accounted_at
+        snapshot.mark_accounted(0)
+        self.assertEqual(snapshot.last_accounted_at, token_only_original)
+
+        with self.assertRaisesRegex(TypeError, "accounted_seconds must be an integer"):
+            snapshot.mark_accounted(True)  # type: ignore[arg-type]
 
     def test_continuation_prompt_allows_complete_and_strict_blocked_updates(self) -> None:
         prompt = continuation_prompt(make_goal()).replace("\r\n", "\n")

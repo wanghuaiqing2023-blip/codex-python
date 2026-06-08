@@ -6,6 +6,7 @@ from pycodex.core import (
     is_contextual_dev_message_content,
     parse_turn_item,
 )
+from pycodex.core.event_mapping import is_contextual_user_message_content
 from pycodex.protocol import (
     AgentMessageContent,
     ContentItem,
@@ -95,6 +96,37 @@ class CoreEventMappingTests(unittest.TestCase):
         items = (
             ResponseItem.message("user", (ContentItem.input_text("<environment_context>ctx</environment_context>"),)),
             ResponseItem.message("user", (ContentItem.input_text(GoalContext("Continue working.").render()),)),
+            ResponseItem.message(
+                "user",
+                (
+                    ContentItem.input_text("<environment_context>ctx</environment_context>"),
+                    ContentItem.input_text("# AGENTS.md instructions for dir\n\n<INSTRUCTIONS>\nbody\n</INSTRUCTIONS>"),
+                ),
+            ),
+        )
+
+        for item in items:
+            self.assertIsNone(parse_turn_item(item))
+
+    def test_skips_user_instructions_env_skill_and_shell_context_like_rust(self) -> None:
+        # Rust test: skips_user_instructions_and_env
+        items = (
+            ResponseItem.message(
+                "user",
+                (ContentItem.input_text("# AGENTS.md instructions for test_directory\n\n<INSTRUCTIONS>\ntest_text\n</INSTRUCTIONS>"),),
+            ),
+            ResponseItem.message(
+                "user",
+                (ContentItem.input_text("<environment_context>test_text</environment_context>"),),
+            ),
+            ResponseItem.message(
+                "user",
+                (ContentItem.input_text("<skill>\n<name>demo</name>\n<path>skills/demo/SKILL.md</path>\nbody\n</skill>"),),
+            ),
+            ResponseItem.message(
+                "user",
+                (ContentItem.input_text("<user_shell_command>echo 42</user_shell_command>"),),
+            ),
             ResponseItem.message(
                 "user",
                 (
@@ -221,6 +253,88 @@ class CoreEventMappingTests(unittest.TestCase):
         self.assertTrue(is_contextual_dev_message_content((contextual, plain)))
         self.assertTrue(has_non_contextual_dev_message_content((contextual, plain)))
         self.assertFalse(has_non_contextual_dev_message_content((contextual,)))
+
+
+def test_contextual_user_message_content_helper_matches_rust_any_fragment_rule() -> None:
+    # Rust source: codex/codex-rs/core/src/event_mapping.rs
+    # Rust behavior: is_contextual_user_message_content returns true if any
+    # content item is a contextual user fragment.
+    assert is_contextual_user_message_content(
+        (
+            ContentItem.input_text("visible user text"),
+            ContentItem.input_text(GoalContext("Continue working.").render()),
+        )
+    )
+    assert not is_contextual_user_message_content(
+        (ContentItem.input_text("visible user text"),)
+    )
+
+
+def test_assistant_output_text_maps_to_agent_message_like_rust() -> None:
+    # Rust test: codex/codex-rs/core/src/event_mapping_tests.rs
+    # test parses_agent_message
+    item = ResponseItem.message(
+        "assistant",
+        (ContentItem.output_text("Hello from Codex"),),
+        id="msg-1",
+    )
+
+    turn_item = parse_turn_item(item)
+
+    assert turn_item is not None
+    assert turn_item.item.content == (
+        AgentMessageContent.text_content("Hello from Codex"),
+    )
+
+
+def test_user_output_text_is_ignored_like_rust_warning_path() -> None:
+    # Rust source: codex/codex-rs/core/src/event_mapping.rs
+    # Rust behavior: parse_user_message ignores OutputText content items.
+    item = ResponseItem.message(
+        "user",
+        (
+            ContentItem.output_text("ignored assistant-shaped text"),
+            ContentItem.input_text("visible user text"),
+        ),
+    )
+
+    turn_item = parse_turn_item(item)
+
+    assert turn_item is not None
+    assert turn_item.item.content == (UserInput.text_input("visible user text"),)
+
+
+def test_system_and_unknown_message_roles_are_skipped_like_rust() -> None:
+    # Rust source: codex/codex-rs/core/src/event_mapping.rs
+    assert parse_turn_item(
+        ResponseItem.message("system", (ContentItem.input_text("hidden"),))
+    ) is None
+    assert parse_turn_item(
+        ResponseItem.message("tool", (ContentItem.input_text("hidden"),))
+    ) is None
+
+
+def test_contextual_developer_prefixes_match_rust_behavior_surface() -> None:
+    # Rust source: codex/codex-rs/core/src/event_mapping.rs
+    contextual_prefixes = (
+        "<permissions instructions>",
+        "<model_switch>",
+        "<collaboration_mode>",
+        "<realtime_conversation>",
+        "<personality_spec>",
+    )
+
+    for prefix in contextual_prefixes:
+        assert is_contextual_dev_message_content(
+            (ContentItem.input_text(f"  {prefix}body"),)
+        )
+        assert not has_non_contextual_dev_message_content(
+            (ContentItem.input_text(f"  {prefix}body"),)
+        )
+
+    assert has_non_contextual_dev_message_content(
+        (ContentItem.output_text("<model_switch>body"),)
+    )
 
 
 if __name__ == "__main__":

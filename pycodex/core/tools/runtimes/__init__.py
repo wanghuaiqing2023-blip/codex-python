@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from datetime import timedelta
 from pathlib import Path
@@ -28,13 +28,20 @@ from pycodex.core.exec import (
     DEFAULT_EXEC_COMMAND_TIMEOUT_MS,
     ExecCapturePolicy,
     ExecExpiration,
+    cancel_when_either,
     is_likely_sandbox_denied,
 )
+from pycodex.core.command_canonicalization import (
+    canonicalize_command_for_approval as _canonicalize_command_for_approval,
+)
+from pycodex.core.guardian.approval_request import GuardianNetworkAccessTrigger
 from pycodex.core.sandbox_tags import SandboxType
 from pycodex.core.shell import Shell, ShellType
 from pycodex.core.tools.hook_names import HookToolName
+from pycodex.core.tools.network_approval import NetworkApprovalMode, NetworkApprovalSpec
 from pycodex.core.tools.sandboxing import ExecApprovalRequirement, PermissionRequestPayload, SandboxAttempt, ToolError
 from pycodex.shell_command import parse_shell_lc_plain_commands, parse_shell_lc_single_command_prefix
+from pycodex.utils.path_utils import paths_match_after_normalization
 from pycodex.protocol import (
     AdditionalPermissionProfile,
     AskForApproval,
@@ -83,11 +90,6 @@ class ShellRuntimeBackend(str, Enum):
     SHELL_COMMAND_ZSH_FORK = "shell_command_zsh_fork"
 
 
-class NetworkApprovalMode(str, Enum):
-    IMMEDIATE = "immediate"
-    DEFERRED = "deferred"
-
-
 class DecisionSource(str, Enum):
     PREFIX_RULE = "prefix_rule"
     UNMATCHED_COMMAND_FALLBACK = "unmatched_command_fallback"
@@ -131,51 +133,6 @@ class ToolRuntimeError(Exception):
 
 
 @dataclass(frozen=True)
-class GuardianNetworkAccessTrigger:
-    call_id: str
-    tool_name: str
-    command: tuple[str, ...]
-    cwd: Path
-    sandbox_permissions: SandboxPermissions
-    additional_permissions: AdditionalPermissionProfile | None = None
-    justification: str | None = None
-    tty: bool | None = None
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.call_id, str) or not self.call_id:
-            raise TypeError("call_id must be a non-empty string")
-        if not isinstance(self.tool_name, str) or not self.tool_name:
-            raise TypeError("tool_name must be a non-empty string")
-        object.__setattr__(self, "command", _string_tuple(self.command, "command"))
-        if not isinstance(self.cwd, Path):
-            object.__setattr__(self, "cwd", Path(self.cwd))
-        if not isinstance(self.sandbox_permissions, SandboxPermissions):
-            object.__setattr__(self, "sandbox_permissions", SandboxPermissions(self.sandbox_permissions))
-        if self.additional_permissions is not None and not isinstance(self.additional_permissions, AdditionalPermissionProfile):
-            raise TypeError("additional_permissions must be AdditionalPermissionProfile or None")
-        if self.justification is not None and not isinstance(self.justification, str):
-            raise TypeError("justification must be a string or None")
-        if self.tty is not None and not isinstance(self.tty, bool):
-            raise TypeError("tty must be a bool or None")
-
-
-@dataclass(frozen=True)
-class NetworkApprovalSpec:
-    network: Any
-    mode: NetworkApprovalMode
-    trigger: GuardianNetworkAccessTrigger
-    command: str
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.mode, NetworkApprovalMode):
-            object.__setattr__(self, "mode", NetworkApprovalMode(self.mode))
-        if not isinstance(self.trigger, GuardianNetworkAccessTrigger):
-            raise TypeError("trigger must be GuardianNetworkAccessTrigger")
-        if not isinstance(self.command, str):
-            raise TypeError("command must be a string")
-
-
-@dataclass(frozen=True)
 class ParsedShellCommand:
     program: str
     script: str
@@ -202,6 +159,59 @@ class CandidateCommands:
         object.__setattr__(self, "commands", commands)
         if not isinstance(self.used_complex_parsing, bool):
             raise TypeError("used_complex_parsing must be a bool")
+
+
+@dataclass(frozen=True)
+class InterceptedExecPolicyContext:
+    approval_policy: AskForApproval | GranularApprovalConfig
+    permission_profile: PermissionProfile
+    file_system_sandbox_policy: FileSystemSandboxPolicy
+    sandbox_cwd: Path
+    sandbox_permissions: SandboxPermissions = SandboxPermissions.USE_DEFAULT
+    enable_shell_wrapper_parsing: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.permission_profile, PermissionProfile):
+            raise TypeError("permission_profile must be PermissionProfile")
+        if not isinstance(self.file_system_sandbox_policy, FileSystemSandboxPolicy):
+            raise TypeError("file_system_sandbox_policy must be FileSystemSandboxPolicy")
+        if not isinstance(self.sandbox_cwd, Path):
+            object.__setattr__(self, "sandbox_cwd", Path(self.sandbox_cwd))
+        if not isinstance(self.sandbox_permissions, SandboxPermissions):
+            object.__setattr__(self, "sandbox_permissions", SandboxPermissions(self.sandbox_permissions))
+        if not isinstance(self.enable_shell_wrapper_parsing, bool):
+            raise TypeError("enable_shell_wrapper_parsing must be a bool")
+
+
+@dataclass(frozen=True)
+class InterceptedExecPolicyEvaluation:
+    decision: Any
+    matched_rules: tuple[Mapping[str, Any], ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "matched_rules", tuple(dict(rule) for rule in self.matched_rules))
+
+
+@dataclass(frozen=True)
+class ShellEscalationPolicyPlan:
+    decision: Any
+    decision_source: DecisionSource
+    needs_escalation: bool
+    escalation_execution: "ShellEscalationExecution"
+    prompt_permissions: AdditionalPermissionProfile | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.decision_source, DecisionSource):
+            object.__setattr__(self, "decision_source", DecisionSource(self.decision_source))
+        if not isinstance(self.needs_escalation, bool):
+            raise TypeError("needs_escalation must be a bool")
+        if not isinstance(self.escalation_execution, ShellEscalationExecution):
+            raise TypeError("escalation_execution must be ShellEscalationExecution")
+        if self.prompt_permissions is not None and not isinstance(
+            self.prompt_permissions,
+            AdditionalPermissionProfile,
+        ):
+            raise TypeError("prompt_permissions must be AdditionalPermissionProfile or None")
 
 
 @dataclass(frozen=True)
@@ -273,6 +283,171 @@ class ShellEscalationDecision:
     @classmethod
     def deny(cls, reason: str | None = None) -> "ShellEscalationDecision":
         return cls("deny", reason=reason)
+
+
+@dataclass(frozen=True)
+class ShellPrepareSandboxedExecParams:
+    command: tuple[str, ...]
+    workdir: Path
+    env: dict[str, str]
+    permission_profile: PermissionProfile
+    additional_permissions: AdditionalPermissionProfile | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "command", _string_tuple(self.command, "command"))
+        if not isinstance(self.workdir, Path):
+            object.__setattr__(self, "workdir", Path(self.workdir))
+        object.__setattr__(self, "env", _env_dict(self.env))
+        if not isinstance(self.permission_profile, PermissionProfile):
+            raise TypeError("permission_profile must be PermissionProfile")
+        if self.additional_permissions is not None and not isinstance(
+            self.additional_permissions,
+            AdditionalPermissionProfile,
+        ):
+            raise TypeError("additional_permissions must be AdditionalPermissionProfile or None")
+
+
+@dataclass(frozen=True)
+class ShellPrepareSandboxedExecContext:
+    sandbox_policy_cwd: Path
+    network: Any | None = None
+    codex_linux_sandbox_exe: Path | None = None
+    use_legacy_landlock: bool = False
+    windows_sandbox_level: WindowsSandboxLevel = WindowsSandboxLevel.DISABLED
+    windows_sandbox_private_desktop: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.sandbox_policy_cwd, Path):
+            object.__setattr__(self, "sandbox_policy_cwd", Path(self.sandbox_policy_cwd))
+        if self.codex_linux_sandbox_exe is not None and not isinstance(self.codex_linux_sandbox_exe, Path):
+            object.__setattr__(self, "codex_linux_sandbox_exe", Path(self.codex_linux_sandbox_exe))
+        if not isinstance(self.use_legacy_landlock, bool):
+            raise TypeError("use_legacy_landlock must be a bool")
+        if not isinstance(self.windows_sandbox_level, WindowsSandboxLevel):
+            object.__setattr__(
+                self,
+                "windows_sandbox_level",
+                WindowsSandboxLevel.parse(str(self.windows_sandbox_level)),
+            )
+        if not isinstance(self.windows_sandbox_private_desktop, bool):
+            raise TypeError("windows_sandbox_private_desktop must be a bool")
+
+
+@dataclass(frozen=True)
+class ShellSandboxTransformRequest:
+    command: SandboxCommand
+    permissions: PermissionProfile
+    sandbox: Any
+    enforce_managed_network: bool
+    network: Any | None
+    sandbox_policy_cwd: Path
+    codex_linux_sandbox_exe: Path | None
+    use_legacy_landlock: bool
+    windows_sandbox_level: WindowsSandboxLevel
+    windows_sandbox_private_desktop: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.command, SandboxCommand):
+            raise TypeError("command must be SandboxCommand")
+        if not isinstance(self.permissions, PermissionProfile):
+            raise TypeError("permissions must be PermissionProfile")
+        if not isinstance(self.enforce_managed_network, bool):
+            raise TypeError("enforce_managed_network must be a bool")
+        if not isinstance(self.sandbox_policy_cwd, Path):
+            object.__setattr__(self, "sandbox_policy_cwd", Path(self.sandbox_policy_cwd))
+        if self.codex_linux_sandbox_exe is not None and not isinstance(self.codex_linux_sandbox_exe, Path):
+            object.__setattr__(self, "codex_linux_sandbox_exe", Path(self.codex_linux_sandbox_exe))
+        if not isinstance(self.use_legacy_landlock, bool):
+            raise TypeError("use_legacy_landlock must be a bool")
+        if not isinstance(self.windows_sandbox_level, WindowsSandboxLevel):
+            object.__setattr__(
+                self,
+                "windows_sandbox_level",
+                WindowsSandboxLevel.parse(str(self.windows_sandbox_level)),
+            )
+        if not isinstance(self.windows_sandbox_private_desktop, bool):
+            raise TypeError("windows_sandbox_private_desktop must be a bool")
+
+
+@dataclass(frozen=True)
+class ShellCommandExecutorRunContext:
+    command: tuple[str, ...]
+    cwd: Path
+    env: dict[str, str]
+    network: Any | None
+    sandbox: SandboxType
+    sandbox_policy_cwd: Path
+    windows_sandbox_level: WindowsSandboxLevel
+    permission_profile: PermissionProfile
+    file_system_sandbox_policy: FileSystemSandboxPolicy
+    network_sandbox_policy: NetworkSandboxPolicy
+    arg0: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "command", _string_tuple(self.command, "command"))
+        if not isinstance(self.cwd, Path):
+            object.__setattr__(self, "cwd", Path(self.cwd))
+        object.__setattr__(self, "env", _env_dict(self.env))
+        if not isinstance(self.sandbox, SandboxType):
+            object.__setattr__(self, "sandbox", SandboxType(str(self.sandbox)))
+        if not isinstance(self.sandbox_policy_cwd, Path):
+            object.__setattr__(self, "sandbox_policy_cwd", Path(self.sandbox_policy_cwd))
+        if not isinstance(self.windows_sandbox_level, WindowsSandboxLevel):
+            object.__setattr__(
+                self,
+                "windows_sandbox_level",
+                WindowsSandboxLevel.parse(str(self.windows_sandbox_level)),
+            )
+        if not isinstance(self.permission_profile, PermissionProfile):
+            raise TypeError("permission_profile must be PermissionProfile")
+        if not isinstance(self.file_system_sandbox_policy, FileSystemSandboxPolicy):
+            raise TypeError("file_system_sandbox_policy must be FileSystemSandboxPolicy")
+        if not isinstance(self.network_sandbox_policy, NetworkSandboxPolicy):
+            object.__setattr__(
+                self,
+                "network_sandbox_policy",
+                NetworkSandboxPolicy.parse(str(self.network_sandbox_policy)),
+            )
+        if self.arg0 is not None and not isinstance(self.arg0, str):
+            raise TypeError("arg0 must be a string or None")
+
+
+@dataclass(frozen=True)
+class ShellZshForkExecParams:
+    command: str
+    workdir: str
+    timeout_ms: int
+    login: bool
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.command, str):
+            raise TypeError("command must be a string")
+        if not isinstance(self.workdir, str):
+            raise TypeError("workdir must be a string")
+        if isinstance(self.timeout_ms, bool) or not isinstance(self.timeout_ms, int):
+            raise TypeError("timeout_ms must be an integer")
+        if self.timeout_ms < 0:
+            raise ValueError("timeout_ms must be non-negative")
+        if not isinstance(self.login, bool):
+            raise TypeError("login must be a bool")
+
+
+@dataclass(frozen=True)
+class ShellZshForkCancellationPlan:
+    stopwatch_token: CancellationToken
+    cancel_token: CancellationToken
+    network_denial_cancellation_token: CancellationToken | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.stopwatch_token, CancellationToken):
+            raise TypeError("stopwatch_token must be CancellationToken")
+        if not isinstance(self.cancel_token, CancellationToken):
+            raise TypeError("cancel_token must be CancellationToken")
+        if (
+            self.network_denial_cancellation_token is not None
+            and not isinstance(self.network_denial_cancellation_token, CancellationToken)
+        ):
+            raise TypeError("network_denial_cancellation_token must be CancellationToken or None")
 
 
 @dataclass(frozen=True)
@@ -469,6 +644,21 @@ def shell_escalation_request_env(env: Mapping[str, str]) -> dict[str, str]:
         if key in {ESCALATE_SOCKET_ENV_VAR, EXEC_WRAPPER_ENV_VAR}:
             continue
         result[key] = value
+    return result
+
+
+def shell_escalation_merge_env_overlay(
+    base_env: Mapping[str, str],
+    env_overlay: Mapping[str, str],
+) -> dict[str, str]:
+    # Rust source: codex-rs/core/src/tools/runtimes/shell/unix_escalation.rs
+    # Behavior anchor: CoreShellCommandExecutor::run merges only escalation
+    # wrapper/socket variables from EscalationSession::env() into the base env.
+    result = _env_dict(base_env)
+    overlay = _env_dict(env_overlay)
+    for key in (ESCALATE_SOCKET_ENV_VAR, EXEC_WRAPPER_ENV_VAR):
+        if key in overlay:
+            result[key] = overlay[key]
     return result
 
 
@@ -1806,6 +1996,7 @@ class ShellRequest:
     justification: str | None
     exec_approval_requirement: ExecApprovalRequirement
     additional_permissions_preapproved: bool = False
+    capture_policy: ExecCapturePolicy = ExecCapturePolicy.SHELL_TOOL
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "command", _string_tuple(self.command, "command"))
@@ -1832,6 +2023,8 @@ class ShellRequest:
             raise TypeError("exec_approval_requirement must be ExecApprovalRequirement")
         if not isinstance(self.additional_permissions_preapproved, bool):
             raise TypeError("additional_permissions_preapproved must be a bool")
+        if not isinstance(self.capture_policy, ExecCapturePolicy):
+            object.__setattr__(self, "capture_policy", ExecCapturePolicy(self.capture_policy))
 
     def approval_sandbox_permissions(self) -> SandboxPermissions:
         return approval_sandbox_permissions(
@@ -1941,6 +2134,209 @@ class UnifiedExecOptions:
             raise TypeError("expiration must be ExecExpiration")
         if not isinstance(self.capture_policy, ExecCapturePolicy):
             object.__setattr__(self, "capture_policy", ExecCapturePolicy(self.capture_policy))
+
+
+@dataclass(frozen=True)
+class UnifiedExecDirectRunPlan:
+    process_id: int
+    sandbox_command: SandboxCommand
+    options: UnifiedExecOptions
+    tty: bool
+    environment: Any
+    exec_server_env_config: Any | None
+    managed_network: Any | None
+    spawn_lifecycle: str = "noop"
+
+    def __post_init__(self) -> None:
+        if isinstance(self.process_id, bool) or not isinstance(self.process_id, int):
+            raise TypeError("process_id must be an int")
+        if not isinstance(self.sandbox_command, SandboxCommand):
+            raise TypeError("sandbox_command must be SandboxCommand")
+        if not isinstance(self.options, UnifiedExecOptions):
+            raise TypeError("options must be UnifiedExecOptions")
+        if not isinstance(self.tty, bool):
+            raise TypeError("tty must be a bool")
+        if self.spawn_lifecycle != "noop":
+            raise ValueError("spawn_lifecycle must be noop")
+
+
+@dataclass(frozen=True)
+class PreparedUnifiedExecSpawn:
+    exec_request: Any
+    spawn_lifecycle: Any
+
+
+@dataclass(frozen=True)
+class PreparedUnifiedExecZshFork:
+    exec_request: Any
+    escalation_session: Any
+
+
+@dataclass
+class ZshForkSpawnLifecycle:
+    escalation_session: Any
+
+    def inherited_fds(self) -> list[int]:
+        env = getattr(self.escalation_session, "env", None)
+        env_value = env() if callable(env) else env
+        if not isinstance(env_value, Mapping):
+            return []
+        fd_value = env_value.get(ESCALATE_SOCKET_ENV_VAR)
+        try:
+            return [int(fd_value)]
+        except (TypeError, ValueError):
+            return []
+
+    def after_spawn(self) -> None:
+        close_client_socket = getattr(self.escalation_session, "close_client_socket", None)
+        if callable(close_client_socket):
+            close_client_socket()
+
+
+def _is_unix_platform() -> bool:
+    return os.name == "posix"
+
+
+async def _maybe_await(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
+async def maybe_run_shell_command_zsh_fork(
+    req: Any,
+    attempt: Any,
+    ctx: Any,
+    command: Iterable[str],
+    *,
+    try_run_zsh_fork: Any | None = None,
+) -> ExecToolCallOutput | None:
+    if not _is_unix_platform():
+        return None
+    runner = try_run_zsh_fork
+    if runner is None:
+        runner = getattr(ctx, "try_run_zsh_fork", None)
+    if runner is None:
+        return None
+    result = await _maybe_await(runner(req, attempt, ctx, tuple(command)))
+    if result is None or isinstance(result, ExecToolCallOutput):
+        return result
+    raise TypeError("try_run_zsh_fork must return ExecToolCallOutput or None")
+
+
+async def maybe_prepare_unified_exec_zsh_fork(
+    req: Any,
+    attempt: Any,
+    ctx: Any,
+    exec_request: Any,
+    zsh_fork_config: Any,
+    *,
+    prepare_unified_exec_zsh_fork: Any | None = None,
+) -> PreparedUnifiedExecSpawn | None:
+    if not _is_unix_platform():
+        return None
+    preparer = prepare_unified_exec_zsh_fork
+    if preparer is None:
+        preparer = getattr(ctx, "prepare_unified_exec_zsh_fork", None)
+    if preparer is None:
+        return None
+    shell_zsh_path = getattr(zsh_fork_config, "shell_zsh_path", None)
+    wrapper_exe = getattr(zsh_fork_config, "main_execve_wrapper_exe", None)
+    prepared = await _maybe_await(
+        preparer(req, attempt, ctx, exec_request, shell_zsh_path, wrapper_exe)
+    )
+    if prepared is None:
+        return None
+    prepared_exec_request = getattr(prepared, "exec_request", None)
+    if prepared_exec_request is None and isinstance(prepared, Mapping):
+        prepared_exec_request = prepared.get("exec_request")
+    escalation_session = getattr(prepared, "escalation_session", None)
+    if escalation_session is None and isinstance(prepared, Mapping):
+        escalation_session = prepared.get("escalation_session")
+    return PreparedUnifiedExecSpawn(
+        exec_request=prepared_exec_request,
+        spawn_lifecycle=ZshForkSpawnLifecycle(escalation_session),
+    )
+
+
+def _path_as_posix_string(path: str | Path) -> str:
+    if isinstance(path, Path):
+        return path.as_posix()
+    return str(path)
+
+
+def _session_env(session: Any) -> dict[str, str]:
+    env = getattr(session, "env", None)
+    value = env() if callable(env) else env
+    if value is None:
+        return {}
+    return _env_dict(value)
+
+
+def prepare_unified_exec_zsh_fork_from_session(
+    exec_request: Any,
+    shell_zsh_path: str | Path,
+    escalation_session: Any,
+) -> PreparedUnifiedExecZshFork | None:
+    # Rust source: codex-rs/core/src/tools/runtimes/shell/unix_escalation.rs
+    # Behavior anchor: prepare_unified_exec_zsh_fork parse/match/env-extension
+    # path after EscalateServer::start_session succeeds.
+    try:
+        parsed = extract_shell_script(exec_request.command)
+    except ToolRuntimeError:
+        return None
+    if parsed.program != _path_as_posix_string(shell_zsh_path):
+        return None
+    env = {**_env_dict(exec_request.env), **_session_env(escalation_session)}
+    return PreparedUnifiedExecZshFork(
+        exec_request=replace(exec_request, env=env),
+        escalation_session=escalation_session,
+    )
+
+
+def shell_zsh_fork_exec_params(
+    command: tuple[str, ...] | list[str],
+    cwd: str | Path,
+    timeout_ms: int | None,
+) -> ShellZshForkExecParams:
+    # Rust source: codex-rs/core/src/tools/runtimes/shell/unix_escalation.rs
+    # Behavior anchor: try_run_zsh_fork builds ExecParams from the parsed
+    # sandbox-transformed shell command and effective timeout.
+    parsed = extract_shell_script(command)
+    effective_timeout_ms = timeout_ms if timeout_ms is not None else DEFAULT_EXEC_COMMAND_TIMEOUT_MS
+    if isinstance(effective_timeout_ms, bool) or not isinstance(effective_timeout_ms, int):
+        raise TypeError("timeout_ms must be an integer or None")
+    if effective_timeout_ms < 0:
+        raise ValueError("timeout_ms must be non-negative")
+    return ShellZshForkExecParams(
+        command=parsed.script,
+        workdir=Path(cwd).as_posix(),
+        timeout_ms=effective_timeout_ms,
+        login=parsed.login,
+    )
+
+
+def shell_zsh_fork_cancellation_plan(
+    stopwatch_token: CancellationToken,
+    network_denial_cancellation_token: CancellationToken | None = None,
+) -> ShellZshForkCancellationPlan:
+    # Rust source: codex-rs/core/src/tools/runtimes/shell/unix_escalation.rs
+    # Behavior anchor: try_run_zsh_fork starts with
+    # Stopwatch::cancellation_token() and combines it with the attempt's
+    # network-denial cancellation token when present.
+    if not isinstance(stopwatch_token, CancellationToken):
+        raise TypeError("stopwatch_token must be CancellationToken")
+    if network_denial_cancellation_token is None:
+        cancel_token = stopwatch_token
+    else:
+        if not isinstance(network_denial_cancellation_token, CancellationToken):
+            raise TypeError("network_denial_cancellation_token must be CancellationToken or None")
+        cancel_token = cancel_when_either(stopwatch_token, network_denial_cancellation_token)
+    return ShellZshForkCancellationPlan(
+        stopwatch_token=stopwatch_token,
+        cancel_token=cancel_token,
+        network_denial_cancellation_token=network_denial_cancellation_token,
+    )
 
 
 def build_sandbox_command(
@@ -2156,6 +2552,196 @@ def shell_escalation_decision_for_policy_decision(
             return ShellEscalationDecision.deny("Execution forbidden by policy")
         return ShellEscalationDecision.prompt()
     raise ValueError(f"unknown policy decision: {decision!r}")
+
+
+def shell_prepare_escalated_exec(
+    program: str | Path,
+    argv: tuple[str, ...] | list[str],
+    workdir: str | Path,
+    env: Mapping[str, str],
+    execution: ShellEscalationExecution,
+    *,
+    permission_profile: PermissionProfile,
+    prepare_sandboxed_exec: Any,
+) -> ShellPreparedExec:
+    # Rust source: codex-rs/core/src/tools/runtimes/shell/unix_escalation.rs
+    # Behavior anchor: CoreShellCommandExecutor::prepare_escalated_exec.
+    if not isinstance(execution, ShellEscalationExecution):
+        raise TypeError("execution must be ShellEscalationExecution")
+    if not isinstance(permission_profile, PermissionProfile):
+        raise TypeError("permission_profile must be PermissionProfile")
+    if not callable(prepare_sandboxed_exec):
+        raise TypeError("prepare_sandboxed_exec must be callable")
+    argv_tuple = _string_tuple(argv, "argv")
+    if not argv_tuple:
+        raise ValueError("intercepted exec request must contain argv[0]")
+    command = join_program_and_argv(program, argv_tuple)
+    workdir_path = Path(workdir)
+    env_dict = _env_dict(env)
+
+    if execution.type == "unsandboxed":
+        return ShellPreparedExec(command, workdir_path, env_dict, arg0=argv_tuple[0])
+
+    params = shell_prepare_escalated_exec_params(
+        command,
+        workdir_path,
+        env_dict,
+        execution,
+        permission_profile=permission_profile,
+    )
+    prepared = prepare_sandboxed_exec(params)
+    if not isinstance(prepared, ShellPreparedExec):
+        raise TypeError("prepare_sandboxed_exec must return ShellPreparedExec")
+    return prepared
+
+
+def shell_prepare_escalated_exec_params(
+    command: tuple[str, ...] | list[str],
+    workdir: str | Path,
+    env: Mapping[str, str],
+    execution: ShellEscalationExecution,
+    *,
+    permission_profile: PermissionProfile,
+) -> ShellPrepareSandboxedExecParams:
+    if not isinstance(execution, ShellEscalationExecution):
+        raise TypeError("execution must be ShellEscalationExecution")
+    if execution.type == "turn_default":
+        return ShellPrepareSandboxedExecParams(command, Path(workdir), _env_dict(env), permission_profile, None)
+    if execution.type != "permissions":
+        raise ValueError(f"{execution.type} execution does not use sandboxed parameters")
+    permissions = execution.permission_profile
+    if isinstance(permissions, AdditionalPermissionProfile):
+        return ShellPrepareSandboxedExecParams(command, Path(workdir), _env_dict(env), permission_profile, permissions)
+    if isinstance(permissions, PermissionProfile):
+        return ShellPrepareSandboxedExecParams(command, Path(workdir), _env_dict(env), permissions, None)
+    raise TypeError("permissions execution must carry PermissionProfile or AdditionalPermissionProfile")
+
+
+def shell_prepare_sandboxed_exec(
+    params: ShellPrepareSandboxedExecParams,
+    context: ShellPrepareSandboxedExecContext,
+    *,
+    sandbox_manager: Any,
+    sandboxable_preference: Any = "auto",
+) -> ShellPreparedExec:
+    # Rust source: codex-rs/core/src/tools/runtimes/shell/unix_escalation.rs
+    # Behavior anchor: CoreShellCommandExecutor::prepare_sandboxed_exec.
+    from pycodex.core.sandboxing import ExecOptions, from_sandbox_exec_request
+
+    if not isinstance(params, ShellPrepareSandboxedExecParams):
+        raise TypeError("params must be ShellPrepareSandboxedExecParams")
+    if not isinstance(context, ShellPrepareSandboxedExecContext):
+        raise TypeError("context must be ShellPrepareSandboxedExecContext")
+    if not params.command:
+        raise ValueError("prepared command must not be empty")
+    select_initial = getattr(sandbox_manager, "select_initial", None)
+    transform = getattr(sandbox_manager, "transform", None)
+    if not callable(select_initial) or not callable(transform):
+        raise TypeError("sandbox_manager must expose select_initial and transform")
+
+    file_system_sandbox_policy, network_sandbox_policy = params.permission_profile.to_runtime_permissions()
+    sandbox = select_initial(
+        file_system_sandbox_policy,
+        network_sandbox_policy,
+        sandboxable_preference,
+        context.windows_sandbox_level,
+        context.network is not None,
+    )
+    program, *args = params.command
+    request = ShellSandboxTransformRequest(
+        command=SandboxCommand(
+            program,
+            tuple(args),
+            params.workdir,
+            params.env,
+            params.additional_permissions,
+        ),
+        permissions=params.permission_profile,
+        sandbox=sandbox,
+        enforce_managed_network=context.network is not None,
+        network=context.network,
+        sandbox_policy_cwd=context.sandbox_policy_cwd,
+        codex_linux_sandbox_exe=context.codex_linux_sandbox_exe,
+        use_legacy_landlock=context.use_legacy_landlock,
+        windows_sandbox_level=context.windows_sandbox_level,
+        windows_sandbox_private_desktop=context.windows_sandbox_private_desktop,
+    )
+    exec_request = from_sandbox_exec_request(
+        transform(request),
+        ExecOptions(ExecExpiration.default_timeout(), ExecCapturePolicy.SHELL_TOOL),
+        context.sandbox_policy_cwd,
+    )
+    apply_to_env = getattr(exec_request.network, "apply_to_env", None)
+    if callable(apply_to_env):
+        apply_to_env(exec_request.env)
+    return ShellPreparedExec(exec_request.command, exec_request.cwd, exec_request.env, arg0=exec_request.arg0)
+
+
+def shell_command_executor_exec_request(
+    context: ShellCommandExecutorRunContext,
+    env_overlay: Mapping[str, str],
+    cancel_rx: CancellationToken,
+) -> Any:
+    # Rust source: codex-rs/core/src/tools/runtimes/shell/unix_escalation.rs
+    # Behavior anchor: CoreShellCommandExecutor::run ExecRequest construction.
+    from pycodex.core.exec import ExecRequest
+
+    if not isinstance(context, ShellCommandExecutorRunContext):
+        raise TypeError("context must be ShellCommandExecutorRunContext")
+    if not isinstance(cancel_rx, CancellationToken):
+        raise TypeError("cancel_rx must be CancellationToken")
+    return ExecRequest(
+        command=context.command,
+        cwd=context.cwd,
+        env=shell_escalation_merge_env_overlay(context.env, env_overlay),
+        exec_server_env_config=None,
+        network=context.network,
+        expiration=ExecExpiration.cancellation(cancel_rx),
+        capture_policy=ExecCapturePolicy.SHELL_TOOL,
+        sandbox=context.sandbox,
+        windows_sandbox_policy_cwd=context.sandbox_policy_cwd,
+        windows_sandbox_level=context.windows_sandbox_level,
+        windows_sandbox_private_desktop=False,
+        permission_profile=context.permission_profile,
+        file_system_sandbox_policy=context.file_system_sandbox_policy,
+        network_sandbox_policy=context.network_sandbox_policy,
+        windows_sandbox_filesystem_overrides=None,
+        arg0=context.arg0,
+    )
+
+
+async def shell_command_executor_run(
+    context: ShellCommandExecutorRunContext,
+    env_overlay: Mapping[str, str],
+    cancel_rx: CancellationToken,
+    *,
+    execute_exec_request_with_after_spawn: Any,
+    after_spawn: Any | None = None,
+) -> ExecResult:
+    if not callable(execute_exec_request_with_after_spawn):
+        raise TypeError("execute_exec_request_with_after_spawn must be callable")
+    request = shell_command_executor_exec_request(context, env_overlay, cancel_rx)
+    result = await _maybe_await(
+        execute_exec_request_with_after_spawn(
+            request,
+            None,
+            after_spawn,
+        )
+    )
+    return exec_result_from_tool_output(result)
+
+
+def exec_result_from_tool_output(result: ExecToolCallOutput) -> ExecResult:
+    if not isinstance(result, ExecToolCallOutput):
+        raise TypeError("result must be ExecToolCallOutput")
+    return ExecResult(
+        exit_code=result.exit_code,
+        stdout=result.stdout.text,
+        stderr=result.stderr.text,
+        output=result.aggregated_output.text,
+        duration=result.duration,
+        timed_out=result.timed_out,
+    )
 
 
 def shell_escalate_action_from_decision(decision: ShellEscalationDecision) -> ShellEscalateAction:
@@ -2390,6 +2976,308 @@ def commands_for_intercepted_exec_policy(
     return CandidateCommands((join_program_and_argv(program, argv_tuple),), False)
 
 
+def evaluate_intercepted_exec_policy(
+    policy: Any,
+    program: str | Path,
+    argv: tuple[str, ...] | list[str],
+    context: InterceptedExecPolicyContext,
+) -> InterceptedExecPolicyEvaluation:
+    # Rust source: codex-rs/core/src/tools/runtimes/shell/unix_escalation.rs
+    # Behavior anchor: evaluate_intercepted_exec_policy. The shell-wrapper
+    # parsing flag decides whether policy sees parsed inner shell commands or
+    # the resolved intercepted executable path.
+    from pycodex.execpolicy import (
+        Decision,
+        strongest_decision,
+    )
+
+    if not isinstance(context, InterceptedExecPolicyContext):
+        raise TypeError("context must be InterceptedExecPolicyContext")
+    if context.enable_shell_wrapper_parsing:
+        candidate = commands_for_intercepted_exec_policy(program, argv)
+    else:
+        candidate = CandidateCommands((join_program_and_argv(program, argv),), False)
+
+    rules = _intercepted_exec_policy_rules(policy)
+    host_executables = _intercepted_exec_policy_host_executables(policy)
+    matched_rules: list[Mapping[str, Any]] = []
+    decisions: list[Decision] = []
+
+    for command in candidate.commands:
+        command_matches = _match_intercepted_exec_prefix_rules(command, rules)
+        resolved_program = _resolved_host_executable_for_command(command, host_executables)
+        if resolved_program is not None:
+            host_command = (Path(command[0]).name, *command[1:])
+            command_matches = tuple(
+                _prefix_rule_match_with_resolved_program(match, resolved_program)
+                for match in _match_intercepted_exec_prefix_rules(host_command, rules)
+            )
+        if command_matches:
+            matched_rules.extend(command_matches)
+            decisions.extend(
+                decision
+                for match in command_matches
+                for decision in (_runtime_policy_match_decision(match),)
+                if decision is not None
+            )
+            continue
+
+        fallback_decision = _render_unix_intercepted_exec_fallback_decision(
+            _intercepted_exec_heuristic_command(command),
+            context,
+            used_complex_parsing=candidate.used_complex_parsing,
+        )
+        matched_rules.append(
+            {
+                "heuristicsRuleMatch": {
+                    "command": list(command),
+                    "decision": fallback_decision.value,
+                }
+            }
+        )
+        decisions.append(fallback_decision)
+
+    return InterceptedExecPolicyEvaluation(strongest_decision(decisions), tuple(matched_rules))
+
+
+def decision_driven_by_policy(
+    matched_rules: tuple[Mapping[str, Any], ...] | list[Mapping[str, Any]],
+    decision: Any,
+) -> bool:
+    # Rust source: CoreShellActionProvider::decision_driven_by_policy.
+    from pycodex.execpolicy import Decision
+
+    target = Decision(str(getattr(decision, "value", decision)))
+    return any(
+        "heuristicsRuleMatch" not in rule and _runtime_policy_match_decision(rule) is target
+        for rule in matched_rules
+    )
+
+
+def shell_escalation_policy_plan(
+    evaluation: InterceptedExecPolicyEvaluation,
+    *,
+    sandbox_permissions: SandboxPermissions,
+    permission_profile: PermissionProfile,
+    prompt_permissions: AdditionalPermissionProfile | None = None,
+) -> ShellEscalationPolicyPlan:
+    # Rust source: codex-rs/core/src/tools/runtimes/shell/unix_escalation.rs
+    # Behavior anchor: CoreShellActionProvider::determine_action, after policy
+    # evaluation and before process_decision.
+    if not isinstance(evaluation, InterceptedExecPolicyEvaluation):
+        raise TypeError("evaluation must be InterceptedExecPolicyEvaluation")
+    sandbox_permissions = SandboxPermissions(sandbox_permissions)
+    if not isinstance(permission_profile, PermissionProfile):
+        raise TypeError("permission_profile must be PermissionProfile")
+    if prompt_permissions is not None and not isinstance(prompt_permissions, AdditionalPermissionProfile):
+        raise TypeError("prompt_permissions must be AdditionalPermissionProfile or None")
+
+    driven_by_policy = decision_driven_by_policy(evaluation.matched_rules, evaluation.decision)
+    needs_escalation = sandbox_permissions.requires_escalated_permissions() or driven_by_policy
+    decision_source = (
+        DecisionSource.PREFIX_RULE
+        if driven_by_policy
+        else DecisionSource.UNMATCHED_COMMAND_FALLBACK
+    )
+    escalation_execution = (
+        ShellEscalationExecution.unsandboxed()
+        if decision_source is DecisionSource.PREFIX_RULE
+        else shell_request_escalation_execution(
+            sandbox_permissions,
+            permission_profile,
+            prompt_permissions,
+        )
+    )
+    return ShellEscalationPolicyPlan(
+        decision=evaluation.decision,
+        decision_source=decision_source,
+        needs_escalation=needs_escalation,
+        escalation_execution=escalation_execution,
+        prompt_permissions=prompt_permissions,
+    )
+
+
+def _intercepted_exec_policy_rules(policy: Any) -> tuple[Any, ...]:
+    if policy is None:
+        return ()
+    if isinstance(policy, Mapping):
+        rules = policy.get("rules", policy.get("prefix_rules", policy.get("prefixRules", ())))
+        return tuple(rules or ())
+    rules = getattr(policy, "rules", None)
+    if rules is not None:
+        return tuple(rules)
+    prefix_rules = getattr(policy, "prefix_rules", None)
+    if prefix_rules is not None:
+        return tuple(prefix_rules)
+    if isinstance(policy, (tuple, list)):
+        return tuple(policy)
+    return ()
+
+
+def _intercepted_exec_policy_host_executables(policy: Any) -> Mapping[str, tuple[str, ...]]:
+    if policy is None:
+        return {}
+    if isinstance(policy, Mapping):
+        raw = policy.get("host_executables", policy.get("hostExecutables", {}))
+    else:
+        raw = getattr(policy, "host_executables", {})
+    if not isinstance(raw, Mapping):
+        return {}
+    result: dict[str, tuple[str, ...]] = {}
+    for name, paths in raw.items():
+        if isinstance(paths, (str, bytes)):
+            result[str(name)] = (str(paths),)
+        elif isinstance(paths, Iterable):
+            result[str(name)] = tuple(str(path) for path in paths)
+    return result
+
+
+def _match_intercepted_exec_prefix_rules(
+    command: tuple[str, ...],
+    rules: tuple[Any, ...],
+) -> tuple[Mapping[str, Any], ...]:
+    matches: list[Mapping[str, Any]] = []
+    for rule in rules:
+        parsed = _runtime_prefix_rule_from_object(rule)
+        if parsed is None:
+            continue
+        pattern, decision, justification = parsed
+        prefix = _runtime_prefix_rule_matched_prefix(pattern, command)
+        if prefix is None:
+            continue
+        data: dict[str, Any] = {
+            "matchedPrefix": list(prefix),
+            "decision": getattr(decision, "value", decision),
+        }
+        if justification:
+            data["justification"] = justification
+        matches.append({"prefixRuleMatch": data})
+    return tuple(matches)
+
+
+def _runtime_prefix_rule_from_object(rule: Any) -> tuple[tuple[str | tuple[str, ...], ...], Any, str | None] | None:
+    from pycodex.execpolicy import Decision, ExecPolicyPrefixRule
+
+    if isinstance(rule, ExecPolicyPrefixRule):
+        return rule.pattern, rule.decision, rule.justification
+    if isinstance(rule, Mapping):
+        pattern = rule.get("pattern")
+        decision = rule.get("decision")
+        justification = rule.get("justification")
+    else:
+        pattern = getattr(rule, "pattern", None)
+        decision = getattr(rule, "decision", None)
+        justification = getattr(rule, "justification", None)
+    if pattern is None or decision is None:
+        return None
+    try:
+        parsed_pattern = tuple(
+            tuple(str(choice) for choice in token)
+            if isinstance(token, (tuple, list))
+            else str(token)
+            for token in pattern
+        )
+        parsed_decision = Decision(str(getattr(decision, "value", decision)))
+    except (TypeError, ValueError):
+        return None
+    parsed_justification = justification if isinstance(justification, str) and justification else None
+    return parsed_pattern, parsed_decision, parsed_justification
+
+
+def _runtime_prefix_rule_matched_prefix(
+    pattern: tuple[str | tuple[str, ...], ...],
+    command: tuple[str, ...],
+) -> tuple[str, ...] | None:
+    if len(command) < len(pattern):
+        return None
+    matched: list[str] = []
+    for pattern_token, command_token in zip(pattern, command, strict=False):
+        if isinstance(pattern_token, tuple):
+            if command_token not in pattern_token:
+                return None
+            matched.append(command_token)
+            continue
+        if command_token != pattern_token:
+            return None
+        matched.append(command_token)
+    return tuple(matched)
+
+
+def _resolved_host_executable_for_command(
+    command: tuple[str, ...],
+    host_executables: Mapping[str, tuple[str, ...]],
+) -> str | None:
+    if not command or not _is_unix_absolute_path(command[0]):
+        return None
+    basename = Path(command[0]).name
+    allowed_paths = host_executables.get(basename)
+    if allowed_paths is None:
+        return None
+    return command[0] if command[0] in allowed_paths else None
+
+
+def _intercepted_exec_heuristic_command(command: tuple[str, ...]) -> tuple[str, ...]:
+    if command and _is_unix_absolute_path(command[0]):
+        return (Path(command[0]).name, *command[1:])
+    return command
+
+
+def _is_unix_absolute_path(path: str) -> bool:
+    return path.startswith("/") or os.path.isabs(path)
+
+
+def _render_unix_intercepted_exec_fallback_decision(
+    command: tuple[str, ...],
+    context: InterceptedExecPolicyContext,
+    *,
+    used_complex_parsing: bool,
+) -> Any:
+    from pycodex.execpolicy import Decision
+    from pycodex.shell_command import command_might_be_dangerous, is_known_safe_command
+
+    if is_known_safe_command(command) and not used_complex_parsing and context.approval_policy is AskForApproval.UNLESS_TRUSTED:
+        return Decision.ALLOW
+    if command_might_be_dangerous(command):
+        if context.approval_policy is AskForApproval.NEVER:
+            if context.permission_profile.type in {"disabled", "external"}:
+                return Decision.ALLOW
+            return Decision.FORBIDDEN
+        return Decision.PROMPT
+    if context.approval_policy in {AskForApproval.NEVER, AskForApproval.ON_FAILURE}:
+        return Decision.ALLOW
+    if context.approval_policy is AskForApproval.UNLESS_TRUSTED:
+        return Decision.PROMPT
+    if context.file_system_sandbox_policy.kind in {
+        FileSystemSandboxKind.UNRESTRICTED,
+        FileSystemSandboxKind.EXTERNAL_SANDBOX,
+    }:
+        return Decision.ALLOW
+    if context.sandbox_permissions.requests_sandbox_override():
+        return Decision.PROMPT
+    return Decision.ALLOW
+
+
+def _prefix_rule_match_with_resolved_program(match: Mapping[str, Any], program: str) -> Mapping[str, Any]:
+    if "prefixRuleMatch" not in match:
+        return match
+    data = dict(match["prefixRuleMatch"])
+    data["resolvedProgram"] = str(program)
+    return {"prefixRuleMatch": data}
+
+
+def _runtime_policy_match_decision(match: Mapping[str, Any]) -> Any | None:
+    from pycodex.execpolicy import Decision
+
+    data = match.get("prefixRuleMatch", match)
+    if not isinstance(data, Mapping):
+        return None
+    decision = data.get("decision")
+    try:
+        return Decision(str(getattr(decision, "value", decision)))
+    except ValueError:
+        return None
+
+
 def map_exec_result(sandbox: SandboxType, result: ExecResult) -> ExecToolCallOutput:
     if not isinstance(sandbox, SandboxType):
         sandbox = SandboxType(sandbox)
@@ -2481,6 +3369,39 @@ def build_unified_exec_sandbox_command(
         raise
 
 
+def unified_exec_direct_run_plan(
+    req: UnifiedExecRequest,
+    *,
+    network_denial_cancellation_token: CancellationToken | None = None,
+) -> UnifiedExecDirectRunPlan:
+    # Rust source: codex-rs/core/src/tools/runtimes/unified_exec.rs
+    # Behavior anchor: UnifiedExecRuntime::run direct fallback builds the
+    # sandbox command, attaches unified_exec_options, copies
+    # exec_server_env_config, and opens the process with NoopSpawnLifecycle.
+    if not isinstance(req, UnifiedExecRequest):
+        raise TypeError("req must be UnifiedExecRequest")
+    env = exec_env_for_sandbox_permissions(req.env, req.sandbox_permissions)
+    managed_network = managed_network_for_runtime(req.network, req.sandbox_permissions)
+    apply_to_env = getattr(managed_network, "apply_to_env", None)
+    if callable(apply_to_env):
+        apply_to_env(env)
+    sandbox_command = build_unified_exec_sandbox_command(
+        req.command,
+        req.cwd,
+        env,
+        req.additional_permissions,
+    )
+    return UnifiedExecDirectRunPlan(
+        process_id=req.process_id,
+        sandbox_command=sandbox_command,
+        options=unified_exec_options(network_denial_cancellation_token),
+        tty=req.tty,
+        environment=req.environment,
+        exec_server_env_config=req.exec_server_env_config,
+        managed_network=managed_network,
+    )
+
+
 def unified_exec_network_approval_spec(req: UnifiedExecRequest, *, call_id: str, tool_name: ToolName | str) -> NetworkApprovalSpec | None:
     if not isinstance(req, UnifiedExecRequest):
         raise TypeError("req must be UnifiedExecRequest")
@@ -2503,7 +3424,7 @@ def managed_network_for_runtime(network: Any | None, sandbox_permissions: Sandbo
 
 
 def canonicalize_command_for_approval(command: tuple[str, ...] | list[str]) -> tuple[str, ...]:
-    return _string_tuple(command, "command")
+    return tuple(_canonicalize_command_for_approval(_string_tuple(command, "command")))
 
 
 def flat_tool_name(tool_name: ToolName | str) -> str:
@@ -2594,7 +3515,7 @@ def maybe_wrap_shell_lc_with_snapshot(
     if not snapshot_path.exists():
         return command_tuple
     cwd_path = Path(cwd)
-    if not _paths_match_after_normalization(snapshot_cwd, cwd_path):
+    if not paths_match_after_normalization(snapshot_cwd, cwd_path):
         return command_tuple
     if len(command_tuple) < 3 or command_tuple[1] != "-lc":
         return command_tuple
@@ -2695,13 +3616,6 @@ def shell_single_quote(input: str) -> str:
     return input.replace("'", "'\"'\"'")
 
 
-def _paths_match_after_normalization(left: Path, right: Path) -> bool:
-    try:
-        return left.resolve() == right.resolve()
-    except OSError:
-        return left.absolute() == right.absolute()
-
-
 def _string_tuple(value: tuple[str, ...] | list[str], field_name: str) -> tuple[str, ...]:
     if not isinstance(value, (tuple, list)):
         raise TypeError(f"{field_name} must be a tuple or list")
@@ -2751,10 +3665,14 @@ __all__ = [
     "EXEC_WRAPPER_ENV_VAR",
     "ExecResult",
     "GuardianNetworkAccessTrigger",
+    "InterceptedExecPolicyContext",
+    "InterceptedExecPolicyEvaluation",
     "NetworkApprovalMode",
     "NetworkApprovalSpec",
     "PROMPT_CONFLICT_REASON",
     "ParsedShellCommand",
+    "PreparedUnifiedExecSpawn",
+    "PreparedUnifiedExecZshFork",
     "REJECT_RULES_APPROVAL_REASON",
     "REJECT_SANDBOX_APPROVAL_REASON",
     "SHELL_ESCALATE_HANDSHAKE_MESSAGE",
@@ -2762,6 +3680,7 @@ __all__ = [
     "SHELL_SUPER_EXEC_STDIO_DESTINATION_FDS",
     "SandboxCommand",
     "ShellApprovalKey",
+    "ShellCommandExecutorRunContext",
     "ShellEscalateAction",
     "ShellEscalateClientHandshakePlan",
     "ShellEscalateClientSocketPair",
@@ -2773,19 +3692,27 @@ __all__ = [
     "ShellEscalateResponse",
     "ShellEscalationDecision",
     "ShellEscalationExecution",
+    "ShellEscalationPolicyPlan",
     "ShellEscalateServerPlan",
     "ShellLocalExecvPlan",
+    "ShellPrepareSandboxedExecParams",
+    "ShellPrepareSandboxedExecContext",
+    "ShellSandboxTransformRequest",
     "ShellPreparedExec",
     "ShellSuperExecMessage",
     "ShellSuperExecResult",
     "ShellSuperExecSpawnPlan",
     "ShellSuperExecSubprocessSpec",
+    "ShellZshForkCancellationPlan",
+    "ShellZshForkExecParams",
     "ShellRequest",
     "ShellRuntimeBackend",
     "ToolRuntimeError",
     "UnifiedExecApprovalKey",
+    "UnifiedExecDirectRunPlan",
     "UnifiedExecOptions",
     "UnifiedExecRequest",
+    "ZshForkSpawnLifecycle",
     "approval_sandbox_permissions",
     "apply_patch_approval_keys",
     "apply_patch_permission_request_payload",
@@ -2799,9 +3726,12 @@ __all__ = [
     "build_unified_exec_sandbox_command",
     "canonicalize_command_for_approval",
     "commands_for_intercepted_exec_policy",
+    "decision_driven_by_policy",
     "disable_powershell_profile_for_elevated_windows_sandbox",
     "exec_env_for_sandbox_permissions",
+    "exec_result_from_tool_output",
     "execve_prompt_is_rejected_by_policy",
+    "evaluate_intercepted_exec_policy",
     "extract_shell_script",
     "effective_file_system_sandbox_policy",
     "effective_network_sandbox_policy",
@@ -2814,8 +3744,11 @@ __all__ = [
     "map_exec_result",
     "maybe_wrap_shell_lc_with_snapshot",
     "managed_network_for_runtime",
+    "maybe_prepare_unified_exec_zsh_fork",
+    "maybe_run_shell_command_zsh_fork",
     "shell_prepared_exec_effective_arg0",
     "shell_prepared_exec_program_and_args",
+    "prepare_unified_exec_zsh_fork_from_session",
     "shell_escalate_action_from_decision",
     "shell_escalate_client_action_from_response",
     "shell_escalate_client_handshake_payload",
@@ -2844,9 +3777,11 @@ __all__ = [
     "shell_escalate_server_plan_from_decision",
     "shell_escalate_server_plan_send_response",
     "shell_escalate_server_request_run",
+    "shell_escalation_merge_env_overlay",
     "shell_escalation_request_env",
     "shell_escalation_session_env",
     "shell_escalation_socket_fd_from_env",
+    "shell_escalation_policy_plan",
     "shell_local_execv_plan",
     "shell_local_execv_run",
     "shell_super_exec_duplicate_fd_for_transfer",
@@ -2864,6 +3799,8 @@ __all__ = [
     "shell_super_exec_run_prepared",
     "shell_super_exec_run_subprocess",
     "shell_request_escalation_execution",
+    "shell_zsh_fork_cancellation_plan",
+    "shell_zsh_fork_exec_params",
     "shell_escalation_decision_after_review",
     "shell_escalation_decision_for_approved_review",
     "shell_escalation_decision_for_policy_decision",
@@ -2874,9 +3811,15 @@ __all__ = [
     "shell_socket_sendmsg_with_fds",
     "shell_socket_validate_fds_for_message",
     "shell_approval_keys",
+    "shell_command_executor_exec_request",
+    "shell_command_executor_run",
     "shell_network_approval_spec",
     "shell_permission_request_payload",
+    "shell_prepare_escalated_exec",
+    "shell_prepare_escalated_exec_params",
+    "shell_prepare_sandboxed_exec",
     "unified_exec_approval_keys",
+    "unified_exec_direct_run_plan",
     "unified_exec_network_approval_spec",
     "unified_exec_options",
     "unified_exec_permission_request_payload",

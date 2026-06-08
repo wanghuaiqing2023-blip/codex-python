@@ -155,17 +155,21 @@ async def schedule_startup_prewarm(
     started_at = time.monotonic()
 
     async def run() -> Any:
+        status: str | None = None
         try:
             result = await prewarm()
             status = "ready"
             return result
+        except asyncio.CancelledError:
+            raise
         except Exception:
             status = "failed"
             raise
         finally:
-            elapsed = time.monotonic() - started_at
-            _record_startup_phase(session_telemetry, "startup_prewarm_total", elapsed, status)
-            _record_duration(session_telemetry, STARTUP_PREWARM_DURATION_METRIC, elapsed, (("status", status),))
+            if status is not None:
+                elapsed = time.monotonic() - started_at
+                _record_startup_phase(session_telemetry, "startup_prewarm_total", elapsed, status)
+                _record_duration(session_telemetry, STARTUP_PREWARM_DURATION_METRIC, elapsed, (("status", status),))
 
     return SessionStartupPrewarmHandle.new(asyncio.create_task(run()), started_at, timeout)
 

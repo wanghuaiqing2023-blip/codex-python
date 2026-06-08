@@ -28,6 +28,7 @@ def sourced(entries: dict[str, bool]) -> Sourced[FeatureRequirementsToml]:
 
 class CoreManagedFeaturesTests(unittest.TestCase):
     def test_from_configured_normalizes_required_features(self) -> None:
+        # Rust: codex-core::config::config_tests::feature_requirements_normalize_effective_feature_values.
         configured = Features.with_defaults()
         configured.disable(Feature.PERSONALITY)
         configured.enable(Feature.SHELL_TOOL)
@@ -41,12 +42,23 @@ class CoreManagedFeaturesTests(unittest.TestCase):
         self.assertFalse(managed.enabled(Feature.SHELL_TOOL))
 
     def test_auto_review_requirement_maps_to_guardian_approval(self) -> None:
+        # Rust: codex-core::config::config_tests::feature_requirements_auto_review_disables_guardian_approval.
         managed = ManagedFeatures.from_configured(
             Features.with_defaults(),
             sourced({"auto_review": False}),
         )
 
         self.assertFalse(managed.enabled(Feature.GUARDIAN_APPROVAL))
+
+    def test_absent_feature_requirements_leave_configured_values_mutable(self) -> None:
+        configured = Features.with_defaults()
+        configured.disable(Feature.PERSONALITY)
+
+        managed = ManagedFeatures.from_configured(configured, None)
+        self.assertFalse(managed.enabled(Feature.PERSONALITY))
+
+        managed.enable(Feature.PERSONALITY)
+        self.assertTrue(managed.enabled(Feature.PERSONALITY))
 
     def test_runtime_mutations_are_normalized_to_requirements(self) -> None:
         managed = ManagedFeatures.from_configured(
@@ -139,6 +151,15 @@ class CoreManagedFeaturesTests(unittest.TestCase):
 
         self.assertEqual(caught.exception.candidate, "features.personality=false")
         self.assertEqual(caught.exception.allowed, "[personality=true]")
+
+    def test_validate_explicit_feature_settings_rejects_legacy_unified_exec_toggle_conflict(self) -> None:
+        cfg = {"experimental_use_unified_exec_tool": True}
+
+        with self.assertRaises(ConstraintError) as caught:
+            validate_explicit_feature_settings_in_config_toml(cfg, sourced({"unified_exec": False}))
+
+        self.assertEqual(caught.exception.candidate, "experimental_use_unified_exec_tool=true")
+        self.assertEqual(caught.exception.allowed, "[unified_exec=false]")
 
     def test_validate_feature_requirements_normalizes_base_configured_values(self) -> None:
         cfg = {

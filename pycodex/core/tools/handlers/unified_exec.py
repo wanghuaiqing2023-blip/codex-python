@@ -554,7 +554,7 @@ class ExecCommandHandler:
     def post_tool_use_payload(self, invocation: ToolInvocation, result: JsonValue) -> PostToolUsePayload | None:
         return post_unified_exec_tool_use_payload(invocation, result)
 
-    def handle(self, invocation: ToolInvocation) -> ExecCommandToolOutput:
+    def handle(self, invocation: ToolInvocation) -> ExecCommandToolOutput | Any:
         try:
             resolved = resolve_exec_command_invocation(
                 invocation,
@@ -563,6 +563,13 @@ class ExecCommandHandler:
             )
         except (TypeError, ValueError, json.JSONDecodeError) as error:
             raise _parse_or_validation_error(error) from error
+        return self._handle_after_skill_invocation(invocation, resolved)
+
+    def _handle_after_skill_invocation(
+        self,
+        invocation: ToolInvocation,
+        resolved: ResolvedExecCommandInvocation,
+    ) -> ExecCommandToolOutput | Any:
         manager = _invocation_optional_unified_exec_manager(invocation)
         exec_command = getattr(manager, "exec_command", None) if manager is not None else None
         if callable(exec_command):
@@ -584,6 +591,7 @@ class ExecCommandHandler:
                 exit_code=None,
                 hook_command=None,
             )
+        _emit_unified_exec_tty_metric(invocation.turn, resolved.args.tty)
         try:
             completed = subprocess.run(
                 resolved.resolved_command.command,
@@ -628,6 +636,14 @@ class ExecCommandHandler:
         manager = _invocation_optional_unified_exec_manager(invocation)
         turn = invocation.turn
         approval_policy = _invocation_approval_policy(invocation)
+        maybe_emitted = _maybe_emit_implicit_skill_invocation(
+            invocation.session,
+            turn,
+            resolved.args.cmd,
+            resolved.cwd,
+        )
+        if inspect.isawaitable(maybe_emitted):
+            await maybe_emitted
         process_id = await _allocate_unified_exec_process_id(manager)
         requested_additional_permissions = resolved.args.additional_permissions
         effective_additional_permissions = await apply_granted_turn_permissions(
@@ -691,6 +707,7 @@ class ExecCommandHandler:
                 exit_code=None,
                 hook_command=None,
             )
+        _emit_unified_exec_tty_metric(turn, resolved.args.tty)
         request = ExecCommandRequest(
             call_id=invocation.call_id,
             command=resolved.resolved_command.command,
@@ -769,7 +786,7 @@ class WriteStdinHandler:
         request = WriteStdinRequest(
             process_id=args.session_id,
             input=args.chars,
-            yield_time_ms=resolve_write_stdin_yield_time(args.chars, args.yield_time_ms),
+            yield_time_ms=args.yield_time_ms,
             max_output_tokens=args.max_output_tokens,
             truncation_policy=_invocation_truncation_policy(invocation),
         )
@@ -784,11 +801,9 @@ class WriteStdinHandler:
 
 
 def updated_hook_command(updated_input: JsonValue) -> str:
-    data = _mapping(updated_input, "updated hook input")
-    command = data.get("command")
-    if not isinstance(command, str):
-        raise TypeError("updated hook input command must be a string")
-    return command
+    from pycodex.core.tools.handlers.utils import updated_hook_command as shared_updated_hook_command
+
+    return shared_updated_hook_command(updated_input)
 
 
 def _sandbox_denied_tool_output(
@@ -829,6 +844,23 @@ def _sandbox_denied_tool_output(
 
 def _parse_or_validation_error(error: BaseException) -> FunctionCallError:
     return FunctionCallError.respond_to_model(f"failed to parse function arguments: {error}")
+
+
+def _maybe_emit_implicit_skill_invocation(sess: Any, turn_context: Any, command: str, workdir: Path) -> Any:
+    from pycodex.core.skills import maybe_emit_implicit_skill_invocation
+
+    return maybe_emit_implicit_skill_invocation(sess, turn_context, command, workdir)
+
+
+def _emit_unified_exec_tty_metric(turn_context: Any, tty: bool) -> None:
+    telemetry = getattr(turn_context, "session_telemetry", None)
+    counter = getattr(telemetry, "counter", None)
+    if not callable(counter):
+        return
+    try:
+        counter("codex.tool.unified_exec", 1, (("tty", "true" if tty else "false"),))
+    except Exception:
+        return
 
 
 def intercept_exec_apply_patch(

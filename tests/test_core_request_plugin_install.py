@@ -614,14 +614,26 @@ id = "slack@openai-curated"
 
 class RequestPluginInstallSpecAndHandlerTests(unittest.TestCase):
     def test_list_available_tool_spec_matches_upstream_contract(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/list_available_plugins_to_install_spec.rs
+        # Rust test: create_list_available_plugins_to_install_tool_uses_expected_wire_shape
         spec = create_list_available_plugins_to_install_tool()
 
         self.assertEqual(spec["type"], "function")
         self.assertEqual(spec["name"], LIST_AVAILABLE_PLUGINS_TO_INSTALL_TOOL_NAME)
-        self.assertIn(
-            "Returns known plugins and connectors that can be passed to `request_plugin_install`.",
+        self.assertEqual(
             spec["description"],
+            (
+                "# List plugin/connector install candidates\n\n"
+                "Use this tool only when both are true:\n"
+                "- The user explicitly asks to use a specific plugin or connector that is not already available in the current context or active `tools` list.\n"
+                "- `tool_search` is not available, or it has already been called and did not find or make the requested tool callable.\n\n"
+                "Returns known plugins and connectors that can be passed to `request_plugin_install`. "
+                "When both a plugin and a connector match, prefer the plugin; use the connector only when its corresponding plugin is already installed.\n"
+            ),
         )
+        self.assertFalse(spec["strict"])
+        self.assertIsNone(spec.get("defer_loading"))
+        self.assertIsNone(spec.get("output_schema"))
         self.assertEqual(
             spec["parameters"],
             {
@@ -633,17 +645,50 @@ class RequestPluginInstallSpecAndHandlerTests(unittest.TestCase):
         )
 
     def test_request_plugin_install_tool_spec_matches_upstream_contract(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/request_plugin_install_spec.rs
+        # Rust test: create_request_plugin_install_tool_uses_expected_wire_shape
         spec = create_request_plugin_install_tool()
 
+        self.assertEqual(spec["type"], "function")
         self.assertEqual(spec["name"], REQUEST_PLUGIN_INSTALL_TOOL_NAME)
-        self.assertIn(
-            "Use this tool only after `list_available_plugins_to_install` returns a plugin or connector",
-            spec["description"],
-        )
-        self.assertIn("tool_type", spec["parameters"]["required"])
         self.assertEqual(
-            spec["parameters"]["properties"]["action_type"]["description"],
-            'Suggested action for the tool. Use "install".',
+            spec["description"],
+            (
+                "# Request plugin/connector install\n\n"
+                "Use this tool only after `list_available_plugins_to_install` returns a plugin or connector that exactly matches the user's explicit request.\n\n"
+                "Do not use it for adjacent capabilities, broad recommendations, or tools that merely seem useful. "
+                "Pass the returned `tool_type` through directly, and pass the returned `id` as `tool_id`.\n\n"
+                "IMPORTANT: DO NOT call this tool in parallel with other tools."
+            ),
+        )
+        self.assertFalse(spec["strict"])
+        self.assertIsNone(spec.get("defer_loading"))
+        self.assertIsNone(spec.get("output_schema"))
+        self.assertEqual(
+            spec["parameters"]["required"],
+            ["tool_type", "action_type", "tool_id", "suggest_reason"],
+        )
+        self.assertFalse(spec["parameters"]["additionalProperties"])
+        self.assertEqual(
+            spec["parameters"]["properties"],
+            {
+                "tool_type": {
+                    "type": "string",
+                    "description": 'Type of discoverable tool to suggest. Use "connector" or "plugin".',
+                },
+                "action_type": {
+                    "type": "string",
+                    "description": 'Suggested action for the tool. Use "install".',
+                },
+                "tool_id": {
+                    "type": "string",
+                    "description": "Connector or plugin id to suggest.",
+                },
+                "suggest_reason": {
+                    "type": "string",
+                    "description": "Concise one-line user-facing reason why this plugin or connector can help with the current request.",
+                },
+            },
         )
 
     def test_list_available_handler_sorts_truncates_and_serializes(self) -> None:
@@ -737,9 +782,14 @@ class RequestPluginInstallSpecAndHandlerTests(unittest.TestCase):
             )
         )
 
+        self.assertEqual(handler.tool_name(), ToolName.plain(REQUEST_PLUGIN_INSTALL_TOOL_NAME))
+        self.assertEqual(handler.spec(), create_request_plugin_install_tool())
         self.assertTrue(handler.supports_parallel_tool_calls())
+        self.assertEqual(captured["args"].suggest_reason, "  Plan with calendar  ")
         self.assertEqual(captured["tool"].name(), "Google Calendar")
         self.assertEqual(captured["params"].thread_id, "thread-1")
+        self.assertEqual(captured["params"].turn_id, "turn-1")
+        self.assertEqual(captured["params"].server_name, CODEX_APPS_MCP_SERVER_NAME)
         self.assertEqual(
             json.loads(output.into_text()),
             {

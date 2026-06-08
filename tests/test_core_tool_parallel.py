@@ -51,6 +51,8 @@ class Recorder:
 
 class ToolParallelTests(unittest.TestCase):
     def test_abort_message_matches_shell_and_generic_formats(self) -> None:
+        # Rust parity: codex-core::tools::parallel
+        # parallel.rs::ToolCallRuntime::abort_message.
         shell = ToolCall(
             tool_name=ToolName.plain("unified_exec"),
             call_id="call-shell",
@@ -84,6 +86,8 @@ class ToolParallelTests(unittest.TestCase):
         self.assertEqual(abort_message(namespaced_unified_exec, 1.234), "aborted by user after 1.2s")
 
     def test_aborted_tool_result_converts_to_model_output(self) -> None:
+        # Rust parity: codex-core::tools::parallel
+        # parallel.rs::ToolCallRuntime::aborted_response.
         call = ToolCall(
             tool_name=ToolName.plain("view_image"),
             call_id="call-1",
@@ -100,6 +104,8 @@ class ToolParallelTests(unittest.TestCase):
         self.assertEqual(result.code_mode_result(), "aborted by user after 2.0s")
 
     def test_failure_response_preserves_payload_specific_shape(self) -> None:
+        # Rust parity: codex-core::tools::parallel
+        # parallel.rs::ToolCallRuntime::failure_response.
         function_call = ToolCall(
             tool_name=ToolName.plain("fn"),
             call_id="call-fn",

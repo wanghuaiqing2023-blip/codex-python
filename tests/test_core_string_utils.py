@@ -11,15 +11,20 @@ from pycodex.core import (
     truncate_middle_chars,
     truncate_middle_with_token_budget,
 )
-from pycodex.core_skills.rendering import approx_token_count
 from pycodex.utils.string import (
     _split_string,
+    approx_token_count,
     sanitize_metric_tag_value,
     truncate_to_char_boundary,
 )
 
 
 class CoreStringUtilsTests(unittest.TestCase):
+    # Source: rust_source_inferred
+    # Rust crate: codex-utils-string
+    # Rust module: src/lib.rs
+    # Rust item: take_bytes_at_char_boundary
+    # Contract: utils.string.utf8_prefix_truncation
     def test_take_bytes_at_char_boundary_keeps_valid_utf8_prefix(self) -> None:
         self.assertEqual(take_bytes_at_char_boundary("abc", 8), "abc")
         self.assertEqual(take_bytes_at_char_boundary("\U0001f600abc\U0001f600", 5), "\U0001f600a")
@@ -33,6 +38,11 @@ class CoreStringUtilsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "max_bytes must be non-negative"):
             take_bytes_at_char_boundary("abc", -1)
 
+    # Source: rust_source_inferred
+    # Rust crate: codex-utils-string
+    # Rust module: src/truncate.rs
+    # Rust items: approx_token_count; approx_bytes_for_tokens; approx_tokens_from_byte_count
+    # Contract: utils.string.approx_token_estimate
     def test_approx_token_helpers_use_upstream_four_byte_estimate(self) -> None:
         self.assertEqual(approx_token_count("abcdef"), 2)
         self.assertEqual(approx_token_count("\U0001f600abc"), 2)
@@ -46,9 +56,15 @@ class CoreStringUtilsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "bytes_count must be non-negative"):
             approx_tokens_from_byte_count(-1)
 
+    # Source: rust_test_migrated
+    # Rust crate: codex-utils-string
+    # Rust module: src/truncate/tests.rs
+    # Rust tests: split_string_works; split_string_handles_empty_string; split_string_only_keeps_prefix_when_tail_budget_is_zero; split_string_only_keeps_suffix_when_prefix_budget_is_zero; split_string_handles_overlapping_budgets_without_removal; split_string_respects_utf8_boundaries
+    # Contract: utils.string.middle_split
     def test_split_string_matches_upstream_utf8_boundary_behavior(self) -> None:
         self.assertEqual(_split_string("hello world", 5, 5), (1, "hello", "world"))
         self.assertEqual(_split_string("abc", 0, 0), (3, "", ""))
+        self.assertEqual(_split_string("", 4, 4), (0, "", ""))
         self.assertEqual(_split_string("abcdef", 3, 0), (3, "abc", ""))
         self.assertEqual(_split_string("abcdef", 0, 3), (3, "", "def"))
         self.assertEqual(_split_string("abcdef", 4, 4), (0, "abcd", "ef"))
@@ -57,6 +73,11 @@ class CoreStringUtilsTests(unittest.TestCase):
         self.assertEqual(_split_string("\U0001f600" * 5, 7, 7), (3, "\U0001f600", "\U0001f600"))
         self.assertEqual(_split_string("\U0001f600" * 5, 8, 8), (1, "\U0001f600\U0001f600", "\U0001f600\U0001f600"))
 
+    # Source: rust_test_migrated
+    # Rust crate: codex-utils-string
+    # Rust module: src/truncate/tests.rs
+    # Rust test: truncate_middle_bytes_handles_utf8_content
+    # Contract: utils.string.middle_truncate_chars
     def test_truncate_middle_chars_uses_byte_budget_and_char_marker(self) -> None:
         self.assertEqual(truncate_middle_chars("short", 100), "short")
         self.assertEqual(
@@ -67,11 +88,23 @@ class CoreStringUtilsTests(unittest.TestCase):
             truncate_middle_chars("\U0001f600" * 5, 8),
             "\U0001f600\u20263 chars truncated\u2026\U0001f600",
         )
+        self.assertEqual(
+            truncate_middle_chars(
+                "\U0001f600" * 10 + "\nsecond line with text\n",
+                20,
+            ),
+            "\U0001f600\U0001f600\u202621 chars truncated\u2026with text\n",
+        )
         with self.assertRaisesRegex(TypeError, "value must be a string"):
             truncate_middle_chars(123, 10)  # type: ignore[arg-type]
         with self.assertRaisesRegex(ValueError, "max_bytes must be non-negative"):
             truncate_middle_chars("abcdef", -1)
 
+    # Source: rust_test_migrated
+    # Rust crate: codex-utils-string
+    # Rust module: src/truncate/tests.rs
+    # Rust tests: truncate_with_token_budget_returns_original_when_under_limit; truncate_with_token_budget_reports_truncation_at_zero_limit; truncate_middle_tokens_handles_utf8_content
+    # Contract: utils.string.middle_truncate_tokens
     def test_truncate_middle_with_token_budget_reports_original_count(self) -> None:
         self.assertEqual(
             truncate_middle_with_token_budget("short output", 100),
@@ -85,13 +118,22 @@ class CoreStringUtilsTests(unittest.TestCase):
             "\U0001f600" * 10 + "\nsecond line with text\n",
             8,
         )
-        self.assertIn("tokens truncated", output)
+        self.assertEqual(
+            output,
+            "\U0001f600\U0001f600\U0001f600\U0001f600"
+            "\u20268 tokens truncated\u2026 line with text\n",
+        )
         self.assertEqual(original_tokens, 16)
         with self.assertRaisesRegex(TypeError, "value must be a string"):
             truncate_middle_with_token_budget(123, 1)  # type: ignore[arg-type]
         with self.assertRaisesRegex(ValueError, "max_tokens must be non-negative"):
             truncate_middle_with_token_budget("abcdef", -1)
 
+    # Source: rust_test_migrated
+    # Rust crate: codex-utils-string
+    # Rust module: src/lib.rs
+    # Rust tests: tests::sanitize_metric_tag_value_trims_and_fills_unspecified; tests::sanitize_metric_tag_value_replaces_invalid_chars
+    # Contract: utils.string.metric_tag_sanitization
     def test_sanitize_metric_tag_value_matches_upstream_examples(self) -> None:
         self.assertEqual(sanitize_metric_tag_value("bad value!"), "bad_value")
         self.assertEqual(sanitize_metric_tag_value("///"), "unspecified")
@@ -100,6 +142,11 @@ class CoreStringUtilsTests(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "value must be a string"):
             sanitize_metric_tag_value(123)  # type: ignore[arg-type]
 
+    # Source: rust_test_migrated
+    # Rust crate: codex-utils-string
+    # Rust module: src/lib.rs
+    # Rust tests: tests::find_uuids_finds_multiple; tests::find_uuids_ignores_invalid; tests::find_uuids_handles_non_ascii_without_overlap
+    # Contract: utils.string.uuid_detection
     def test_find_uuids_matches_upstream_regex_behavior(self) -> None:
         self.assertEqual(
             find_uuids(
@@ -122,6 +169,11 @@ class CoreStringUtilsTests(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "value must be a string"):
             find_uuids(123)  # type: ignore[arg-type]
 
+    # Source: rust_test_migrated
+    # Rust crate: codex-utils-string
+    # Rust module: src/lib.rs
+    # Rust tests: tests::normalize_markdown_hash_location_suffix_converts_single_location; tests::normalize_markdown_hash_location_suffix_converts_ranges
+    # Contract: utils.string.markdown_location_suffix
     def test_normalize_markdown_hash_location_suffix_converts_locations(self) -> None:
         self.assertEqual(normalize_markdown_hash_location_suffix("#L74C3"), ":74:3")
         self.assertEqual(
@@ -134,6 +186,11 @@ class CoreStringUtilsTests(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "suffix must be a string"):
             normalize_markdown_hash_location_suffix(123)  # type: ignore[arg-type]
 
+    # Source: rust_source_inferred
+    # Rust crate: codex-utils-string
+    # Rust module: src/lib.rs
+    # Rust item: take_bytes_at_char_boundary
+    # Contract: utils.string.char_boundary_truncation
     def test_truncate_to_char_boundary_uses_character_count(self) -> None:
         self.assertEqual(truncate_to_char_boundary("\u00e1" * 4 + "tail", 4), "\u00e1" * 4)
         self.assertEqual(truncate_to_char_boundary("short", 50), "short")
@@ -143,6 +200,11 @@ class CoreStringUtilsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "max_chars must be non-negative"):
             truncate_to_char_boundary("short", -1)
 
+    # Source: rust_test_migrated
+    # Rust crate: codex-utils-string
+    # Rust module: src/json.rs
+    # Rust test: tests::to_ascii_json_string_escapes_non_ascii_strings
+    # Contract: utils.string.ascii_json
     def test_to_ascii_json_string_escapes_non_ascii_strings(self) -> None:
         value = {
             "workspaces": {

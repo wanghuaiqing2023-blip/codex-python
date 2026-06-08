@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Mapping
 
 from pycodex.protocol import (
     PermissionProfile,
     ReasoningEffort,
+    ThreadId,
     ThreadSource,
     WindowsSandboxLevel,
 )
@@ -43,6 +45,49 @@ _CLIENT_METADATA_RESERVED_KEYS = frozenset(
         WINDOW_ID_KEY,
     }
 )
+
+
+class _StringEnum(str, Enum):
+    def __str__(self) -> str:
+        return self.value
+
+
+class CompactionTrigger(_StringEnum):
+    AUTO = "auto"
+
+
+class CompactionReason(_StringEnum):
+    CONTEXT_LIMIT = "context_limit"
+
+
+class CompactionImplementation(_StringEnum):
+    RESPONSES_COMPACTION_V2 = "responses_compaction_v2"
+
+
+class CompactionPhase(_StringEnum):
+    MID_TURN = "mid_turn"
+
+
+class CompactionStrategy(_StringEnum):
+    MEMENTO = "memento"
+
+
+@dataclass(frozen=True)
+class CompactionTurnMetadata:
+    trigger: CompactionTrigger | str
+    reason: CompactionReason | str
+    implementation: CompactionImplementation | str
+    phase: CompactionPhase | str
+    strategy: CompactionStrategy | str = CompactionStrategy.MEMENTO
+
+    def to_mapping(self) -> dict[str, str]:
+        return {
+            "trigger": _enum_value(self.trigger),
+            "reason": _enum_value(self.reason),
+            "implementation": _enum_value(self.implementation),
+            "phase": _enum_value(self.phase),
+            "strategy": _enum_value(self.strategy),
+        }
 
 
 @dataclass(frozen=True)
@@ -92,8 +137,10 @@ class TurnMetadataWorkspace:
 
 @dataclass(frozen=True)
 class TurnMetadataBag:
+    request_kind: str | None = None
     session_id: str | None = None
     thread_id: str | None = None
+    forked_from_thread_id: ThreadId | str | None = None
     thread_source: ThreadSource | str | None = None
     turn_id: str | None = None
     workspaces: dict[str, TurnMetadataWorkspace] = field(default_factory=dict)
@@ -101,10 +148,14 @@ class TurnMetadataBag:
 
     def to_mapping(self) -> dict[str, object]:
         data: dict[str, object] = {}
+        if self.request_kind is not None:
+            data[REQUEST_KIND_KEY] = self.request_kind
         if self.session_id is not None:
             data["session_id"] = self.session_id
         if self.thread_id is not None:
             data["thread_id"] = self.thread_id
+        if self.forked_from_thread_id is not None:
+            data[FORKED_FROM_THREAD_ID_KEY] = _thread_id_value(self.forked_from_thread_id)
         if self.thread_source is not None:
             data["thread_source"] = _enum_value(self.thread_source)
         if self.turn_id is not None:
@@ -153,8 +204,10 @@ def merge_turn_metadata(
 
 
 def build_turn_metadata_bag(
+    request_kind: str | None = None,
     session_id: str | None = None,
     thread_id: str | None = None,
+    forked_from_thread_id: ThreadId | str | None = None,
     thread_source: ThreadSource | str | None = None,
     turn_id: str | None = None,
     sandbox: str | None = None,
@@ -165,8 +218,10 @@ def build_turn_metadata_bag(
     if repo_root is not None and workspace_git_metadata is not None and not workspace_git_metadata.is_empty():
         workspaces[repo_root] = TurnMetadataWorkspace.from_git_metadata(workspace_git_metadata)
     return TurnMetadataBag(
+        request_kind=request_kind,
         session_id=session_id,
         thread_id=thread_id,
+        forked_from_thread_id=forked_from_thread_id,
         thread_source=thread_source,
         turn_id=turn_id,
         workspaces=workspaces,
@@ -184,10 +239,8 @@ def build_turn_metadata_header(cwd: Path | str, sandbox: str | None = None) -> s
     has_changes = get_has_changes(cwd)
     latest_git_commit_hash = str(head_commit_hash) if head_commit_hash is not None else None
 
-    if latest_git_commit_hash is None and associated_remote_urls is None and has_changes is None and sandbox is None:
-        return None
-
     return build_turn_metadata_bag(
+        request_kind="memory",
         sandbox=sandbox,
         repo_root=repo_root,
         workspace_git_metadata=WorkspaceGitMetadata(
@@ -204,16 +257,48 @@ class TurnMetadataState:
         cls,
         session_id: str,
         thread_id: str,
-        thread_source: ThreadSource | str | None,
-        turn_id: str,
-        cwd: Path | str,
-        permission_profile: PermissionProfile,
-        windows_sandbox_level: WindowsSandboxLevel,
-        enforce_managed_network: bool,
+        *args: object,
+        forked_from_thread_id: ThreadId | str | None = None,
+        thread_source: ThreadSource | str | None = None,
+        turn_id: str | None = None,
+        cwd: Path | str | None = None,
+        permission_profile: PermissionProfile | None = None,
+        windows_sandbox_level: WindowsSandboxLevel | None = None,
+        enforce_managed_network: bool | None = None,
     ) -> "TurnMetadataState":
+        if args:
+            if len(args) == 6:
+                # Backward-compatible Python order:
+                # thread_source, turn_id, cwd, permission_profile, windows_sandbox_level, enforce_managed_network.
+                (
+                    thread_source,
+                    turn_id,
+                    cwd,
+                    permission_profile,
+                    windows_sandbox_level,
+                    enforce_managed_network,
+                ) = args  # type: ignore[assignment]
+            elif len(args) == 7:
+                # Rust order:
+                # forked_from_thread_id, thread_source, turn_id, cwd, permission_profile,
+                # windows_sandbox_level, enforce_managed_network.
+                (
+                    forked_from_thread_id,
+                    thread_source,
+                    turn_id,
+                    cwd,
+                    permission_profile,
+                    windows_sandbox_level,
+                    enforce_managed_network,
+                ) = args  # type: ignore[assignment]
+            else:
+                raise TypeError("unexpected TurnMetadataState.new arguments")
+        if turn_id is None or cwd is None or permission_profile is None or windows_sandbox_level is None or enforce_managed_network is None:
+            raise TypeError("missing TurnMetadataState.new arguments")
         return cls(
             session_id=session_id,
             thread_id=thread_id,
+            forked_from_thread_id=forked_from_thread_id,
             thread_source=thread_source,
             turn_id=turn_id,
             cwd=cwd,
@@ -226,6 +311,7 @@ class TurnMetadataState:
         self,
         session_id: str,
         thread_id: str,
+        forked_from_thread_id: ThreadId | str | None,
         thread_source: ThreadSource | str | None,
         turn_id: str,
         cwd: Path | str,
@@ -243,6 +329,7 @@ class TurnMetadataState:
         self.base_metadata = build_turn_metadata_bag(
             session_id=session_id,
             thread_id=thread_id,
+            forked_from_thread_id=forked_from_thread_id,
             thread_source=thread_source,
             turn_id=turn_id,
             sandbox=sandbox,
@@ -289,6 +376,45 @@ class TurnMetadataState:
             metadata.pop(USER_INPUT_REQUESTED_DURING_TURN_KEY, None)
         return metadata
 
+    def _current_header_value_for_model_request_kind(self, window_id: str, request_kind: str) -> str | None:
+        header = self.current_header_value()
+        if header is None:
+            return None
+        try:
+            metadata = json.loads(header)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(metadata, dict):
+            return None
+        metadata[REQUEST_KIND_KEY] = request_kind
+        metadata[WINDOW_ID_KEY] = window_id
+        return to_ascii_json_string(metadata)
+
+    def current_header_value_for_model_request(self, window_id: str) -> str | None:
+        return self._current_header_value_for_model_request_kind(window_id, "turn")
+
+    def current_header_value_for_prewarm(self, window_id: str) -> str | None:
+        return self._current_header_value_for_model_request_kind(window_id, "prewarm")
+
+    def current_header_value_for_compaction(
+        self,
+        window_id: str,
+        compaction: CompactionTurnMetadata,
+    ) -> str | None:
+        header = self._current_header_value_for_model_request_kind(window_id, "compaction")
+        if header is None:
+            return None
+        try:
+            metadata = json.loads(header)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(metadata, dict):
+            return None
+        if not isinstance(compaction, CompactionTurnMetadata):
+            raise TypeError("compaction must be a CompactionTurnMetadata")
+        metadata[COMPACTION_KEY] = compaction.to_mapping()
+        return to_ascii_json_string(metadata)
+
     def mark_user_input_requested_during_turn(self) -> None:
         self.user_input_requested_during_turn = True
 
@@ -320,6 +446,7 @@ class TurnMetadataState:
         enriched = build_turn_metadata_bag(
             session_id=self.base_metadata.session_id,
             thread_id=self.base_metadata.thread_id,
+            forked_from_thread_id=self.base_metadata.forked_from_thread_id,
             thread_source=self.base_metadata.thread_source,
             turn_id=self.base_metadata.turn_id,
             sandbox=self.base_metadata.sandbox,
@@ -346,6 +473,12 @@ def _enum_value(value: object) -> str:
     return str(enum_value if enum_value is not None else value)
 
 
+def _thread_id_value(value: ThreadId | str) -> str:
+    if isinstance(value, ThreadId):
+        return value.to_json()
+    return _enum_value(value)
+
+
 def _ensure_metadata_pair(key: object, value: object) -> bool:
     _ensure_str(key, "responsesapi_client_metadata key")
     _ensure_str(value, "responsesapi_client_metadata value")
@@ -366,6 +499,14 @@ def _ensure_i64(value: object, name: str) -> None:
 
 __all__ = [
     "MODEL_KEY",
+    "COMPACTION_KEY",
+    "CompactionImplementation",
+    "CompactionPhase",
+    "CompactionReason",
+    "CompactionStrategy",
+    "CompactionTrigger",
+    "CompactionTurnMetadata",
+    "FORKED_FROM_THREAD_ID_KEY",
     "McpTurnMetadataContext",
     "REASONING_EFFORT_KEY",
     "REQUEST_KIND_KEY",

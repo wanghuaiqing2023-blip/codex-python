@@ -7,6 +7,7 @@ from pycodex.core.compact_remote import (
     IMAGE_CONTENT_OMITTED_PLACEHOLDER,
     apply_remote_compaction_install_plan,
     build_compact_request_log_data,
+    build_remote_compact_failure_log_data,
     build_remote_compaction_install_plan,
     build_remote_compaction_success_plan,
     ensure_call_outputs_present,
@@ -20,6 +21,7 @@ from pycodex.core.compact_remote import (
     strip_images_when_unsupported,
     trim_function_call_history_to_fit_context_window,
 )
+from pycodex.core.context_manager.history import TotalTokenUsageBreakdown
 from pycodex.core.session.runtime import InMemoryCodexSession
 from pycodex.protocol import (
     AskForApproval,
@@ -128,6 +130,18 @@ class CompactRemoteTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(processed, [kept])
+
+    def test_process_compacted_history_inserts_context_before_compaction_item(self) -> None:
+        compaction = ResponseItem.compaction("encrypted")
+        refreshed_context = developer_message("fresh permissions")
+
+        processed = process_compacted_history(
+            (compaction,),
+            InitialContextInjection.BEFORE_LAST_USER_MESSAGE,
+            (refreshed_context,),
+        )
+
+        self.assertEqual(processed, [refreshed_context, compaction])
 
     def test_ensure_call_outputs_present_inserts_synthetic_outputs_after_calls(self) -> None:
         function_call = ResponseItem.function_call("shell", "{}", "call-1")
@@ -423,6 +437,39 @@ class CompactRemoteTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(log_data.failing_compaction_request_model_visible_bytes, 14)
+
+    def test_build_remote_compact_failure_log_data_matches_rust_structured_fields(self) -> None:
+        """Rust source contract: ``log_remote_compact_failure`` emits these structured fields."""
+
+        request_log_data = build_compact_request_log_data(
+            (user_message("one"),),
+            "instructions",
+            estimate_item_bytes=lambda _item: 5,
+        )
+        usage_breakdown = TotalTokenUsageBreakdown(
+            last_api_response_total_tokens=100,
+            all_history_items_model_visible_bytes=200,
+            estimated_tokens_of_items_added_since_last_successful_api_response=30,
+            estimated_bytes_of_items_added_since_last_successful_api_response=120,
+        )
+
+        log_data = build_remote_compact_failure_log_data(
+            "turn-1",
+            request_log_data,
+            usage_breakdown,
+            RuntimeError("boom"),
+            model_context_window_tokens=8_000,
+        )
+
+        self.assertEqual(log_data.turn_id, "turn-1")
+        self.assertEqual(log_data.last_api_response_total_tokens, 100)
+        self.assertEqual(log_data.all_history_items_model_visible_bytes, 200)
+        self.assertEqual(log_data.estimated_tokens_of_items_added_since_last_successful_api_response, 30)
+        self.assertEqual(log_data.estimated_bytes_of_items_added_since_last_successful_api_response, 120)
+        self.assertEqual(log_data.model_context_window_tokens, 8_000)
+        self.assertEqual(log_data.failing_compaction_request_model_visible_bytes, len("instructions") + 5)
+        self.assertEqual(log_data.compact_error, "boom")
+        self.assertEqual(log_data.message, "remote compaction failed")
 
     def test_estimate_response_item_model_visible_bytes_uses_json_mapping_bytes(self) -> None:
         item = user_message("\u00e9")

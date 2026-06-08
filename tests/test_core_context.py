@@ -161,6 +161,41 @@ class CoreContextTests(unittest.TestCase):
         self.assertIn("<denied>blocked.invalid</denied>", diff.render())
         self.assertIsNone(diff.subagents)
 
+    def test_with_subagents_preserves_existing_subagents_when_empty(self):
+        # Rust source: codex-rs/core/src/context/environment_context.rs
+        # EnvironmentContext::with_subagents only updates when the new value is non-empty.
+        context = EnvironmentContext.new(
+            (EnvironmentContextEnvironment("local", Path("/repo"), "bash"),),
+            subagents="- agent-1",
+        )
+
+        self.assertEqual(context.with_subagents("").subagents, "- agent-1")
+        self.assertEqual(context.with_subagents("- agent-2").subagents, "- agent-2")
+
+    def test_diff_from_turn_context_item_keeps_unchanged_network_like_rust(self):
+        # Rust source: codex-rs/core/src/context/environment_context.rs
+        # diff_from_turn_context_item returns before_network when before and after match.
+        before = TurnContextItem(
+            cwd=Path("/repo"),
+            approval_policy=AskForApproval.ON_REQUEST,
+            sandbox_policy=SandboxPolicy.read_only(),
+            model="gpt-5",
+            current_date=None,
+            timezone=None,
+            network=TurnContextNetworkItem(("api.openai.com",), ("blocked.invalid",)),
+        )
+        after = EnvironmentContext.new(
+            (EnvironmentContextEnvironment("local", Path("/repo"), "zsh"),),
+            network=NetworkContext(("api.openai.com",), ("blocked.invalid",)),
+        )
+
+        diff = EnvironmentContext.diff_from_turn_context_item(before, after)
+
+        self.assertIn(
+            '<network enabled="true"><allowed>api.openai.com</allowed><denied>blocked.invalid</denied></network>',
+            diff.render(),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -18,6 +18,14 @@ def connector_name_slug(name: str) -> str:
     return normalized or "app"
 
 
+def connector_display_label(connector: AppInfo | Mapping[str, JsonValue] | Any) -> str:
+    return coerce_app_info(connector).name
+
+
+def connector_mention_slug(connector: AppInfo | Mapping[str, JsonValue] | Any) -> str:
+    return connector_name_slug(connector_display_label(connector))
+
+
 def connector_install_url(name: str, connector_id: str) -> str:
     return f"https://chatgpt.com/apps/{connector_name_slug(name)}/{connector_id}"
 
@@ -99,7 +107,9 @@ def sort_connectors_by_accessibility_and_name(connectors: list[AppInfo]) -> None
 
 __all__ = [
     "coerce_app_info",
+    "connector_display_label",
     "connector_install_url",
+    "connector_mention_slug",
     "connector_name_slug",
     "normalize_connector_value",
     "replace_app_info",

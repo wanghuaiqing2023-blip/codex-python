@@ -196,12 +196,110 @@ def _command_tokens_for_safe_read(argv: tuple[str, ...]) -> tuple[str, ...] | No
         argv = script_tokens
     if not argv:
         return ()
+    return _command_tokens_from_plain_sequence(argv)
+
+
+def _command_tokens_from_plain_sequence(argv: tuple[str, ...]) -> tuple[str, ...] | None:
+    if _contains_unsafe_shell_syntax(argv):
+        return None
+    segments = _split_plain_command_sequence(argv)
+    if segments is None:
+        return None
+    cwd = Path()
+    read_tokens: list[str] = []
+    for segment in segments:
+        if not segment:
+            return None
+        parsed = _tokens_from_single_safe_command(segment, cwd)
+        if parsed is None:
+            return None
+        kind, tokens = parsed
+        if kind == "cd":
+            if tokens:
+                cwd = Path(tokens[-1])
+            continue
+        read_tokens.extend(tokens)
+    return tuple(read_tokens)
+
+
+def _tokens_from_single_safe_command(
+    argv: tuple[str, ...],
+    cwd: Path,
+) -> tuple[str, tuple[str, ...]] | None:
     command_name = Path(argv[0]).name.lower()
     if command_name in {"cat", "head", "tail", "less", "more", "bat", "batcat", "type", "get-content"}:
-        return _non_option_tokens(argv[1:])
+        return "read", tuple(_join_cwd(cwd, token) for token in _read_path_tokens(command_name, argv[1:]))
     if command_name in {"grep", "rg", "ag", "ack", "findstr", "select-string"}:
-        return _non_option_tokens(argv[1:])
+        return "search", tuple(_join_cwd(cwd, token) for token in _search_path_tokens(command_name, argv[1:]))
+    if command_name == "cd":
+        return "cd", _non_option_tokens(argv[1:])
+    if command_name in _SMALL_FORMATTING_COMMANDS:
+        return "other", ()
     return None
+
+
+_PLAIN_SEQUENCE_OPERATORS = {"&&", "||", ";", "|"}
+_SMALL_FORMATTING_COMMANDS = {"awk", "column", "cut", "head", "nl", "paste", "sed", "sort", "tail", "tee", "tr", "uniq", "wc"}
+
+
+def _contains_unsafe_shell_syntax(argv: tuple[str, ...]) -> bool:
+    for token in argv:
+        if token in {"(", ")", "&"}:
+            return True
+        if token.startswith((">", "<")) or token in {"2>", "2>>", "1>", "1>>"}:
+            return True
+    return False
+
+
+def _split_plain_command_sequence(argv: tuple[str, ...]) -> tuple[tuple[str, ...], ...] | None:
+    segments: list[tuple[str, ...]] = []
+    current: list[str] = []
+    for token in argv:
+        if token in _PLAIN_SEQUENCE_OPERATORS:
+            if not current:
+                return None
+            segments.append(tuple(current))
+            current = []
+            continue
+        current.append(token)
+    if not current:
+        return None
+    segments.append(tuple(current))
+    return tuple(segments)
+
+
+def _join_cwd(cwd: Path, token: str) -> str:
+    if not str(cwd) or Path(token).is_absolute():
+        return token
+    return str(cwd / token).replace("\\", "/")
+
+
+def _read_path_tokens(command_name: str, tokens: Sequence[str]) -> tuple[str, ...]:
+    return _non_option_tokens(tokens, options_with_values=_read_options_with_values(command_name))
+
+
+def _search_path_tokens(command_name: str, tokens: Sequence[str]) -> tuple[str, ...]:
+    non_options = _non_option_tokens(tokens, options_with_values=_search_options_with_values(command_name))
+    if len(non_options) < 2:
+        return ()
+    return (non_options[-1],)
+
+
+def _read_options_with_values(command_name: str) -> set[str]:
+    if command_name in {"less"}:
+        return {"-p", "-P", "--pattern", "--prompt"}
+    if command_name in {"head", "tail"}:
+        return {"-n", "-c", "--lines", "--bytes"}
+    if command_name in {"bat", "batcat"}:
+        return {"--theme", "--style", "--color", "--paging", "--language", "-l"}
+    return set()
+
+
+def _search_options_with_values(command_name: str) -> set[str]:
+    options = {"-e", "-f", "--regexp", "--file", "--glob", "-g", "--type", "-t", "--context", "-C", "-A", "-B"}
+    if command_name in {"grep", "egrep", "fgrep"}:
+        options.update({"--include", "--exclude", "--exclude-dir"})
+    return options
 
 
 def _tokens_from_shell_wrapper(argv: tuple[str, ...]) -> tuple[str, ...] | None:
@@ -222,18 +320,22 @@ def _tokens_from_shell_wrapper(argv: tuple[str, ...]) -> tuple[str, ...] | None:
     return None
 
 
-def _non_option_tokens(tokens: Sequence[str]) -> tuple[str, ...]:
+def _non_option_tokens(tokens: Sequence[str], *, options_with_values: set[str] | None = None) -> tuple[str, ...]:
+    options_with_values = options_with_values or set()
     result: list[str] = []
     skip_next = False
-    for token in tokens:
+    iterator = iter(enumerate(tokens))
+    for index, token in iterator:
         if skip_next:
             skip_next = False
             continue
         if token == "--":
-            result.extend(tokens[tokens.index(token) + 1 :])
+            result.extend(tokens[index + 1 :])
             break
+        if any(token.startswith(f"{option}=") for option in options_with_values if option.startswith("--")):
+            continue
         if token.startswith("-"):
-            if token in {"-e", "-f", "--regexp", "--file", "--glob", "-g"}:
+            if token in options_with_values:
                 skip_next = True
             continue
         result.append(token)

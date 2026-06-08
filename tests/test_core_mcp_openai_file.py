@@ -122,6 +122,19 @@ class McpOpenAIFileTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rewritten["note"], "leave me alone")
         self.assertEqual(rewritten["file"]["file_name"], "one.csv")
 
+    async def test_rewrite_mcp_tool_arguments_ignores_declared_missing_fields(self) -> None:
+        arguments = {"note": "leave me alone"}
+        calls = []
+
+        rewritten = await rewrite_mcp_tool_arguments_for_openai_files(
+            arguments,
+            ("file",),
+            uploader=lambda path, field, index: calls.append((path, field, index)) or uploaded(path.name),
+        )
+
+        self.assertIs(rewritten, arguments)
+        self.assertEqual(calls, [])
+
     async def test_build_uploaded_local_argument_value_requires_uploader(self) -> None:
         with self.assertRaisesRegex(ValueError, "ChatGPT auth is required"):
             await build_uploaded_local_argument_value("file", None, "one.csv")

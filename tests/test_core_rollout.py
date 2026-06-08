@@ -7,6 +7,8 @@ from pathlib import Path
 from pycodex.core import (
     SESSIONS_SUBDIR,
     Cursor,
+    RolloutRecorder,
+    RolloutRecorderParams,
     SessionIndexEntry,
     SessionMeta,
     append_event_msg_to_rollout,
@@ -33,6 +35,7 @@ from pycodex.core import (
     read_event_msgs_from_rollout,
     read_head_for_summary,
     read_model_history_from_rollout,
+    read_rollout_reconstruction_from_rollout,
     read_response_items_from_rollout,
     read_session_meta_line,
     read_thread_item_from_rollout,
@@ -40,7 +43,7 @@ from pycodex.core import (
     session_index_path,
     ThreadSortKey,
 )
-from pycodex.protocol import EventMsg, TurnAbortReason, TurnAbortedEvent
+from pycodex.protocol import AgentPath, EventMsg, InterAgentCommunication, SessionSource, ThreadId, TurnAbortReason, TurnAbortedEvent
 
 
 def workspace_tempdir():
@@ -83,6 +86,31 @@ def write_rollout(path: Path, thread_id: str, extra_lines: list[dict] | None = N
     path.write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8")
 
 
+def inter_agent_assistant_payload(text: str) -> dict:
+    communication = InterAgentCommunication(
+        author=AgentPath.root(),
+        recipient=AgentPath.from_string("/root/worker"),
+        other_recipients=(),
+        content=text,
+        trigger_turn=True,
+    )
+    return communication.to_response_input_item().to_mapping()
+
+
+def turn_context_payload(*, turn_id: str | None, model: str, realtime_active: bool | None) -> dict:
+    payload = {
+        "cwd": ".",
+        "approval_policy": "never",
+        "sandbox_policy": {"type": "read-only", "network_access": False},
+        "model": model,
+    }
+    if turn_id is not None:
+        payload["turn_id"] = turn_id
+    if realtime_active is not None:
+        payload["realtime_active"] = realtime_active
+    return payload
+
+
 def write_thread_rollout(
     codex_home: Path,
     timestamp: str,
@@ -114,6 +142,58 @@ def write_thread_rollout(
 
 
 class CoreRolloutTests(unittest.TestCase):
+    def test_core_rollout_recorder_reexport_create_record_and_resume_history(self):
+        # Rust source: codex-rs/core/src/rollout.rs re-exports
+        # codex_rollout::{RolloutRecorder, RolloutRecorderParams}.
+        # Rust behavior source: codex-rs/rollout/src/recorder.rs.
+        root = workspace_tempdir()
+        thread_id = ThreadId.new()
+        config = type(
+            "Config",
+            (),
+            {
+                "codex_home": root,
+                "sqlite_home": root,
+                "cwd": root,
+                "model_provider_id": "test-provider",
+                "generate_memories": True,
+            },
+        )()
+        params = RolloutRecorderParams.new(
+            thread_id,
+            None,
+            SessionSource.exec(),
+            None,
+            base_instructions={},
+            dynamic_tools=(),
+        )
+
+        recorder = RolloutRecorder.new(config, params)
+        recorder.persist()
+        recorder.record_canonical_items(
+            (
+                {
+                    "type": "event_msg",
+                    "payload": {"type": "user_message", "message": "hello", "kind": "plain"},
+                },
+            )
+        )
+        recorder.flush()
+
+        items, loaded_thread_id, parse_errors = RolloutRecorder.load_rollout_items(recorder.rollout_path)
+        history = RolloutRecorder.get_rollout_history(recorder.rollout_path)
+        resumed = RolloutRecorder.new(config, RolloutRecorderParams.resume(recorder.rollout_path))
+
+        self.assertEqual(loaded_thread_id, thread_id)
+        self.assertEqual(parse_errors, 0)
+        self.assertEqual(items[0].type, "session_meta")
+        self.assertEqual(items[1].type, "event_msg")
+        self.assertEqual(history.type, "Resumed")
+        self.assertIsNotNone(history.resumed)
+        self.assertEqual(history.resumed.conversation_id, thread_id)
+        self.assertEqual(history.resumed.rollout_path, recorder.rollout_path)
+        self.assertEqual(resumed.rollout_path, recorder.rollout_path)
+
     def test_count_session_rollout_files_matches_exec_ephemeral_suite_counting_rule(self):
         root = workspace_tempdir()
         thread_id = str(uuid.uuid4())
@@ -461,6 +541,1176 @@ class CoreRolloutTests(unittest.TestCase):
         items = read_model_history_from_rollout(path)
 
         self.assertEqual([item.content[0].text for item in items], ["keep user", "keep assistant"])
+
+    def test_read_model_history_from_rollout_rollback_counts_inter_agent_assistant_turns(self):
+        # Source: rust_test_migrated
+        # Rust crate: codex-core
+        # Rust module: src/session/rollout_reconstruction.rs
+        # Rust test: reconstruct_history_rollback_counts_inter_agent_assistant_turns
+        # Contract: session.rollout_reconstruction.history_rollback
+        root = workspace_tempdir()
+        thread_id = str(uuid.uuid4())
+        path = root / SESSIONS_SUBDIR / "2025" / "01" / "02" / f"rollout-2025-01-02T00-00-00-{thread_id}.jsonl"
+        write_rollout(
+            path,
+            thread_id,
+            [
+                {
+                    "timestamp": "2025-01-02T00:00:00Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "turn 1 user"}],
+                    },
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:01Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "turn 1 assistant"}],
+                    },
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:02Z",
+                    "type": "response_item",
+                    "payload": inter_agent_assistant_payload("continue"),
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:03Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "worker reply"}],
+                    },
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:04Z",
+                    "type": "event_msg",
+                    "payload": {"type": "thread_rolled_back", "num_turns": 1},
+                },
+            ],
+        )
+
+        items = read_model_history_from_rollout(path)
+
+        self.assertEqual([item.content[0].text for item in items], ["turn 1 user", "turn 1 assistant"])
+
+    def test_read_rollout_reconstruction_bare_turn_context_does_not_hydrate_metadata(self):
+        # Source: rust_test_migrated
+        # Rust crate: codex-core
+        # Rust module: src/session/rollout_reconstruction.rs
+        # Rust test: record_initial_history_resumed_bare_turn_context_does_not_hydrate_previous_turn_settings
+        # Contract: session.rollout_reconstruction.metadata_hydration
+        root = workspace_tempdir()
+        thread_id = str(uuid.uuid4())
+        path = root / SESSIONS_SUBDIR / "2025" / "01" / "02" / f"rollout-2025-01-02T00-00-00-{thread_id}.jsonl"
+        write_rollout(
+            path,
+            thread_id,
+            [
+                {
+                    "timestamp": "2025-01-02T00:00:00Z",
+                    "type": "turn_context",
+                    "payload": turn_context_payload(
+                        turn_id="bare-turn-context",
+                        model="previous-rollout-model",
+                        realtime_active=True,
+                    ),
+                },
+            ],
+        )
+
+        reconstruction = read_rollout_reconstruction_from_rollout(path)
+
+        self.assertEqual(reconstruction.history, ())
+        self.assertIsNone(reconstruction.previous_turn_settings)
+        self.assertIsNone(reconstruction.reference_context_item)
+
+    def test_read_rollout_reconstruction_hydrates_metadata_from_lifecycle_turn_with_missing_context_id(self):
+        # Source: rust_test_migrated
+        # Rust crate: codex-core
+        # Rust module: src/session/rollout_reconstruction.rs
+        # Rust test: record_initial_history_resumed_hydrates_previous_turn_settings_from_lifecycle_turn_with_missing_turn_context_id
+        # Contract: session.rollout_reconstruction.metadata_hydration
+        root = workspace_tempdir()
+        thread_id = str(uuid.uuid4())
+        turn_id = "lifecycle-turn"
+        path = root / SESSIONS_SUBDIR / "2025" / "01" / "02" / f"rollout-2025-01-02T00-00-00-{thread_id}.jsonl"
+        write_rollout(
+            path,
+            thread_id,
+            [
+                {
+                    "timestamp": "2025-01-02T00:00:00Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_started", "turn_id": turn_id, "model_context_window": 128000},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:01Z",
+                    "type": "event_msg",
+                    "payload": {"type": "user_message", "message": "seed"},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:02Z",
+                    "type": "turn_context",
+                    "payload": turn_context_payload(
+                        turn_id=None,
+                        model="previous-rollout-model",
+                        realtime_active=True,
+                    ),
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:03Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_complete", "turn_id": turn_id, "last_agent_message": None},
+                },
+            ],
+        )
+
+        reconstruction = read_rollout_reconstruction_from_rollout(path)
+
+        self.assertIsNotNone(reconstruction.previous_turn_settings)
+        self.assertEqual(reconstruction.previous_turn_settings.model, "previous-rollout-model")
+        self.assertEqual(reconstruction.previous_turn_settings.realtime_active, True)
+        self.assertIsNotNone(reconstruction.reference_context_item)
+        self.assertIsNone(reconstruction.reference_context_item.turn_id)
+        self.assertEqual(reconstruction.reference_context_item.model, "previous-rollout-model")
+
+    def test_read_rollout_reconstruction_rollback_keeps_metadata_in_sync_for_completed_turns(self):
+        # Source: rust_test_migrated
+        # Rust crate: codex-core
+        # Rust module: src/session/rollout_reconstruction.rs
+        # Rust test: reconstruct_history_rollback_keeps_history_and_metadata_in_sync_for_completed_turns
+        # Contract: session.rollout_reconstruction.rollback_metadata
+        root = workspace_tempdir()
+        thread_id = str(uuid.uuid4())
+        first_turn_id = "surviving-turn"
+        rolled_back_turn_id = "rolled-back-turn"
+        path = root / SESSIONS_SUBDIR / "2025" / "01" / "02" / f"rollout-2025-01-02T00-00-00-{thread_id}.jsonl"
+        write_rollout(
+            path,
+            thread_id,
+            [
+                {
+                    "timestamp": "2025-01-02T00:00:00Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_started", "turn_id": first_turn_id, "model_context_window": 128000},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:01Z",
+                    "type": "event_msg",
+                    "payload": {"type": "user_message", "message": "turn 1 user"},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:02Z",
+                    "type": "turn_context",
+                    "payload": turn_context_payload(turn_id=first_turn_id, model="surviving-model", realtime_active=True),
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:03Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "turn 1 user"}],
+                    },
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:04Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "turn 1 assistant"}],
+                    },
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:05Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_complete", "turn_id": first_turn_id, "last_agent_message": None},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:06Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_started", "turn_id": rolled_back_turn_id, "model_context_window": 128000},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:07Z",
+                    "type": "event_msg",
+                    "payload": {"type": "user_message", "message": "turn 2 user"},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:08Z",
+                    "type": "turn_context",
+                    "payload": turn_context_payload(
+                        turn_id=rolled_back_turn_id,
+                        model="rolled-back-model",
+                        realtime_active=False,
+                    ),
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:09Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "turn 2 user"}],
+                    },
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:10Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "turn 2 assistant"}],
+                    },
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:11Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_complete", "turn_id": rolled_back_turn_id, "last_agent_message": None},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:12Z",
+                    "type": "event_msg",
+                    "payload": {"type": "thread_rolled_back", "num_turns": 1},
+                },
+            ],
+        )
+
+        reconstruction = read_rollout_reconstruction_from_rollout(path)
+
+        self.assertEqual([item.content[0].text for item in reconstruction.history], ["turn 1 user", "turn 1 assistant"])
+        self.assertIsNotNone(reconstruction.previous_turn_settings)
+        self.assertEqual(reconstruction.previous_turn_settings.model, "surviving-model")
+        self.assertEqual(reconstruction.previous_turn_settings.realtime_active, True)
+        self.assertIsNotNone(reconstruction.reference_context_item)
+        self.assertEqual(reconstruction.reference_context_item.turn_id, first_turn_id)
+        self.assertEqual(reconstruction.reference_context_item.model, "surviving-model")
+
+    def test_read_rollout_reconstruction_rollback_keeps_metadata_in_sync_for_incomplete_turn(self):
+        # Source: rust_test_migrated
+        # Rust crate: codex-core
+        # Rust module: src/session/rollout_reconstruction.rs
+        # Rust test: reconstruct_history_rollback_keeps_history_and_metadata_in_sync_for_incomplete_turn
+        # Contract: session.rollout_reconstruction.rollback_metadata
+        root = workspace_tempdir()
+        thread_id = str(uuid.uuid4())
+        first_turn_id = "surviving-turn"
+        incomplete_turn_id = "incomplete-rolled-back-turn"
+        path = root / SESSIONS_SUBDIR / "2025" / "01" / "02" / f"rollout-2025-01-02T00-00-00-{thread_id}.jsonl"
+        write_rollout(
+            path,
+            thread_id,
+            [
+                {
+                    "timestamp": "2025-01-02T00:00:00Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_started", "turn_id": first_turn_id, "model_context_window": 128000},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:01Z",
+                    "type": "event_msg",
+                    "payload": {"type": "user_message", "message": "turn 1 user"},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:02Z",
+                    "type": "turn_context",
+                    "payload": turn_context_payload(turn_id=first_turn_id, model="surviving-model", realtime_active=True),
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:03Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "turn 1 user"}],
+                    },
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:04Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "turn 1 assistant"}],
+                    },
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:05Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_complete", "turn_id": first_turn_id, "last_agent_message": None},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:06Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_started", "turn_id": incomplete_turn_id, "model_context_window": 128000},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:07Z",
+                    "type": "event_msg",
+                    "payload": {"type": "user_message", "message": "turn 2 user"},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:08Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "turn 2 user"}],
+                    },
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:09Z",
+                    "type": "event_msg",
+                    "payload": {"type": "thread_rolled_back", "num_turns": 1},
+                },
+            ],
+        )
+
+        reconstruction = read_rollout_reconstruction_from_rollout(path)
+
+        self.assertEqual([item.content[0].text for item in reconstruction.history], ["turn 1 user", "turn 1 assistant"])
+        self.assertIsNotNone(reconstruction.previous_turn_settings)
+        self.assertEqual(reconstruction.previous_turn_settings.model, "surviving-model")
+        self.assertEqual(reconstruction.previous_turn_settings.realtime_active, True)
+        self.assertIsNotNone(reconstruction.reference_context_item)
+        self.assertEqual(reconstruction.reference_context_item.turn_id, first_turn_id)
+        self.assertEqual(reconstruction.reference_context_item.model, "surviving-model")
+
+    def test_read_rollout_reconstruction_rollback_skips_non_user_turns_for_metadata(self):
+        # Source: rust_test_migrated
+        # Rust crate: codex-core
+        # Rust module: src/session/rollout_reconstruction.rs
+        # Rust test: reconstruct_history_rollback_skips_non_user_turns_for_history_and_metadata
+        # Contract: session.rollout_reconstruction.rollback_boundaries
+        root = workspace_tempdir()
+        thread_id = str(uuid.uuid4())
+        first_turn_id = "surviving-turn"
+        rolled_back_turn_id = "rolled-back-user-turn"
+        standalone_turn_id = "standalone-turn"
+        path = root / SESSIONS_SUBDIR / "2025" / "01" / "02" / f"rollout-2025-01-02T00-00-00-{thread_id}.jsonl"
+        write_rollout(
+            path,
+            thread_id,
+            [
+                {
+                    "timestamp": "2025-01-02T00:00:00Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_started", "turn_id": first_turn_id, "model_context_window": 128000},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:01Z",
+                    "type": "event_msg",
+                    "payload": {"type": "user_message", "message": "turn 1 user"},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:02Z",
+                    "type": "turn_context",
+                    "payload": turn_context_payload(turn_id=first_turn_id, model="surviving-model", realtime_active=True),
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:03Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "turn 1 user"}],
+                    },
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:04Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "turn 1 assistant"}],
+                    },
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:05Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_complete", "turn_id": first_turn_id, "last_agent_message": None},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:06Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_started", "turn_id": rolled_back_turn_id, "model_context_window": 128000},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:07Z",
+                    "type": "event_msg",
+                    "payload": {"type": "user_message", "message": "turn 2 user"},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:08Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "turn 2 user"}],
+                    },
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:09Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "turn 2 assistant"}],
+                    },
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:10Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_complete", "turn_id": rolled_back_turn_id, "last_agent_message": None},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:11Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_started", "turn_id": standalone_turn_id, "model_context_window": 128000},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:12Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "standalone assistant"}],
+                    },
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:13Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_complete", "turn_id": standalone_turn_id, "last_agent_message": None},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:14Z",
+                    "type": "event_msg",
+                    "payload": {"type": "thread_rolled_back", "num_turns": 1},
+                },
+            ],
+        )
+
+        reconstruction = read_rollout_reconstruction_from_rollout(path)
+
+        self.assertEqual([item.content[0].text for item in reconstruction.history], ["turn 1 user", "turn 1 assistant"])
+        self.assertIsNotNone(reconstruction.previous_turn_settings)
+        self.assertEqual(reconstruction.previous_turn_settings.model, "surviving-model")
+        self.assertEqual(reconstruction.previous_turn_settings.realtime_active, True)
+        self.assertIsNotNone(reconstruction.reference_context_item)
+        self.assertEqual(reconstruction.reference_context_item.turn_id, first_turn_id)
+        self.assertEqual(reconstruction.reference_context_item.model, "surviving-model")
+
+    def test_read_rollout_reconstruction_rollback_clears_metadata_when_exceeding_user_turns(self):
+        # Source: rust_test_migrated
+        # Rust crate: codex-core
+        # Rust module: src/session/rollout_reconstruction.rs
+        # Rust test: reconstruct_history_rollback_clears_history_and_metadata_when_exceeding_user_turns
+        # Contract: session.rollout_reconstruction.rollback_boundaries
+        root = workspace_tempdir()
+        thread_id = str(uuid.uuid4())
+        only_turn_id = "only-turn"
+        path = root / SESSIONS_SUBDIR / "2025" / "01" / "02" / f"rollout-2025-01-02T00-00-00-{thread_id}.jsonl"
+        write_rollout(
+            path,
+            thread_id,
+            [
+                {
+                    "timestamp": "2025-01-02T00:00:00Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_started", "turn_id": only_turn_id, "model_context_window": 128000},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:01Z",
+                    "type": "event_msg",
+                    "payload": {"type": "user_message", "message": "only user"},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:02Z",
+                    "type": "turn_context",
+                    "payload": turn_context_payload(turn_id=only_turn_id, model="only-model", realtime_active=True),
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:03Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "only user"}],
+                    },
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:04Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "only assistant"}],
+                    },
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:05Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_complete", "turn_id": only_turn_id, "last_agent_message": None},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:06Z",
+                    "type": "event_msg",
+                    "payload": {"type": "thread_rolled_back", "num_turns": 99},
+                },
+            ],
+        )
+
+        reconstruction = read_rollout_reconstruction_from_rollout(path)
+
+        self.assertEqual(reconstruction.history, ())
+        self.assertIsNone(reconstruction.previous_turn_settings)
+        self.assertIsNone(reconstruction.reference_context_item)
+
+    def test_read_rollout_reconstruction_resumed_rollback_skips_only_user_turns(self):
+        # Source: rust_test_migrated
+        # Rust crate: codex-core
+        # Rust module: src/session/rollout_reconstruction.rs
+        # Rust test: record_initial_history_resumed_rollback_skips_only_user_turns
+        # Contract: session.rollout_reconstruction.resumed_rollback_metadata
+        root = workspace_tempdir()
+        thread_id = str(uuid.uuid4())
+        user_turn_id = "user-turn"
+        standalone_turn_id = "standalone-task-turn"
+        path = root / SESSIONS_SUBDIR / "2025" / "01" / "02" / f"rollout-2025-01-02T00-00-00-{thread_id}.jsonl"
+        write_rollout(
+            path,
+            thread_id,
+            [
+                {
+                    "timestamp": "2025-01-02T00:00:00Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_started", "turn_id": user_turn_id, "model_context_window": 128000},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:01Z",
+                    "type": "event_msg",
+                    "payload": {"type": "user_message", "message": "seed"},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:02Z",
+                    "type": "turn_context",
+                    "payload": turn_context_payload(turn_id=user_turn_id, model="previous-model", realtime_active=True),
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:03Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_complete", "turn_id": user_turn_id, "last_agent_message": None},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:04Z",
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "task_started",
+                        "turn_id": standalone_turn_id,
+                        "model_context_window": 128000,
+                    },
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:05Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_complete", "turn_id": standalone_turn_id, "last_agent_message": None},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:06Z",
+                    "type": "event_msg",
+                    "payload": {"type": "thread_rolled_back", "num_turns": 1},
+                },
+            ],
+        )
+
+        reconstruction = read_rollout_reconstruction_from_rollout(path)
+
+        self.assertEqual(reconstruction.history, ())
+        self.assertIsNone(reconstruction.previous_turn_settings)
+        self.assertIsNone(reconstruction.reference_context_item)
+
+    def test_read_rollout_reconstruction_rollback_drops_incomplete_user_turn_compaction_metadata(self):
+        # Source: rust_test_migrated
+        # Rust crate: codex-core
+        # Rust module: src/session/rollout_reconstruction.rs
+        # Rust test: record_initial_history_resumed_rollback_drops_incomplete_user_turn_compaction_metadata
+        # Contract: session.rollout_reconstruction.compaction_metadata
+        root = workspace_tempdir()
+        thread_id = str(uuid.uuid4())
+        previous_turn_id = "previous-turn"
+        incomplete_turn_id = "incomplete-compacted-user-turn"
+        path = root / SESSIONS_SUBDIR / "2025" / "01" / "02" / f"rollout-2025-01-02T00-00-00-{thread_id}.jsonl"
+        write_rollout(
+            path,
+            thread_id,
+            [
+                {
+                    "timestamp": "2025-01-02T00:00:00Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_started", "turn_id": previous_turn_id, "model_context_window": 128000},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:01Z",
+                    "type": "event_msg",
+                    "payload": {"type": "user_message", "message": "seed"},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:02Z",
+                    "type": "turn_context",
+                    "payload": turn_context_payload(turn_id=previous_turn_id, model="previous-model", realtime_active=True),
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:03Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_complete", "turn_id": previous_turn_id, "last_agent_message": None},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:04Z",
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "task_started",
+                        "turn_id": incomplete_turn_id,
+                        "model_context_window": 128000,
+                    },
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:05Z",
+                    "type": "event_msg",
+                    "payload": {"type": "user_message", "message": "rolled back"},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:06Z",
+                    "type": "compacted",
+                    "payload": {"message": "", "replacement_history": []},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:07Z",
+                    "type": "event_msg",
+                    "payload": {"type": "thread_rolled_back", "num_turns": 1},
+                },
+            ],
+        )
+
+        reconstruction = read_rollout_reconstruction_from_rollout(path)
+
+        self.assertEqual(reconstruction.history, ())
+        self.assertIsNotNone(reconstruction.previous_turn_settings)
+        self.assertEqual(reconstruction.previous_turn_settings.model, "previous-model")
+        self.assertEqual(reconstruction.previous_turn_settings.realtime_active, True)
+        self.assertIsNotNone(reconstruction.reference_context_item)
+        self.assertEqual(reconstruction.reference_context_item.turn_id, previous_turn_id)
+        self.assertEqual(reconstruction.reference_context_item.model, "previous-model")
+
+    def test_read_rollout_reconstruction_does_not_seed_reference_context_item_after_compaction(self):
+        # Source: rust_test_migrated
+        # Rust crate: codex-core
+        # Rust module: src/session/rollout_reconstruction.rs
+        # Rust test: record_initial_history_resumed_does_not_seed_reference_context_item_after_compaction
+        # Contract: session.rollout_reconstruction.reference_context_seeding
+        root = workspace_tempdir()
+        thread_id = str(uuid.uuid4())
+        path = root / SESSIONS_SUBDIR / "2025" / "01" / "02" / f"rollout-2025-01-02T00-00-00-{thread_id}.jsonl"
+        write_rollout(
+            path,
+            thread_id,
+            [
+                {
+                    "timestamp": "2025-01-02T00:00:00Z",
+                    "type": "turn_context",
+                    "payload": turn_context_payload(
+                        turn_id="bare-turn-context",
+                        model="previous-model",
+                        realtime_active=True,
+                    ),
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:01Z",
+                    "type": "compacted",
+                    "payload": {"message": "", "replacement_history": []},
+                },
+            ],
+        )
+
+        reconstruction = read_rollout_reconstruction_from_rollout(path)
+
+        self.assertEqual(reconstruction.history, ())
+        self.assertIsNone(reconstruction.previous_turn_settings)
+        self.assertIsNone(reconstruction.reference_context_item)
+
+    def test_read_rollout_reconstruction_legacy_compaction_without_replacement_history_preserves_user_summary(self):
+        # Source: rust_test_migrated
+        # Rust crate: codex-core
+        # Rust module: src/session/rollout_reconstruction.rs
+        # Rust test: reconstruct_history_legacy_compaction_without_replacement_history_does_not_inject_current_initial_context
+        # Contract: session.rollout_reconstruction.legacy_compaction
+        root = workspace_tempdir()
+        thread_id = str(uuid.uuid4())
+        path = root / SESSIONS_SUBDIR / "2025" / "01" / "02" / f"rollout-2025-01-02T00-00-00-{thread_id}.jsonl"
+        write_rollout(
+            path,
+            thread_id,
+            [
+                {
+                    "timestamp": "2025-01-02T00:00:00Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "before compact"}],
+                    },
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:01Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "assistant reply"}],
+                    },
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:02Z",
+                    "type": "compacted",
+                    "payload": {"message": "legacy summary", "replacement_history": None},
+                },
+            ],
+        )
+
+        reconstruction = read_rollout_reconstruction_from_rollout(path)
+
+        self.assertEqual([item.role for item in reconstruction.history], ["user", "user"])
+        self.assertEqual([item.content[0].text for item in reconstruction.history], ["before compact", "legacy summary"])
+        self.assertIsNone(reconstruction.reference_context_item)
+
+    def test_read_rollout_reconstruction_legacy_compaction_without_replacement_history_clears_later_reference_context(self):
+        # Source: rust_test_migrated
+        # Rust crate: codex-core
+        # Rust module: src/session/rollout_reconstruction.rs
+        # Rust test: reconstruct_history_legacy_compaction_without_replacement_history_clears_later_reference_context_item
+        # Contract: session.rollout_reconstruction.legacy_compaction
+        root = workspace_tempdir()
+        thread_id = str(uuid.uuid4())
+        current_turn_id = "current-turn"
+        path = root / SESSIONS_SUBDIR / "2025" / "01" / "02" / f"rollout-2025-01-02T00-00-00-{thread_id}.jsonl"
+        write_rollout(
+            path,
+            thread_id,
+            [
+                {
+                    "timestamp": "2025-01-02T00:00:00Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "before compact"}],
+                    },
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:01Z",
+                    "type": "compacted",
+                    "payload": {"message": "legacy summary", "replacement_history": None},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:02Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_started", "turn_id": current_turn_id, "model_context_window": 128000},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:03Z",
+                    "type": "event_msg",
+                    "payload": {"type": "user_message", "message": "after legacy compact"},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:04Z",
+                    "type": "turn_context",
+                    "payload": turn_context_payload(turn_id=current_turn_id, model="current-model", realtime_active=True),
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:05Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_complete", "turn_id": current_turn_id, "last_agent_message": None},
+                },
+            ],
+        )
+
+        reconstruction = read_rollout_reconstruction_from_rollout(path)
+
+        self.assertIsNone(reconstruction.reference_context_item)
+
+    def test_read_rollout_reconstruction_turn_context_after_compaction_reestablishes_reference_context(self):
+        # Source: rust_test_migrated
+        # Rust crate: codex-core
+        # Rust module: src/session/rollout_reconstruction.rs
+        # Rust test: record_initial_history_resumed_turn_context_after_compaction_reestablishes_reference_context_item
+        # Contract: session.rollout_reconstruction.reference_context_reestablish
+        root = workspace_tempdir()
+        thread_id = str(uuid.uuid4())
+        previous_turn_id = "previous-turn"
+        path = root / SESSIONS_SUBDIR / "2025" / "01" / "02" / f"rollout-2025-01-02T00-00-00-{thread_id}.jsonl"
+        write_rollout(
+            path,
+            thread_id,
+            [
+                {
+                    "timestamp": "2025-01-02T00:00:00Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_started", "turn_id": previous_turn_id, "model_context_window": 128000},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:01Z",
+                    "type": "event_msg",
+                    "payload": {"type": "user_message", "message": "seed"},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:02Z",
+                    "type": "compacted",
+                    "payload": {"message": "", "replacement_history": []},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:03Z",
+                    "type": "turn_context",
+                    "payload": turn_context_payload(
+                        turn_id=previous_turn_id,
+                        model="previous-rollout-model",
+                        realtime_active=True,
+                    ),
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:04Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_complete", "turn_id": previous_turn_id, "last_agent_message": None},
+                },
+            ],
+        )
+
+        reconstruction = read_rollout_reconstruction_from_rollout(path)
+
+        self.assertIsNotNone(reconstruction.previous_turn_settings)
+        self.assertEqual(reconstruction.previous_turn_settings.model, "previous-rollout-model")
+        self.assertEqual(reconstruction.previous_turn_settings.realtime_active, True)
+        self.assertIsNotNone(reconstruction.reference_context_item)
+        self.assertEqual(reconstruction.reference_context_item.turn_id, previous_turn_id)
+        self.assertEqual(reconstruction.reference_context_item.model, "previous-rollout-model")
+
+    def test_read_rollout_reconstruction_aborted_turn_without_id_clears_active_turn_for_compaction_accounting(self):
+        # Source: rust_test_migrated
+        # Rust crate: codex-core
+        # Rust module: src/session/rollout_reconstruction.rs
+        # Rust test: record_initial_history_resumed_aborted_turn_without_id_clears_active_turn_for_compaction_accounting
+        # Contract: session.rollout_reconstruction.aborted_turn_accounting
+        root = workspace_tempdir()
+        thread_id = str(uuid.uuid4())
+        previous_turn_id = "previous-turn"
+        aborted_turn_id = "aborted-turn-without-id"
+        path = root / SESSIONS_SUBDIR / "2025" / "01" / "02" / f"rollout-2025-01-02T00-00-00-{thread_id}.jsonl"
+        write_rollout(
+            path,
+            thread_id,
+            [
+                {
+                    "timestamp": "2025-01-02T00:00:00Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_started", "turn_id": previous_turn_id, "model_context_window": 128000},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:01Z",
+                    "type": "event_msg",
+                    "payload": {"type": "user_message", "message": "seed"},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:02Z",
+                    "type": "turn_context",
+                    "payload": turn_context_payload(turn_id=previous_turn_id, model="previous-rollout-model", realtime_active=True),
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:03Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_complete", "turn_id": previous_turn_id, "last_agent_message": None},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:04Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_started", "turn_id": aborted_turn_id, "model_context_window": 128000},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:05Z",
+                    "type": "event_msg",
+                    "payload": {"type": "user_message", "message": "aborted"},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:06Z",
+                    "type": "event_msg",
+                    "payload": {"type": "turn_aborted", "turn_id": None, "reason": "interrupted"},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:07Z",
+                    "type": "compacted",
+                    "payload": {"message": "", "replacement_history": []},
+                },
+            ],
+        )
+
+        reconstruction = read_rollout_reconstruction_from_rollout(path)
+
+        self.assertIsNotNone(reconstruction.previous_turn_settings)
+        self.assertEqual(reconstruction.previous_turn_settings.model, "previous-rollout-model")
+        self.assertEqual(reconstruction.previous_turn_settings.realtime_active, True)
+        self.assertIsNone(reconstruction.reference_context_item)
+
+    def test_read_rollout_reconstruction_unmatched_abort_preserves_active_turn_for_later_context(self):
+        # Source: rust_test_migrated
+        # Rust crate: codex-core
+        # Rust module: src/session/rollout_reconstruction.rs
+        # Rust test: record_initial_history_resumed_unmatched_abort_preserves_active_turn_for_later_turn_context
+        # Contract: session.rollout_reconstruction.aborted_turn_accounting
+        root = workspace_tempdir()
+        thread_id = str(uuid.uuid4())
+        previous_turn_id = "previous-turn"
+        current_turn_id = "current-turn"
+        unmatched_abort_turn_id = "other-turn"
+        path = root / SESSIONS_SUBDIR / "2025" / "01" / "02" / f"rollout-2025-01-02T00-00-00-{thread_id}.jsonl"
+        write_rollout(
+            path,
+            thread_id,
+            [
+                {
+                    "timestamp": "2025-01-02T00:00:00Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_started", "turn_id": previous_turn_id, "model_context_window": 128000},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:01Z",
+                    "type": "event_msg",
+                    "payload": {"type": "user_message", "message": "seed"},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:02Z",
+                    "type": "turn_context",
+                    "payload": turn_context_payload(turn_id=previous_turn_id, model="previous-model", realtime_active=True),
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:03Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_complete", "turn_id": previous_turn_id, "last_agent_message": None},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:04Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_started", "turn_id": current_turn_id, "model_context_window": 128000},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:05Z",
+                    "type": "event_msg",
+                    "payload": {"type": "user_message", "message": "current"},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:06Z",
+                    "type": "event_msg",
+                    "payload": {"type": "turn_aborted", "turn_id": unmatched_abort_turn_id, "reason": "interrupted"},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:07Z",
+                    "type": "turn_context",
+                    "payload": turn_context_payload(turn_id=current_turn_id, model="current-rollout-model", realtime_active=True),
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:08Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_complete", "turn_id": current_turn_id, "last_agent_message": None},
+                },
+            ],
+        )
+
+        reconstruction = read_rollout_reconstruction_from_rollout(path)
+
+        self.assertIsNotNone(reconstruction.previous_turn_settings)
+        self.assertEqual(reconstruction.previous_turn_settings.model, "current-rollout-model")
+        self.assertEqual(reconstruction.previous_turn_settings.realtime_active, True)
+        self.assertIsNotNone(reconstruction.reference_context_item)
+        self.assertEqual(reconstruction.reference_context_item.turn_id, current_turn_id)
+        self.assertEqual(reconstruction.reference_context_item.model, "current-rollout-model")
+
+    def test_read_rollout_reconstruction_trailing_incomplete_turn_compaction_clears_reference_context(self):
+        # Source: rust_test_migrated
+        # Rust crate: codex-core
+        # Rust module: src/session/rollout_reconstruction.rs
+        # Rust test: record_initial_history_resumed_trailing_incomplete_turn_compaction_clears_reference_context_item
+        # Contract: session.rollout_reconstruction.trailing_incomplete_turn
+        root = workspace_tempdir()
+        thread_id = str(uuid.uuid4())
+        previous_turn_id = "previous-turn"
+        incomplete_turn_id = "trailing-incomplete-turn"
+        path = root / SESSIONS_SUBDIR / "2025" / "01" / "02" / f"rollout-2025-01-02T00-00-00-{thread_id}.jsonl"
+        write_rollout(
+            path,
+            thread_id,
+            [
+                {
+                    "timestamp": "2025-01-02T00:00:00Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_started", "turn_id": previous_turn_id, "model_context_window": 128000},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:01Z",
+                    "type": "event_msg",
+                    "payload": {"type": "user_message", "message": "seed"},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:02Z",
+                    "type": "turn_context",
+                    "payload": turn_context_payload(turn_id=previous_turn_id, model="previous-rollout-model", realtime_active=True),
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:03Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_complete", "turn_id": previous_turn_id, "last_agent_message": None},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:04Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_started", "turn_id": incomplete_turn_id, "model_context_window": 128000},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:05Z",
+                    "type": "event_msg",
+                    "payload": {"type": "user_message", "message": "incomplete"},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:06Z",
+                    "type": "compacted",
+                    "payload": {"message": "", "replacement_history": []},
+                },
+            ],
+        )
+
+        reconstruction = read_rollout_reconstruction_from_rollout(path)
+
+        self.assertIsNotNone(reconstruction.previous_turn_settings)
+        self.assertEqual(reconstruction.previous_turn_settings.model, "previous-rollout-model")
+        self.assertEqual(reconstruction.previous_turn_settings.realtime_active, True)
+        self.assertIsNone(reconstruction.reference_context_item)
+
+    def test_read_rollout_reconstruction_trailing_incomplete_turn_preserves_turn_context_item(self):
+        # Source: rust_test_migrated
+        # Rust crate: codex-core
+        # Rust module: src/session/rollout_reconstruction.rs
+        # Rust test: record_initial_history_resumed_trailing_incomplete_turn_preserves_turn_context_item
+        # Contract: session.rollout_reconstruction.trailing_incomplete_turn
+        root = workspace_tempdir()
+        thread_id = str(uuid.uuid4())
+        current_turn_id = "current-turn"
+        path = root / SESSIONS_SUBDIR / "2025" / "01" / "02" / f"rollout-2025-01-02T00-00-00-{thread_id}.jsonl"
+        write_rollout(
+            path,
+            thread_id,
+            [
+                {
+                    "timestamp": "2025-01-02T00:00:00Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_started", "turn_id": current_turn_id, "model_context_window": 128000},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:01Z",
+                    "type": "event_msg",
+                    "payload": {"type": "user_message", "message": "incomplete"},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:02Z",
+                    "type": "turn_context",
+                    "payload": turn_context_payload(turn_id=current_turn_id, model="current-rollout-model", realtime_active=True),
+                },
+            ],
+        )
+
+        reconstruction = read_rollout_reconstruction_from_rollout(path)
+
+        self.assertIsNotNone(reconstruction.previous_turn_settings)
+        self.assertEqual(reconstruction.previous_turn_settings.model, "current-rollout-model")
+        self.assertEqual(reconstruction.previous_turn_settings.realtime_active, True)
+        self.assertIsNotNone(reconstruction.reference_context_item)
+        self.assertEqual(reconstruction.reference_context_item.turn_id, current_turn_id)
+        self.assertEqual(reconstruction.reference_context_item.model, "current-rollout-model")
+
+    def test_read_rollout_reconstruction_replaced_incomplete_compacted_turn_clears_reference_context(self):
+        # Source: rust_test_migrated
+        # Rust crate: codex-core
+        # Rust module: src/session/rollout_reconstruction.rs
+        # Rust test: record_initial_history_resumed_replaced_incomplete_compacted_turn_clears_reference_context_item
+        # Contract: session.rollout_reconstruction.replaced_incomplete_compacted_turn
+        root = workspace_tempdir()
+        thread_id = str(uuid.uuid4())
+        previous_turn_id = "previous-turn"
+        compacted_incomplete_turn_id = "compacted-incomplete-turn"
+        replacing_turn_id = "replacing-turn"
+        path = root / SESSIONS_SUBDIR / "2025" / "01" / "02" / f"rollout-2025-01-02T00-00-00-{thread_id}.jsonl"
+        write_rollout(
+            path,
+            thread_id,
+            [
+                {
+                    "timestamp": "2025-01-02T00:00:00Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_started", "turn_id": previous_turn_id, "model_context_window": 128000},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:01Z",
+                    "type": "event_msg",
+                    "payload": {"type": "user_message", "message": "seed"},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:02Z",
+                    "type": "turn_context",
+                    "payload": turn_context_payload(turn_id=previous_turn_id, model="previous-rollout-model", realtime_active=True),
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:03Z",
+                    "type": "event_msg",
+                    "payload": {"type": "task_complete", "turn_id": previous_turn_id, "last_agent_message": None},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:04Z",
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "task_started",
+                        "turn_id": compacted_incomplete_turn_id,
+                        "model_context_window": 128000,
+                    },
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:05Z",
+                    "type": "event_msg",
+                    "payload": {"type": "user_message", "message": "compacted"},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:06Z",
+                    "type": "compacted",
+                    "payload": {"message": "", "replacement_history": []},
+                },
+                {
+                    "timestamp": "2025-01-02T00:00:07Z",
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "task_started",
+                        "turn_id": replacing_turn_id,
+                        "model_context_window": 128000,
+                    },
+                },
+            ],
+        )
+
+        reconstruction = read_rollout_reconstruction_from_rollout(path)
+
+        self.assertIsNotNone(reconstruction.previous_turn_settings)
+        self.assertEqual(reconstruction.previous_turn_settings.model, "previous-rollout-model")
+        self.assertEqual(reconstruction.previous_turn_settings.realtime_active, True)
+        self.assertIsNone(reconstruction.reference_context_item)
 
     def test_append_turn_to_rollout_supports_resume_append_file_and_image_evidence(self):
         root = workspace_tempdir()

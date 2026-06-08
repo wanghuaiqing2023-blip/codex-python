@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from pycodex.core import (
+    AppsInstructions,
     PluginCapabilitySummary,
     render_apps_section,
     render_explicit_plugin_instructions,
@@ -28,10 +29,15 @@ class AppPluginRenderingTests(unittest.TestCase):
         self.assertIsNone(render_apps_section((connector("calendar", is_accessible=False, is_enabled=True),)))
 
     def test_render_apps_section_wraps_accessible_enabled_apps(self) -> None:
-        rendered = render_apps_section((connector("calendar", is_accessible=True, is_enabled=True),))
+        connectors = (connector("calendar", is_accessible=True, is_enabled=True),)
+        rendered = render_apps_section(connectors)
+        instructions = AppsInstructions.from_connectors(connectors)
 
         self.assertIsNotNone(rendered)
+        self.assertIsNotNone(instructions)
         assert rendered is not None
+        assert instructions is not None
+        self.assertEqual(rendered, instructions.render())
         self.assertTrue(rendered.startswith(APPS_INSTRUCTIONS_OPEN_TAG))
         self.assertIn("## Apps (Connectors)", rendered)
         self.assertTrue(rendered.endswith(APPS_INSTRUCTIONS_CLOSE_TAG))

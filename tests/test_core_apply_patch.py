@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 from pycodex.apply_patch import (
     APPLY_PATCH_FREEFORM_DESCRIPTION,
+    APPLY_PATCH_ARGUMENT_DIFF_BUFFER_INTERVAL,
     APPLY_PATCH_LARK_GRAMMAR,
     APPLY_PATCH_TOOL_NAME,
     ApplyPatchAction,
@@ -21,10 +22,12 @@ from pycodex.apply_patch import (
     MaybeApplyPatch,
     StreamingPatchParser,
     UpdateFileChunk,
+    build_apply_patch_request,
     convert_apply_patch_hunks_to_protocol,
     convert_apply_patch_to_protocol,
     create_apply_patch_freeform_tool,
     derive_new_contents_from_chunks,
+    file_paths_for_action,
     maybe_parse_apply_patch,
     maybe_parse_apply_patch_verified,
     parse_patch,
@@ -32,6 +35,7 @@ from pycodex.apply_patch import (
     resolve_apply_patch_invocation,
     unified_diff_from_chunks,
     verify_apply_patch_args,
+    write_permissions_for_paths,
 )
 from pycodex.core import (
     ApplyPatchToolOutput,
@@ -48,6 +52,7 @@ from pycodex.protocol import (
     FileSystemPath,
     FileSystemPermissions,
     FileSystemSandboxEntry,
+    FileSystemSandboxPolicy,
     GranularApprovalConfig,
     PermissionProfile,
     ToolName,
@@ -149,6 +154,8 @@ class CoreApplyPatchTests(unittest.TestCase):
             ApplyPatchFileChange(type="chmod")
 
     def test_create_apply_patch_freeform_tool_matches_default_grammar(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/apply_patch_spec.rs
+        # Rust test: create_apply_patch_freeform_tool_matches_expected_spec
         tool = create_apply_patch_freeform_tool(False)
 
         self.assertEqual(
@@ -166,6 +173,8 @@ class CoreApplyPatchTests(unittest.TestCase):
         )
 
     def test_create_apply_patch_freeform_tool_can_accept_environment_id(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/apply_patch_spec.rs
+        # Rust test: create_apply_patch_freeform_tool_includes_environment_id_when_requested
         definition = create_apply_patch_freeform_tool(True).to_mapping()["format"]["definition"]
 
         self.assertIn(
@@ -237,6 +246,84 @@ class CoreApplyPatchTests(unittest.TestCase):
         self.assertEqual(event.payload.call_id, "patch-1")
         self.assertEqual(event.payload.changes, {Path("streamed.txt"): FileChange.add("hello\n")})
         self.assertIsNone(consumer.finish())
+
+    def test_apply_patch_argument_diff_consumer_streams_incremental_changes_like_rust(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/apply_patch.rs
+        # Rust test: apply_patch_tests.rs::diff_consumer_streams_apply_patch_changes.
+        class Features:
+            def enabled(self, feature) -> bool:
+                return feature is Feature.APPLY_PATCH_STREAMING_EVENTS
+
+        turn = SimpleNamespace(features=Features())
+        consumer = ApplyPatchArgumentDiffConsumer()
+
+        self.assertIsNone(consumer.consume_diff(turn, "call-1", "*** Begin Patch\n"))
+
+        event = consumer.consume_diff(
+            turn,
+            "call-1",
+            "*** Add File: hello.txt\n+hello",
+        )
+        self.assertIsNotNone(event)
+        self.assertEqual(event.payload.call_id, "call-1")
+        self.assertEqual(event.payload.changes, {Path("hello.txt"): FileChange.add("")})
+
+        self.assertIsNone(consumer.consume_diff(turn, "call-1", "\n+world"))
+        self.assertIsNone(consumer.consume_diff(turn, "call-1", "\n*** End Patch"))
+
+        event = consumer.finish()
+
+        self.assertIsNotNone(event)
+        self.assertEqual(event.payload.call_id, "call-1")
+        self.assertEqual(event.payload.changes, {Path("hello.txt"): FileChange.add("hello\nworld\n")})
+
+    def test_apply_patch_argument_diff_consumer_streams_environment_header_like_rust(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/apply_patch.rs
+        # Rust test: apply_patch_tests.rs::diff_consumer_streams_apply_patch_changes_with_environment_header.
+        class Features:
+            def enabled(self, feature) -> bool:
+                return feature is Feature.APPLY_PATCH_STREAMING_EVENTS
+
+        turn = SimpleNamespace(features=Features())
+        consumer = ApplyPatchArgumentDiffConsumer()
+
+        self.assertIsNone(
+            consumer.consume_diff(
+                turn,
+                "call-1",
+                "*** Begin Patch\n*** Environment ID: remote\n",
+            )
+        )
+        event = consumer.consume_diff(
+            turn,
+            "call-1",
+            "*** Add File: hello.txt\n+hello",
+        )
+
+        self.assertIsNotNone(event)
+        self.assertEqual(event.payload.changes, {Path("hello.txt"): FileChange.add("")})
+
+    def test_apply_patch_argument_diff_consumer_sends_next_update_after_buffer_interval(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/apply_patch.rs
+        # Rust test: apply_patch_tests.rs::diff_consumer_sends_next_update_after_buffer_interval.
+        class Features:
+            def enabled(self, feature) -> bool:
+                return feature is Feature.APPLY_PATCH_STREAMING_EVENTS
+
+        turn = SimpleNamespace(features=Features())
+        consumer = ApplyPatchArgumentDiffConsumer()
+        consumer.consume_diff(turn, "call-1", "*** Begin Patch\n")
+        first = consumer.consume_diff(turn, "call-1", "*** Add File: hello.txt\n+hello")
+
+        self.assertIsNotNone(first)
+        self.assertEqual(first.payload.changes, {Path("hello.txt"): FileChange.add("")})
+
+        assert consumer.last_sent_at is not None
+        consumer.last_sent_at -= APPLY_PATCH_ARGUMENT_DIFF_BUFFER_INTERVAL
+        second = consumer.consume_diff(turn, "call-1", "\n+world")
+
+        self.assertIsNotNone(second)
+        self.assertEqual(second.payload.changes, {Path("hello.txt"): FileChange.add("hello\n")})
 
     def test_apply_patch_argument_diff_consumer_respects_streaming_feature_gate(self) -> None:
         consumer = ApplyPatchArgumentDiffConsumer()
@@ -522,6 +609,106 @@ class CoreApplyPatchTests(unittest.TestCase):
                 "Success. Updated the following files:\n"
                 f"M {root / 'old.txt'}\n",
             )
+
+    def test_file_paths_for_action_includes_move_destination_like_rust(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/apply_patch.rs
+        # Rust test: apply_patch_tests.rs::approval_keys_include_move_destination.
+        root = self.make_workspace_dir()
+        action = ApplyPatchAction(
+            {
+                root / "old" / "name.txt": ApplyPatchFileChange.update(
+                    "@@\n-old\n+new\n",
+                    move_path=root / "renamed" / "dir" / "name.txt",
+                    new_content="new\n",
+                    old_content="old\n",
+                )
+            },
+            cwd=root,
+        )
+
+        self.assertEqual(
+            file_paths_for_action(action),
+            (
+                root / "old" / "name.txt",
+                root / "renamed" / "dir" / "name.txt",
+            ),
+        )
+
+    def test_write_permissions_for_paths_match_rust_workspace_boundaries(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/apply_patch.rs
+        # Rust tests: write_permissions_for_paths_skip_dirs_already_writable_under_workspace_root
+        # and write_permissions_for_paths_keep_dirs_outside_workspace_root.
+        root = self.make_workspace_dir()
+        workspace = root / "workspace"
+        outside = root / "outside"
+        workspace.mkdir()
+        outside.mkdir()
+        sandbox_policy = FileSystemSandboxPolicy.workspace_write(
+            (),
+            exclude_tmpdir_env_var=True,
+            exclude_slash_tmp=True,
+        )
+
+        self.assertIsNone(
+            write_permissions_for_paths(
+                [workspace / "nested" / "file.txt"],
+                sandbox_policy,
+                workspace,
+            )
+        )
+
+        permissions = write_permissions_for_paths(
+            [outside / "file.txt"],
+            sandbox_policy,
+            workspace,
+        )
+
+        self.assertIsNotNone(permissions)
+        entries = permissions.file_system.entries
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0].path.path, outside)
+        self.assertEqual(entries[0].access, FileSystemAccessMode.WRITE)
+
+    def test_build_apply_patch_request_shapes_runtime_request_like_rust_handler(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/apply_patch.rs
+        # Behavior anchor: ApplyPatchHandler converts a verified action into
+        # ApplyPatchRequest with file paths, protocol changes, and effective
+        # additional permissions before runtime/orchestrator handoff.
+        root = self.make_workspace_dir()
+        workspace = root / "workspace"
+        outside = root / "outside"
+        workspace.mkdir()
+        outside.mkdir()
+        action = ApplyPatchAction(
+            {
+                outside / "created.txt": ApplyPatchFileChange.add("hello\n"),
+            },
+            cwd=workspace,
+            patch="*** Begin Patch\n*** Add File: created.txt\n+hello\n*** End Patch",
+        )
+        turn_environment = SimpleNamespace(environment_id="local", cwd=workspace)
+
+        request = build_apply_patch_request(
+            turn_environment=turn_environment,
+            action=action,
+            file_system_sandbox_policy=FileSystemSandboxPolicy.workspace_write(
+                (),
+                exclude_tmpdir_env_var=True,
+                exclude_slash_tmp=True,
+            ),
+            cwd=workspace,
+        )
+
+        self.assertIs(request.turn_environment, turn_environment)
+        self.assertEqual(request.action, action)
+        self.assertEqual(request.file_paths, (outside / "created.txt",))
+        self.assertEqual(request.changes, {outside / "created.txt": FileChange.add("hello\n")})
+        self.assertEqual(request.exec_approval_requirement.type, "skip")
+        self.assertFalse(request.permissions_preapproved)
+        self.assertIsNotNone(request.additional_permissions)
+        entries = request.additional_permissions.file_system.entries
+        self.assertEqual(entries[0].path.path, outside)
+        self.assertEqual(entries[0].access, FileSystemAccessMode.WRITE)
 
     def test_parse_patch_parses_multiple_hunk_variants(self) -> None:
         self.assertEqual(

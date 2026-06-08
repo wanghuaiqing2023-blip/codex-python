@@ -23,6 +23,15 @@ class AsyncConfig:
         }
 
 
+class SyncConfig:
+    def __init__(self) -> None:
+        self.plugins_manager = None
+
+    def to_mcp_config(self, plugins_manager: object) -> dict[str, object]:
+        self.plugins_manager = plugins_manager
+        return {"servers": {"local": {"command": "run"}}}
+
+
 class McpManagerTests(unittest.IsolatedAsyncioTestCase):
     async def test_manager_delegates_through_config_to_mcp_config(self) -> None:
         config = AsyncConfig()
@@ -46,6 +55,28 @@ class McpManagerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await manager.configured_servers({"servers": {}}), {"a": {"kind": "configured"}})
         self.assertEqual(await manager.effective_servers({"servers": {}}, auth="token"), {"a": {"auth": "token"}})
         self.assertEqual(await manager.tool_plugin_provenance({"servers": {}}), {"a": {"plugin": "p"}})
+
+    async def test_manager_accepts_sync_to_mcp_config(self) -> None:
+        config = SyncConfig()
+        plugins_manager = {"plugins": ["p"]}
+        manager = McpManager(plugins_manager=plugins_manager)
+
+        self.assertEqual(
+            await manager.configured_servers(config),
+            {"local": {"command": "run"}},
+        )
+        self.assertIs(config.plugins_manager, plugins_manager)
+
+    async def test_manager_rejects_non_mapping_delegate_server_results(self) -> None:
+        manager = McpManager(
+            plugins_manager=None,
+            delegates=McpDelegates(
+                configured_mcp_servers=lambda _cfg: ["not", "a", "mapping"],
+            ),
+        )
+
+        with self.assertRaisesRegex(TypeError, "configured_mcp_servers must be a mapping"):
+            await manager.configured_servers({"servers": {}})
 
 
 class McpPureHelpersTests(unittest.TestCase):
