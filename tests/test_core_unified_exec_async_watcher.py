@@ -2,7 +2,9 @@ import unittest
 
 from pycodex.core.unified_exec import (
     HeadTailBuffer,
+    MAX_EXEC_OUTPUT_DELTAS_PER_CALL,
     UnifiedExecEndEventPlan,
+    should_emit_exec_output_delta,
     split_valid_utf8_prefix_with_max,
     unified_exec_failed_end_event_plan,
     unified_exec_success_end_event_plan,
@@ -45,6 +47,14 @@ class CoreUnifiedExecAsyncWatcherTests(unittest.TestCase):
 
         self.assertEqual(first, bytes([0xFF]))
         self.assertEqual(buffer, bytearray(b"ab"))
+
+    def test_output_delta_emission_stops_at_upstream_call_cap(self) -> None:
+        # Rust source: codex-rs/core/src/unified_exec/async_watcher.rs
+        # Behavior anchor: process_chunk stops emitting ExecCommandOutputDelta
+        # once MAX_EXEC_OUTPUT_DELTAS_PER_CALL has already been emitted.
+        self.assertTrue(should_emit_exec_output_delta(0))
+        self.assertTrue(should_emit_exec_output_delta(MAX_EXEC_OUTPUT_DELTAS_PER_CALL - 1))
+        self.assertFalse(should_emit_exec_output_delta(MAX_EXEC_OUTPUT_DELTAS_PER_CALL))
 
     def test_success_end_event_uses_transcript_as_primary_output(self) -> None:
         # Rust source: codex-rs/core/src/unified_exec/async_watcher.rs

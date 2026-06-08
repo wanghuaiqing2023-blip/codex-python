@@ -37,8 +37,19 @@ class SkillMetadata:
     plugin_id: str | None = None
 
 
+@dataclass(frozen=True)
+class SkillError:
+    path: Path
+    message: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.path, Path):
+            object.__setattr__(self, "path", Path(self.path))
+
+
 __all__ = [
     "SkillDependencies",
+    "SkillError",
     "SkillMetadata",
     "SkillToolDependency",
 ]

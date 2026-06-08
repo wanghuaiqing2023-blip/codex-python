@@ -13,7 +13,13 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from pycodex.core.context import render_available_skills_body
+from pycodex.core.context import (
+    SKILLS_HOW_TO_USE_WITH_ABSOLUTE_PATHS,
+    SKILLS_HOW_TO_USE_WITH_ALIASES,
+    SKILLS_INTRO_WITH_ABSOLUTE_PATHS,
+    SKILLS_INTRO_WITH_ALIASES,
+    render_available_skills_body,
+)
 from pycodex.core_skills.model import SkillMetadata
 from pycodex.core_skills.invocation_utils import SkillLoadOutcome
 
@@ -74,6 +80,20 @@ class SkillRenderReport:
         if self.total_count == 0 or self.truncated_description_chars == 0:
             return 0
         return (self.truncated_description_chars + self.total_count - 1) // self.total_count
+
+
+@dataclass(frozen=True)
+class SkillRenderSideEffects:
+    kind: str
+    session_telemetry: Any | None = None
+
+    @classmethod
+    def none(cls) -> "SkillRenderSideEffects":
+        return cls("none")
+
+    @classmethod
+    def thread_start(cls, session_telemetry: Any) -> "SkillRenderSideEffects":
+        return cls("thread_start", session_telemetry)
 
 
 @dataclass(frozen=True)
@@ -601,11 +621,16 @@ __all__ = [
     "SKILL_DESCRIPTION_TRUNCATION_WARNING_THRESHOLD_CHARS",
     "SKILL_DESCRIPTIONS_REMOVED_WARNING_PREFIX",
     "SKILL_METADATA_CONTEXT_WINDOW_PERCENT",
+    "SKILLS_HOW_TO_USE_WITH_ABSOLUTE_PATHS",
+    "SKILLS_HOW_TO_USE_WITH_ALIASES",
+    "SKILLS_INTRO_WITH_ABSOLUTE_PATHS",
+    "SKILLS_INTRO_WITH_ALIASES",
     "SkillLine",
     "SkillMetadataBudget",
     "SkillMetadataBudgetKind",
     "SkillPathAliases",
     "SkillRenderReport",
+    "SkillRenderSideEffects",
     "alias_root_for_skill_root",
     "aliased_metadata_overhead_cost",
     "aliased_render_is_better",
@@ -629,6 +654,7 @@ __all__ = [
     "plugin_version_skill_counts_for_skill_roots",
     "render_lines_with_description_budget",
     "render_minimum_skill_lines_until_budget",
+    "render_available_skills_body",
     "render_skill_path_with_aliases",
     "render_skill_lines_from_lines",
     "sum_description_truncation",

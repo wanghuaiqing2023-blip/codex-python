@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import difflib
 import shlex
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -29,6 +30,7 @@ from pycodex.protocol import (
     FileSystemPath,
     FileSystemPermissions,
     FileSystemSandboxEntry,
+    FileSystemSandboxPolicy,
     GranularApprovalConfig,
     PatchApplyUpdatedEvent,
     approval_policy_display_value,
@@ -38,6 +40,7 @@ from pycodex.protocol import ToolName
 JsonValue = Any
 
 APPLY_PATCH_TOOL_NAME = "apply_patch"
+APPLY_PATCH_ARGUMENT_DIFF_BUFFER_INTERVAL = 0.5
 APPLY_PATCH_FREEFORM_DESCRIPTION = (
     "Use the `apply_patch` tool to edit files. This is a FREEFORM tool, so do "
     "not wrap the patch in JSON."
@@ -786,6 +789,8 @@ class ApplyPatchHandler(CoreToolRuntime):
 @dataclass
 class ApplyPatchArgumentDiffConsumer:
     parser: StreamingPatchParser = field(default_factory=StreamingPatchParser)
+    last_sent_at: float | None = None
+    pending: PatchApplyUpdatedEvent | None = None
 
     def consume_diff(self, turn: Any, call_id: str, delta: str) -> EventMsg | None:
         if not _apply_patch_streaming_events_enabled(turn):
@@ -796,16 +801,25 @@ class ApplyPatchArgumentDiffConsumer:
             return None
         if not hunks:
             return None
-        return EventMsg.with_payload(
-            "patch_apply_updated",
-            PatchApplyUpdatedEvent(call_id, convert_apply_patch_hunks_to_protocol(hunks)),
-        )
+        event = PatchApplyUpdatedEvent(call_id, convert_apply_patch_hunks_to_protocol(hunks))
+        now = time.monotonic()
+        if self.last_sent_at is not None and now - self.last_sent_at < APPLY_PATCH_ARGUMENT_DIFF_BUFFER_INTERVAL:
+            self.pending = event
+            return None
+        self.pending = None
+        self.last_sent_at = now
+        return EventMsg.with_payload("patch_apply_updated", event)
 
     def finish(self) -> EventMsg | None:
         try:
             self.parser.finish()
         except ApplyPatchParseError as error:
             raise FunctionCallError.respond_to_model(f"failed to parse apply_patch: {error}") from error
+        event = self.pending
+        self.pending = None
+        if event is not None:
+            self.last_sent_at = time.monotonic()
+            return EventMsg.with_payload("patch_apply_updated", event)
         return None
 
 
@@ -909,6 +923,102 @@ def _apply_patch_write_check_paths(action: ApplyPatchAction) -> tuple[Path, ...]
         if move_path is not None:
             paths.append(_write_check_path(move_path))
     return tuple(dict.fromkeys(paths))
+
+
+def file_paths_for_action(action: ApplyPatchAction) -> tuple[Path, ...]:
+    if not isinstance(action, ApplyPatchAction):
+        raise TypeError("action must be ApplyPatchAction")
+    cwd = action.cwd
+    paths: list[Path] = []
+    for path, change in action.changes.items():
+        paths.append(_resolve_action_path(path, cwd))
+        move_path = getattr(change, "move_path", None)
+        if move_path is not None:
+            paths.append(_resolve_action_path(move_path, cwd))
+    return tuple(dict.fromkeys(paths))
+
+
+def write_permissions_for_paths(
+    file_paths: tuple[Path, ...] | list[Path],
+    file_system_sandbox_policy: FileSystemSandboxPolicy,
+    cwd: Path | str,
+) -> AdditionalPermissionProfile | None:
+    if not isinstance(file_system_sandbox_policy, FileSystemSandboxPolicy):
+        raise TypeError("file_system_sandbox_policy must be FileSystemSandboxPolicy")
+    cwd = Path(cwd)
+    write_roots: list[Path] = []
+    for path in file_paths:
+        path = Path(path)
+        parent = path.parent if str(path.parent) not in {"", "."} else path
+        if not file_system_sandbox_policy.can_write_path_with_cwd(parent, cwd):
+            write_roots.append(parent)
+    if not write_roots:
+        return None
+    entries = tuple(
+        FileSystemSandboxEntry(
+            FileSystemPath.explicit_path(path),
+            FileSystemAccessMode.WRITE,
+        )
+        for path in tuple(dict.fromkeys(write_roots))
+    )
+    return AdditionalPermissionProfile(file_system=FileSystemPermissions(entries=entries))
+
+
+def build_apply_patch_request(
+    *,
+    turn_environment: Any,
+    action: ApplyPatchAction,
+    file_system_sandbox_policy: FileSystemSandboxPolicy,
+    cwd: Path | str | None = None,
+    effective_additional_permissions: Any | None = None,
+    exec_approval_requirement: Any | None = None,
+) -> Any:
+    # Rust source: codex-rs/core/src/tools/handlers/apply_patch.rs
+    # Behavior anchor: handler converts verified patches into an
+    # ApplyPatchRequest before handing off to ApplyPatchRuntime.
+    from pycodex.core.tools.handlers.utils import EffectiveAdditionalPermissions
+    from pycodex.core.tools.runtimes import ApplyPatchRequest
+    from pycodex.core.tools.sandboxing import ExecApprovalRequirement
+
+    if not isinstance(action, ApplyPatchAction):
+        raise TypeError("action must be ApplyPatchAction")
+    if not isinstance(file_system_sandbox_policy, FileSystemSandboxPolicy):
+        raise TypeError("file_system_sandbox_policy must be FileSystemSandboxPolicy")
+    request_cwd = Path(cwd) if cwd is not None else action.cwd
+    if request_cwd is None:
+        request_cwd = Path(getattr(turn_environment, "cwd"))
+    file_paths = file_paths_for_action(action)
+    if effective_additional_permissions is None:
+        effective_additional_permissions = EffectiveAdditionalPermissions(
+            sandbox_permissions="use_default",
+            additional_permissions=write_permissions_for_paths(
+                file_paths,
+                file_system_sandbox_policy,
+                request_cwd,
+            ),
+            permissions_preapproved=False,
+        )
+    if not isinstance(effective_additional_permissions, EffectiveAdditionalPermissions):
+        raise TypeError("effective_additional_permissions must be EffectiveAdditionalPermissions")
+    if exec_approval_requirement is None:
+        exec_approval_requirement = ExecApprovalRequirement.skip()
+    if not isinstance(exec_approval_requirement, ExecApprovalRequirement):
+        raise TypeError("exec_approval_requirement must be ExecApprovalRequirement")
+    return ApplyPatchRequest(
+        turn_environment=turn_environment,
+        action=action,
+        file_paths=file_paths,
+        changes=convert_apply_patch_to_protocol(action),
+        exec_approval_requirement=exec_approval_requirement,
+        additional_permissions=effective_additional_permissions.additional_permissions,
+        permissions_preapproved=effective_additional_permissions.permissions_preapproved,
+    )
+
+
+def _resolve_action_path(path: Path, cwd: Path | None) -> Path:
+    if path.is_absolute() or cwd is None:
+        return path
+    return cwd / path
 
 
 def _write_check_path(path: Path) -> Path:
@@ -1909,6 +2019,7 @@ def _ensure_str_tuple(value: object, name: str) -> tuple[str, ...]:
 __all__ = [
     "ADD_FILE_MARKER",
     "APPLY_PATCH_FREEFORM_DESCRIPTION",
+    "APPLY_PATCH_ARGUMENT_DIFF_BUFFER_INTERVAL",
     "APPLY_PATCH_LARK_GRAMMAR",
     "APPLY_PATCH_TOOL_NAME",
     "APPLY_PATCH_COMMANDS",
@@ -1939,10 +2050,12 @@ __all__ = [
     "apply_patch_action_to_disk",
     "apply_patch_payload_command",
     "apply_patch_summary",
+    "build_apply_patch_request",
     "convert_apply_patch_hunks_to_protocol",
     "convert_apply_patch_to_protocol",
     "create_apply_patch_freeform_tool",
     "derive_new_contents_from_chunks",
+    "file_paths_for_action",
     "maybe_parse_apply_patch",
     "maybe_parse_apply_patch_verified",
     "parse_patch",
@@ -1951,5 +2064,6 @@ __all__ = [
     "unified_diff_from_chunks",
     "unified_diff_from_chunks_with_context",
     "verify_apply_patch_args",
+    "write_permissions_for_paths",
 ]
 

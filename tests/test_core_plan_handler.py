@@ -1,8 +1,10 @@
 import json
+import asyncio
 import unittest
 
 from pycodex.core import (
     FunctionCallError,
+    ToolInvocation,
     ToolPayload,
 )
 from pycodex.core.tools.handlers.plan import (
@@ -13,7 +15,8 @@ from pycodex.core.tools.handlers.plan import (
     create_update_plan_tool,
     parse_update_plan_arguments,
 )
-from pycodex.protocol import PlanItemArg, SearchToolCallParams, StepStatus, ToolName, UpdatePlanArgs
+from pycodex.protocol import EventMsg, PlanItemArg, SearchToolCallParams, StepStatus, ToolName, UpdatePlanArgs
+from types import SimpleNamespace
 
 
 class PlanHandlerTests(unittest.TestCase):
@@ -117,6 +120,39 @@ class PlanHandlerTests(unittest.TestCase):
         self.assertIsInstance(output, PlanToolOutput)
         self.assertEqual(captured[0].plan[0].status, StepStatus.IN_PROGRESS)
 
+    def test_plan_handler_sends_plan_update_event_for_invocation_like_rust(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/plan.rs
+        # Rust contract: PlanHandler sends EventMsg::PlanUpdate through session.send_event.
+        class Session:
+            def __init__(self) -> None:
+                self.events = []
+
+            async def send_event(self, turn, event):
+                self.events.append((turn, event))
+
+        turn = SimpleNamespace(collaboration_mode=SimpleNamespace(mode="default"))
+        session = Session()
+        invocation = ToolInvocation(
+            session=session,
+            turn=turn,
+            call_id="call-plan",
+            tool_name=UPDATE_PLAN_TOOL_NAME,
+            payload=ToolPayload.function(
+                json.dumps({"plan": [{"step": "Patch", "status": "in_progress"}]})
+            ),
+        )
+
+        output = asyncio.run(PlanHandler().handle(invocation))
+
+        self.assertIsInstance(output, PlanToolOutput)
+        self.assertEqual(len(session.events), 1)
+        self.assertIs(session.events[0][0], turn)
+        event = session.events[0][1]
+        self.assertIsInstance(event, EventMsg)
+        self.assertEqual(event.type, "plan_update")
+        self.assertEqual(event.payload.plan[0].step, "Patch")
+        self.assertEqual(event.payload.plan[0].status, StepStatus.IN_PROGRESS)
+
     def test_plan_handler_rejects_plan_mode_and_bad_payloads(self) -> None:
         # Rust source: codex-rs/core/src/tools/handlers/plan.rs
         # Rust contract: update_plan is not available while already in Plan mode and rejects unsupported payloads.
@@ -126,6 +162,15 @@ class PlanHandlerTests(unittest.TestCase):
             handler.handle(ToolPayload.function('{"plan":[]}'), collaboration_mode="plan")
         self.assertEqual(plan_mode.exception.kind, "respond_to_model")
 
+        with self.assertRaisesRegex(FunctionCallError, "not allowed in Plan mode"):
+            handler.handle(
+                ToolInvocation(
+                    turn=SimpleNamespace(collaboration_mode=SimpleNamespace(mode="plan")),
+                    call_id="call-plan",
+                    tool_name=UPDATE_PLAN_TOOL_NAME,
+                    payload=ToolPayload.function('{"plan":[]}'),
+                )
+            )
         with self.assertRaises(FunctionCallError):
             handler.handle(ToolPayload.custom("raw"))
         with self.assertRaises(FunctionCallError):

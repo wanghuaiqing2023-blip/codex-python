@@ -1,8 +1,11 @@
 import json
+import asyncio
 import unittest
+from types import SimpleNamespace
 
 from pycodex.core import (
     FunctionCallError,
+    ToolInvocation,
     ToolPayload,
 )
 from pycodex.core.tools.handlers.request_user_input import (
@@ -23,6 +26,8 @@ from pycodex.protocol import (
     RequestUserInputQuestionOption,
     RequestUserInputResponse,
     SearchToolCallParams,
+    SessionSource,
+    SubAgentSource,
     ToolName,
 )
 
@@ -212,6 +217,86 @@ class RequestUserInputHandlerTests(unittest.TestCase):
             json.loads(output.into_text()),
             {"answers": {"pick_one": {"answers": ["A"]}}},
         )
+
+    def test_handler_uses_invocation_call_id_and_turn_mode_like_rust(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/request_user_input.rs
+        # Rust contract: handler reads call_id and collaboration mode from the tool invocation context.
+        captured = {}
+
+        def callback(call_id, args):
+            captured["call_id"] = call_id
+            captured["args"] = args
+            return {"answers": {"pick_one": {"answers": ["B"]}}}
+
+        invocation = ToolInvocation(
+            call_id="call-from-invocation",
+            tool_name=REQUEST_USER_INPUT_TOOL_NAME,
+            turn=SimpleNamespace(collaboration_mode=SimpleNamespace(mode=ModeKind.PLAN)),
+            payload=ToolPayload.function(request_args_json()),
+        )
+
+        output = RequestUserInputHandler(request_callback=callback).handle(invocation)
+
+        self.assertEqual(captured["call_id"], "call-from-invocation")
+        self.assertTrue(captured["args"].questions[0].is_other)
+        self.assertEqual(
+            json.loads(output.into_text()),
+            {"answers": {"pick_one": {"answers": ["B"]}}},
+        )
+
+    def test_handler_prefers_rust_style_session_request_user_input_entrypoint(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/request_user_input.rs
+        # Rust contract: handler awaits session.collaboration_mode() and session.request_user_input(turn, call_id, args).
+        captured = {}
+
+        class Session:
+            async def collaboration_mode(self):
+                return SimpleNamespace(mode=ModeKind.PLAN)
+
+            async def request_user_input(self, turn, call_id, args):
+                captured["turn"] = turn
+                captured["call_id"] = call_id
+                captured["args"] = args
+                return RequestUserInputResponse(
+                    {"pick_one": RequestUserInputAnswer(("A",))}
+                )
+
+        turn = SimpleNamespace(session_source=SessionSource.cli())
+        invocation = ToolInvocation(
+            call_id="call-session",
+            tool_name=REQUEST_USER_INPUT_TOOL_NAME,
+            session=Session(),
+            turn=turn,
+            payload=ToolPayload.function(request_args_json()),
+        )
+
+        output = asyncio.run(RequestUserInputHandler().handle(invocation))
+
+        self.assertIs(captured["turn"], turn)
+        self.assertEqual(captured["call_id"], "call-session")
+        self.assertTrue(captured["args"].questions[0].is_other)
+        self.assertEqual(
+            json.loads(output.into_text()),
+            {"answers": {"pick_one": {"answers": ["A"]}}},
+        )
+
+    def test_handler_rejects_invocation_subagent_like_rust(self) -> None:
+        # Rust test: request_user_input_tests.rs::multi_agent_v2_request_user_input_rejects_subagent_threads
+        invocation = ToolInvocation(
+            call_id="call-subagent",
+            tool_name=REQUEST_USER_INPUT_TOOL_NAME,
+            turn=SimpleNamespace(
+                session_source=SessionSource.subagent(SubAgentSource.other_source("guardian")),
+                collaboration_mode=SimpleNamespace(mode=ModeKind.PLAN),
+            ),
+            payload=ToolPayload.function(request_args_json()),
+        )
+
+        with self.assertRaisesRegex(
+            FunctionCallError,
+            "request_user_input can only be used by the root thread",
+        ):
+            RequestUserInputHandler().handle(invocation)
 
     def test_handler_rejects_unavailable_modes_subagents_and_bad_payloads(self) -> None:
         # Rust source: codex-rs/core/src/tools/handlers/request_user_input.rs

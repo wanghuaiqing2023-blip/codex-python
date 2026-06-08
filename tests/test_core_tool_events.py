@@ -7,6 +7,7 @@ from pycodex.core import (
     AppliedPatchDelta,
     AppliedPatchFileChange,
     ExecCommandInput,
+    FunctionCallError,
     ToolEmitter,
     ToolEventCtx,
     ToolEventFailure,

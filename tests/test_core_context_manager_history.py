@@ -1,5 +1,7 @@
 """Parity tests for ``codex-rs/core/src/context_manager/history.rs``."""
 
+import base64
+import json
 from pathlib import Path
 
 from pycodex.core.context_manager.history import (
@@ -7,6 +9,7 @@ from pycodex.core.context_manager.history import (
     estimate_item_token_count,
     estimate_response_item_model_visible_bytes,
     estimate_token_count_with_base_instructions,
+    is_user_turn_boundary,
 )
 from pycodex.protocol import (
     AskForApproval,
@@ -265,6 +268,20 @@ def test_for_prompt_preserves_inter_agent_assistant_messages() -> None:
     assert history.for_prompt(("text", "image")) == [item]
 
 
+def test_inter_agent_assistant_messages_are_turn_boundaries() -> None:
+    """Rust unit test: ``inter_agent_assistant_messages_are_turn_boundaries``."""
+
+    assert is_user_turn_boundary(_inter_agent_assistant_msg("continue"))
+
+
+def test_legacy_inter_agent_assistant_messages_are_not_turn_boundaries() -> None:
+    """Rust unit test: ``legacy_inter_agent_assistant_messages_are_not_turn_boundaries``."""
+
+    item = _assistant_msg("author: /root\nrecipient: /root/worker\nother_recipients: []\nContent: continue")
+
+    assert not is_user_turn_boundary(item)
+
+
 def test_drop_last_n_user_turns_treats_inter_agent_assistant_messages_as_instruction_turns() -> None:
     """Rust unit test: ``drop_last_n_user_turns_treats_inter_agent_assistant_messages_as_instruction_turns``."""
 
@@ -403,6 +420,29 @@ def test_for_prompt_normalizes_outputs_and_strips_images() -> None:
     assert prompt_items[2].content == (ContentItem.input_text("image content omitted because you do not support image input"),)
 
 
+def test_for_prompt_preserves_image_generation_calls_when_images_are_supported() -> None:
+    """Rust unit test: ``for_prompt_preserves_image_generation_calls_when_images_are_supported``."""
+
+    image_generation = ResponseItem.image_generation_call("ig_123", "generating", "Zm9v", revised_prompt="lobster")
+    user = _user_msg("hi")
+    history = ContextManager.from_items((image_generation, user))
+
+    assert history.for_prompt(("text", "image")) == [image_generation, user]
+
+
+def test_for_prompt_clears_image_generation_result_when_images_are_unsupported() -> None:
+    """Rust unit test: ``for_prompt_clears_image_generation_result_when_images_are_unsupported``."""
+
+    user = _user_msg("generate a lobster")
+    image_generation = ResponseItem.image_generation_call("ig_123", "completed", "Zm9v", revised_prompt="lobster")
+    history = ContextManager.from_items((user, image_generation))
+
+    assert history.for_prompt(("text",)) == [
+        user,
+        ResponseItem.image_generation_call("ig_123", "completed", "", revised_prompt="lobster"),
+    ]
+
+
 def test_normalize_history_mutates_items_like_rust_helper() -> None:
     """Rust source contract: ``normalize_history`` mutates the stored history items."""
 
@@ -494,6 +534,30 @@ def test_estimate_response_item_model_visible_bytes_falls_back_for_invalid_origi
     )
 
     assert estimate_response_item_model_visible_bytes(item) == compact_json_bytes - len(invalid_payload) + 7373
+
+
+def test_estimate_response_item_model_visible_bytes_uses_original_webp_patch_estimate() -> None:
+    """Rust unit test: ``original_detail_webp_images_scale_with_dimensions``."""
+
+    width = 2304
+    height = 864
+    vp8x_chunk = (
+        b"VP8X"
+        + (10).to_bytes(4, "little")
+        + b"\x00\x00\x00\x00"
+        + (width - 1).to_bytes(3, "little")
+        + (height - 1).to_bytes(3, "little")
+    )
+    webp_bytes = b"RIFF" + (4 + len(vp8x_chunk)).to_bytes(4, "little") + b"WEBP" + vp8x_chunk
+    payload = base64.b64encode(webp_bytes).decode("ascii")
+    image_url = f"data:image/webp;base64,{payload}"
+    item = _function_call_output_items(
+        "call-original-webp",
+        (FunctionCallOutputContentItem.input_image(image_url, detail=ImageDetail.ORIGINAL),),
+    )
+    compact_json_bytes = len(json.dumps(item.to_mapping(), ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+    assert estimate_response_item_model_visible_bytes(item) == compact_json_bytes - len(payload) + 7776
 
 
 def test_remove_first_item_removes_matching_output_for_function_call() -> None:

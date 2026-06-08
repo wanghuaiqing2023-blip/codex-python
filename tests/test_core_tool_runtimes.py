@@ -1,14 +1,18 @@
+import asyncio
 import array
 import socket
 import tempfile
 import subprocess
 import unittest
 import json
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
 from pycodex.execpolicy import (
+    Decision,
+    ExecPolicyPrefixRule,
     PROMPT_CONFLICT_REASON,
     REJECT_RULES_APPROVAL_REASON,
     REJECT_SANDBOX_APPROVAL_REASON,
@@ -29,8 +33,12 @@ from pycodex.core import (
     ExecApprovalRequirement,
     ExecResult,
     GuardianNetworkAccessTrigger,
+    InterceptedExecPolicyContext,
+    InterceptedExecPolicyEvaluation,
     NetworkApprovalMode,
     ParsedShellCommand,
+    PreparedUnifiedExecSpawn,
+    PreparedUnifiedExecZshFork,
     SHELL_ESCALATE_HANDSHAKE_MESSAGE,
     SHELL_SOCKET_MAX_FDS_PER_MESSAGE,
     SHELL_SOCKET_STREAM_MAX_PAYLOAD,
@@ -51,19 +59,28 @@ from pycodex.core import (
     ShellEscalateResponse,
     ShellEscalationDecision,
     ShellEscalationExecution,
+    ShellEscalationPolicyPlan,
     ShellEscalateServerPlan,
+    ShellCommandExecutorRunContext,
     ShellLocalExecvPlan,
+    ShellPrepareSandboxedExecContext,
+    ShellPrepareSandboxedExecParams,
+    ShellSandboxTransformRequest,
     ShellPreparedExec,
     ShellSuperExecMessage,
     ShellSuperExecResult,
     ShellSuperExecSpawnPlan,
     ShellSuperExecSubprocessSpec,
+    ShellZshForkCancellationPlan,
+    ShellZshForkExecParams,
     SandboxCommand,
+    SandboxExecRequest,
     SandboxType,
     ToolRuntimeError,
     UnifiedExecDirectRunPlan,
     UnifiedExecOptions,
     UnifiedExecRequest,
+    ZshForkSpawnLifecycle,
     approval_sandbox_permissions,
     apply_patch_approval_keys,
     apply_patch_file_system_sandbox_context_for_attempt,
@@ -74,17 +91,23 @@ from pycodex.core import (
     build_sandbox_command,
     build_unified_exec_sandbox_command,
     disable_powershell_profile_for_elevated_windows_sandbox,
+    decision_driven_by_policy,
     exec_env_for_sandbox_permissions,
+    exec_result_from_tool_output,
     execve_prompt_is_rejected_by_policy,
     extract_shell_script,
     effective_file_system_sandbox_policy,
+    evaluate_intercepted_exec_policy,
     is_valid_shell_variable_name,
     join_program_and_argv,
     map_exec_result,
+    maybe_prepare_unified_exec_zsh_fork,
+    maybe_run_shell_command_zsh_fork,
     managed_network_for_runtime,
     maybe_wrap_shell_lc_with_snapshot,
     shell_prepared_exec_effective_arg0,
     shell_prepared_exec_program_and_args,
+    prepare_unified_exec_zsh_fork_from_session,
     shell_escalate_action_from_decision,
     shell_escalate_client_action_from_response,
     shell_escalate_client_handshake_payload,
@@ -113,6 +136,8 @@ from pycodex.core import (
     shell_escalate_server_plan_from_decision,
     shell_escalate_server_plan_send_response,
     shell_escalate_server_request_run,
+    shell_escalation_merge_env_overlay,
+    shell_escalation_policy_plan,
     shell_escalation_request_env,
     shell_escalation_session_env,
     shell_escalation_socket_fd_from_env,
@@ -133,11 +158,18 @@ from pycodex.core import (
     shell_super_exec_run_prepared,
     shell_super_exec_run_subprocess,
     shell_approval_keys,
+    shell_command_executor_exec_request,
+    shell_command_executor_run,
     shell_network_approval_spec,
+    shell_prepare_escalated_exec,
+    shell_prepare_escalated_exec_params,
+    shell_prepare_sandboxed_exec,
     shell_escalation_decision_after_review,
     shell_escalation_decision_for_approved_review,
     shell_escalation_decision_for_policy_decision,
     shell_request_escalation_execution,
+    shell_zsh_fork_cancellation_plan,
+    shell_zsh_fork_exec_params,
     shell_permission_request_payload,
     shell_single_quote,
     shell_socket_build_length_prefixed_payload,
@@ -155,6 +187,7 @@ from pycodex.core import (
     unified_exec_sandbox_cwd,
 )
 from pycodex.core import SandboxAttempt
+from pycodex.core.exec import ExecRequest
 from pycodex.core import DEFAULT_EXEC_COMMAND_TIMEOUT_MS, ExecCapturePolicy, ExecExpirationKind
 from pycodex.core.exec import CancellationToken
 from pycodex.core.tools.network_approval import (
@@ -166,6 +199,7 @@ from pycodex.core.tools.runtimes import flat_tool_name
 from pycodex.protocol import (
     AskForApproval,
     CODEX_THREAD_ID_ENV_VAR,
+    ExecToolCallOutput,
     FileChange,
     FileSystemAccessMode,
     FileSystemPath,
@@ -183,12 +217,241 @@ from pycodex.protocol import (
     AdditionalPermissionProfile,
     FileSystemPermissions,
     SandboxPermissions,
+    StreamOutput,
     ToolName,
     WindowsSandboxLevel,
 )
 
 
 class ToolRuntimesTests(unittest.TestCase):
+    def test_zsh_fork_backend_non_unix_falls_back_to_normal_paths(self) -> None:
+        # Rust source: codex-rs/core/src/tools/runtimes/shell/zsh_fork_backend.rs
+        # Contract: cfg(not(unix)) implementations return Ok(None) for shell
+        # and unified-exec paths without invoking escalation.
+        async def run() -> None:
+            with patch("pycodex.core.tools.runtimes.os.name", "nt"):
+                shell_result = await maybe_run_shell_command_zsh_fork(
+                    object(),
+                    object(),
+                    object(),
+                    ("zsh", "-lc", "echo hi"),
+                    try_run_zsh_fork=lambda *_args: self.fail("delegate should not run"),
+                )
+                unified_result = await maybe_prepare_unified_exec_zsh_fork(
+                    object(),
+                    object(),
+                    object(),
+                    "exec-request",
+                    object(),
+                    prepare_unified_exec_zsh_fork=lambda *_args: self.fail("delegate should not run"),
+                )
+            self.assertIsNone(shell_result)
+            self.assertIsNone(unified_result)
+
+        asyncio.run(run())
+
+    def test_zsh_fork_backend_unix_delegates_shell_command(self) -> None:
+        # Rust source: maybe_run_shell_command delegates to
+        # unix_escalation::try_run_zsh_fork on Unix.
+        output = ExecToolCallOutput(exit_code=7)
+        calls: list[tuple[object, object, object, tuple[str, ...]]] = []
+
+        async def delegate(req: object, attempt: object, ctx: object, command: tuple[str, ...]) -> ExecToolCallOutput:
+            calls.append((req, attempt, ctx, command))
+            return output
+
+        async def run() -> None:
+            req = object()
+            attempt = object()
+            ctx = object()
+            with patch("pycodex.core.tools.runtimes.os.name", "posix"):
+                result = await maybe_run_shell_command_zsh_fork(
+                    req,
+                    attempt,
+                    ctx,
+                    ["zsh", "-lc", "echo hi"],
+                    try_run_zsh_fork=delegate,
+                )
+            self.assertIs(result, output)
+            self.assertEqual(calls, [(req, attempt, ctx, ("zsh", "-lc", "echo hi"))])
+
+        asyncio.run(run())
+
+    def test_zsh_fork_backend_unix_wraps_prepared_unified_exec_spawn(self) -> None:
+        # Rust source: maybe_prepare_unified_exec wraps the unix escalation
+        # result in PreparedUnifiedExecSpawn with a ZshFork spawn lifecycle.
+        closed: list[bool] = []
+
+        class EscalationSession:
+            def env(self) -> dict[str, str]:
+                return {ESCALATE_SOCKET_ENV_VAR: "42"}
+
+            def close_client_socket(self) -> None:
+                closed.append(True)
+
+        prepared = type(
+            "Prepared",
+            (),
+            {"exec_request": "prepared-exec", "escalation_session": EscalationSession()},
+        )()
+        calls: list[tuple[object, object, object, object, Path, Path]] = []
+        config = type(
+            "Config",
+            (),
+            {
+                "shell_zsh_path": Path("/bin/zsh"),
+                "main_execve_wrapper_exe": Path("/tmp/wrapper"),
+            },
+        )()
+
+        def delegate(
+            req: object,
+            attempt: object,
+            ctx: object,
+            exec_request: object,
+            shell_zsh_path: Path,
+            wrapper_exe: Path,
+        ) -> object:
+            calls.append((req, attempt, ctx, exec_request, shell_zsh_path, wrapper_exe))
+            return prepared
+
+        async def run() -> None:
+            req = object()
+            attempt = object()
+            ctx = object()
+            with patch("pycodex.core.tools.runtimes.os.name", "posix"):
+                result = await maybe_prepare_unified_exec_zsh_fork(
+                    req,
+                    attempt,
+                    ctx,
+                    "exec-request",
+                    config,
+                    prepare_unified_exec_zsh_fork=delegate,
+                )
+            self.assertIsInstance(result, PreparedUnifiedExecSpawn)
+            self.assertEqual(result.exec_request, "prepared-exec")
+            self.assertIsInstance(result.spawn_lifecycle, ZshForkSpawnLifecycle)
+            self.assertEqual(result.spawn_lifecycle.inherited_fds(), [42])
+            result.spawn_lifecycle.after_spawn()
+            self.assertEqual(closed, [True])
+            self.assertEqual(
+                calls,
+                [(req, attempt, ctx, "exec-request", Path("/bin/zsh"), Path("/tmp/wrapper"))],
+            )
+
+        asyncio.run(run())
+
+    def test_shell_zsh_fork_exec_params_match_rust_try_run_shape(self) -> None:
+        # Rust source: codex-rs/core/src/tools/runtimes/shell/unix_escalation.rs
+        # Behavior anchor: try_run_zsh_fork constructs ExecParams from
+        # ParsedShellCommand and the effective request timeout.
+        params = shell_zsh_fork_exec_params(
+            ("/usr/bin/env", "A=1", "/bin/zsh", "-lc", "echo hi"),
+            Path("/work/tree"),
+            None,
+        )
+
+        self.assertEqual(
+            params,
+            ShellZshForkExecParams(
+                command="echo hi",
+                workdir="/work/tree",
+                timeout_ms=DEFAULT_EXEC_COMMAND_TIMEOUT_MS,
+                login=True,
+            ),
+        )
+        self.assertEqual(
+            shell_zsh_fork_exec_params(("/bin/zsh", "-c", "pwd"), "/tmp/project", 1234),
+            ShellZshForkExecParams("pwd", "/tmp/project", 1234, False),
+        )
+        with self.assertRaises(ToolRuntimeError):
+            shell_zsh_fork_exec_params(("sandbox-exec", "-fc", "echo no"), "/work", None)
+
+    def test_shell_zsh_fork_cancellation_plan_matches_rust_network_denial_merge(self) -> None:
+        # Rust source: codex-rs/core/src/tools/runtimes/shell/unix_escalation.rs
+        # Behavior anchor: try_run_zsh_fork uses the stopwatch cancellation
+        # token directly unless the sandbox attempt carries a network-denial
+        # cancellation token, in which case it combines them with cancel_when_either.
+        stopwatch = CancellationToken()
+        no_network = shell_zsh_fork_cancellation_plan(stopwatch)
+
+        self.assertEqual(
+            no_network,
+            ShellZshForkCancellationPlan(
+                stopwatch_token=stopwatch,
+                cancel_token=stopwatch,
+                network_denial_cancellation_token=None,
+            ),
+        )
+
+        network = CancellationToken()
+        with_network = shell_zsh_fork_cancellation_plan(stopwatch, network)
+
+        self.assertIs(with_network.stopwatch_token, stopwatch)
+        self.assertIs(with_network.network_denial_cancellation_token, network)
+        self.assertIsNot(with_network.cancel_token, stopwatch)
+        self.assertIsNot(with_network.cancel_token, network)
+        self.assertFalse(with_network.cancel_token.is_cancelled())
+        network.cancel()
+        self.assertTrue(with_network.cancel_token.is_cancelled())
+
+        stopwatch_2 = CancellationToken()
+        network_2 = CancellationToken()
+        with_stopwatch_cancel = shell_zsh_fork_cancellation_plan(stopwatch_2, network_2)
+        stopwatch_2.cancel()
+        self.assertTrue(with_stopwatch_cancel.cancel_token.is_cancelled())
+
+    def test_prepare_unified_exec_zsh_fork_from_session_matches_rust_env_extension(self) -> None:
+        # Rust source: codex-rs/core/src/tools/runtimes/shell/unix_escalation.rs
+        # Behavior anchor: prepare_unified_exec_zsh_fork parses the shell command,
+        # rejects non-zsh targets, and extends the ExecRequest env with the
+        # EscalationSession env after start_session succeeds.
+        class EscalationSession:
+            def env(self) -> dict[str, str]:
+                return {
+                    ESCALATE_SOCKET_ENV_VAR: "9",
+                    EXEC_WRAPPER_ENV_VAR: "/tmp/wrapper",
+                    "EXTRA_SESSION_VALUE": "kept",
+                }
+
+        request = ExecRequest(
+            command=("/usr/bin/env", "A=1", "/bin/zsh", "-lc", "echo hi"),
+            cwd=Path("/work"),
+            env={"BASE": "1", ESCALATE_SOCKET_ENV_VAR: "old"},
+            permission_profile=PermissionProfile.read_only(),
+        )
+        session = EscalationSession()
+
+        prepared = prepare_unified_exec_zsh_fork_from_session(request, Path("/bin/zsh"), session)
+
+        self.assertIsInstance(prepared, PreparedUnifiedExecZshFork)
+        self.assertIs(prepared.escalation_session, session)
+        self.assertIsNot(prepared.exec_request, request)
+        self.assertEqual(request.env[ESCALATE_SOCKET_ENV_VAR], "old")
+        self.assertEqual(
+            prepared.exec_request.env,
+            {
+                "BASE": "1",
+                ESCALATE_SOCKET_ENV_VAR: "9",
+                EXEC_WRAPPER_ENV_VAR: "/tmp/wrapper",
+                "EXTRA_SESSION_VALUE": "kept",
+            },
+        )
+        self.assertIsNone(
+            prepare_unified_exec_zsh_fork_from_session(
+                request,
+                Path("/usr/local/bin/zsh"),
+                session,
+            )
+        )
+        self.assertIsNone(
+            prepare_unified_exec_zsh_fork_from_session(
+                ExecRequest(command=("sandbox-exec", "-fc", "echo no"), cwd=Path("/work")),
+                Path("/bin/zsh"),
+                session,
+            )
+        )
+
     def test_shell_escalation_env_vars_match_rust_protocol_constants(self) -> None:
         self.assertEqual(ESCALATE_SOCKET_ENV_VAR, "CODEX_ESCALATE_SOCKET")
         self.assertEqual(EXEC_WRAPPER_ENV_VAR, "EXEC_WRAPPER")
@@ -224,6 +487,163 @@ class ToolRuntimesTests(unittest.TestCase):
             shell_escalation_request_env({"A": 1})
         with self.assertRaises(TypeError):
             shell_escalation_request_env(object())
+
+    def test_shell_escalation_merge_env_overlay_only_copies_protocol_vars(self) -> None:
+        # Rust source: codex-rs/core/src/tools/runtimes/shell/unix_escalation.rs
+        # Behavior anchor: CoreShellCommandExecutor::run only merges
+        # CODEX_ESCALATE_SOCKET and EXEC_WRAPPER from env_overlay.
+        base_env = {
+            "A": "base",
+            "PATH": "/bin",
+            "CODEX_ESCALATE_SOCKET": "old",
+        }
+        overlay = {
+            "A": "overlay",
+            "CODEX_ESCALATE_SOCKET": "42",
+            "EXEC_WRAPPER": "/tmp/exec-wrapper",
+            "IGNORED": "value",
+        }
+
+        self.assertEqual(
+            shell_escalation_merge_env_overlay(base_env, overlay),
+            {
+                "A": "base",
+                "PATH": "/bin",
+                "CODEX_ESCALATE_SOCKET": "42",
+                "EXEC_WRAPPER": "/tmp/exec-wrapper",
+            },
+        )
+        self.assertEqual(base_env["CODEX_ESCALATE_SOCKET"], "old")
+        with self.assertRaises(TypeError):
+            shell_escalation_merge_env_overlay({"A": "B"}, {"CODEX_ESCALATE_SOCKET": 42})
+        with self.assertRaises(TypeError):
+            shell_escalation_merge_env_overlay(object(), {})
+
+    def test_shell_command_executor_exec_request_matches_rust_run_shape(self) -> None:
+        # Rust source: codex-rs/core/src/tools/runtimes/shell/unix_escalation.rs
+        # Behavior anchor: CoreShellCommandExecutor::run ExecRequest construction.
+        cancellation = CancellationToken()
+        profile = PermissionProfile.read_only()
+        file_system_policy, network_policy = profile.to_runtime_permissions()
+        context = ShellCommandExecutorRunContext(
+            command=("/usr/bin/touch", "/tmp/file"),
+            cwd=Path("/work"),
+            env={"A": "base"},
+            network="network",
+            sandbox=SandboxType.LINUX_SECCOMP,
+            sandbox_policy_cwd=Path("/policy"),
+            windows_sandbox_level=WindowsSandboxLevel.RESTRICTED_TOKEN,
+            permission_profile=profile,
+            file_system_sandbox_policy=file_system_policy,
+            network_sandbox_policy=network_policy,
+            arg0="touch",
+        )
+
+        request = shell_command_executor_exec_request(
+            context,
+            {
+                "A": "ignored",
+                "CODEX_ESCALATE_SOCKET": "42",
+                "EXEC_WRAPPER": "/tmp/exec-wrapper",
+            },
+            cancellation,
+        )
+
+        self.assertEqual(request.command, ("/usr/bin/touch", "/tmp/file"))
+        self.assertEqual(request.cwd, Path("/work"))
+        self.assertEqual(
+            request.env,
+            {
+                "A": "base",
+                "CODEX_ESCALATE_SOCKET": "42",
+                "EXEC_WRAPPER": "/tmp/exec-wrapper",
+            },
+        )
+        self.assertIs(request.network, context.network)
+        self.assertIs(request.expiration.cancellation, cancellation)
+        self.assertEqual(request.capture_policy, ExecCapturePolicy.SHELL_TOOL)
+        self.assertEqual(request.sandbox, SandboxType.LINUX_SECCOMP)
+        self.assertEqual(request.windows_sandbox_policy_cwd, Path("/policy"))
+        self.assertEqual(request.windows_sandbox_level, WindowsSandboxLevel.RESTRICTED_TOKEN)
+        self.assertFalse(request.windows_sandbox_private_desktop)
+        self.assertEqual(request.permission_profile, profile)
+        self.assertEqual(request.file_system_sandbox_policy, file_system_policy)
+        self.assertEqual(request.network_sandbox_policy, network_policy)
+        self.assertIsNone(request.windows_sandbox_filesystem_overrides)
+        self.assertIsNone(request.exec_server_env_config)
+        self.assertEqual(request.arg0, "touch")
+
+    def test_shell_command_executor_run_maps_exec_output_to_rust_exec_result(self) -> None:
+        # Rust source: codex-rs/core/src/tools/runtimes/shell/unix_escalation.rs
+        # Behavior anchor: CoreShellCommandExecutor::run output mapping.
+        profile = PermissionProfile.read_only()
+        file_system_policy, network_policy = profile.to_runtime_permissions()
+        context = ShellCommandExecutorRunContext(
+            command=("/usr/bin/printf", "hello"),
+            cwd=Path("/work"),
+            env={"A": "base"},
+            network=None,
+            sandbox=SandboxType.NONE,
+            sandbox_policy_cwd=Path("/policy"),
+            windows_sandbox_level=WindowsSandboxLevel.DISABLED,
+            permission_profile=profile,
+            file_system_sandbox_policy=file_system_policy,
+            network_sandbox_policy=network_policy,
+        )
+        cancellation = CancellationToken()
+        after_spawn_calls: list[bool] = []
+        seen: list[tuple[object, object, object]] = []
+
+        async def execute(request: object, stdout_stream: object, after_spawn: object) -> ExecToolCallOutput:
+            seen.append((request, stdout_stream, after_spawn))
+            if callable(after_spawn):
+                after_spawn()
+            return ExecToolCallOutput(
+                exit_code=7,
+                stdout=StreamOutput.new("out"),
+                stderr=StreamOutput.new("err"),
+                aggregated_output=StreamOutput.new("outerr"),
+                duration=timedelta(milliseconds=12),
+                timed_out=True,
+            )
+
+        result = asyncio.run(
+            shell_command_executor_run(
+                context,
+                {"EXEC_WRAPPER": "/tmp/exec-wrapper"},
+                cancellation,
+                execute_exec_request_with_after_spawn=execute,
+                after_spawn=lambda: after_spawn_calls.append(True),
+            )
+        )
+
+        request, stdout_stream, after_spawn = seen[0]
+        self.assertIsNone(stdout_stream)
+        self.assertTrue(callable(after_spawn))
+        self.assertEqual(request.env, {"A": "base", "EXEC_WRAPPER": "/tmp/exec-wrapper"})
+        self.assertEqual(after_spawn_calls, [True])
+        self.assertEqual(
+            result,
+            ExecResult(
+                exit_code=7,
+                stdout="out",
+                stderr="err",
+                output="outerr",
+                duration=timedelta(milliseconds=12),
+                timed_out=True,
+            ),
+        )
+        self.assertEqual(
+            exec_result_from_tool_output(
+                ExecToolCallOutput(
+                    exit_code=0,
+                    stdout=StreamOutput.new("stdout"),
+                    stderr=StreamOutput.new("stderr"),
+                    aggregated_output=StreamOutput.new("aggregate"),
+                )
+            ),
+            ExecResult(exit_code=0, stdout="stdout", stderr="stderr", output="aggregate"),
+        )
 
     def test_shell_escalation_socket_fd_from_env_matches_client_fd_parse(self) -> None:
         self.assertEqual(shell_escalation_socket_fd_from_env({"CODEX_ESCALATE_SOCKET": "42"}), 42)
@@ -1230,6 +1650,185 @@ class ToolRuntimesTests(unittest.TestCase):
             ),
             ShellEscalationDecision.deny("Execution forbidden by policy"),
         )
+
+    def test_shell_prepare_escalated_exec_matches_rust_branching(self) -> None:
+        # Rust source: codex-rs/core/src/tools/runtimes/shell/unix_escalation.rs
+        # Behavior anchor: CoreShellCommandExecutor::prepare_escalated_exec.
+        default_profile = PermissionProfile.read_only()
+        resolved_profile = PermissionProfile.workspace_write()
+        additional = AdditionalPermissionProfile(
+            file_system=FileSystemPermissions.from_read_write_roots(write_roots=("/tmp/output",))
+        )
+        calls: list[ShellPrepareSandboxedExecParams] = []
+
+        def prepare_sandboxed_exec(params: ShellPrepareSandboxedExecParams) -> ShellPreparedExec:
+            calls.append(params)
+            return ShellPreparedExec(params.command, params.workdir, params.env, arg0="sandbox-arg0")
+
+        unsandboxed = shell_prepare_escalated_exec(
+            "/usr/bin/touch",
+            ("touch", "/tmp/file"),
+            "/work",
+            {"A": "B"},
+            ShellEscalationExecution.unsandboxed(),
+            permission_profile=default_profile,
+            prepare_sandboxed_exec=prepare_sandboxed_exec,
+        )
+        self.assertEqual(unsandboxed, ShellPreparedExec(("/usr/bin/touch", "/tmp/file"), Path("/work"), {"A": "B"}, arg0="touch"))
+        self.assertEqual(calls, [])
+
+        turn_default = shell_prepare_escalated_exec(
+            "/usr/bin/touch",
+            ("touch", "/tmp/file"),
+            "/work",
+            {"A": "B"},
+            ShellEscalationExecution.turn_default(),
+            permission_profile=default_profile,
+            prepare_sandboxed_exec=prepare_sandboxed_exec,
+        )
+        self.assertEqual(turn_default.arg0, "sandbox-arg0")
+        self.assertEqual(calls[-1].permission_profile, default_profile)
+        self.assertIsNone(calls[-1].additional_permissions)
+
+        shell_prepare_escalated_exec(
+            "/usr/bin/touch",
+            ("touch", "/tmp/file"),
+            "/work",
+            {"A": "B"},
+            ShellEscalationExecution.permissions(additional),
+            permission_profile=default_profile,
+            prepare_sandboxed_exec=prepare_sandboxed_exec,
+        )
+        self.assertEqual(calls[-1].permission_profile, default_profile)
+        self.assertEqual(calls[-1].additional_permissions, additional)
+
+        shell_prepare_escalated_exec(
+            "/usr/bin/touch",
+            ("touch", "/tmp/file"),
+            "/work",
+            {"A": "B"},
+            ShellEscalationExecution.permissions(resolved_profile),
+            permission_profile=default_profile,
+            prepare_sandboxed_exec=prepare_sandboxed_exec,
+        )
+        self.assertEqual(calls[-1].permission_profile, resolved_profile)
+        self.assertIsNone(calls[-1].additional_permissions)
+
+        with self.assertRaisesRegex(ValueError, r"intercepted exec request must contain argv\[0\]"):
+            shell_prepare_escalated_exec(
+                "/usr/bin/touch",
+                (),
+                "/work",
+                {},
+                ShellEscalationExecution.unsandboxed(),
+                permission_profile=default_profile,
+                prepare_sandboxed_exec=prepare_sandboxed_exec,
+            )
+        with self.assertRaises(TypeError):
+            shell_prepare_escalated_exec_params(
+                ("/usr/bin/touch", "/tmp/file"),
+                "/work",
+                {},
+                ShellEscalationExecution.permissions("profile"),
+                permission_profile=default_profile,
+            )
+
+    def test_shell_prepare_sandboxed_exec_matches_rust_transform_shape(self) -> None:
+        # Rust source: codex-rs/core/src/tools/runtimes/shell/unix_escalation.rs
+        # Behavior anchor: CoreShellCommandExecutor::prepare_sandboxed_exec.
+        profile = PermissionProfile.workspace_write(network=NetworkSandboxPolicy.ENABLED)
+        additional = AdditionalPermissionProfile(
+            file_system=FileSystemPermissions.from_read_write_roots(write_roots=("/tmp/output",))
+        )
+
+        class FakeNetwork:
+            def apply_to_env(self, env: dict[str, str]) -> None:
+                env["NETWORK_APPLIED"] = "1"
+
+        class FakeSandboxManager:
+            def __init__(self) -> None:
+                self.select_calls: list[tuple[object, ...]] = []
+                self.transform_calls: list[ShellSandboxTransformRequest] = []
+
+            def select_initial(
+                self,
+                file_system_policy: FileSystemSandboxPolicy,
+                network_policy: NetworkSandboxPolicy,
+                preference: str,
+                windows_level: WindowsSandboxLevel,
+                enforce_network: bool,
+            ) -> SandboxType:
+                self.select_calls.append(
+                    (file_system_policy, network_policy, preference, windows_level, enforce_network)
+                )
+                return SandboxType.LINUX_SECCOMP
+
+            def transform(self, request: ShellSandboxTransformRequest) -> SandboxExecRequest:
+                self.transform_calls.append(request)
+                return SandboxExecRequest(
+                    command=("sandboxed", *request.command.args),
+                    cwd=request.command.cwd,
+                    env={**request.command.env, "SANDBOX": "1"},
+                    network=request.network,
+                    sandbox=request.sandbox,
+                    windows_sandbox_level=request.windows_sandbox_level,
+                    windows_sandbox_private_desktop=request.windows_sandbox_private_desktop,
+                    permission_profile=request.permissions,
+                    file_system_sandbox_policy=request.permissions.file_system_sandbox_policy(),
+                    network_sandbox_policy=request.permissions.network_sandbox_policy(),
+                    arg0="sandbox-arg0",
+                )
+
+        manager = FakeSandboxManager()
+        context = ShellPrepareSandboxedExecContext(
+            sandbox_policy_cwd=Path("/policy"),
+            network=FakeNetwork(),
+            codex_linux_sandbox_exe=Path("/tmp/codex-linux-sandbox"),
+            use_legacy_landlock=True,
+            windows_sandbox_level=WindowsSandboxLevel.RESTRICTED_TOKEN,
+        )
+
+        prepared = shell_prepare_sandboxed_exec(
+            ShellPrepareSandboxedExecParams(
+                command=("/usr/bin/touch", "/tmp/file"),
+                workdir=Path("/work"),
+                env={"A": "B"},
+                permission_profile=profile,
+                additional_permissions=additional,
+            ),
+            context,
+            sandbox_manager=manager,
+        )
+
+        file_system_policy, network_policy = profile.to_runtime_permissions()
+        self.assertEqual(
+            manager.select_calls,
+            [(file_system_policy, network_policy, "auto", WindowsSandboxLevel.RESTRICTED_TOKEN, True)],
+        )
+        request = manager.transform_calls[0]
+        self.assertEqual(request.command, SandboxCommand("/usr/bin/touch", ("/tmp/file",), Path("/work"), {"A": "B"}, additional))
+        self.assertEqual(request.permissions, profile)
+        self.assertEqual(request.sandbox, SandboxType.LINUX_SECCOMP)
+        self.assertTrue(request.enforce_managed_network)
+        self.assertEqual(request.sandbox_policy_cwd, Path("/policy"))
+        self.assertEqual(request.codex_linux_sandbox_exe, Path("/tmp/codex-linux-sandbox"))
+        self.assertTrue(request.use_legacy_landlock)
+        self.assertFalse(request.windows_sandbox_private_desktop)
+        self.assertEqual(
+            prepared,
+            ShellPreparedExec(
+                ("sandboxed", "/tmp/file"),
+                Path("/work"),
+                {"A": "B", "SANDBOX": "1", "NETWORK_APPLIED": "1"},
+                arg0="sandbox-arg0",
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "prepared command must not be empty"):
+            shell_prepare_sandboxed_exec(
+                ShellPrepareSandboxedExecParams((), Path("/work"), {}, profile),
+                context,
+                sandbox_manager=manager,
+            )
 
     def test_shell_escalate_action_from_decision_matches_rust_wire_actions(self) -> None:
         execution = ShellEscalationExecution.unsandboxed()
@@ -3237,6 +3836,172 @@ class ToolRuntimesTests(unittest.TestCase):
         self.assertEqual(candidate.commands, (("/tmp/tool", "--flag", "value"),))
         self.assertFalse(candidate.used_complex_parsing)
 
+    def test_evaluate_intercepted_exec_policy_uses_wrapper_command_when_parsing_disabled(self) -> None:
+        # Rust source: codex-rs/core/src/tools/runtimes/shell/unix_escalation.rs
+        # Rust test: evaluate_intercepted_exec_policy_uses_wrapper_command_when_shell_wrapper_parsing_disabled.
+        evaluation = evaluate_intercepted_exec_policy(
+            (ExecPolicyPrefixRule.new(("npm", "publish"), "prompt"),),
+            "/bin/zsh",
+            ("zsh", "-lc", "npm publish"),
+            _intercepted_exec_context(enable_shell_wrapper_parsing=False),
+        )
+
+        self.assertIs(evaluation.decision, Decision.ALLOW)
+        self.assertEqual(
+            evaluation.matched_rules,
+            (
+                {
+                    "heuristicsRuleMatch": {
+                        "command": ["/bin/zsh", "-lc", "npm publish"],
+                        "decision": "allow",
+                    }
+                },
+            ),
+        )
+        self.assertFalse(decision_driven_by_policy(evaluation.matched_rules, evaluation.decision))
+
+    def test_evaluate_intercepted_exec_policy_matches_inner_commands_when_enabled(self) -> None:
+        # Rust source: codex-rs/core/src/tools/runtimes/shell/unix_escalation.rs
+        # Rust test: evaluate_intercepted_exec_policy_matches_inner_shell_commands_when_enabled.
+        evaluation = evaluate_intercepted_exec_policy(
+            (ExecPolicyPrefixRule.new(("npm", "publish"), "prompt"),),
+            "/bin/bash",
+            ("bash", "-lc", "npm publish"),
+            _intercepted_exec_context(enable_shell_wrapper_parsing=True),
+        )
+
+        self.assertIs(evaluation.decision, Decision.PROMPT)
+        self.assertEqual(
+            evaluation.matched_rules,
+            (
+                {
+                    "prefixRuleMatch": {
+                        "matchedPrefix": ["npm", "publish"],
+                        "decision": "prompt",
+                    }
+                },
+            ),
+        )
+        self.assertTrue(decision_driven_by_policy(evaluation.matched_rules, evaluation.decision))
+
+    def test_evaluate_intercepted_exec_policy_uses_host_executable_mappings(self) -> None:
+        # Rust source: codex-rs/core/src/tools/runtimes/shell/unix_escalation.rs
+        # Rust tests: intercepted_exec_policy_uses_host_executable_mappings and
+        # intercepted_exec_policy_rejects_disallowed_host_executable_mapping.
+        policy = {
+            "rules": (ExecPolicyPrefixRule.new(("git", "status"), "prompt"),),
+            "host_executables": {"git": ("/usr/bin/git",)},
+        }
+
+        matched = evaluate_intercepted_exec_policy(
+            policy,
+            "/usr/bin/git",
+            ("git", "status"),
+            _intercepted_exec_context(enable_shell_wrapper_parsing=False),
+        )
+        self.assertIs(matched.decision, Decision.PROMPT)
+        self.assertEqual(matched.matched_rules[0]["prefixRuleMatch"]["resolvedProgram"], "/usr/bin/git")
+        self.assertTrue(decision_driven_by_policy(matched.matched_rules, matched.decision))
+
+        disallowed = evaluate_intercepted_exec_policy(
+            policy,
+            "/opt/homebrew/bin/git",
+            ("git", "status"),
+            _intercepted_exec_context(enable_shell_wrapper_parsing=False),
+        )
+        self.assertIs(disallowed.decision, Decision.ALLOW)
+        self.assertEqual(disallowed.matched_rules[0]["heuristicsRuleMatch"]["command"][0], "/opt/homebrew/bin/git")
+        self.assertFalse(decision_driven_by_policy(disallowed.matched_rules, disallowed.decision))
+
+    def test_evaluate_intercepted_exec_policy_treats_preapproved_additional_permissions_as_default(self) -> None:
+        # Rust source: codex-rs/core/src/tools/runtimes/shell/unix_escalation.rs
+        # Rust test: intercepted_exec_policy_treats_preapproved_additional_permissions_as_default.
+        preapproved = evaluate_intercepted_exec_policy(
+            (),
+            "/usr/bin/printf",
+            ("printf", "hello"),
+            _intercepted_exec_context(
+                permission_profile=PermissionProfile.workspace_write(),
+                sandbox_permissions=approval_sandbox_permissions(
+                    SandboxPermissions.WITH_ADDITIONAL_PERMISSIONS,
+                    True,
+                ),
+            ),
+        )
+        fresh_request = evaluate_intercepted_exec_policy(
+            (),
+            "/usr/bin/printf",
+            ("printf", "hello"),
+            _intercepted_exec_context(
+                permission_profile=PermissionProfile.workspace_write(),
+                sandbox_permissions=SandboxPermissions.WITH_ADDITIONAL_PERMISSIONS,
+            ),
+        )
+
+        self.assertIs(preapproved.decision, Decision.ALLOW)
+        self.assertIs(fresh_request.decision, Decision.PROMPT)
+
+    def test_shell_escalation_policy_plan_matches_rust_determine_action_branching(self) -> None:
+        # Rust source: codex-rs/core/src/tools/runtimes/shell/unix_escalation.rs
+        # Behavior anchor: CoreShellActionProvider::determine_action selects
+        # needs_escalation, DecisionSource, and EscalationExecution before
+        # delegating to process_decision.
+        profile = PermissionProfile.workspace_write()
+        prefix_rule_evaluation = InterceptedExecPolicyEvaluation(
+            Decision.ALLOW,
+            (
+                {
+                    "prefixRuleMatch": {
+                        "matchedPrefix": ["npm", "publish"],
+                        "decision": "allow",
+                    }
+                },
+            ),
+        )
+
+        prefix_plan = shell_escalation_policy_plan(
+            prefix_rule_evaluation,
+            sandbox_permissions=SandboxPermissions.USE_DEFAULT,
+            permission_profile=profile,
+        )
+
+        self.assertEqual(
+            prefix_plan,
+            ShellEscalationPolicyPlan(
+                decision=Decision.ALLOW,
+                decision_source=DecisionSource.PREFIX_RULE,
+                needs_escalation=True,
+                escalation_execution=ShellEscalationExecution.unsandboxed(),
+            ),
+        )
+
+        heuristic_evaluation = InterceptedExecPolicyEvaluation(
+            Decision.ALLOW,
+            ({"heuristicsRuleMatch": {"command": ["touch", "file"], "decision": "allow"}},),
+        )
+        require_escalated = shell_escalation_policy_plan(
+            heuristic_evaluation,
+            sandbox_permissions=SandboxPermissions.REQUIRE_ESCALATED,
+            permission_profile=profile,
+        )
+        self.assertEqual(require_escalated.decision_source, DecisionSource.UNMATCHED_COMMAND_FALLBACK)
+        self.assertTrue(require_escalated.needs_escalation)
+        self.assertEqual(require_escalated.escalation_execution, ShellEscalationExecution.unsandboxed())
+
+        additional = AdditionalPermissionProfile(
+            file_system=FileSystemPermissions.from_read_write_roots(write_roots=("/tmp/out",))
+        )
+        with_additional = shell_escalation_policy_plan(
+            heuristic_evaluation,
+            sandbox_permissions=SandboxPermissions.WITH_ADDITIONAL_PERMISSIONS,
+            permission_profile=profile,
+            prompt_permissions=additional,
+        )
+        self.assertFalse(with_additional.needs_escalation)
+        self.assertEqual(with_additional.decision_source, DecisionSource.UNMATCHED_COMMAND_FALLBACK)
+        self.assertEqual(with_additional.escalation_execution, ShellEscalationExecution.permissions(profile))
+        self.assertEqual(with_additional.prompt_permissions, additional)
+
     def test_map_exec_result_preserves_output_on_sandbox_denied(self) -> None:
         with self.assertRaises(ToolRuntimeError) as ctx:
             map_exec_result(
@@ -3433,6 +4198,22 @@ class ToolRuntimesTests(unittest.TestCase):
         self.assertFalse(is_valid_shell_variable_name("1A"))
         self.assertEqual(shell_single_quote("echo 'hello'"), """echo '"'"'hello'"'"'""")
         self.assertTrue(isinstance(CODEX_PROXY_GIT_SSH_COMMAND_MARKER, str))
+
+
+def _intercepted_exec_context(
+    *,
+    permission_profile: PermissionProfile | None = None,
+    sandbox_permissions: SandboxPermissions = SandboxPermissions.USE_DEFAULT,
+    enable_shell_wrapper_parsing: bool = False,
+) -> InterceptedExecPolicyContext:
+    return InterceptedExecPolicyContext(
+        approval_policy=AskForApproval.ON_REQUEST,
+        permission_profile=permission_profile or PermissionProfile.read_only(),
+        file_system_sandbox_policy=FileSystemSandboxPolicy.restricted(()),
+        sandbox_cwd=Path("/work"),
+        sandbox_permissions=sandbox_permissions,
+        enable_shell_wrapper_parsing=enable_shell_wrapper_parsing,
+    )
 
 
 if __name__ == "__main__":

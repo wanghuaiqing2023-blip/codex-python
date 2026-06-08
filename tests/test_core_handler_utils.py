@@ -69,6 +69,18 @@ class HandlerUtilsTests(unittest.TestCase):
         self.assertIs(handler_package.updated_hook_command, updated_hook_command)
         self.assertIs(handler_package.rewrite_function_string_argument, rewrite_function_string_argument)
 
+    def test_handler_package_reexports_rust_root_handler_names(self):
+        # Rust source: codex-core/src/tools/handlers/mod.rs
+        # Rust contract: the module root re-exports public handler types.
+        from pycodex.core.tools.handlers.shell import ShellCommandHandler
+        from pycodex.core.tools.handlers.unified_exec import ExecCommandHandler, WriteStdinHandler
+        from pycodex.core.tools.handlers.view_image import ViewImageHandler
+
+        self.assertIs(handler_package.ShellCommandHandler, ShellCommandHandler)
+        self.assertIs(handler_package.ExecCommandHandler, ExecCommandHandler)
+        self.assertIs(handler_package.WriteStdinHandler, WriteStdinHandler)
+        self.assertIs(handler_package.ViewImageHandler, ViewImageHandler)
+
     def test_shell_and_unified_exec_reuse_shared_updated_hook_command(self):
         # Direct adjacent smoke: concrete handlers should not keep a duplicate
         # implementation of Rust handlers/mod.rs updated_hook_command.
@@ -309,6 +321,34 @@ class HandlerUtilsTests(unittest.TestCase):
         )
         self.assertEqual(effective.sandbox_permissions, SandboxPermissions.WITH_ADDITIONAL_PERMISSIONS)
         self.assertEqual(effective.additional_permissions.network, NetworkPermissions(enabled=True))
+
+    def test_apply_granted_turn_permissions_merges_explicit_and_sticky_grants_like_rust(self):
+        # Rust source: codex-core/src/tools/handlers/mod.rs
+        # Rust contract: apply_granted_turn_permissions merges explicit inline
+        # permissions with sticky session/turn grants before preapproval checks.
+        class Session:
+            async def granted_session_permissions(self):
+                return AdditionalPermissionProfile(network=NetworkPermissions(enabled=True))
+
+            def granted_turn_permissions(self):
+                return None
+
+        explicit = AdditionalPermissionProfile(
+            file_system=FileSystemPermissions.from_read_write_roots(None, (Path("/workspace/out"),))
+        )
+
+        effective = asyncio.run(
+            apply_granted_turn_permissions(
+                Session(),
+                Path("/workspace"),
+                SandboxPermissions.WITH_ADDITIONAL_PERMISSIONS,
+                explicit,
+            )
+        )
+
+        self.assertEqual(effective.sandbox_permissions, SandboxPermissions.WITH_ADDITIONAL_PERMISSIONS)
+        self.assertEqual(effective.additional_permissions.network, NetworkPermissions(enabled=True))
+        self.assertEqual(effective.additional_permissions.file_system, explicit.file_system)
 
     def test_session_strict_auto_review_reads_async_method_or_bool_attribute(self):
         class MethodSession:

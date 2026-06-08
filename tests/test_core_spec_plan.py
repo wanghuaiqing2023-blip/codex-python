@@ -15,6 +15,7 @@ from pycodex.core import (
     WAIT_TOOL_NAME,
     add_apply_patch_tool_for_turn_context,
     add_apply_patch_tool,
+    add_extension_tools,
     add_unified_exec_tools_for_turn_context,
     add_view_image_tool_for_turn_context,
     build_environment_tool_router_from_turn_context,
@@ -67,6 +68,22 @@ class SearchableRegisteredTool(RegisteredTool):
             self.tool_spec,
             {"name": "Deferred tools", "description": "Tools hidden until search."},
         )
+
+
+class ExtensionExecutor:
+    def __init__(self, name: ToolName | str) -> None:
+        self.name = ToolName.from_value(name)
+
+    def tool_name(self) -> ToolName:
+        return self.name
+
+    def spec(self):
+        if self.name.namespace is not None:
+            return namespace_spec(self.name.namespace, self.name.name)
+        return function_spec(self.name.name)
+
+    def handle(self, _call):
+        return None
 
 
 class SpecPlanTests(unittest.TestCase):
@@ -261,6 +278,68 @@ class SpecPlanTests(unittest.TestCase):
 
         self.assertEqual(descriptions["mcp__calendar__"].name, "mcp__calendar__")
         self.assertEqual(descriptions["mcp__calendar__"].description, "Calendar tools")
+
+    def test_add_extension_tools_skips_registered_duplicate_names_like_rust(self) -> None:
+        # Rust parity: codex-core::tools::spec_plan
+        # spec_plan.rs::append_extension_tool_executors skips names already registered.
+        planned = PlannedTools()
+        planned.add(RegisteredTool.plain("local_echo", tool_spec=function_spec("local_echo")))
+
+        add_extension_tools(
+            planned,
+            (
+                ExtensionExecutor("local_echo"),
+                ExtensionExecutor("extension_echo"),
+                ExtensionExecutor("extension_echo"),
+            ),
+        )
+        specs, registry = build_model_visible_specs_and_registry(planned)
+
+        self.assertEqual([spec["name"] for spec in specs], ["local_echo", "extension_echo"])
+        self.assertEqual(
+            registry.tool_names(),
+            (ToolName.plain("extension_echo"), ToolName.plain("local_echo")),
+        )
+
+    def test_add_extension_tools_reserves_code_mode_and_tool_search_names_like_rust(self) -> None:
+        # Rust parity: codex-core::tools::spec_plan
+        # append_extension_tool_executors reserves code-mode exec/wait and pending tool_search.
+        code_mode_plan = PlannedTools()
+        add_extension_tools(
+            code_mode_plan,
+            (
+                ExtensionExecutor(PUBLIC_TOOL_NAME),
+                ExtensionExecutor(WAIT_TOOL_NAME),
+                ExtensionExecutor("extension_ok"),
+            ),
+            ToolPlanOptions(code_mode_enabled=True),
+        )
+        code_mode_specs, code_mode_registry = build_model_visible_specs_and_registry(
+            code_mode_plan,
+            ToolPlanOptions(code_mode_enabled=True),
+        )
+
+        self.assertEqual([spec["name"] for spec in code_mode_specs], [PUBLIC_TOOL_NAME, WAIT_TOOL_NAME, "extension_ok"])
+        self.assertIsInstance(code_mode_registry.tool(ToolName.plain(PUBLIC_TOOL_NAME)), CodeModeExecuteHandler)
+        self.assertIsInstance(code_mode_registry.tool(ToolName.plain(WAIT_TOOL_NAME)), CodeModeWaitHandler)
+
+        search_plan = PlannedTools()
+        search_plan.add_with_exposure(
+            SearchableRegisteredTool(
+                name=ToolName.namespaced("mcp__calendar__", "create_event"),
+                tool_spec=namespace_spec("mcp__calendar__", "create_event"),
+            ),
+            ToolExposure.DEFERRED,
+        )
+        add_extension_tools(
+            search_plan,
+            (ExtensionExecutor("tool_search"), ExtensionExecutor("extension_ok")),
+        )
+        search_specs, search_registry = build_model_visible_specs_and_registry(search_plan)
+
+        self.assertEqual([spec.get("name", spec["type"]) for spec in search_specs], ["extension_ok", "tool_search"])
+        self.assertIsInstance(search_registry.tool(ToolName.plain("tool_search")), ToolSearchHandler)
+        self.assertIsNotNone(search_registry.tool(ToolName.plain("extension_ok")))
 
     def test_hosted_model_tool_specs_follow_provider_and_standalone_web_run(self) -> None:
         # Rust parity: codex-core::tools::spec_plan

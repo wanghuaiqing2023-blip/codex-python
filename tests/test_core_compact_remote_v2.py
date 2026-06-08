@@ -10,11 +10,13 @@ from pycodex.core import (
     build_remote_compaction_v2_success_plan,
     build_v2_compacted_history,
     collect_compaction_output,
+    message_text_token_count,
     remote_compaction_v2_max_stream_retries,
     remote_compaction_v2_request_outcome,
     remote_compaction_v2_retry_decision,
     remote_compaction_v2_trace_attempt_payload,
     response_processed_request_for_remote_compaction_v2,
+    truncate_message_text_to_token_budget,
     truncate_retained_messages_for_remote_compaction,
 )
 from pycodex.core.compact import InitialContextInjection
@@ -422,6 +424,43 @@ class CompactRemoteV2Tests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             truncate_retained_messages_for_remote_compaction((image_only, newest), max_tokens=1),
             [newest],
+        )
+
+    def test_message_text_token_count_ignores_images_and_non_messages(self) -> None:
+        item = ResponseItem.message(
+            "user",
+            (
+                ContentItem.input_text("abcd"),
+                ContentItem.input_image("data:image/png;base64,abc"),
+                ContentItem.output_text("uvwxyz"),
+            ),
+        )
+
+        self.assertEqual(message_text_token_count(item), 3)
+        self.assertEqual(message_text_token_count(ResponseItem.compaction("encrypted")), 0)
+
+    def test_truncate_message_text_to_token_budget_zero_budget_preserves_images(self) -> None:
+        item = ResponseItem.message(
+            "user",
+            (
+                ContentItem.input_text("abcdef"),
+                ContentItem.input_image("data:image/png;base64,abc"),
+                ContentItem.output_text("uvwxyz"),
+            ),
+            id="msg-1",
+            phase=MessagePhase.FINAL_ANSWER,
+        )
+
+        truncated = truncate_message_text_to_token_budget(item, max_tokens=0)
+
+        self.assertEqual(
+            truncated,
+            ResponseItem.message(
+                "user",
+                (ContentItem.input_image("data:image/png;base64,abc"),),
+                id="msg-1",
+                phase=MessagePhase.FINAL_ANSWER,
+            ),
         )
 
 

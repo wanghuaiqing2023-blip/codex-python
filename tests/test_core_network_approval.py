@@ -19,6 +19,8 @@ from pycodex.core import (
     PendingHostApproval,
     allows_network_approval_flow,
     begin_network_approval,
+    build_blocked_request_observer,
+    build_network_policy_decider,
     finish_deferred_network_approval,
     finish_immediate_network_approval,
     network_approval_outcome_to_result,
@@ -214,8 +216,12 @@ class NetworkApprovalTests(unittest.TestCase):
         self.assertIs(call.cancellation_token, token)
 
     def test_network_approval_dataclasses_reject_non_rust_shapes(self) -> None:
-        with self.assertRaisesRegex(ValueError, "unknown network decision type"):
-            NetworkDecision("ask")
+        self.assertEqual(
+            NetworkDecision.ask(NETWORK_APPROVAL_DENY_REASON_NOT_ALLOWED),
+            NetworkDecision("ask", NETWORK_APPROVAL_DENY_REASON_NOT_ALLOWED),
+        )
+        with self.assertRaisesRegex(TypeError, "ask decision reason must be a string"):
+            NetworkDecision.ask(123)  # type: ignore[arg-type]
         with self.assertRaisesRegex(ValueError, "allow decision cannot include reason"):
             NetworkDecision("allow", "because")
         with self.assertRaisesRegex(TypeError, "deny decision reason must be a string"):
@@ -693,6 +699,64 @@ class NetworkApprovalTests(unittest.TestCase):
 
         self.assertIsNone(service.take_call_outcome("registration-1"))
         self.assertIsNone(service.take_call_outcome("registration-2"))
+
+    def test_build_blocked_request_observer_records_blocked_request(self) -> None:
+        # Rust source: codex-rs/core/src/tools/network_approval.rs::build_blocked_request_observer.
+        service = NetworkApprovalService()
+        token = service.register_call("registration-1", "turn-1", {}, "curl")
+        observer = build_blocked_request_observer(service)
+
+        observer(
+            BlockedRequest(
+                host="example.com",
+                reason="not_allowed",
+                protocol="http",
+                decision="deny",
+            )
+        )
+
+        self.assertTrue(token.is_cancelled())
+        self.assertEqual(
+            service.take_call_outcome("registration-1"),
+            NetworkApprovalOutcome.denied_by_policy(
+                'Network access to "example.com" was blocked: domain is not on the allowlist '
+                "for the current sandbox mode."
+            ),
+        )
+
+    def test_build_network_policy_decider_asks_when_session_missing(self) -> None:
+        # Rust source: codex-rs/core/src/tools/network_approval.rs::build_network_policy_decider.
+        service = NetworkApprovalService()
+        decider = build_network_policy_decider(service, lambda: None)
+
+        decision = decider({"host": "example.com", "port": 443, "protocol": "HttpsConnect"})
+
+        self.assertEqual(decision, NetworkDecision.ask(NETWORK_APPROVAL_DENY_REASON_NOT_ALLOWED))
+
+    def test_build_network_policy_decider_uses_session_review_callback(self) -> None:
+        # Rust source: codex-rs/core/src/tools/network_approval.rs::handle_inline_policy_request.
+        from pycodex.protocol.approvals import ReviewDecision
+
+        class Session:
+            permission_profile = PermissionProfile.workspace_write()
+            approval_policy = AskForApproval.ON_REQUEST
+
+            def __init__(self) -> None:
+                self.plans = []
+
+            def request_network_approval(self, plan):
+                self.plans.append(plan)
+                return ReviewDecision.approved_for_session()
+
+        service = NetworkApprovalService()
+        session = Session()
+        decider = build_network_policy_decider(service, lambda: session)
+
+        decision = decider({"host": "Example.COM", "port": 443, "protocol": "HttpsConnect"})
+
+        self.assertEqual(decision, NetworkDecision.allow())
+        self.assertEqual(len(session.plans), 1)
+        self.assertIn(HostApprovalKey("example.com", "https", 443), service.session_approved_hosts)
 
     def test_finish_call_only_consumes_target_registration(self) -> None:
         service = NetworkApprovalService()

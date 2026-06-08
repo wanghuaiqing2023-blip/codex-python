@@ -240,6 +240,29 @@ class SafetyTests(unittest.TestCase):
                 SafetyCheck.ask_user(),
             )
 
+    def test_on_failure_auto_approves_unconstrained_external_patch(self) -> None:
+        # Rust source: codex-rs/core/src/safety.rs
+        # Behavior anchor: OnFailure enters the auto-approval path even when
+        # the patch is not constrained to writable paths.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cwd = Path(tmpdir)
+            action = ApplyPatchAction.new_add_for_test(cwd.parent / "outside.txt", "")
+            profile = PermissionProfile.external(NetworkSandboxPolicy.RESTRICTED)
+            policy = FileSystemSandboxPolicy.restricted(())
+
+            self.assertFalse(is_write_patch_constrained_to_writable_paths(action, policy, cwd))
+            self.assertEqual(
+                assess_patch_safety(
+                    action,
+                    AskForApproval.ON_FAILURE,
+                    profile,
+                    policy,
+                    cwd,
+                    WindowsSandboxLevel.DISABLED,
+                ),
+                SafetyCheck.auto_approve(SandboxType.NONE),
+            )
+
     def test_explicit_unreadable_paths_prevent_auto_approval_for_external_sandbox(self) -> None:
         # Rust source: codex-rs/core/src/safety.rs
         # Rust test: explicit_unreadable_paths_prevent_auto_approval_for_external_sandbox.

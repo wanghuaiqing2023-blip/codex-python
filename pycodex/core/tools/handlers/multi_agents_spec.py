@@ -24,9 +24,9 @@ SPAWN_AGENT_SERVICE_TIER_OVERRIDE_DESCRIPTION = (
 )
 MAX_MODEL_OVERRIDES_IN_SPAWN_AGENT_DESCRIPTION = 5
 
-MIN_WAIT_TIMEOUT_MS = 1_000
+MIN_WAIT_TIMEOUT_MS = 10_000
 DEFAULT_WAIT_TIMEOUT_MS = 30_000
-MAX_WAIT_TIMEOUT_MS = 600_000
+MAX_WAIT_TIMEOUT_MS = 3_600_000
 
 
 def _usize(value: JsonValue, field_name: str) -> int:
@@ -175,14 +175,20 @@ def create_followup_task_tool() -> dict[str, JsonValue]:
 
 
 def create_resume_agent_tool() -> dict[str, JsonValue]:
-    return {
-        "type": "function",
-        "name": "resume_agent",
-        "description": "Resume a previously closed agent by id so it can receive send_input and wait_agent calls.",
-        "strict": False,
-        "parameters": _object_schema({"id": {"type": "string", "description": "Agent id to resume."}}, ["id"], False),
-        "output_schema": resume_agent_output_schema(),
-    }
+    return _namespace_tool(
+        {
+            "type": "function",
+            "name": "resume_agent",
+            "description": "Resume a previously closed agent by id so it can receive send_input and wait_agent calls.",
+            "strict": False,
+            "parameters": _object_schema(
+                {"id": {"type": "string", "description": "Agent id to resume."}},
+                ["id"],
+                False,
+            ),
+            "output_schema": resume_agent_output_schema(),
+        }
+    )
 
 
 def create_wait_agent_tool_v1(options: WaitAgentTimeoutOptions = WaitAgentTimeoutOptions()) -> dict[str, JsonValue]:
@@ -399,13 +405,58 @@ def spawn_agent_tool_description(available_models_description: str | None, retur
     if include_usage_hint and usage_hint_text is not None:
         return f"{base}\n{usage_hint_text}"
     if include_usage_hint:
-        return base + "\nThis spawn_agent tool provides you access to sub-agents that inherit your current model by default. Do not set the `model` field unless the user explicitly asks for a different model or there is a clear task-specific reason."
+        agent_role_usage_hint = (
+            "Agent-role guidance below only helps choose which agent to use after spawning is already authorized; it never authorizes spawning by itself."
+            if available_models_description is not None
+            else ""
+        )
+        return (
+            base
+            + "\nThis spawn_agent tool provides you access to sub-agents that inherit your current model by default. Do not set the `model` field unless the user explicitly asks for a different model or there is a clear task-specific reason. You should follow the rules and guidelines below to use this tool.\n\n"
+            + "Only use `spawn_agent` if and only if the user explicitly asks for sub-agents, delegation, or parallel agent work.\n"
+            + "Requests for depth, thoroughness, research, investigation, or detailed codebase analysis do not count as permission to spawn.\n"
+            + f"{agent_role_usage_hint}\n\n"
+            + "### When to delegate vs. do the subtask yourself\n"
+            + "- First, quickly analyze the overall user task and form a succinct high-level plan. Identify which tasks are immediate blockers on the critical path, and which tasks are sidecar tasks that are needed but can run in parallel without blocking the next local step. As part of that plan, explicitly decide what immediate task you should do locally right now. Do this planning step before delegating to agents so you do not hand off the immediate blocking task to a submodel and then waste time waiting on it.\n"
+            + "- Use a subagent when a subtask is easy enough for it to handle and can run in parallel with your local work. Prefer delegating concrete, bounded sidecar tasks that materially advance the main task without blocking your immediate next local step.\n"
+            + "- Do not delegate urgent blocking work when your immediate next step depends on that result. If the very next action is blocked on that task, the main rollout should usually do it locally to keep the critical path moving.\n"
+            + "- Keep work local when the subtask is too difficult to delegate well and when it is tightly coupled, urgent, or likely to block your immediate next step.\n\n"
+            + "### Designing delegated subtasks\n"
+            + "- Subtasks must be concrete, well-defined, and self-contained.\n"
+            + "- Delegated subtasks must materially advance the main task.\n"
+            + "- Do not duplicate work between the main rollout and delegated subtasks.\n"
+            + "- Avoid issuing multiple delegate calls on the same unresolved thread unless the new delegated task is genuinely different and necessary.\n"
+            + "- Narrow the delegated ask to the concrete output you need next.\n"
+            + "- For coding tasks, prefer delegating concrete code-change worker subtasks over read-only explorer analysis when the subagent can make a bounded patch in a clear write scope.\n"
+            + "- When delegating coding work, instruct the submodel to edit files directly in its forked workspace and list the file paths it changed in the final answer.\n"
+            + "- For code-edit subtasks, decompose work so each delegated task has a disjoint write set.\n\n"
+            + "### After you delegate\n"
+            + "- Call wait_agent very sparingly. Only call wait_agent when you need the result immediately for the next critical-path step and you are blocked until it returns.\n"
+            + "- Do not redo delegated subagent tasks yourself; focus on integrating results or tackling non-overlapping work.\n"
+            + "- While the subagent is running in the background, do meaningful non-overlapping work immediately.\n"
+            + "- Do not repeatedly wait by reflex.\n"
+            + "- When a delegated coding task returns, quickly review the uploaded changes, then integrate or refine them.\n\n"
+            + "### Parallel delegation patterns\n"
+            + "- Run multiple independent information-seeking subtasks in parallel when you have distinct questions that can be answered independently.\n"
+            + "- Split implementation into disjoint codebase slices and spawn multiple agents for them in parallel when the write scopes do not overlap.\n"
+            + "- Delegate verification only when it can run in parallel with ongoing implementation and is likely to catch a concrete risk before final integration.\n"
+            + "- The key is to find opportunities to spawn multiple independent subtasks in parallel within the same round, while ensuring each subtask is well-defined, self-contained, and materially advances the main task."
+        )
     return base
 
 
 def spawn_agent_tool_description_v2(available_models_description: str | None, include_usage_hint: bool, usage_hint_text: str | None, max_concurrent_threads_per_session: int | None) -> str:
     concurrency = "" if max_concurrent_threads_per_session is None else f"This session is configured with `max_concurrent_threads_per_session = {max_concurrent_threads_per_session}` for concurrently open agent threads."
-    base = f"\n        {available_models_description or ''}\n        Spawns an agent to work on the specified task. If your current task is `/root/task1` and you spawn_agent with task_name \"task_3\" the agent will have canonical task name `/root/task1/task_3`.\n{SPAWN_AGENT_INHERITED_MODEL_GUIDANCE}\n{concurrency}"
+    base = (
+        f"\n        {available_models_description or ''}\n"
+        '        Spawns an agent to work on the specified task. If your current task is `/root/task1` and you spawn_agent with task_name "task_3" the agent will have canonical task name `/root/task1/task_3`.\n'
+        "You are then able to refer to this agent as `task_3` or `/root/task1/task_3` interchangeably. However an agent `/root/task2/task_3` would only be able to communicate with this agent via its canonical name `/root/task1/task_3`.\n"
+        "The spawned agent will have the same tools as you and the ability to spawn its own subagents.\n"
+        f"{SPAWN_AGENT_INHERITED_MODEL_GUIDANCE}\n"
+        "It will be able to send you and other running agents messages, and its final answer will be provided to you when it finishes.\n"
+        "The new agent's canonical task name will be provided to it along with the message.\n"
+        f"{concurrency}"
+    )
     if include_usage_hint and usage_hint_text is not None:
         return f"\n        {base}\n{usage_hint_text}"
     return base
@@ -417,7 +468,28 @@ def spawn_agent_models_description(models: Iterable[JsonValue]) -> str:
     visible = [model for model in models if _model_field(model, "show_in_picker", False)][:MAX_MODEL_OVERRIDES_IN_SPAWN_AGENT_DESCRIPTION]
     if not visible:
         return "No picker-visible model overrides are currently loaded."
-    lines = [f"- `{_model_field(model, 'model', '')}`: {_model_field(model, 'description', '')}" for model in visible]
+    lines = []
+    for model in visible:
+        default_reasoning_effort = _string_value(_model_field(model, "default_reasoning_effort", ""))
+        supported_efforts = []
+        for preset in _model_field(model, "supported_reasoning_efforts", ()):
+            effort = _string_value(_model_field(preset, "effort", ""))
+            if effort == "":
+                continue
+            if effort == default_reasoning_effort:
+                supported_efforts.append(f"{effort} (default)")
+            else:
+                supported_efforts.append(effort)
+        reasoning_suffix = "" if not supported_efforts else f" Reasoning efforts: {', '.join(supported_efforts)}."
+        service_tiers = [
+            _string_value(_model_field(tier, "id", ""))
+            for tier in _model_field(model, "service_tiers", ())
+        ]
+        service_tiers = [tier for tier in service_tiers if tier]
+        service_suffix = "" if not service_tiers else f" Service tiers: {', '.join(service_tiers)}."
+        lines.append(
+            f"- `{_model_field(model, 'model', '')}`: {_model_field(model, 'description', '')}{reasoning_suffix}{service_suffix}"
+        )
     return "Available model overrides (optional; inherited parent model is preferred):\n" + "\n".join(lines)
 
 
@@ -460,3 +532,10 @@ def _model_field(model: JsonValue, name: str, default: JsonValue) -> JsonValue:
     if isinstance(model, Mapping):
         return model.get(name, default)
     return getattr(model, name, default)
+
+
+def _string_value(value: JsonValue) -> str:
+    enum_value = getattr(value, "value", None)
+    if isinstance(enum_value, str):
+        return enum_value
+    return str(value)

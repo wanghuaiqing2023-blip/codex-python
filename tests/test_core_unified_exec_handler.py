@@ -8,6 +8,7 @@ import unittest
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from pycodex.features import Feature
 from pycodex.core.tools.hook_names import HookToolName
@@ -149,7 +150,7 @@ class CoreUnifiedExecHandlerTests(unittest.TestCase):
         self.assertIsNotNone(manager.request)
         self.assertEqual(manager.request.process_id, 45)
         self.assertEqual(manager.request.input, "hello\n")
-        self.assertEqual(manager.request.yield_time_ms, 250)
+        self.assertEqual(manager.request.yield_time_ms, 1)
         self.assertEqual(manager.request.max_output_tokens, 12)
         self.assertEqual(manager.request.truncation_policy, TruncationPolicyConfig.tokens(123))
 
@@ -288,6 +289,97 @@ class CoreUnifiedExecHandlerTests(unittest.TestCase):
         self.assertFalse(request.additional_permissions_preapproved)
         self.assertEqual(request.justification, "test escalation")
         self.assertEqual(request.prefix_rule, ("echo",))
+
+    def test_exec_command_handler_emits_implicit_skill_invocation_before_execution(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs
+        # Behavior anchor: handle calls maybe_emit_implicit_skill_invocation
+        # after resolving cwd and before unified exec execution.
+        order: list[str] = []
+
+        class Manager:
+            async def allocate_process_id(self) -> int:
+                return 45
+
+            async def exec_command(self, request: ExecCommandRequest) -> ExecCommandToolOutput:
+                order.append("exec")
+                return ExecCommandToolOutput(
+                    event_call_id=request.call_id,
+                    chunk_id="chunk-managed",
+                    wall_time_seconds=0.0,
+                    raw_output=b"",
+                    truncation_policy=request.truncation_policy,
+                    process_id=None,
+                    exit_code=0,
+                    hook_command=request.hook_command,
+                )
+
+        async def fake_emit(_session: object, _turn: object, command: str, workdir: Path) -> object:
+            order.append(f"skill:{command}:{workdir.name}")
+            return object()
+
+        root = Path.cwd()
+        manager = Manager()
+        invocation = ToolInvocation(
+            call_id="call-skill",
+            tool_name="exec_command",
+            payload=ToolPayload.function(json.dumps({"cmd": "scripts/run.py", "workdir": "."})),
+            session=SimpleNamespace(
+                user_shell=lambda: Shell(ShellType.SH, shutil.which("sh") or "/bin/sh"),
+                services=SimpleNamespace(unified_exec_manager=manager),
+            ),
+            turn=SimpleNamespace(environments=(SimpleNamespace(environment_id="local", cwd=root),)),
+        )
+
+        with patch("pycodex.core.tools.handlers.unified_exec._maybe_emit_implicit_skill_invocation", side_effect=fake_emit):
+            asyncio.run(ExecCommandHandler().handle(invocation))
+
+        self.assertEqual(order, [f"skill:scripts/run.py:{root.name}", "exec"])
+
+    def test_exec_command_handler_emits_unified_exec_tty_metric(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs
+        # Behavior anchor: emit_unified_exec_tty_metric records
+        # TOOL_CALL_UNIFIED_EXEC_METRIC with tty tag.
+        class Telemetry:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def counter(self, metric: str, inc: int, tags: tuple[tuple[str, str], ...]) -> None:
+                self.calls.append((metric, inc, tags))
+
+        class Manager:
+            async def allocate_process_id(self) -> int:
+                return 45
+
+            async def exec_command(self, request: ExecCommandRequest) -> ExecCommandToolOutput:
+                return ExecCommandToolOutput(
+                    event_call_id=request.call_id,
+                    chunk_id="chunk-managed",
+                    wall_time_seconds=0.0,
+                    raw_output=b"",
+                    truncation_policy=request.truncation_policy,
+                    process_id=None,
+                    exit_code=0,
+                    hook_command=request.hook_command,
+                )
+
+        telemetry = Telemetry()
+        invocation = ToolInvocation(
+            call_id="call-telemetry",
+            tool_name="exec_command",
+            payload=ToolPayload.function(json.dumps({"cmd": "echo tty", "tty": True})),
+            session=SimpleNamespace(
+                user_shell=lambda: Shell(ShellType.SH, shutil.which("sh") or "/bin/sh"),
+                services=SimpleNamespace(unified_exec_manager=Manager()),
+            ),
+            turn=SimpleNamespace(
+                environments=(SimpleNamespace(environment_id="local", cwd=Path.cwd()),),
+                session_telemetry=telemetry,
+            ),
+        )
+
+        asyncio.run(ExecCommandHandler().handle(invocation))
+
+        self.assertEqual(telemetry.calls, [("codex.tool.unified_exec", 1, (("tty", "true"),))])
 
     def test_exec_command_handler_releases_allocated_process_id_on_manager_error(self) -> None:
         class Manager:
@@ -1155,6 +1247,53 @@ class CoreUnifiedExecHandlerTests(unittest.TestCase):
         self.assertEqual(payload.tool_use_id, "exec-call-45")
         self.assertEqual(payload.tool_input, {"command": "sleep 1; echo finished"})
         self.assertEqual(payload.tool_response, "finished\n")
+
+    def test_write_stdin_post_hook_keeps_parallel_session_metadata_separate(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/unified_exec/write_stdin.rs
+        # Rust test: write_stdin_post_tool_use_payload_keeps_parallel_session_metadata_separate.
+        payload = ToolPayload.function('{"session_id":45,"chars":""}')
+        output_a = ExecCommandToolOutput(
+            event_call_id="exec-call-a",
+            chunk_id="chunk-a",
+            wall_time_seconds=0.498,
+            raw_output=b"alpha\n",
+            truncation_policy=TruncationPolicyConfig.tokens(10_000),
+            process_id=None,
+            exit_code=0,
+            hook_command="sleep 2; echo alpha",
+        )
+        output_b = ExecCommandToolOutput(
+            event_call_id="exec-call-b",
+            chunk_id="chunk-b",
+            wall_time_seconds=0.498,
+            raw_output=b"beta\n",
+            truncation_policy=TruncationPolicyConfig.tokens(10_000),
+            process_id=None,
+            exit_code=0,
+            hook_command="sleep 1; echo beta",
+        )
+        invocation_b = ToolInvocation(
+            call_id="write-call-b",
+            tool_name=ToolName.plain("write_stdin"),
+            payload=payload,
+        )
+        invocation_a = ToolInvocation(
+            call_id="write-call-a",
+            tool_name=ToolName.plain("write_stdin"),
+            payload=payload,
+        )
+
+        payloads = [
+            WriteStdinHandler().post_tool_use_payload(invocation_b, output_b),
+            WriteStdinHandler().post_tool_use_payload(invocation_a, output_a),
+        ]
+
+        self.assertEqual(payloads[0].tool_use_id, "exec-call-b")
+        self.assertEqual(payloads[0].tool_input, {"command": "sleep 1; echo beta"})
+        self.assertEqual(payloads[0].tool_response, "beta\n")
+        self.assertEqual(payloads[1].tool_use_id, "exec-call-a")
+        self.assertEqual(payloads[1].tool_input, {"command": "sleep 2; echo alpha"})
+        self.assertEqual(payloads[1].tool_response, "alpha\n")
 
     def test_post_hook_skips_running_sessions(self) -> None:
         # Rust source: codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs

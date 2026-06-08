@@ -57,6 +57,20 @@ core.rollout
 
 No legacy `pycodex.core` compatibility shim files remain for crates that already have canonical Python packages. New crate-level migrations should move implementation to the canonical package, update imports, validate the touched slice, then delete the old coordinate.
 
+## Cross-Package Rust Module Mappings
+
+Some Rust `codex-core` modules intentionally live outside `pycodex.core` when
+Python has a clearer domain package:
+
+```text
+codex/codex-rs/core/src/apply_patch.rs
+  -> pycodex.apply_patch
+```
+
+`pycodex.apply_patch` also carries the adjacent Rust `codex-apply-patch` crate
+surface plus the core apply-patch handler helpers. Do not recreate a duplicate
+`pycodex.core.apply_patch` shim unless a compatibility break requires it.
+
 ## Test Source Policy
 
 Prefer Rust `codex-core` unit tests, `src/*_tests.rs`, and `core/tests/common`

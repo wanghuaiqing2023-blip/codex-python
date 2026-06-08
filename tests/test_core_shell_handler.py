@@ -1,9 +1,10 @@
 import json
+import asyncio
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from pycodex.core.exec import ExecCapturePolicy
+from pycodex.core.exec import ExecCapturePolicy, ExecExpiration, ExecParams
 from pycodex.core.function_tool import FunctionCallError
 from pycodex.core.tools.hook_names import HookToolName
 from pycodex.core.shell import Shell, ShellType
@@ -12,8 +13,11 @@ from pycodex.core.tools.handlers.shell import (
     ShellCommandBackendConfig,
     ShellCommandHandler,
     ShellCommandHandlerOptions,
+    ShellCommandInvocationRequest,
     ShellCommandToolCallParams,
+    RunExecLikeArgs,
     build_shell_request,
+    run_exec_like,
     shell_command_payload_command,
 )
 from pycodex.core.tools.handlers.utils import EffectiveAdditionalPermissions
@@ -164,6 +168,36 @@ class CoreShellHandlerTests(unittest.TestCase):
         self.assertEqual(preapproved.exec_approval_requirement.type, "skip")
         self.assertEqual(not_preapproved.exec_approval_requirement.type, "forbidden")
 
+    def test_build_shell_request_preserves_full_buffer_capture_policy(self) -> None:
+        # Rust source: codex-rs/core/src/exec.rs::build_exec_request.
+        # Rust test: codex-rs/core/src/exec_tests.rs::process_exec_tool_call_preserves_full_buffer_capture_policy.
+        exec_params = ExecParams(
+            command=("/bin/bash", "-lc", "printf hello"),
+            cwd=Path("/repo"),
+            expiration=ExecExpiration.from_timeout_ms(1),
+            capture_policy=ExecCapturePolicy.FULL_BUFFER,
+            env={},
+            sandbox_permissions=SandboxPermissions.USE_DEFAULT,
+            justification=None,
+        )
+
+        request = build_shell_request(
+            exec_params,
+            hook_command="printf hello",
+            shell_type=ShellType.BASH,
+            effective_additional_permissions=EffectiveAdditionalPermissions(
+                SandboxPermissions.USE_DEFAULT,
+                permissions_preapproved=False,
+            ),
+            normalized_additional_permissions=None,
+            approval_policy=AskForApproval.NEVER,
+            permission_profile=PermissionProfile.disabled(),
+            file_system_sandbox_policy=FileSystemSandboxPolicy.unrestricted(),
+            sandbox_cwd=Path("/repo"),
+        )
+
+        self.assertEqual(request.capture_policy, ExecCapturePolicy.FULL_BUFFER)
+
     def test_handler_backend_and_spec(self) -> None:
         handler = ShellCommandHandler(
             ShellCommandHandlerOptions(
@@ -178,6 +212,190 @@ class CoreShellHandlerTests(unittest.TestCase):
         self.assertIn("login", spec["parameters"]["properties"])
         self.assertTrue(handler.supports_parallel_tool_calls())
         self.assertTrue(handler.waits_for_runtime_cancellation())
+
+    def test_handler_entrypoint_parses_invocation_and_dispatches_runner(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/shell/shell_command.rs::ShellCommandHandler::handle
+        # Rust contract: handle parses function payloads, derives ExecParams, preserves the raw hook command,
+        # and hands the shell request to the runtime path.
+        captured = {}
+        thread_id = ThreadId.new()
+
+        async def runner(request: ShellCommandInvocationRequest):
+            captured["request"] = request
+            return {
+                "text": "shell output",
+                "success": True,
+                "post_tool_use_response": "wire shell output",
+            }
+
+        turn = SimpleNamespace(
+            cwd=Path("/repo"),
+            shell_environment_policy=ShellEnvironmentPolicy.default(),
+            network="net",
+            config=SimpleNamespace(
+                permissions=SimpleNamespace(
+                    allow_login_shell=True,
+                    windows_sandbox_private_desktop=False,
+                )
+            ),
+        )
+        session = SimpleNamespace(
+            conversation_id=thread_id,
+            user_shell=lambda: Shell(ShellType.BASH, "/bin/bash"),
+        )
+        invocation = ToolInvocation(
+            call_id="call-shell",
+            tool_name=ToolName.plain("shell_command"),
+            session=session,
+            turn=turn,
+            cancellation_token=object(),
+            tracker=object(),
+            payload=ToolPayload.function(
+                json.dumps(
+                    {
+                        "command": "echo hello",
+                        "workdir": "subdir",
+                        "timeout_ms": 50,
+                        "login": True,
+                        "prefix_rule": ["echo"],
+                    }
+                )
+            ),
+        )
+
+        output = asyncio.run(ShellCommandHandler(runner=runner).handle(invocation))
+
+        request = captured["request"]
+        self.assertIs(request.invocation, invocation)
+        self.assertEqual(request.hook_command, "echo hello")
+        self.assertEqual(request.exec_params.command, ("/bin/bash", "-lc", "echo hello"))
+        self.assertEqual(request.exec_params.cwd, Path("/repo/subdir"))
+        self.assertEqual(request.exec_params.expiration.timeout_ms(), 50)
+        self.assertEqual(request.exec_params.capture_policy, ExecCapturePolicy.SHELL_TOOL)
+        self.assertEqual(request.exec_params.network, "net")
+        self.assertEqual(request.shell_type, ShellType.BASH)
+        self.assertEqual(request.prefix_rule, ("echo",))
+        self.assertEqual(request.backend, ShellCommandBackend.CLASSIC)
+        self.assertEqual(request.workdir, Path("/repo/subdir"))
+        self.assertEqual(output.into_text(), "shell output")
+        self.assertEqual(output.post_tool_use_response("call-shell", invocation.payload), "wire shell output")
+
+    def test_run_exec_like_builds_shell_request_and_dispatches_runner(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/shell.rs::run_exec_like.
+        # Behavior anchor: run_exec_like normalizes permissions, builds the
+        # ShellRequest, and hands execution to the shell runtime boundary.
+        captured = {}
+        thread_id = ThreadId.new()
+        policy = ShellEnvironmentPolicy(
+            inherit=ShellEnvironmentPolicyInherit.NONE,
+            set_values={"EXPLICIT": "1"},
+        )
+        turn = SimpleNamespace(
+            cwd=Path("/repo"),
+            shell_environment_policy=policy,
+            approval_policy=AskForApproval.ON_REQUEST,
+            permission_profile=lambda: PermissionProfile.workspace_write(),
+            file_system_sandbox_policy=lambda: FileSystemSandboxPolicy.workspace_write(()),
+        )
+        session = SimpleNamespace(
+            conversation_id=thread_id,
+            user_shell=lambda: Shell(ShellType.BASH, "/bin/bash"),
+        )
+        params = ShellCommandToolCallParams(
+            command="echo hello",
+            sandbox_permissions=SandboxPermissions.REQUIRE_ESCALATED,
+            justification="need unsandboxed",
+            prefix_rule=("echo",),
+        )
+        exec_params = ShellCommandHandler.to_exec_params(
+            params,
+            session,
+            turn,
+            thread_id,
+            allow_login_shell=False,
+        )
+        invocation = ToolInvocation(
+            call_id="call-run-like",
+            tool_name=ToolName.plain("shell_command"),
+            session=session,
+            turn=turn,
+            cancellation_token=object(),
+            tracker=object(),
+            payload=ToolPayload.function('{"command":"echo hello"}'),
+        )
+
+        def runner(request: ShellCommandInvocationRequest) -> dict[str, object]:
+            captured["request"] = request
+            return {"text": "ok", "post_tool_use_response": "wire"}
+
+        output = asyncio.run(
+            run_exec_like(
+                RunExecLikeArgs(
+                    tool_name=ToolName.plain("shell_command"),
+                    exec_params=exec_params,
+                    cancellation_token=invocation.cancellation_token,
+                    hook_command=params.command,
+                    shell_type=ShellType.BASH,
+                    additional_permissions=params.additional_permissions,
+                    prefix_rule=params.prefix_rule,
+                    session=session,
+                    turn=turn,
+                    tracker=invocation.tracker,
+                    call_id=invocation.call_id,
+                    shell_runtime_backend=ShellCommandBackend.CLASSIC,
+                    invocation=invocation,
+                    params=params,
+                    workdir=exec_params.cwd,
+                    runner=runner,
+                )
+            )
+        )
+
+        request = captured["request"]
+        self.assertEqual(output.into_text(), "ok")
+        self.assertEqual(request.shell_request.hook_command, "echo hello")
+        self.assertEqual(request.shell_request.command, ("/bin/bash", "-c", "echo hello"))
+        self.assertEqual(request.shell_request.explicit_env_overrides, {"EXPLICIT": "1"})
+        self.assertEqual(request.shell_request.sandbox_permissions, SandboxPermissions.REQUIRE_ESCALATED)
+        self.assertEqual(request.shell_request.justification, "need unsandboxed")
+        self.assertEqual(request.shell_request.exec_approval_requirement.type, "needs_approval")
+        self.assertEqual(request.prefix_rule, ("echo",))
+
+    def test_handler_entrypoint_rejects_unsupported_payload_and_missing_runtime(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/shell/shell_command.rs::ShellCommandHandler::handle
+        # Rust contract: non-function payloads are model-visible errors before runtime dispatch.
+        handler = ShellCommandHandler()
+        invocation = ToolInvocation(
+            call_id="call-shell",
+            tool_name=ToolName.plain("shell_command"),
+            session=SimpleNamespace(user_shell=lambda: Shell(ShellType.BASH, "/bin/bash")),
+            turn=SimpleNamespace(
+                cwd=Path("/repo"),
+                shell_environment_policy=ShellEnvironmentPolicy.default(),
+                config=SimpleNamespace(permissions=SimpleNamespace(allow_login_shell=False)),
+            ),
+            cancellation_token=object(),
+            tracker=object(),
+            payload=ToolPayload.custom("raw"),
+        )
+
+        with self.assertRaisesRegex(FunctionCallError, "unsupported payload for shell_command handler"):
+            handler.handle(invocation)
+
+        missing_runtime = ToolInvocation(
+            call_id="call-shell",
+            tool_name=ToolName.plain("shell_command"),
+            session=SimpleNamespace(
+                conversation_id=ThreadId.new(),
+                user_shell=lambda: Shell(ShellType.BASH, "/bin/bash"),
+            ),
+            turn=invocation.turn,
+            cancellation_token=object(),
+            tracker=object(),
+            payload=ToolPayload.function('{"command":"echo hello"}'),
+        )
+        with self.assertRaisesRegex(FunctionCallError, "shell_command runtime is unavailable"):
+            asyncio.run(handler.handle(missing_runtime))
 
     def test_pre_tool_use_payload_uses_bash_hook(self) -> None:
         # Rust source: codex-rs/core/src/tools/handlers/shell/shell_command.rs
@@ -214,7 +432,7 @@ class CoreShellHandlerTests(unittest.TestCase):
             )
         self.assertTrue(unsupported.exception.is_model_response)
 
-        with self.assertRaisesRegex(FunctionCallError, "updated hook input command must be a string") as bad_command:
+        with self.assertRaisesRegex(FunctionCallError, "updatedInput without string field `command`") as bad_command:
             handler.with_updated_hook_input(
                 ToolInvocation(
                     call_id="call-45",

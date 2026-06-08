@@ -15,6 +15,7 @@ from pycodex.core import (
     config_without_lock_controls,
     lock_layer_from_config,
     read_config_lock_from_path,
+    toml_round_trip,
     toml_value,
     validate_config_lock_metadata_shape,
     validate_config_lock_replay,
@@ -162,6 +163,19 @@ class ConfigLockTests(unittest.TestCase):
             toml_value({"model": None}, "config lock")
         with self.assertRaisesRegex(TypeError, "label must be a string"):
             toml_value({}, 1)  # type: ignore[arg-type]
+
+    def test_toml_round_trip_accepts_supported_shapes_and_rejects_unrepresentable_values(self) -> None:
+        # Rust source: codex-rs/core/src/config_lock.rs
+        # Rust anchor: toml_round_trip validates that resolved config values can be represented as TOML.
+        config = {"model": "gpt-5", "features": {"enabled": ["exec", "patch"]}, "retries": 2}
+
+        self.assertEqual(toml_round_trip(config, "config lock"), config)
+        with self.assertRaisesRegex(ConfigLockError, "null value"):
+            toml_round_trip({"model": None}, "config lock")
+        with self.assertRaisesRegex(ConfigLockError, "unsupported TOML value"):
+            toml_round_trip({"model": object()}, "config lock")
+        with self.assertRaisesRegex(TypeError, "label must be a string"):
+            toml_round_trip({}, 1)  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":

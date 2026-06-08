@@ -14,11 +14,19 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping
 
-from pycodex.protocol import AdditionalPermissionProfile, NetworkApprovalProtocol, SandboxPermissions
+from pycodex.protocol import (
+    AdditionalPermissionProfile,
+    GuardianCommandSource,
+    NetworkApprovalProtocol,
+    SandboxPermissions,
+)
 from pycodex.protocol.request_permissions import RequestPermissionProfile
+from pycodex.core.guardian.prompt import (
+    GUARDIAN_MAX_ACTION_STRING_TOKENS,
+    guardian_truncate_text,
+)
 
 JsonValue = Any
-GUARDIAN_MAX_ACTION_STRING_CHARS = 64_000
 TRUNCATION_TAG = "truncated"
 
 
@@ -162,6 +170,7 @@ class GuardianApprovalRequest:
         if self.kind not in {
             "shell",
             "exec_command",
+            "execve",
             "apply_patch",
             "network_access",
             "mcp_tool_call",
@@ -219,6 +228,29 @@ class GuardianApprovalRequest:
                 "additional_permissions": additional_permissions,
                 "justification": _optional_string(justification, "justification"),
                 "tty": tty,
+            },
+        )
+
+    @classmethod
+    def execve(
+        cls,
+        *,
+        id: str,
+        source: GuardianCommandSource | str,
+        program: str,
+        argv: tuple[str, ...] | list[str],
+        cwd: Path | str,
+        additional_permissions: AdditionalPermissionProfile | None = None,
+    ) -> "GuardianApprovalRequest":
+        return cls(
+            "execve",
+            {
+                "id": _non_empty_string(id, "id"),
+                "source": GuardianCommandSource(source),
+                "program": _non_empty_string(program, "program"),
+                "argv": _string_tuple(argv, "argv"),
+                "cwd": Path(cwd),
+                "additional_permissions": additional_permissions,
             },
         )
 
@@ -343,6 +375,15 @@ def guardian_approval_request_to_json(action: GuardianApprovalRequest) -> dict[s
         return _command_json("shell", data, tty=None)
     if action.kind == "exec_command":
         return _command_json("exec_command", data, tty=bool(data["tty"]))
+    if action.kind == "execve":
+        result: dict[str, JsonValue] = {
+            "tool": _guardian_command_source_tool_name(data["source"]),
+            "program": data["program"],
+            "argv": list(data["argv"]),
+            "cwd": _path_json(data["cwd"]),
+        }
+        _set_optional(result, "additional_permissions", data.get("additional_permissions"))
+        return result
     if action.kind == "apply_patch":
         return {
             "tool": "apply_patch",
@@ -401,6 +442,15 @@ def _command_json(tool: str, data: Mapping[str, JsonValue], *, tty: bool | None)
     return result
 
 
+def _guardian_command_source_tool_name(source: object) -> str:
+    parsed = GuardianCommandSource(source)
+    if parsed == GuardianCommandSource.SHELL:
+        return "shell"
+    if parsed == GuardianCommandSource.UNIFIED_EXEC:
+        return "exec_command"
+    raise AssertionError("unreachable guardian command source")
+
+
 def guardian_assessment_action(action: GuardianApprovalRequest) -> dict[str, JsonValue]:
     if not isinstance(action, GuardianApprovalRequest):
         raise TypeError("action must be GuardianApprovalRequest")
@@ -417,6 +467,14 @@ def guardian_assessment_action(action: GuardianApprovalRequest) -> dict[str, Jso
             "type": "command",
             "source": "unified_exec",
             "command": shlex.join(data["command"]),
+            "cwd": _path_json(data["cwd"]),
+        }
+    if action.kind == "execve":
+        return {
+            "type": "execve",
+            "source": _enum_json(data["source"]),
+            "program": data["program"],
+            "argv": list(data["argv"]),
             "cwd": _path_json(data["cwd"]),
         }
     if action.kind == "apply_patch":
@@ -467,6 +525,13 @@ def guardian_reviewed_action(action: GuardianApprovalRequest) -> dict[str, JsonV
             "sandbox_permissions": _enum_json(data["sandbox_permissions"]),
             "additional_permissions": _mapping_json(data.get("additional_permissions")),
             "tty": data["tty"],
+        }
+    if action.kind == "execve":
+        return {
+            "type": "execve",
+            "source": _enum_json(data["source"]),
+            "program": data["program"],
+            "additional_permissions": _mapping_json(data.get("additional_permissions")),
         }
     if action.kind == "apply_patch":
         return {"type": "apply_patch"}
@@ -519,7 +584,7 @@ def format_guardian_action_pretty(action: GuardianApprovalRequest) -> FormattedG
 
 def _truncate_guardian_action_value(value: JsonValue) -> tuple[JsonValue, bool]:
     if isinstance(value, str):
-        return _guardian_truncate_text(value, GUARDIAN_MAX_ACTION_STRING_CHARS)
+        return guardian_truncate_text(value, GUARDIAN_MAX_ACTION_STRING_TOKENS)
     if isinstance(value, list):
         truncated = False
         values: list[JsonValue] = []
@@ -537,19 +602,6 @@ def _truncate_guardian_action_value(value: JsonValue) -> tuple[JsonValue, bool]:
             values[key] = item
         return values, truncated
     return value, False
-
-
-def _guardian_truncate_text(content: str, max_chars: int) -> tuple[str, bool]:
-    if not content or len(content) <= max_chars:
-        return content, False
-    omitted = max(0, len(content) - max_chars) // 4
-    marker = f'<{TRUNCATION_TAG} omitted_approx_tokens="{omitted}" />'
-    if max_chars <= len(marker):
-        return marker, True
-    available = max_chars - len(marker)
-    prefix = available // 2
-    suffix = available - prefix
-    return f"{content[:prefix]}{marker}{content[-suffix:]}", True
 
 
 __all__ = [

@@ -1,5 +1,5 @@
+import asyncio
 import json
-import threading
 import unittest
 
 from pycodex.core import (
@@ -19,7 +19,7 @@ from pycodex.core.tools.handlers.test_sync import (
 from pycodex.protocol import ToolName
 
 
-class TestSyncHandlerTests(unittest.TestCase):
+class TestSyncHandlerTests(unittest.IsolatedAsyncioTestCase):
     def test_test_sync_tool_matches_expected_spec(self) -> None:
         # Rust source: codex-rs/core/src/tools/handlers/test_sync_spec.rs
         # Rust test: test_sync_tool_matches_expected_spec
@@ -93,12 +93,12 @@ class TestSyncHandlerTests(unittest.TestCase):
             BarrierArgs("single", 1, DEFAULT_TEST_SYNC_TIMEOUT_MS),
         )
 
-    def test_handler_returns_ok_and_supports_parallel(self) -> None:
+    async def test_handler_returns_ok_and_supports_parallel(self) -> None:
         # Rust source: codex-rs/core/src/tools/handlers/test_sync.rs
         # Rust contract: handler returns successful "ok" output and supports parallel tool calls.
         handler = TestSyncHandler()
 
-        output = handler.handle(
+        output = await handler.handle(
             ToolPayload.function(
                 json.dumps({"barrier": {"id": "handler-single", "participants": 1}})
             )
@@ -109,60 +109,63 @@ class TestSyncHandlerTests(unittest.TestCase):
         self.assertTrue(handler.matches_kind(ToolPayload.function("{}")))
         self.assertEqual(output.into_text(), "ok")
 
-    def test_barrier_validation_matches_rust_messages(self) -> None:
+    async def test_barrier_validation_matches_rust_messages(self) -> None:
         # Rust source: codex-rs/core/src/tools/handlers/test_sync.rs
         # Rust contract: invalid barrier participants/timeouts surface model-visible FunctionCallError messages.
         with self.assertRaises(FunctionCallError) as zero_participants:
-            wait_on_barrier(BarrierArgs("zero-participants", 0))
+            await wait_on_barrier(BarrierArgs("zero-participants", 0))
         self.assertIn("participants must be greater than zero", str(zero_participants.exception))
 
         with self.assertRaises(FunctionCallError) as zero_timeout:
-            wait_on_barrier(BarrierArgs("zero-timeout", 1, 0))
+            await wait_on_barrier(BarrierArgs("zero-timeout", 1, 0))
         self.assertIn("timeout must be greater than zero", str(zero_timeout.exception))
 
         with self.assertRaises(FunctionCallError) as timeout:
-            wait_on_barrier(BarrierArgs("timeout", 2, 1))
+            await wait_on_barrier(BarrierArgs("timeout", 2, 1))
         self.assertEqual(str(timeout.exception), "test_sync_tool barrier wait timed out")
 
-        with self.assertRaises(FunctionCallError) as mismatch:
-            wait_on_barrier(BarrierArgs("mismatch", 2, 50))
-        self.assertEqual(str(mismatch.exception), "test_sync_tool barrier wait timed out")
+        waiting = asyncio.create_task(wait_on_barrier(BarrierArgs("mismatch", 2, 50)))
+        await asyncio.sleep(0)
         with self.assertRaises(FunctionCallError) as existing:
-            wait_on_barrier(BarrierArgs("mismatch", 3, 50))
+            await wait_on_barrier(BarrierArgs("mismatch", 3, 50))
         self.assertIn("already registered with 2 participants", str(existing.exception))
+        with self.assertRaises(FunctionCallError) as mismatch:
+            await waiting
+        self.assertEqual(str(mismatch.exception), "test_sync_tool barrier wait timed out")
 
-    def test_barrier_timeout_does_not_break_registered_barrier(self) -> None:
+    async def test_barrier_timeout_does_not_break_registered_barrier(self) -> None:
         # Rust source: codex-rs/core/src/tools/handlers/test_sync.rs
         # Rust contract: timed-out waiters do not permanently poison a reusable barrier id.
         with self.assertRaises(FunctionCallError) as timeout:
-            wait_on_barrier(BarrierArgs("reusable-after-timeout", 2, 1))
+            await wait_on_barrier(BarrierArgs("reusable-after-timeout", 2, 1))
         self.assertEqual(str(timeout.exception), "test_sync_tool barrier wait timed out")
 
-        results: list[str] = []
-        errors: list[BaseException] = []
+        worker = asyncio.create_task(
+            wait_on_barrier(BarrierArgs("reusable-after-timeout", 2, 100))
+        )
+        await asyncio.sleep(0)
+        await wait_on_barrier(BarrierArgs("reusable-after-timeout", 2, 100))
+        await worker
 
-        def wait_later() -> None:
-            try:
-                wait_on_barrier(BarrierArgs("reusable-after-timeout", 2, 100))
-                results.append("ok")
-            except BaseException as err:
-                errors.append(err)
+    async def test_handler_releases_concurrent_barrier_waiters(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/test_sync.rs
+        # Rust contract: concurrent calls with the same id/participant count rendezvous and each returns "ok".
+        handler = TestSyncHandler()
+        payload = ToolPayload.function(
+            json.dumps({"barrier": {"id": "handler-concurrent", "participants": 2}})
+        )
 
-        worker = threading.Thread(target=wait_later)
-        worker.start()
-        wait_on_barrier(BarrierArgs("reusable-after-timeout", 2, 100))
-        worker.join()
+        outputs = await asyncio.gather(handler.handle(payload), handler.handle(payload))
 
-        self.assertEqual(results, ["ok"])
-        self.assertEqual(errors, [])
+        self.assertEqual([output.into_text() for output in outputs], ["ok", "ok"])
 
-    def test_rejects_bad_payloads_and_non_rust_shapes(self) -> None:
+    async def test_rejects_bad_payloads_and_non_rust_shapes(self) -> None:
         handler = TestSyncHandler()
 
         with self.assertRaises(FunctionCallError):
-            handler.handle(ToolPayload.custom("raw"))
+            await handler.handle(ToolPayload.custom("raw"))
         with self.assertRaises(FunctionCallError):
-            handler.handle(ToolPayload.function("{not json"))
+            await handler.handle(ToolPayload.function("{not json"))
         with self.assertRaises(TypeError):
             handler.matches_kind(object())
         with self.assertRaises(TypeError):

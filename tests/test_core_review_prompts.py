@@ -75,6 +75,14 @@ class ReviewPromptsTests(unittest.TestCase):
             ),
         )
 
+    def test_resolve_review_request_uses_default_hint_and_round_trips_to_request(self) -> None:
+        # Rust: codex-core::review_prompts::resolve_review_request and
+        # impl From<ResolvedReviewRequest> for ReviewRequest.
+        resolved = resolve_review_request(ReviewRequest(ReviewTarget.base_branch("main")), Path.cwd())
+
+        self.assertEqual(resolved.user_facing_hint, "changes against 'main'")
+        self.assertEqual(resolved.to_review_request(), ReviewRequest(ReviewTarget.base_branch("main"), user_facing_hint="changes against 'main'"))
+
 
 if __name__ == "__main__":
     unittest.main()

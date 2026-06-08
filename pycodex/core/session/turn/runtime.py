@@ -32,13 +32,13 @@ from pycodex.core.connectors import (
 )
 from pycodex.connectors.merge import merge_plugin_connectors_with_accessible
 from pycodex.connectors.metadata import connector_name_slug
-from pycodex.core.context import PluginInstructions, SkillInstructions
+from pycodex.core.context import SkillInstructions
 from pycodex.core.hook_runtime import HookRuntimeOutcome, additional_context_messages
 from pycodex.core.state.additional_context import (
     AdditionalContextEntry,
     AdditionalContextStore,
 )
-from pycodex.core.plugins.render import render_explicit_plugin_instructions
+from pycodex.core.plugins.injection import build_plugin_injections as _build_plugin_injections
 from pycodex.core.plugins.mentions import (
     app_id_from_path,
     collect_explicit_app_ids,
@@ -1579,62 +1579,6 @@ def _track_explicit_plugin_mentions(sess: Any, turn_context: Any, mentioned_plug
             tracker(_track_analytics_context(sess, turn_context), payload)
         except Exception:
             pass
-
-
-def _build_plugin_injections(
-    mentioned_plugins: tuple[Any, ...],
-    mcp_tools: tuple[Any, ...],
-    available_connectors: tuple[Any, ...],
-) -> tuple[ResponseItem, ...]:
-    if not mentioned_plugins:
-        return ()
-    items: list[ResponseItem] = []
-    for plugin in mentioned_plugins:
-        plugin_name = _field_value(plugin, "display_name", "")
-        if not plugin_name:
-            continue
-        plugin_display_name = str(plugin_name)
-        plugin_mcp_servers = set(_string_tuple(_field_value(plugin, "mcp_server_names", ())))
-        plugin_app_ids = set(_string_tuple(_field_value(plugin, "app_connector_ids", ())))
-        available_mcp_servers = sorted(
-            {
-                str(_field_value(tool, "server_name", ""))
-                for tool in mcp_tools
-                if (tool_server_name := str(_field_value(tool, "server_name", "")))
-                and not tool_server_name.startswith("codex_apps")
-                and (
-                    plugin_display_name in _string_tuple(_field_value(tool, "plugin_display_names", ()))
-                    or tool_server_name in plugin_mcp_servers
-                )
-            }
-        )
-        available_apps = sorted(
-            {
-                str(
-                    _field_value(connector, "name", _field_value(connector, "id", ""))
-                )
-                for connector in available_connectors
-                if (
-                    bool(_field_value(connector, "is_enabled", False))
-                    and (
-                        plugin_display_name in _string_tuple(_field_value(connector, "plugin_display_names", ()))
-                        or (
-                            (connector_id := str(_field_value(connector, "id", "")))
-                            and connector_id in plugin_app_ids
-                        )
-                    )
-                )
-            }
-        )
-        available_apps = tuple(x for x in available_apps if x)
-        try:
-            instructions = render_explicit_plugin_instructions(plugin, available_mcp_servers, available_apps)
-        except Exception:
-            instructions = None
-        if instructions is None:
-            continue
-        items.append(PluginInstructions.new(instructions).into_response_item())
-    return tuple(items)
 
 
 def _turn_skills_outcome(sess: Any, turn_context: Any) -> tuple[Any, ...] | None:

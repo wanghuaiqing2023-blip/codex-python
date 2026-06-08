@@ -6,6 +6,7 @@ from pycodex.core.context import (
     FragmentRegistrationProxy,
     matches_marked_text,
 )
+from pycodex.core.context import fragment as fragment_coordinate
 from pycodex.protocol import ContentItem, ResponseInputItem, ResponseItem
 
 
@@ -79,6 +80,13 @@ class ContextFragmentTests(unittest.TestCase):
             FragmentRegistrationProxy.new(object())
         with self.assertRaises(TypeError):
             registration.matches_text(123)  # type: ignore[arg-type]
+
+    def test_rust_coordinate_module_reexports_fragment_contract(self) -> None:
+        # Rust source: codex/codex-rs/core/src/context/fragment.rs
+        self.assertIs(fragment_coordinate.ContextualUserFragmentBase, ContextualUserFragmentBase)
+        self.assertIs(fragment_coordinate.FragmentRegistrationProxy, FragmentRegistrationProxy)
+        self.assertIs(fragment_coordinate.matches_marked_text, matches_marked_text)
+        self.assertIn("ContextualUserFragment", fragment_coordinate.__all__)
 
 
 if __name__ == "__main__":

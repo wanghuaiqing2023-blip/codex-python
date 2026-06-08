@@ -7,6 +7,9 @@ import pytest
 from pycodex.core.codex_delegate import (
     CancellationToken,
     GUARDIAN_APPROVAL_REQUEST_SOURCE_DELEGATED_SUBAGENT,
+    MCP_TOOL_APPROVAL_ACCEPT_FOR_SESSION,
+    MCP_TOOL_APPROVAL_DECLINE_SYNTHETIC,
+    MCP_TOOL_APPROVAL_QUESTION_ID_PREFIX,
     RunCodexThreadOptions,
     SANDBOX_PERMISSIONS_WITH_ADDITIONAL_PERMISSIONS,
     await_approval_with_cancel,
@@ -17,6 +20,7 @@ from pycodex.core.codex_delegate import (
     handle_patch_approval,
     handle_request_permissions,
     mcp_selected_label_for_decision,
+    maybe_auto_review_mcp_request_user_input,
     run_codex_thread_interactive,
 )
 from pycodex.core.guardian.review import routes_approval_to_guardian
@@ -57,10 +61,13 @@ def test_event_kind_reads_protocol_event_msg():
 
 
 def test_mcp_selected_label_prefers_session_approval_when_available():
-    options = [SimpleNamespace(label="Yes"), SimpleNamespace(label="Yes, for this session")]
+    options = [
+        SimpleNamespace(label="Allow"),
+        SimpleNamespace(label=MCP_TOOL_APPROVAL_ACCEPT_FOR_SESSION),
+    ]
 
-    assert mcp_selected_label_for_decision(ReviewDecision.approved_for_session(), options) == "Yes, for this session"
-    assert mcp_selected_label_for_decision(ReviewDecision.denied(), options) == "No"
+    assert mcp_selected_label_for_decision(ReviewDecision.approved_for_session(), options) == MCP_TOOL_APPROVAL_ACCEPT_FOR_SESSION
+    assert mcp_selected_label_for_decision(ReviewDecision.denied(), options) == MCP_TOOL_APPROVAL_DECLINE_SYNTHETIC
 
 
 @pytest.mark.asyncio
@@ -345,6 +352,60 @@ async def test_handle_patch_approval_routes_auto_review_to_guardian_hook():
     assert codex.submitted[0].type == "patch_approval"
     assert codex.submitted[0].fields["id"] == "patch-call-1"
     assert codex.submitted[0].fields["decision"] == ReviewDecision.abort()
+
+
+@pytest.mark.asyncio
+async def test_delegated_mcp_guardian_abort_returns_synthetic_decline_answer():
+    # Rust source:
+    # codex/codex-rs/core/src/codex_delegate.rs::maybe_auto_review_mcp_request_user_input
+    # Rust test:
+    # codex/codex-rs/core/src/codex_delegate_tests.rs::
+    # delegated_mcp_guardian_abort_returns_synthetic_decline_answer
+    question_id = f"{MCP_TOOL_APPROVAL_QUESTION_ID_PREFIX}_call-1"
+    notifications = []
+
+    async def review_mcp_tool_invocation(parent_ctx, call_id, invocation):
+        await asyncio.sleep(1)
+
+    async def notify_approval(approval_id, decision):
+        notifications.append((approval_id, decision))
+
+    parent_ctx = SimpleNamespace(
+        approval_policy=AskForApproval.ON_REQUEST,
+        config=SimpleNamespace(approvals_reviewer=ApprovalsReviewer.AUTO_REVIEW),
+    )
+    parent_session = SimpleNamespace(
+        review_mcp_tool_invocation=review_mcp_tool_invocation,
+        notify_approval=notify_approval,
+    )
+    event = SimpleNamespace(
+        call_id="call-1",
+        turn_id="child-turn-1",
+        questions=[
+            SimpleNamespace(
+                id=question_id,
+                header="Approve app tool call?",
+                question="Allow this app tool?",
+                is_other=False,
+                is_secret=False,
+                options=None,
+            )
+        ],
+    )
+    cancel_token = CancellationToken()
+    cancel_token.cancel()
+
+    response = await maybe_auto_review_mcp_request_user_input(
+        parent_session,
+        parent_ctx,
+        {"call-1": SimpleNamespace(server="custom_server", tool="dangerous_tool", arguments=None)},
+        event,
+        cancel_token,
+    )
+
+    assert response is not None
+    assert response.answers[question_id].answers == (MCP_TOOL_APPROVAL_DECLINE_SYNTHETIC,)
+    assert notifications == [("call-1", ReviewDecision.abort())]
 
 
 @pytest.mark.asyncio

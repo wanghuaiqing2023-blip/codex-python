@@ -99,16 +99,51 @@ def _estimate_original_image_bytes(image_url: str) -> int | None:
         image_bytes = base64.b64decode(payload, validate=True)
     except (binascii.Error, ValueError):
         return None
-    if len(image_bytes) < 24 or image_bytes[:8] != b"\x89PNG\r\n\x1a\n" or image_bytes[12:16] != b"IHDR":
+    dimensions = _png_dimensions(image_bytes) or _webp_dimensions(image_bytes)
+    if dimensions is None:
         return None
-    width = int.from_bytes(image_bytes[16:20], "big")
-    height = int.from_bytes(image_bytes[20:24], "big")
+    width, height = dimensions
     if width <= 0 or height <= 0:
         return None
     patches_wide = (width + ORIGINAL_IMAGE_PATCH_SIZE - 1) // ORIGINAL_IMAGE_PATCH_SIZE
     patches_high = (height + ORIGINAL_IMAGE_PATCH_SIZE - 1) // ORIGINAL_IMAGE_PATCH_SIZE
     patch_count = min(patches_wide * patches_high, ORIGINAL_IMAGE_MAX_PATCHES)
     return _saturating_mul_i64(patch_count, 4)
+
+
+def _png_dimensions(image_bytes: bytes) -> tuple[int, int] | None:
+    if len(image_bytes) < 24 or image_bytes[:8] != b"\x89PNG\r\n\x1a\n" or image_bytes[12:16] != b"IHDR":
+        return None
+    return int.from_bytes(image_bytes[16:20], "big"), int.from_bytes(image_bytes[20:24], "big")
+
+
+def _webp_dimensions(image_bytes: bytes) -> tuple[int, int] | None:
+    if len(image_bytes) < 20 or image_bytes[:4] != b"RIFF" or image_bytes[8:12] != b"WEBP":
+        return None
+    offset = 12
+    while offset + 8 <= len(image_bytes):
+        chunk_type = image_bytes[offset : offset + 4]
+        chunk_size = int.from_bytes(image_bytes[offset + 4 : offset + 8], "little")
+        data_start = offset + 8
+        data_end = data_start + chunk_size
+        if data_end > len(image_bytes):
+            return None
+        chunk = image_bytes[data_start:data_end]
+        if chunk_type == b"VP8X" and len(chunk) >= 10:
+            width = int.from_bytes(chunk[4:7], "little") + 1
+            height = int.from_bytes(chunk[7:10], "little") + 1
+            return width, height
+        if chunk_type == b"VP8L" and len(chunk) >= 5 and chunk[0] == 0x2F:
+            bits = int.from_bytes(chunk[1:5], "little")
+            width = (bits & 0x3FFF) + 1
+            height = ((bits >> 14) & 0x3FFF) + 1
+            return width, height
+        if chunk_type == b"VP8 " and len(chunk) >= 10 and chunk[3:6] == b"\x9d\x01\x2a":
+            width = int.from_bytes(chunk[6:8], "little") & 0x3FFF
+            height = int.from_bytes(chunk[8:10], "little") & 0x3FFF
+            return width, height
+        offset = data_end + (chunk_size % 2)
+    return None
 
 
 def _is_original_image_detail(detail: object) -> bool:
@@ -492,6 +527,18 @@ def is_model_generated_item(item: ResponseItem) -> bool:
     }
 
 
+def is_codex_generated_item(item: ResponseItem) -> bool:
+    if not isinstance(item, ResponseItem):
+        raise TypeError("item must be a ResponseItem")
+    if item.type == "message":
+        return item.role == "developer"
+    return item.type in {
+        "function_call_output",
+        "tool_search_output",
+        "custom_tool_call_output",
+    }
+
+
 def user_message_positions(items: Sequence[ResponseItem]) -> list[int]:
     return [index for index, item in enumerate(items) if is_user_turn_boundary(item)]
 
@@ -562,6 +609,7 @@ __all__ = [
     "estimate_response_item_model_visible_bytes",
     "estimate_token_count_with_base_instructions",
     "is_api_message",
+    "is_codex_generated_item",
     "is_model_generated_item",
     "is_user_turn_boundary",
     "parse_base64_image_data_url",

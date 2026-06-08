@@ -5,9 +5,11 @@ from pycodex.core.compact import (
     COMPACT_USER_MESSAGE_MAX_TOKENS,
     SUMMARY_PREFIX,
     SUMMARIZATION_PROMPT,
+    CompactionStatus,
     build_compacted_history,
     build_compacted_history_with_limit,
     collect_user_messages,
+    compaction_status_from_result,
     content_items_to_text,
     insert_initial_context_before_last_real_user_or_summary,
     is_summary_message,
@@ -30,6 +32,12 @@ class Provider:
 
     def supports_remote_compaction(self) -> bool:
         return self.supported
+
+
+class CodexLikeError(RuntimeError):
+    def __init__(self, kind: str) -> None:
+        super().__init__(kind)
+        self.kind = kind
 
 
 class CompactTests(unittest.TestCase):
@@ -133,6 +141,26 @@ class CompactTests(unittest.TestCase):
 
         self.assertEqual(content_items_to_text(history[-1].content), "(no summary available)")
 
+    def test_build_compacted_history_preserves_initial_context_before_user_messages(self) -> None:
+        # Rust source: codex-rs/core/src/compact.rs::build_compacted_history_with_limit.
+        # Behavior anchor: initial context is retained before selected user messages and summary.
+        context = (developer_message("fresh permissions"),)
+
+        history = build_compacted_history(context, ("first user message",), "SUMMARY")
+
+        self.assertEqual(history[0], developer_message("fresh permissions"))
+        self.assertEqual(content_items_to_text(history[1].content), "first user message")
+        self.assertEqual(content_items_to_text(history[2].content), "SUMMARY")
+
+    def test_build_compacted_history_zero_token_budget_keeps_only_summary_after_context(self) -> None:
+        # Rust source: codex-rs/core/src/compact.rs::build_compacted_history_with_limit.
+        # Behavior anchor: max_tokens=0 skips user messages and still appends summary.
+        context = (developer_message("fresh permissions"),)
+
+        history = build_compacted_history_with_limit(context, ("first", "second"), "SUMMARY", 0)
+
+        self.assertEqual(history, [developer_message("fresh permissions"), user_message("SUMMARY")])
+
     def test_build_token_limited_compacted_history_truncates_overlong_user_messages(self) -> None:
         # Rust source: codex-rs/core/src/compact.rs
         # Rust test: build_token_limited_compacted_history_truncates_overlong_user_messages.
@@ -210,6 +238,22 @@ class CompactTests(unittest.TestCase):
         self.assertFalse(should_use_remote_compact_task(Provider(False)))
         with self.assertRaisesRegex(TypeError, "supports_remote_compaction"):
             should_use_remote_compact_task(object())
+
+    def test_compaction_status_from_result_matches_rust_error_buckets(self) -> None:
+        # Rust source: codex-rs/core/src/compact.rs
+        # Behavior anchor: compaction_status_from_result maps Ok(_) to
+        # completed, Interrupted/TurnAborted errors to interrupted, and all
+        # other errors to failed.
+        self.assertEqual(compaction_status_from_result(object()), CompactionStatus.COMPLETED)
+        self.assertEqual(
+            compaction_status_from_result(CodexLikeError("interrupted")),
+            CompactionStatus.INTERRUPTED,
+        )
+        self.assertEqual(
+            compaction_status_from_result(CodexLikeError("turn_aborted")),
+            CompactionStatus.INTERRUPTED,
+        )
+        self.assertEqual(compaction_status_from_result(RuntimeError("stream failed")), CompactionStatus.FAILED)
 
 
 if __name__ == "__main__":

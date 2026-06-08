@@ -6,6 +6,7 @@ from pathlib import Path
 from pycodex.core import (
     ROOT_LAST_TASK_MESSAGE,
     agent_matches_prefix,
+    agent_nickname_candidates,
     default_agent_nickname_list,
     filter_forked_rollout_items,
     is_multi_agent_v2_usage_hint_message,
@@ -14,6 +15,7 @@ from pycodex.core import (
     thread_spawn_depth,
     thread_spawn_parent_thread_id,
 )
+from pycodex.core.config.agent_roles import AgentRoleConfig
 from pycodex.protocol import (
     AgentPath,
     CompactedItem,
@@ -42,6 +44,21 @@ class AgentControlPureHelpersTests(unittest.TestCase):
         self.assertIn("Jason", names)
         self.assertNotIn("", names)
         self.assertEqual(ROOT_LAST_TASK_MESSAGE, "Main thread")
+
+    def test_agent_nickname_candidates_uses_role_candidates_or_default_list(self) -> None:
+        # Rust source: codex-rs/core/src/agent/control.rs::agent_nickname_candidates.
+        roles = {"worker": AgentRoleConfig(nickname_candidates=(" Ada ", "Grace"))}
+
+        self.assertEqual(agent_nickname_candidates(roles, "worker"), [" Ada ", "Grace"])
+        self.assertEqual(agent_nickname_candidates(roles, "missing")[:3], ["Euclid", "Archimedes", "Ptolemy"])
+
+        class ConfigLike:
+            agent_roles = {"default": AgentRoleConfig(nickname_candidates=("Rooty",))}
+
+        self.assertEqual(agent_nickname_candidates(ConfigLike(), None), ["Rooty"])
+
+        with self.assertRaisesRegex(TypeError, "config_or_roles must be a mapping"):
+            agent_nickname_candidates(object())
 
     def test_keep_forked_rollout_item_keeps_system_developer_user_messages(self) -> None:
         for role in ("system", "developer", "user"):

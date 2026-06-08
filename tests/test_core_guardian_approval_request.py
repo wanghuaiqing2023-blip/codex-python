@@ -12,7 +12,7 @@ from pycodex.core.guardian.approval_request import (
     guardian_request_turn_id,
     guardian_reviewed_action,
 )
-from pycodex.protocol import NetworkApprovalProtocol, SandboxPermissions
+from pycodex.protocol import GuardianCommandSource, NetworkApprovalProtocol, SandboxPermissions
 from pycodex.protocol.request_permissions import RequestPermissionProfile
 
 
@@ -83,6 +83,46 @@ class GuardianApprovalRequestTests(unittest.TestCase):
                 "files": ["/tmp/guardian.txt"],
             },
         )
+
+    def test_execve_shape_matches_unix_rust_branch(self) -> None:
+        action = GuardianApprovalRequest.execve(
+            id="execve-1",
+            source=GuardianCommandSource.UNIFIED_EXEC,
+            program="/bin/rm",
+            argv=("/usr/bin/rm", "-f", "/tmp/file.sqlite"),
+            cwd=Path("/tmp"),
+        )
+
+        self.assertEqual(
+            guardian_approval_request_to_json(action),
+            {
+                "tool": "exec_command",
+                "program": "/bin/rm",
+                "argv": ["/usr/bin/rm", "-f", "/tmp/file.sqlite"],
+                "cwd": "/tmp",
+            },
+        )
+        self.assertEqual(
+            guardian_assessment_action(action),
+            {
+                "type": "execve",
+                "source": "unified_exec",
+                "program": "/bin/rm",
+                "argv": ["/usr/bin/rm", "-f", "/tmp/file.sqlite"],
+                "cwd": "/tmp",
+            },
+        )
+        self.assertEqual(
+            guardian_reviewed_action(action),
+            {
+                "type": "execve",
+                "source": "unified_exec",
+                "program": "/bin/rm",
+                "additional_permissions": None,
+            },
+        )
+        self.assertEqual(guardian_request_target_item_id(action), "execve-1")
+        self.assertEqual(guardian_request_turn_id(action, "fallback-turn"), "fallback-turn")
 
     def test_network_access_json_renders_trigger_with_camel_case_fields(self) -> None:
         trigger = GuardianNetworkAccessTrigger(

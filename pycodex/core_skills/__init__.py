@@ -1,5 +1,6 @@
 """Core skills helpers ported from `codex-rs/core-skills`."""
 
+from . import remote
 from .config_rules import *  # noqa: F401,F403
 from .injections import *  # noqa: F401,F403
 from .invocation_utils import *  # noqa: F401,F403
@@ -9,6 +10,7 @@ from .rendering import *  # noqa: F401,F403
 
 __all__ = [
     "SkillDependencies",
+    "SkillError",
     "SkillMetadata",
     "SkillToolDependency",
     "SkillConfigRule",
@@ -57,6 +59,11 @@ __all__ = [
     "SkillMetadataBudgetKind",
     "SkillPathAliases",
     "SkillRenderReport",
+    "SkillRenderSideEffects",
+    "SKILLS_HOW_TO_USE_WITH_ABSOLUTE_PATHS",
+    "SKILLS_HOW_TO_USE_WITH_ALIASES",
+    "SKILLS_INTRO_WITH_ABSOLUTE_PATHS",
+    "SKILLS_INTRO_WITH_ALIASES",
     "alias_root_for_skill_root",
     "aliased_metadata_overhead_cost",
     "aliased_render_is_better",
@@ -80,7 +87,9 @@ __all__ = [
     "plugin_version_skill_counts_for_skill_roots",
     "render_lines_with_description_budget",
     "render_minimum_skill_lines_until_budget",
+    "render_available_skills_body",
     "render_skill_path_with_aliases",
     "render_skill_lines_from_lines",
     "sum_description_truncation",
+    "remote",
 ]

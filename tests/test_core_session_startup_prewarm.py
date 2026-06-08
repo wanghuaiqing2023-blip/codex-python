@@ -77,6 +77,22 @@ class SessionStartupPrewarmTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(phase[0] == "startup_prewarm_total" and phase[2] == "ready" for phase in telemetry.startup_phases))
         self.assertTrue(any(duration[0] == STARTUP_PREWARM_DURATION_METRIC for duration in telemetry.durations))
 
+    async def test_scheduled_prewarm_timeout_aborts_without_total_phase(self) -> None:
+        # Rust source: codex-rs/core/src/session_startup_prewarm.rs
+        # Behavior anchor: resolve timeout aborts the prewarm task and records
+        # timed_out resolve telemetry; the aborted startup task does not record
+        # a startup_prewarm_total ready/failed phase.
+        telemetry = SessionTelemetryRecorder()
+        handle = await schedule_startup_prewarm(lambda: asyncio.sleep(10), telemetry, timeout=0.001)
+
+        resolution = await handle.resolve(telemetry)
+
+        self.assertEqual(resolution.type, "unavailable")
+        self.assertEqual(resolution.status, "timed_out")
+        self.assertTrue(handle.task.cancelled())
+        self.assertFalse(any(phase[0] == "startup_prewarm_total" for phase in telemetry.startup_phases))
+        self.assertTrue(any(phase[0] == "startup_prewarm_resolve" and phase[2] == "timed_out" for phase in telemetry.startup_phases))
+
     async def test_unavailable_not_scheduled_helper(self) -> None:
         resolution = unavailable_startup_prewarm_not_scheduled()
 

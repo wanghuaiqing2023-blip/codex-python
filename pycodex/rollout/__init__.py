@@ -17,7 +17,17 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from pycodex.protocol.models import ResponseItem
-from pycodex.protocol.protocol import USER_MESSAGE_BEGIN, CompactedItem, EventMsg, ThreadRolledBackEvent, TurnContextItem
+from pycodex.protocol.protocol import (
+    USER_MESSAGE_BEGIN,
+    CompactedItem,
+    EventMsg,
+    InitialHistory,
+    ResumedHistory,
+    RolloutItem,
+    ThreadId,
+    ThreadRolledBackEvent,
+    TurnContextItem,
+)
 
 
 SESSIONS_SUBDIR = "sessions"
@@ -39,6 +49,191 @@ class RolloutReconstruction:
     history: tuple[ResponseItem, ...]
     previous_turn_settings: PreviousTurnSettings | None = None
     reference_context_item: TurnContextItem | None = None
+
+
+@dataclass(frozen=True)
+class RolloutRecorderParams:
+    """Create/resume parameters matching Rust's ``RolloutRecorderParams``."""
+
+    type: str
+    conversation_id: ThreadId | None = None
+    forked_from_id: ThreadId | None = None
+    source: object | None = None
+    thread_source: object | None = None
+    base_instructions: object | None = None
+    dynamic_tools: tuple[object, ...] = ()
+    path: Path | None = None
+
+    @classmethod
+    def new(
+        cls,
+        conversation_id: ThreadId | str,
+        forked_from_id: ThreadId | str | None,
+        source: object,
+        thread_source: object | None,
+        base_instructions: object | None = None,
+        dynamic_tools: Iterable[object] = (),
+    ) -> "RolloutRecorderParams":
+        return cls(
+            "Create",
+            conversation_id=ThreadId.from_string(str(conversation_id)),
+            forked_from_id=None if forked_from_id is None else ThreadId.from_string(str(forked_from_id)),
+            source=source,
+            thread_source=thread_source,
+            base_instructions=base_instructions,
+            dynamic_tools=tuple(dynamic_tools),
+        )
+
+    @classmethod
+    def resume(cls, path: Path | str) -> "RolloutRecorderParams":
+        return cls("Resume", path=Path(path))
+
+    def __post_init__(self) -> None:
+        if self.type not in {"Create", "Resume"}:
+            raise ValueError(f"unknown RolloutRecorderParams type: {self.type}")
+        if self.type == "Create":
+            if self.conversation_id is None:
+                raise ValueError("Create rollout params require conversation_id")
+            if not isinstance(self.conversation_id, ThreadId):
+                object.__setattr__(self, "conversation_id", ThreadId.from_string(str(self.conversation_id)))
+            if self.forked_from_id is not None and not isinstance(self.forked_from_id, ThreadId):
+                object.__setattr__(self, "forked_from_id", ThreadId.from_string(str(self.forked_from_id)))
+        if self.type == "Resume":
+            if self.path is None:
+                raise ValueError("Resume rollout params require path")
+            if not isinstance(self.path, Path):
+                object.__setattr__(self, "path", Path(self.path))
+
+
+class RolloutRecorder:
+    """Small JSONL rollout recorder façade for the core re-export coordinate."""
+
+    def __init__(self, rollout_path: Path, *, meta: SessionMeta | None = None) -> None:
+        if not isinstance(rollout_path, Path):
+            rollout_path = Path(rollout_path)
+        if meta is not None and not isinstance(meta, SessionMeta):
+            raise TypeError("meta must be SessionMeta or None")
+        self._rollout_path = rollout_path
+        self._meta = meta
+        self._persisted = rollout_path.exists()
+
+    @classmethod
+    def new(cls, config: object, params: RolloutRecorderParams) -> "RolloutRecorder":
+        if not isinstance(params, RolloutRecorderParams):
+            raise TypeError("params must be RolloutRecorderParams")
+        if params.type == "Resume":
+            assert params.path is not None
+            return cls(params.path)
+
+        codex_home = _config_path(config, "codex_home")
+        cwd = _config_path(config, "cwd")
+        sqlite_home = _config_path(config, "sqlite_home", default=codex_home)
+        _ = sqlite_home
+        model_provider = _config_value(config, "model_provider_id", default="unknown")
+        timestamp = _format_rfc3339(datetime.now(timezone.utc))
+        assert params.conversation_id is not None
+        meta = SessionMeta(
+            id=params.conversation_id.to_json(),
+            forked_from_id=None if params.forked_from_id is None else params.forked_from_id.to_json(),
+            timestamp=timestamp,
+            cwd=os.fspath(cwd),
+            originator="codex_python",
+            cli_version="pycodex",
+            source=_session_source_to_string(params.source),
+            thread_source=_optional_string(params.thread_source),
+            model_provider=str(model_provider),
+            base_instructions=params.base_instructions,
+            dynamic_tools=None if not params.dynamic_tools else list(params.dynamic_tools),
+        )
+        return cls(_rollout_path_for_meta(codex_home, meta), meta=meta)
+
+    @property
+    def rollout_path(self) -> Path:
+        return self._rollout_path
+
+    def persist(self) -> None:
+        if self._persisted:
+            return
+        self._rollout_path.parent.mkdir(parents=True, exist_ok=True)
+        if self._meta is None:
+            self._rollout_path.touch()
+        else:
+            line = {
+                "timestamp": self._meta.timestamp,
+                "type": "session_meta",
+                "payload": SessionMetaLine(meta=self._meta).to_mapping(),
+            }
+            self._rollout_path.write_text(
+                json.dumps(line, separators=(",", ":"), ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+        self._persisted = True
+
+    def flush(self) -> None:
+        self.persist()
+
+    def shutdown(self) -> None:
+        self.flush()
+
+    def record_canonical_items(self, items: Iterable[RolloutItem | Mapping[str, Any]]) -> None:
+        self.persist()
+        for item in items:
+            append_rollout_item_to_path(self._rollout_path, item)
+
+    @staticmethod
+    def load_rollout_items(path: Path | str) -> tuple[list[RolloutItem], ThreadId | None, int]:
+        rollout_path = Path(path)
+        text = rollout_path.read_text(encoding="utf-8")
+        if not text.strip():
+            raise OSError("empty session file")
+        items: list[RolloutItem] = []
+        thread_id: ThreadId | None = None
+        parse_errors = 0
+        for line in text.splitlines():
+            if not line.strip():
+                continue
+            try:
+                raw = json.loads(line)
+                item = RolloutItem.from_mapping(raw)
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                parse_errors += 1
+                continue
+            if item.type == "session_meta" and thread_id is None:
+                payload = item.payload
+                meta = getattr(payload, "meta", None)
+                raw_id = getattr(meta, "id", None)
+                if raw_id is not None:
+                    thread_id = ThreadId.from_string(str(raw_id))
+            items.append(item)
+        return items, thread_id, parse_errors
+
+    @staticmethod
+    def get_rollout_history(path: Path | str) -> InitialHistory:
+        rollout_path = Path(path)
+        items, thread_id, _parse_errors = RolloutRecorder.load_rollout_items(rollout_path)
+        if thread_id is None:
+            raise OSError("failed to parse thread ID from rollout file")
+        if not items:
+            return InitialHistory.new()
+        return InitialHistory.resumed_history(
+            ResumedHistory(thread_id, tuple(items), rollout_path=rollout_path)
+        )
+
+
+def append_rollout_item_to_path(
+    path: Path | str,
+    item: RolloutItem | Mapping[str, Any],
+    *,
+    timestamp: str | None = None,
+) -> None:
+    rollout_item = RolloutItem.from_mapping(item)
+    line = rollout_item.to_mapping()
+    line["timestamp"] = timestamp or _format_rfc3339(datetime.now(timezone.utc))
+    rollout_path = Path(path)
+    rollout_path.parent.mkdir(parents=True, exist_ok=True)
+    with rollout_path.open("a", encoding="utf-8", newline="\n") as file:
+        file.write(json.dumps(line, separators=(",", ":"), ensure_ascii=False))
+        file.write("\n")
 
 
 @dataclass(frozen=True)
@@ -1548,6 +1743,48 @@ def _matches_cwd(cwd: Path | None, cwd_filters: Sequence[Path] | None) -> bool:
     if cwd is None:
         return False
     return any(_normalized_path(cwd) == _normalized_path(candidate) for candidate in cwd_filters)
+
+
+def _config_value(config: object, name: str, *, default: object | None = None) -> object:
+    value = getattr(config, name, default)
+    if callable(value):
+        return value()
+    if value is None:
+        return default
+    return value
+
+
+def _config_path(config: object, name: str, *, default: Path | None = None) -> Path:
+    value = _config_value(config, name, default=default)
+    if value is None:
+        raise AttributeError(f"config is missing {name}")
+    return Path(os.fspath(value))
+
+
+def _session_source_to_string(source: object | None) -> str:
+    if source is None:
+        return "vscode"
+    raw = getattr(source, "value", source)
+    if isinstance(raw, str):
+        return raw
+    serializer = getattr(source, "to_json", None)
+    if callable(serializer):
+        return str(serializer())
+    return str(source)
+
+
+def _optional_string(value: object | None) -> str | None:
+    if value is None:
+        return None
+    raw = getattr(value, "value", value)
+    return str(raw)
+
+
+def _rollout_path_for_meta(codex_home: Path, meta: SessionMeta) -> Path:
+    date = meta.timestamp[:10]
+    year, month, day = date[:4], date[5:7], date[8:10]
+    file_timestamp = meta.timestamp.replace(":", "-").replace("+00-00", "Z")
+    return Path(codex_home) / SESSIONS_SUBDIR / year / month / day / f"rollout-{file_timestamp}-{meta.id}.jsonl"
 
 
 def _normalized_path(path: Path) -> str:

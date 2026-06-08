@@ -10,7 +10,8 @@ behavior.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import inspect
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any, Callable, Iterable
 
@@ -42,7 +43,7 @@ from pycodex.core.tools.registry import ToolInvocation
 from pycodex.core.tools.tool_search_entry import ToolSearchInfo
 from pycodex.tools.tool_discovery import ToolSearchSourceInfo
 from pycodex.core.tools.router import FunctionCallError
-from pycodex.protocol import AgentStatus, ResponseInputItem, ThreadId, ToolName
+from pycodex.protocol import AgentPath, AgentStatus, InterAgentCommunication, ResponseInputItem, ThreadId, ToolName
 
 JsonValue = Any
 
@@ -286,9 +287,11 @@ class MessageDeliveryMode(str, Enum):
     QUEUE_ONLY = "queue_only"
     TRIGGER_TURN = "trigger_turn"
 
-    def apply(self, communication: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    def apply(self, communication: dict[str, JsonValue] | InterAgentCommunication) -> dict[str, JsonValue] | InterAgentCommunication:
+        if isinstance(communication, InterAgentCommunication):
+            return replace(communication, trigger_turn=self is MessageDeliveryMode.TRIGGER_TURN)
         if not isinstance(communication, dict):
-            raise TypeError("communication must be a mapping")
+            raise TypeError("communication must be a mapping or InterAgentCommunication")
         output = dict(communication)
         output["trigger_turn"] = self is MessageDeliveryMode.TRIGGER_TURN
         return output
@@ -300,6 +303,114 @@ def message_content(message: str) -> str:
     if message.strip() == "":
         raise FunctionCallError.respond_to_model("Empty message can't be sent to an agent")
     return message
+
+
+def _call_list_agents(callback: Callable[..., Iterable[JsonValue]], session_source: Any, path_prefix: str | None) -> Iterable[JsonValue]:
+    try:
+        signature = inspect.signature(callback)
+    except (TypeError, ValueError):
+        return callback(session_source, path_prefix)
+    positional = [
+        parameter
+        for parameter in signature.parameters.values()
+        if parameter.kind
+        in {
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        }
+    ]
+    has_varargs = any(parameter.kind is inspect.Parameter.VAR_POSITIONAL for parameter in signature.parameters.values())
+    if has_varargs or len(positional) >= 2:
+        return callback(session_source, path_prefix)
+    return callback(path_prefix)
+
+
+def _agent_metadata_path(metadata: Any) -> AgentPath | None:
+    if metadata is None:
+        return None
+    if isinstance(metadata, dict):
+        value = metadata.get("agent_path")
+    else:
+        value = getattr(metadata, "agent_path", None)
+    if value is None:
+        return None
+    if isinstance(value, AgentPath):
+        return value
+    return AgentPath.from_string(str(value))
+
+
+def _required_agent_metadata_path(metadata: Any) -> AgentPath:
+    agent_path = _agent_metadata_path(metadata)
+    if agent_path is None:
+        raise FunctionCallError.respond_to_model("target agent is missing an agent_path")
+    return agent_path
+
+
+def handle_message_string_tool(
+    *,
+    mode: MessageDeliveryMode,
+    target: str,
+    message: str,
+    send_message: Callable[[MessageDeliveryMode, str, str], FunctionToolOutput | None],
+    get_agent_metadata: Callable[[str], Any] | None = None,
+) -> FunctionToolOutput:
+    prompt = message_content(message)
+    if get_agent_metadata is not None:
+        receiver_agent_path = _required_agent_metadata_path(get_agent_metadata(target))
+        if mode is MessageDeliveryMode.TRIGGER_TURN and receiver_agent_path.is_root():
+            raise FunctionCallError.respond_to_model("Tasks can't be assigned to the root agent")
+    result = send_message(mode, target, prompt)
+    if result is None:
+        return successful_empty_message_output()
+    if not isinstance(result, FunctionToolOutput):
+        raise TypeError("send_message callback must return FunctionToolOutput or None")
+    return result
+
+
+def _wait_timeout_bounds_from_turn(
+    turn: Any,
+    min_timeout_ms: int,
+    default_timeout_ms: int,
+    max_timeout_ms: int,
+) -> tuple[int, int, int]:
+    config = getattr(turn, "config", None)
+    multi_agent_v2 = getattr(config, "multi_agent_v2", None)
+    if multi_agent_v2 is None:
+        return min_timeout_ms, default_timeout_ms, max_timeout_ms
+    return (
+        _timeout_bound(getattr(multi_agent_v2, "min_wait_timeout_ms", None), min_timeout_ms, "min_wait_timeout_ms"),
+        _timeout_bound(getattr(multi_agent_v2, "default_wait_timeout_ms", None), default_timeout_ms, "default_wait_timeout_ms"),
+        _timeout_bound(getattr(multi_agent_v2, "max_wait_timeout_ms", None), max_timeout_ms, "max_wait_timeout_ms"),
+    )
+
+
+def _timeout_bound(value: Any, fallback: int, name: str) -> int:
+    if value is None:
+        return fallback
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer")
+    return value
+
+
+def _spawn_hide_metadata_from_turn(turn: Any) -> bool:
+    config = getattr(turn, "config", None)
+    multi_agent_v2 = getattr(config, "multi_agent_v2", None)
+    return bool(getattr(multi_agent_v2, "hide_spawn_agent_metadata", False))
+
+
+def _coerce_spawn_agent_result(result: SpawnAgentResult | dict[str, JsonValue]) -> SpawnAgentResult:
+    if isinstance(result, SpawnAgentResult):
+        return result
+    data = _mapping(result, "spawn_agent result")
+    task_name = data.get("task_name")
+    if not isinstance(task_name, str):
+        raise FunctionCallError.respond_to_model("spawned agent is missing a canonical task name")
+    hide_metadata = "nickname" not in data
+    return SpawnAgentResult(
+        task_name=task_name,
+        nickname=_optional_str(data, "nickname"),
+        hide_metadata=hide_metadata,
+    )
 
 
 @dataclass(frozen=True)
@@ -469,20 +580,20 @@ class SpawnAgentHandler:
         if self._spawn_agent is None:
             raise FunctionCallError.respond_to_model("agent control is unavailable in this session")
         result = self._spawn_agent(args)
-        if isinstance(result, SpawnAgentResult):
-            return result
-        data = _mapping(result, "spawn_agent result")
-        hide_metadata = "nickname" not in data
-        return SpawnAgentResult(
-            task_name=_required_str(data, "task_name"),
-            nickname=_optional_str(data, "nickname"),
-            hide_metadata=hide_metadata,
-        )
+        coerced = _coerce_spawn_agent_result(result)
+        if _spawn_hide_metadata_from_turn(getattr(invocation, "turn", None)):
+            return SpawnAgentResult.hidden_metadata(coerced.task_name)
+        return coerced
 
 
 class ListAgentsHandler:
-    def __init__(self, list_agents: Callable[[str | None], Iterable[JsonValue]] | None = None) -> None:
+    def __init__(
+        self,
+        list_agents: Callable[..., Iterable[JsonValue]] | None = None,
+        register_session_root: Callable[[Any, Any], None] | None = None,
+    ) -> None:
         self._list_agents = list_agents
+        self._register_session_root = register_session_root
 
     def tool_name(self) -> ToolName:
         return ToolName.plain("list_agents")
@@ -497,12 +608,23 @@ class ListAgentsHandler:
         args = ListAgentsArgs.from_json(function_arguments(invocation.payload))
         if self._list_agents is None:
             raise FunctionCallError.respond_to_model("agent control is unavailable in this session")
-        return ListAgentsResult(tuple(self._list_agents(args.path_prefix)))
+        session_source = getattr(getattr(invocation, "turn", None), "session_source", None)
+        if self._register_session_root is not None:
+            conversation_id = getattr(getattr(invocation, "session", None), "conversation_id", None)
+            if conversation_id is None:
+                conversation_id = getattr(getattr(invocation, "session", None), "thread_id", None)
+            self._register_session_root(conversation_id, session_source)
+        return ListAgentsResult(tuple(_call_list_agents(self._list_agents, session_source, args.path_prefix)))
 
 
 class CloseAgentHandler:
-    def __init__(self, close_agent: Callable[[str], AgentStatus | str | dict[str, JsonValue]] | None = None) -> None:
+    def __init__(
+        self,
+        close_agent: Callable[[str], AgentStatus | str | dict[str, JsonValue]] | None = None,
+        get_agent_metadata: Callable[[str], Any] | None = None,
+    ) -> None:
         self._close_agent = close_agent
+        self._get_agent_metadata = get_agent_metadata
 
     def tool_name(self) -> ToolName:
         return ToolName.plain("close_agent")
@@ -517,10 +639,22 @@ class CloseAgentHandler:
         args = CloseAgentArgs.from_json(function_arguments(invocation.payload))
         if self._close_agent is None:
             raise FunctionCallError.respond_to_model("agent control is unavailable in this session")
+        if self._get_agent_metadata is not None:
+            agent_path = _agent_metadata_path(self._get_agent_metadata(args.target))
+            if agent_path is not None and agent_path.is_root():
+                raise FunctionCallError.respond_to_model("root is not a spawned agent")
         return CloseAgentResult(AgentStatus.from_mapping(self._close_agent(args.target)))
 
 
 class SendMessageHandler:
+    def __init__(
+        self,
+        send_message: Callable[[MessageDeliveryMode, str, str], FunctionToolOutput | None] | None = None,
+        get_agent_metadata: Callable[[str], Any] | None = None,
+    ) -> None:
+        self._send_message = send_message
+        self._get_agent_metadata = get_agent_metadata
+
     def tool_name(self) -> ToolName:
         return ToolName.plain("send_message")
 
@@ -535,8 +669,28 @@ class SendMessageHandler:
         message_content(args.message)
         return args
 
+    def handle(self, invocation: ToolInvocation) -> FunctionToolOutput:
+        args = self.parse_args(invocation.payload)
+        if self._send_message is None:
+            raise FunctionCallError.respond_to_model("agent control is unavailable in this session")
+        return handle_message_string_tool(
+            mode=MessageDeliveryMode.QUEUE_ONLY,
+            target=args.target,
+            message=args.message,
+            send_message=self._send_message,
+            get_agent_metadata=self._get_agent_metadata,
+        )
+
 
 class FollowupTaskHandler:
+    def __init__(
+        self,
+        send_message: Callable[[MessageDeliveryMode, str, str], FunctionToolOutput | None] | None = None,
+        get_agent_metadata: Callable[[str], Any] | None = None,
+    ) -> None:
+        self._send_message = send_message
+        self._get_agent_metadata = get_agent_metadata
+
     def tool_name(self) -> ToolName:
         return ToolName.plain("followup_task")
 
@@ -550,6 +704,18 @@ class FollowupTaskHandler:
         args = FollowupTaskArgs.from_json(function_arguments(payload))
         message_content(args.message)
         return args
+
+    def handle(self, invocation: ToolInvocation) -> FunctionToolOutput:
+        args = self.parse_args(invocation.payload)
+        if self._send_message is None:
+            raise FunctionCallError.respond_to_model("agent control is unavailable in this session")
+        return handle_message_string_tool(
+            mode=MessageDeliveryMode.TRIGGER_TURN,
+            target=args.target,
+            message=args.message,
+            send_message=self._send_message,
+            get_agent_metadata=self._get_agent_metadata,
+        )
 
 
 class WaitAgentHandler:
@@ -580,6 +746,12 @@ class WaitAgentHandler:
         default_timeout_ms: int = DEFAULT_WAIT_TIMEOUT_MS,
         max_timeout_ms: int = MAX_WAIT_TIMEOUT_MS,
     ) -> WaitAgentResult:
+        min_timeout_ms, default_timeout_ms, max_timeout_ms = _wait_timeout_bounds_from_turn(
+            getattr(invocation, "turn", None),
+            min_timeout_ms,
+            default_timeout_ms,
+            max_timeout_ms,
+        )
         timeout_ms = self.parse_args(invocation.payload).resolve_timeout_ms(
             min_timeout_ms,
             default_timeout_ms,
@@ -654,6 +826,7 @@ __all__ = [
     "WaitAgentHandler",
     "WaitAgentResult",
     "WaitArgs",
+    "handle_message_string_tool",
     "message_content",
     "successful_empty_message_output",
 ]

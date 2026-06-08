@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 from pycodex.core import (
+    BACKEND_PROMPT,
     DEFAULT_USER_FIRST_NAME,
     PROMPT_UNSET,
     USER_FIRST_NAME_PLACEHOLDER,
@@ -12,6 +14,14 @@ from pycodex.core import (
 
 
 class RealtimePromptTests(unittest.TestCase):
+    def test_backend_prompt_literal_matches_upstream_template(self) -> None:
+        # Rust source: codex-rs/core/src/realtime_prompt.rs includes this
+        # template with include_str!("../templates/realtime/backend_prompt.md").
+        root = Path(__file__).resolve().parents[1]
+        upstream = root / "codex" / "codex-rs" / "core" / "templates" / "realtime" / "backend_prompt.md"
+
+        self.assertEqual(BACKEND_PROMPT, upstream.read_text(encoding="utf-8"))
+
     def test_prepare_realtime_backend_prompt_prefers_config_override(self) -> None:
         self.assertEqual(
             prepare_realtime_backend_prompt("prompt from request", "prompt from config"),

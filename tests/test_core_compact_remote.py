@@ -131,6 +131,18 @@ class CompactRemoteTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(processed, [kept])
 
+    def test_process_compacted_history_inserts_context_before_compaction_item(self) -> None:
+        compaction = ResponseItem.compaction("encrypted")
+        refreshed_context = developer_message("fresh permissions")
+
+        processed = process_compacted_history(
+            (compaction,),
+            InitialContextInjection.BEFORE_LAST_USER_MESSAGE,
+            (refreshed_context,),
+        )
+
+        self.assertEqual(processed, [refreshed_context, compaction])
+
     def test_ensure_call_outputs_present_inserts_synthetic_outputs_after_calls(self) -> None:
         function_call = ResponseItem.function_call("shell", "{}", "call-1")
         tool_search_call = ResponseItem.tool_search_call("{}", call_id="search-1")

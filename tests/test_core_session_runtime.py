@@ -408,6 +408,27 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(pending[1].content[0].text, "queued item")
         self.assertFalse(await session.input_queue.has_pending_input(session.active_turn))
 
+    async def test_in_memory_session_inject_if_running_returns_items_without_active_turn(self) -> None:
+        # Rust source: codex-core/src/session/inject.rs inject_if_running None branch.
+        session = InMemoryCodexSession(cwd="C:/work/project", active_turn=None)
+        item = ResponseItem.message("user", (ContentItem.input_text("outside turn"),))
+
+        result = await session.inject_if_running([item])
+
+        self.assertEqual(result, (item,))
+        self.assertFalse(await session.input_queue.has_pending_input(None))
+
+    async def test_in_memory_session_inject_no_new_turn_queues_when_active_turn_exists(self) -> None:
+        # Rust source: codex-core/src/session/inject.rs inject_no_new_turn first tries active injection.
+        session = InMemoryCodexSession(cwd="C:/work/project")
+        item = ResponseItem.message("user", (ContentItem.input_text("active turn"),))
+
+        await session.inject_no_new_turn([item], None)
+
+        self.assertEqual(session.recorded_batches, [])
+        pending = await session.input_queue.get_pending_input(session.active_turn)
+        self.assertEqual(pending, (item,))
+
     async def test_in_memory_session_record_user_prompt_emits_turn_item_events(self) -> None:
         session = InMemoryCodexSession(cwd="C:/work/project", thread_id="thread-1", turn_id="turn-1")
         turn = await session.new_default_turn()
@@ -1845,7 +1866,7 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.compacted_items[0].replacement_history, (replacement,))
 
     async def test_in_memory_session_inject_no_new_turn_records_items_and_flushes(self) -> None:
-        session = InMemoryCodexSession(cwd="C:/work/project")
+        session = InMemoryCodexSession(cwd="C:/work/project", active_turn=None)
         item = {
             "type": "message",
             "role": "user",

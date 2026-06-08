@@ -1,6 +1,8 @@
 import json
+import asyncio
 import unittest
 from dataclasses import replace
+from types import SimpleNamespace
 
 from pycodex.core.tools.handlers.goal import (
     COMPLETION_BUDGET_REPORT_MESSAGE,
@@ -181,6 +183,77 @@ class CoreGoalHandlerTests(unittest.TestCase):
         self.assertEqual(updated_payload["remainingTokens"], 3750)
         self.assertEqual(updated_payload["completionBudgetReport"], COMPLETION_BUDGET_REPORT_MESSAGE)
         self.assertEqual(store.tool_completed_goal_count, 1)
+
+    def test_handlers_use_rust_style_async_session_entrypoints(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/goal/{create_goal,get_goal,update_goal}.rs
+        # Rust contract: handlers call session goal APIs with the turn context and apply ToolCompletedGoal before update.
+        calls = []
+        thread_id = ThreadId.new()
+
+        class Session:
+            def __init__(self) -> None:
+                self.goal = None
+
+            async def create_thread_goal(self, turn, request):
+                calls.append(("create", turn, request.objective, request.token_budget))
+                self.goal = ThreadGoal(
+                    thread_id=thread_id,
+                    objective=request.objective,
+                    status=ThreadGoalStatus.ACTIVE,
+                    tokens_used=0,
+                    time_used_seconds=0,
+                    created_at=1,
+                    updated_at=1,
+                    token_budget=request.token_budget,
+                )
+                return self.goal
+
+            async def get_thread_goal(self):
+                calls.append(("get",))
+                return self.goal
+
+            async def goal_runtime_apply(self, event):
+                calls.append(("runtime", event))
+                self.goal = replace(self.goal, tokens_used=750, time_used_seconds=12)
+
+            async def set_thread_goal(self, turn, request):
+                calls.append(("set", turn, request.status))
+                self.goal = replace(self.goal, status=request.status, updated_at=2)
+                return self.goal
+
+        session = Session()
+        turn = SimpleNamespace(name="turn")
+        create_invocation = SimpleNamespace(
+            session=session,
+            turn=turn,
+            payload=ToolPayload.function(json.dumps({"objective": "port Codex", "token_budget": 1000})),
+        )
+        created = asyncio.run(CreateGoalHandler().handle(create_invocation))
+        self.assertEqual(json.loads(created.into_text())["goal"]["objective"], "port Codex")
+
+        fetched = asyncio.run(
+            GetGoalHandler().handle(SimpleNamespace(session=session, payload=ToolPayload.function("{}")))
+        )
+        self.assertEqual(json.loads(fetched.into_text())["remainingTokens"], 1000)
+
+        updated = asyncio.run(
+            UpdateGoalHandler().handle(
+                SimpleNamespace(
+                    session=session,
+                    turn=turn,
+                    payload=ToolPayload.function(json.dumps({"status": "complete"})),
+                )
+            )
+        )
+        updated_payload = json.loads(updated.into_text())
+        self.assertEqual(updated_payload["goal"]["status"], "complete")
+        self.assertEqual(updated_payload["remainingTokens"], 250)
+        self.assertEqual(updated_payload["completionBudgetReport"], COMPLETION_BUDGET_REPORT_MESSAGE)
+        self.assertEqual(calls[0], ("create", turn, "port Codex", 1000))
+        self.assertEqual(calls[1], ("get",))
+        self.assertEqual(calls[2][0], "runtime")
+        self.assertEqual(calls[2][1], {"type": "tool_completed_goal", "turn_context": turn})
+        self.assertEqual(calls[3], ("set", turn, ThreadGoalStatus.COMPLETE))
 
     def test_create_goal_rejects_existing_goal_with_rust_message(self) -> None:
         store = InMemoryGoalStore(ThreadId.new())

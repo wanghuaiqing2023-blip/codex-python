@@ -890,15 +890,21 @@ def parse_wait_arguments(arguments: str) -> ExecWaitArgs:
         raise ValueError("failed to parse function arguments: expected JSON object")
     if "cell_id" not in value:
         raise ValueError("failed to parse function arguments: missing field `cell_id`")
+    cell_id = value["cell_id"]
+    if not isinstance(cell_id, str):
+        raise ValueError("failed to parse function arguments: field `cell_id` must be a string")
+    terminate = value.get("terminate", False)
+    if not isinstance(terminate, bool):
+        raise ValueError("failed to parse function arguments: field `terminate` must be a boolean")
     return ExecWaitArgs(
-        cell_id=str(value["cell_id"]),
+        cell_id=cell_id,
         yield_time_ms=_wait_argument_int(value, "yield_time_ms", DEFAULT_WAIT_YIELD_TIME_MS),
         max_tokens=(
             None
             if value.get("max_tokens") is None
             else _wait_argument_int(value, "max_tokens", DEFAULT_WAIT_YIELD_TIME_MS)
         ),
-        terminate=bool(value.get("terminate", False)),
+        terminate=terminate,
     )
 
 
@@ -2206,6 +2212,7 @@ def _json_round_trip(value: JsonValue) -> JsonValue:
 def _into_function_call_output_content_item(
     item: FunctionCallOutputContentItem | Mapping[str, JsonValue],
 ) -> FunctionCallOutputContentItem:
+    item = _code_mode_content_item_to_mapping(item)
     content_item = FunctionCallOutputContentItem.from_mapping(item)
     if content_item.type == "input_image":
         return FunctionCallOutputContentItem.input_image(
@@ -2213,6 +2220,22 @@ def _into_function_call_output_content_item(
             content_item.detail or DEFAULT_IMAGE_DETAIL,
         )
     return content_item
+
+
+def _code_mode_content_item_to_mapping(item: Any) -> Any:
+    if isinstance(item, Mapping) or isinstance(item, FunctionCallOutputContentItem):
+        return item
+    item_type = getattr(item, "type", None)
+    if item_type == "input_text":
+        return {"type": "input_text", "text": getattr(item, "text", None)}
+    if item_type == "input_image":
+        detail = getattr(item, "detail", None)
+        return {
+            "type": "input_image",
+            "image_url": getattr(item, "image_url", None),
+            **({} if detail is None else {"detail": getattr(detail, "value", detail)}),
+        }
+    return item
 
 
 def _build_function_tool_payload(tool_name: ToolName, input: JsonValue | None) -> Any:

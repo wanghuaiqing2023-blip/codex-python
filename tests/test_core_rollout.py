@@ -7,6 +7,8 @@ from pathlib import Path
 from pycodex.core import (
     SESSIONS_SUBDIR,
     Cursor,
+    RolloutRecorder,
+    RolloutRecorderParams,
     SessionIndexEntry,
     SessionMeta,
     append_event_msg_to_rollout,
@@ -41,7 +43,7 @@ from pycodex.core import (
     session_index_path,
     ThreadSortKey,
 )
-from pycodex.protocol import AgentPath, EventMsg, InterAgentCommunication, TurnAbortReason, TurnAbortedEvent
+from pycodex.protocol import AgentPath, EventMsg, InterAgentCommunication, SessionSource, ThreadId, TurnAbortReason, TurnAbortedEvent
 
 
 def workspace_tempdir():
@@ -140,6 +142,58 @@ def write_thread_rollout(
 
 
 class CoreRolloutTests(unittest.TestCase):
+    def test_core_rollout_recorder_reexport_create_record_and_resume_history(self):
+        # Rust source: codex-rs/core/src/rollout.rs re-exports
+        # codex_rollout::{RolloutRecorder, RolloutRecorderParams}.
+        # Rust behavior source: codex-rs/rollout/src/recorder.rs.
+        root = workspace_tempdir()
+        thread_id = ThreadId.new()
+        config = type(
+            "Config",
+            (),
+            {
+                "codex_home": root,
+                "sqlite_home": root,
+                "cwd": root,
+                "model_provider_id": "test-provider",
+                "generate_memories": True,
+            },
+        )()
+        params = RolloutRecorderParams.new(
+            thread_id,
+            None,
+            SessionSource.exec(),
+            None,
+            base_instructions={},
+            dynamic_tools=(),
+        )
+
+        recorder = RolloutRecorder.new(config, params)
+        recorder.persist()
+        recorder.record_canonical_items(
+            (
+                {
+                    "type": "event_msg",
+                    "payload": {"type": "user_message", "message": "hello", "kind": "plain"},
+                },
+            )
+        )
+        recorder.flush()
+
+        items, loaded_thread_id, parse_errors = RolloutRecorder.load_rollout_items(recorder.rollout_path)
+        history = RolloutRecorder.get_rollout_history(recorder.rollout_path)
+        resumed = RolloutRecorder.new(config, RolloutRecorderParams.resume(recorder.rollout_path))
+
+        self.assertEqual(loaded_thread_id, thread_id)
+        self.assertEqual(parse_errors, 0)
+        self.assertEqual(items[0].type, "session_meta")
+        self.assertEqual(items[1].type, "event_msg")
+        self.assertEqual(history.type, "Resumed")
+        self.assertIsNotNone(history.resumed)
+        self.assertEqual(history.resumed.conversation_id, thread_id)
+        self.assertEqual(history.resumed.rollout_path, recorder.rollout_path)
+        self.assertEqual(resumed.rollout_path, recorder.rollout_path)
+
     def test_count_session_rollout_files_matches_exec_ephemeral_suite_counting_rule(self):
         root = workspace_tempdir()
         thread_id = str(uuid.uuid4())

@@ -1,6 +1,7 @@
 import unittest
 
-from pycodex.core.context import GoalContext
+from pycodex.core.context import GoalContext, is_contextual_user_fragment
+from pycodex.core.event_mapping import parse_turn_item
 from pycodex.protocol import ContentItem, ResponseInputItem, ResponseItem
 
 
@@ -27,6 +28,16 @@ class GoalContextTests(unittest.TestCase):
             fragment.into_response_input_item(),
             ResponseInputItem.message("user", (ContentItem.input_text(rendered),)),
         )
+
+    def test_goal_context_is_hidden_contextual_user_fragment(self) -> None:
+        # Rust tests:
+        # - context/contextual_user_message_tests.rs::detects_goal_context_fragment
+        # - event_mapping_tests.rs::goal_context_does_not_parse_as_visible_turn_item
+        rendered = GoalContext.new("Continue working toward the active thread goal.").render()
+        item = ResponseItem.message("user", (ContentItem.input_text(rendered),), id="msg-1")
+
+        self.assertTrue(is_contextual_user_fragment(ContentItem.input_text(rendered)))
+        self.assertIsNone(parse_turn_item(item))
 
 
 if __name__ == "__main__":

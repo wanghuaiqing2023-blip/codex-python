@@ -60,6 +60,32 @@ def create_linux_sandbox_command_args_for_permission_profile(
     return linux_cmd
 
 
+def create_linux_sandbox_command_args(
+    command: Sequence[str],
+    command_cwd: str | Path,
+    sandbox_policy_cwd: str | Path,
+    use_legacy_landlock: bool,
+    allow_network_for_proxy: bool,
+) -> list[str]:
+    if not isinstance(use_legacy_landlock, bool):
+        raise TypeError("use_legacy_landlock must be a bool")
+    if not isinstance(allow_network_for_proxy, bool):
+        raise TypeError("allow_network_for_proxy must be a bool")
+    linux_cmd = [
+        "--sandbox-policy-cwd",
+        _as_posix_path(sandbox_policy_cwd),
+        "--command-cwd",
+        _as_posix_path(command_cwd),
+    ]
+    if use_legacy_landlock:
+        linux_cmd.append("--use-legacy-landlock")
+    if allow_network_for_proxy:
+        linux_cmd.append("--allow-network-for-proxy")
+    linux_cmd.append("--")
+    linux_cmd.extend(_string_sequence(command, "command"))
+    return linux_cmd
+
+
 def linux_sandbox_arg0(codex_linux_sandbox_exe: str | Path) -> str:
     path = Path(codex_linux_sandbox_exe)
     if path.name == CODEX_LINUX_SANDBOX_ARG0:
@@ -114,6 +140,7 @@ def _string_sequence(value: object, label: str) -> tuple[str, ...]:
 __all__ = [
     "CODEX_LINUX_SANDBOX_ARG0",
     "allow_network_for_proxy",
+    "create_linux_sandbox_command_args",
     "build_linux_sandbox_spawn_child_request",
     "create_linux_sandbox_command_args_for_permission_profile",
     "linux_sandbox_arg0",

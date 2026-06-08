@@ -146,6 +146,27 @@ class AgentRegistryTests(unittest.TestCase):
         self.assertEqual(registry.nickname_reset_count, 1)
         third.release()
 
+    def test_repeated_resets_advance_the_ordinal_suffix(self) -> None:
+        # Rust source: codex-rs/core/src/agent/registry_tests.rs::repeated_resets_advance_the_ordinal_suffix.
+        registry = AgentRegistry()
+
+        first = registry.reserve_spawn_slot()
+        first_id = ThreadId.new()
+        self.assertEqual(first.reserve_agent_nickname_with_preference(["Plato"]), "Plato")
+        first.commit(agent_metadata(first_id))
+        registry.release_spawned_thread(first_id)
+
+        second = registry.reserve_spawn_slot()
+        second_id = ThreadId.new()
+        self.assertEqual(second.reserve_agent_nickname_with_preference(["Plato"]), "Plato the 2nd")
+        second.commit(agent_metadata(second_id))
+        registry.release_spawned_thread(second_id)
+
+        third = registry.reserve_spawn_slot()
+        self.assertEqual(third.reserve_agent_nickname_with_preference(["Plato"]), "Plato the 3rd")
+        self.assertEqual(registry.nickname_reset_count, 2)
+        third.release()
+
     def test_empty_nickname_pool_is_rejected(self) -> None:
         registry = AgentRegistry()
         reservation = registry.reserve_spawn_slot()

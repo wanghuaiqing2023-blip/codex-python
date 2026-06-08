@@ -98,6 +98,26 @@ class WindowsSandboxReadGrantsTests(unittest.TestCase):
             self.assertEqual(calls[0][4], tmp_path)
             self.assertEqual(calls[0][5], (tmp_path.resolve(),))
 
+    def test_setup_refresher_error_propagates(self) -> None:
+        # Rust: run_setup_refresh_with_extra_read_roots(...)? propagates setup
+        # refresh failures after validation and canonicalization.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+
+            def refresher(*_args) -> None:
+                raise RuntimeError("setup refresh failed")
+
+            with self.assertRaisesRegex(RuntimeError, "setup refresh failed"):
+                grant_read_root_non_elevated(
+                    permission_profile(),
+                    tmp_path,
+                    tmp_path,
+                    {},
+                    tmp_path,
+                    tmp_path,
+                    setup_refresher=refresher,
+                )
+
     def test_default_success_path_requires_real_setup_refresh(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

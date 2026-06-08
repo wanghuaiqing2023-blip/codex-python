@@ -1,17 +1,27 @@
 import asyncio
+from pathlib import Path
+import uuid
 
 import pytest
 
+from pycodex.exec_server import EnvironmentManager
 from pycodex.core.thread_manager import (
     ForkSnapshot,
     ForkSnapshotKind,
     NewThread,
     StartThreadOptions,
+    StoredThread,
+    StoredThreadHistory,
     ThreadManager,
     ThreadNotFoundError,
+    ThreadStoreError,
     set_thread_manager_test_mode_for_tests,
     should_use_test_thread_manager_behavior,
+    stored_thread_to_initial_history,
+    thread_store_metadata_update_error,
+    thread_store_rollout_read_error,
 )
+from pycodex.protocol import CodexErr, RolloutItem, TurnEnvironmentSelection, ThreadId
 
 
 def test_thread_manager_test_mode_flag_round_trips():
@@ -66,6 +76,37 @@ async def test_start_thread_accepts_injected_factory_result():
     assert new_thread.session_configured == {"ok": True}
 
 
+def test_default_environment_selections_uses_environment_manager_defaults():
+    manager = ThreadManager(environment_manager=EnvironmentManager.default_for_tests())
+
+    selections = manager.default_environment_selections(Path("/tmp"))
+
+    assert selections == [TurnEnvironmentSelection(environment_id="local", cwd=Path("/tmp"))]
+
+
+def test_validate_environment_selections_rejects_duplicate_selection_ids():
+    manager = ThreadManager(environment_manager=EnvironmentManager.default_for_tests())
+
+    with pytest.raises(CodexErr) as exc:
+        manager.validate_environment_selections(
+            (
+                TurnEnvironmentSelection(environment_id="local", cwd=Path("/tmp")),
+                TurnEnvironmentSelection(environment_id="local", cwd=Path("/tmp")),
+            )
+        )
+    assert exc.value.kind == "invalid_request"
+    assert "duplicate turn environment id" in exc.value.message
+
+
+def test_validate_environment_selections_rejects_unknown_environment_id():
+    manager = ThreadManager(environment_manager=EnvironmentManager.default_for_tests())
+
+    with pytest.raises(CodexErr) as exc:
+        manager.validate_environment_selections((TurnEnvironmentSelection(environment_id="missing", cwd=Path("/tmp")),))
+    assert exc.value.kind == "invalid_request"
+    assert "unknown turn environment id `missing`" in exc.value.message
+
+
 def test_thread_lookup_metadata_and_removal_are_in_memory():
     manager = ThreadManager()
     manager.add_thread(NewThread("thread-1", object(), {"configured": True}))
@@ -78,6 +119,84 @@ def test_thread_lookup_metadata_and_removal_are_in_memory():
     assert manager.remove_thread("thread-1") is False
     with pytest.raises(ThreadNotFoundError):
         manager.get_thread("thread-1")
+
+
+def test_stored_thread_to_initial_history_builds_resumed_history_and_prefers_explicit_rollout_path():
+    # Rust: codex-rs/core/src/thread_manager.rs::stored_thread_to_initial_history.
+    thread_id = ThreadId.from_string(str(uuid.uuid4()))
+    item = RolloutItem.response_item(
+        {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "output_text", "text": "hello"}],
+        }
+    )
+    stored = StoredThread(
+        thread_id=thread_id,
+        history=StoredThreadHistory((item,)),
+        rollout_path=Path("stored.jsonl"),
+    )
+
+    history = stored_thread_to_initial_history(stored, rollout_path=Path("explicit.jsonl"))
+
+    assert history.type == "Resumed"
+    assert history.resumed is not None
+    assert history.resumed.conversation_id == thread_id
+    assert history.resumed.history == (item,)
+    assert history.resumed.rollout_path == Path("explicit.jsonl")
+
+
+def test_stored_thread_to_initial_history_uses_stored_rollout_path_and_errors_without_history():
+    # Rust: missing persisted history becomes CodexErr::Fatal with the thread id.
+    thread_id = ThreadId.from_string(str(uuid.uuid4()))
+    item = RolloutItem.response_item({"type": "message", "role": "assistant", "content": []})
+    mapped = {
+        "thread_id": str(thread_id),
+        "history": {"items": [item.to_mapping()]},
+        "rollout_path": "stored.jsonl",
+    }
+
+    history = stored_thread_to_initial_history(mapped)
+
+    assert history.resumed is not None
+    assert history.resumed.rollout_path == Path("stored.jsonl")
+    with pytest.raises(CodexErr) as exc:
+        stored_thread_to_initial_history(StoredThread(thread_id=thread_id))
+    assert exc.value.kind == "fatal"
+    assert f"thread {thread_id} did not include persisted history" in str(exc.value)
+
+
+def test_thread_store_rollout_read_error_maps_rust_variants():
+    # Rust: codex-rs/core/src/thread_manager.rs::thread_store_rollout_read_error.
+    thread_id = ThreadId.from_string(str(uuid.uuid4()))
+
+    not_found = thread_store_rollout_read_error(ThreadStoreError.thread_not_found(thread_id))
+    invalid = thread_store_rollout_read_error(ThreadStoreError.invalid_request("bad rollout path"))
+    other = thread_store_rollout_read_error(ThreadStoreError.other("io failed"))
+
+    assert not_found == CodexErr.thread_not_found(str(thread_id))
+    assert invalid == CodexErr.invalid_request("bad rollout path")
+    assert other.kind == "fatal"
+    assert "failed to read thread by rollout path: io failed" in str(other)
+
+
+def test_thread_store_metadata_update_error_maps_rust_variants():
+    # Rust: codex-rs/core/src/thread_manager.rs::thread_store_metadata_update_error.
+    thread_id = ThreadId.from_string(str(uuid.uuid4()))
+    missing_id = ThreadId.from_string(str(uuid.uuid4()))
+
+    not_found = thread_store_metadata_update_error(thread_id, ThreadStoreError.thread_not_found(missing_id))
+    invalid = thread_store_metadata_update_error(thread_id, ThreadStoreError.invalid_request("bad patch"))
+    unsupported = thread_store_metadata_update_error(thread_id, ThreadStoreError.unsupported("update_metadata"))
+    other = thread_store_metadata_update_error(thread_id, ThreadStoreError.other("disk failed"))
+
+    assert not_found == CodexErr.thread_not_found(str(missing_id))
+    assert invalid == CodexErr.invalid_request("bad patch")
+    assert unsupported == CodexErr.unsupported_operation(
+        "thread metadata update is not supported by this store: update_metadata"
+    )
+    assert other.kind == "fatal"
+    assert f"failed to update thread metadata {thread_id}: disk failed" in str(other)
 
 
 @pytest.mark.asyncio

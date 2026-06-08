@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import inspect
 from dataclasses import dataclass
 from typing import Any, Callable
 
 from pycodex.core.tools.context import FunctionToolOutput, ToolPayload
 from pycodex.core.tools.router import FunctionCallError
-from pycodex.protocol import ResponseInputItem, ToolName, UpdatePlanArgs
+from pycodex.protocol import EventMsg, ResponseInputItem, ToolName, UpdatePlanArgs
 
 JsonValue = Any
 
@@ -105,6 +106,9 @@ class PlanHandler:
         *,
         collaboration_mode: Any = None,
     ) -> PlanToolOutput:
+        turn = getattr(invocation_or_payload, "turn", None)
+        if collaboration_mode is None and turn is not None:
+            collaboration_mode = getattr(turn, "collaboration_mode", None)
         if _is_plan_mode(collaboration_mode):
             raise FunctionCallError.respond_to_model(
                 "update_plan is a TODO/checklist tool and is not allowed in Plan mode"
@@ -124,7 +128,17 @@ class PlanHandler:
         args = parse_update_plan_arguments(arguments)
         if self._on_plan_update is not None:
             self._on_plan_update(args)
+        sender = getattr(getattr(invocation_or_payload, "session", None), "send_event", None)
+        if callable(sender):
+            result = sender(turn, EventMsg.with_payload("plan_update", args))
+            if inspect.isawaitable(result):
+                return _await_plan_update_event(result)
         return PlanToolOutput()
+
+
+async def _await_plan_update_event(result: Any) -> PlanToolOutput:
+    await result
+    return PlanToolOutput()
 
 
 def parse_update_plan_arguments(arguments: str) -> UpdatePlanArgs:

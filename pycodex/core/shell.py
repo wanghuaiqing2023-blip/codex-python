@@ -17,7 +17,7 @@ class ShellType(str, Enum):
     CMD = "cmd"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class Shell:
     shell_type: ShellType
     shell_path: Path
@@ -31,6 +31,14 @@ class Shell:
 
     def name(self) -> str:
         return self.shell_type.value
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Shell):
+            return NotImplemented
+        return self.shell_type == other.shell_type and self.shell_path == other.shell_path
+
+    def __hash__(self) -> int:
+        return hash((self.shell_type, self.shell_path))
 
     def derive_exec_args(self, command: str, use_login_shell: bool = False) -> list[str]:
         if self.shell_type in {ShellType.ZSH, ShellType.BASH, ShellType.SH}:

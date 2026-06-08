@@ -12,6 +12,7 @@ import logging
 import sys
 import time
 from dataclasses import dataclass, field
+from collections.abc import Iterable
 from typing import Any
 
 from pycodex.core.function_tool import FunctionCallError
@@ -97,6 +98,38 @@ class ToolCall:
         )
 
 
+@dataclass(frozen=True)
+class ToolRouterParams:
+    mcp_tools: tuple[Any, ...] | None = None
+    deferred_mcp_tools: tuple[Any, ...] | None = None
+    discoverable_tools: tuple[Any, ...] | None = None
+    extension_tool_executors: tuple[Any, ...] = ()
+    dynamic_tools: tuple[Any, ...] = ()
+
+    def __init__(
+        self,
+        *,
+        mcp_tools: Iterable[Any] | None = None,
+        deferred_mcp_tools: Iterable[Any] | None = None,
+        discoverable_tools: Iterable[Any] | None = None,
+        extension_tool_executors: Iterable[Any] = (),
+        dynamic_tools: Iterable[Any] = (),
+    ) -> None:
+        object.__setattr__(self, "mcp_tools", None if mcp_tools is None else tuple(mcp_tools))
+        object.__setattr__(
+            self,
+            "deferred_mcp_tools",
+            None if deferred_mcp_tools is None else tuple(deferred_mcp_tools),
+        )
+        object.__setattr__(
+            self,
+            "discoverable_tools",
+            None if discoverable_tools is None else tuple(discoverable_tools),
+        )
+        object.__setattr__(self, "extension_tool_executors", tuple(extension_tool_executors))
+        object.__setattr__(self, "dynamic_tools", tuple(dynamic_tools))
+
+
 def _model_visible_specs_from_registry(registry: ToolRegistry) -> tuple[JsonValue, ...]:
     specs: list[JsonValue] = []
     for name in registry.tool_names():
@@ -125,6 +158,16 @@ class ToolRouter:
             raise TypeError("registry must be ToolRegistry or None")
         self._model_visible_specs = tuple(model_visible_specs)
         self._registry = registry or ToolRegistry.empty()
+
+    @classmethod
+    def from_turn_context(
+        cls,
+        turn_context: Any,
+        params: ToolRouterParams | None = None,
+    ) -> "ToolRouter":
+        from pycodex.core.tools.spec_plan import build_tool_router
+
+        return build_tool_router(turn_context, params or ToolRouterParams())
 
     @classmethod
     def from_parts(
@@ -873,6 +916,11 @@ def _call_or_value(value: Any) -> Any:
     return value() if callable(value) else value
 
 
+def _call_or_get(value: Any, name: str, default: Any) -> Any:
+    candidate = _field_or_attr(value, name, default)
+    return candidate() if callable(candidate) else candidate
+
+
 def _log_preview_for_telemetry(output: Any) -> str | None:
     if output is None:
         return None
@@ -962,6 +1010,50 @@ def _call_method(value: Any, name: str, *args: Any) -> Any:
     if not callable(method):
         return None
     return method(*args)
+
+
+def extension_tool_executors(session: Any) -> tuple[Any, ...]:
+    services = _field_or_attr(session, "services")
+    extensions = _field_or_attr(services, "extensions")
+    contributors = _call_or_get(extensions, "tool_contributors", ())
+    session_store = _field_or_attr(services, "session_extension_data")
+    thread_store = _field_or_attr(services, "thread_extension_data")
+    executors: list[Any] = []
+    for contributor in _iter_contributors(contributors):
+        tools = _field_or_attr(contributor, "tools")
+        if not callable(tools):
+            continue
+        executors.extend(_iter_contributors(_call_tools_contributor(tools, session_store, thread_store)))
+    return tuple(executors)
+
+
+def _iter_contributors(value: Any) -> tuple[Any, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, (str, bytes)):
+        raise TypeError("contributors must be an iterable of objects")
+    if isinstance(value, Iterable):
+        return tuple(value)
+    raise TypeError("contributors must be an iterable of objects")
+
+
+def _call_tools_contributor(tools: Any, session_store: Any, thread_store: Any) -> Any:
+    try:
+        signature = inspect.signature(tools)
+    except (TypeError, ValueError):
+        return tools(session_store, thread_store)
+    candidates = (
+        ((session_store, thread_store), {}),
+        ((), {"session_store": session_store, "thread_store": thread_store}),
+        ((), {}),
+    )
+    for args, kwargs in candidates:
+        try:
+            signature.bind(*args, **kwargs)
+        except TypeError:
+            continue
+        return tools(*args, **kwargs)
+    raise TypeError("extension tool contributor has invalid tools signature")
 
 
 def _trace_thread_id(session: Any) -> str:
@@ -1193,9 +1285,11 @@ __all__ = [
     "ToolCall",
     "ToolPostHookTypeError",
     "ToolRouter",
+    "ToolRouterParams",
     "build_tool_call",
     "dispatch_tool_call",
     "dispatch_tool_call_with_terminal_outcome",
+    "extension_tool_executors",
     "apply_post_tool_use_feedback",
     "notify_tool_finish_if_unclaimed",
 ]

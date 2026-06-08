@@ -31,11 +31,13 @@ from pycodex.core import (
     ToolPayload,
     ToolRegistry,
     ToolRouter,
+    ToolRouterParams,
     apply_post_tool_use_feedback,
     build_environment_tool_router_from_turn_context,
     build_tool_call,
     dispatch_tool_call,
     dispatch_tool_call_with_terminal_outcome,
+    extension_tool_executors,
 )
 from pycodex.core.tools.handlers.view_image import ViewImageHandler
 from pycodex.protocol import NetworkSandboxPolicy, PermissionProfile, ResponseItem, SearchToolCallParams, ToolName, TruncationPolicyConfig
@@ -93,6 +95,55 @@ class NamespacedTelemetryHandler(TelemetryHandler):
     def __init__(self):
         super().__init__("lookup")
         self.name = ToolName.namespaced("mcp__server__", "lookup")
+
+
+class ExtensionEchoExecutor:
+    def __init__(self) -> None:
+        self.captured_call = None
+
+    def tool_name(self) -> ToolName:
+        return ToolName.namespaced("extension/", "echo")
+
+    def spec(self) -> dict[str, Any]:
+        return {
+            "type": "namespace",
+            "name": "extension/",
+            "description": "Extension tools",
+            "tools": (
+                {
+                    "type": "function",
+                    "name": "echo",
+                    "description": "Echoes arguments through an extension tool.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"message": {"type": "string"}},
+                        "required": ["message"],
+                        "additionalProperties": False,
+                    },
+                },
+            ),
+        }
+
+    def handle(self, call: ToolCall) -> JsonToolOutput:
+        self.captured_call = call
+        return JsonToolOutput.new(
+            {
+                "arguments": json.loads(call.function_arguments()),
+                "callId": call.call_id,
+                "historyIds": [item.id for item in call.conversation_history.items],
+                "ok": True,
+            }
+        )
+
+
+class ExtensionEchoContributor:
+    def __init__(self, executor: ExtensionEchoExecutor) -> None:
+        self.executor = executor
+        self.seen = None
+
+    def tools(self, session_store, thread_store):
+        self.seen = (session_store, thread_store)
+        return (self.executor,)
 
 
 class LifecycleRecorder:
@@ -501,6 +552,72 @@ class ToolRouterTests(unittest.TestCase):
                 )
             )
         )
+
+    def test_extension_tool_executors_collects_session_contributors_like_rust(self) -> None:
+        # Rust parity: codex-core::tools::router
+        # router.rs::extension_tool_executors reads session/thread extension stores.
+        executor = ExtensionEchoExecutor()
+        contributor = ExtensionEchoContributor(executor)
+        session = SimpleNamespace(
+            services=SimpleNamespace(
+                extensions=SimpleNamespace(tool_contributors=lambda: (contributor,)),
+                session_extension_data={"session": True},
+                thread_extension_data={"thread": True},
+            )
+        )
+
+        self.assertEqual(extension_tool_executors(session), (executor,))
+        self.assertEqual(contributor.seen, ({"session": True}, {"thread": True}))
+
+    def test_from_turn_context_registers_extension_tools_as_visible_and_dispatchable(self) -> None:
+        # Rust parity: codex-core::tools::router
+        # router_tests.rs::extension_tool_executors_are_model_visible_and_dispatchable.
+        executor = ExtensionEchoExecutor()
+        history_item = ResponseItem.message("user", [], id="msg-history")
+        router = ToolRouter.from_turn_context(
+            SimpleNamespace(environments=()),
+            ToolRouterParams(extension_tool_executors=(executor,), dynamic_tools=()),
+        )
+
+        self.assertIn(
+            {
+                "type": "namespace",
+                "name": "extension/",
+                "description": "Extension tools",
+                "tools": (
+                    {
+                        "type": "function",
+                        "name": "echo",
+                        "description": "Echoes arguments through an extension tool.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"message": {"type": "string"}},
+                            "required": ["message"],
+                            "additionalProperties": False,
+                        },
+                    },
+                ),
+            },
+            router.model_visible_specs(),
+        )
+
+        result = asyncio.run(
+            router.dispatch_tool_call_with_terminal_outcome(
+                ToolCall(
+                    tool_name=ToolName.namespaced("extension/", "echo"),
+                    call_id="call-extension",
+                    payload=ToolPayload.function(json.dumps({"message": "hello"})),
+                    conversation_history=ConversationHistory((history_item,)),
+                )
+            )
+        )
+
+        self.assertEqual(
+            result.code_mode_result(),
+            {"arguments": {"message": "hello"}, "callId": "call-extension", "historyIds": [], "ok": True},
+        )
+        self.assertEqual(executor.captured_call.call_id, "call-extension")
+        self.assertEqual(executor.captured_call.tool_name, ToolName.namespaced("extension/", "echo"))
 
     def test_dispatch_tool_call_wraps_handler_output_and_lifecycle(self) -> None:
         handler = EchoHandler()

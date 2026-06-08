@@ -43,6 +43,20 @@ UNIFIED_EXEC_ENV = (
     ("CODEX_CI", "1"),
 )
 _T = TypeVar("_T")
+_DETERMINISTIC_PROCESS_IDS_FOR_TESTS = True
+
+
+def set_deterministic_process_ids_for_tests(enabled: bool) -> None:
+    """Set the default process-id mode used by test-created managers."""
+
+    global _DETERMINISTIC_PROCESS_IDS_FOR_TESTS
+    _DETERMINISTIC_PROCESS_IDS_FOR_TESTS = bool(enabled)
+
+
+def deterministic_process_ids_for_tests() -> bool:
+    """Return the current test default for process-id allocation."""
+
+    return _DETERMINISTIC_PROCESS_IDS_FOR_TESTS
 
 
 @dataclass(frozen=True)
@@ -820,12 +834,14 @@ class UnifiedExecProcessManager:
         self,
         *,
         max_processes: int = MAX_UNIFIED_EXEC_PROCESSES,
-        deterministic_process_ids: bool = True,
+        deterministic_process_ids: bool | None = None,
     ) -> None:
         if isinstance(max_processes, bool) or not isinstance(max_processes, int):
             raise TypeError("max_processes must be an integer")
         if max_processes <= 0:
             raise ValueError("max_processes must be positive")
+        if deterministic_process_ids is None:
+            deterministic_process_ids = _DETERMINISTIC_PROCESS_IDS_FOR_TESTS
         if not isinstance(deterministic_process_ids, bool):
             raise TypeError("deterministic_process_ids must be a bool")
         self.max_processes = max_processes
@@ -1287,6 +1303,7 @@ __all__ = [
     "WriteStdinRequest",
     "apply_unified_exec_env",
     "clamp_yield_time",
+    "deterministic_process_ids_for_tests",
     "env_overlay_for_exec_server",
     "exec_server_after_seq",
     "exec_server_env_for_request",
@@ -1302,6 +1319,7 @@ __all__ = [
     "resolve_failed_aggregated_output",
     "resolve_max_tokens",
     "resolve_write_stdin_yield_time",
+    "set_deterministic_process_ids_for_tests",
     "should_emit_exec_output_delta",
     "should_emit_terminal_interaction",
     "split_valid_utf8_prefix",

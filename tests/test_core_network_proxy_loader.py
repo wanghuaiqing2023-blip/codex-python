@@ -9,16 +9,28 @@ from pycodex.network_proxy import (
     ConfigLayerSource,
     LayerMtime,
     MtimeConfigReloader,
+    NetworkConstraints,
     NetworkDomainPermission,
+    NetworkMode,
     NetworkProxyConfig,
     NetworkProxyConstraints,
+    NetworkProxySpec,
     NetworkToml,
     apply_exec_policy_network_rules,
     apply_network_constraints,
+    config_from_layers,
     collect_layer_mtimes,
     is_user_controlled_layer,
+    network_constraints_from_trusted_layers,
+    network_tables_from_toml,
     normalize_host,
     overlay_network_domain_permissions,
+    selected_network_from_tables,
+)
+from pycodex.protocol.models import (
+    ManagedFileSystemPermissions,
+    NetworkSandboxPolicy,
+    PermissionProfile,
 )
 
 
@@ -126,6 +138,163 @@ class NetworkProxyLoaderTests(unittest.TestCase):
         self.assertEqual(constraints.allowed_domains, ["api.example.com", "blocked.example.com"])
         self.assertIsNone(constraints.denied_domains)
 
+    def test_selected_network_from_tables_ignores_builtin_profile_without_permissions_table(self) -> None:
+        # Rust source: codex-rs/core/src/network_proxy_loader_tests.rs
+        # selected_network_from_tables_ignores_builtin_profile_without_permissions_table.
+        parsed = network_tables_from_toml({"default_permissions": ":workspace"})
+
+        self.assertIsNone(selected_network_from_tables(parsed))
+
+    def test_selected_network_from_tables_rejects_unknown_builtin_profile_without_permissions_table(self) -> None:
+        # Rust source: codex-rs/core/src/network_proxy_loader_tests.rs
+        # selected_network_from_tables_rejects_unknown_builtin_profile_without_permissions_table.
+        parsed = network_tables_from_toml({"default_permissions": ":unknown"})
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "default_permissions refers to unknown built-in profile `:unknown`",
+        ):
+            selected_network_from_tables(parsed)
+
+    def test_selected_network_from_tables_resolves_builtin_workspace_parent(self) -> None:
+        # Rust source: codex-rs/core/src/network_proxy_loader_tests.rs
+        # selected_network_from_tables_resolves_builtin_workspace_parent.
+        network = selected_network_from_tables(
+            network_tables_from_toml(
+                {
+                    "default_permissions": "dev",
+                    "permissions": {
+                        "dev": {
+                            "extends": ":workspace",
+                            "network": {
+                                "enabled": True,
+                                "domains": {"child.example.com": "allow"},
+                            },
+                        }
+                    },
+                }
+            )
+        )
+
+        self.assertEqual(network.enabled, True)
+        self.assertEqual(network.domains, {"child.example.com": "allow"})
+
+    def test_selected_network_from_tables_resolves_permission_profile_inheritance(self) -> None:
+        # Rust source: codex-rs/core/src/network_proxy_loader_tests.rs
+        # selected_network_from_tables_resolves_permission_profile_inheritance.
+        network = selected_network_from_tables(
+            network_tables_from_toml(
+                {
+                    "default_permissions": "dev",
+                    "permissions": {
+                        "base": {
+                            "network": {
+                                "enabled": True,
+                                "dangerously_allow_all_unix_sockets": True,
+                                "domains": {
+                                    "base.example.com": "allow",
+                                    "shared.example.com": "deny",
+                                },
+                            }
+                        },
+                        "dev": {
+                            "extends": "base",
+                            "network": {
+                                "allow_local_binding": True,
+                                "domains": {
+                                    "child.example.com": "allow",
+                                    "shared.example.com": "allow",
+                                },
+                            },
+                        },
+                    },
+                }
+            )
+        )
+
+        self.assertTrue(network.enabled)
+        self.assertTrue(network.dangerously_allow_all_unix_sockets)
+        self.assertTrue(network.allow_local_binding)
+        self.assertEqual(
+            network.domains,
+            {
+                "base.example.com": "allow",
+                "child.example.com": "allow",
+                "shared.example.com": "allow",
+            },
+        )
+
+    def test_config_from_layers_resolves_inherited_profiles_across_layers(self) -> None:
+        # Rust source: codex-rs/core/src/network_proxy_loader_tests.rs
+        # config_from_layers_resolves_inherited_profiles_across_layers.
+        config = config_from_layers(
+            [
+                ConfigLayerEntry(
+                    ConfigLayerSource.session_flags(),
+                    {"permissions": {"base": {"network": {"domains": {"base.example.com": "allow"}}}}},
+                ),
+                ConfigLayerEntry(
+                    ConfigLayerSource.session_flags(),
+                    {
+                        "default_permissions": "dev",
+                        "permissions": {
+                            "dev": {
+                                "extends": "base",
+                                "network": {"domains": {"child.example.com": "allow"}},
+                            }
+                        },
+                    },
+                ),
+            ]
+        )
+
+        self.assertEqual(config.network.allowed_domains(), ["base.example.com", "child.example.com"])
+
+    def test_config_from_layers_uses_only_the_final_selected_profile_network(self) -> None:
+        # Rust source: codex-rs/core/src/network_proxy_loader_tests.rs
+        # config_from_layers_uses_only_the_final_selected_profile_network.
+        config = config_from_layers(
+            [
+                ConfigLayerEntry(
+                    ConfigLayerSource.session_flags(),
+                    {
+                        "default_permissions": "dev",
+                        "permissions": {
+                            "dev": {"network": {"domains": {"lower.example.com": "allow"}}}
+                        },
+                    },
+                ),
+                ConfigLayerEntry(ConfigLayerSource.session_flags(), {"default_permissions": ":workspace"}),
+            ]
+        )
+
+        self.assertIsNone(config.network.allowed_domains())
+        self.assertIsNone(config.network.denied_domains())
+
+    def test_trusted_constraints_use_only_the_final_selected_profile_network(self) -> None:
+        # Rust source: codex-rs/core/src/network_proxy_loader_tests.rs
+        # trusted_constraints_use_only_the_final_selected_profile_network.
+        constraints = network_constraints_from_trusted_layers(
+            [
+                ConfigLayerEntry(
+                    ConfigLayerSource.system("/tmp/system.toml"),
+                    {
+                        "default_permissions": "dev",
+                        "permissions": {
+                            "dev": {"network": {"domains": {"managed.example.com": "allow"}}}
+                        },
+                    },
+                ),
+                ConfigLayerEntry(
+                    ConfigLayerSource.legacy_managed_config_toml_from_file("/tmp/managed.toml"),
+                    {"default_permissions": ":workspace"},
+                ),
+            ]
+        )
+
+        self.assertIsNone(constraints.allowed_domains)
+        self.assertIsNone(constraints.denied_domains)
+
     def test_user_controlled_layer_matches_rust(self) -> None:
         self.assertTrue(is_user_controlled_layer(ConfigLayerSource.user("/tmp/user.toml")))
         self.assertTrue(is_user_controlled_layer(ConfigLayerSource.project("/tmp/.codex")))
@@ -188,6 +357,234 @@ class NetworkProxyLoaderTests(unittest.TestCase):
         self.assertEqual(normalize_host("EXAMPLE.COM."), "example.com")
         with self.assertRaisesRegex(TypeError, "host must be a string"):
             normalize_host(123)  # type: ignore[arg-type]
+
+    def test_network_proxy_spec_requirements_allowed_domains_are_baseline_for_user_allowlist(self) -> None:
+        # Rust source: codex-rs/core/src/config/network_proxy_spec_tests.rs
+        # requirements_allowed_domains_are_a_baseline_for_user_allowlist.
+        config = NetworkProxyConfig()
+        config.network.set_allowed_domains(["api.example.com"])
+        requirements = NetworkConstraints(domains={"*.example.com": "allow"})
+
+        spec = NetworkProxySpec.from_config_and_constraints(
+            config,
+            requirements,
+            PermissionProfile.read_only(),
+        )
+
+        self.assertEqual(spec.config.network.allowed_domains(), ["*.example.com", "api.example.com"])
+        self.assertEqual(spec.constraints.allowed_domains, ["*.example.com"])
+        self.assertEqual(spec.constraints.allowlist_expansion_enabled, True)
+
+    def test_network_proxy_spec_requirements_allowed_domains_do_not_override_user_denies(self) -> None:
+        # Rust source: codex-rs/core/src/config/network_proxy_spec_tests.rs
+        # requirements_allowed_domains_do_not_override_user_denies_for_same_pattern.
+        config = NetworkProxyConfig()
+        config.network.set_denied_domains(["api.example.com"])
+        requirements = NetworkConstraints(domains={"api.example.com": "allow"})
+
+        spec = NetworkProxySpec.from_config_and_constraints(
+            config,
+            requirements,
+            PermissionProfile.workspace_write(),
+        )
+
+        self.assertIsNone(spec.config.network.allowed_domains())
+        self.assertEqual(spec.config.network.denied_domains(), ["api.example.com"])
+        self.assertEqual(spec.constraints.allowed_domains, ["api.example.com"])
+
+    def test_network_proxy_spec_managed_unrestricted_profile_allows_domain_expansion(self) -> None:
+        # Rust source: codex-rs/core/src/config/network_proxy_spec_tests.rs
+        # managed_unrestricted_profile_allows_domain_expansion.
+        config = NetworkProxyConfig()
+        config.network.set_allowed_domains(["api.example.com"])
+        permission_profile = PermissionProfile.managed(
+            ManagedFileSystemPermissions.unrestricted(),
+            NetworkSandboxPolicy.RESTRICTED,
+        )
+
+        spec = NetworkProxySpec.from_config_and_constraints(
+            config,
+            NetworkConstraints(domains={"*.example.com": "allow"}),
+            permission_profile,
+        )
+
+        self.assertEqual(spec.config.network.allowed_domains(), ["*.example.com", "api.example.com"])
+        self.assertEqual(spec.constraints.allowlist_expansion_enabled, True)
+
+    def test_network_proxy_spec_disabled_profile_keeps_managed_lists_fixed(self) -> None:
+        # Rust source: codex-rs/core/src/config/network_proxy_spec_tests.rs
+        # danger_full_access_keeps_managed_allowlist_and_denylist_fixed.
+        config = NetworkProxyConfig()
+        config.network.set_allowed_domains(["evil.com"])
+        config.network.set_denied_domains(["more-blocked.example.com"])
+        requirements = NetworkConstraints(
+            domains={
+                "*.example.com": NetworkDomainPermission.ALLOW,
+                "blocked.example.com": NetworkDomainPermission.DENY,
+            }
+        )
+
+        spec = NetworkProxySpec.from_config_and_constraints(
+            config,
+            requirements,
+            PermissionProfile.disabled(),
+        )
+
+        self.assertEqual(spec.config.network.allowed_domains(), ["*.example.com"])
+        self.assertEqual(spec.config.network.denied_domains(), ["blocked.example.com"])
+        self.assertEqual(spec.constraints.allowlist_expansion_enabled, False)
+        self.assertEqual(spec.constraints.denylist_expansion_enabled, False)
+
+    def test_network_proxy_spec_managed_allowed_domains_only_hard_denies_misses(self) -> None:
+        # Rust source: codex-rs/core/src/config/network_proxy_spec_tests.rs
+        # managed_allowed_domains_only_ignores_user_allowlist_and_hard_denies_misses.
+        config = NetworkProxyConfig()
+        config.network.set_allowed_domains(["api.example.com"])
+
+        spec = NetworkProxySpec.from_config_and_constraints(
+            config,
+            NetworkConstraints(
+                domains={"managed.example.com": "allow"},
+                managed_allowed_domains_only=True,
+            ),
+            PermissionProfile.workspace_write(),
+        )
+
+        self.assertEqual(spec.config.network.allowed_domains(), ["managed.example.com"])
+        self.assertEqual(spec.constraints.allowed_domains, ["managed.example.com"])
+        self.assertEqual(spec.constraints.allowlist_expansion_enabled, False)
+        self.assertTrue(spec.hard_deny_allowlist_misses)
+
+    def test_network_proxy_spec_managed_allowed_domains_only_without_managed_list_blocks_users(self) -> None:
+        # Rust source: codex-rs/core/src/config/network_proxy_spec_tests.rs
+        # managed_allowed_domains_only_without_managed_allowlist_blocks_all_user_domains.
+        for profile in (PermissionProfile.workspace_write(), PermissionProfile.disabled()):
+            config = NetworkProxyConfig()
+            config.network.set_allowed_domains(["api.example.com"])
+
+            spec = NetworkProxySpec.from_config_and_constraints(
+                config,
+                NetworkConstraints(managed_allowed_domains_only=True),
+                profile,
+            )
+
+            self.assertIsNone(spec.config.network.allowed_domains())
+            self.assertEqual(spec.constraints.allowed_domains, [])
+            self.assertEqual(spec.constraints.allowlist_expansion_enabled, False)
+            self.assertTrue(spec.hard_deny_allowlist_misses)
+
+    def test_network_proxy_spec_deny_only_requirements_do_not_create_allow_constraints_in_full_access(self) -> None:
+        # Rust source: codex-rs/core/src/config/network_proxy_spec_tests.rs
+        # deny_only_requirements_do_not_create_allow_constraints_in_full_access.
+        config = NetworkProxyConfig()
+        config.network.set_allowed_domains(["api.example.com"])
+
+        spec = NetworkProxySpec.from_config_and_constraints(
+            config,
+            NetworkConstraints(domains={"managed-blocked.example.com": "deny"}),
+            PermissionProfile.disabled(),
+        )
+
+        self.assertEqual(spec.config.network.allowed_domains(), ["api.example.com"])
+        self.assertIsNone(spec.constraints.allowed_domains)
+        self.assertIsNone(spec.constraints.allowlist_expansion_enabled)
+        self.assertEqual(spec.config.network.denied_domains(), ["managed-blocked.example.com"])
+
+    def test_network_proxy_spec_allow_only_requirements_do_not_create_deny_constraints_in_full_access(self) -> None:
+        # Rust source: codex-rs/core/src/config/network_proxy_spec_tests.rs
+        # allow_only_requirements_do_not_create_deny_constraints_in_full_access.
+        config = NetworkProxyConfig()
+        config.network.set_denied_domains(["blocked.example.com"])
+
+        spec = NetworkProxySpec.from_config_and_constraints(
+            config,
+            NetworkConstraints(domains={"managed.example.com": "allow"}),
+            PermissionProfile.disabled(),
+        )
+
+        self.assertEqual(spec.config.network.allowed_domains(), ["managed.example.com"])
+        self.assertEqual(spec.config.network.denied_domains(), ["blocked.example.com"])
+        self.assertIsNone(spec.constraints.denied_domains)
+        self.assertIsNone(spec.constraints.denylist_expansion_enabled)
+
+    def test_network_proxy_spec_requirements_denied_domains_are_baseline_for_default_mode(self) -> None:
+        # Rust source: codex-rs/core/src/config/network_proxy_spec_tests.rs
+        # requirements_denied_domains_are_a_baseline_for_default_mode.
+        config = NetworkProxyConfig()
+        config.network.set_denied_domains(["blocked.example.com"])
+
+        spec = NetworkProxySpec.from_config_and_constraints(
+            config,
+            NetworkConstraints(domains={"managed-blocked.example.com": "deny"}),
+            PermissionProfile.workspace_write(),
+        )
+
+        self.assertEqual(
+            spec.config.network.denied_domains(),
+            ["managed-blocked.example.com", "blocked.example.com"],
+        )
+        self.assertEqual(spec.constraints.denied_domains, ["managed-blocked.example.com"])
+        self.assertEqual(spec.constraints.denylist_expansion_enabled, True)
+
+    def test_network_proxy_spec_denylist_expansion_keeps_user_entries_mutable(self) -> None:
+        # Rust source: codex-rs/core/src/config/network_proxy_spec_tests.rs
+        # requirements_denylist_expansion_keeps_user_entries_mutable.
+        config = NetworkProxyConfig()
+        config.network.set_denied_domains(["blocked.example.com"])
+        spec = NetworkProxySpec.from_config_and_constraints(
+            config,
+            NetworkConstraints(domains={"managed-blocked.example.com": "deny"}),
+            PermissionProfile.workspace_write(),
+        )
+
+        spec.config.network.upsert_domain_permission("blocked.example.com", NetworkDomainPermission.ALLOW)
+
+        self.assertEqual(spec.config.network.allowed_domains(), ["blocked.example.com"])
+        self.assertEqual(spec.config.network.denied_domains(), ["managed-blocked.example.com"])
+
+    def test_network_proxy_spec_ports_flags_and_exec_policy_rules(self) -> None:
+        # Rust source: codex-rs/core/src/config/network_proxy_spec.rs::apply_requirements
+        # and with_exec_policy_network_rules.
+        spec = NetworkProxySpec.from_config_and_constraints(
+            NetworkProxyConfig(),
+            NetworkConstraints(
+                enabled=True,
+                http_port=43128,
+                socks_port=43129,
+                allow_upstream_proxy=True,
+                dangerously_allow_non_loopback_proxy=True,
+                dangerously_allow_all_unix_sockets=True,
+                unix_sockets=("/tmp/socket",),
+                allow_local_binding=True,
+            ),
+            PermissionProfile.workspace_write(),
+        )
+
+        self.assertTrue(spec.enabled())
+        self.assertEqual(spec.proxy_host_and_port(), "127.0.0.1:43128")
+        self.assertEqual(spec.config.network.socks_url, "http://127.0.0.1:43129")
+        self.assertTrue(spec.config.network.allow_upstream_proxy)
+        self.assertTrue(spec.config.network.dangerously_allow_non_loopback_proxy)
+        self.assertTrue(spec.config.network.dangerously_allow_all_unix_sockets)
+        self.assertEqual(spec.config.network.allow_unix_sockets, ["/tmp/socket"])
+        self.assertTrue(spec.config.network.allow_local_binding)
+
+        updated = spec.with_exec_policy_network_rules(
+            ExecPolicy(allowed=["api.example.com"], denied=["blocked.example.com"])
+        )
+
+        self.assertEqual(updated.config.network.allowed_domains(), ["api.example.com"])
+        self.assertEqual(updated.config.network.denied_domains(), ["blocked.example.com"])
+
+    def test_network_proxy_spec_socks_enabled_reflects_config(self) -> None:
+        config = NetworkProxyConfig()
+        config.network.enable_socks5 = True
+        config.network.mode = NetworkMode.FULL
+
+        spec = NetworkProxySpec.from_config_and_constraints(config, None, PermissionProfile.workspace_write())
+
+        self.assertTrue(spec.socks_enabled())
+        self.assertEqual(spec.config.network.mode, NetworkMode.FULL)
 
 
 if __name__ == "__main__":

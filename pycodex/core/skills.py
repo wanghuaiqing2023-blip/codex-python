@@ -13,7 +13,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from pycodex.core_skills.model import SkillMetadata
+from pycodex import core_skills
+from pycodex.core_skills import config_rules, remote
+from pycodex.core_skills import injections as injection
+from pycodex.core_skills import invocation_utils
+from pycodex.core_skills import mentions as mention_counts
+from pycodex.core_skills import model
+from pycodex.core_skills import rendering as render
+from pycodex.core_skills.model import SkillError, SkillMetadata
 from pycodex.core_skills.config_rules import SkillConfigRules
 from pycodex.core_skills.injections import SkillInjections, build_skill_injections
 from pycodex.core_skills.invocation_utils import (
@@ -24,9 +31,15 @@ from pycodex.core_skills.invocation_utils import (
 )
 from pycodex.core_skills.mentions import build_skill_name_counts, collect_explicit_skill_mentions
 from pycodex.core_skills.rendering import (
+    SKILLS_HOW_TO_USE_WITH_ABSOLUTE_PATHS,
+    SKILLS_HOW_TO_USE_WITH_ALIASES,
+    SKILLS_INTRO_WITH_ABSOLUTE_PATHS,
+    SKILLS_INTRO_WITH_ALIASES,
+    SkillRenderSideEffects,
     SkillRenderReport,
     build_available_skills,
     default_skill_metadata_budget,
+    render_available_skills_body,
 )
 
 
@@ -86,6 +99,8 @@ async def maybe_emit_implicit_skill_invocation(
     workdir: str | Path,
 ) -> SkillInvocation | None:
     outcome = getattr(getattr(turn_context, "turn_skills", None), "outcome", None)
+    if outcome is None:
+        return None
     candidate = detect_implicit_skill_invocation_for_command(outcome, command, Path(workdir))
     if candidate is None:
         return None
@@ -185,13 +200,19 @@ def _track_events_context(sess: Any, turn_context: Any) -> dict[str, str]:
 
 __all__ = [
     "SkillConfigRules",
+    "SkillError",
     "SkillInjections",
     "SkillInvocation",
     "SkillLoadOutcome",
     "SkillMetadata",
     "SkillPolicy",
     "SkillRenderReport",
+    "SkillRenderSideEffects",
     "SkillsLoadInput",
+    "SKILLS_HOW_TO_USE_WITH_ABSOLUTE_PATHS",
+    "SKILLS_HOW_TO_USE_WITH_ALIASES",
+    "SKILLS_INTRO_WITH_ABSOLUTE_PATHS",
+    "SKILLS_INTRO_WITH_ALIASES",
     "build_available_skills",
     "build_skill_injections",
     "build_skill_name_counts",
@@ -199,6 +220,15 @@ __all__ = [
     "default_skill_metadata_budget",
     "detect_implicit_skill_invocation_for_command",
     "filter_skill_load_outcome_for_product",
+    "config_rules",
+    "core_skills",
+    "injection",
+    "invocation_utils",
+    "mention_counts",
     "maybe_emit_implicit_skill_invocation",
+    "model",
+    "remote",
+    "render",
+    "render_available_skills_body",
     "skills_load_input_from_config",
 ]

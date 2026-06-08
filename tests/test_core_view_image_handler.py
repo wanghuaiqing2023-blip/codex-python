@@ -1,3 +1,4 @@
+import asyncio
 import json
 import tempfile
 import unittest
@@ -207,6 +208,68 @@ class ViewImageHandlerTests(unittest.TestCase):
                     )
                 )
             self.assertIn("unknown turn environment id `missing`", str(unknown.exception))
+
+    def test_handler_rejects_turn_without_image_input_modality_like_rust(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/view_image.rs
+        # Rust contract: view_image is rejected when the model does not support image input.
+        invocation = SimpleNamespace(
+            turn=SimpleNamespace(model_info=SimpleNamespace(input_modalities=("text",))),
+            payload=ToolPayload.function(json.dumps({"path": "image.png"})),
+        )
+
+        with self.assertRaises(FunctionCallError) as unsupported:
+            ViewImageHandler().handle(invocation)
+
+        self.assertEqual(str(unsupported.exception), VIEW_IMAGE_UNSUPPORTED_MESSAGE)
+
+    def test_handler_emits_image_view_turn_item_like_rust(self) -> None:
+        # Rust source: codex-rs/core/src/tools/handlers/view_image.rs
+        # Rust contract: successful view_image calls emit ImageView turn item started/completed events.
+        class Session:
+            def __init__(self) -> None:
+                self.started = []
+                self.completed = []
+
+            async def emit_turn_item_started(self, turn, item):
+                self.started.append((turn, item))
+
+            async def emit_turn_item_completed(self, turn, item):
+                self.completed.append((turn, item))
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image = root / "image.png"
+            image.write_bytes(
+                b"\x89PNG\r\n\x1a\n"
+                b"\x00\x00\x00\rIHDR"
+                b"\x00\x00\x00\x01\x00\x00\x00\x01"
+                b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+                b"\x00\x00\x00\nIDATx\x9cc\xf8\x0f\x00\x01\x01\x01\x00\x18\xdd\x8d\xb0"
+                b"\x00\x00\x00\x00IEND\xaeB`\x82"
+            )
+            turn = SimpleNamespace(
+                model_info=SimpleNamespace(input_modalities=("text", "image")),
+                environments=(SimpleNamespace(environment_id="local", cwd=root),),
+            )
+            session = Session()
+            invocation = SimpleNamespace(
+                session=session,
+                turn=turn,
+                call_id="call-view-image",
+                payload=ToolPayload.function(json.dumps({"path": "image.png"})),
+            )
+
+            output = asyncio.run(ViewImageHandler().handle(invocation))
+
+        self.assertTrue(output.image_url.startswith("data:image/png;base64,"))
+        self.assertEqual(len(session.started), 1)
+        self.assertEqual(len(session.completed), 1)
+        self.assertIs(session.started[0][0], turn)
+        self.assertIs(session.completed[0][0], turn)
+        self.assertEqual(session.started[0][1], session.completed[0][1])
+        self.assertEqual(session.started[0][1].type, "ImageView")
+        self.assertEqual(session.started[0][1].item.id, "call-view-image")
+        self.assertEqual(session.started[0][1].item.path, root / "image.png")
 
     def test_handler_rejects_unsupported_and_bad_paths(self) -> None:
         # Rust source: codex-rs/core/src/tools/handlers/view_image.rs

@@ -3,12 +3,24 @@
 from __future__ import annotations
 
 import json
+import inspect
+import time
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Protocol
 
 from pycodex.core.tools.context import FunctionToolOutput, ToolPayload
 from pycodex.core.tools.router import FunctionCallError
-from pycodex.protocol import Resource, ResourceContent, ResourceTemplate, ToolName
+from pycodex.protocol import (
+    CallToolResult,
+    McpToolCallError,
+    McpToolCallItem,
+    McpToolCallStatus,
+    Resource,
+    ResourceContent,
+    ResourceTemplate,
+    ToolName,
+    TurnItem,
+)
 
 JsonValue = Any
 
@@ -324,13 +336,40 @@ class ListMcpResourcesHandler:
         args = ListResourcesArgs.from_mapping(parse_mcp_resource_arguments(payload.arguments))
         server = _optional_normalized(args.server)
         cursor = _optional_normalized(args.cursor)
-        if server is None:
-            if cursor is not None:
-                raise FunctionCallError.respond_to_model("cursor can only be used when a server is specified")
-            result = ListResourcesPayload.from_all_servers(_provider_call(self.provider.list_all_resources, "resources/list"))
-        else:
-            result = ListResourcesPayload.from_single_server(server, _provider_call(lambda: self.provider.list_resources(server, cursor), "resources/list"))
-        return serialize_function_output(result.to_mapping())
+        invocation = _mcp_invocation(
+            server or "codex",
+            LIST_MCP_RESOURCES_TOOL_NAME,
+            parse_mcp_resource_arguments(payload.arguments),
+        )
+        started = _emit_tool_call_begin(invocation_or_payload, invocation)
+        started_at = time.perf_counter()
+        try:
+            if server is None:
+                if cursor is not None:
+                    raise FunctionCallError.respond_to_model("cursor can only be used when a server is specified")
+                result = ListResourcesPayload.from_all_servers(_provider_call(self.provider.list_all_resources, "resources/list"))
+            else:
+                result = ListResourcesPayload.from_single_server(server, _provider_call(lambda: self.provider.list_resources(server, cursor), "resources/list"))
+            output = serialize_function_output(result.to_mapping())
+        except FunctionCallError as err:
+            ended = _emit_tool_call_end(
+                invocation_or_payload,
+                invocation,
+                _duration_ms(started_at),
+                error=str(err),
+            )
+            if inspect.isawaitable(started) or inspect.isawaitable(ended):
+                return _await_events_then_raise(started, ended, err)
+            raise
+        ended = _emit_tool_call_end(
+            invocation_or_payload,
+            invocation,
+            _duration_ms(started_at),
+            result=_call_tool_result_from_content(output.into_text(), output.success),
+        )
+        if inspect.isawaitable(started) or inspect.isawaitable(ended):
+            return _await_events_then_output(started, ended, output)
+        return output
 
 
 class ListMcpResourceTemplatesHandler:
@@ -354,13 +393,40 @@ class ListMcpResourceTemplatesHandler:
         args = ListResourceTemplatesArgs.from_mapping(parse_mcp_resource_arguments(payload.arguments))
         server = _optional_normalized(args.server)
         cursor = _optional_normalized(args.cursor)
-        if server is None:
-            if cursor is not None:
-                raise FunctionCallError.respond_to_model("cursor can only be used when a server is specified")
-            result = ListResourceTemplatesPayload.from_all_servers(_provider_call(self.provider.list_all_resource_templates, "resources/templates/list"))
-        else:
-            result = ListResourceTemplatesPayload.from_single_server(server, _provider_call(lambda: self.provider.list_resource_templates(server, cursor), "resources/templates/list"))
-        return serialize_function_output(result.to_mapping())
+        invocation = _mcp_invocation(
+            server or "codex",
+            LIST_MCP_RESOURCE_TEMPLATES_TOOL_NAME,
+            parse_mcp_resource_arguments(payload.arguments),
+        )
+        started = _emit_tool_call_begin(invocation_or_payload, invocation)
+        started_at = time.perf_counter()
+        try:
+            if server is None:
+                if cursor is not None:
+                    raise FunctionCallError.respond_to_model("cursor can only be used when a server is specified")
+                result = ListResourceTemplatesPayload.from_all_servers(_provider_call(self.provider.list_all_resource_templates, "resources/templates/list"))
+            else:
+                result = ListResourceTemplatesPayload.from_single_server(server, _provider_call(lambda: self.provider.list_resource_templates(server, cursor), "resources/templates/list"))
+            output = serialize_function_output(result.to_mapping())
+        except FunctionCallError as err:
+            ended = _emit_tool_call_end(
+                invocation_or_payload,
+                invocation,
+                _duration_ms(started_at),
+                error=str(err),
+            )
+            if inspect.isawaitable(started) or inspect.isawaitable(ended):
+                return _await_events_then_raise(started, ended, err)
+            raise
+        ended = _emit_tool_call_end(
+            invocation_or_payload,
+            invocation,
+            _duration_ms(started_at),
+            result=_call_tool_result_from_content(output.into_text(), output.success),
+        )
+        if inspect.isawaitable(started) or inspect.isawaitable(ended):
+            return _await_events_then_output(started, ended, output)
+        return output
 
 
 class ReadMcpResourceHandler:
@@ -384,10 +450,37 @@ class ReadMcpResourceHandler:
         args = ReadResourceArgs.from_mapping(parse_mcp_resource_arguments(payload.arguments))
         server = _required_normalized("server", args.server)
         uri = _required_normalized("uri", args.uri)
-        result = _provider_call(lambda: self.provider.read_resource(server, uri), "resources/read")
-        if not isinstance(result, ReadResourceResult):
-            raise TypeError("read_resource must return ReadResourceResult")
-        return serialize_function_output(ReadResourcePayload(server, uri, result).to_mapping())
+        invocation = _mcp_invocation(
+            server,
+            READ_MCP_RESOURCE_TOOL_NAME,
+            parse_mcp_resource_arguments(payload.arguments),
+        )
+        started = _emit_tool_call_begin(invocation_or_payload, invocation)
+        started_at = time.perf_counter()
+        try:
+            result = _provider_call(lambda: self.provider.read_resource(server, uri), "resources/read")
+            if not isinstance(result, ReadResourceResult):
+                raise TypeError("read_resource must return ReadResourceResult")
+            output = serialize_function_output(ReadResourcePayload(server, uri, result).to_mapping())
+        except FunctionCallError as err:
+            ended = _emit_tool_call_end(
+                invocation_or_payload,
+                invocation,
+                _duration_ms(started_at),
+                error=str(err),
+            )
+            if inspect.isawaitable(started) or inspect.isawaitable(ended):
+                return _await_events_then_raise(started, ended, err)
+            raise
+        ended = _emit_tool_call_end(
+            invocation_or_payload,
+            invocation,
+            _duration_ms(started_at),
+            result=_call_tool_result_from_content(output.into_text(), output.success),
+        )
+        if inspect.isawaitable(started) or inspect.isawaitable(ended):
+            return _await_events_then_output(started, ended, output)
+        return output
 
 
 def parse_mcp_resource_arguments(raw_args: str | None) -> JsonValue | None:
@@ -410,6 +503,103 @@ def serialize_function_output(payload: JsonValue) -> FunctionToolOutput:
     except (TypeError, ValueError) as err:
         raise FunctionCallError.respond_to_model(f"failed to serialize MCP resource response: {err}") from err
     return FunctionToolOutput.from_text(content, True)
+
+
+def _mcp_invocation(server: str, tool: str, arguments: JsonValue | None) -> dict[str, JsonValue]:
+    return {"server": server, "tool": tool, "arguments": arguments}
+
+
+def _call_tool_result_from_content(content: str, success: bool | None) -> CallToolResult:
+    return CallToolResult(
+        content=({"type": "text", "text": content},),
+        is_error=None if success is None else not success,
+    )
+
+
+def _emit_tool_call_begin(invocation_or_payload: Any, invocation: Mapping[str, JsonValue]) -> Any | None:
+    session, turn, call_id = _event_context(invocation_or_payload)
+    if session is None:
+        return None
+    started = getattr(session, "emit_turn_item_started", None)
+    if not callable(started):
+        return None
+    item = TurnItem.mcp_tool_call(
+        McpToolCallItem(
+            id=call_id,
+            server=str(invocation["server"]),
+            tool=str(invocation["tool"]),
+            arguments=invocation["arguments"] if invocation["arguments"] is not None else None,
+            status=McpToolCallStatus.IN_PROGRESS,
+        )
+    )
+    return started(turn, item)
+
+
+def _emit_tool_call_end(
+    invocation_or_payload: Any,
+    invocation: Mapping[str, JsonValue],
+    duration_ms: int,
+    *,
+    result: CallToolResult | None = None,
+    error: str | None = None,
+) -> Any | None:
+    session, turn, call_id = _event_context(invocation_or_payload)
+    if session is None:
+        return None
+    completed = getattr(session, "emit_turn_item_completed", None)
+    if not callable(completed):
+        return None
+    status = (
+        McpToolCallStatus.FAILED
+        if error is not None or (result is not None and result.is_error is True)
+        else McpToolCallStatus.COMPLETED
+    )
+    item = TurnItem.mcp_tool_call(
+        McpToolCallItem(
+            id=call_id,
+            server=str(invocation["server"]),
+            tool=str(invocation["tool"]),
+            arguments=invocation["arguments"] if invocation["arguments"] is not None else None,
+            status=status,
+            result=result,
+            error=McpToolCallError(error) if error is not None else None,
+            duration=duration_ms,
+        )
+    )
+    return completed(turn, item)
+
+
+def _event_context(invocation_or_payload: Any) -> tuple[Any | None, Any | None, str]:
+    session = getattr(invocation_or_payload, "session", None)
+    turn = getattr(invocation_or_payload, "turn", None)
+    call_id = getattr(invocation_or_payload, "call_id", None)
+    if session is None or turn is None or not isinstance(call_id, str) or not call_id:
+        return None, None, ""
+    return session, turn, call_id
+
+
+def _duration_ms(started_at: float) -> int:
+    return max(0, int((time.perf_counter() - started_at) * 1000))
+
+
+async def _await_events_then_output(
+    started: Any,
+    ended: Any,
+    output: FunctionToolOutput,
+) -> FunctionToolOutput:
+    if inspect.isawaitable(started):
+        await started
+    if inspect.isawaitable(ended):
+        await ended
+    return output
+
+
+async def _await_events_then_raise(started: Any, ended: Any, err: FunctionCallError) -> FunctionToolOutput:
+    if inspect.isawaitable(started):
+        await started
+    if inspect.isawaitable(ended):
+        await ended
+    raise err
 
 
 def _function_payload(invocation_or_payload: Any, tool_name: str) -> ToolPayload:

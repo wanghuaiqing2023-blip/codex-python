@@ -39,6 +39,7 @@ Current Python implementation files:
 | Python module/file | Role |
 |---|---|
 | `pycodex/config/overrides.py` | config override parsing and CLI override representation |
+| `pycodex/config/schema.py` | config schema fixture canonicalization and write helper |
 | `pycodex/config/toml_compat.py` | dependency-light TOML compatibility parser used by config-facing code |
 
 `pycodex/_toml.py` has been deleted; use `pycodex.config.toml_compat` directly.

@@ -138,7 +138,30 @@ def _debug_thread(value: Any) -> PromptDebugThread:
             shutdown=getattr(value, "shutdown_and_wait", None),
             remove=getattr(value, "remove_thread", None),
         )
+    thread = getattr(value, "thread", None)
+    if thread is not None:
+        session = _session_from_thread(thread)
+        if session is not None:
+            return PromptDebugThread(
+                session=session,
+                thread_id=getattr(value, "thread_id", None),
+                shutdown=getattr(thread, "shutdown_and_wait", None),
+                remove=getattr(value, "remove_thread", None),
+            )
+    session = _session_from_thread(value)
+    if session is not None:
+        return PromptDebugThread(
+            session=session,
+            thread_id=getattr(value, "thread_id", None),
+            shutdown=getattr(value, "shutdown_and_wait", None),
+            remove=getattr(value, "remove_thread", None),
+        )
     return PromptDebugThread(session=value)
+
+
+def _session_from_thread(thread: Any) -> Any | None:
+    codex = getattr(thread, "codex", None)
+    return getattr(codex, "session", None)
 
 
 def _user_inputs(value: Sequence[UserInput]) -> tuple[UserInput, ...]:

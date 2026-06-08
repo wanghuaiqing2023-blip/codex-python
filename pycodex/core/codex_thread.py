@@ -60,13 +60,12 @@ class ThreadConfigSnapshot:
             raise TypeError("ephemeral must be a bool")
 
     def sandbox_policy(self) -> Any:
+        if self.permission_profile is None:
+            raise TypeError("permission_profile is required")
         method = getattr(self.permission_profile, "to_legacy_sandbox_policy", None)
         if callable(method):
             return method(self.cwd)
-        method = getattr(self.permission_profile, "sandbox_policy", None)
-        if callable(method):
-            return method(self.cwd)
-        return None
+        raise TypeError("permission_profile must expose to_legacy_sandbox_policy()")
 
 
 @dataclass(frozen=True, slots=True)

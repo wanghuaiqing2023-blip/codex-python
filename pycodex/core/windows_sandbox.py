@@ -88,17 +88,19 @@ class ConfigToml:
 class WindowsSandboxSetupRequest:
     mode: WindowsSandboxSetupMode
     permission_profile: Any
-    permission_profile_cwd: str
-    command_cwd: str
+    permission_profile_cwd: str | Path
+    command_cwd: str | Path
     env_map: dict[str, str] = field(default_factory=dict)
-    codex_home: str = ""
+    codex_home: str | Path = ""
 
     def __post_init__(self) -> None:
         if not isinstance(self.mode, WindowsSandboxSetupMode):
             object.__setattr__(self, "mode", WindowsSandboxSetupMode(self.mode))
         for field_name in ("permission_profile_cwd", "command_cwd", "codex_home"):
-            if not isinstance(getattr(self, field_name), str):
-                raise TypeError(f"{field_name} must be a string")
+            value = getattr(self, field_name)
+            if not isinstance(value, (str, Path)):
+                raise TypeError(f"{field_name} must be a string or Path")
+            object.__setattr__(self, field_name, Path(value))
         if not isinstance(self.env_map, dict):
             raise TypeError("env_map must be a dict")
         if not all(isinstance(key, str) and isinstance(value, str) for key, value in self.env_map.items()):

@@ -67,12 +67,12 @@ class NetworkDecision:
     def __post_init__(self) -> None:
         if not isinstance(self.type, str):
             raise TypeError("network decision type must be a string")
-        if self.type not in {"allow", "deny"}:
+        if self.type not in {"allow", "deny", "ask"}:
             raise ValueError(f"unknown network decision type: {self.type}")
         if self.type == "allow" and self.reason is not None:
             raise ValueError("allow decision cannot include reason")
-        if self.type == "deny" and not isinstance(self.reason, str):
-            raise TypeError("deny decision reason must be a string")
+        if self.type in {"deny", "ask"} and not isinstance(self.reason, str):
+            raise TypeError(f"{self.type} decision reason must be a string")
 
     @classmethod
     def allow(cls) -> "NetworkDecision":
@@ -81,6 +81,10 @@ class NetworkDecision:
     @classmethod
     def deny(cls, reason: str) -> "NetworkDecision":
         return cls("deny", reason)
+
+    @classmethod
+    def ask(cls, reason: str) -> "NetworkDecision":
+        return cls("ask", reason)
 
 
 @dataclass(frozen=True)
@@ -520,6 +524,43 @@ class NetworkApprovalService:
     def approval_id_for_key(key: HostApprovalKey) -> str:
         return f"network#{key.protocol}#{key.host}#{key.port}"
 
+    def handle_inline_policy_request(
+        self,
+        session: Any,
+        request: Mapping[str, JsonValue] | object,
+    ) -> NetworkDecision:
+        protocol = _network_request_approval_protocol(request)
+        plan = plan_inline_network_policy_request(
+            self,
+            request,
+            protocol,
+            permission_profile=_session_permission_profile(session),
+            approval_policy=_session_approval_policy(session),
+        )
+        if plan.decision is not None:
+            return plan.decision
+        if plan.disposition is InlineNetworkApprovalDisposition.WAIT_FOR_PENDING:
+            if plan.pending is None:
+                return NetworkDecision.deny(NETWORK_APPROVAL_DENY_REASON_NOT_ALLOWED)
+            decision = plan.pending.wait_for_decision()
+            if decision is None:
+                return NetworkDecision.ask(NETWORK_APPROVAL_DENY_REASON_NOT_ALLOWED)
+            return decision.to_network_decision()
+
+        review_decision_callback = _session_attr(session, "request_network_approval")
+        if callable(review_decision_callback):
+            review_decision = review_decision_callback(plan)
+            owner_call = self.resolve_single_active_call()
+            resolution = apply_network_review_decision(
+                self,
+                plan.key,
+                review_decision,
+                registration_id=owner_call.registration_id if owner_call is not None else None,
+            )
+            return resolution.decision.to_network_decision()
+
+        return NetworkDecision.ask(NETWORK_APPROVAL_DENY_REASON_NOT_ALLOWED)
+
 
 def plan_inline_network_policy_request(
     service: NetworkApprovalService,
@@ -747,6 +788,115 @@ def apply_network_review_decision(
     return resolution
 
 
+def build_blocked_request_observer(
+    network_approval: NetworkApprovalService,
+) -> Any:
+    if not isinstance(network_approval, NetworkApprovalService):
+        raise TypeError("network_approval must be a NetworkApprovalService")
+
+    def observer(blocked: Any | Mapping[str, JsonValue]) -> None:
+        network_approval.record_blocked_request(blocked)
+
+    return observer
+
+
+def build_network_policy_decider(
+    network_approval: NetworkApprovalService,
+    network_policy_decider_session: Any,
+) -> Any:
+    if not isinstance(network_approval, NetworkApprovalService):
+        raise TypeError("network_approval must be a NetworkApprovalService")
+
+    def decider(request: Mapping[str, JsonValue] | object) -> NetworkDecision:
+        session = _upgrade_session_ref(network_policy_decider_session)
+        if session is None:
+            return NetworkDecision.ask(NETWORK_APPROVAL_DENY_REASON_NOT_ALLOWED)
+        return network_approval.handle_inline_policy_request(session, request)
+
+    return decider
+
+
+def _upgrade_session_ref(session_ref: Any) -> Any | None:
+    if session_ref is None:
+        return None
+    if callable(session_ref):
+        return session_ref()
+    upgrade = getattr(session_ref, "upgrade", None)
+    if callable(upgrade):
+        return upgrade()
+    read = getattr(session_ref, "read", None)
+    if callable(read):
+        session = read()
+        if hasattr(session, "upgrade") and callable(session.upgrade):
+            return session.upgrade()
+        return session
+    return session_ref
+
+
+def _network_request_approval_protocol(request: Mapping[str, JsonValue] | object) -> NetworkApprovalProtocol:
+    protocol = _request_value(request, "protocol")
+    if isinstance(protocol, NetworkApprovalProtocol):
+        return protocol
+    if not isinstance(protocol, str):
+        raise TypeError("protocol must be a string or NetworkApprovalProtocol")
+    normalized = _normalize_protocol_label(protocol)
+    if normalized == "http":
+        return NetworkApprovalProtocol.HTTP
+    if normalized in {"https", "https_connect"}:
+        return NetworkApprovalProtocol.HTTPS
+    if normalized in {"socks5_tcp", "socks5tcp"}:
+        return NetworkApprovalProtocol.SOCKS5_TCP
+    if normalized in {"socks5_udp", "socks5udp"}:
+        return NetworkApprovalProtocol.SOCKS5_UDP
+    raise ValueError(f"unknown network protocol: {protocol}")
+
+
+def _normalize_protocol_label(protocol: str) -> str:
+    normalized = protocol.replace("-", "_")
+    chars: list[str] = []
+    for index, char in enumerate(normalized):
+        if char.isupper() and index > 0 and normalized[index - 1] != "_":
+            chars.append("_")
+        chars.append(char.lower())
+    return "".join(chars)
+
+
+def _session_permission_profile(session: Any) -> PermissionProfile | None:
+    value = _session_attr(session, "permission_profile")
+    if callable(value):
+        value = value()
+    if value is None:
+        turn_context = _session_attr(session, "turn_context")
+        value = _session_attr(turn_context, "permission_profile") if turn_context is not None else None
+        if callable(value):
+            value = value()
+    if value is not None and not isinstance(value, PermissionProfile):
+        raise TypeError("permission_profile must be a PermissionProfile")
+    return value
+
+
+def _session_approval_policy(session: Any) -> AskForApproval | str:
+    value = _session_attr(session, "approval_policy")
+    if callable(value):
+        value = value()
+    if value is None:
+        turn_context = _session_attr(session, "turn_context")
+        value = _session_attr(turn_context, "approval_policy") if turn_context is not None else None
+        if callable(value):
+            value = value()
+    if value is None:
+        return AskForApproval.NEVER
+    return value
+
+
+def _session_attr(value: Any, name: str) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, Mapping):
+        return value.get(name)
+    return getattr(value, name, None)
+
+
 __all__ = [
     "NETWORK_APPROVAL_DENY_REASON_NOT_ALLOWED",
     "ActiveNetworkApproval",
@@ -768,6 +918,8 @@ __all__ = [
     "apply_network_review_decision",
     "allows_network_approval_flow",
     "begin_network_approval",
+    "build_blocked_request_observer",
+    "build_network_policy_decider",
     "finish_deferred_network_approval",
     "finish_immediate_network_approval",
     "network_approval_outcome_to_result",

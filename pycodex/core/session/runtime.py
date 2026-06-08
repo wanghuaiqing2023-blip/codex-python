@@ -412,7 +412,7 @@ class InMemoryCodexSession:
     models_etag: str | None = None
     emitted_events: list[EventMsg] = field(default_factory=list)
     input_queue: InMemoryInputQueue = field(default_factory=InMemoryInputQueue)
-    active_turn: InMemoryActiveTurn = field(default_factory=InMemoryActiveTurn)
+    active_turn: InMemoryActiveTurn | None = field(default_factory=InMemoryActiveTurn)
     response_processed_ids: list[str] = field(default_factory=list)
     drain_in_flight_count: int = 0
     unified_diff: str | None = None
@@ -488,8 +488,8 @@ class InMemoryCodexSession:
         self.emitted_events = list(self.emitted_events)
         if not isinstance(self.input_queue, InMemoryInputQueue):
             raise TypeError("input_queue must be InMemoryInputQueue")
-        if not isinstance(self.active_turn, InMemoryActiveTurn):
-            raise TypeError("active_turn must be InMemoryActiveTurn")
+        if self.active_turn is not None and not isinstance(self.active_turn, InMemoryActiveTurn):
+            raise TypeError("active_turn must be InMemoryActiveTurn or None")
         self.response_processed_ids = list(self.response_processed_ids)
         if not isinstance(self.drain_in_flight_count, int):
             raise TypeError("drain_in_flight_count must be an int")
@@ -770,18 +770,28 @@ class InMemoryCodexSession:
     ) -> None:
         if isinstance(items, (str, bytes)) or not isinstance(items, (list, tuple)):
             raise TypeError("items must be a list or tuple of ResponseItem or mapping")
+        not_injected = await self.inject_if_running(items)
+        if not_injected is None:
+            return
         turn_context = current_turn_context
         if turn_context is None:
             turn_context = await self.new_default_turn()
         await self.record_conversation_items(
             turn_context,
-            tuple(_response_item(item) for item in items),
+            tuple(_response_item(item) for item in not_injected),
         )
 
-    async def inject_if_running(self, items: list[Any] | tuple[Any, ...]) -> None:
+    async def inject_if_running(self, items: list[Any] | tuple[Any, ...]) -> tuple[Any, ...] | None:
         if isinstance(items, (str, bytes)) or not isinstance(items, (list, tuple)):
             raise TypeError("items must be a list or tuple")
-        await self.input_queue.extend_pending_input(tuple(_pending_input_item(item) for item in items))
+        original_items = tuple(items)
+        if self.active_turn is None:
+            return original_items
+        await self.input_queue.extend_pending_input_for_turn_state(
+            self.active_turn.turn_state,
+            tuple(_pending_input_item(item) for item in original_items),
+        )
+        return None
 
     async def flush_rollout(self) -> None:
         self.flush_rollout_count += 1

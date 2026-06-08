@@ -27,6 +27,15 @@ class AsyncProvider:
         return "async-attested"
 
 
+class NoneProvider:
+    def __init__(self) -> None:
+        self.contexts = []
+
+    def header_for_request(self, context: AttestationContext) -> None:
+        self.contexts.append(context)
+        return None
+
+
 class AttestationTests(unittest.IsolatedAsyncioTestCase):
     def test_header_constant_matches_rust(self) -> None:
         self.assertEqual(X_OAI_ATTESTATION_HEADER, "x-oai-attestation")
@@ -56,6 +65,20 @@ class AttestationTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertIsNone(result)
+
+    async def test_provider_can_decline_to_generate_header(self) -> None:
+        # Rust AttestationProvider returns Future<Output = Option<HeaderValue>>.
+        provider = NoneProvider()
+        thread_id = ThreadId.new()
+
+        result = await generate_attestation_header_for_request(
+            include_attestation=True,
+            attestation_provider=provider,
+            thread_id=thread_id,
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(provider.contexts, [AttestationContext(thread_id)])
 
     async def test_sync_provider_receives_context_and_returns_header(self) -> None:
         provider = SyncProvider()

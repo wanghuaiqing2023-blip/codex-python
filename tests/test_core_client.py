@@ -167,8 +167,27 @@ def test_subagent_and_parent_thread_headers_match_thread_spawn_source():
     assert parent_thread_id_header_value(source) == str(parent_thread_id)
 
 
+def test_build_ws_client_metadata_includes_window_lineage_and_turn_metadata():
+    # Rust: codex-core/src/client_tests.rs
+    # build_ws_client_metadata_includes_window_lineage_and_turn_metadata
+    parent_thread_id = ThreadId.from_string("22222222-2222-4222-8222-222222222222")
+    source = SessionSource.subagent(SubAgentSource.thread_spawn(parent_thread_id, depth=2))
+    client = ModelClient(
+        session_id="session",
+        thread_id="thread",
+        installation_id="11111111-1111-4111-8111-111111111111",
+        session_source=source,
+    )
 
+    client.advance_window_generation()
 
+    assert client.build_ws_client_metadata(r'{"turn_id":"turn-123"}') == {
+        X_CODEX_INSTALLATION_ID_HEADER: "11111111-1111-4111-8111-111111111111",
+        X_CODEX_WINDOW_ID_HEADER: "thread:1",
+        X_OPENAI_SUBAGENT_HEADER: "collab_spawn",
+        X_CODEX_PARENT_THREAD_ID_HEADER: str(parent_thread_id),
+        X_CODEX_TURN_METADATA_HEADER: r'{"turn_id":"turn-123"}',
+    }
 
 
 def test_build_ws_client_metadata_keeps_subagent_metadata_unfiltered():

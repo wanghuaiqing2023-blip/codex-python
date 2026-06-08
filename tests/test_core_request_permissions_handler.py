@@ -455,8 +455,23 @@ class RequestPermissionsHandlerTests(unittest.TestCase):
         # Rust contract: unsupported payloads, empty permission requests, bad JSON, and cancelled responses are model-visible errors.
         handler = RequestPermissionsHandler()
 
-        with self.assertRaises(FunctionCallError):
+        with self.assertRaisesRegex(
+            FunctionCallError,
+            "request_permissions handler received unsupported payload",
+        ):
             handler.handle(ToolPayload.custom("raw"))
+        with self.assertRaisesRegex(
+            FunctionCallError,
+            "request_permissions handler received unsupported payload",
+        ):
+            handler.handle(
+                ToolInvocation(
+                    call_id="call-custom",
+                    tool_name=REQUEST_PERMISSIONS_TOOL_NAME,
+                    source=ToolCallSource.direct(),
+                    payload=ToolPayload.custom("raw"),
+                )
+            )
         with self.assertRaises(FunctionCallError):
             handler.handle(ToolPayload.function("{not json"))
         with self.assertRaises(FunctionCallError):

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-import threading
+import asyncio
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -18,7 +18,7 @@ TEST_SYNC_TOOL_NAME = "test_sync_tool"
 DEFAULT_TEST_SYNC_TIMEOUT_MS = 1_000
 
 _BARRIERS: dict[str, "_BarrierState"] = {}
-_BARRIERS_LOCK = threading.Lock()
+_BARRIERS_LOCK = asyncio.Lock()
 
 
 @dataclass(frozen=True)
@@ -83,13 +83,13 @@ class _ReusableBarrier:
         if participants <= 0:
             raise ValueError("participants must be greater than zero")
         self.participants = participants
-        self._condition = threading.Condition()
+        self._condition = asyncio.Condition()
         self._waiting = 0
         self._generation = 0
 
-    def wait(self, timeout_seconds: float) -> int:
+    async def wait(self, timeout_seconds: float) -> int:
         deadline = time.monotonic() + timeout_seconds
-        with self._condition:
+        async with self._condition:
             generation = self._generation
             self._waiting += 1
 
@@ -105,7 +105,13 @@ class _ReusableBarrier:
                     self._waiting -= 1
                     self._condition.notify_all()
                     raise TimeoutError
-                self._condition.wait(remaining)
+                try:
+                    await asyncio.wait_for(self._condition.wait(), timeout=remaining)
+                except TimeoutError:
+                    if generation == self._generation:
+                        self._waiting -= 1
+                        self._condition.notify_all()
+                        raise
 
             return 1
 
@@ -167,7 +173,7 @@ class TestSyncHandler:
             raise TypeError("payload must be ToolPayload")
         return payload.type in {"function", "tool_search"}
 
-    def handle(self, invocation_or_payload: Any) -> FunctionToolOutput:
+    async def handle(self, invocation_or_payload: Any) -> FunctionToolOutput:
         payload = getattr(invocation_or_payload, "payload", invocation_or_payload)
         if not isinstance(payload, ToolPayload) or payload.type != "function":
             raise FunctionCallError.respond_to_model(
@@ -181,11 +187,11 @@ class TestSyncHandler:
         args = parse_test_sync_arguments(arguments)
 
         if args.sleep_before_ms is not None and args.sleep_before_ms > 0:
-            time.sleep(args.sleep_before_ms / 1000)
+            await asyncio.sleep(args.sleep_before_ms / 1000)
         if args.barrier is not None:
-            wait_on_barrier(args.barrier)
+            await wait_on_barrier(args.barrier)
         if args.sleep_after_ms is not None and args.sleep_after_ms > 0:
-            time.sleep(args.sleep_after_ms / 1000)
+            await asyncio.sleep(args.sleep_after_ms / 1000)
 
         return FunctionToolOutput.from_text("ok", True)
 
@@ -202,7 +208,7 @@ def parse_test_sync_arguments(arguments: str) -> TestSyncArgs:
         ) from err
 
 
-def wait_on_barrier(args: BarrierArgs) -> None:
+async def wait_on_barrier(args: BarrierArgs) -> None:
     if not isinstance(args, BarrierArgs):
         raise TypeError("args must be BarrierArgs")
     if args.participants == 0:
@@ -214,7 +220,7 @@ def wait_on_barrier(args: BarrierArgs) -> None:
             "barrier timeout must be greater than zero"
         )
 
-    with _BARRIERS_LOCK:
+    async with _BARRIERS_LOCK:
         state = _BARRIERS.get(args.id)
         if state is None:
             state = _BarrierState(
@@ -229,18 +235,18 @@ def wait_on_barrier(args: BarrierArgs) -> None:
         barrier = state.barrier
 
     try:
-        index = barrier.wait(args.timeout_ms / 1000)
+        index = await barrier.wait(args.timeout_ms / 1000)
     except TimeoutError as err:
         raise FunctionCallError.respond_to_model(
             "test_sync_tool barrier wait timed out"
         ) from err
 
     if index == 0:
-        _remove_barrier_if_current(args.id, barrier)
+        await _remove_barrier_if_current(args.id, barrier)
 
 
-def _remove_barrier_if_current(barrier_id: str, barrier: threading.Barrier) -> None:
-    with _BARRIERS_LOCK:
+async def _remove_barrier_if_current(barrier_id: str, barrier: _ReusableBarrier) -> None:
+    async with _BARRIERS_LOCK:
         state = _BARRIERS.get(barrier_id)
         if state is not None and state.barrier is barrier:
             _BARRIERS.pop(barrier_id, None)

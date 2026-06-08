@@ -40,6 +40,8 @@ from pycodex.rollout import (
     append_event_msg_to_rollout,
     read_rollout_reconstruction_from_rollout,
 )
+from pycodex.core.tasks.compact import CompactTask
+from pycodex.core.tasks.regular import RegularTask
 
 
 USER_SHELL_COMMAND_MODE_ACTIVE_TURN_AUXILIARY = "active_turn_auxiliary"
@@ -51,16 +53,6 @@ AUTO_REVIEW_DENIED_ACTION_APPROVAL_DEVELOPER_PREFIX = (
 @dataclass(frozen=True)
 class UserShellCommandTask:
     command: str
-
-
-@dataclass(frozen=True)
-class CompactTask:
-    pass
-
-
-@dataclass(frozen=True)
-class RegularTask:
-    pass
 
 
 @dataclass(frozen=True)
@@ -792,8 +784,14 @@ async def review(sess: Any, config: Any, sub_id: str, review_request: ReviewRequ
         )
         return
 
-    spawn_review = getattr(sess, "spawn_review_thread")
-    await _maybe_await(spawn_review(config, turn_context, sub_id, resolved))
+    spawn_review = getattr(sess, "spawn_review_thread", None)
+    if callable(spawn_review):
+        await _maybe_await(spawn_review(config, turn_context, sub_id, resolved))
+        return
+
+    from pycodex.core.session.review import spawn_review_thread
+
+    await spawn_review_thread(sess, config, turn_context, sub_id, resolved)
 
 
 async def run_user_shell_command(sess: Any, sub_id: str, command: str) -> None:

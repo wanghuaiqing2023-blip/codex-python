@@ -4,13 +4,17 @@ from typing import Any
 
 from pycodex.core.tools.hook_names import HookToolName
 from pycodex.core.tools.sandboxing import (
+    Approvable,
+    ApprovalCtx,
     ApprovalStore,
     ExecApprovalRequirement,
     PermissionRequestPayload,
     SandboxAttempt,
     SandboxOverride,
+    Sandboxable,
     ToolCtx,
     ToolError,
+    ToolRuntime,
     default_exec_approval_requirement,
     managed_network_for_sandbox_permissions,
     sandbox_override_for_first_attempt,
@@ -302,6 +306,56 @@ class ToolSandboxingTests(unittest.TestCase):
         self.assertEqual(with_cached_approval(store, ["apply.patch"], fetch_denied), ReviewDecision.denied())
         self.assertEqual(with_cached_approval(store, ["apply.patch"], fetch_denied), ReviewDecision.denied())
         self.assertEqual(calls, ["approved", "denied", "denied"])
+
+    def test_approval_ctx_and_runtime_trait_defaults_match_rust_interfaces(self) -> None:
+        # Rust source: codex-rs/core/src/tools/sandboxing.rs
+        # Behavior anchors: ApprovalCtx, Approvable default methods,
+        # Sandboxable::escalate_on_failure, and ToolRuntime default hooks.
+        ctx = ApprovalCtx(
+            session={"session": True},
+            turn={"turn": True},
+            call_id="call-1",
+            guardian_review_id="review-1",
+            retry_reason="retry",
+            network_approval_context={"host": "example.com"},
+        )
+
+        class Runtime(ToolRuntime):
+            def approval_keys(self, req):
+                return [req]
+
+            async def start_approval_async(self, req, ctx):
+                return ReviewDecision.approved()
+
+            def sandbox_preference(self):
+                return "default"
+
+            async def run(self, req, attempt, ctx):
+                return {"ok": True}
+
+        runtime = Runtime()
+
+        self.assertEqual(ctx.call_id, "call-1")
+        self.assertEqual(runtime.approval_keys("key"), ["key"])
+        self.assertEqual(runtime.sandbox_permissions("req"), SandboxPermissions.USE_DEFAULT)
+        self.assertTrue(runtime.should_bypass_approval(AskForApproval.NEVER, False))
+        self.assertFalse(runtime.should_bypass_approval(AskForApproval.ON_REQUEST, False))
+        self.assertIsNone(runtime.exec_approval_requirement("req"))
+        self.assertIsNone(runtime.permission_request_payload("req"))
+        self.assertTrue(runtime.wants_no_sandbox_approval(AskForApproval.ON_FAILURE))
+        self.assertEqual(runtime.sandbox_preference(), "default")
+        self.assertTrue(runtime.escalate_on_failure())
+        self.assertIsNone(runtime.network_approval_spec("req", ToolCtx(object(), object(), "call-1", ToolName.plain("x"))))
+        self.assertIsNone(runtime.sandbox_cwd("req"))
+        self.assertIsInstance(runtime, Approvable)
+        self.assertIsInstance(runtime, Sandboxable)
+
+        with self.assertRaises(TypeError):
+            ApprovalCtx(object(), object(), 123)  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            ApprovalCtx(object(), object(), "call", guardian_review_id=123)  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            ApprovalCtx(object(), object(), "call", retry_reason=123)  # type: ignore[arg-type]
 
     def test_managed_network_is_removed_for_explicit_escalation_only(self) -> None:
         # Rust source: codex-rs/core/src/tools/sandboxing.rs

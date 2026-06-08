@@ -60,6 +60,18 @@ def write_rollout_with_user_event(directory: Path, thread_id: str, model_provide
     return path
 
 
+def write_rollout_with_meta_only(directory: Path, thread_id: str, model_provider: str | None = None) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"rollout-{TEST_TIMESTAMP}-{thread_id}.jsonl"
+    line = {
+        "timestamp": TEST_TIMESTAMP,
+        "type": "session_meta",
+        "payload": session_meta_payload(thread_id, model_provider),
+    }
+    path.write_text(json.dumps(line) + "\n", encoding="utf-8")
+    return path
+
+
 def write_session_with_user_event(codex_home: Path, model_provider: str | None = None) -> Path:
     thread_id = str(uuid.uuid4())
     directory = codex_home / SESSIONS_SUBDIR / "2025" / "01" / "01"
@@ -93,6 +105,36 @@ class PersonalityMigrationTests(unittest.TestCase):
 
             self.assertEqual(status, PersonalityMigrationStatus.APPLIED)
             self.assertEqual(read_config_toml(codex_home)["personality"], "pragmatic")
+
+    def test_applied_migration_preserves_existing_config_fields(self) -> None:
+        # Rust: codex-core tests/suite/personality_migration.rs
+        # no_marker_sessions_preserves_existing_config_fields.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            write_session_with_user_event(codex_home)
+            (codex_home / "config.toml").write_text('model = "gpt-5.4"\n', encoding="utf-8")
+
+            status = maybe_migrate_personality(codex_home, read_config_toml(codex_home))
+
+            migrated_config = read_config_toml(codex_home)
+            self.assertEqual(status, PersonalityMigrationStatus.APPLIED)
+            self.assertEqual(migrated_config["model"], "gpt-5.4")
+            self.assertEqual(migrated_config["personality"], "pragmatic")
+
+    def test_meta_only_rollout_is_treated_as_no_sessions(self) -> None:
+        # Rust: codex-core tests/suite/personality_migration.rs
+        # no_marker_meta_only_rollout_is_treated_as_no_sessions.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            thread_id = str(uuid.uuid4())
+            directory = codex_home / SESSIONS_SUBDIR / "2025" / "01" / "01"
+            write_rollout_with_meta_only(directory, thread_id)
+
+            status = maybe_migrate_personality(codex_home, {})
+
+            self.assertEqual(status, PersonalityMigrationStatus.SKIPPED_NO_SESSIONS)
+            self.assertFalse((codex_home / "config.toml").exists())
+            self.assertTrue((codex_home / PERSONALITY_MIGRATION_FILENAME).exists())
 
     def test_skips_when_marker_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

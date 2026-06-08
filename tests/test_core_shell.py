@@ -50,6 +50,16 @@ class ShellTest(unittest.TestCase):
         self.assertEqual(Shell(ShellType.SH, Path("/bin/sh")).name(), "sh")
         self.assertEqual(Shell(ShellType.CMD, Path("cmd.exe")).name(), "cmd")
 
+    def test_shell_equality_ignores_snapshot_like_upstream(self) -> None:
+        # Rust source: codex-rs/core/src/shell.rs impl PartialEq for Shell.
+        left = Shell(ShellType.BASH, Path("/bin/bash"), object())
+        right = Shell(ShellType.BASH, Path("/bin/bash"), object())
+
+        self.assertEqual(left, right)
+        self.assertEqual(hash(left), hash(right))
+        self.assertNotEqual(left, Shell(ShellType.ZSH, Path("/bin/bash"), left.shell_snapshot))
+        self.assertNotEqual(left, Shell(ShellType.BASH, Path("/bin/zsh"), left.shell_snapshot))
+
     def test_derive_exec_args(self) -> None:
         bash = Shell(ShellType.BASH, Path("/bin/bash"))
         self.assertEqual(bash.derive_exec_args("echo hello", False), ["/bin/bash", "-c", "echo hello"])

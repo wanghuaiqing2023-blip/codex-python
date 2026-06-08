@@ -110,6 +110,53 @@ class PromptDebugTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(state["shutdown"])
         self.assertEqual(state["removed"], "thread-1")
 
+    async def test_build_prompt_input_accepts_new_thread_shape(self) -> None:
+        # Rust: prompt_debug::build_prompt_input uses NewThread.thread.codex.session.
+        session = Session()
+        state = {"shutdown": False}
+
+        async def shutdown() -> None:
+            state["shutdown"] = True
+
+        codex_thread = SimpleNamespace(codex=SimpleNamespace(session=session), shutdown_and_wait=shutdown)
+        new_thread = SimpleNamespace(thread_id="thread-2", thread=codex_thread)
+
+        async def factory(_config: object, _state_db: object | None) -> object:
+            return new_thread
+
+        output = await build_prompt_input({}, (UserInput.text_input("hello"),), session_factory=factory)
+
+        self.assertEqual(output[-1].content[0].text, "hello")
+        self.assertTrue(state["shutdown"])
+
+    async def test_build_prompt_input_shuts_down_thread_when_prompt_build_fails(self) -> None:
+        # Rust stores the Result, shuts the thread down, then returns the prompt result.
+        session = Session()
+        state = {"shutdown": False, "removed": None}
+
+        async def shutdown() -> None:
+            state["shutdown"] = True
+
+        async def remove(thread_id: str | None) -> None:
+            state["removed"] = thread_id
+
+        def failing_build_prompt(
+            _prompt_input: list[ResponseItem],
+            _router: object,
+            _turn: object,
+            _base: BaseInstructions,
+        ) -> Prompt:
+            raise ValueError("prompt failed")
+
+        async def factory(_config: object, _state_db: object | None) -> PromptDebugThread:
+            return PromptDebugThread(session=session, thread_id="thread-3", shutdown=shutdown, remove=remove)
+
+        with self.assertRaisesRegex(ValueError, "prompt failed"):
+            await build_prompt_input({}, (), session_factory=factory, build_prompt=failing_build_prompt)
+
+        self.assertTrue(state["shutdown"])
+        self.assertEqual(state["removed"], "thread-3")
+
     async def test_build_prompt_input_requires_factory(self) -> None:
         with self.assertRaises(RuntimeError):
             await build_prompt_input({}, ())

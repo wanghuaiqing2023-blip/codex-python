@@ -41,6 +41,7 @@ from pycodex.core.tools.code_mode import (
     build_runtime_text_event,
     build_runtime_tool_call_event,
     build_runtime_yield_event,
+    build_wait_tool_description,
     code_mode_namespace_name,
     code_mode_name_for_tool_name,
     collect_code_mode_exec_prompt_tool_definitions,
@@ -84,6 +85,7 @@ from pycodex.core.tools.code_mode import (
 )
 from pycodex.core.tools.context import ToolPayload
 from pycodex.protocol import DEFAULT_IMAGE_DETAIL, FunctionCallOutputContentItem, ImageDetail, ToolName
+from pycodex import code_mode as external_code_mode
 
 
 def function_spec(name: str, description: str = "Tool") -> dict[str, object]:
@@ -843,28 +845,72 @@ class CodeModeTests(unittest.TestCase):
             deferred_tools_available=False,
         )
 
-        self.assertEqual(spec.type, "custom")
-        self.assertEqual(spec.name, "exec")
-        self.assertEqual(spec.format.definition, CODE_MODE_FREEFORM_GRAMMAR)
-        self.assertIn("Run JavaScript code", spec.description or "")
-        self.assertIn("### `update_plan`", spec.description or "")
+        self.assertEqual(
+            spec.to_mapping(),
+            {
+                "type": "custom",
+                "name": "exec",
+                "description": build_exec_tool_description(
+                    (enabled_tool,),
+                    {},
+                    code_mode_only=True,
+                    deferred_tools_available=False,
+                ),
+                "format": {
+                    "type": "grammar",
+                    "syntax": "lark",
+                    "definition": CODE_MODE_FREEFORM_GRAMMAR,
+                },
+            },
+        )
 
     def test_create_wait_tool_matches_upstream_schema(self) -> None:
         spec = create_wait_tool()
 
-        self.assertEqual(spec["type"], "function")
-        self.assertEqual(spec["name"], "wait")
-        self.assertFalse(spec["strict"])
-        self.assertIn("Waits on a yielded `exec` cell", spec["description"])
-        parameters = spec["parameters"]
-        self.assertEqual(parameters["required"], ["cell_id"])
-        self.assertFalse(parameters["additionalProperties"])
-        self.assertEqual(parameters["properties"]["cell_id"]["type"], "string")
-        self.assertEqual(parameters["properties"]["yield_time_ms"]["type"], "number")
-        self.assertEqual(parameters["properties"]["max_tokens"]["type"], "number")
-        self.assertEqual(parameters["properties"]["terminate"]["type"], "boolean")
+        self.assertEqual(
+            spec,
+            {
+                "type": "function",
+                "name": "wait",
+                "description": (
+                    "Waits on a yielded `exec` cell and returns new output or completion.\n"
+                    f"{build_wait_tool_description().strip()}"
+                ),
+                "strict": False,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "cell_id": {
+                            "type": "string",
+                            "description": "Identifier of the running exec cell.",
+                        },
+                        "yield_time_ms": {
+                            "type": "number",
+                            "description": (
+                                "How long to wait (in milliseconds) for more output before yielding again."
+                            ),
+                        },
+                        "max_tokens": {
+                            "type": "number",
+                            "description": (
+                                "Maximum number of output tokens to return for this wait call."
+                            ),
+                        },
+                        "terminate": {
+                            "type": "boolean",
+                            "description": "Whether to terminate the running exec cell.",
+                        },
+                    },
+                    "required": ["cell_id"],
+                    "additionalProperties": False,
+                },
+            },
+        )
 
     def test_parse_wait_arguments_applies_defaults_and_validates_numbers(self) -> None:
+        # Rust source: codex-rs/core/src/tools/code_mode/wait_handler.rs
+        # Contract: ExecWaitArgs is serde-deserialized, so string/bool fields are
+        # not implicitly coerced from arbitrary JSON values.
         self.assertEqual(
             parse_wait_arguments('{"cell_id":"cell-1"}'),
             ExecWaitArgs(cell_id="cell-1"),
@@ -880,6 +926,10 @@ class CodeModeTests(unittest.TestCase):
             parse_wait_arguments("{}")
         with self.assertRaisesRegex(ValueError, "must be an integer"):
             parse_wait_arguments('{"cell_id":"cell-1","yield_time_ms":1.5}')
+        with self.assertRaisesRegex(ValueError, "field `cell_id` must be a string"):
+            parse_wait_arguments('{"cell_id":1}')
+        with self.assertRaisesRegex(ValueError, "field `terminate` must be a boolean"):
+            parse_wait_arguments('{"cell_id":"cell-1","terminate":1}')
 
     def test_code_mode_response_adapter_defaults_image_detail(self) -> None:
         items = into_function_call_output_content_items(
@@ -897,6 +947,50 @@ class CodeModeTests(unittest.TestCase):
                 DEFAULT_IMAGE_DETAIL,
             ),
         )
+
+    def test_code_mode_response_adapter_maps_external_code_mode_items(self) -> None:
+        # Rust source: codex-rs/core/src/tools/code_mode/response_adapter.rs
+        # Contract: codex_code_mode content items are converted to protocol content items.
+        items = into_function_call_output_content_items(
+            (
+                external_code_mode.FunctionCallOutputContentItem(
+                    type="input_text",
+                    text="hello",
+                ),
+                external_code_mode.FunctionCallOutputContentItem(
+                    type="input_image",
+                    image_url="data:image/png;base64,AUTO",
+                    detail=external_code_mode.ImageDetail.AUTO,
+                ),
+                external_code_mode.FunctionCallOutputContentItem(
+                    type="input_image",
+                    image_url="data:image/png;base64,LOW",
+                    detail=external_code_mode.ImageDetail.LOW,
+                ),
+                external_code_mode.FunctionCallOutputContentItem(
+                    type="input_image",
+                    image_url="data:image/png;base64,HIGH",
+                    detail=external_code_mode.ImageDetail.HIGH,
+                ),
+                external_code_mode.FunctionCallOutputContentItem(
+                    type="input_image",
+                    image_url="data:image/png;base64,ORIGINAL",
+                    detail=external_code_mode.ImageDetail.ORIGINAL,
+                ),
+                external_code_mode.FunctionCallOutputContentItem(
+                    type="input_image",
+                    image_url="data:image/png;base64,DEFAULT",
+                    detail=None,
+                ),
+            )
+        )
+
+        self.assertEqual(items[0], FunctionCallOutputContentItem.input_text("hello"))
+        self.assertEqual(items[1].detail, ImageDetail.AUTO)
+        self.assertEqual(items[2].detail, ImageDetail.LOW)
+        self.assertEqual(items[3].detail, ImageDetail.HIGH)
+        self.assertEqual(items[4].detail, ImageDetail.ORIGINAL)
+        self.assertEqual(items[5].detail, DEFAULT_IMAGE_DETAIL)
 
     def test_handle_runtime_response_formats_successful_yield(self) -> None:
         output = handle_runtime_response(
@@ -1000,6 +1094,7 @@ class CodeModeTests(unittest.TestCase):
         output = handler.handle(invocation)
 
         self.assertTrue(handler.matches_kind(invocation.payload))
+        self.assertFalse(handler.matches_kind(ToolPayload.function("{}")))
         self.assertEqual(handler.tool_name(), ToolName.plain("exec"))
         self.assertEqual(handler.spec().name, "exec")
         self.assertEqual(len(captured), 1)
@@ -1051,6 +1146,7 @@ class CodeModeTests(unittest.TestCase):
         output = handler.handle(invocation)
 
         self.assertTrue(handler.matches_kind(invocation.payload))
+        self.assertFalse(handler.matches_kind(ToolPayload.custom("raw")))
         self.assertEqual(handler.tool_name(), ToolName.plain("wait"))
         self.assertEqual(handler.spec()["name"], "wait")
         self.assertEqual(captured, [WaitRequest(cell_id="cell-1", yield_time_ms=11, terminate=True)])

@@ -2,10 +2,12 @@
 
 from .history import (
     ContextManager,
+    TotalTokenUsageBreakdown,
     estimate_item_token_count,
     estimate_response_item_model_visible_bytes,
     estimate_token_count_with_base_instructions,
     is_api_message,
+    is_codex_generated_item,
     is_user_turn_boundary,
     process_history_item,
     process_history_items,
@@ -23,11 +25,13 @@ from .normalize import (
 __all__ = [
     "ContextManager",
     "IMAGE_CONTENT_OMITTED_PLACEHOLDER",
+    "TotalTokenUsageBreakdown",
     "ensure_call_outputs_present",
     "estimate_item_token_count",
     "estimate_response_item_model_visible_bytes",
     "estimate_token_count_with_base_instructions",
     "is_api_message",
+    "is_codex_generated_item",
     "is_user_turn_boundary",
     "normalize_call_outputs",
     "process_history_item",

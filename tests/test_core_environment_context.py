@@ -56,6 +56,18 @@ class EnvironmentContextTests(unittest.TestCase):
             "</environment_context>",
         )
 
+    def test_network_context_omits_empty_domain_elements(self) -> None:
+        # Rust source: codex-rs/core/src/context/environment_context.rs::NetworkContext::render.
+        self.assertEqual(
+            NetworkContext(("api.example.com",), ()).render(),
+            '<network enabled="true"><allowed>api.example.com</allowed></network>',
+        )
+        self.assertEqual(
+            NetworkContext((), ("blocked.example.com",)).render(),
+            '<network enabled="true"><denied>blocked.example.com</denied></network>',
+        )
+        self.assertEqual(NetworkContext((), ()).render(), '<network enabled="true"></network>')
+
     def test_serializes_read_only_environment_context_without_environment_entries(self) -> None:
         context = EnvironmentContext.new(
             (),
@@ -131,6 +143,37 @@ class EnvironmentContextTests(unittest.TestCase):
 
         self.assertTrue(first.equals_except_shell(second))
         self.assertFalse(first.equals_except_shell(different))
+
+    def test_equals_except_shell_compares_multiple_environment_ids_and_cwds(self) -> None:
+        # Rust source: codex-rs/core/src/context/environment_context.rs::EnvironmentContextEnvironments::equals_except_shell.
+        first = EnvironmentContext.new(
+            (
+                EnvironmentContextEnvironment("local", Path("/repo/local"), "bash"),
+                EnvironmentContextEnvironment("remote", Path("/repo/remote"), "bash"),
+            )
+        )
+        same_except_shell = EnvironmentContext.new(
+            (
+                EnvironmentContextEnvironment("local", Path("/repo/local"), "pwsh"),
+                EnvironmentContextEnvironment("remote", Path("/repo/remote"), "cmd"),
+            )
+        )
+        different_id = EnvironmentContext.new(
+            (
+                EnvironmentContextEnvironment("local", Path("/repo/local"), "bash"),
+                EnvironmentContextEnvironment("other", Path("/repo/remote"), "bash"),
+            )
+        )
+        different_cwd = EnvironmentContext.new(
+            (
+                EnvironmentContextEnvironment("local", Path("/repo/local"), "bash"),
+                EnvironmentContextEnvironment("remote", Path("/repo/other"), "bash"),
+            )
+        )
+
+        self.assertTrue(first.equals_except_shell(same_except_shell))
+        self.assertFalse(first.equals_except_shell(different_id))
+        self.assertFalse(first.equals_except_shell(different_cwd))
 
     def test_with_subagents_keeps_existing_value_when_new_value_is_empty(self) -> None:
         context = EnvironmentContext.new(

@@ -24,6 +24,13 @@ from pycodex.core.guardian.review import (
     format_apply_patch_changes_for_guardian,
     routes_approval_to_guardian,
 )
+from pycodex.core.mcp_tool_call import (
+    MCP_TOOL_APPROVAL_ACCEPT,
+    MCP_TOOL_APPROVAL_ACCEPT_FOR_SESSION,
+    MCP_TOOL_APPROVAL_DECLINE_SYNTHETIC,
+    MCP_TOOL_APPROVAL_QUESTION_ID_PREFIX,
+    is_mcp_tool_approval_question_id,
+)
 from pycodex.core.tools.handlers.utils import normalize_request_permissions_response
 from pycodex.protocol import (
     Event,
@@ -41,9 +48,8 @@ from pycodex.protocol import (
 
 
 SUBMISSION_CHANNEL_CAPACITY = 1024
-MCP_TOOL_APPROVAL_ACCEPT = "Yes"
-MCP_TOOL_APPROVAL_ACCEPT_FOR_SESSION = "Yes, for this session"
-MCP_TOOL_APPROVAL_DECLINE_SYNTHETIC = "No"
+
+
 class CancellationToken:
     """Small asyncio equivalent of tokio_util's cancellation token."""
 
@@ -563,10 +569,6 @@ def event_payload(event: Event | Any) -> Any:
     return getattr(msg, "payload", msg)
 
 
-def is_mcp_tool_approval_question_id(question_id: str) -> bool:
-    return str(question_id).startswith("mcp_tool_approval")
-
-
 def mcp_selected_label_for_decision(decision: ReviewDecision, options: Sequence[Any] | None = None) -> str:
     if decision.type == "approved_for_session":
         labels = tuple(str(getattr(option, "label", option)) for option in (options or ()))
@@ -634,6 +636,7 @@ __all__ = [
     "MCP_TOOL_APPROVAL_ACCEPT",
     "MCP_TOOL_APPROVAL_ACCEPT_FOR_SESSION",
     "MCP_TOOL_APPROVAL_DECLINE_SYNTHETIC",
+    "MCP_TOOL_APPROVAL_QUESTION_ID_PREFIX",
     "SUBMISSION_CHANNEL_CAPACITY",
     "CancellationToken",
     "CodexDelegateIo",
