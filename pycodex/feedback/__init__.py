@@ -5,14 +5,23 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 import json
+import os
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Any
+from typing import Any, Iterable, Mapping
 
 
 DOCTOR_REPORT_ATTACHMENT_FILENAME = "codex-doctor-report.json"
 WINDOWS_SANDBOX_LOG_ATTACHMENT_FILENAME = "windows-sandbox.log"
-FEEDBACK_DIAGNOSTICS_ATTACHMENT_FILENAME = "feedback-diagnostics.json"
+FEEDBACK_DIAGNOSTICS_ATTACHMENT_FILENAME = "codex-connectivity-diagnostics.txt"
+PROXY_ENV_VARS = (
+    "HTTP_PROXY",
+    "http_proxy",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+)
 
 
 @dataclass(frozen=True)
@@ -38,16 +47,60 @@ def emit_feedback_request_tags_with_auth_env(tags: FeedbackRequestTags, auth_env
 
 @dataclass(frozen=True)
 class FeedbackDiagnostic:
-    name: str
-    value: Any
+    headline: str
+    details: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
 class FeedbackDiagnostics:
     diagnostics: list[FeedbackDiagnostic] = field(default_factory=list)
 
+    @classmethod
+    def new(cls, diagnostics: Iterable[FeedbackDiagnostic]) -> "FeedbackDiagnostics":
+        return cls(list(diagnostics))
+
+    @classmethod
+    def collect_from_env(cls, env: Mapping[str, str] | None = None) -> "FeedbackDiagnostics":
+        return cls.collect_from_pairs((os.environ if env is None else env).items())
+
+    @classmethod
+    def collect_from_pairs(cls, pairs: Iterable[tuple[Any, Any]]) -> "FeedbackDiagnostics":
+        env = {str(key): str(value) for key, value in pairs}
+        proxy_details = [f"{key} = {env[key]}" for key in PROXY_ENV_VARS if key in env]
+        if not proxy_details:
+            return cls()
+        return cls(
+            [
+                FeedbackDiagnostic(
+                    headline="Proxy environment variables are set and may affect connectivity.",
+                    details=proxy_details,
+                )
+            ]
+        )
+
+    def is_empty(self) -> bool:
+        return not self.diagnostics
+
+    def attachment_text(self) -> str | None:
+        if not self.diagnostics:
+            return None
+        lines = ["Connectivity diagnostics", ""]
+        for diagnostic in self.diagnostics:
+            lines.append(f"- {diagnostic.headline}")
+            lines.extend(f"  - {detail}" for detail in diagnostic.details)
+        return "\n".join(lines)
+
     def to_json_text(self) -> str:
-        return json.dumps([diagnostic.__dict__ for diagnostic in self.diagnostics], ensure_ascii=False)
+        return json.dumps(
+            [
+                {
+                    "headline": diagnostic.headline,
+                    "details": list(diagnostic.details),
+                }
+                for diagnostic in self.diagnostics
+            ],
+            ensure_ascii=False,
+        )
 
 
 @dataclass(frozen=True)
@@ -135,13 +188,36 @@ class FeedbackUpload:
         return self
 
     def feedback_diagnostics_attachment_text(self, include_logs: bool) -> str | None:
-        return self.diagnostics.to_json_text()
+        if not include_logs:
+            return None
+        return self.diagnostics.attachment_text()
 
     def save_to_temp_file(self) -> Path:
         handle = NamedTemporaryFile("w", delete=False, suffix=".json", encoding="utf-8")
         with handle:
-            handle.write(self.diagnostics.to_json_text())
+            handle.write(self.diagnostics.attachment_text() or "")
         return Path(handle.name)
 
     def upload_feedback(self, options: FeedbackUploadOptions) -> None:
         raise NotImplementedError("codex-feedback upload backend is not ported")
+
+
+__all__ = [
+    "CodexFeedback",
+    "DOCTOR_REPORT_ATTACHMENT_FILENAME",
+    "FEEDBACK_DIAGNOSTICS_ATTACHMENT_FILENAME",
+    "FeedbackAttachment",
+    "FeedbackAttachmentPath",
+    "FeedbackDiagnostic",
+    "FeedbackDiagnostics",
+    "FeedbackMakeWriter",
+    "FeedbackRequestTags",
+    "FeedbackSnapshot",
+    "FeedbackUpload",
+    "FeedbackUploadOptions",
+    "FeedbackWriter",
+    "PROXY_ENV_VARS",
+    "WINDOWS_SANDBOX_LOG_ATTACHMENT_FILENAME",
+    "emit_feedback_request_tags",
+    "emit_feedback_request_tags_with_auth_env",
+]

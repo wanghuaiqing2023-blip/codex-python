@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -21,13 +21,19 @@ from pycodex.protocol import (
 )
 
 from .exec import (
+    ExecParams,
     ExecCapturePolicy,
     ExecExpiration,
     ExecRequest,
     WindowsSandboxFilesystemOverrides,
+    apply_network_to_env,
     exec_params_from_request,
     finalize_exec_result,
+    resolve_windows_elevated_filesystem_overrides,
+    resolve_windows_restricted_token_filesystem_overrides,
     run_raw_exec_subprocess,
+    select_process_exec_tool_sandbox_type,
+    windows_sandbox_uses_elevated_backend,
 )
 from .sandbox_tags import SandboxType
 from .spawn import CODEX_SANDBOX_ENV_VAR, CODEX_SANDBOX_NETWORK_DISABLED_ENV_VAR
@@ -214,6 +220,202 @@ def from_sandbox_exec_request(
     )
 
 
+def _transform_to_sandbox_exec_request(
+    *,
+    params: ExecParams,
+    permission_profile: PermissionProfile,
+    sandbox_type: SandboxType | str,
+    env: Mapping[str, str],
+    enforce_managed_network: bool,
+    sandbox_cwd: Path,
+    codex_linux_sandbox_exe: Path | str | None,
+    use_legacy_landlock: bool,
+    sandbox_manager: Any = None,
+) -> SandboxExecRequest:
+    """Return the sandbox-transformed request for ``ExecParams``.
+
+    Rust source: ``codex-rs/core/src/exec.rs::build_exec_request`` delegates
+    command rewriting to ``SandboxManager::transform`` before projecting the
+    resulting ``SandboxExecRequest`` through ``sandboxing::ExecRequest``.
+    Python keeps that seam: when a sandbox manager is supplied, this helper
+    calls its ``transform`` method; otherwise it constructs the selected
+    sandbox request directly from the already resolved policies.
+    """
+
+    windows_sandbox_level = params.windows_sandbox_level or WindowsSandboxLevel.DISABLED
+    windows_private_desktop = bool(params.windows_sandbox_private_desktop)
+    if sandbox_manager is not None:
+        transform = getattr(sandbox_manager, "transform", None)
+        if not callable(transform):
+            raise TypeError("sandbox_manager must expose a callable transform")
+        command = {
+            "program": params.command[0],
+            "args": tuple(params.command[1:]),
+            "cwd": sandbox_cwd,
+            "env": dict(env),
+            "additional_permissions": None,
+        }
+        transformed = transform(
+            {
+                "command": command,
+                "permissions": permission_profile.to_runtime_permissions(),
+                "sandbox": sandbox_type,
+                "enforce_managed_network": enforce_managed_network,
+                "network": params.network,
+                "sandbox_policy_cwd": sandbox_cwd,
+                "codex_linux_sandbox_exe": codex_linux_sandbox_exe,
+                "use_legacy_landlock": use_legacy_landlock,
+                "windows_sandbox_level": windows_sandbox_level,
+                "windows_sandbox_private_desktop": windows_private_desktop,
+                "permission_profile": permission_profile,
+            }
+        )
+        if isinstance(transformed, SandboxExecRequest):
+            return transformed
+        if isinstance(transformed, Mapping):
+            return SandboxExecRequest(
+                command=tuple(str(part) for part in transformed["command"]),
+                cwd=Path(transformed.get("cwd", sandbox_cwd)),
+                env=dict(transformed.get("env", env)),
+                network=transformed.get("network", params.network),
+                sandbox=transformed.get("sandbox", sandbox_type),
+                windows_sandbox_level=transformed.get("windows_sandbox_level", windows_sandbox_level),
+                windows_sandbox_private_desktop=transformed.get(
+                    "windows_sandbox_private_desktop",
+                    windows_private_desktop,
+                ),
+                permission_profile=transformed.get("permission_profile", permission_profile),
+                file_system_sandbox_policy=transformed.get(
+                    "file_system_sandbox_policy",
+                    permission_profile.file_system_policy,
+                ),
+                network_sandbox_policy=transformed.get(
+                    "network_sandbox_policy",
+                    permission_profile.network_policy,
+                ),
+                arg0=transformed.get("arg0"),
+            )
+        raise TypeError("sandbox_manager.transform must return SandboxExecRequest or mapping")
+
+    return SandboxExecRequest(
+        command=params.command,
+        cwd=sandbox_cwd,
+        env=dict(env),
+        network=params.network,
+        sandbox=sandbox_type,
+        windows_sandbox_level=windows_sandbox_level,
+        windows_sandbox_private_desktop=windows_private_desktop,
+        permission_profile=permission_profile,
+        file_system_sandbox_policy=permission_profile.file_system_policy,
+        network_sandbox_policy=permission_profile.network_policy,
+        arg0=None,
+    )
+
+
+def build_exec_request(
+    params: ExecParams,
+    permission_profile: PermissionProfile,
+    sandbox_cwd: Path | str,
+    codex_linux_sandbox_exe: Path | str | None = None,
+    use_legacy_landlock: bool = False,
+    *,
+    sandbox_manager: Any = None,
+) -> ExecRequest:
+    """Build an ``ExecRequest`` from exec-tool params.
+
+    Rust source: ``codex-rs/core/src/exec.rs::build_exec_request``. This
+    bridges exec-tool params, permission profiles, sandbox selection, sandbox
+    transformation, and the portable ``sandboxing::ExecRequest``.
+    """
+
+    if not isinstance(params, ExecParams):
+        raise TypeError("params must be an ExecParams")
+    if not isinstance(permission_profile, PermissionProfile):
+        raise TypeError("permission_profile must be a PermissionProfile")
+    if not params.command:
+        raise ValueError("command args are empty")
+
+    sandbox_cwd_path = Path(sandbox_cwd)
+    file_system_policy = permission_profile.file_system_policy
+    network_policy = permission_profile.network_policy
+    enforce_managed_network = params.network is not None
+    env = apply_network_to_env(params.env, params.network) if enforce_managed_network else dict(params.env)
+    windows_sandbox_level = params.windows_sandbox_level or WindowsSandboxLevel.DISABLED
+    sandbox_type = select_process_exec_tool_sandbox_type(
+        file_system_policy,
+        network_policy,
+        windows_sandbox_level,
+        enforce_managed_network,
+    )
+    sandbox_request = _transform_to_sandbox_exec_request(
+        params=params,
+        permission_profile=permission_profile,
+        sandbox_type=sandbox_type,
+        env=env,
+        enforce_managed_network=enforce_managed_network,
+        sandbox_cwd=sandbox_cwd_path,
+        codex_linux_sandbox_exe=codex_linux_sandbox_exe,
+        use_legacy_landlock=use_legacy_landlock,
+        sandbox_manager=sandbox_manager,
+    )
+    exec_request = from_sandbox_exec_request(
+        sandbox_request,
+        ExecOptions(params.expiration, params.capture_policy),
+        sandbox_cwd_path,
+    )
+
+    sandbox_policy = compatibility_sandbox_policy(exec_request)
+    use_windows_elevated_backend = windows_sandbox_uses_elevated_backend(
+        exec_request.windows_sandbox_level,
+        sandbox_policy.proxy_networking,
+    )
+    if use_windows_elevated_backend:
+        overrides = resolve_windows_elevated_filesystem_overrides(
+            exec_request.sandbox,
+            sandbox_policy,
+            exec_request.file_system_sandbox_policy,
+            exec_request.network_sandbox_policy,
+            sandbox_cwd_path,
+            use_windows_elevated_backend,
+        )
+    else:
+        overrides = resolve_windows_restricted_token_filesystem_overrides(
+            exec_request.sandbox,
+            sandbox_policy,
+            exec_request.file_system_sandbox_policy,
+            exec_request.network_sandbox_policy,
+            sandbox_cwd_path,
+            exec_request.windows_sandbox_level,
+        )
+    return replace(exec_request, windows_sandbox_filesystem_overrides=overrides)
+
+
+async def process_exec_tool_call(
+    params: ExecParams,
+    permission_profile: PermissionProfile,
+    sandbox_cwd: Path | str,
+    codex_linux_sandbox_exe: Path | str | None = None,
+    use_legacy_landlock: bool = False,
+    stdout_stream: Any = None,
+    *,
+    sandbox_manager: Any = None,
+) -> Any:
+    """Process an exec-tool call through the sandboxing bridge.
+
+    Rust source: ``codex-rs/core/src/exec.rs::process_exec_tool_call``.
+    """
+
+    exec_request = build_exec_request(
+        params,
+        permission_profile,
+        sandbox_cwd,
+        codex_linux_sandbox_exe,
+        use_legacy_landlock,
+        sandbox_manager=sandbox_manager,
+    )
+    return await execute_env(exec_request, stdout_stream)
+
+
 async def execute_env(
     exec_request: ExecRequest,
     stdout_stream: Any = None,
@@ -282,9 +484,12 @@ def _duration_since(started: float) -> Any:
 
 
 __all__ = [
+    "build_exec_request",
     "ExecOptions",
+    "ExecParams",
     "ExecRequest",
     "ExecServerEnvConfig",
+    "process_exec_tool_call",
     "SandboxExecRequest",
     "SandboxPermissions",
     "SandboxType",

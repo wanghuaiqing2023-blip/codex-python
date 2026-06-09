@@ -9,19 +9,30 @@ behavior.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import inspect
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Any, Callable, Iterable
 
+from pycodex.core.agent import next_thread_spawn_depth
+from pycodex.core.agent.control import SpawnAgentForkMode as ControlSpawnAgentForkMode
+from pycodex.core.agent.control import SpawnAgentOptions
 from pycodex.core.tools.handlers.multi_agents_common import (
     DEFAULT_WAIT_TIMEOUT_MS,
     MAX_WAIT_TIMEOUT_MS,
     MIN_WAIT_TIMEOUT_MS,
+    apply_requested_spawn_agent_model_overrides,
+    apply_spawn_agent_runtime_overrides,
+    apply_spawn_agent_service_tier,
+    apply_spawn_agent_overrides,
+    build_agent_spawn_config,
+    collab_spawn_error,
     function_arguments,
     parse_collab_input,
     reject_full_fork_spawn_overrides,
+    thread_spawn_source,
     tool_output_code_mode_result,
     tool_output_json_text,
     tool_output_response_item,
@@ -43,7 +54,7 @@ from pycodex.core.tools.registry import ToolInvocation
 from pycodex.core.tools.tool_search_entry import ToolSearchInfo
 from pycodex.tools.tool_discovery import ToolSearchSourceInfo
 from pycodex.core.tools.router import FunctionCallError
-from pycodex.protocol import AgentPath, AgentStatus, InterAgentCommunication, ResponseInputItem, ThreadId, ToolName
+from pycodex.protocol import AgentPath, AgentStatus, InterAgentCommunication, Op, ResponseInputItem, SessionSource, ThreadId, ToolName, UserInput
 
 JsonValue = Any
 
@@ -413,6 +424,176 @@ def _coerce_spawn_agent_result(result: SpawnAgentResult | dict[str, JsonValue]) 
     )
 
 
+def _spawn_agent_from_invocation(invocation: ToolInvocation, args: SpawnAgentArgs) -> SpawnAgentResult:
+    session = getattr(invocation, "session", None)
+    turn = getattr(invocation, "turn", None)
+    if session is None or turn is None:
+        raise FunctionCallError.respond_to_model("agent control is unavailable in this session")
+    agent_control = _agent_control_from_session(session)
+    session_source = getattr(turn, "session_source", None)
+    if not isinstance(session_source, SessionSource):
+        session_source = SessionSource.default()
+    child_depth = next_thread_spawn_depth(session_source)
+    role_name = args.role_name()
+    input_items = parse_collab_input(args.message, None)
+    prompt = _render_input_preview(input_items)
+    config = _apply_spawn_config_overrides(
+        session,
+        turn,
+        build_agent_spawn_config(None, turn),
+        args,
+        child_depth,
+    )
+    spawn_source = thread_spawn_source(
+        getattr(session, "conversation_id"),
+        session_source,
+        child_depth,
+        role_name,
+        args.task_name,
+    )
+    operation = _spawn_initial_operation(session_source, spawn_source, input_items, prompt)
+    try:
+        spawned = _sync_await(agent_control.spawn_agent_with_metadata(
+            config,
+            operation,
+            spawn_source,
+            SpawnAgentOptions(
+                fork_parent_spawn_call_id=getattr(invocation, "call_id", None) if args.fork_mode() is not None else None,
+                fork_mode=_control_fork_mode(args.fork_mode()),
+                environments=_turn_environment_selections(turn),
+            ),
+        ))
+    except Exception as err:
+        raise collab_spawn_error(err) from err
+    metadata = getattr(spawned, "metadata", None)
+    snapshot = None
+    get_snapshot = getattr(agent_control, "get_agent_config_snapshot", None)
+    if callable(get_snapshot):
+        try:
+            snapshot = _sync_await(get_snapshot(getattr(spawned, "thread_id")))
+        except Exception:
+            snapshot = None
+    task_name = _spawned_task_name(snapshot, metadata)
+    if task_name is None:
+        raise FunctionCallError.respond_to_model("spawned agent is missing a canonical task name")
+    nickname = _spawned_nickname(snapshot, metadata)
+    if _spawn_hide_metadata_from_turn(turn):
+        return SpawnAgentResult.hidden_metadata(task_name)
+    return SpawnAgentResult.with_nickname(task_name, nickname)
+
+
+def _spawn_initial_operation(
+    parent_session_source: SessionSource,
+    spawn_source: SessionSource,
+    input_items: tuple[UserInput, ...],
+    prompt: str,
+) -> Op:
+    recipient = spawn_source.get_agent_path()
+    if recipient is not None and all(item.type == "text" for item in input_items):
+        return Op.inter_agent_communication(
+            InterAgentCommunication(
+                author=parent_session_source.get_agent_path() or AgentPath.root(),
+                recipient=recipient,
+                content=prompt,
+                trigger_turn=True,
+            )
+        )
+    return Op.user_input(input_items)
+
+
+def _control_fork_mode(fork: SpawnAgentFork | None) -> Any:
+    if fork is None:
+        return None
+    if fork.mode is SpawnAgentForkMode.FULL_HISTORY:
+        return ControlSpawnAgentForkMode.FULL_HISTORY
+    return (ControlSpawnAgentForkMode.LAST_N_TURNS, int(fork.last_n_turns or 0))
+
+
+def _spawn_config_from_turn(turn: Any, args: SpawnAgentArgs) -> Any:
+    config = build_agent_spawn_config(None, turn)
+    if args.service_tier is not None and config is not None:
+        try:
+            setattr(config, "service_tier", args.service_tier)
+        except Exception:
+            pass
+    return config
+
+
+def _apply_spawn_config_overrides(
+    session: Any,
+    turn: Any,
+    config: Any,
+    args: SpawnAgentArgs,
+    child_depth: int,
+) -> Any:
+    if args.service_tier is not None:
+        _set_config_attr(config, "service_tier", args.service_tier)
+    if args.fork_mode() is None or args.fork_mode().mode is not SpawnAgentForkMode.FULL_HISTORY:
+        apply_requested_spawn_agent_model_overrides(
+            session,
+            turn,
+            config,
+            args.model,
+            args.reasoning_effort,
+        )
+    parent_service_tier = getattr(getattr(turn, "config", None), "service_tier", None)
+    apply_spawn_agent_service_tier(session, config, parent_service_tier, args.service_tier)
+    apply_spawn_agent_runtime_overrides(config, turn)
+    apply_spawn_agent_overrides(config, child_depth)
+    return config
+
+
+def _set_config_attr(config: Any, key: str, value: Any) -> None:
+    if isinstance(config, dict):
+        config[key] = value
+    else:
+        setattr(config, key, value)
+
+
+def _turn_environment_selections(turn: Any) -> tuple[Any, ...] | None:
+    environments = getattr(turn, "environments", None)
+    to_selections = getattr(environments, "to_selections", None)
+    if callable(to_selections):
+        selections = to_selections()
+        return tuple(selections) if selections is not None else None
+    return None
+
+
+def _spawned_task_name(snapshot: Any, metadata: Any) -> str | None:
+    for source in (snapshot, metadata):
+        path = _agent_metadata_path(source)
+        if path is not None:
+            return path.as_str()
+        session_source = getattr(source, "session_source", None)
+        if isinstance(session_source, SessionSource):
+            path = session_source.get_agent_path()
+            if path is not None:
+                return path.as_str()
+    return None
+
+
+def _spawned_nickname(snapshot: Any, metadata: Any) -> str | None:
+    for source in (snapshot, metadata):
+        session_source = getattr(source, "session_source", None)
+        getter = getattr(session_source, "get_nickname", None)
+        if callable(getter):
+            value = getter()
+            if isinstance(value, str):
+                return value
+        value = getattr(source, "agent_nickname", None)
+        if isinstance(value, str):
+            return value
+        if isinstance(source, dict):
+            value = source.get("agent_nickname")
+            if isinstance(value, str):
+                return value
+    return None
+
+
+def _render_input_preview(input_items: tuple[UserInput, ...]) -> str:
+    return "\n".join(item.text or "" if item.type == "text" else "[input]" for item in input_items)
+
+
 @dataclass(frozen=True)
 class ListAgentsResult:
     agents: tuple[JsonValue, ...]
@@ -578,8 +759,9 @@ class SpawnAgentHandler:
     def handle(self, invocation: ToolInvocation) -> SpawnAgentResult:
         args = self.parse_args(invocation.payload)
         if self._spawn_agent is None:
-            raise FunctionCallError.respond_to_model("agent control is unavailable in this session")
-        result = self._spawn_agent(args)
+            result = _spawn_agent_from_invocation(invocation, args)
+        else:
+            result = self._spawn_agent(args)
         coerced = _coerce_spawn_agent_result(result)
         if _spawn_hide_metadata_from_turn(getattr(invocation, "turn", None)):
             return SpawnAgentResult.hidden_metadata(coerced.task_name)
@@ -794,13 +976,61 @@ class ResumeAgentHandler:
     def handle(self, invocation: ToolInvocation) -> ResumeAgentResult:
         args = self.parse_args(invocation.payload)
         thread_id = args.thread_id()
-        if self._resume_agent is None:
-            raise FunctionCallError.respond_to_model("agent control is unavailable in this session")
-        return ResumeAgentResult(AgentStatus.from_mapping(self._resume_agent(thread_id)))
+        if self._resume_agent is not None:
+            return ResumeAgentResult(AgentStatus.from_mapping(self._resume_agent(thread_id)))
+        session = getattr(invocation, "session", None)
+        turn = getattr(invocation, "turn", None)
+        agent_control = _agent_control_from_session(session)
+        try:
+            status = _sync_await(agent_control.get_status(thread_id))
+            if AgentStatus.from_mapping(status).type == "not_found":
+                config = getattr(turn, "config", None)
+                session_source = getattr(turn, "session_source", None)
+                _sync_await(agent_control.resume_agent_from_rollout(config, thread_id, session_source))
+                status = _sync_await(agent_control.get_status(thread_id))
+            return ResumeAgentResult(AgentStatus.from_mapping(status))
+        except Exception as err:
+            raise FunctionCallError.respond_to_model(f"collab tool failed: {err}") from err
 
 
 def successful_empty_message_output() -> FunctionToolOutput:
     return FunctionToolOutput.from_text("", True)
+
+
+def _agent_control_from_session(session: Any) -> Any:
+    services = getattr(session, "services", None)
+    agent_control = getattr(services, "agent_control", None)
+    if agent_control is None:
+        agent_control = getattr(session, "agent_control", None)
+    if agent_control is None:
+        raise FunctionCallError.respond_to_model("agent control is unavailable in this session")
+    return agent_control
+
+
+def _sync_await(value: Any) -> Any:
+    if not inspect.isawaitable(value):
+        return value
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(value)
+
+    result: dict[str, Any] = {}
+
+    def run() -> None:
+        try:
+            result["value"] = asyncio.run(value)
+        except BaseException as err:
+            result["error"] = err
+
+    import threading
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join()
+    if "error" in result:
+        raise result["error"]
+    return result.get("value")
 
 
 __all__ = [

@@ -94,6 +94,55 @@ def test_root_metric_helpers_emit_rust_metric_names_and_tags() -> None:
     assert GRACEFULL_INTERRUPTION_TIMEOUT_MS == 100
 
 
+def test_emit_turn_network_proxy_metric_records_inactive_turn() -> None:
+    # Rust source: codex-rs/core/src/tasks/mod_tests.rs
+    # Rust test: emit_turn_network_proxy_metric_records_inactive_turn.
+    telemetry = Telemetry()
+
+    emit_turn_network_proxy_metric(telemetry, False, ("tmp_mem_enabled", "false"))
+
+    assert telemetry.calls == [
+        (
+            TURN_NETWORK_PROXY_METRIC,
+            1,
+            [("active", "false"), ("tmp_mem_enabled", "false")],
+        )
+    ]
+
+
+def test_emit_turn_memory_metric_records_read_allowed_with_citations() -> None:
+    # Rust source: codex-rs/core/src/tasks/mod_tests.rs
+    # Rust test: emit_turn_memory_metric_records_read_allowed_with_citations.
+    telemetry = Telemetry()
+
+    emit_turn_memory_metric(telemetry, True, True, True)
+
+    assert telemetry.calls == [
+        (
+            TURN_MEMORY_METRIC,
+            1,
+            [
+                ("read_allowed", "true"),
+                ("feature_enabled", "true"),
+                ("config_use_memories", "true"),
+                ("has_citations", "true"),
+            ],
+        )
+    ]
+
+
+def test_emit_compact_metric_records_auto_local() -> None:
+    # Rust source: codex-rs/core/src/tasks/mod_tests.rs
+    # Rust test: emit_compact_metric_records_auto_local.
+    telemetry = Telemetry()
+
+    emit_compact_metric(telemetry, "local", False)
+
+    assert telemetry.calls == [
+        (TASK_COMPACT_METRIC, 1, [("type", "local"), ("manual", "false")])
+    ]
+
+
 def test_session_task_context_wraps_session_services() -> None:
     # Rust source: SessionTaskContext in codex-rs/core/src/tasks/mod.rs.
     # Contract: the context clones/exposes the session, turn extension data,

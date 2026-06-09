@@ -7,6 +7,7 @@ Rust source:
 from __future__ import annotations
 
 import hashlib
+import asyncio
 from collections import OrderedDict
 from collections.abc import Callable
 from typing import Generic, TypeVar
@@ -32,6 +33,8 @@ class BlockingLruCache(Generic[K, V]):
         return cls(capacity) if capacity > 0 else None
 
     def get_or_insert_with(self, key: K, value: Callable[[], V]) -> V:
+        if not _runtime_available():
+            return value()
         existing = self.get(key)
         if existing is not None:
             return existing
@@ -40,6 +43,8 @@ class BlockingLruCache(Generic[K, V]):
         return created
 
     def get_or_try_insert_with(self, key: K, value: Callable[[], V]) -> V:
+        if not _runtime_available():
+            return value()
         existing = self.get(key)
         if existing is not None:
             return existing
@@ -48,12 +53,16 @@ class BlockingLruCache(Generic[K, V]):
         return created
 
     def get(self, key: K) -> V | None:
+        if not _runtime_available():
+            return None
         if key not in self._items:
             return None
         self._items.move_to_end(key)
         return self._items[key]
 
     def insert(self, key: K, value: V) -> V | None:
+        if not _runtime_available():
+            return None
         previous = self._items.pop(key, None)
         self._items[key] = value
         while len(self._items) > self.capacity:
@@ -61,20 +70,57 @@ class BlockingLruCache(Generic[K, V]):
         return previous
 
     def remove(self, key: K) -> V | None:
+        if not _runtime_available():
+            return None
+        return self._items.pop(key, None)
+
+    def clear(self) -> None:
+        if not _runtime_available():
+            return
+        self._items.clear()
+
+    def with_mut(self, callback: Callable[["BlockingLruCache[K, V]"], R]) -> R:
+        if not _runtime_available():
+            return callback(_DisabledLruCache())
+        return callback(self)
+
+    def blocking_lock(self) -> "BlockingLruCache[K, V] | None":
+        return self if _runtime_available() else None
+
+
+def sha1_digest(data: bytes | bytearray | memoryview) -> bytes:
+    return hashlib.sha1(bytes(data)).digest()
+
+
+class _DisabledLruCache(BlockingLruCache[K, V]):
+    def __init__(self) -> None:
+        self.capacity = 0
+        self._items = OrderedDict()
+
+    def insert(self, key: K, value: V) -> V | None:
+        previous = self._items.pop(key, None)
+        self._items[key] = value
+        return previous
+
+    def get(self, key: K) -> V | None:
+        return self._items.get(key)
+
+    def remove(self, key: K) -> V | None:
         return self._items.pop(key, None)
 
     def clear(self) -> None:
         self._items.clear()
 
-    def with_mut(self, callback: Callable[["BlockingLruCache[K, V]"], R]) -> R:
-        return callback(self)
-
-    def blocking_lock(self) -> "BlockingLruCache[K, V]":
-        return self
+    def blocking_lock(self) -> None:
+        return None
 
 
-def sha1_digest(data: bytes | bytearray | memoryview) -> bytes:
-    return hashlib.sha1(bytes(data)).digest()
+def _runtime_available() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
 
 
 __all__ = ["BlockingLruCache", "sha1_digest"]

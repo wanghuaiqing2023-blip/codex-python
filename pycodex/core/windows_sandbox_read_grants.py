@@ -12,10 +12,10 @@ Windows sandbox setup refresh in pure Python.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-import sys
 from pathlib import Path
 from typing import TypeAlias
 
+from pycodex.core import windows_sandbox
 from pycodex.protocol.models import PermissionProfile
 
 WindowsSandboxSetupRefresher: TypeAlias = Callable[
@@ -36,13 +36,14 @@ def run_setup_refresh_with_extra_read_roots(
     codex_home: Path,
     extra_read_roots: Sequence[Path],
 ) -> object:
-    if sys.platform != "win32":
-        return None
-    # The original Rust implementation wires into a dedicated Windows sandbox helper.
-    # The stdlib-only port does not depend on that native helper, so this best-effort
-    # path intentionally performs a no-op and allows callers to continue while still
-    # exposing a stable compatibility surface for dependency injection.
-    return None
+    return windows_sandbox.run_setup_refresh_with_extra_read_roots(
+        permission_profile,
+        permission_profile_cwd,
+        command_cwd,
+        env_map,
+        codex_home,
+        extra_read_roots,
+    )
 
 
 def grant_read_root_non_elevated(

@@ -2,9 +2,11 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 from pycodex.core.tools.handlers.agent_jobs import (
     AgentJobItem,
+    AgentJobItemCreateParams,
     InMemoryAgentJobStore,
     ReportAgentJobResultHandler,
     SpawnAgentsOnCsvHandler,
@@ -22,8 +24,54 @@ from pycodex.core.tools.handlers.agent_jobs import (
     render_job_csv,
 )
 from pycodex.core.tools.context import ToolPayload
+from pycodex.core.tools.context import ToolCallSource, ToolInvocation
 from pycodex.core.tools.router import FunctionCallError
 from pycodex.protocol import ToolName
+from pycodex.core.environment_selection import ResolvedTurnEnvironments, TurnEnvironment
+
+
+class FakeAgentControl:
+    def __init__(self, store: InMemoryAgentJobStore | None = None, *, auto_report: bool = True) -> None:
+        self.store = store
+        self.auto_report = auto_report
+        self.next_thread_id = 1
+        self.shutdowns: list[str] = []
+
+    def spawn_agent_with_metadata(self, spawn_config: object, items: tuple[object, ...], session_source: object, options: object) -> dict[str, str]:
+        thread_id = f"thread-{self.next_thread_id}"
+        self.next_thread_id += 1
+        return {"thread_id": thread_id}
+
+    def subscribe_status(self, thread_id: object) -> None:
+        return None
+
+    def get_status(self, thread_id: object) -> str:
+        if self.auto_report and self.store is not None:
+            thread_id_text = str(thread_id)
+            for item in list(self.store.items.values()):
+                if item.assigned_thread_id == thread_id_text and item.status == "running" and item.result_json is None:
+                    self.store.report_agent_job_item_result(
+                        item.job_id,
+                        item.item_id,
+                        thread_id_text,
+                        {"ok": True},
+                    )
+                    break
+        return {"type": "completed"}
+
+    def shutdown_live_agent(self, thread_id: object) -> None:
+        self.shutdowns.append(str(thread_id))
+
+
+def agent_job_session(store: InMemoryAgentJobStore, agent_control: FakeAgentControl | None = None) -> object:
+    return type(
+        "Session",
+        (),
+        {
+            "state_db": store,
+            "agent_control": agent_control or FakeAgentControl(store),
+        },
+    )()
 
 
 class CoreAgentJobsTests(unittest.TestCase):
@@ -202,12 +250,31 @@ class CoreAgentJobsTests(unittest.TestCase):
 
     def test_report_agent_job_result_records_and_cancels_on_stop(self) -> None:
         store = InMemoryAgentJobStore()
+        job_id = "job"
+        item_id = "item"
+        store.create_agent_job(
+            job_id=job_id,
+            name="test",
+            instruction="do",
+            auto_export=True,
+            max_runtime_seconds=None,
+            output_schema_json=None,
+            input_headers=["id"],
+            input_csv_path="in.csv",
+            output_csv_path="out.csv",
+        )
+        store.create_agent_job_items(
+            job_id,
+            (AgentJobItemCreateParams(item_id=item_id, row_index=0, source_id=None, row_json={"id": "1"}),),
+        )
+        store.mark_agent_job_running(job_id)
+        store.mark_agent_job_item_running_with_thread(job_id, item_id, "thread")
         output = ReportAgentJobResultHandler(store, reporting_thread_id="thread").handle(
             ToolPayload.function(
                 json.dumps(
                     {
-                        "job_id": "job",
-                        "item_id": "item",
+                        "job_id": job_id,
+                        "item_id": item_id,
                         "result": {"ok": True},
                         "stop": True,
                     }
@@ -215,14 +282,79 @@ class CoreAgentJobsTests(unittest.TestCase):
             )
         )
         self.assertEqual(json.loads(output.into_text()), {"accepted": True})
-        self.assertEqual(store.reported_results[("job", "item")], {"ok": True})
+        self.assertEqual(store.reported_results[(job_id, item_id)], {"ok": True})
         self.assertEqual(store.cancelled_jobs["job"], "cancelled by worker request")
 
+    def test_report_agent_job_result_returns_false_for_missing_item(self) -> None:
+        store = InMemoryAgentJobStore()
+        output = ReportAgentJobResultHandler(store, reporting_thread_id="thread").handle(
+            ToolPayload.function(
+                json.dumps(
+                    {
+                        "job_id": "missing_job",
+                        "item_id": "missing_item",
+                        "result": {"ok": True},
+                    }
+                )
+            )
+        )
+        self.assertEqual(output.into_text(), '{"accepted":false}')
+        self.assertEqual(len(store.reported_results), 0)
+
+    def test_report_agent_job_result_requires_running_thread_id_match(self) -> None:
+        store = InMemoryAgentJobStore()
+        job_id = "job-1"
+        item_id = "item-1"
+        store.create_agent_job(
+            job_id=job_id,
+            name="test",
+            instruction="do",
+            auto_export=True,
+            max_runtime_seconds=None,
+            output_schema_json=None,
+            input_headers=["id"],
+            input_csv_path="in.csv",
+            output_csv_path="out.csv",
+        )
+        store.create_agent_job_items(job_id, (AgentJobItemCreateParams(item_id=item_id, row_index=0, source_id=None, row_json={"id": "1"}),))
+        store.mark_agent_job_running(job_id)
+        store.mark_agent_job_item_running_with_thread(job_id, item_id, "thread-a")
+        # Missing/wrong reporting thread should be rejected.
+        output = ReportAgentJobResultHandler(store, reporting_thread_id="thread-b").handle(
+            ToolPayload.function(
+                json.dumps(
+                    {"job_id": job_id, "item_id": item_id, "result": {"ok": True}}
+                )
+            )
+        )
+        self.assertEqual(output.into_text(), '{"accepted":false}')
+        item = store.get_agent_job_item(job_id, item_id)
+        self.assertEqual(item.status, "running")
+        self.assertNotIn((job_id, item_id), store.reported_results)
     def test_report_agent_job_result_handler_surface_matches_rust_runtime(self) -> None:
         # Rust source: codex-rs/core/src/tools/handlers/agent_jobs/report_agent_job_result.rs
         # Contract: plain tool name, report tool spec, function-payload runtime matching,
         # and compact JSON FunctionToolOutput on accepted reports.
         store = InMemoryAgentJobStore()
+        job_id = "job"
+        item_id = "item"
+        store.create_agent_job(
+            job_id=job_id,
+            name="test",
+            instruction="do",
+            auto_export=True,
+            max_runtime_seconds=None,
+            output_schema_json=None,
+            input_headers=["id"],
+            input_csv_path="in.csv",
+            output_csv_path="out.csv",
+        )
+        store.create_agent_job_items(
+            job_id,
+            (AgentJobItemCreateParams(item_id=item_id, row_index=0, source_id=None, row_json={"id": "1"}),),
+        )
+        store.mark_agent_job_running(job_id)
+        store.mark_agent_job_item_running_with_thread(job_id, item_id, "thread-1")
         handler = ReportAgentJobResultHandler(store, reporting_thread_id="thread-1")
         payload = ToolPayload.function(json.dumps({"job_id": "job", "item_id": "item", "result": {"ok": True}}))
 
@@ -236,6 +368,54 @@ class CoreAgentJobsTests(unittest.TestCase):
         self.assertEqual(output.into_text(), '{"accepted":true}')
         self.assertEqual(store.reported_results[("job", "item")], {"ok": True})
         self.assertNotIn("job", store.cancelled_jobs)
+
+    def test_report_agent_job_result_infers_thread_id_from_invocation_session(self) -> None:
+        store = InMemoryAgentJobStore()
+        job_id = "job-1"
+        item_id = "item-1"
+        store.create_agent_job(
+            job_id=job_id,
+            name="test",
+            instruction="do",
+            auto_export=True,
+            max_runtime_seconds=None,
+            output_schema_json=None,
+            input_headers=["id"],
+            input_csv_path="in.csv",
+            output_csv_path="out.csv",
+        )
+        store.create_agent_job_items(
+            job_id,
+            (AgentJobItemCreateParams(item_id=item_id, row_index=0, source_id=None, row_json={"id": "1"}),),
+        )
+        store.mark_agent_job_running(job_id)
+        store.mark_agent_job_item_running_with_thread(job_id, item_id, "thread-session")
+        invocation = type("Invocation", (), {
+            "session": type("Session", (), {"conversation_id": "thread-session"})(),
+            "payload": ToolPayload.function(
+                json.dumps(
+                    {"job_id": job_id, "item_id": item_id, "result": {"ok": True}}
+                )
+            ),
+        })()
+
+        output = ReportAgentJobResultHandler(store).handle(invocation)
+
+        self.assertEqual(output.into_text(), '{"accepted":true}')
+        self.assertEqual(store.reported_results[(job_id, item_id)], {"ok": True})
+
+    def test_report_agent_job_result_requires_reporting_thread_id(self) -> None:
+        invocation = type("Invocation", (), {
+            "session": object(),
+            "payload": ToolPayload.function(
+                json.dumps({"job_id": "job", "item_id": "item", "result": {"ok": True}})
+            ),
+        })()
+        with self.assertRaisesRegex(
+            FunctionCallError,
+            "requires a reporting_thread_id",
+        ):
+            ReportAgentJobResultHandler().handle(invocation)
 
     def test_report_agent_job_result_accepted_false_and_store_failure(self) -> None:
         # Rust source: report_agent_job_result.rs::handle records the result first,
@@ -286,13 +466,16 @@ class CoreAgentJobsTests(unittest.TestCase):
             FunctionCallError,
             "failed to record agent job result for job / item: db down",
         ):
-            ReportAgentJobResultHandler(FailingStore()).handle(
+            ReportAgentJobResultHandler(
+                FailingStore(),
+                reporting_thread_id="thread",
+            ).handle(
                 ToolPayload.function(json.dumps({"job_id": "job", "item_id": "item", "result": {"ok": True}}))
             )
 
     def test_report_agent_job_result_rejects_non_object_result_and_payload(self) -> None:
         with self.assertRaisesRegex(FunctionCallError, "result must be a JSON object"):
-            ReportAgentJobResultHandler().handle(
+            ReportAgentJobResultHandler(reporting_thread_id="thread").handle(
                 ToolPayload.function(json.dumps({"job_id": "j", "item_id": "i", "result": []}))
             )
         with self.assertRaisesRegex(FunctionCallError, "unsupported payload"):
@@ -309,6 +492,288 @@ class CoreAgentJobsTests(unittest.TestCase):
         self.assertEqual(len(job_id), 36)
         self.assertTrue(output_path.endswith(f".agent-job-{job_id[:8]}.csv"))
         self.assertEqual(items[0].item_id, "A")
+
+    def test_spawn_handler_runs_and_exports_placeholder_csv(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_csv = root / "input.csv"
+            input_csv.write_text("id,name\nA,one\nB,two\n", encoding="utf-8")
+
+            class _Environment:
+                def is_remote(self) -> bool:
+                    return False
+
+            turn = type(
+                "Turn",
+                (),
+                {
+                    "config": type("Config", (), {"agent_max_threads": 4, "agent_job_max_runtime_seconds": None})(),
+                    "environments": ResolvedTurnEnvironments(
+                        (TurnEnvironment(environment_id="local", environment=_Environment(), cwd=root),)
+                    ),
+                },
+            )()
+
+            store = InMemoryAgentJobStore()
+            invocation = ToolInvocation(
+                session=agent_job_session(store),
+                turn=turn,
+                cancellation_token=None,
+                tracker=None,
+                call_id="call-1",
+                tool_name="spawn_agents_on_csv",
+                source=ToolCallSource.direct(),
+                payload=ToolPayload.function(
+                    json.dumps(
+                        {
+                            "csv_path": "input.csv",
+                            "instruction": "Process {name}",
+                            "max_concurrency": 2,
+                        }
+                    )
+                ),
+            )
+
+            output = SpawnAgentsOnCsvHandler().handle(invocation)
+
+            data = json.loads(output.into_text())
+            self.assertEqual(data["status"], "completed")
+            self.assertEqual(data["total_items"], 2)
+            self.assertEqual(data["completed_items"], 2)
+            self.assertEqual(data["failed_items"], 0)
+            output_path = Path(data["output_csv_path"])
+            self.assertTrue(output_path.exists())
+            content = output_path.read_text()
+            self.assertIn("item_id", content)
+            self.assertIn("row_index", content)
+
+
+    def test_spawn_handler_marks_cancelled_status_when_store_reports_cancelled(self) -> None:
+        class CancelingStore(InMemoryAgentJobStore):
+            def __init__(self) -> None:
+                super().__init__()
+                self._cancelled = False
+
+            def mark_agent_job_running(self, job_id: str) -> None:
+                super().mark_agent_job_running(job_id)
+                self._cancelled = True
+
+            def is_agent_job_cancelled(self, job_id: str) -> bool:
+                return self._cancelled
+
+            def mark_agent_job_cancelled(self, job_id: str, message: str) -> None:
+                self._cancelled = True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_csv = root / "input.csv"
+            input_csv.write_text("id,name\nA,one\nB,two\n", encoding="utf-8")
+
+            class _Environment:
+                def is_remote(self) -> bool:
+                    return False
+
+            turn = type(
+                "Turn",
+                (),
+                {
+                    "config": type("Config", (), {"agent_max_threads": 4, "agent_job_max_runtime_seconds": None})(),
+                    "environments": ResolvedTurnEnvironments(
+                        (TurnEnvironment(environment_id="local", environment=_Environment(), cwd=root),)
+                    ),
+                },
+            )()
+
+            store = CancelingStore()
+            invocation = ToolInvocation(
+                session=agent_job_session(store),
+                turn=turn,
+                cancellation_token=None,
+                tracker=None,
+                call_id="call-cancel-1",
+                tool_name="spawn_agents_on_csv",
+                source=ToolCallSource.direct(),
+                payload=ToolPayload.function(
+                    json.dumps(
+                        {
+                            "csv_path": "input.csv",
+                            "instruction": "Process {name}",
+                            "max_concurrency": 2,
+                        }
+                    )
+                ),
+            )
+
+            output = SpawnAgentsOnCsvHandler(state_db=store).handle(invocation)
+            data = json.loads(output.into_text())
+            self.assertEqual(data["status"], "cancelled")
+            self.assertEqual(data["completed_items"], 0)
+            self.assertEqual(data["failed_items"], 0)
+
+    def test_spawn_handler_returns_failed_status_when_export_fails(self) -> None:
+        class FailingExportHandler(SpawnAgentsOnCsvHandler):
+            def _export_job_csv_snapshot(self, store: Any, job_id: str) -> None:
+                raise RuntimeError("export failed")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_csv = root / "input.csv"
+            input_csv.write_text("id,name\nA,one\n", encoding="utf-8")
+
+            class _Environment:
+                def is_remote(self) -> bool:
+                    return False
+
+            turn = type(
+                "Turn",
+                (),
+                {
+                    "config": type("Config", (), {"agent_max_threads": 4, "agent_job_max_runtime_seconds": None})(),
+                    "environments": ResolvedTurnEnvironments(
+                        (TurnEnvironment(environment_id="local", environment=_Environment(), cwd=root),)
+                    ),
+                },
+            )()
+
+            store = InMemoryAgentJobStore()
+            invocation = ToolInvocation(
+                session=agent_job_session(store),
+                turn=turn,
+                cancellation_token=None,
+                tracker=None,
+                call_id="call-export-fail",
+                tool_name="spawn_agents_on_csv",
+                source=ToolCallSource.direct(),
+                payload=ToolPayload.function(
+                    json.dumps(
+                        {
+                            "csv_path": "input.csv",
+                            "instruction": "Process {name}",
+                            "max_concurrency": 1,
+                        }
+                    )
+                ),
+            )
+
+            output = FailingExportHandler().handle(invocation)
+            data = json.loads(output.into_text())
+            self.assertEqual(data["status"], "failed")
+            self.assertEqual(data["failed_items"], 0)
+            self.assertIsInstance(data["job_error"], str)
+            self.assertIn("auto-export failed", data["job_error"])
+
+
+    def test_spawn_handler_marks_failed_items_when_workers_cannot_claim_item(self) -> None:
+        class RefusingStore(InMemoryAgentJobStore):
+            def mark_agent_job_item_running_with_thread(
+                self, job_id: str, item_id: str, thread_id: str
+            ) -> bool:
+                self.mark_agent_job_item_failed(job_id, item_id, "failed to claim worker item")
+                return False
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_csv = root / "input.csv"
+            input_csv.write_text("id,name\nA,one\nB,two\n", encoding="utf-8")
+
+            class _Environment:
+                def is_remote(self) -> bool:
+                    return False
+
+            turn = type(
+                "Turn",
+                (),
+                {
+                    "config": type("Config", (), {"agent_max_threads": 4, "agent_job_max_runtime_seconds": None})(),
+                    "environments": ResolvedTurnEnvironments(
+                        (TurnEnvironment(environment_id="local", environment=_Environment(), cwd=root),)
+                    ),
+                },
+            )()
+
+            store = RefusingStore()
+            invocation = ToolInvocation(
+                session=agent_job_session(store),
+                turn=turn,
+                cancellation_token=None,
+                tracker=None,
+                call_id="call-fail-1",
+                tool_name="spawn_agents_on_csv",
+                source=ToolCallSource.direct(),
+                payload=ToolPayload.function(
+                    json.dumps(
+                        {
+                            "csv_path": "input.csv",
+                            "instruction": "Process {name}",
+                            "max_concurrency": 2,
+                        }
+                    )
+                ),
+            )
+
+            output = SpawnAgentsOnCsvHandler(state_db=store).handle(invocation)
+            data = json.loads(output.into_text())
+            self.assertEqual(data["status"], "completed")
+            self.assertEqual(data["total_items"], 2)
+            self.assertEqual(data["completed_items"], 0)
+            self.assertEqual(data["failed_items"], 2)
+            failed_items = {item["item_id"] for item in data["failed_item_errors"]}
+            self.assertEqual(failed_items, {"row-1", "row-2"})
+
+
+    def test_spawn_handler_rejects_unsupported_payload(self) -> None:
+        with self.assertRaisesRegex(
+            FunctionCallError,
+            "agent jobs handler received unsupported payload",
+        ):
+            SpawnAgentsOnCsvHandler().handle(ToolPayload.custom("raw"))
+
+    def test_spawn_handler_rejects_when_depth_limit_reached(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_csv = root / "input.csv"
+            input_csv.write_text("id,name\nA,one\n", encoding="utf-8")
+
+            class _Environment:
+                def is_remote(self) -> bool:
+                    return False
+
+            turn = type(
+                "Turn",
+                (),
+                {
+                    "config": type(
+                        "Config",
+                        (),
+                        {
+                            "agent_max_threads": 4,
+                            "agent_max_depth": 0,
+                            "agent_job_max_runtime_seconds": None,
+                        },
+                    )(),
+                    "environments": ResolvedTurnEnvironments(
+                        (TurnEnvironment(environment_id="local", environment=_Environment(), cwd=root),)
+                    ),
+                },
+            )()
+
+            store = InMemoryAgentJobStore()
+            invocation = ToolInvocation(
+                session=agent_job_session(store),
+                turn=turn,
+                cancellation_token=None,
+                tracker=None,
+                call_id="call-depth-limit",
+                tool_name="spawn_agents_on_csv",
+                source=ToolCallSource.direct(),
+                payload=ToolPayload.function(json.dumps({"csv_path": "input.csv", "instruction": "Process {name}"})),
+            )
+
+            with self.assertRaisesRegex(
+                FunctionCallError,
+                "agent depth limit reached; this session cannot spawn more subagents",
+            ):
+                SpawnAgentsOnCsvHandler().handle(invocation)
 
 
 if __name__ == "__main__":

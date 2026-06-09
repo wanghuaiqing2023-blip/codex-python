@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 import json
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Any, Mapping
 
 from pycodex.features import Feature, Features, FeaturesToml
@@ -172,6 +173,85 @@ def sandbox_setup_is_complete(_codex_home: str) -> bool:
     return users_version == _WINDOWS_SANDBOX_SETUP_VERSION
 
 
+def elevated_setup_failure_details(_err: BaseException) -> tuple[str, str] | None:
+    return None
+
+
+def elevated_setup_failure_metric_name(_err: BaseException) -> str:
+    raise RuntimeError("elevated_setup_failure_metric_name is only supported on Windows")
+
+
+def run_elevated_setup(
+    permission_profile: Any,
+    permission_profile_cwd: Path | str,
+    command_cwd: Path | str,
+    env_map: Mapping[str, str],
+    codex_home: Path | str,
+) -> object:
+    raise NotImplementedError("elevated Windows sandbox setup is only supported on Windows")
+
+
+def run_legacy_setup_preflight(
+    permission_profile: Any,
+    permission_profile_cwd: Path | str,
+    command_cwd: Path | str,
+    env_map: Mapping[str, str],
+    codex_home: Path | str,
+) -> object:
+    raise NotImplementedError("legacy Windows sandbox setup is only supported on Windows")
+
+
+def run_setup_refresh_with_extra_read_roots(
+    permission_profile: Any,
+    permission_profile_cwd: Path | str,
+    command_cwd: Path | str,
+    env_map: Mapping[str, str],
+    codex_home: Path | str,
+    extra_read_roots: Sequence[Path | str],
+) -> object:
+    """Rust ``windows_sandbox::run_setup_refresh_with_extra_read_roots`` interface.
+
+    The Rust implementation refreshes Windows sandbox setup with the supplied
+    extra read roots. The Python stdlib port does not yet include the native
+    Windows setup backend, but callers should still go through this explicit
+    interface rather than silently treating refresh as a no-op.
+    """
+
+    raise NotImplementedError(
+        "Windows sandbox read-root refresh is only supported on Windows"
+    )
+
+
+async def run_windows_sandbox_setup(request: WindowsSandboxSetupRequest) -> None:
+    if not isinstance(request, WindowsSandboxSetupRequest):
+        raise TypeError("request must be WindowsSandboxSetupRequest")
+    if request.mode is WindowsSandboxSetupMode.ELEVATED:
+        if not sandbox_setup_is_complete(request.codex_home):
+            run_elevated_setup(
+                request.permission_profile,
+                request.permission_profile_cwd,
+                request.command_cwd,
+                request.env_map,
+                request.codex_home,
+            )
+    else:
+        run_legacy_setup_preflight(
+            request.permission_profile,
+            request.permission_profile_cwd,
+            request.command_cwd,
+            request.env_map,
+            request.codex_home,
+        )
+    from pycodex.core.config.edit import ConfigEditsBuilder
+
+    await (
+        ConfigEditsBuilder.new(request.codex_home)
+        .set_windows_sandbox_mode(windows_sandbox_setup_mode_tag(request.mode))
+        .clear_legacy_windows_sandbox_keys()
+        .apply()
+    )
+
+
 def _read_setup_json_version(path: Path) -> int | None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -232,10 +312,16 @@ __all__ = [
     "WindowsSandboxSetupMode",
     "WindowsSandboxSetupRequest",
     "WindowsToml",
+    "elevated_setup_failure_details",
+    "elevated_setup_failure_metric_name",
     "legacy_windows_sandbox_mode",
     "legacy_windows_sandbox_mode_from_entries",
     "resolve_windows_sandbox_mode",
     "resolve_windows_sandbox_private_desktop",
+    "run_elevated_setup",
+    "run_legacy_setup_preflight",
+    "run_setup_refresh_with_extra_read_roots",
+    "run_windows_sandbox_setup",
     "sandbox_setup_is_complete",
     "windows_sandbox_level_from_config",
     "windows_sandbox_level_from_features",

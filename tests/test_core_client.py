@@ -70,6 +70,7 @@ from pycodex.core.stream_events_utils import (
     SamplingOutputItemDoneTransitionPlan,
     SamplingOutputTextDeltaApplyPlan,
     SamplingOutputState,
+    SamplingPlanModeAssistantDonePlan,
     SamplingReasoningDeltaApplyPlan,
     SamplingStreamedAssistantTextDeltaPlan,
     SamplingStreamEventApplyPlan,
@@ -1205,6 +1206,50 @@ def test_sampling_request_runtime_hook_adapter_applies_output_item_done_to_state
     assert state_snapshot["output_result"] is output_result
     assert state_snapshot["state_after_output_result"] is state_after
     assert state_snapshot["mailbox_preemption_plan"] is mailbox_preemption
+
+
+def test_plan_mode_uses_contributed_turn_item_for_last_agent_message():
+    # Rust: codex-core session/turn_tests.rs
+    # Test: plan_mode_uses_contributed_turn_item_for_last_agent_message
+    class RewriteAgentMessageContributor:
+        def contribute(self, _thread_store, _turn_store, item):
+            if item.type != "AgentMessage":
+                return item
+            return TurnItem.agent_message(
+                AgentMessageItem(
+                    item.item.id,
+                    (AgentMessageContent.text_content("plan contributed assistant text"),),
+                )
+            )
+
+    sess = SimpleNamespace(turn_item_contributors=lambda: (RewriteAgentMessageContributor(),))
+    turn_store = object()
+    assistant_item = ResponseItem.message(
+        "assistant",
+        (ContentItem.output_text("original assistant text"),),
+        id="msg-1",
+    )
+    state = SamplingRuntimeEventApplicationState()
+    adapter = SamplingRequestRuntimeHookAdapter(event_application_state=state)
+    plan = SamplingStreamEventApplyPlan(
+        event_type="response.output_item.done",
+        output_item_done_apply_plan=SamplingOutputItemDoneApplyPlan(
+            transition_plan=SamplingOutputItemDoneTransitionPlan(),
+            completed_item=assistant_item,
+            plan_mode_assistant_done_plan=SamplingPlanModeAssistantDonePlan(
+                handled=True,
+                last_agent_message="original assistant text",
+                should_update_last_agent_message=True,
+                sess=sess,
+                turn_store=turn_store,
+            ),
+        ),
+    )
+
+    result = adapter.apply_event_plan({"type": "apply_event_plan", "plan": plan})
+
+    assert result["state"]["result_last_agent_message"] == "plan contributed assistant text"
+    assert state.result_last_agent_message == "plan contributed assistant text"
 
 
 def test_sampling_request_runtime_hook_adapter_applies_added_and_text_delta_to_state():

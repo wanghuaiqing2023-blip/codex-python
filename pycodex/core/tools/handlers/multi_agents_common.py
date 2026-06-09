@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import copy
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -210,6 +211,71 @@ def reject_full_fork_spawn_overrides(
         )
 
 
+def build_agent_spawn_config(base_instructions: Any, turn: Any) -> Any:
+    config = build_agent_shared_config(turn)
+    _set_config_value(config, "base_instructions", _base_instruction_text(base_instructions))
+    return config
+
+
+def build_agent_resume_config(turn: Any, child_depth: int) -> Any:
+    config = build_agent_shared_config(turn)
+    apply_spawn_agent_overrides(config, child_depth)
+    _set_config_value(config, "base_instructions", None)
+    return config
+
+
+def build_agent_shared_config(turn: Any) -> Any:
+    base_config = getattr(turn, "config", None)
+    if base_config is None:
+        raise TypeError("turn.config is required")
+    config = copy.deepcopy(base_config)
+    model_info = getattr(turn, "model_info", None)
+    provider = getattr(turn, "provider", None)
+    model_slug = getattr(model_info, "slug", None)
+    if model_slug is not None:
+        _set_config_value(config, "model", model_slug)
+    provider_info = getattr(provider, "info", None)
+    if callable(provider_info):
+        _set_config_value(config, "model_provider", provider_info())
+    elif provider is not None:
+        _set_config_value(config, "model_provider", provider)
+    reasoning_effort = getattr(turn, "reasoning_effort", None)
+    if reasoning_effort is None:
+        reasoning_effort = getattr(model_info, "default_reasoning_level", None)
+    _set_config_value(config, "model_reasoning_effort", reasoning_effort)
+    if hasattr(turn, "reasoning_summary"):
+        _set_config_value(config, "model_reasoning_summary", getattr(turn, "reasoning_summary"))
+    if hasattr(turn, "developer_instructions"):
+        _set_config_value(config, "developer_instructions", getattr(turn, "developer_instructions"))
+    if hasattr(turn, "compact_prompt"):
+        _set_config_value(config, "compact_prompt", getattr(turn, "compact_prompt"))
+    apply_spawn_agent_runtime_overrides(config, turn)
+    return config
+
+
+def apply_spawn_agent_runtime_overrides(config: Any, turn: Any) -> None:
+    permissions = _config_permissions(config)
+    approval_policy = getattr(turn, "approval_policy", None)
+    if approval_policy is not None:
+        _set_nested_permission_value(permissions, "approval_policy", _approval_policy_value(approval_policy))
+    if hasattr(turn, "shell_environment_policy"):
+        _set_nested_permission_value(permissions, "shell_environment_policy", getattr(turn, "shell_environment_policy"))
+    if hasattr(turn, "codex_linux_sandbox_exe"):
+        _set_config_value(config, "codex_linux_sandbox_exe", getattr(turn, "codex_linux_sandbox_exe"))
+    if hasattr(turn, "cwd"):
+        _set_config_value(config, "cwd", getattr(turn, "cwd"))
+    permission_profile = _turn_permission_profile(turn)
+    if permission_profile is not None:
+        setter = getattr(permissions, "set_permission_profile", None)
+        if callable(setter):
+            try:
+                setter(permission_profile)
+            except Exception as err:
+                raise FunctionCallError.respond_to_model(f"permission_profile is invalid: {err}") from err
+        else:
+            _set_nested_permission_value(permissions, "permission_profile", permission_profile)
+
+
 def find_spawn_agent_model_name(available_models: Iterable[Any], requested_model: str) -> str:
     if not isinstance(requested_model, str):
         raise TypeError("requested_model must be a string")
@@ -284,6 +350,72 @@ def apply_spawn_agent_overrides(config: Any, child_depth: int) -> None:
     if child_depth >= agent_max_depth and not _feature_enabled(features, Feature.MULTI_AGENT_V2):
         _disable_feature(features, Feature.SPAWN_CSV)
         _disable_feature(features, Feature.COLLAB)
+
+
+def apply_requested_spawn_agent_model_overrides(
+    session: Any,
+    turn: Any,
+    config: Any,
+    requested_model: str | None = None,
+    requested_reasoning_effort: ReasoningEffort | str | None = None,
+) -> None:
+    if requested_model is None and requested_reasoning_effort is None:
+        return
+    if requested_model is not None:
+        models_manager = _models_manager(session)
+        available_models = _call_maybe_await(getattr(models_manager, "list_models"), "offline")
+        selected_model_name = find_spawn_agent_model_name(available_models, requested_model)
+        model_info = _model_info(models_manager, selected_model_name, config)
+        _set_config_value(config, "model", selected_model_name)
+        if requested_reasoning_effort is not None:
+            validate_spawn_agent_reasoning_effort(
+                selected_model_name,
+                getattr(model_info, "supported_reasoning_levels", ()),
+                requested_reasoning_effort,
+            )
+            _set_config_value(config, "model_reasoning_effort", requested_reasoning_effort)
+        else:
+            _set_config_value(config, "model_reasoning_effort", getattr(model_info, "default_reasoning_level", None))
+        return
+
+    model_info = getattr(turn, "model_info", None)
+    model = getattr(model_info, "slug", _get_config_value(config, "model"))
+    validate_spawn_agent_reasoning_effort(
+        str(model),
+        getattr(model_info, "supported_reasoning_levels", ()),
+        requested_reasoning_effort,
+    )
+    _set_config_value(config, "model_reasoning_effort", requested_reasoning_effort)
+
+
+def apply_spawn_agent_service_tier(
+    session: Any,
+    config: Any,
+    parent_service_tier: str | None = None,
+    requested_service_tier: str | None = None,
+) -> None:
+    candidates = (
+        _get_config_value(config, "service_tier"),
+        requested_service_tier,
+        parent_service_tier,
+    )
+    if all(candidate is None for candidate in candidates):
+        _set_config_value(config, "service_tier", None)
+        return
+    model = _get_config_value(config, "model")
+    if model is None:
+        raise FunctionCallError.respond_to_model(
+            "spawn_agent could not resolve the child model for service tier validation"
+        )
+    model_info = _model_info(_models_manager(session), str(model), config)
+    selected = select_spawn_agent_service_tier(
+        str(model),
+        model_info,
+        config_service_tier=candidates[0],
+        requested_service_tier=requested_service_tier,
+        parent_service_tier=parent_service_tier,
+    )
+    _set_config_value(config, "service_tier", selected)
 
 
 def _receiver_agents_tuple(values: Iterable[CollabAgentRef]) -> tuple[CollabAgentRef, ...]:
@@ -411,6 +543,132 @@ def _disable_feature(features: Any, feature: Feature) -> None:
         features.discard(feature.key())
         return
     raise TypeError("features must expose disable(), be a dict, or be a set")
+
+
+def _base_instruction_text(base_instructions: Any) -> str | None:
+    if base_instructions is None:
+        return None
+    if isinstance(base_instructions, str):
+        return base_instructions
+    if isinstance(base_instructions, Mapping):
+        value = base_instructions.get("text")
+    else:
+        value = getattr(base_instructions, "text", None)
+    if value is None or isinstance(value, str):
+        return value
+    raise TypeError("base_instructions.text must be a string or None")
+
+
+def _get_config_value(config: Any, key: str, default: Any = None) -> Any:
+    if isinstance(config, Mapping):
+        return config.get(key, default)
+    return getattr(config, key, default)
+
+
+def _set_config_value(config: Any, key: str, value: Any) -> None:
+    if isinstance(config, dict):
+        config[key] = value
+        return
+    setattr(config, key, value)
+
+
+def _config_permissions(config: Any) -> Any:
+    permissions = _get_config_value(config, "permissions")
+    if permissions is None:
+        if isinstance(config, dict):
+            permissions = {}
+            config["permissions"] = permissions
+        else:
+            permissions = type("Permissions", (), {})()
+            setattr(config, "permissions", permissions)
+    return permissions
+
+
+def _set_nested_permission_value(permissions: Any, key: str, value: Any) -> None:
+    if key == "approval_policy":
+        target = permissions.get(key) if isinstance(permissions, Mapping) else getattr(permissions, key, None)
+        setter = getattr(target, "set", None)
+        if callable(setter):
+            try:
+                setter(value)
+            except Exception as err:
+                raise FunctionCallError.respond_to_model(f"approval_policy is invalid: {err}") from err
+            return
+    if isinstance(permissions, dict):
+        permissions[key] = value
+    else:
+        setattr(permissions, key, value)
+
+
+def _approval_policy_value(approval_policy: Any) -> Any:
+    value = getattr(approval_policy, "value", None)
+    if callable(value):
+        return value()
+    if value is not None:
+        return value
+    return approval_policy
+
+
+def _turn_permission_profile(turn: Any) -> Any:
+    value = getattr(turn, "permission_profile", None)
+    if callable(value):
+        return value()
+    return value
+
+
+def _models_manager(session: Any) -> Any:
+    services = getattr(session, "services", None)
+    manager = getattr(services, "models_manager", None)
+    if manager is None:
+        manager = getattr(session, "models_manager", None)
+    if manager is None:
+        raise FunctionCallError.respond_to_model("models manager is unavailable for spawn_agent")
+    return manager
+
+
+def _model_info(models_manager: Any, model: str, config: Any) -> Any:
+    getter = getattr(models_manager, "get_model_info", None)
+    if not callable(getter):
+        raise FunctionCallError.respond_to_model("models manager cannot resolve model info for spawn_agent")
+    manager_config = config
+    to_manager_config = getattr(config, "to_models_manager_config", None)
+    if callable(to_manager_config):
+        manager_config = to_manager_config()
+    try:
+        return _call_maybe_await(getter, model, manager_config)
+    except TypeError:
+        return _call_maybe_await(getter, model)
+
+
+def _call_maybe_await(callable_obj: Any, *args: Any) -> Any:
+    if not callable(callable_obj):
+        raise TypeError("expected callable")
+    value = callable_obj(*args)
+    import inspect
+    if not inspect.isawaitable(value):
+        return value
+    import asyncio
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(value)
+
+    result: dict[str, Any] = {}
+
+    def run() -> None:
+        try:
+            result["value"] = asyncio.run(value)
+        except BaseException as err:
+            result["error"] = err
+
+    import threading
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join()
+    if "error" in result:
+        raise result["error"]
+    return result.get("value")
 
 
 def _to_json_value(value: JsonValue) -> JsonValue:

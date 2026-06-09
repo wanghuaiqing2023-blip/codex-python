@@ -54,6 +54,15 @@ from pycodex.core.session.review import (
     review_features_for_review,
     spawn_review_thread,
 )
+from pycodex.core.session.rollout_reconstruction import (
+    PreviousTurnSettings,
+    RolloutReconstruction,
+    read_model_history_from_rollout,
+    read_rollout_reconstruction_from_rollout,
+    reconstruct_history_from_rollout,
+    reconstruct_history_from_rollout_async,
+    turn_ids_are_compatible,
+)
 
 __all__ = [
     "AUTO_REVIEW_DENIED_ACTION_APPROVAL_DEVELOPER_PREFIX",
@@ -81,12 +90,18 @@ __all__ = [
     "review",
     "review_config_for_review",
     "review_features_for_review",
+    "PreviousTurnSettings",
+    "read_model_history_from_rollout",
+    "read_rollout_reconstruction_from_rollout",
+    "reconstruct_history_from_rollout",
+    "reconstruct_history_from_rollout_async",
     "RegularTask",
     "request_permissions_response",
     "request_user_input_response",
     "ResponseItemTurnInput",
     "resolve_elicitation",
     "run_user_shell_command",
+    "RolloutReconstruction",
     "session_configuration_to_lock_config_toml",
     "set_thread_memory_mode",
     "shutdown",
@@ -96,6 +111,7 @@ __all__ = [
     "thread_settings_applied_event",
     "thread_settings_update",
     "to_config_lockfile_toml",
+    "turn_ids_are_compatible",
     "update_thread_settings",
     "user_input_or_turn",
     "user_input_or_turn_inner",

@@ -8,19 +8,45 @@ stdlib-only slice.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from dataclasses import dataclass
 from typing import Any, Sequence
 
 from pycodex.core.client_common import Prompt
-from pycodex.core.compact import InitialContextInjection
+from pycodex.core.compact import (
+    COMPACTION_STRATEGY_MEMENTO,
+    CompactionAnalyticsAttempt,
+    CompactionPhase,
+    CompactionReason,
+    CompactionStatus,
+    CompactionTrigger,
+    InitialContextInjection,
+    compaction_status_from_result,
+)
 from pycodex.core.compact_remote import process_compacted_history
 from pycodex.core.compact_remote import should_keep_compacted_history_item
+from pycodex.core.compact_remote import build_compact_request_log_data, log_remote_compact_failure
+from pycodex.core.compact_remote import trim_function_call_history_to_fit_context_window
+from pycodex.core.turn_metadata import CompactionTurnMetadata
 from pycodex.features import Feature
 from pycodex.core.responses_retry import ResponsesStreamRequest, RetryableResponseStreamDecision, response_stream_retry_decision
 from pycodex.utils.string import approx_token_count
 from pycodex.core.tools.context import truncate_text
-from pycodex.protocol import BaseInstructions, CodexErr, CompactedItem, ContentItem, Personality, ResponseItem, TruncationPolicyConfig, TurnContextItem
+from pycodex.protocol import (
+    BaseInstructions,
+    CodexErr,
+    CompactedItem,
+    ContentItem,
+    ContextCompactionItem,
+    EventMsg,
+    Personality,
+    ResponseItem,
+    TruncationPolicyConfig,
+    TurnContextItem,
+    TurnItem,
+    TurnStartedEvent,
+)
 
 
 RETAINED_MESSAGE_TOKEN_BUDGET = 64_000
@@ -33,6 +59,207 @@ class RemoteCompactionV2StreamError(RuntimeError):
 
 class RemoteCompactionV2OutputError(RuntimeError):
     """Remote compaction v2 produced the wrong number of compaction outputs."""
+
+
+async def run_inline_remote_auto_compact_task(
+    sess: Any,
+    turn_context: Any,
+    client_session: Any,
+    initial_context_injection: InitialContextInjection,
+    reason: CompactionReason | str = CompactionReason.CONTEXT_LIMIT,
+    phase: CompactionPhase | str = CompactionPhase.MID_TURN,
+) -> None:
+    await run_remote_compact_task_inner(
+        sess,
+        turn_context,
+        client_session,
+        initial_context_injection,
+        CompactionTrigger.AUTO,
+        reason,
+        phase,
+    )
+
+
+async def run_remote_compact_task(sess: Any, turn_context: Any) -> None:
+    await _send_event(
+        sess,
+        turn_context,
+        EventMsg.with_payload(
+            "task_started",
+            TurnStartedEvent(
+                turn_id=str(_field(turn_context, "sub_id")),
+                trace_id=_field(turn_context, "trace_id"),
+                started_at=await _started_at(turn_context),
+                model_context_window=_model_context_window(turn_context),
+                collaboration_mode_kind=_collaboration_mode_kind(turn_context),
+            ),
+        ),
+    )
+    await run_remote_compact_task_inner(
+        sess,
+        turn_context,
+        None,
+        InitialContextInjection.DO_NOT_INJECT,
+        CompactionTrigger.MANUAL,
+        CompactionReason.USER_REQUESTED,
+        CompactionPhase.STANDALONE_TURN,
+    )
+
+
+async def run_remote_compact_task_inner(
+    sess: Any,
+    turn_context: Any,
+    client_session: Any | None,
+    initial_context_injection: InitialContextInjection | str,
+    trigger: CompactionTrigger | str,
+    reason: CompactionReason | str,
+    phase: CompactionPhase | str,
+) -> None:
+    metadata = CompactionTurnMetadata(
+        trigger=_enum_value(trigger),
+        reason=_enum_value(reason),
+        implementation="responses_compaction_v2",
+        phase=_enum_value(phase),
+        strategy=COMPACTION_STRATEGY_MEMENTO,
+    )
+    attempt = await CompactionAnalyticsAttempt.begin(
+        sess,
+        turn_context,
+        trigger,
+        reason,
+        "responses_compaction_v2",
+        phase,
+    )
+    pre = await _run_compact_hook(sess, turn_context, "run_pre_compact_hooks", trigger)
+    if _hook_stopped(pre):
+        error = _hook_reason(pre) or "PreCompact hook stopped execution"
+        await attempt.track(sess, CompactionStatus.INTERRUPTED, error)
+        raise RuntimeError(error)
+    try:
+        await run_remote_compact_task_inner_impl(
+            sess,
+            turn_context,
+            client_session,
+            InitialContextInjection(initial_context_injection),
+            metadata,
+        )
+    except Exception as exc:
+        await attempt.track(sess, compaction_status_from_result(exc), str(exc))
+        await _send_error(sess, turn_context, exc)
+        raise
+    post = await _run_compact_hook(sess, turn_context, "run_post_compact_hooks", trigger)
+    if _hook_stopped(post):
+        await attempt.track(sess, CompactionStatus.INTERRUPTED, "PostCompact hook stopped execution")
+        raise RuntimeError("PostCompact hook stopped execution")
+    await attempt.track(sess, CompactionStatus.COMPLETED, None)
+
+
+async def run_remote_compact_task_inner_impl(
+    sess: Any,
+    turn_context: Any,
+    client_session: Any | None,
+    initial_context_injection: InitialContextInjection,
+    compaction_metadata: CompactionTurnMetadata,
+) -> None:
+    context_compaction_item = ContextCompactionItem.new()
+    compaction_item = TurnItem.context_compaction(context_compaction_item)
+    await _call_required(sess, "emit_turn_item_started", turn_context, compaction_item)
+
+    history = await _clone_history(sess)
+    base_instructions = await _base_instructions(sess)
+    trimmer = globals().get("trim_function_call_history_to_fit_context_window")
+    if callable(trimmer):
+        result = trimmer(history, turn_context, base_instructions)
+        if hasattr(result, "items"):
+            history = list(result.items)
+
+    trace_input_history = list(_history_raw_items(history))
+    prompt_input = _history_for_prompt(history, _input_modalities(turn_context))
+    tool_router = await _built_tools(sess, turn_context)
+    prompt = build_remote_compaction_v2_prompt(
+        prompt_input,
+        _model_visible_specs(tool_router),
+        parallel_tool_calls=bool(_field(_field(turn_context, "model_info"), "supports_parallel_tool_calls", False)),
+        base_instructions=base_instructions,
+        personality=_field(turn_context, "personality"),
+    )
+    header = _compaction_metadata_header(sess, turn_context, compaction_metadata)
+    client_session = client_session or _new_model_client_session(sess)
+    compaction_output, response_id = await run_remote_compaction_request_v2(
+        sess,
+        turn_context,
+        client_session,
+        prompt,
+        header,
+    )
+    compacted_history = build_v2_compacted_history(prompt_input, compaction_output)
+    initial_context: Sequence[ResponseItem] = ()
+    reference_context_item = None
+    if initial_context_injection is InitialContextInjection.BEFORE_LAST_USER_MESSAGE:
+        initial_context = await _build_initial_context(sess, turn_context)
+        to_context_item = getattr(turn_context, "to_turn_context_item", None)
+        if callable(to_context_item):
+            reference_context_item = to_context_item()
+    plan = build_remote_compaction_v2_success_plan(
+        trace_input_history,
+        compacted_history,
+        initial_context_injection,
+        initial_context,
+        reference_context_item,
+    )
+    await apply_remote_compaction_v2_install_plan(sess, plan)
+    await _call_required(sess, "recompute_token_usage", turn_context)
+    await _call_required(sess, "emit_turn_item_completed", turn_context, compaction_item)
+    if response_processed_request_for_remote_compaction_v2(_field(turn_context, "features"), response_id):
+        sender = getattr(client_session, "send_response_processed", None)
+        if callable(sender):
+            await _maybe_await(sender(response_id))
+
+
+async def run_remote_compaction_request_v2(
+    sess: Any,
+    turn_context: Any,
+    client_session: Any,
+    prompt: Prompt,
+    turn_metadata_header: str | None,
+) -> tuple[ResponseItem, str]:
+    max_retries = remote_compaction_v2_max_stream_retries(_provider_info(turn_context))
+    retries = 0
+    while True:
+        try:
+            stream = await _stream_compaction_request(client_session, turn_context, prompt, turn_metadata_header)
+            return await collect_compaction_output_async(stream)
+        except Exception as exc:
+            if not _is_retryable(exc):
+                await log_remote_compaction_request_failure(sess, turn_context, prompt, exc)
+                raise
+            if retries >= max_retries:
+                await log_remote_compaction_request_failure(sess, turn_context, prompt, exc)
+                raise
+            retries += 1
+            retry_handler = getattr(client_session, "handle_retryable_response_stream_error", None)
+            if callable(retry_handler):
+                await _maybe_await(retry_handler(retries, max_retries, exc, ResponsesStreamRequest.REMOTE_COMPACTION_V2))
+            else:
+                await asyncio.sleep(min(0.1 * (2 ** (retries - 1)), 2.0))
+
+
+async def collect_compaction_output_async(stream: Any) -> tuple[ResponseItem, str]:
+    events: list[Any] = []
+    async for event in _aiter_stream(stream):
+        events.append(_normalize_stream_event(event))
+        if _event_type(events[-1]) == "completed":
+            break
+    return collect_compaction_output(events)
+
+
+async def log_remote_compaction_request_failure(sess: Any, turn_context: Any, prompt: Prompt, err: Exception) -> None:
+    breakdown_getter = getattr(sess, "get_total_token_usage_breakdown", None)
+    breakdown = await _maybe_await(breakdown_getter()) if callable(breakdown_getter) else None
+    data = build_compact_request_log_data(prompt.input, prompt.base_instructions.text)
+    logger = globals().get("log_remote_compact_failure")
+    if callable(logger):
+        logger(turn_context, data, breakdown, err)
 
 
 @dataclass(frozen=True)
@@ -440,6 +667,225 @@ def _usize(value: int, label: str) -> int:
     return value
 
 
+async def _clone_history(sess: Any) -> Any:
+    clone_history = getattr(sess, "clone_history", None)
+    if not callable(clone_history):
+        raise TypeError("remote compaction v2 requires session.clone_history()")
+    return await _maybe_await(clone_history())
+
+
+def _history_raw_items(history: Any) -> Sequence[ResponseItem]:
+    raw_items = getattr(history, "raw_items", None)
+    if callable(raw_items):
+        return raw_items()
+    if isinstance(history, Sequence):
+        return history
+    raise TypeError("remote compaction v2 history must expose raw_items()")
+
+
+def _history_for_prompt(history: Any, input_modalities: Any) -> list[ResponseItem]:
+    for_prompt = getattr(history, "for_prompt", None)
+    if callable(for_prompt):
+        return list(for_prompt(input_modalities))
+    return list(_history_raw_items(history))
+
+
+async def _base_instructions(sess: Any) -> BaseInstructions:
+    getter = getattr(sess, "get_base_instructions", None)
+    if not callable(getter):
+        raise TypeError("remote compaction v2 requires session.get_base_instructions()")
+    value = await _maybe_await(getter())
+    if isinstance(value, BaseInstructions):
+        return value
+    if isinstance(value, str):
+        return BaseInstructions(value)
+    raise TypeError("session.get_base_instructions() must return BaseInstructions or str")
+
+
+def _input_modalities(turn_context: Any) -> Any:
+    return _field(_field(turn_context, "model_info"), "input_modalities")
+
+
+async def _built_tools(sess: Any, turn_context: Any) -> Any:
+    builder = getattr(sess, "built_tools", None)
+    if callable(builder):
+        return await _maybe_await(builder(turn_context))
+    builder = getattr(turn_context, "built_tools", None)
+    if callable(builder):
+        return await _maybe_await(builder(sess))
+    router = getattr(turn_context, "tool_router", None)
+    if router is not None:
+        return router
+    return ()
+
+
+def _model_visible_specs(tool_router: Any) -> Sequence[Any]:
+    specs = getattr(tool_router, "model_visible_specs", None)
+    if callable(specs):
+        return specs()
+    if isinstance(tool_router, Sequence) and not isinstance(tool_router, (str, bytes)):
+        return tool_router
+    return ()
+
+
+def _compaction_metadata_header(sess: Any, turn_context: Any, metadata: CompactionTurnMetadata) -> str | None:
+    state = _field(turn_context, "turn_metadata_state")
+    current = getattr(state, "current_header_value_for_compaction", None)
+    if not callable(current):
+        return None
+    model_client = _field(_field(sess, "services"), "model_client")
+    window = getattr(model_client, "current_window_id", None)
+    window_id = window() if callable(window) else None
+    return current(window_id, metadata)
+
+
+def _new_model_client_session(sess: Any) -> Any:
+    model_client = _field(_field(sess, "services"), "model_client")
+    new_session = getattr(model_client, "new_session", None)
+    if not callable(new_session):
+        raise TypeError("remote compaction v2 requires services.model_client.new_session()")
+    return new_session()
+
+
+async def _build_initial_context(sess: Any, turn_context: Any) -> list[ResponseItem]:
+    builder = getattr(sess, "build_initial_context", None)
+    if not callable(builder):
+        raise TypeError("remote compaction v2 requires session.build_initial_context()")
+    return list(await _maybe_await(builder(turn_context)))
+
+
+async def _stream_compaction_request(client_session: Any, turn_context: Any, prompt: Prompt, header: str | None) -> Any:
+    stream = getattr(client_session, "stream", None)
+    if not callable(stream):
+        raise TypeError("remote compaction v2 requires client_session.stream()")
+    return await _maybe_await(
+        stream(
+            prompt,
+            _field(turn_context, "model_info"),
+            _field(turn_context, "session_telemetry"),
+            _field(turn_context, "reasoning_effort"),
+            _field(turn_context, "reasoning_summary"),
+            _field(_field(turn_context, "config"), "service_tier"),
+            header,
+        )
+    )
+
+
+async def _aiter_stream(stream: Any):
+    if hasattr(stream, "__aiter__"):
+        async for event in stream:
+            yield event
+        return
+    while True:
+        next_event = getattr(stream, "next", None)
+        if not callable(next_event):
+            raise TypeError("remote compaction v2 stream must be async iterable or expose next()")
+        event = await _maybe_await(next_event())
+        if event is None:
+            return
+        yield event
+
+
+def _normalize_stream_event(event: Any) -> Any:
+    if isinstance(event, tuple):
+        return {"type": event[0], **({"item": event[1]} if len(event) > 1 and event[0] == "output_item_done" else {"response_id": event[1]} if len(event) > 1 and event[0] == "completed" else {})}
+    kind = getattr(event, "type", None) or getattr(event, "kind", None)
+    if kind in {"output_item_done", "OutputItemDone"}:
+        return {"type": "output_item_done", "item": getattr(event, "item", getattr(event, "payload", None))}
+    if kind in {"completed", "Completed"}:
+        return {"type": "completed", "response_id": getattr(event, "response_id", _field(getattr(event, "payload", None), "response_id"))}
+    return event
+
+
+def _provider_info(turn_context: Any) -> Any:
+    provider = _field(turn_context, "provider")
+    info = getattr(provider, "info", None)
+    return info() if callable(info) else info if info is not None else provider
+
+
+def _is_retryable(exc: Exception) -> bool:
+    retryable = getattr(exc, "is_retryable", None)
+    if callable(retryable):
+        return bool(retryable())
+    return bool(getattr(exc, "retryable", False))
+
+
+async def _run_compact_hook(sess: Any, turn_context: Any, name: str, trigger: Any) -> Any:
+    hook = getattr(sess, name, None)
+    if callable(hook):
+        return await _maybe_await(hook(turn_context, trigger))
+    hooks = _field(_field(sess, "services"), "hook_runtime")
+    hook = getattr(hooks, name, None)
+    if callable(hook):
+        return await _maybe_await(hook(sess, turn_context, trigger))
+    return "continue"
+
+
+def _hook_stopped(outcome: Any) -> bool:
+    if outcome is None:
+        return False
+    if isinstance(outcome, str):
+        return outcome.lower() in {"stopped", "stop"}
+    return str(_field(outcome, "type", _field(outcome, "kind", ""))).lower() in {"stopped", "stop"}
+
+
+def _hook_reason(outcome: Any) -> str | None:
+    reason = _field(outcome, "reason")
+    return reason if isinstance(reason, str) else None
+
+
+async def _send_event(sess: Any, turn_context: Any, event: EventMsg) -> None:
+    await _call_required(sess, "send_event", turn_context, event)
+
+
+async def _send_error(sess: Any, turn_context: Any, exc: Exception) -> None:
+    to_error_event = getattr(exc, "to_error_event", None)
+    if callable(to_error_event):
+        await _send_event(sess, turn_context, EventMsg.with_payload("error", to_error_event("Error running remote compact task")))
+
+
+async def _call_required(target: Any, name: str, *args: Any) -> Any:
+    method = getattr(target, name, None)
+    if not callable(method):
+        raise TypeError(f"remote compaction v2 requires {name}()")
+    return await _maybe_await(method(*args))
+
+
+async def _started_at(turn_context: Any) -> int | None:
+    timing = _field(turn_context, "turn_timing_state")
+    getter = getattr(timing, "started_at_unix_secs", None)
+    if callable(getter):
+        return await _maybe_await(getter())
+    return None
+
+
+def _model_context_window(turn_context: Any) -> int | None:
+    getter = getattr(turn_context, "model_context_window", None)
+    return getter() if callable(getter) else _field(turn_context, "model_context_window_value")
+
+
+def _collaboration_mode_kind(turn_context: Any) -> Any:
+    return _field(_field(turn_context, "collaboration_mode"), "mode")
+
+
+def _enum_value(value: Any) -> str:
+    return str(getattr(value, "value", value))
+
+
+def _field(value: Any, name: str, default: Any = None) -> Any:
+    if value is None:
+        return default
+    if isinstance(value, dict):
+        return value.get(name, default)
+    return getattr(value, name, default)
+
+
+async def _maybe_await(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
 __all__ = [
     "MAX_REMOTE_COMPACTION_V2_STREAM_RETRIES",
     "RETAINED_MESSAGE_TOKEN_BUDGET",
@@ -453,13 +899,20 @@ __all__ = [
     "build_remote_compaction_v2_success_plan",
     "build_v2_compacted_history",
     "collect_compaction_output",
+    "collect_compaction_output_async",
     "is_retained_for_remote_compaction_v2",
+    "log_remote_compaction_request_failure",
     "message_text_token_count",
     "remote_compaction_v2_max_stream_retries",
     "remote_compaction_v2_request_outcome",
     "remote_compaction_v2_retry_decision",
     "remote_compaction_v2_trace_attempt_payload",
     "response_processed_request_for_remote_compaction_v2",
+    "run_inline_remote_auto_compact_task",
+    "run_remote_compact_task",
+    "run_remote_compact_task_inner",
+    "run_remote_compact_task_inner_impl",
+    "run_remote_compaction_request_v2",
     "truncate_message_text_to_token_budget",
     "truncate_retained_messages_for_remote_compaction",
 ]

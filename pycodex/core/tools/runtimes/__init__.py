@@ -40,6 +40,7 @@ from pycodex.core.shell import Shell, ShellType
 from pycodex.core.tools.hook_names import HookToolName
 from pycodex.core.tools.network_approval import NetworkApprovalMode, NetworkApprovalSpec
 from pycodex.core.tools.sandboxing import ExecApprovalRequirement, PermissionRequestPayload, SandboxAttempt, ToolError
+from pycodex.execpolicy import Decision
 from pycodex.shell_command import parse_shell_lc_plain_commands, parse_shell_lc_single_command_prefix
 from pycodex.utils.path_utils import paths_match_after_normalization
 from pycodex.protocol import (
@@ -448,6 +449,264 @@ class ShellZshForkCancellationPlan:
             and not isinstance(self.network_denial_cancellation_token, CancellationToken)
         ):
             raise TypeError("network_denial_cancellation_token must be CancellationToken or None")
+
+
+@dataclass
+class ShellEscalationSession:
+    """Runtime session facade for the zsh-fork escalation socket env."""
+
+    env_vars: dict[str, str]
+    close_callback: Any | None = None
+
+    def __post_init__(self) -> None:
+        self.env_vars = _env_dict(self.env_vars)
+
+    def env(self) -> dict[str, str]:
+        return dict(self.env_vars)
+
+    def close_client_socket(self) -> None:
+        if callable(self.close_callback):
+            self.close_callback()
+
+
+@dataclass
+class CoreShellActionProvider:
+    """Python facade for Rust ``CoreShellActionProvider``.
+
+    It owns policy evaluation plus approval prompting. Concrete guardian,
+    hook, and user-prompt implementations are delegated to the session/turn
+    runtime objects when present.
+    """
+
+    policy: Any
+    session: Any
+    turn: Any
+    call_id: str
+    tool_name: Any
+    approval_policy: AskForApproval | GranularApprovalConfig
+    permission_profile: PermissionProfile
+    file_system_sandbox_policy: FileSystemSandboxPolicy
+    sandbox_policy_cwd: Path
+    sandbox_permissions: SandboxPermissions = SandboxPermissions.USE_DEFAULT
+    approval_sandbox_permissions: SandboxPermissions = SandboxPermissions.USE_DEFAULT
+    prompt_permissions: AdditionalPermissionProfile | None = None
+
+    async def determine_action(
+        self,
+        program: str | Path,
+        argv: tuple[str, ...] | list[str],
+        workdir: str | Path,
+    ) -> ShellEscalationDecision:
+        evaluation = evaluate_intercepted_exec_policy(
+            self.policy,
+            str(program),
+            tuple(argv),
+            InterceptedExecPolicyContext(
+                approval_policy=self.approval_policy,
+                permission_profile=self.permission_profile,
+                file_system_sandbox_policy=self.file_system_sandbox_policy,
+                sandbox_cwd=Path(self.sandbox_policy_cwd),
+                sandbox_permissions=self.approval_sandbox_permissions,
+                enable_shell_wrapper_parsing=False,
+            ),
+        )
+        plan = shell_escalation_policy_plan(
+            evaluation,
+            sandbox_permissions=self.sandbox_permissions,
+            permission_profile=self.permission_profile,
+            prompt_permissions=self.prompt_permissions,
+        )
+        return await self.process_decision(plan, str(program), tuple(argv), Path(workdir))
+
+    async def process_decision(
+        self,
+        plan: ShellEscalationPolicyPlan,
+        program: str,
+        argv: tuple[str, ...],
+        workdir: Path,
+    ) -> ShellEscalationDecision:
+        if plan.decision is Decision.ALLOW or str(plan.decision).lower().endswith("allow"):
+            return (
+                ShellEscalationDecision.escalate(plan.escalation_execution)
+                if plan.needs_escalation
+                else ShellEscalationDecision.run()
+            )
+        if plan.decision is Decision.FORBIDDEN or str(plan.decision).lower().endswith("forbidden"):
+            return ShellEscalationDecision.deny("Execution forbidden by policy")
+        rejected = execve_prompt_is_rejected_by_policy(self.approval_policy, plan.decision_source)
+        if rejected is not None:
+            return ShellEscalationDecision.deny("Execution forbidden by policy")
+        review = await self.prompt(program, argv, workdir, plan.prompt_permissions)
+        return shell_escalation_decision_after_review(
+            review,
+            needs_escalation=plan.needs_escalation,
+            escalation_execution=plan.escalation_execution,
+        )
+
+    async def prompt(
+        self,
+        program: str,
+        argv: tuple[str, ...],
+        workdir: Path,
+        additional_permissions: AdditionalPermissionProfile | None,
+    ) -> ReviewDecision:
+        command = join_program_and_argv(program, argv)
+        hooks = getattr(self.session, "run_permission_request_hooks", None)
+        if callable(hooks):
+            hook_result = await _maybe_await_runtime(
+                hooks(
+                    self.turn,
+                    self.call_id,
+                    PermissionRequestPayload.bash(" ".join(command)),
+                )
+            )
+            if hook_result == "allow" or (
+                isinstance(hook_result, ReviewDecision) and hook_result.type == "approved"
+            ):
+                return ReviewDecision.approved()
+            if hook_result == "deny" or (
+                isinstance(hook_result, ReviewDecision) and hook_result.type == "denied"
+            ):
+                return ReviewDecision.denied()
+        guardian = getattr(self.session, "review_approval_request", None)
+        if callable(guardian):
+            decision = await _maybe_await_runtime(
+                guardian(
+                    self.turn,
+                    self.call_id,
+                    {
+                        "type": "execve",
+                        "source": self.tool_name,
+                        "program": program,
+                        "argv": tuple(argv),
+                        "cwd": workdir,
+                        "additional_permissions": additional_permissions,
+                    },
+                )
+            )
+            if isinstance(decision, ReviewDecision):
+                return decision
+        prompt = getattr(self.session, "request_command_approval", None)
+        if callable(prompt):
+            decision = await _maybe_await_runtime(
+                prompt(
+                    self.turn,
+                    self.call_id,
+                    None,
+                    command,
+                    workdir,
+                    None,
+                    None,
+                    None,
+                    additional_permissions,
+                    (ReviewDecision.approved(), ReviewDecision.abort()),
+                )
+            )
+            if isinstance(decision, ReviewDecision):
+                return decision
+        return ReviewDecision.abort()
+
+
+async def try_run_zsh_fork(
+    req: ShellRequest,
+    attempt: SandboxAttempt,
+    ctx: Any,
+    command: tuple[str, ...] | list[str],
+    *,
+    escalation_server_factory: Any | None = None,
+) -> ExecToolCallOutput | None:
+    """Run a shell command through the zsh-fork escalation facade."""
+
+    shell_zsh_path = _ctx_service(ctx, "shell_zsh_path")
+    if shell_zsh_path is None:
+        return None
+    user_shell = getattr(getattr(ctx, "session", None), "user_shell", None)
+    user_shell_value = user_shell() if callable(user_shell) else user_shell
+    shell_type = getattr(user_shell_value, "shell_type", ShellType.ZSH)
+    if shell_type is not ShellType.ZSH:
+        return None
+    params = shell_zsh_fork_exec_params(command, req.cwd, getattr(req, "timeout_ms", None))
+    stopwatch = CancellationToken()
+    cancellation = shell_zsh_fork_cancellation_plan(
+        stopwatch,
+        getattr(attempt, "network_denial_cancellation_token", None),
+    )
+    executor = ShellCommandExecutorRunContext(
+        command=tuple(command),
+        cwd=Path(req.cwd),
+        env=exec_env_for_sandbox_permissions(req.env, req.sandbox_permissions),
+        network=managed_network_for_runtime(req.network, req.sandbox_permissions),
+        sandbox=getattr(attempt, "sandbox", SandboxType.NONE),
+        sandbox_policy_cwd=Path(req.cwd),
+        windows_sandbox_level=WindowsSandboxLevel.DISABLED,
+        permission_profile=PermissionProfile.read_only(),
+        file_system_sandbox_policy=FileSystemSandboxPolicy.unrestricted(),
+        network_sandbox_policy=NetworkSandboxPolicy.RESTRICTED,
+    )
+    if escalation_server_factory is None:
+        escalation_server_factory = _ctx_service(ctx, "escalation_server_factory")
+    if callable(escalation_server_factory):
+        result = await _maybe_await_runtime(
+            escalation_server_factory(shell_zsh_path, _ctx_service(ctx, "main_execve_wrapper_exe")).exec(
+                params,
+                cancellation.cancel_token,
+                executor,
+            )
+        )
+    else:
+        result = await shell_command_executor_run(
+            executor,
+            command=tuple(command),
+            cwd=Path(req.cwd),
+            env_overlay={},
+            cancel_rx=cancellation.cancel_token,
+        )
+    return map_exec_result(getattr(attempt, "sandbox", SandboxType.NONE), result)
+
+
+async def prepare_unified_exec_zsh_fork(
+    req: UnifiedExecRequest,
+    attempt: SandboxAttempt,
+    ctx: Any,
+    exec_request: Any,
+    shell_zsh_path: str | Path,
+    main_execve_wrapper_exe: str | Path,
+    *,
+    escalation_server_factory: Any | None = None,
+) -> PreparedUnifiedExecZshFork | None:
+    """Prepare unified-exec zsh-fork session and extend the exec env."""
+
+    del attempt
+    parsed = None
+    try:
+        parsed = extract_shell_script(tuple(exec_request.command))
+    except ToolRuntimeError:
+        return None
+    if parsed.program != str(shell_zsh_path):
+        return None
+    if escalation_server_factory is None:
+        escalation_server_factory = _ctx_service(ctx, "escalation_server_factory")
+    if callable(escalation_server_factory):
+        session = await _maybe_await_runtime(
+            escalation_server_factory(Path(shell_zsh_path), Path(main_execve_wrapper_exe)).start_session(
+                CancellationToken(),
+                None,
+            )
+        )
+    else:
+        session = ShellEscalationSession(shell_escalation_session_env(0, Path(main_execve_wrapper_exe)))
+    return prepare_unified_exec_zsh_fork_from_session(exec_request, Path(shell_zsh_path), session)
+
+
+def _ctx_service(ctx: Any, name: str) -> Any:
+    services = getattr(getattr(ctx, "session", None), "services", None)
+    return getattr(services, name, None)
+
+
+async def _maybe_await_runtime(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
 @dataclass(frozen=True)
@@ -2217,6 +2476,8 @@ async def maybe_run_shell_command_zsh_fork(
     if runner is None:
         runner = getattr(ctx, "try_run_zsh_fork", None)
     if runner is None:
+        runner = globals()["try_run_zsh_fork"]
+    if runner is None:
         return None
     result = await _maybe_await(runner(req, attempt, ctx, tuple(command)))
     if result is None or isinstance(result, ExecToolCallOutput):
@@ -2239,9 +2500,13 @@ async def maybe_prepare_unified_exec_zsh_fork(
     if preparer is None:
         preparer = getattr(ctx, "prepare_unified_exec_zsh_fork", None)
     if preparer is None:
+        preparer = globals()["prepare_unified_exec_zsh_fork"]
+    if preparer is None:
         return None
     shell_zsh_path = getattr(zsh_fork_config, "shell_zsh_path", None)
     wrapper_exe = getattr(zsh_fork_config, "main_execve_wrapper_exe", None)
+    if shell_zsh_path is None or wrapper_exe is None:
+        return None
     prepared = await _maybe_await(
         preparer(req, attempt, ctx, exec_request, shell_zsh_path, wrapper_exe)
     )
@@ -3660,6 +3925,7 @@ __all__ = [
     "ApplyPatchRequest",
     "ApplyPatchRuntimeOutput",
     "CandidateCommands",
+    "CoreShellActionProvider",
     "DecisionSource",
     "ESCALATE_SOCKET_ENV_VAR",
     "EXEC_WRAPPER_ENV_VAR",
@@ -3693,6 +3959,7 @@ __all__ = [
     "ShellEscalationDecision",
     "ShellEscalationExecution",
     "ShellEscalationPolicyPlan",
+    "ShellEscalationSession",
     "ShellEscalateServerPlan",
     "ShellLocalExecvPlan",
     "ShellPrepareSandboxedExecParams",
@@ -3746,6 +4013,7 @@ __all__ = [
     "managed_network_for_runtime",
     "maybe_prepare_unified_exec_zsh_fork",
     "maybe_run_shell_command_zsh_fork",
+    "prepare_unified_exec_zsh_fork",
     "shell_prepared_exec_effective_arg0",
     "shell_prepared_exec_program_and_args",
     "prepare_unified_exec_zsh_fork_from_session",
@@ -3801,6 +4069,7 @@ __all__ = [
     "shell_request_escalation_execution",
     "shell_zsh_fork_cancellation_plan",
     "shell_zsh_fork_exec_params",
+    "try_run_zsh_fork",
     "shell_escalation_decision_after_review",
     "shell_escalation_decision_for_approved_review",
     "shell_escalation_decision_for_policy_decision",

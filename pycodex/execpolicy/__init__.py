@@ -340,8 +340,11 @@ def create_exec_approval_requirement_for_command(
 
     proposed = None
     if auto_amendment_allowed:
-        proposed = _first_amendment_for_decision(parsed.commands, fallback_decisions, Decision.ALLOW)
-    return ExecApprovalRequirement.skip(proposed_execpolicy_amendment=proposed)
+        proposed = _try_derive_execpolicy_amendment_for_allow_rules(request.matched_rules)
+    return ExecApprovalRequirement.skip(
+        bypass_sandbox=_all_commands_explicitly_allowed_by_policy(parsed.commands, request.matched_rules),
+        proposed_execpolicy_amendment=proposed,
+    )
 
 
 def match_exec_policy_rules_for_command(
@@ -663,6 +666,48 @@ def _first_amendment_for_decision(
     for command, command_decision in zip(commands, decisions, strict=False):
         if command_decision is decision:
             return ExecPolicyAmendment.new(list(command))
+    return None
+
+
+def _all_commands_explicitly_allowed_by_policy(
+    commands: Sequence[Sequence[str]],
+    matched_rules: Sequence[object],
+) -> bool:
+    if not commands or not matched_rules:
+        return False
+    normalized_commands = tuple(tuple(str(part) for part in command) for command in commands)
+    for command in normalized_commands:
+        command_allowed = False
+        for rule in matched_rules:
+            match = _prefix_rule_match(rule)
+            if match is None:
+                continue
+            if _policy_match_decision(rule) is not Decision.ALLOW:
+                continue
+            prefix = _matched_prefix(match)
+            if prefix and _command_starts_with(command, prefix):
+                command_allowed = True
+                break
+        if not command_allowed:
+            return False
+    return True
+
+
+def _try_derive_execpolicy_amendment_for_allow_rules(
+    matched_rules: Sequence[object],
+) -> ExecPolicyAmendment | None:
+    if any(_prefix_rule_match(rule) is not None for rule in matched_rules):
+        return None
+    for rule in matched_rules:
+        if _policy_match_decision(rule) is not Decision.ALLOW:
+            continue
+        command = None
+        if isinstance(rule, Mapping):
+            command = rule.get("command")
+        else:
+            command = getattr(rule, "command", None)
+        if command:
+            return ExecPolicyAmendment.new([str(part) for part in command])
     return None
 
 

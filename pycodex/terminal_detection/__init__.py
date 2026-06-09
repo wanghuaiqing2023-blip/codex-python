@@ -7,6 +7,7 @@ Rust source:
 from __future__ import annotations
 
 import os
+import subprocess
 from dataclasses import dataclass
 from enum import Enum
 from typing import Mapping
@@ -44,6 +45,12 @@ class Multiplexer:
 
 
 @dataclass(frozen=True)
+class TmuxClientInfo:
+    termtype: str | None = None
+    termname: str | None = None
+
+
+@dataclass(frozen=True)
 class TerminalInfo:
     name: TerminalName
     term_program: str | None = None
@@ -64,18 +71,37 @@ class TerminalInfo:
         return self.multiplexer is not None and self.multiplexer.type == "zellij"
 
 
-def terminal_info(env: Mapping[str, str] | None = None) -> TerminalInfo:
-    return _detect_terminal_info_from_env(os.environ if env is None else env)
+def terminal_info(
+    env: Mapping[str, str] | None = None,
+    *,
+    tmux_client_info: TmuxClientInfo | None = None,
+    zellij_version: str | None = None,
+) -> TerminalInfo:
+    process_env = env is None
+    return _detect_terminal_info_from_env(
+        os.environ if env is None else env,
+        tmux_client_info=tmux_client_info if tmux_client_info is not None else (_tmux_client_info() if process_env else TmuxClientInfo()),
+        zellij_version=zellij_version if zellij_version is not None else (_zellij_version_from_command() if process_env else None),
+    )
 
 
 def user_agent(env: Mapping[str, str] | None = None) -> str:
     return terminal_info(env).user_agent_token()
 
 
-def _detect_terminal_info_from_env(env: Mapping[str, str]) -> TerminalInfo:
-    multiplexer = _detect_multiplexer(env)
+def _detect_terminal_info_from_env(
+    env: Mapping[str, str],
+    *,
+    tmux_client_info: TmuxClientInfo | None = None,
+    zellij_version: str | None = None,
+) -> TerminalInfo:
+    multiplexer = _detect_multiplexer(env, zellij_version=zellij_version)
     term_program = _var_non_empty(env, "TERM_PROGRAM")
     if term_program is not None:
+        if _is_tmux_term_program(term_program) and multiplexer is not None and multiplexer.type == "tmux":
+            terminal = _terminal_from_tmux_client_info(tmux_client_info or TmuxClientInfo(), multiplexer)
+            if terminal is not None:
+                return terminal
         version = _var_non_empty(env, "TERM_PROGRAM_VERSION")
         name = _terminal_name_from_term_program(term_program) or TerminalName.UNKNOWN
         return TerminalInfo(name, term_program=term_program, version=version, multiplexer=multiplexer)
@@ -104,13 +130,84 @@ def _detect_terminal_info_from_env(env: Mapping[str, str]) -> TerminalInfo:
     return TerminalInfo(TerminalName.UNKNOWN, multiplexer=multiplexer)
 
 
-def _detect_multiplexer(env: Mapping[str, str]) -> Multiplexer | None:
+def _detect_multiplexer(env: Mapping[str, str], *, zellij_version: str | None = None) -> Multiplexer | None:
     if _var_non_empty(env, "TMUX") or _var_non_empty(env, "TMUX_PANE"):
-        version = _var_non_empty(env, "TERM_PROGRAM_VERSION") if (env.get("TERM_PROGRAM") or "").lower() == "tmux" else None
+        version = _var_non_empty(env, "TERM_PROGRAM_VERSION") if _is_tmux_term_program(env.get("TERM_PROGRAM") or "") else None
         return Multiplexer.tmux(version)
     if _var_non_empty(env, "ZELLIJ") or _var_non_empty(env, "ZELLIJ_SESSION_NAME") or _var_non_empty(env, "ZELLIJ_VERSION"):
-        return Multiplexer.zellij(_var_non_empty(env, "ZELLIJ_VERSION"))
+        return Multiplexer.zellij(_var_non_empty(env, "ZELLIJ_VERSION") or _none_if_whitespace(zellij_version))
     return None
+
+
+def _is_tmux_term_program(value: str) -> bool:
+    return value.lower() == "tmux"
+
+
+def _terminal_from_tmux_client_info(client_info: TmuxClientInfo, multiplexer: Multiplexer | None) -> TerminalInfo | None:
+    termtype = _none_if_whitespace(client_info.termtype)
+    termname = _none_if_whitespace(client_info.termname)
+    if termtype is not None:
+        program, version = _split_term_program_and_version(termtype)
+        name = _terminal_name_from_term_program(program) or TerminalName.UNKNOWN
+        return TerminalInfo(name, term_program=program, version=version, term=termname, multiplexer=multiplexer)
+    if termname is not None:
+        name = TerminalName.DUMB if termname == "dumb" else TerminalName.WEZTERM if termname in {"wezterm", "wezterm-mux"} else TerminalName.UNKNOWN
+        return TerminalInfo(name, term=termname, multiplexer=multiplexer)
+    return None
+
+
+def _split_term_program_and_version(value: str) -> tuple[str, str | None]:
+    parts = value.split()
+    return (parts[0] if parts else "", parts[1] if len(parts) > 1 else None)
+
+
+def _tmux_client_info() -> TmuxClientInfo:
+    return TmuxClientInfo(
+        termtype=_tmux_display_message("#{client_termtype}"),
+        termname=_tmux_display_message("#{client_termname}"),
+    )
+
+
+def _tmux_display_message(format_value: str) -> str | None:
+    try:
+        output = subprocess.run(
+            ["tmux", "display-message", "-p", format_value],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except OSError:
+        return None
+    if output.returncode != 0:
+        return None
+    return _none_if_whitespace(output.stdout.strip())
+
+
+def _zellij_version_from_command() -> str | None:
+    try:
+        output = subprocess.run(
+            ["zellij", "--version"],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except OSError:
+        return None
+    if output.returncode != 0:
+        return None
+    return parse_zellij_version(output.stdout.strip())
+
+
+def parse_zellij_version(value: str) -> str | None:
+    value = _none_if_whitespace(value)
+    if value is None:
+        return None
+    parts = value.split()
+    if len(parts) >= 2 and parts[0].lower() == "zellij":
+        return parts[1]
+    return value
 
 
 def _terminal_name_from_term_program(value: str) -> TerminalName | None:
@@ -162,13 +259,19 @@ def _sanitize_header_value(value: str) -> str:
 
 def _var_non_empty(env: Mapping[str, str], name: str) -> str | None:
     value = env.get(name)
+    return _none_if_whitespace(value)
+
+
+def _none_if_whitespace(value: str | None) -> str | None:
     return value if value is not None and value.strip() else None
 
 
 __all__ = [
     "Multiplexer",
+    "TmuxClientInfo",
     "TerminalInfo",
     "TerminalName",
+    "parse_zellij_version",
     "terminal_info",
     "user_agent",
 ]

@@ -9,6 +9,7 @@ runtime responsibilities.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -174,6 +175,55 @@ async def schedule_startup_prewarm(
     return SessionStartupPrewarmHandle.new(asyncio.create_task(run()), started_at, timeout)
 
 
+async def schedule_session_startup_prewarm(
+    session: Any,
+    base_instructions: str,
+    prewarm: Callable[[], Awaitable[Any]] | None = None,
+) -> SessionStartupPrewarmHandle:
+    """Rust ``Session::schedule_startup_prewarm`` outer lifecycle.
+
+    The Rust module builds tools, constructs the startup prompt, creates a
+    model-client session, and warms its websocket inside
+    ``schedule_startup_prewarm_inner``. In Python those runtime services remain
+    owned by the session/model-client layer, so this helper requires either an
+    explicit ``prewarm`` coroutine factory or a session method named
+    ``schedule_startup_prewarm_inner`` / ``startup_prewarm_inner``.
+    """
+
+    session_telemetry = _session_telemetry(session)
+    provider = await _maybe_await(_call_required(session, "provider"))
+    timeout = await _maybe_await(_call_required(provider, "websocket_connect_timeout"))
+
+    if prewarm is None:
+        inner = getattr(session, "schedule_startup_prewarm_inner", None)
+        if not callable(inner):
+            inner = getattr(session, "startup_prewarm_inner", None)
+        if not callable(inner):
+            raise AttributeError(
+                "session must provide schedule_startup_prewarm_inner(base_instructions) "
+                "or pass an explicit prewarm coroutine factory"
+            )
+
+        async def prewarm() -> Any:
+            return await _maybe_await(inner(base_instructions))
+
+    handle = await schedule_startup_prewarm(prewarm, session_telemetry, float(timeout))
+    await _maybe_await(_call_required(session, "set_session_startup_prewarm", handle))
+    return handle
+
+
+async def consume_startup_prewarm_for_regular_turn(
+    session: Any,
+    cancellation_token: CancellationToken | None,
+) -> SessionStartupPrewarmResolution:
+    """Rust ``Session::consume_startup_prewarm_for_regular_turn`` outer lifecycle."""
+
+    startup_prewarm = await _maybe_await(_call_required(session, "take_session_startup_prewarm"))
+    if startup_prewarm is None:
+        return unavailable_startup_prewarm_not_scheduled()
+    return await startup_prewarm.resolve(_session_telemetry(session), cancellation_token)
+
+
 async def _drain_cancelled_task(task: asyncio.Task[Any]) -> None:
     try:
         await task
@@ -224,6 +274,30 @@ def _record_duration(telemetry: Any, metric: str, duration: float, tags: tuple[t
         recorder(metric, duration, tags)
 
 
+def _session_telemetry(session: Any) -> Any:
+    services = getattr(session, "services", None)
+    telemetry = getattr(services, "session_telemetry", None)
+    if telemetry is not None:
+        return telemetry
+    telemetry = getattr(session, "session_telemetry", None)
+    if telemetry is not None:
+        return telemetry
+    raise AttributeError("session must provide services.session_telemetry or session_telemetry")
+
+
+def _call_required(target: Any, name: str, *args: Any) -> Any:
+    method = getattr(target, name, None)
+    if not callable(method):
+        raise AttributeError(f"{target!r} must provide callable {name}")
+    return method(*args)
+
+
+async def _maybe_await(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
 __all__ = [
     "STARTUP_PREWARM_AGE_AT_FIRST_TURN_METRIC",
     "STARTUP_PREWARM_DURATION_METRIC",
@@ -231,7 +305,9 @@ __all__ = [
     "SessionStartupPrewarmHandle",
     "SessionStartupPrewarmResolution",
     "SessionTelemetryRecorder",
+    "consume_startup_prewarm_for_regular_turn",
     "resolution_from_task_result",
+    "schedule_session_startup_prewarm",
     "schedule_startup_prewarm",
     "unavailable_startup_prewarm_not_scheduled",
 ]

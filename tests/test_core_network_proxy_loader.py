@@ -14,6 +14,7 @@ from pycodex.network_proxy import (
     NetworkMode,
     NetworkProxyConfig,
     NetworkProxyConstraints,
+    NetworkProxyAuditMetadata,
     NetworkProxySpec,
     NetworkToml,
     apply_exec_policy_network_rules,
@@ -375,6 +376,42 @@ class NetworkProxyLoaderTests(unittest.TestCase):
         self.assertEqual(spec.constraints.allowed_domains, ["*.example.com"])
         self.assertEqual(spec.constraints.allowlist_expansion_enabled, True)
 
+    def test_network_proxy_spec_build_state_threads_audit_metadata_to_state(self) -> None:
+        # Rust source: codex-rs/core/src/config/network_proxy_spec_tests.rs
+        # build_state_with_audit_metadata_threads_metadata_to_state.
+        spec = NetworkProxySpec.from_config_and_constraints(
+            NetworkProxyConfig(),
+            None,
+            PermissionProfile.workspace_write(),
+        )
+        metadata = NetworkProxyAuditMetadata(
+            {
+                "conversation_id": "conversation-1",
+                "app_version": "1.2.3",
+                "user_account_id": "acct-1",
+            }
+        )
+
+        state = spec.build_state_with_audit_metadata(metadata)
+
+        self.assertEqual(state.audit_metadata, metadata)
+
+    def test_network_proxy_spec_requirements_allowlist_expansion_keeps_user_entries_mutable(self) -> None:
+        # Rust source: codex-rs/core/src/config/network_proxy_spec_tests.rs
+        # requirements_allowlist_expansion_keeps_user_entries_mutable.
+        config = NetworkProxyConfig()
+        config.network.set_allowed_domains(["api.example.com"])
+        spec = NetworkProxySpec.from_config_and_constraints(
+            config,
+            NetworkConstraints(domains={"*.example.com": "allow"}),
+            PermissionProfile.workspace_write(),
+        )
+
+        spec.config.network.upsert_domain_permission("api.example.com", NetworkDomainPermission.DENY)
+
+        self.assertEqual(spec.config.network.allowed_domains(), ["*.example.com"])
+        self.assertEqual(spec.config.network.denied_domains(), ["api.example.com"])
+
     def test_network_proxy_spec_requirements_allowed_domains_do_not_override_user_denies(self) -> None:
         # Rust source: codex-rs/core/src/config/network_proxy_spec_tests.rs
         # requirements_allowed_domains_do_not_override_user_denies_for_same_pattern.
@@ -454,6 +491,24 @@ class NetworkProxyLoaderTests(unittest.TestCase):
         self.assertEqual(spec.constraints.allowed_domains, ["managed.example.com"])
         self.assertEqual(spec.constraints.allowlist_expansion_enabled, False)
         self.assertTrue(spec.hard_deny_allowlist_misses)
+
+    def test_network_proxy_spec_managed_allowed_domains_only_disables_default_expansion(self) -> None:
+        # Rust source: codex-rs/core/src/config/network_proxy_spec_tests.rs
+        # managed_allowed_domains_only_disables_default_mode_allowlist_expansion.
+        config = NetworkProxyConfig()
+        config.network.set_allowed_domains(["api.example.com"])
+
+        spec = NetworkProxySpec.from_config_and_constraints(
+            config,
+            NetworkConstraints(
+                domains={"*.example.com": "allow"},
+                managed_allowed_domains_only=True,
+            ),
+            PermissionProfile.workspace_write(),
+        )
+
+        self.assertEqual(spec.config.network.allowed_domains(), ["*.example.com"])
+        self.assertEqual(spec.constraints.allowlist_expansion_enabled, False)
 
     def test_network_proxy_spec_managed_allowed_domains_only_without_managed_list_blocks_users(self) -> None:
         # Rust source: codex-rs/core/src/config/network_proxy_spec_tests.rs

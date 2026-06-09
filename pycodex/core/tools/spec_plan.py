@@ -32,14 +32,44 @@ from pycodex.core.tools.hosted_spec import (
     create_image_generation_tool,
     create_web_search_tool,
 )
+from pycodex.core.tools.handlers.agent_jobs import ReportAgentJobResultHandler, SpawnAgentsOnCsvHandler
+from pycodex.core.tools.handlers.goal import CreateGoalHandler, GetGoalHandler, UpdateGoalHandler
 from pycodex.core.tools.handlers.mcp import McpHandler, McpToolRequestCallback
 from pycodex.core.tools.handlers.extension_tools import ExtensionToolAdapter
+from pycodex.core.tools.handlers.multi_agents import (
+    CloseAgentHandler,
+    ResumeAgentHandler,
+    SendInputHandler,
+    SpawnAgentHandler,
+    WaitAgentHandler,
+)
+from pycodex.core.tools.handlers.multi_agents_common import (
+    DEFAULT_WAIT_TIMEOUT_MS,
+    MAX_WAIT_TIMEOUT_MS,
+    MIN_WAIT_TIMEOUT_MS,
+)
+from pycodex.core.tools.handlers.multi_agents_spec import SpawnAgentToolOptions, WaitAgentTimeoutOptions
+from pycodex.core.tools.handlers.multi_agents_v2 import (
+    CloseAgentHandler as CloseAgentHandlerV2,
+    FollowupTaskHandler as FollowupTaskHandlerV2,
+    ListAgentsHandler as ListAgentsHandlerV2,
+    SendMessageHandler as SendMessageHandlerV2,
+    SpawnAgentHandler as SpawnAgentHandlerV2,
+    WaitAgentHandler as WaitAgentHandlerV2,
+)
 from pycodex.core.tools.handlers.request_plugin_install import (
     ListAvailablePluginsToInstallHandler,
     RequestPluginInstallCallback,
     RequestPluginInstallHandler,
 )
 from pycodex.core.tools.handlers.request_permissions import RequestPermissionsCallback, RequestPermissionsHandler
+from pycodex.core.tools.handlers.plan import PlanHandler
+from pycodex.core.tools.handlers.request_user_input import (
+    RequestUserInputHandler,
+    request_user_input_available_modes,
+)
+from pycodex.core.tools.handlers.shell import ShellCommandHandler, ShellCommandHandlerOptions
+from pycodex.core.tools.handlers.test_sync import TestSyncHandler
 from pycodex.tools.tool_discovery import (
     DiscoverableTool,
     collect_request_plugin_install_entries,
@@ -50,7 +80,7 @@ from pycodex.core.tools.tool_search_entry import default_namespace_description
 from pycodex.core.tools.handlers.tool_search import TOOL_SEARCH_TOOL_NAME, ToolSearchHandler
 from pycodex.core.tools.handlers.unified_exec import ExecCommandHandler, ExecCommandHandlerOptions, WriteStdinHandler
 from pycodex.core.tools.handlers.view_image import ViewImageHandler, ViewImageToolOptions
-from pycodex.protocol import ToolName, WebSearchConfig, WebSearchMode, WebSearchToolType
+from pycodex.protocol import ModeKind, SessionSource, SubAgentSource, ToolName, WebSearchConfig, WebSearchMode, WebSearchToolType
 
 JsonValue = Any
 
@@ -88,6 +118,21 @@ class ToolPlanOptions:
     image_generation_enabled: bool = False
     auth_uses_codex_backend: bool = False
     model_supports_image_input: bool = False
+    request_permissions_tool_enabled: bool = False
+    goal_tools_enabled: bool = False
+    tool_suggest_enabled: bool = False
+    apps_enabled: bool = False
+    plugins_enabled: bool = False
+    request_user_input_default_mode_enabled: bool = False
+    test_sync_tool_enabled: bool = False
+    multi_agent_v2_enabled: bool = False
+    collab_tools_enabled: bool = False
+    multi_agent_v2_non_code_mode_only: bool = False
+    agent_jobs_tools_enabled: bool = False
+    agent_jobs_worker_tools_enabled: bool = False
+    use_unified_exec: bool = True
+    allow_login_shell: bool = False
+    exec_permission_approvals_enabled: bool = False
 
 
 def tool_environment_mode_from_turn_context(turn_context: Any) -> str:
@@ -126,14 +171,21 @@ def build_tool_router(
     params: Any,
     options: ToolPlanOptions | None = None,
 ) -> ToolRouter:
+    options = options or tool_plan_options_from_turn_context(turn_context)
     planned_tools = PlannedTools()
-    add_environment_tools_for_turn_context(planned_tools, turn_context)
+    add_shell_tools_for_turn_context(planned_tools, turn_context, options)
+    add_core_utility_tools_for_turn_context(
+        planned_tools,
+        turn_context,
+        options,
+        discoverable_tools=getattr(params, "discoverable_tools", None),
+    )
+    add_collaboration_tools_for_turn_context(planned_tools, turn_context, options)
     add_mcp_tools(
         planned_tools,
         getattr(params, "mcp_tools", None) or (),
         getattr(params, "deferred_mcp_tools", None) or (),
     )
-    add_discoverable_install_tools(planned_tools, getattr(params, "discoverable_tools", None))
     add_dynamic_tools(planned_tools, getattr(params, "dynamic_tools", ()) or ())
     add_extension_tools(
         planned_tools,
@@ -141,6 +193,53 @@ def build_tool_router(
         options,
     )
     return build_tool_router_from_plan(planned_tools, options)
+
+
+def tool_plan_options_from_turn_context(turn_context: Any) -> ToolPlanOptions:
+    provider = getattr(turn_context, "provider", None)
+    capabilities = _call_or_get(provider, "capabilities", None)
+    config = getattr(turn_context, "config", None)
+    model_info = getattr(turn_context, "model_info", None)
+    features = getattr(turn_context, "features", None)
+    web_search_mode = _field_value(getattr(config, "web_search_mode", None), "value")
+    web_search_tool_type = getattr(model_info, "web_search_tool_type", WebSearchToolType.TEXT)
+    if web_search_tool_type is None:
+        web_search_tool_type = WebSearchToolType.TEXT
+    return ToolPlanOptions(
+        search_tool_enabled=bool(getattr(model_info, "supports_search_tool", False)),
+        namespace_tools_enabled=bool(getattr(capabilities, "namespace_tools", True)),
+        code_mode_enabled=_feature_enabled(features, "CodeMode", "code_mode"),
+        code_mode_only=_feature_enabled(features, "CodeModeOnly", "code_mode_only"),
+        provider_web_search=bool(getattr(capabilities, "web_search", False)),
+        standalone_web_run_available=False,
+        web_search_mode=web_search_mode if isinstance(web_search_mode, WebSearchMode) else None,
+        web_search_config=getattr(config, "web_search_config", None),
+        web_search_tool_type=web_search_tool_type,
+        provider_image_generation=bool(getattr(capabilities, "image_generation", False)),
+        image_generation_enabled=_feature_enabled(features, "ImageGeneration", "image_generation"),
+        auth_uses_codex_backend=_auth_uses_codex_backend(getattr(turn_context, "auth_manager", None)),
+        model_supports_image_input=_model_supports_image_input(model_info),
+        request_permissions_tool_enabled=_feature_enabled(features, "RequestPermissionsTool", "request_permissions_tool"),
+        goal_tools_enabled=_goal_tools_enabled(turn_context),
+        tool_suggest_enabled=_feature_enabled(features, "ToolSuggest", "tool_suggest"),
+        apps_enabled=_feature_enabled(features, "Apps", "apps"),
+        plugins_enabled=_feature_enabled(features, "Plugins", "plugins"),
+        request_user_input_default_mode_enabled=_feature_enabled(features, "RequestUserInputDefaultMode", "request_user_input_default_mode"),
+        test_sync_tool_enabled=_model_supports_experimental_tool(model_info, "test_sync_tool"),
+        multi_agent_v2_enabled=_feature_enabled(features, "MultiAgentV2", "multi_agent_v2"),
+        collab_tools_enabled=(
+            _feature_enabled(features, "MultiAgentV2", "multi_agent_v2")
+            or _feature_enabled(features, "Collab", "collab")
+        ),
+        multi_agent_v2_non_code_mode_only=bool(
+            getattr(getattr(config, "multi_agent_v2", None), "non_code_mode_only", False)
+        ),
+        agent_jobs_tools_enabled=_feature_enabled(features, "SpawnCsv", "spawn_csv"),
+        agent_jobs_worker_tools_enabled=_agent_jobs_worker_tools_enabled(turn_context, features),
+        use_unified_exec=bool(_field_value(getattr(config, "use_unified_exec", True), "value", True)),
+        allow_login_shell=bool(getattr(getattr(config, "permissions", None), "allow_login_shell", False)),
+        exec_permission_approvals_enabled=_feature_enabled(features, "ExecPermissionApprovals", "exec_permission_approvals"),
+    )
 
 
 def build_model_visible_specs_and_registry(
@@ -406,6 +505,158 @@ def add_environment_tools_for_turn_context(
     )
 
 
+def add_shell_tools_for_turn_context(
+    planned_tools: PlannedTools,
+    turn_context: Any,
+    options: ToolPlanOptions | None = None,
+) -> None:
+    options = options or tool_plan_options_from_turn_context(turn_context)
+    if not tool_environment_has_environment(turn_context):
+        return
+    include_environment_id = tool_environment_includes_environment_id(turn_context)
+    if options.use_unified_exec:
+        planned_tools.add(
+            ExecCommandHandler(
+                ExecCommandHandlerOptions(
+                    allow_login_shell=options.allow_login_shell,
+                    exec_permission_approvals_enabled=options.exec_permission_approvals_enabled,
+                    include_environment_id=include_environment_id,
+                )
+            )
+        )
+        planned_tools.add(WriteStdinHandler())
+        planned_tools.add_dispatch_only(
+            ShellCommandHandler(
+                ShellCommandHandlerOptions(
+                    allow_login_shell=options.allow_login_shell,
+                    exec_permission_approvals_enabled=options.exec_permission_approvals_enabled,
+                )
+            )
+        )
+        return
+    planned_tools.add(
+        ShellCommandHandler(
+            ShellCommandHandlerOptions(
+                allow_login_shell=options.allow_login_shell,
+                exec_permission_approvals_enabled=options.exec_permission_approvals_enabled,
+            )
+        )
+    )
+
+
+def add_core_utility_tools_for_turn_context(
+    planned_tools: PlannedTools,
+    turn_context: Any,
+    options: ToolPlanOptions | None = None,
+    *,
+    discoverable_tools: Iterable[DiscoverableTool | Mapping[str, JsonValue]] | None = None,
+) -> None:
+    options = options or tool_plan_options_from_turn_context(turn_context)
+    planned_tools.add(PlanHandler())
+    if options.goal_tools_enabled:
+        planned_tools.add(GetGoalHandler())
+        planned_tools.add(CreateGoalHandler())
+        planned_tools.add(UpdateGoalHandler())
+    planned_tools.add(
+        RequestUserInputHandler(
+            request_user_input_available_modes(
+                default_mode_enabled=options.request_user_input_default_mode_enabled,
+            )
+        )
+    )
+    add_request_permissions_tool(
+        planned_tools,
+        request_permissions_tool_enabled=options.request_permissions_tool_enabled,
+    )
+    add_discoverable_install_tools(
+        planned_tools,
+        discoverable_tools,
+        tool_suggest_enabled=options.tool_suggest_enabled,
+        apps_enabled=options.apps_enabled,
+        plugins_enabled=options.plugins_enabled,
+    )
+    add_apply_patch_tool_for_turn_context(
+        planned_tools,
+        turn_context,
+        apply_patch_tool_type=getattr(getattr(turn_context, "model_info", None), "apply_patch_tool_type", None),
+    )
+    if options.test_sync_tool_enabled:
+        planned_tools.add(TestSyncHandler())
+    add_view_image_tool_for_turn_context(
+        planned_tools,
+        turn_context,
+        can_request_original_image_detail=_can_request_original_image_detail(getattr(turn_context, "model_info", None)),
+    )
+
+
+def add_collaboration_tools_for_turn_context(
+    planned_tools: PlannedTools,
+    turn_context: Any,
+    options: ToolPlanOptions | None = None,
+) -> None:
+    options = options or tool_plan_options_from_turn_context(turn_context)
+    if options.collab_tools_enabled:
+        wait_options = wait_agent_timeout_options_from_turn_context(turn_context, options)
+        spawn_options = spawn_agent_tool_options_from_turn_context(turn_context)
+        if options.multi_agent_v2_enabled:
+            exposure = (
+                ToolExposure.DIRECT_MODEL_ONLY
+                if options.multi_agent_v2_non_code_mode_only
+                else ToolExposure.DIRECT
+            )
+            namespace = _multi_agent_v2_tool_namespace(turn_context, options)
+            planned_tools.add_with_exposure(_multi_agent_v2_handler(SpawnAgentHandlerV2(spawn_options), namespace), exposure)
+            planned_tools.add_with_exposure(_multi_agent_v2_handler(SendMessageHandlerV2(), namespace), exposure)
+            planned_tools.add_with_exposure(_multi_agent_v2_handler(FollowupTaskHandlerV2(), namespace), exposure)
+            planned_tools.add_with_exposure(_multi_agent_v2_handler(WaitAgentHandlerV2(wait_options), namespace), exposure)
+            planned_tools.add_with_exposure(_multi_agent_v2_handler(CloseAgentHandlerV2(), namespace), exposure)
+            planned_tools.add_with_exposure(_multi_agent_v2_handler(ListAgentsHandlerV2(), namespace), exposure)
+        else:
+            exposure = (
+                ToolExposure.DEFERRED
+                if options.search_tool_enabled and options.namespace_tools_enabled
+                else ToolExposure.DIRECT
+            )
+            planned_tools.add_with_exposure(SpawnAgentHandler(spawn_options), exposure)
+            planned_tools.add_with_exposure(SendInputHandler(), exposure)
+            planned_tools.add_with_exposure(ResumeAgentHandler(), exposure)
+            planned_tools.add_with_exposure(WaitAgentHandler(wait_options), exposure)
+            planned_tools.add_with_exposure(CloseAgentHandler(), exposure)
+
+    if options.agent_jobs_tools_enabled:
+        planned_tools.add(SpawnAgentsOnCsvHandler())
+        if options.agent_jobs_worker_tools_enabled:
+            planned_tools.add(ReportAgentJobResultHandler())
+
+
+def wait_agent_timeout_options_from_turn_context(
+    turn_context: Any,
+    options: ToolPlanOptions | None = None,
+) -> WaitAgentTimeoutOptions:
+    options = options or tool_plan_options_from_turn_context(turn_context)
+    if not options.multi_agent_v2_enabled:
+        return WaitAgentTimeoutOptions(DEFAULT_WAIT_TIMEOUT_MS, MIN_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS)
+    multi_agent_config = getattr(getattr(turn_context, "config", None), "multi_agent_v2", None)
+    return WaitAgentTimeoutOptions(
+        getattr(multi_agent_config, "default_wait_timeout_ms", DEFAULT_WAIT_TIMEOUT_MS),
+        getattr(multi_agent_config, "min_wait_timeout_ms", MIN_WAIT_TIMEOUT_MS),
+        getattr(multi_agent_config, "max_wait_timeout_ms", MAX_WAIT_TIMEOUT_MS),
+    )
+
+
+def spawn_agent_tool_options_from_turn_context(turn_context: Any) -> SpawnAgentToolOptions:
+    config = getattr(turn_context, "config", None)
+    multi_agent_config = getattr(config, "multi_agent_v2", None)
+    return SpawnAgentToolOptions(
+        available_models=getattr(turn_context, "available_models", ()),
+        agent_type_description=_agent_type_description(turn_context),
+        hide_agent_type_model_reasoning=bool(getattr(multi_agent_config, "hide_spawn_agent_metadata", False)),
+        include_usage_hint=bool(getattr(multi_agent_config, "usage_hint_enabled", False)),
+        usage_hint_text=getattr(multi_agent_config, "usage_hint_text", None),
+        max_concurrent_threads_per_session=getattr(multi_agent_config, "max_concurrent_threads_per_session", None),
+    )
+
+
 def build_environment_tool_router_from_turn_context(
     turn_context: Any,
     options: ToolPlanOptions | None = None,
@@ -644,9 +895,196 @@ def _call_or_get(handler: Any, name: str, default: Any) -> Any:
     return value
 
 
+class MultiAgentV2NamespaceOverride:
+    def __init__(self, handler: Any, namespace: str) -> None:
+        if not isinstance(namespace, str) or namespace == "":
+            raise TypeError("namespace must be a non-empty string")
+        self.handler = handler
+        self.namespace = namespace
+
+    def tool_name(self) -> ToolName:
+        name = _runtime_tool_name(self.handler)
+        return ToolName.namespaced(self.namespace, name.name)
+
+    def spec(self) -> JsonValue:
+        spec = _runtime_spec(self.handler)
+        data = _spec_to_mapping(spec)
+        if data.get("type") != "function":
+            return data
+        return {
+            "type": "namespace",
+            "name": self.namespace,
+            "description": "Tools for spawning and managing sub-agents.",
+            "tools": (data,),
+        }
+
+    def exposure(self) -> ToolExposure:
+        return _runtime_exposure(self.handler)
+
+    def supports_parallel_tool_calls(self) -> bool:
+        value = _call_or_get(self.handler, "supports_parallel_tool_calls", False)
+        return bool(value)
+
+    def waits_for_runtime_cancellation(self) -> bool:
+        value = _call_or_get(self.handler, "waits_for_runtime_cancellation", False)
+        return bool(value)
+
+    def matches_kind(self, payload: Any) -> bool:
+        method = getattr(self.handler, "matches_kind", None)
+        if callable(method):
+            return bool(method(payload))
+        return True
+
+    def search_info(self) -> Any:
+        method = getattr(self.handler, "search_info", None)
+        if callable(method):
+            return method()
+        return None
+
+    def handle(self, invocation: Any) -> Any:
+        method = getattr(self.handler, "handle", None)
+        if not callable(method):
+            raise TypeError("wrapped multi-agent handler must expose handle(invocation)")
+        return method(invocation)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.handler, name)
+
+
+def _multi_agent_v2_handler(handler: Any, namespace: str | None) -> Any:
+    if namespace is None:
+        return handler
+    return MultiAgentV2NamespaceOverride(handler, namespace)
+
+
+def _multi_agent_v2_tool_namespace(turn_context: Any, options: ToolPlanOptions) -> str | None:
+    if not options.namespace_tools_enabled:
+        return None
+    multi_agent_config = getattr(getattr(turn_context, "config", None), "multi_agent_v2", None)
+    namespace = getattr(multi_agent_config, "tool_namespace", None)
+    if namespace is None or namespace == "":
+        return None
+    return str(namespace)
+
+
+def _feature_enabled(features: Any, *names: str) -> bool:
+    if features is None:
+        return False
+    getter = getattr(features, "get", None)
+    if callable(getter):
+        features = getter()
+    enabled = getattr(features, "enabled", None)
+    if callable(enabled):
+        for name in names:
+            for candidate in (name, _snake_to_pascal(name), _pascal_to_snake(name)):
+                try:
+                    if bool(enabled(candidate)):
+                        return True
+                except Exception:
+                    continue
+    for name in names:
+        for candidate in (name, _snake_to_pascal(name), _pascal_to_snake(name)):
+            value = getattr(features, candidate, None)
+            if isinstance(value, bool) and value:
+                return True
+            if isinstance(features, Mapping) and bool(features.get(candidate, False)):
+                return True
+    return False
+
+
+def _field_value(value: Any, attr: str, default: Any = None) -> Any:
+    if value is None:
+        return default
+    field = getattr(value, attr, default)
+    return field() if callable(field) else field
+
+
+def _auth_uses_codex_backend(auth_manager: Any) -> bool:
+    if auth_manager is None:
+        return False
+    if isinstance(auth_manager, (tuple, list)):
+        return any(_auth_uses_codex_backend(item) for item in auth_manager)
+    current = getattr(auth_manager, "current_auth_uses_codex_backend", None)
+    if callable(current):
+        try:
+            return bool(current())
+        except Exception:
+            return False
+    return bool(getattr(auth_manager, "uses_codex_backend", False))
+
+
+def _model_supports_image_input(model_info: Any) -> bool:
+    modalities = getattr(model_info, "input_modalities", ())
+    for modality in modalities or ():
+        value = getattr(modality, "value", modality)
+        if str(value).lower() == "image":
+            return True
+    return False
+
+
+def _model_supports_experimental_tool(model_info: Any, tool_name: str) -> bool:
+    tools = getattr(model_info, "experimental_supported_tools", ())
+    return tool_name in tuple(tools or ())
+
+
+def _can_request_original_image_detail(model_info: Any) -> bool:
+    checker = getattr(model_info, "can_request_original_image_detail", None)
+    if callable(checker):
+        return bool(checker())
+    return bool(getattr(model_info, "original_image_detail_supported", False))
+
+
+def _goal_tools_enabled(turn_context: Any) -> bool:
+    getter = getattr(turn_context, "goal_tools_enabled", None)
+    enabled = bool(getter()) if callable(getter) else bool(getattr(turn_context, "goal_tools_enabled", False))
+    if not enabled:
+        return False
+    session_source = getattr(turn_context, "session_source", None)
+    source_text = str(getattr(session_source, "value", session_source)).lower()
+    return "review" not in source_text
+
+
+def _agent_jobs_worker_tools_enabled(turn_context: Any, features: Any) -> bool:
+    if not _feature_enabled(features, "SpawnCsv", "spawn_csv"):
+        return False
+    session_source = getattr(turn_context, "session_source", None)
+    if isinstance(session_source, Mapping):
+        label = session_source.get("label") or session_source.get("source") or ""
+    else:
+        label = getattr(session_source, "label", None)
+        if label is None:
+            sub_agent = getattr(session_source, "sub_agent", None)
+            label = getattr(sub_agent, "label", "")
+    return str(label).startswith("agent_job:")
+
+
+def _agent_type_description(turn_context: Any) -> str:
+    config = getattr(turn_context, "config", None)
+    roles = getattr(config, "agent_roles", None)
+    if isinstance(roles, Mapping) and roles:
+        return "\n".join(str(key) for key in sorted(roles))
+    return ""
+
+
+def _snake_to_pascal(value: str) -> str:
+    return "".join(part[:1].upper() + part[1:] for part in value.split("_") if part)
+
+
+def _pascal_to_snake(value: str) -> str:
+    chars: list[str] = []
+    for index, char in enumerate(value):
+        if char.isupper() and index > 0:
+            chars.append("_")
+        chars.append(char.lower())
+    return "".join(chars)
+
+
 __all__ = [
     "PlannedTools",
     "ToolPlanOptions",
+    "MultiAgentV2NamespaceOverride",
+    "add_collaboration_tools_for_turn_context",
+    "add_core_utility_tools_for_turn_context",
     "add_discoverable_install_tools",
     "add_apply_patch_tool",
     "add_apply_patch_tool_for_turn_context",
@@ -656,6 +1094,7 @@ __all__ = [
     "add_hosted_model_tools",
     "add_mcp_tools",
     "add_request_permissions_tool",
+    "add_shell_tools_for_turn_context",
     "add_unified_exec_tools_for_turn_context",
     "add_view_image_tool_for_turn_context",
     "append_tool_search_executor",
@@ -674,5 +1113,8 @@ __all__ = [
     "tool_environment_has_environment",
     "tool_environment_includes_environment_id",
     "tool_environment_mode_from_turn_context",
+    "tool_plan_options_from_turn_context",
+    "wait_agent_timeout_options_from_turn_context",
+    "spawn_agent_tool_options_from_turn_context",
 ]
 

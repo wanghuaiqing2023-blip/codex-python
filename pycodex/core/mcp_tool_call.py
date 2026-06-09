@@ -1407,6 +1407,42 @@ def custom_mcp_tool_approval_mode_from_config(
     )
     return parsed.approval_mode_for_tool(tool_name)
 
+
+
+def mcp_transport_from_server_origin(server_origin: str | None) -> str:
+    """Return the Rust MCP transport tag for a server origin string."""
+
+    if server_origin is None:
+        return ""
+    if not isinstance(server_origin, str):
+        raise TypeError("server_origin must be a string or None")
+    if server_origin == "stdio":
+        return "stdio"
+    if server_origin == "in_process":
+        return "in_process"
+    return "streamable_http"
+
+
+def mcp_server_fields_from_origin(server_origin: str | None) -> dict[str, str | int]:
+    """Extract server.address/server.port fields from a URL-like origin."""
+
+    if server_origin is None:
+        return {}
+    if not isinstance(server_origin, str):
+        raise TypeError("server_origin must be a string or None")
+    from urllib.parse import urlparse
+
+    parsed = urlparse(server_origin)
+    if not parsed.hostname:
+        return {}
+    fields: dict[str, str | int] = {"server.address": parsed.hostname}
+    if parsed.port is not None:
+        fields["server.port"] = parsed.port
+    elif parsed.scheme == "http":
+        fields["server.port"] = 80
+    elif parsed.scheme == "https":
+        fields["server.port"] = 443
+    return fields
 
 def _optional_app_tool_approval(value: JsonValue) -> AppToolApproval | None:
     if value is None:
@@ -1584,6 +1620,8 @@ __all__ = [
     "mcp_elicitation_request_id",
     "mcp_elicitation_response_from_guardian_decision_parts",
     "mcp_result_span_telemetry_attributes",
+    "mcp_server_fields_from_origin",
+    "mcp_transport_from_server_origin",
     "mcp_tool_approval_decision_from_guardian",
     "mcp_tool_approval_config_edit_for_key",
     "mcp_tool_approval_is_remembered",

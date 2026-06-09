@@ -8,6 +8,7 @@ session/runtime delivery as an injected boundary.
 from __future__ import annotations
 
 import shlex
+import inspect
 import time
 from dataclasses import dataclass
 from datetime import timedelta
@@ -15,6 +16,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from pycodex.core.function_tool import FunctionCallError
+from pycodex.core.tools.sandboxing import ToolError
 from pycodex.core.turn_diff_tracker import AppliedPatchDelta, TurnDiffTracker
 from pycodex.core.user_shell_command import format_exec_output_for_model, format_exec_output_str
 from pycodex.protocol import (
@@ -907,28 +909,95 @@ class ToolEmitter:
             return (result,)
         raise ValueError(f"unsupported tool emitter type: {self.type}")
 
+    async def emit_to_session(self, ctx: ToolEventCtx, stage: ToolEventStage) -> None:
+        for item in self.emit(ctx, stage):
+            await _send_emitted_item(ctx, item)
+
+    async def begin(self, ctx: ToolEventCtx) -> None:
+        await self.emit_to_session(ctx, ToolEventStage.begin())
+
     def finish(
         self,
         ctx: ToolEventCtx,
-        out: ExecToolCallOutput | ToolEventFailure,
+        out: ExecToolCallOutput | ToolEventFailure | ToolError,
         applied_patch_delta: AppliedPatchDelta | None = None,
     ) -> tuple[str | FunctionCallError, tuple[EventMsg | TurnItem, ...]]:
-        if isinstance(out, ExecToolCallOutput):
-            stage = ToolEventStage.success(out, applied_patch_delta)
-            result: str | FunctionCallError = format_exec_output_for_model(out, ctx.truncation_policy)
-            if out.exit_code != 0:
-                result = FunctionCallError.respond_to_model(result)
-        elif isinstance(out, ToolEventFailure):
-            failure = out
-            if failure.type == "rejected" and failure.message == "rejected by user":
-                normalized = "patch rejected by user" if self.type == "apply_patch" else "exec command rejected by user"
-                failure = ToolEventFailure.rejected(normalized, applied_patch_delta)
-            stage = ToolEventStage.failure(failure)
-            message = failure.message if failure.message is not None else format_exec_output_for_model(failure.output, ctx.truncation_policy)
-            result = FunctionCallError.respond_to_model(message)
-        else:
-            raise TypeError("out must be ExecToolCallOutput or ToolEventFailure")
+        result, stage = self._finish_result_and_stage(ctx, out, applied_patch_delta)
         return result, self.emit(ctx, stage)
+
+    async def finish_and_emit(
+        self,
+        ctx: ToolEventCtx,
+        out: ExecToolCallOutput | ToolEventFailure | ToolError,
+        applied_patch_delta: AppliedPatchDelta | None = None,
+    ) -> str | FunctionCallError:
+        result, stage = self._finish_result_and_stage(ctx, out, applied_patch_delta)
+        await self.emit_to_session(ctx, stage)
+        return result
+
+    def _finish_result_and_stage(
+        self,
+        ctx: ToolEventCtx,
+        out: ExecToolCallOutput | ToolEventFailure | ToolError,
+        applied_patch_delta: AppliedPatchDelta | None,
+    ) -> tuple[str | FunctionCallError, ToolEventStage]:
+        if isinstance(out, ExecToolCallOutput):
+            content = format_exec_output_for_model(out, ctx.truncation_policy)
+            result: str | FunctionCallError = content
+            if out.exit_code != 0:
+                result = FunctionCallError.respond_to_model(content)
+            return result, ToolEventStage.success(out, applied_patch_delta)
+
+        if isinstance(out, ToolError):
+            converted = self._stage_for_tool_error(ctx, out, applied_patch_delta)
+            return converted
+
+        if isinstance(out, ToolEventFailure):
+            failure = _normalize_rejection_failure(self.type, out, applied_patch_delta)
+            message = (
+                failure.message
+                if failure.message is not None
+                else format_exec_output_for_model(failure.output, ctx.truncation_policy)
+            )
+            return FunctionCallError.respond_to_model(message), ToolEventStage.failure(failure)
+
+        raise TypeError("out must be ExecToolCallOutput, ToolEventFailure, or ToolError")
+
+    def _stage_for_tool_error(
+        self,
+        ctx: ToolEventCtx,
+        error: ToolError,
+        applied_patch_delta: AppliedPatchDelta | None,
+    ) -> tuple[str | FunctionCallError, ToolEventStage]:
+        if error.type == "rejected":
+            failure = _normalize_rejection_failure(
+                self.type,
+                ToolEventFailure.rejected(error.message or ""),
+                applied_patch_delta,
+            )
+            return FunctionCallError.respond_to_model(failure.message or ""), ToolEventStage.failure(failure)
+
+        if error.type != "codex":
+            raise ValueError(f"unsupported tool error type: {error.type}")
+
+        sandbox_kind, output = _sandbox_error_output(error.error)
+        if sandbox_kind in {"timeout", "denied"} and output is not None:
+            response = format_exec_output_for_model(output, ctx.truncation_policy)
+            if self.type == "apply_patch" and sandbox_kind == "denied" and applied_patch_delta is not None:
+                return (
+                    FunctionCallError.respond_to_model(response),
+                    ToolEventStage.success(output, applied_patch_delta),
+                )
+            return (
+                FunctionCallError.respond_to_model(response),
+                ToolEventStage.failure(ToolEventFailure.output_failure(output)),
+            )
+
+        message = f"execution error: {error.error!r}"
+        return (
+            FunctionCallError.respond_to_model(message),
+            ToolEventStage.failure(ToolEventFailure.message_failure(message)),
+        )
 
 
 def _ensure_ctx_and_input(ctx: ToolEventCtx, exec_input: ExecCommandInput) -> None:
@@ -936,6 +1005,59 @@ def _ensure_ctx_and_input(ctx: ToolEventCtx, exec_input: ExecCommandInput) -> No
         raise TypeError("ctx must be ToolEventCtx")
     if not isinstance(exec_input, ExecCommandInput):
         raise TypeError("exec_input must be ExecCommandInput")
+
+
+async def _send_emitted_item(ctx: ToolEventCtx, item: EventMsg | TurnItem) -> None:
+    if isinstance(item, EventMsg):
+        sender = getattr(ctx.session, "send_event", None)
+        if not callable(sender):
+            raise TypeError("session must expose send_event(turn, event) for EventMsg delivery")
+        await _maybe_await(sender(ctx.turn, item))
+        return
+
+    if not isinstance(item, TurnItem):
+        raise TypeError("emitted item must be EventMsg or TurnItem")
+    if _turn_item_is_in_progress(item):
+        sender = getattr(ctx.session, "emit_turn_item_started", None)
+        if not callable(sender):
+            raise TypeError("session must expose emit_turn_item_started(turn, item)")
+        await _maybe_await(sender(ctx.turn, item))
+        return
+    sender = getattr(ctx.session, "emit_turn_item_completed", None)
+    if not callable(sender):
+        raise TypeError("session must expose emit_turn_item_completed(turn, item)")
+    await _maybe_await(sender(ctx.turn, item))
+
+
+async def _maybe_await(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
+def _normalize_rejection_failure(
+    emitter_type: str,
+    failure: ToolEventFailure,
+    applied_patch_delta: AppliedPatchDelta | None,
+) -> ToolEventFailure:
+    if failure.type != "rejected" or failure.message != "rejected by user":
+        return failure
+    normalized = "patch rejected by user" if emitter_type == "apply_patch" else "exec command rejected by user"
+    return ToolEventFailure.rejected(normalized, applied_patch_delta)
+
+
+def _sandbox_error_output(error: Any) -> tuple[str | None, ExecToolCallOutput | None]:
+    if isinstance(error, Mapping):
+        sandbox_kind = error.get("sandbox")
+        output = error.get("output")
+    else:
+        sandbox_kind = getattr(error, "sandbox", None)
+        output = getattr(error, "output", None)
+    if sandbox_kind not in {"timeout", "denied"}:
+        return None, None
+    if not isinstance(output, ExecToolCallOutput):
+        raise TypeError("sandbox tool error output must be ExecToolCallOutput")
+    return sandbox_kind, output
 
 
 def _int_ms(value: int) -> int:

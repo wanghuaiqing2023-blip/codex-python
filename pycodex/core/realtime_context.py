@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import inspect
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from pycodex.protocol import ContentItem, ResponseItem, TruncationPolicyConfig
 
@@ -19,6 +21,7 @@ RECENT_WORK_SECTION_TOKEN_BUDGET = 2_200
 WORKSPACE_SECTION_TOKEN_BUDGET = 1_600
 NOTES_SECTION_TOKEN_BUDGET = 300
 REALTIME_TURN_TOKEN_BUDGET = 300
+MAX_RECENT_THREADS = 40
 MAX_RECENT_WORK_GROUPS = 8
 MAX_CURRENT_CWD_ASKS = 8
 MAX_OTHER_CWD_ASKS = 5
@@ -80,6 +83,83 @@ def build_realtime_startup_context(
         if section is not None:
             parts.append(section)
     return format_startup_context_blob("\n\n".join(parts))
+
+
+async def build_realtime_startup_context_from_session(
+    sess: object,
+    budget_tokens: int,
+    *,
+    user_root: Path | str | None = None,
+) -> str | None:
+    """Build realtime startup context from a session-like runtime object.
+
+    Rust source: ``codex-rs/core/src/realtime_context.rs::build_realtime_startup_context``.
+    The Rust function owns the top-level runtime assembly: read config/cwd,
+    clone current history, load recent threads from the thread store, collect a
+    bounded workspace map, and then render the fixed-order startup context
+    sections.  Python keeps the lower pure helpers available for tests and
+    callers, while this async facade mirrors the session-facing Rust boundary.
+    """
+
+    get_config = getattr(sess, "get_config", None)
+    clone_history = getattr(sess, "clone_history", None)
+    if not callable(get_config):
+        raise TypeError("session must expose get_config")
+    if not callable(clone_history):
+        raise TypeError("session must expose clone_history")
+
+    config = await _maybe_await(get_config())
+    cwd = _get_field(config, "cwd", None)
+    if cwd is None:
+        raise TypeError("session config must expose cwd")
+
+    history = await _maybe_await(clone_history())
+    raw_items = _history_raw_items(history)
+    recent_threads = await load_recent_threads(sess)
+    return build_realtime_startup_context(
+        current_thread_items=raw_items,
+        recent_threads=recent_threads,
+        cwd=cwd,
+        user_root=Path.home() if user_root is None else user_root,
+        budget_tokens=budget_tokens,
+    )
+
+
+async def load_recent_threads(sess: object) -> list[object]:
+    """Load recent non-archived threads for realtime startup context.
+
+    Rust source: ``codex-rs/core/src/realtime_context.rs::load_recent_threads``.
+    Errors are intentionally swallowed and represented as an empty list, just
+    like the Rust implementation logs and continues without recent-work
+    context when the thread store is unavailable.
+    """
+
+    services = getattr(sess, "services", None)
+    thread_store = _get_field(services, "thread_store", None)
+    list_threads = getattr(thread_store, "list_threads", None)
+    if not callable(list_threads):
+        return []
+    params = {
+        "page_size": MAX_RECENT_THREADS,
+        "cursor": None,
+        "sort_key": "UpdatedAt",
+        "sort_direction": "Desc",
+        "allowed_sources": [],
+        "model_providers": None,
+        "cwd_filters": None,
+        "archived": False,
+        "search_term": None,
+        "use_state_db_only": False,
+    }
+    try:
+        try:
+            page = await _maybe_await(list_threads(params))
+        except TypeError:
+            page = await _maybe_await(list_threads(**params))
+    except Exception:
+        return []
+    items = _get_field(page, "items", ())
+    return list(items or ())
 
 
 def build_current_thread_section(items: Iterable[ResponseItem | dict[str, object]]) -> str | None:
@@ -353,9 +433,33 @@ def _file_name_string(path: Path) -> str:
 
 
 def _get_thread_field(thread: object, name: str, default: object = None) -> object:
-    if isinstance(thread, dict):
-        return thread.get(name, default)
-    return getattr(thread, name, default)
+    return _get_field(thread, name, default)
+
+
+def _get_field(value: object, name: str, default: object = None) -> object:
+    if isinstance(value, dict):
+        return value.get(name, default)
+    return getattr(value, name, default)
+
+
+async def _maybe_await(value: object) -> object:
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
+def _history_raw_items(history: object) -> Iterable[ResponseItem | dict[str, object]]:
+    raw_items = getattr(history, "raw_items", None)
+    if callable(raw_items):
+        return raw_items()
+    if raw_items is not None:
+        return raw_items
+    items = _get_field(history, "items", None)
+    if items is not None:
+        return items
+    if isinstance(history, Iterable):
+        return history
+    raise TypeError("session history must expose raw_items, items, or be iterable")
 
 
 def _reverse_sort_value(value: object) -> tuple[int, object]:
@@ -404,6 +508,7 @@ __all__ = [
     "MAX_ASK_CHARS",
     "MAX_CURRENT_CWD_ASKS",
     "MAX_OTHER_CWD_ASKS",
+    "MAX_RECENT_THREADS",
     "MAX_RECENT_WORK_GROUPS",
     "NOISY_DIR_NAMES",
     "NOTES_SECTION_TOKEN_BUDGET",
@@ -417,9 +522,11 @@ __all__ = [
     "build_current_thread_section",
     "build_recent_work_section",
     "build_realtime_startup_context",
+    "build_realtime_startup_context_from_session",
     "build_workspace_section_with_user_root",
     "format_section",
     "format_startup_context_blob",
     "render_tree",
     "truncate_realtime_text_to_token_budget",
+    "load_recent_threads",
 ]

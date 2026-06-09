@@ -11,6 +11,7 @@ Rust reference:
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import os
 import signal
 import subprocess
@@ -241,6 +242,19 @@ async def spawn_pipe_process_no_stdin(
     return await _spawn_process(program, args, cwd, env, arg0, stdin_enabled=False)
 
 
+async def spawn_pipe_process_no_stdin_with_inherited_fds(
+    program: str,
+    args: Sequence[str],
+    cwd: str | os.PathLike[str],
+    env: Mapping[str, str],
+    arg0: str | None = None,
+    inherited_fds: Sequence[int] = (),
+) -> SpawnedProcess:
+    if inherited_fds:
+        raise NotImplementedError("preserving inherited file descriptors is not implemented for Python pipe spawn")
+    return await spawn_pipe_process_no_stdin(program, args, cwd, env, arg0)
+
+
 async def spawn_pty_process(
     program: str,
     args: Sequence[str],
@@ -251,6 +265,20 @@ async def spawn_pty_process(
 ) -> SpawnedProcess:
     del size
     return await _spawn_process(program, args, cwd, env, arg0, stdin_enabled=True)
+
+
+async def spawn_process_with_inherited_fds(
+    program: str,
+    args: Sequence[str],
+    cwd: str | os.PathLike[str],
+    env: Mapping[str, str],
+    arg0: str | None = None,
+    size: TerminalSize = TerminalSize(),
+    inherited_fds: Sequence[int] = (),
+) -> SpawnedProcess:
+    if inherited_fds:
+        raise NotImplementedError("preserving inherited file descriptors is not implemented for Python PTY spawn")
+    return await spawn_pty_process(program, args, cwd, env, arg0, size)
 
 
 ExecCommandSession = ProcessHandle
@@ -319,12 +347,26 @@ def spawn_from_driver(driver: ProcessDriver) -> SpawnedProcess:
 class process_group:
     @staticmethod
     def set_parent_death_signal(parent_pid: int) -> None:
-        del parent_pid
+        if not sys.platform.startswith("linux"):
+            return
+        libc = ctypes.CDLL(None, use_errno=True)
+        prctl = libc.prctl
+        prctl.argtypes = [ctypes.c_int, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_ulong]
+        prctl.restype = ctypes.c_int
+        PR_SET_PDEATHSIG = 1
+        if prctl(PR_SET_PDEATHSIG, signal.SIGTERM, 0, 0, 0) == -1:
+            errno = ctypes.get_errno()
+            raise OSError(errno, os.strerror(errno))
+        if os.getppid() != int(parent_pid):
+            os.kill(os.getpid(), signal.SIGTERM)
 
     @staticmethod
     def detach_from_tty() -> None:
         if os.name != "nt":
-            os.setsid()
+            try:
+                os.setsid()
+            except PermissionError:
+                process_group.set_process_group()
 
     @staticmethod
     def set_process_group() -> None:
@@ -378,5 +420,7 @@ __all__ = [
     "spawn_from_driver",
     "spawn_pipe_process",
     "spawn_pipe_process_no_stdin",
+    "spawn_pipe_process_no_stdin_with_inherited_fds",
+    "spawn_process_with_inherited_fds",
     "spawn_pty_process",
 ]

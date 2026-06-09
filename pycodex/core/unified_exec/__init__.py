@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import queue
 import random
 import subprocess
 import threading
@@ -1174,6 +1175,327 @@ def process_output_chunk(
     return processed, emitted_deltas
 
 
+def start_streaming_output(
+    process: Any,
+    context: UnifiedExecContext,
+    transcript: "HeadTailBuffer",
+) -> threading.Thread:
+    """Start the background unified-exec output watcher.
+
+    Rust source: ``codex-rs/core/src/unified_exec/async_watcher.rs::start_streaming_output``.
+    The Python runtime uses a daemon thread instead of Tokio, but preserves the
+    module contract: read chunks continuously, append them to the shared
+    transcript, emit UTF-8-safe output deltas up to the per-call cap, and notify
+    output-drained after process cancellation plus the trailing-output grace.
+    """
+
+    if not isinstance(context, UnifiedExecContext):
+        raise TypeError("context must be UnifiedExecContext")
+    if not isinstance(transcript, HeadTailBuffer):
+        raise TypeError("transcript must be HeadTailBuffer")
+
+    receiver = _process_output_receiver(process)
+    cancellation_token = _process_cancellation_token(process)
+    output_drained = _process_output_drained_notify(process)
+
+    def run() -> None:
+        pending = bytearray()
+        emitted_deltas = 0
+        grace_started_at: float | None = None
+        while True:
+            if _token_cancelled(cancellation_token):
+                if grace_started_at is None:
+                    grace_started_at = time.monotonic()
+                elif (time.monotonic() - grace_started_at) * 1000 >= TRAILING_OUTPUT_GRACE_MS:
+                    _notify_output_drained(output_drained)
+                    break
+
+            chunk = _recv_output_chunk(receiver, timeout=0.01)
+            if chunk is None:
+                if grace_started_at is not None:
+                    continue
+                if _receiver_closed(receiver):
+                    _notify_output_drained(output_drained)
+                    break
+                continue
+
+            processed, emitted_deltas = process_output_chunk(
+                pending,
+                transcript,
+                emitted_deltas,
+                chunk,
+            )
+            for output in processed:
+                if output.delta_chunk is not None:
+                    _send_exec_output_delta(context, output.delta_chunk)
+
+    thread = threading.Thread(target=run, name=f"unified-exec-output-{context.call_id}", daemon=True)
+    thread.start()
+    return thread
+
+
+def spawn_exit_watcher(
+    process: Any,
+    session_ref: Any,
+    turn_ref: Any,
+    call_id: str,
+    command: Iterable[str],
+    cwd: Any,
+    process_id: int,
+    transcript: "HeadTailBuffer",
+    started_at: float | None = None,
+) -> threading.Thread:
+    """Start the background unified-exec exit watcher.
+
+    Rust source: ``codex-rs/core/src/unified_exec/async_watcher.rs::spawn_exit_watcher``.
+    """
+
+    if started_at is None:
+        started_at = time.monotonic()
+    cancellation_token = _process_cancellation_token(process)
+    output_drained = _process_output_drained_notify(process)
+
+    def run() -> None:
+        _wait_for_token_cancelled(cancellation_token)
+        _wait_for_output_drained(output_drained)
+        duration_ms = int(max(time.monotonic() - started_at, 0.0) * 1000)
+        failure_message = _process_failure_message(process)
+        if failure_message is not None:
+            emit_failed_exec_end_for_unified_exec(
+                session_ref,
+                turn_ref,
+                call_id,
+                command,
+                cwd,
+                str(process_id),
+                transcript,
+                "",
+                failure_message,
+                duration_ms,
+            )
+        else:
+            emit_exec_end_for_unified_exec(
+                session_ref,
+                turn_ref,
+                call_id,
+                command,
+                cwd,
+                str(process_id),
+                transcript,
+                "",
+                _process_exit_code(process),
+                duration_ms,
+            )
+
+    thread = threading.Thread(target=run, name=f"unified-exec-exit-{call_id}", daemon=True)
+    thread.start()
+    return thread
+
+
+def emit_exec_end_for_unified_exec(
+    session_ref: Any,
+    turn_ref: Any,
+    call_id: str,
+    command: Iterable[str],
+    cwd: Any,
+    process_id: str | int | None,
+    transcript: "HeadTailBuffer",
+    fallback_output: str,
+    exit_code: int,
+    duration_ms: int = 0,
+) -> UnifiedExecEndEventPlan:
+    plan = unified_exec_success_end_event_plan(
+        call_id=call_id,
+        command=command,
+        cwd=cwd,
+        process_id=process_id,
+        transcript=transcript,
+        fallback_output=fallback_output,
+        exit_code=exit_code,
+        duration_ms=duration_ms,
+    )
+    _send_unified_exec_end_event(session_ref, turn_ref, plan)
+    return plan
+
+
+def emit_failed_exec_end_for_unified_exec(
+    session_ref: Any,
+    turn_ref: Any,
+    call_id: str,
+    command: Iterable[str],
+    cwd: Any,
+    process_id: str | int | None,
+    transcript: "HeadTailBuffer",
+    fallback_output: str,
+    message: str,
+    duration_ms: int = 0,
+) -> UnifiedExecEndEventPlan:
+    plan = unified_exec_failed_end_event_plan(
+        call_id=call_id,
+        command=command,
+        cwd=cwd,
+        process_id=process_id,
+        transcript=transcript,
+        fallback_output=fallback_output,
+        message=message,
+        duration_ms=duration_ms,
+    )
+    _send_unified_exec_end_event(session_ref, turn_ref, plan)
+    return plan
+
+
+def _process_output_receiver(process: Any) -> Any:
+    receiver = getattr(process, "output_receiver", None)
+    return receiver() if callable(receiver) else getattr(process, "output", receiver)
+
+
+def _process_cancellation_token(process: Any) -> Any:
+    token = getattr(process, "cancellation_token", None)
+    return token() if callable(token) else getattr(process, "cancelled", token)
+
+
+def _process_output_drained_notify(process: Any) -> Any:
+    notify = getattr(process, "output_drained_notify", None)
+    return notify() if callable(notify) else getattr(process, "output_drained", notify)
+
+
+def _recv_output_chunk(receiver: Any, *, timeout: float) -> bytes | None:
+    if receiver is None:
+        return None
+    if isinstance(receiver, queue.Queue):
+        try:
+            value = receiver.get(timeout=timeout)
+        except queue.Empty:
+            return None
+        return bytes(value) if value is not None else None
+    recv = getattr(receiver, "recv", None) or getattr(receiver, "get", None)
+    if callable(recv):
+        try:
+            value = recv(timeout=timeout)
+        except (TimeoutError, queue.Empty):
+            return None
+        except TypeError:
+            try:
+                value = recv()
+            except (TimeoutError, queue.Empty):
+                return None
+        return bytes(value) if value is not None else None
+    try:
+        value = next(receiver)
+    except StopIteration:
+        setattr(receiver, "_pycodex_closed", True)
+        return None
+    return bytes(value) if value is not None else None
+
+
+def _receiver_closed(receiver: Any) -> bool:
+    if receiver is None:
+        return True
+    return bool(getattr(receiver, "closed", False) or getattr(receiver, "_pycodex_closed", False))
+
+
+def _token_cancelled(token: Any) -> bool:
+    if token is None:
+        return False
+    for name in ("is_cancelled", "is_set", "cancelled"):
+        value = getattr(token, name, None)
+        if callable(value):
+            return bool(value())
+        if value is not None and not callable(value):
+            return bool(value)
+    return bool(token)
+
+
+def _wait_for_token_cancelled(token: Any) -> None:
+    wait = getattr(token, "wait", None)
+    if callable(wait):
+        wait()
+        return
+    while not _token_cancelled(token):
+        time.sleep(0.01)
+
+
+def _notify_output_drained(notify: Any) -> None:
+    for name in ("notify_one", "notify", "set", "release"):
+        value = getattr(notify, name, None)
+        if callable(value):
+            value()
+            return
+    if callable(notify):
+        notify()
+
+
+def _wait_for_output_drained(notify: Any) -> None:
+    wait = getattr(notify, "wait", None)
+    if callable(wait):
+        wait()
+        return
+    if notify is None:
+        return
+    is_set = getattr(notify, "is_set", None)
+    if not callable(is_set):
+        return
+    while not bool(is_set()):
+        time.sleep(0.01)
+
+
+def _process_failure_message(process: Any) -> str | None:
+    failure = getattr(process, "failure_message", None)
+    value = failure() if callable(failure) else failure
+    return value if isinstance(value, str) and value else None
+
+
+def _process_exit_code(process: Any) -> int:
+    exit_code = getattr(process, "exit_code", None)
+    value = exit_code() if callable(exit_code) else exit_code
+    return int(value) if value is not None else -1
+
+
+def _send_exec_output_delta(context: UnifiedExecContext, chunk: str) -> None:
+    event = {
+        "type": "exec_command_output_delta",
+        "call_id": context.call_id,
+        "stream": "stdout",
+        "chunk": chunk,
+    }
+    _send_session_event(context.session, context.turn, event)
+
+
+def _send_unified_exec_end_event(session_ref: Any, turn_ref: Any, plan: UnifiedExecEndEventPlan) -> None:
+    _send_session_event(
+        session_ref,
+        turn_ref,
+        {
+            "type": "exec_command_end",
+            "call_id": plan.call_id,
+            "command": plan.command,
+            "cwd": plan.cwd,
+            "process_id": plan.process_id,
+            "source": plan.source,
+            "status": plan.status,
+            "exit_code": plan.exit_code,
+            "stdout": plan.stdout,
+            "stderr": plan.stderr,
+            "aggregated_output": plan.aggregated_output,
+            "duration_ms": plan.duration_ms,
+            "timed_out": plan.timed_out,
+        },
+    )
+
+
+def _send_session_event(session_ref: Any, turn_ref: Any, event: dict[str, Any]) -> None:
+    send = getattr(session_ref, "send_event", None)
+    if callable(send):
+        try:
+            send(turn_ref, event)
+        except TypeError:
+            send(event)
+        return
+    send_raw = getattr(session_ref, "send_event_raw", None)
+    if callable(send_raw):
+        send_raw(event)
+
+
 class HeadTailBuffer:
     """Capped byte buffer that keeps a stable prefix and suffix."""
 
@@ -1305,6 +1627,8 @@ __all__ = [
     "clamp_yield_time",
     "deterministic_process_ids_for_tests",
     "env_overlay_for_exec_server",
+    "emit_exec_end_for_unified_exec",
+    "emit_failed_exec_end_for_unified_exec",
     "exec_server_after_seq",
     "exec_server_env_for_request",
     "exec_server_params_for_request",
@@ -1324,6 +1648,8 @@ __all__ = [
     "should_emit_terminal_interaction",
     "split_valid_utf8_prefix",
     "split_valid_utf8_prefix_with_max",
+    "spawn_exit_watcher",
+    "start_streaming_output",
     "terminal_interaction_process_id",
     "unified_exec_failed_end_event_plan",
     "unified_exec_success_end_event_plan",

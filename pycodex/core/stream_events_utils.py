@@ -772,6 +772,8 @@ class SamplingPlanModeAssistantDonePlan:
     should_emit_agent_message_completed: bool = False
     should_drop_empty_agent_message: bool = False
     previously_active_item: TurnItem | None = None
+    sess: object | None = None
+    turn_store: object | None = None
 
     def __post_init__(self) -> None:
         for field_name in (
