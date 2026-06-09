@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from pycodex.api import ResponseEvent
 from pycodex.core.tools.network_approval import CancellationToken
 from pycodex.protocol import BaseInstructions, Personality, ResponseItem
 
@@ -112,5 +113,6 @@ __all__ = [
     "REVIEW_EXIT_INTERRUPTED_TMPL",
     "REVIEW_EXIT_SUCCESS_TMPL",
     "REVIEW_PROMPT",
+    "ResponseEvent",
     "ResponseStream",
 ]

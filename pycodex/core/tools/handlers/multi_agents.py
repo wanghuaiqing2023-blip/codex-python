@@ -9,18 +9,32 @@ small callbacks so this port stays stdlib-only.
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
+import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from pycodex.core.agent import exceeds_thread_spawn_depth_limit, next_thread_spawn_depth
+from pycodex.core.agent.control import SpawnAgentForkMode, SpawnAgentOptions
+from pycodex.core.agent.status import is_final
 from pycodex.core.tools.handlers.multi_agents_common import (
     DEFAULT_WAIT_TIMEOUT_MS,
     MAX_WAIT_TIMEOUT_MS,
     MIN_WAIT_TIMEOUT_MS,
+    apply_requested_spawn_agent_model_overrides,
+    apply_spawn_agent_runtime_overrides,
+    apply_spawn_agent_service_tier,
+    apply_spawn_agent_overrides,
+    collab_agent_error,
+    collab_spawn_error,
+    build_agent_spawn_config,
     function_arguments,
     parse_collab_input,
     reject_full_fork_spawn_overrides,
+    thread_spawn_source,
     tool_output_code_mode_result,
     tool_output_json_text,
     tool_output_response_item,
@@ -44,7 +58,7 @@ from pycodex.core.tools.registry import ToolInvocation
 from pycodex.core.tools.tool_search_entry import ToolSearchInfo
 from pycodex.tools.tool_discovery import ToolSearchSourceInfo
 from pycodex.core.tools.router import FunctionCallError
-from pycodex.protocol import AgentStatus, ResponseInputItem, ThreadId, ToolName, UserInput
+from pycodex.protocol import AgentStatus, Op, ResponseInputItem, SessionSource, ThreadId, ToolName, UserInput
 
 JsonValue = Any
 MULTI_AGENT_TOOL_SEARCH_SOURCE_NAME = "Multi-agent tools"
@@ -396,8 +410,9 @@ class V1SpawnAgentHandler:
     def handle(self, invocation: ToolInvocation) -> V1SpawnAgentResult:
         args = self.parse_args(invocation.payload)
         if self._spawn_agent is None:
-            raise FunctionCallError.respond_to_model("agent control is unavailable in this session")
-        result = self._spawn_agent(args)
+            result = _spawn_agent_from_invocation(invocation, args)
+        else:
+            result = self._spawn_agent(args)
         if isinstance(result, V1SpawnAgentResult):
             return result
         data = _mapping(result, "spawn_agent result")
@@ -432,8 +447,9 @@ class SendInputHandler:
     def handle(self, invocation: ToolInvocation) -> SendInputResult:
         args = self.parse_args(invocation.payload)
         if self._send_input is None:
-            raise FunctionCallError.respond_to_model("agent control is unavailable in this session")
-        submission_id = self._send_input(args.receiver_thread_id(), args.input_items(), args.interrupt)
+            submission_id = _send_input_from_invocation(invocation, args)
+        else:
+            submission_id = self._send_input(args.receiver_thread_id(), args.input_items(), args.interrupt)
         return SendInputResult(submission_id)
 
 
@@ -459,7 +475,7 @@ class V1CloseAgentHandler:
     def handle(self, invocation: ToolInvocation) -> V1CloseAgentResult:
         args = V1CloseAgentArgs.from_json(function_arguments(invocation.payload))
         if self._close_agent is None:
-            raise FunctionCallError.respond_to_model("agent control is unavailable in this session")
+            return V1CloseAgentResult(_close_agent_from_invocation(invocation, args.agent_id()))
         return V1CloseAgentResult(AgentStatus.from_mapping(self._close_agent(args.agent_id())))
 
 
@@ -498,13 +514,240 @@ class V1WaitAgentHandler:
         targets = args.receiver_thread_ids()
         timeout_ms = args.resolve_timeout_ms(min_timeout_ms, default_timeout_ms, max_timeout_ms)
         if self._wait_agent is None:
-            raise FunctionCallError.respond_to_model("agent control is unavailable in this session")
-        status = self._wait_agent(targets, timeout_ms)
+            status = _wait_agent_from_invocation(invocation, targets, timeout_ms)
+        else:
+            status = self._wait_agent(targets, timeout_ms)
         timed_out = len(status) == 0
         return V1WaitAgentResult(status, timed_out)
 
 
+def _spawn_agent_from_invocation(invocation: ToolInvocation, args: V1SpawnAgentArgs) -> V1SpawnAgentResult:
+    session = _required_session(invocation)
+    turn = _required_turn(invocation)
+    agent_control = _agent_control(session)
+    session_source = getattr(turn, "session_source", None)
+    if not isinstance(session_source, SessionSource):
+        session_source = SessionSource.default()
+    child_depth = next_thread_spawn_depth(session_source)
+    max_depth = getattr(getattr(turn, "config", None), "agent_max_depth", None)
+    if max_depth is not None and exceeds_thread_spawn_depth_limit(child_depth, max_depth):
+        raise FunctionCallError.respond_to_model("Agent depth limit reached. Solve the task yourself.")
+
+    role_name = args.role_name()
+    input_items = args.input_items()
+    config = _apply_spawn_config_overrides(
+        invocation,
+        _spawn_config_from_turn(turn, args),
+        args,
+        child_depth,
+    )
+    try:
+        spawned = _sync_await(agent_control.spawn_agent_with_metadata(
+            config,
+            input_items,
+            thread_spawn_source(
+                getattr(session, "conversation_id"),
+                session_source,
+                child_depth,
+                role_name,
+                None,
+            ),
+            SpawnAgentOptions(
+                fork_parent_spawn_call_id=getattr(invocation, "call_id", None) if args.fork_context else None,
+                fork_mode=SpawnAgentForkMode.FULL_HISTORY if args.fork_context else None,
+                environments=_turn_environment_selections(turn),
+            ),
+        ))
+    except Exception as err:
+        raise collab_spawn_error(err) from err
+    metadata = getattr(spawned, "metadata", None)
+    nickname = getattr(metadata, "agent_nickname", None)
+    return V1SpawnAgentResult(agent_id=str(getattr(spawned, "thread_id")), nickname=nickname)
+
+
+def _send_input_from_invocation(invocation: ToolInvocation, args: SendInputArgs) -> str:
+    session = _required_session(invocation)
+    agent_control = _agent_control(session)
+    receiver = args.receiver_thread_id()
+    try:
+        if args.interrupt:
+            _sync_await(agent_control.interrupt_agent(receiver))
+        return str(_sync_await(agent_control.send_input(receiver, Op.user_input(args.input_items()))))
+    except Exception as err:
+        raise collab_agent_error(receiver, err) from err
+
+
+def _close_agent_from_invocation(invocation: ToolInvocation, agent_id: ThreadId) -> AgentStatus:
+    session = _required_session(invocation)
+    agent_control = _agent_control(session)
+    try:
+        previous_status = _status_from_subscription_or_current(agent_control, agent_id)
+        _sync_await(agent_control.close_agent(agent_id))
+        return previous_status
+    except Exception as err:
+        raise collab_agent_error(agent_id, err) from err
+
+
+def _wait_agent_from_invocation(
+    invocation: ToolInvocation,
+    targets: tuple[ThreadId, ...],
+    timeout_ms: int,
+) -> dict[str, AgentStatus]:
+    session = _required_session(invocation)
+    agent_control = _agent_control(session)
+    deadline = time.monotonic() + (timeout_ms / 1000.0)
+    subscriptions: dict[ThreadId, Any] = {}
+    for target in targets:
+        try:
+            subscriptions[target] = _sync_await(agent_control.subscribe_status(target))
+        except Exception as err:
+            if _is_thread_not_found(err):
+                return {str(target): AgentStatus.not_found()}
+            raise collab_agent_error(target, err) from err
+
+    while True:
+        statuses: dict[str, AgentStatus] = {}
+        for target in targets:
+            status = _status_from_subscription_or_current(agent_control, target, subscriptions.get(target))
+            if is_final(status):
+                statuses[str(target)] = status
+        if statuses:
+            return statuses
+        if time.monotonic() >= deadline:
+            return {}
+        time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
+
+
+def _status_from_subscription_or_current(
+    agent_control: Any,
+    agent_id: ThreadId,
+    subscription: Any = None,
+) -> AgentStatus:
+    if subscription is None:
+        try:
+            subscription = _sync_await(agent_control.subscribe_status(agent_id))
+        except Exception:
+            subscription = None
+    status = _subscription_status(subscription)
+    if status is not None:
+        return AgentStatus.from_mapping(status)
+    return AgentStatus.from_mapping(_sync_await(agent_control.get_status(agent_id)))
+
+
+def _subscription_status(subscription: Any) -> Any:
+    if subscription is None:
+        return None
+    for name in ("borrow_and_update", "borrow", "get", "value"):
+        value = getattr(subscription, name, None)
+        if callable(value):
+            return _sync_await(value())
+        if value is not None:
+            return value
+    return None
+
+
+def _spawn_config_from_turn(turn: Any, args: V1SpawnAgentArgs) -> Any:
+    config = build_agent_spawn_config(None, turn)
+    if args.service_tier is not None:
+        _set_config_attr(config, "service_tier", args.service_tier)
+    return config
+
+
+def _apply_spawn_config_overrides(invocation: ToolInvocation, config: Any, args: V1SpawnAgentArgs, child_depth: int) -> Any:
+    session = _required_session(invocation)
+    turn = _required_turn(invocation)
+    if not args.fork_context:
+        apply_requested_spawn_agent_model_overrides(
+            session,
+            turn,
+            config,
+            args.model,
+            args.reasoning_effort,
+        )
+    parent_service_tier = getattr(getattr(turn, "config", None), "service_tier", None)
+    apply_spawn_agent_service_tier(session, config, parent_service_tier, args.service_tier)
+    apply_spawn_agent_runtime_overrides(config, turn)
+    apply_spawn_agent_overrides(config, child_depth)
+    return config
+
+
+def _set_config_attr(config: Any, key: str, value: Any) -> None:
+    if isinstance(config, dict):
+        config[key] = value
+    else:
+        setattr(config, key, value)
+
+
+def _turn_environment_selections(turn: Any) -> tuple[Any, ...] | None:
+    environments = getattr(turn, "environments", None)
+    to_selections = getattr(environments, "to_selections", None)
+    if callable(to_selections):
+        selections = to_selections()
+        return tuple(selections) if selections is not None else None
+    return None
+
+
+def _required_session(invocation: ToolInvocation) -> Any:
+    session = getattr(invocation, "session", None)
+    if session is None:
+        raise FunctionCallError.respond_to_model("agent control is unavailable in this session")
+    return session
+
+
+def _required_turn(invocation: ToolInvocation) -> Any:
+    turn = getattr(invocation, "turn", None)
+    if turn is None:
+        raise FunctionCallError.respond_to_model("multi-agent tool requires a turn context")
+    return turn
+
+
+def _agent_control(session: Any) -> Any:
+    services = getattr(session, "services", None)
+    agent_control = getattr(services, "agent_control", None)
+    if agent_control is None:
+        agent_control = getattr(session, "agent_control", None)
+    if agent_control is None:
+        raise FunctionCallError.respond_to_model("agent control is unavailable in this session")
+    return agent_control
+
+
+def _is_thread_not_found(err: Exception) -> bool:
+    return getattr(err, "kind", None) == "thread_not_found" or "thread not found" in str(err).lower()
+
+
+def _sync_await(value: Any) -> Any:
+    if not inspect.isawaitable(value):
+        return value
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(value)
+
+    result: dict[str, Any] = {}
+
+    def run() -> None:
+        try:
+            result["value"] = asyncio.run(value)
+        except BaseException as err:
+            result["error"] = err
+
+    import threading
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join()
+    if "error" in result:
+        raise result["error"]
+    return result.get("value")
+
+
+CloseAgentHandler = V1CloseAgentHandler
+SpawnAgentHandler = V1SpawnAgentHandler
+WaitAgentHandler = V1WaitAgentHandler
+
+
 __all__ = [
+    "CloseAgentHandler",
     "MULTI_AGENT_TOOL_SEARCH_SOURCE_DESCRIPTION",
     "MULTI_AGENT_TOOL_SEARCH_SOURCE_NAME",
     "ResumeAgentArgs",
@@ -519,9 +762,11 @@ __all__ = [
     "V1SpawnAgentArgs",
     "V1SpawnAgentHandler",
     "V1SpawnAgentResult",
+    "SpawnAgentHandler",
     "V1WaitAgentHandler",
     "V1WaitAgentResult",
     "V1WaitArgs",
+    "WaitAgentHandler",
     "multi_agent_tool_search_info",
     "parse_agent_id_target",
     "parse_agent_id_targets",

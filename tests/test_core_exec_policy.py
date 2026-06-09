@@ -581,6 +581,96 @@ class CoreExecPolicyTests(unittest.TestCase):
             ExecPolicyCommands((("echo", "blocked"),), False, ExecPolicyCommandOrigin.POWERSHELL),
         )
 
+    @unittest.skipUnless(os.name == "nt", "PowerShell exec-policy parsing is Windows-specific upstream")
+    def test_powershell_inner_commands_are_evaluated_against_prompt_rules_on_windows(self):
+        # Rust source: codex-rs/core/src/exec_policy_windows_tests.rs
+        # Rust test: evaluates_powershell_inner_commands_against_prompt_rules.
+        command = ("powershell.exe", "-NoProfile", "-Command", "echo blocked")
+        matched_rules = match_exec_policy_rules_for_command(
+            command,
+            (ExecPolicyPrefixRule.new(["echo"], "prompt"),),
+        )
+
+        requirement = create_exec_approval_requirement_for_command(
+            ExecApprovalRequest(
+                command=command,
+                approval_policy=AskForApproval.NEVER,
+                permission_profile=PermissionProfile.disabled(),
+                file_system_sandbox_policy=FileSystemSandboxPolicy.unrestricted(),
+                sandbox_cwd=Path("/repo"),
+                sandbox_permissions=SandboxPermissions.USE_DEFAULT,
+                matched_rules=matched_rules,
+            )
+        )
+
+        self.assertEqual(requirement.type, "forbidden")
+        self.assertEqual(requirement.reason, PROMPT_CONFLICT_REASON)
+
+    @unittest.skipUnless(os.name == "nt", "PowerShell exec-policy parsing is Windows-specific upstream")
+    def test_powershell_inner_commands_are_evaluated_against_allow_rules_on_windows(self):
+        # Rust source: codex-rs/core/src/exec_policy_windows_tests.rs
+        # Rust test: evaluates_powershell_inner_commands_against_allow_rules.
+        command = ("powershell.exe", "-NoProfile", "-Command", "echo blocked")
+        matched_rules = match_exec_policy_rules_for_command(
+            command,
+            (ExecPolicyPrefixRule.new(["echo"], "allow"),),
+        )
+
+        requirement = create_exec_approval_requirement_for_command(
+            ExecApprovalRequest(
+                command=command,
+                approval_policy=AskForApproval.UNLESS_TRUSTED,
+                permission_profile=PermissionProfile.read_only(),
+                file_system_sandbox_policy=PermissionProfile.read_only().file_system_sandbox_policy(),
+                sandbox_cwd=Path("/repo"),
+                sandbox_permissions=SandboxPermissions.USE_DEFAULT,
+                matched_rules=matched_rules,
+            )
+        )
+
+        self.assertEqual(requirement.type, "skip")
+        self.assertTrue(requirement.bypass_sandbox)
+        self.assertIsNone(requirement.proposed_execpolicy_amendment)
+
+    @unittest.skipUnless(os.name == "nt", "PowerShell exec-policy parsing is Windows-specific upstream")
+    def test_unmatched_safe_powershell_words_are_allowed_on_windows(self):
+        # Rust source: codex-rs/core/src/exec_policy_windows_tests.rs
+        # Rust test: unmatched_safe_powershell_words_are_allowed.
+        self.assertIs(
+            render_decision_for_unmatched_command(
+                ["Get-Content", "Cargo.toml"],
+                _context(
+                    approval_policy=AskForApproval.UNLESS_TRUSTED,
+                    permission_profile=PermissionProfile.read_only(),
+                    file_system_sandbox_policy=PermissionProfile.read_only().file_system_sandbox_policy(),
+                    command_origin=ExecPolicyCommandOrigin.POWERSHELL,
+                ),
+            ),
+            Decision.ALLOW,
+        )
+
+    @unittest.skipUnless(os.name == "nt", "PowerShell exec-policy parsing is Windows-specific upstream")
+    def test_unmatched_dangerous_powershell_inner_commands_require_approval_on_windows(self):
+        # Rust source: codex-rs/core/src/exec_policy_windows_tests.rs
+        # Rust test: unmatched_dangerous_powershell_inner_commands_require_approval.
+        requirement = create_exec_approval_requirement_for_command(
+            ExecApprovalRequest(
+                command=("powershell.exe", "-NoProfile", "-Command", "Remove-Item test -Force"),
+                approval_policy=AskForApproval.ON_REQUEST,
+                permission_profile=PermissionProfile.disabled(),
+                file_system_sandbox_policy=FileSystemSandboxPolicy.unrestricted(),
+                sandbox_cwd=Path("/repo"),
+                sandbox_permissions=SandboxPermissions.USE_DEFAULT,
+            )
+        )
+
+        self.assertEqual(requirement.type, "needs_approval")
+        self.assertIsNone(requirement.reason)
+        self.assertEqual(
+            requirement.proposed_execpolicy_amendment,
+            ExecPolicyAmendment.new(["Remove-Item", "test", "-Force"]),
+        )
+
     def test_profile_is_managed_read_only_detects_windows_unsandboxed_read_only(self):
         # Rust source: codex-rs/core/src/exec_policy.rs
         # Behavior anchor: profile_is_managed_read_only.

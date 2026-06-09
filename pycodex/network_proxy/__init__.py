@@ -10,9 +10,11 @@ semantics that can be represented without that external runtime.
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from collections.abc import Awaitable, Callable
 from typing import Any, Mapping, Sequence
 
 JsonValue = Any
@@ -90,6 +92,57 @@ class NetworkProxyConstraints:
     denylist_expansion_enabled: bool | None = None
     allow_unix_sockets: list[str] | None = None
     allow_local_binding: bool | None = None
+
+
+@dataclass(frozen=True)
+class ConfigState:
+    config: NetworkProxyConfig
+    constraints: NetworkProxyConstraints
+
+
+@dataclass(frozen=True)
+class NetworkProxyAuditMetadata:
+    value: Mapping[str, JsonValue] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class NetworkProxyState:
+    state: ConfigState
+    reloader: object
+    audit_metadata: NetworkProxyAuditMetadata | None = None
+
+
+@dataclass(frozen=True)
+class StartedNetworkProxy:
+    proxy_value: Any
+    handle: Any
+
+    def proxy(self) -> Any:
+        return self.proxy_value
+
+
+@dataclass(frozen=True)
+class StaticNetworkProxyReloader:
+    state: ConfigState
+
+    async def maybe_reload(self) -> None:
+        return None
+
+    async def reload_now(self) -> ConfigState:
+        return self.state
+
+    def source_label(self) -> str:
+        return "StaticNetworkProxyReloader"
+
+
+NetworkProxyBuilder = Callable[
+    [NetworkProxyState, object, object | None, object | None, bool, NetworkProxyAuditMetadata],
+    StartedNetworkProxy | Awaitable[StartedNetworkProxy],
+]
+ConfigLayersLoader = Callable[
+    [],
+    Sequence["ConfigLayerEntry"] | Awaitable[Sequence["ConfigLayerEntry"]],
+]
 
 
 @dataclass(frozen=True)
@@ -262,6 +315,49 @@ class NetworkProxySpec:
     def socks_enabled(self) -> bool:
         return self.config.network.enable_socks5
 
+    async def start_proxy(
+        self,
+        permission_profile: object,
+        policy_decider: object | None,
+        blocked_request_observer: object | None,
+        enable_network_approval_flow: bool,
+        audit_metadata: NetworkProxyAuditMetadata | Mapping[str, JsonValue] | None,
+        *,
+        network_proxy_builder: NetworkProxyBuilder,
+    ) -> StartedNetworkProxy:
+        if not isinstance(enable_network_approval_flow, bool):
+            raise TypeError("enable_network_approval_flow must be a bool")
+        if audit_metadata is None:
+            audit_metadata = NetworkProxyAuditMetadata()
+        elif isinstance(audit_metadata, Mapping):
+            audit_metadata = NetworkProxyAuditMetadata(dict(audit_metadata))
+        elif not isinstance(audit_metadata, NetworkProxyAuditMetadata):
+            raise TypeError("audit_metadata must be NetworkProxyAuditMetadata, mapping, or None")
+        if not callable(network_proxy_builder):
+            raise TypeError("network_proxy_builder must be callable")
+        effective_policy_decider = policy_decider
+        if (
+            enable_network_approval_flow
+            and not self.hard_deny_allowlist_misses
+            and effective_policy_decider is None
+            and self.managed_sandbox_active(permission_profile)
+        ):
+            effective_policy_decider = ask_not_allowed_policy_decider
+        state = self.build_state_with_audit_metadata(audit_metadata)
+        started = network_proxy_builder(
+            state,
+            permission_profile,
+            effective_policy_decider,
+            blocked_request_observer,
+            enable_network_approval_flow,
+            audit_metadata,
+        )
+        if inspect.isawaitable(started):
+            started = await started
+        if not isinstance(started, StartedNetworkProxy):
+            raise TypeError("network_proxy_builder must return StartedNetworkProxy")
+        return started
+
     def recompute_for_permission_profile(self, permission_profile: object) -> "NetworkProxySpec":
         return type(self).from_config_and_constraints(self.base_config, self.requirements, permission_profile)
 
@@ -274,6 +370,39 @@ class NetworkProxySpec:
             config,
             _clone_network_proxy_constraints(self.constraints),
             self.hard_deny_allowlist_misses,
+        )
+
+    async def apply_to_started_proxy(self, started_proxy: StartedNetworkProxy) -> None:
+        if not isinstance(started_proxy, StartedNetworkProxy):
+            raise TypeError("started_proxy must be StartedNetworkProxy")
+        proxy = started_proxy.proxy()
+        replacer = getattr(proxy, "replace_config_state", None)
+        if not callable(replacer):
+            raise AttributeError("started proxy must provide replace_config_state")
+        result = replacer(self.build_config_state_for_spec())
+        if inspect.isawaitable(result):
+            await result
+
+    def build_state_with_audit_metadata(
+        self,
+        audit_metadata: NetworkProxyAuditMetadata | Mapping[str, JsonValue] | None,
+    ) -> NetworkProxyState:
+        if audit_metadata is None:
+            audit_metadata = NetworkProxyAuditMetadata()
+        elif isinstance(audit_metadata, Mapping):
+            audit_metadata = NetworkProxyAuditMetadata(dict(audit_metadata))
+        elif not isinstance(audit_metadata, NetworkProxyAuditMetadata):
+            raise TypeError("audit_metadata must be NetworkProxyAuditMetadata, mapping, or None")
+        return NetworkProxyState(
+            self.build_config_state_for_spec(),
+            reloader=None,
+            audit_metadata=audit_metadata,
+        )
+
+    def build_config_state_for_spec(self) -> ConfigState:
+        return ConfigState(
+            _clone_network_proxy_config(self.config),
+            _clone_network_proxy_constraints(self.constraints),
         )
 
     @staticmethod
@@ -374,6 +503,10 @@ def normalize_host(host: str) -> str:
     return host.strip().rstrip(".").lower()
 
 
+async def ask_not_allowed_policy_decider(_request: object) -> str:
+    return "ask:not_allowed"
+
+
 def apply_network_constraints(network: NetworkToml, constraints: NetworkProxyConstraints) -> None:
     if not isinstance(network, NetworkToml):
         raise TypeError("network must be NetworkToml")
@@ -453,6 +586,41 @@ def config_from_layers(
     if exec_policy is not None:
         apply_exec_policy_network_rules(config, exec_policy)
     return config
+
+
+async def build_network_proxy_state(
+    layers: Sequence[ConfigLayerEntry] | None = None,
+    exec_policy: object | None = None,
+    *,
+    config_layers_loader: ConfigLayersLoader | None = None,
+) -> NetworkProxyState:
+    state, reloader = await build_network_proxy_state_and_reloader(
+        layers,
+        exec_policy,
+        config_layers_loader=config_layers_loader,
+    )
+    return NetworkProxyState(state, reloader)
+
+
+async def build_network_proxy_state_and_reloader(
+    layers: Sequence[ConfigLayerEntry] | None = None,
+    exec_policy: object | None = None,
+    *,
+    config_layers_loader: ConfigLayersLoader | None = None,
+) -> tuple[ConfigState, MtimeConfigReloader]:
+    if layers is None:
+        if config_layers_loader is None:
+            raise ValueError("layers or config_layers_loader must be provided")
+        loaded_layers = config_layers_loader()
+        if inspect.isawaitable(loaded_layers):
+            loaded_layers = await loaded_layers
+        layers = loaded_layers
+    if isinstance(layers, ConfigLayerEntry) or not isinstance(layers, Sequence):
+        raise TypeError("layers must be a sequence of ConfigLayerEntry")
+    config = config_from_layers(layers, exec_policy)
+    constraints = network_constraints_from_trusted_layers(layers)
+    state = ConfigState(config, constraints)
+    return state, MtimeConfigReloader(collect_layer_mtimes(layers))
 
 
 def network_constraints_from_trusted_layers(layers: Sequence[ConfigLayerEntry]) -> NetworkProxyConstraints:
@@ -751,22 +919,32 @@ def _path_mtime_ns(path: Path) -> int | None:
 
 
 __all__ = [
+    "ConfigState",
     "ConfigLayerEntry",
     "ConfigLayerSource",
     "LayerMtime",
     "MtimeConfigReloader",
+    "ConfigLayersLoader",
     "NetworkConstraints",
     "NetworkDomainPermission",
     "NetworkMode",
+    "NetworkProxyAuditMetadata",
+    "NetworkProxyBuilder",
     "NetworkProxyConfig",
     "NetworkProxyConstraints",
     "NetworkProxyNetworkConfig",
+    "NetworkProxyState",
     "NetworkProxySpec",
     "NetworkTablesToml",
     "NetworkToml",
+    "StartedNetworkProxy",
+    "StaticNetworkProxyReloader",
     "apply_exec_policy_network_rules",
     "apply_network_tables",
     "apply_network_constraints",
+    "build_network_proxy_state",
+    "build_network_proxy_state_and_reloader",
+    "ask_not_allowed_policy_decider",
     "collect_layer_mtimes",
     "config_from_layers",
     "is_user_controlled_layer",

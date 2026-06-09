@@ -8,7 +8,10 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping
 
-from pycodex.core.config.permissions import is_builtin_permission_profile_name
+from pycodex.core.config.permissions import (
+    is_builtin_permission_profile_name,
+    validate_user_permission_profile_names,
+)
 from pycodex.core.config.schema import (
     canonicalize,
     config_schema_json,
@@ -56,6 +59,13 @@ class ThreadStoreConfig:
         if not isinstance(id, str):
             raise TypeError("thread store id must be a string")
         return cls("in_memory", id=id)
+
+
+@dataclass(frozen=True)
+class EffectivePermissionSelection:
+    profiles: Mapping[str, Any] | None
+    selected_profile_id: str | None
+    requirements_force_profile_selection: bool = False
 
 
 def resolve_sqlite_home_env(resolved_cwd: str | os.PathLike[str], env: Mapping[str, str] | None = None) -> Path | None:
@@ -151,6 +161,49 @@ def normalize_guardian_policy_config(value: str | None) -> str | None:
     return trimmed or None
 
 
+def merge_managed_permission_profiles(
+    configured_permissions: Mapping[str, Any] | None,
+    requirements_toml: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    requirements = requirements_toml or {}
+    managed_profiles = _managed_permission_profiles(requirements)
+    if not managed_profiles:
+        return dict(_permission_entries(configured_permissions)) if configured_permissions is not None else None
+
+    merged = dict(_permission_entries(configured_permissions))
+    for profile_id, managed_profile in managed_profiles.items():
+        if profile_id in merged:
+            raise ValueError(
+                "requirements.toml permissions profile "
+                f"`{profile_id}` conflicts with a config-defined profile of the same name"
+            )
+        merged[profile_id] = managed_profile
+    return merged
+
+
+def resolve_effective_permission_selection(
+    configured_permissions: Mapping[str, Any] | None,
+    default_permissions_override: str | None,
+    configured_default_permissions: str | None,
+    requirements_toml: Mapping[str, Any] | None,
+    startup_warnings: list[str],
+) -> EffectivePermissionSelection:
+    profiles = merge_managed_permission_profiles(configured_permissions, requirements_toml)
+    validate_user_permission_profile_names(profiles)
+    validate_required_permission_profile_catalog(requirements_toml, profiles)
+    selected_profile_id = resolve_default_permissions(
+        default_permissions_override,
+        configured_default_permissions,
+        requirements_toml,
+        startup_warnings,
+    )
+    return EffectivePermissionSelection(
+        profiles=profiles,
+        selected_profile_id=selected_profile_id,
+        requirements_force_profile_selection=(requirements_toml or {}).get("allowed_permissions") is not None,
+    )
+
+
 def resolve_default_permissions(
     default_permissions_override: str | None,
     configured_default_permissions: str | None,
@@ -159,7 +212,11 @@ def resolve_default_permissions(
 ) -> str | None:
     requirements = requirements_toml or {}
     allowed_permissions = requirements.get("allowed_permissions")
-    default_permissions = default_permissions_override or configured_default_permissions
+    default_permissions = (
+        default_permissions_override
+        if default_permissions_override is not None
+        else configured_default_permissions
+    )
     if (
         default_permissions is not None
         and allowed_permissions is not None
@@ -195,6 +252,42 @@ def validate_required_permission_profile_catalog(
             raise ValueError(f"requirements.toml allowed_permissions refers to undefined profile `{profile_id}`")
 
 
+def profile_allows_configured_network_proxy(permission_profile: Any) -> bool:
+    profile_type = getattr(permission_profile, "type", None)
+    if profile_type is None and isinstance(permission_profile, Mapping):
+        profile_type = permission_profile.get("type")
+    if profile_type not in {"managed", "external"}:
+        return False
+    network = getattr(permission_profile, "network", None)
+    if network is None and isinstance(permission_profile, Mapping):
+        network = permission_profile.get("network")
+    return _network_permission_is_enabled(network)
+
+
+def build_network_proxy_spec(
+    configured_network_proxy_config: Any,
+    network_requirements: Any | None,
+    permission_profile: Any,
+) -> Any | None:
+    from pycodex.network_proxy import NetworkProxySpec
+
+    requirements, source = _sourced_value_and_source(network_requirements)
+    has_network_requirements = requirements is not None
+    try:
+        network = NetworkProxySpec.from_config_and_constraints(
+            configured_network_proxy_config,
+            requirements,
+            permission_profile,
+        )
+    except Exception as exc:
+        if source is not None:
+            raise type(exc)(f"failed to build managed network proxy from {source}: {exc}") from exc
+        raise
+    if has_network_requirements:
+        return network
+    return network if network.enabled() else None
+
+
 def _optional_int(value: Mapping[str, Any], key: str, default: int | None) -> int | None:
     item = value.get(key, default)
     if item is None:
@@ -202,6 +295,30 @@ def _optional_int(value: Mapping[str, Any], key: str, default: int | None) -> in
     if not isinstance(item, int):
         raise TypeError(f"{key} must be an integer or None")
     return item
+
+
+def _network_permission_is_enabled(network: Any) -> bool:
+    checker = getattr(network, "is_enabled", None)
+    if callable(checker):
+        return bool(checker())
+    if isinstance(network, Mapping):
+        if "enabled" in network:
+            return bool(network["enabled"])
+        if "policy" in network:
+            return str(network["policy"]).lower() in {"enabled", "restricted", "limited", "proxy"}
+    if isinstance(network, str):
+        return network.lower() in {"enabled", "restricted", "limited", "proxy"}
+    return bool(network)
+
+
+def _sourced_value_and_source(value: Any | None) -> tuple[Any | None, Any | None]:
+    if value is None:
+        return None, None
+    if isinstance(value, Mapping) and "value" in value:
+        return value.get("value"), value.get("source")
+    if hasattr(value, "value"):
+        return getattr(value, "value"), getattr(value, "source", None)
+    return value, None
 
 
 def _string_list(value: Any, label: str) -> list[str]:
@@ -212,21 +329,52 @@ def _string_list(value: Any, label: str) -> list[str]:
     return list(value)
 
 
+def _permission_entries(permissions: Mapping[str, Any] | None) -> Mapping[str, Any]:
+    if permissions is None:
+        return {}
+    if not isinstance(permissions, Mapping):
+        raise TypeError("permissions must be a mapping or None")
+    entries = permissions.get("entries")
+    if isinstance(entries, Mapping):
+        return entries
+    profiles = permissions.get("profiles")
+    if isinstance(profiles, Mapping):
+        return profiles
+    return permissions
+
+
+def _managed_permission_profiles(requirements_toml: Mapping[str, Any]) -> Mapping[str, Any]:
+    permissions = requirements_toml.get("permissions")
+    if not isinstance(permissions, Mapping):
+        return {}
+    profiles = permissions.get("profiles")
+    if profiles is None:
+        return {}
+    if not isinstance(profiles, Mapping):
+        raise TypeError("requirements.toml permissions.profiles must be a mapping")
+    return profiles
+
+
 __all__ = [
     "AuthCredentialsStoreMode",
     "CONFIG_TOML_FILE",
     "DEFAULT_IGNORE_LARGE_UNTRACKED_DIRS",
     "DEFAULT_IGNORE_LARGE_UNTRACKED_FILES",
+    "EffectivePermissionSelection",
     "GhostSnapshotConfig",
     "LOCAL_DEV_BUILD_VERSION",
     "OAuthCredentialsStoreMode",
     "SQLITE_HOME_ENV",
     "ThreadStoreConfig",
     "canonicalize",
+    "build_network_proxy_spec",
     "config_schema_json",
     "ghost_snapshot_config",
     "guardian_policy_config_from_requirements",
+    "merge_managed_permission_profiles",
     "normalize_guardian_policy_config",
+    "profile_allows_configured_network_proxy",
+    "resolve_effective_permission_selection",
     "resolve_cli_auth_credentials_store_mode",
     "resolve_default_permissions",
     "resolve_mcp_oauth_credentials_store_mode",

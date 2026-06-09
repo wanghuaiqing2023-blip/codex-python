@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from inspect import isawaitable, iscoroutinefunction
 from enum import Enum
 from typing import Any, Callable, Mapping, MutableMapping, Sequence
@@ -23,7 +23,9 @@ from pycodex.core.attestation import (
 )
 from pycodex.core.client_common import Prompt
 from pycodex.protocol import (
+    AgentMessageContent,
     AgentMessageItem,
+    ContentItem,
     InternalSessionSource,
     PlanItem,
     ResponseItem,
@@ -90,6 +92,17 @@ def auth_headers_from_value(auth: Any) -> dict[str, str]:
         return {str(key): str(value) for key, value in dict(headers or {}).items()}
     return {}
 
+
+
+def sideband_websocket_auth_headers(api_auth: Any) -> dict[str, str]:
+    """Build sideband WebSocket auth headers from the API auth material.
+
+    Mirrors Rust `sideband_websocket_auth_headers`: API-key sessions send the
+    bearer API key, while ChatGPT-auth style providers can contribute their
+    bearer/account headers through the same auth-header protocol used by normal
+    requests.
+    """
+    return auth_headers_from_value(api_auth)
 
 @dataclass(frozen=True, slots=True)
 class CompactConversationRequestSettings:
@@ -174,6 +187,13 @@ class RealtimeWebrtcCallStart:
     sideband_headers: Mapping[str, str]
 
 
+@dataclass(frozen=True, slots=True)
+class CurrentClientSetup:
+    auth: Any = None
+    api_provider: Any = None
+    api_auth: Any = None
+
+
 @dataclass(slots=True)
 class ModelClientState:
     session_id: Any
@@ -251,11 +271,15 @@ class ModelClient:
         self.prompt_cache_key_override = prompt_cache_key_override
 
     def with_prompt_cache_key_override(self, prompt_cache_key_override: str | None) -> "ModelClient":
+        if prompt_cache_key_override is not None and not isinstance(prompt_cache_key_override, str):
+            raise TypeError("prompt_cache_key_override must be a string or None")
         self.prompt_cache_key_override = prompt_cache_key_override
         return self
 
     def prompt_cache_key(self) -> str:
-        return self.prompt_cache_key_override or str(self.state.thread_id)
+        if self.prompt_cache_key_override is not None:
+            return self.prompt_cache_key_override
+        return str(self.state.thread_id)
 
     def new_session(self) -> "ModelClientSession":
         return ModelClientSession(
@@ -266,7 +290,7 @@ class ModelClient:
 
     def auth_manager(self) -> Any:
         auth_manager = getattr(self.state.provider, "auth_manager", None)
-        return auth_manager() if callable(auth_manager) else None
+        return auth_manager() if callable(auth_manager) else auth_manager
 
     def set_window_generation(self, window_generation: int) -> None:
         if isinstance(window_generation, bool) or not isinstance(window_generation, int) or window_generation < 0:
@@ -292,9 +316,17 @@ class ModelClient:
         self.state.cached_websocket_session = websocket_session
 
     def responses_websocket_enabled(self) -> bool:
-        provider_info = getattr(self.state.provider, "info", lambda: self.state.provider)()
-        supports = bool(getattr(provider_info, "supports_websockets", False))
+        provider_info = _provider_info(self.state.provider)
+        supports = _provider_supports_websockets(provider_info)
         return supports and not self.state.disable_websockets
+
+    async def current_client_setup(self) -> CurrentClientSetup:
+        provider = self.state.provider
+        return CurrentClientSetup(
+            auth=await _call_provider_hook(provider, "auth"),
+            api_provider=await _call_provider_hook(provider, "api_provider"),
+            api_auth=await _call_provider_hook(provider, "api_auth"),
+        )
 
     def force_http_fallback(self, session_telemetry: Any = None, model_info: Any = None) -> bool:
         activated = self.responses_websocket_enabled() and not self.state.disable_websockets
@@ -302,8 +334,8 @@ class ModelClient:
             counter = getattr(session_telemetry, "counter", None)
             if callable(counter):
                 counter("codex.transport.fallback_to_http", 1, (("from_wire_api", "responses_websocket"),))
-        self.state.disable_websockets = True
-        self.store_cached_websocket_session(WebsocketSession())
+            self.state.disable_websockets = True
+            self.store_cached_websocket_session(WebsocketSession())
         return activated
 
     def build_subagent_headers(self) -> dict[str, str]:
@@ -652,12 +684,32 @@ class ModelClientSession:
     websocket_session: WebsocketSession
     turn_state: TurnState = field(default_factory=TurnState)
 
+    def reset_websocket_session(self) -> None:
+        self.websocket_session.reset()
+
+    def force_http_fallback(self, session_telemetry: Any = None, model_info: Any = None) -> bool:
+        activated = self.client.force_http_fallback(
+            session_telemetry=session_telemetry,
+            model_info=model_info,
+        )
+        self.reset_websocket_session()
+        return activated
+
+    async def send_response_processed(self, response_id: str) -> Any:
+        if not isinstance(response_id, str):
+            raise TypeError("response_id must be a string")
+        connection = self.websocket_session.connection
+        if connection is None:
+            return None
+        sender = getattr(connection, "send_response_processed", None)
+        if not callable(sender):
+            return None
+        result = sender(response_id)
+        return await result if isawaitable(result) else result
+
     def close(self) -> None:
         self.client.store_cached_websocket_session(self.websocket_session)
         self.websocket_session = WebsocketSession()
-
-    def reset_websocket_session(self) -> None:
-        self.websocket_session.reset()
 
     def websocket_connection_needs_new(self) -> bool:
         connection = self.websocket_session.connection
@@ -684,6 +736,47 @@ class ModelClientSession:
         self.websocket_session.connection = connection
         self.websocket_session.set_connection_reused(False)
         return {"preconnected": True, "connection_reused": False}
+
+    async def preconnect_websocket_with_connector(
+        self,
+        connector: Any,
+        *,
+        session_telemetry: Any = None,
+        model_info: Any = None,
+        turn_metadata_header: str | None = None,
+    ) -> dict[str, Any]:
+        """Rust ``ModelClientSession::preconnect_websocket`` outer boundary.
+
+        The concrete WebSocket transport is injected as ``connector``. It may
+        be a callable accepting keyword arguments, or an object exposing
+        ``connect_websocket``. The returned connection is installed through the
+        existing ``preconnect_websocket`` helper so disabled/already-connected
+        semantics stay in one place.
+        """
+
+        if not self.client.responses_websocket_enabled():
+            return {"preconnected": False, "reason": "websocket_disabled"}
+        if self.websocket_session.connection is not None:
+            return {
+                "preconnected": False,
+                "reason": "connection_already_present",
+                "connection_reused": self.websocket_session.connection_reused(),
+            }
+        setup = await self.client.current_client_setup()
+        connect = connector if callable(connector) else getattr(connector, "connect_websocket", None)
+        if not callable(connect):
+            raise TypeError("connector must be callable or expose connect_websocket")
+        connection = connect(
+            session_telemetry=session_telemetry,
+            model_info=model_info,
+            api_provider=setup.api_provider,
+            api_auth=setup.api_auth,
+            turn_state=self.turn_state,
+            turn_metadata_header=turn_metadata_header,
+        )
+        if isawaitable(connection):
+            connection = await connection
+        return self.preconnect_websocket(connection)
 
     def prewarm_websocket(
         self,
@@ -1939,6 +2032,7 @@ def _apply_sampling_event_plan_to_state(
                 state,
                 thread_id=getattr(transition, "thread_id", ""),
                 turn_id=getattr(transition, "turn_id", ""),
+                completed_item=completed_item,
             )
         if output_result is not None:
             state.output_result = output_result
@@ -2083,6 +2177,7 @@ def _apply_plan_mode_assistant_done_plan_to_state(
     *,
     thread_id: str = "",
     turn_id: str = "",
+    completed_item: ResponseItem | None = None,
 ) -> None:
     completion = getattr(plan, "proposed_plan_completion_plan", None)
     if not thread_id:
@@ -2117,10 +2212,76 @@ def _apply_plan_mode_assistant_done_plan_to_state(
         state.plan_item_completed = getattr(completion, "plan_item_completed_after", state.plan_item_completed)
 
     turn_item_emit = getattr(plan, "turn_item_emit_plan", None)
+    contributed_turn_item = _plan_mode_contributed_agent_turn_item(plan, completed_item, turn_item_emit)
+    if contributed_turn_item is not None and turn_item_emit is not None:
+        turn_item_emit = _replace_attr(turn_item_emit, "turn_item", contributed_turn_item)
     if turn_item_emit is not None:
         _apply_plan_mode_turn_item_emit_plan_to_state(turn_item_emit, state, thread_id=thread_id, turn_id=turn_id)
     if getattr(plan, "should_update_last_agent_message", False):
-        state.result_last_agent_message = getattr(plan, "last_agent_message", state.result_last_agent_message)
+        if contributed_turn_item is not None and contributed_turn_item.type == "AgentMessage":
+            from pycodex.core.stream_events_utils import agent_message_text
+
+            state.result_last_agent_message = agent_message_text(contributed_turn_item.item)
+        else:
+            state.result_last_agent_message = getattr(plan, "last_agent_message", state.result_last_agent_message)
+
+
+def _plan_mode_contributed_agent_turn_item(
+    plan: Any,
+    completed_item: ResponseItem | None,
+    turn_item_emit: Any,
+) -> TurnItem | None:
+    turn_item = getattr(turn_item_emit, "turn_item", None)
+    if not isinstance(turn_item, TurnItem):
+        turn_item = _assistant_response_item_to_agent_turn_item(completed_item)
+    if turn_item is None or turn_item.type != "AgentMessage":
+        return None
+
+    sess = getattr(plan, "sess", None)
+    if sess is None:
+        sess = getattr(plan, "session", None)
+    if sess is None:
+        return turn_item
+    turn_store = getattr(plan, "turn_store", None)
+
+    from pycodex.core.stream_events_utils import apply_turn_item_contributors
+
+    contributed = apply_turn_item_contributors(sess, turn_store, turn_item)
+    if isawaitable(contributed):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            contributed = asyncio.run(contributed)
+        else:
+            raise RuntimeError("plan mode turn item contributors require an async event-plan application path")
+    if not isinstance(contributed, TurnItem):
+        raise TypeError("turn item contributors must return a TurnItem")
+    return contributed
+
+
+def _assistant_response_item_to_agent_turn_item(item: ResponseItem | None) -> TurnItem | None:
+    if not isinstance(item, ResponseItem) or item.type != "message" or item.role != "assistant":
+        return None
+    content = tuple(
+        AgentMessageContent.text_content(content_item.text or "")
+        for content_item in item.content
+        if isinstance(content_item, ContentItem) and content_item.type == "output_text"
+    )
+    if not content:
+        return None
+    return TurnItem.agent_message(AgentMessageItem(item.id or "", content))
+
+
+def _replace_attr(value: Any, name: str, replacement: Any) -> Any:
+    try:
+        return replace(value, **{name: replacement})
+    except TypeError:
+        if hasattr(value, "__dict__"):
+            clone = type("_PlanAttrReplacement", (), {})()
+            clone.__dict__.update(value.__dict__)
+            setattr(clone, name, replacement)
+            return clone
+        return value
 
 
 def _apply_plan_mode_turn_item_emit_plan_to_state(
@@ -3265,6 +3426,26 @@ def _feature_responses_websocket_response_processed() -> Any:
     return Feature.RESPONSES_WEBSOCKET_RESPONSE_PROCESSED
 
 
+async def _call_provider_hook(provider: Any, name: str) -> Any:
+    hook = getattr(provider, name, None)
+    if not callable(hook):
+        return None
+    value = hook()
+    return await value if isawaitable(value) else value
+
+
+def _provider_info(provider: Any) -> Any:
+    info = getattr(provider, "info", None)
+    if callable(info):
+        return info()
+    return info if info is not None else provider
+
+
+def _provider_supports_websockets(provider_info: Any) -> bool:
+    supports = getattr(provider_info, "supports_websockets", False)
+    return bool(supports() if callable(supports) else supports)
+
+
 __all__ = [
     "COMPACT_REQUEST_TIMEOUT_IDLE_MULTIPLIER",
     "MEMORIES_SUMMARIZE_ENDPOINT",
@@ -3283,10 +3464,12 @@ __all__ = [
     "X_OPENAI_MEMGEN_REQUEST_HEADER",
     "X_OPENAI_SUBAGENT_HEADER",
     "auth_headers_from_value",
+    "sideband_websocket_auth_headers",
     "X_RESPONSESAPI_INCLUDE_TIMING_METRICS_HEADER",
     "WS_REQUEST_HEADER_TRACEPARENT_CLIENT_METADATA_KEY",
     "WS_REQUEST_HEADER_TRACESTATE_CLIENT_METADATA_KEY",
     "CompactConversationRequestSettings",
+    "CurrentClientSetup",
     "LastResponse",
     "ModelClient",
     "ModelClientSession",

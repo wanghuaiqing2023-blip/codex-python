@@ -8,12 +8,13 @@ keeps that shape while the deeper session runtime is still being ported.
 
 from __future__ import annotations
 
+import copy
 import inspect
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from pycodex.protocol import CollaborationMode, ModeKind, Op, SessionSource, Settings, ThreadMemoryMode, W3cTraceContext
+from pycodex.protocol import CollaborationMode, ContentItem, ModeKind, Op, ResponseItem, SessionSource, Settings, ThreadMemoryMode, W3cTraceContext
 
 SETTINGS_UNSET = object()
 _UNSET = SETTINGS_UNSET
@@ -25,6 +26,14 @@ class CodexThreadError(Exception):
 
 class InvalidThreadRequest(CodexThreadError):
     """Raised when a caller makes a request Rust would reject as invalid."""
+
+
+class ActiveTurnInjectionRejected(CodexThreadError):
+    """Raised when hidden items cannot be injected into the active turn."""
+
+    def __init__(self, items: Sequence[Any]) -> None:
+        self.items = tuple(items)
+        super().__init__("thread has no active turn for response item injection")
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,11 +255,18 @@ class CodexThread:
         )
 
     async def inject_response_items_into_active_turn(self, items: Sequence[Any]) -> None:
+        original_items = tuple(items)
+        response_items = [_response_input_item_to_response_item(item) for item in original_items]
         session = _nested_get(self.codex, "session")
         injector = getattr(session, "inject_if_running", None)
         if not callable(injector):
-            raise list(items)
-        await _maybe_await(injector(list(items)))
+            raise ActiveTurnInjectionRejected(original_items)
+        try:
+            result = await _maybe_await(injector(response_items))
+        except Exception as exc:
+            raise ActiveTurnInjectionRejected(original_items) from exc
+        if result is False:
+            raise ActiveTurnInjectionRejected(original_items)
 
     async def set_app_server_client_info(
         self,
@@ -313,16 +329,26 @@ class CodexThread:
         return await _call_required(self.codex, "agent_status")
 
     def subscribe_status(self) -> Any:
-        return getattr(self.codex, "agent_status", None)
+        subscriber = getattr(self.codex, "subscribe_status", None)
+        if callable(subscriber):
+            return subscriber()
+        status = getattr(self.codex, "agent_status", None)
+        subscribe = getattr(status, "subscribe", None)
+        if callable(subscribe):
+            return subscribe()
+        clone = getattr(status, "clone", None)
+        if callable(clone):
+            return clone()
+        return status
 
     async def token_usage_info(self) -> Any:
-        return await _call_required(_nested_get(self.codex, "session"), "token_usage_info")
+        return copy.deepcopy(await _call_required(_nested_get(self.codex, "session"), "token_usage_info"))
 
     async def inject_user_message_without_turn(self, message: str) -> None:
         if not isinstance(message, str):
             raise TypeError("message must be a string")
         session = _nested_get(self.codex, "session")
-        item = {"type": "message", "role": "user", "content": [{"type": "input_text", "text": message}]}
+        item = ResponseItem.message("user", (ContentItem.input_text(message),))
         await _call_required(session, "inject_no_new_turn", [item], None)
 
     async def inject_response_items(self, items: Sequence[Any]) -> None:
@@ -339,10 +365,10 @@ class CodexThread:
         await _call_required(session, "flush_rollout")
 
     def rollout_path(self) -> Path | None:
-        return self._rollout_path
+        return Path(self._rollout_path) if self._rollout_path is not None else None
 
     def session_configured(self) -> Any:
-        return self._session_configured
+        return copy.deepcopy(self._session_configured)
 
     def is_running(self) -> bool:
         tx_sub = getattr(self.codex, "tx_sub", None)
@@ -370,13 +396,13 @@ class CodexThread:
 
     def state_db(self) -> Any:
         state_db = getattr(self.codex, "state_db", None)
-        return state_db() if callable(state_db) else None
+        return state_db() if callable(state_db) else state_db
 
     async def config_snapshot(self) -> ThreadConfigSnapshot:
         snapshot = _call_optional(self.codex, "thread_config_snapshot")
         if snapshot is not None:
-            return await _maybe_await(snapshot)
-        return await _call_required(_nested_get(self.codex, "session"), "thread_config_snapshot")
+            return copy.deepcopy(await _maybe_await(snapshot))
+        return copy.deepcopy(await _call_required(_nested_get(self.codex, "session"), "thread_config_snapshot"))
 
     async def config(self) -> Any:
         return await _call_required(_nested_get(self.codex, "session"), "get_config")
@@ -385,7 +411,8 @@ class CodexThread:
         await _call_required(_nested_get(self.codex, "session"), "refresh_runtime_config", next_config)
 
     async def environment_selections(self) -> Any:
-        return await _call_required(self.codex, "thread_environment_selections")
+        selections = await _call_required(self.codex, "thread_environment_selections")
+        return list(selections or [])
 
     async def read_mcp_resource(self, server: str, uri: str) -> Any:
         return await _call_required(_nested_get(self.codex, "session"), "read_resource", server, uri)
@@ -498,6 +525,18 @@ def _protocol_nullable_setting(value: Any) -> Any:
     return value
 
 
+def _response_input_item_to_response_item(item: Any) -> ResponseItem:
+    if isinstance(item, ResponseItem):
+        return item
+    converter = getattr(ResponseItem, "from_response_input_item", None)
+    if callable(converter):
+        try:
+            return converter(item)
+        except Exception:
+            pass
+    return ResponseItem.from_mapping(item)
+
+
 def _field_or_mapping(value: Any, name: str) -> Any:
     if isinstance(value, Mapping):
         return value.get(name)
@@ -518,6 +557,7 @@ async def _maybe_await(value: Any) -> Any:
 
 
 __all__ = [
+    "ActiveTurnInjectionRejected",
     "CodexThread",
     "CodexThreadError",
     "CodexThreadSettingsOverrides",

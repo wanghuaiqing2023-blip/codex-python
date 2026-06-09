@@ -139,6 +139,16 @@ def reject_unknown_builtin_permission_profile(profile_name: str) -> None:
         )
 
 
+def validate_user_permission_profile_names(permissions: JsonValue | None) -> None:
+    if permissions is None:
+        return
+    for profile_name in _permissions_entries(permissions):
+        if profile_name.startswith(":"):
+            raise ValueError(
+                f"permissions profile `{profile_name}` uses a reserved built-in profile prefix"
+            )
+
+
 def compile_permission_profile_selection(
     permissions: JsonValue | None,
     profile_name: str,
@@ -264,6 +274,19 @@ def apply_network_proxy_feature_config(config: NetworkProxyConfig, feature_confi
     if not isinstance(config, NetworkProxyConfig):
         raise TypeError("config must be NetworkProxyConfig")
     _apply_network_to_network_proxy_config(config, feature_config)
+
+
+def network_proxy_config_for_profile_selection(
+    permissions: JsonValue | None,
+    profile_name: str,
+) -> NetworkProxyConfig:
+    if is_builtin_permission_profile_name(profile_name):
+        return NetworkProxyConfig()
+    reject_unknown_builtin_permission_profile(profile_name)
+    if permissions is None:
+        raise ValueError("default_permissions requires a `[permissions]` table")
+    profile, _warnings = resolve_permission_profile(permissions, profile_name)
+    return network_proxy_config_from_profile_network(profile.get("network"))
 
 
 def compile_permission_profile_workspace_roots(
@@ -1019,6 +1042,7 @@ __all__ = [
     "is_windows_absolute_path",
     "is_windows_drive_absolute_path",
     "apply_network_proxy_feature_config",
+    "network_proxy_config_for_profile_selection",
     "network_proxy_config_from_profile_network",
     "normalize_absolute_path_for_platform",
     "normalize_windows_device_path",
@@ -1032,5 +1056,6 @@ __all__ = [
     "resolve_permission_profile",
     "unbounded_unreadable_globstar_paths",
     "unsupported_read_write_glob_paths",
+    "validate_user_permission_profile_names",
     "validate_glob_scan_max_depth",
 ]

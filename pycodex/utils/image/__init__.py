@@ -13,13 +13,51 @@ MAX_DIMENSION = 2048
 
 
 class ImageProcessingError(Exception):
-    def __init__(self, kind: str, message: str, *, mime: str | None = None) -> None:
-        super().__init__(message)
-        self.kind = kind
-        self.mime = mime
+    kind = "image"
+
+    @staticmethod
+    def decode_error(path: str | Path, source: BaseException) -> "ImageProcessingError":
+        if isinstance(source, DecodeImageError):
+            return source
+        return DecodeImageError(path, source)
 
     def is_invalid_image(self) -> bool:
-        return self.kind == "decode"
+        return isinstance(self, DecodeImageError)
+
+
+class ReadImageError(ImageProcessingError):
+    kind = "read"
+
+    def __init__(self, path: str | Path, source: BaseException) -> None:
+        self.path = Path(path)
+        self.source = source
+        super().__init__(f"failed to read image at {self.path}: {source}")
+
+
+class DecodeImageError(ImageProcessingError):
+    kind = "decode"
+
+    def __init__(self, path: str | Path, source: BaseException) -> None:
+        self.path = Path(path)
+        self.source = source
+        super().__init__(f"failed to decode image at {self.path}: {source}")
+
+
+class EncodeImageError(ImageProcessingError):
+    kind = "encode"
+
+    def __init__(self, image_format: str, source: BaseException) -> None:
+        self.format = image_format
+        self.source = source
+        super().__init__(f"failed to encode image as {image_format!r}: {source}")
+
+
+class UnsupportedImageFormatError(ImageProcessingError):
+    kind = "unsupported"
+
+    def __init__(self, mime: str) -> None:
+        self.mime = mime
+        super().__init__(f"unsupported image `{mime}`")
 
 
 @dataclass(frozen=True)
@@ -43,11 +81,11 @@ def load_for_prompt_bytes(path: str | Path, file_bytes: bytes, mode: PromptImage
     parsed = _parse_image_header(file_bytes)
     if parsed is None:
         suffix = Path(path).suffix.lstrip(".") or "unknown"
-        raise ImageProcessingError("unsupported", f"unsupported image `{suffix}`", mime=suffix)
+        raise UnsupportedImageFormatError(suffix)
     mime, width, height = parsed
     if mode is PromptImageMode.ORIGINAL or (width <= MAX_DIMENSION and height <= MAX_DIMENSION):
         return EncodedImage(bytes=file_bytes, mime=mime, width=width, height=height)
-    raise NotImplementedError("codex-utils-image resize/encode path requires an approved image codec dependency")
+    raise EncodeImageError("resize", RuntimeError("codex-utils-image resize/encode path requires an approved image codec dependency"))
 
 
 def _parse_image_header(data: bytes) -> tuple[str, int, int] | None:
@@ -107,3 +145,15 @@ def _webp_size(data: bytes) -> tuple[int, int] | None:
         height = ((bits >> 14) & 0x3FFF) + 1
         return width, height
     return None
+
+__all__ = [
+    "DecodeImageError",
+    "EncodedImage",
+    "EncodeImageError",
+    "ImageProcessingError",
+    "MAX_DIMENSION",
+    "PromptImageMode",
+    "ReadImageError",
+    "UnsupportedImageFormatError",
+    "load_for_prompt_bytes",
+]

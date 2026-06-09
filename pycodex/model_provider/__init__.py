@@ -15,6 +15,7 @@ from typing import Any, Mapping, Protocol
 
 from pycodex.model_provider_info import ModelProviderInfo
 from pycodex.protocol import ProviderAccount
+from .bearer_auth_provider import BearerAuthProvider
 
 
 DEFAULT_APPROVAL_REVIEW_PREFERRED_MODEL = "codex-auto-review"
@@ -81,29 +82,6 @@ class ModelProvider(Protocol):
 
 
 SharedModelProvider = ModelProvider
-
-
-@dataclass
-class BearerAuthProvider:
-    token: str | None = None
-    account_id: str | None = None
-    is_fedramp_account: bool = False
-
-    @classmethod
-    def new(cls, token: str) -> "BearerAuthProvider":
-        return cls(token=token)
-
-    @classmethod
-    def for_test(cls, token: str | None, account_id: str | None) -> "BearerAuthProvider":
-        return cls(token=token, account_id=account_id)
-
-    def add_auth_headers(self, headers: dict[str, str]) -> None:
-        if self.token is not None:
-            headers["Authorization"] = f"Bearer {self.token}"
-        if self.account_id is not None:
-            headers["ChatGPT-Account-ID"] = self.account_id
-        if self.is_fedramp_account:
-            headers["X-OpenAI-Fedramp"] = "true"
 
 
 CoreAuthProvider = BearerAuthProvider
@@ -177,17 +155,14 @@ def create_model_provider(
     return ConfiguredModelProvider(provider_info, auth_manager)
 
 
-def auth_provider_from_auth(auth: Any) -> Any:
-    if isinstance(auth, str):
-        return BearerAuthProvider.new(auth)
-    token = getattr(auth, "token", None)
-    if isinstance(token, str):
-        return BearerAuthProvider.new(token)
-    return unauthenticated_auth_provider()
-
-
-def unauthenticated_auth_provider() -> BearerAuthProvider:
-    return BearerAuthProvider()
+from .auth import AgentIdentityAuthProvider as AgentIdentityAuthProvider
+from .auth import UnauthenticatedAuthProvider as UnauthenticatedAuthProvider
+from .auth import auth_manager_for_provider as auth_manager_for_provider
+from .auth import auth_provider_from_auth as auth_provider_from_auth
+from .auth import bearer_auth_for_provider as bearer_auth_for_provider
+from .auth import resolve_provider_auth as resolve_provider_auth
+from .auth import unauthenticated_auth_provider as unauthenticated_auth_provider
+from .bearer_auth_provider import BearerAuthProvider as BearerAuthProvider
 
 
 __all__ = [
@@ -200,8 +175,14 @@ __all__ = [
     "ProviderAccountResult",
     "ProviderAccountState",
     "ProviderCapabilities",
+    "ProviderAccount",
     "SharedModelProvider",
+    "AgentIdentityAuthProvider",
+    "UnauthenticatedAuthProvider",
+    "auth_manager_for_provider",
     "auth_provider_from_auth",
+    "bearer_auth_for_provider",
     "create_model_provider",
+    "resolve_provider_auth",
     "unauthenticated_auth_provider",
 ]

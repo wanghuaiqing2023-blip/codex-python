@@ -1312,9 +1312,17 @@ def verify_apply_patch_args(
         raise ValueError("cwd must be an absolute path")
 
     effective_cwd = cwd_path / args.workdir if args.workdir is not None else cwd_path
+    workspace_root = _workspace_root_for_cwd(cwd_path)
+    if not args.hunks:
+        return MaybeApplyPatchVerified.correctness_error(
+            ApplyPatchError.compute_replacements("patch must contain at least one hunk")
+        )
     changes: dict[Path, ApplyPatchFileChange] = {}
     for hunk in args.hunks:
         path = hunk.resolve_path(effective_cwd)
+        path_escape_error = _apply_patch_path_escape_error(path, workspace_root)
+        if path_escape_error is not None:
+            return MaybeApplyPatchVerified.correctness_error(path_escape_error)
         if hunk.type == "add":
             overwritten_content = _read_optional_text(path)
             changes[path] = ApplyPatchFileChange.add(
@@ -1352,6 +1360,9 @@ def verify_apply_patch_args(
             except ApplyPatchError as error:
                 return MaybeApplyPatchVerified.correctness_error(error)
             move_path = effective_cwd / hunk.move_path if hunk.move_path is not None else None
+            move_path_escape_error = _apply_patch_path_escape_error(move_path, workspace_root)
+            if move_path_escape_error is not None:
+                return MaybeApplyPatchVerified.correctness_error(move_path_escape_error)
             changes[path] = ApplyPatchFileChange.update(
                 update.unified_diff,
                 move_path=move_path,
@@ -1948,8 +1959,37 @@ def _read_optional_text(path: Path | None) -> str | None:
         return None
     try:
         return path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
+
+
+def _workspace_root_for_cwd(cwd: Path) -> Path:
+    resolved = cwd.resolve()
+    current = resolved
+    home = Path.home().resolve()
+    while True:
+        if current == home:
+            return resolved
+        if (current / ".git").exists():
+            return current
+        if current.parent == current:
+            return resolved
+        current = current.parent
+
+
+def _apply_patch_path_escape_error(path: Path | None, workspace_root: Path) -> ApplyPatchError | None:
+    if path is None:
+        return None
+    try:
+        resolved_path = path.resolve(strict=False)
+        resolved_root = workspace_root.resolve(strict=False)
+    except OSError as error:
+        return ApplyPatchError.io_error(f"Failed to resolve {path}", error)
+    if resolved_path == resolved_root or resolved_path.is_relative_to(resolved_root):
+        return None
+    return ApplyPatchError.compute_replacements(
+        f"apply_patch path escapes workspace root {resolved_root}: {path}"
+    )
 
 
 def _coerce_apply_patch_file_change(value: ApplyPatchFileChange | Mapping[str, JsonValue]) -> ApplyPatchFileChange:

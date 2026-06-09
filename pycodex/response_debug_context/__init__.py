@@ -44,7 +44,7 @@ def extract_response_debug_context_from_api_error(error: Any) -> ResponseDebugCo
     if transport is None and isinstance(error, Mapping):
         transport = error.get("transport")
     if transport is None and _variant_name(error) == "transport":
-        transport = getattr(error, "error", error)
+        transport = error.get("error", error) if isinstance(error, Mapping) else getattr(error, "error", error)
     if transport is None:
         return ResponseDebugContext()
     return extract_response_debug_context(transport)

@@ -296,6 +296,28 @@ class ConfigEditsBuilder:
     def for_config_path(cls, config_path: str | Path) -> "ConfigEditsBuilder":
         return cls(config_path=Path(config_path))
 
+    @classmethod
+    def for_config(cls, config: Any) -> "ConfigEditsBuilder":
+        """Build edits for the resolved user config file, matching Rust `for_config`.
+
+        Rust first asks `config.config_layer_stack.get_user_config_file()` and
+        falls back to `config.codex_home / config.toml`. Python keeps the same
+        interface contract while accepting attribute-style config objects or
+        mapping-backed facades.
+        """
+
+        layer_stack = _field(config, "config_layer_stack")
+        get_user_config_file = getattr(layer_stack, "get_user_config_file", None)
+        if callable(get_user_config_file):
+            user_config_file = get_user_config_file()
+            if user_config_file is not None:
+                return cls.for_config_path(Path(user_config_file))
+
+        codex_home = _field(config, "codex_home")
+        if codex_home is None:
+            raise ConfigEditError("config must provide config_layer_stack.get_user_config_file() or codex_home")
+        return cls.for_config_path(Path(codex_home) / CONFIG_TOML_FILE)
+
     def set_model(self, model: str | None, effort: str | Enum | None = None) -> "ConfigEditsBuilder":
         self.edits.extend(model_selection_edits(model, effort))
         return self

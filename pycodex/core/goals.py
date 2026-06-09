@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import inspect
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 from pycodex.protocol import (
+    EventMsg,
     ModeKind,
     ResponseInputItem,
     ThreadGoal,
     ThreadGoalStatus,
+    ThreadGoalUpdatedEvent,
     TokenUsage,
 )
 from pycodex.state import ThreadGoal as StateThreadGoal
@@ -156,6 +160,293 @@ class GoalWallClockAccountingSnapshot:
         self.reset_baseline()
 
 
+@dataclass(frozen=True)
+class CreateGoalRequest:
+    objective: str
+    token_budget: int | None = None
+
+    def __post_init__(self) -> None:
+        _ensure_str(self.objective, "objective")
+        validate_goal_budget(self.token_budget)
+
+
+@dataclass(frozen=True)
+class SetGoalRequest:
+    objective: str | None = None
+    status: ThreadGoalStatus | None = None
+    token_budget: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.objective is not None:
+            _ensure_str(self.objective, "objective")
+        if self.status is not None and not isinstance(self.status, ThreadGoalStatus):
+            object.__setattr__(self, "status", ThreadGoalStatus(self.status))
+        validate_goal_budget(self.token_budget)
+
+
+@dataclass
+class GoalTurnAccountingSnapshot:
+    turn_id: str | None
+    last_accounted_token_usage: TokenUsage
+    active_goal_id: str | None = None
+
+    def mark_active_goal(self, goal_id: str) -> None:
+        _ensure_str(goal_id, "goal_id")
+        self.active_goal_id = goal_id
+
+    def active_this_turn(self) -> bool:
+        return self.active_goal_id is not None
+
+    def clear_active_goal(self) -> None:
+        self.active_goal_id = None
+
+    def reset_baseline(self, token_usage: TokenUsage) -> None:
+        self.last_accounted_token_usage = token_usage
+
+    def token_delta_since_last_accounting(self, current: TokenUsage) -> int:
+        last = self.last_accounted_token_usage
+        return goal_token_delta_for_usage(
+            TokenUsage(
+                input_tokens=max(current.input_tokens - last.input_tokens, 0),
+                cached_input_tokens=max(current.cached_input_tokens - last.cached_input_tokens, 0),
+                output_tokens=max(current.output_tokens - last.output_tokens, 0),
+                reasoning_output_tokens=max(current.reasoning_output_tokens - last.reasoning_output_tokens, 0),
+                total_tokens=max(current.total_tokens - last.total_tokens, 0),
+            )
+        )
+
+    def mark_accounted(self, current: TokenUsage) -> None:
+        self.last_accounted_token_usage = current
+
+
+@dataclass
+class GoalAccountingSnapshot:
+    turn: GoalTurnAccountingSnapshot | None = None
+    wall_clock: GoalWallClockAccountingSnapshot = field(default_factory=GoalWallClockAccountingSnapshot)
+
+
+@dataclass
+class GoalRuntimeState:
+    state_db: Any | None = None
+    budget_limit_reported_goal_id: str | None = None
+    accounting: GoalAccountingSnapshot = field(default_factory=GoalAccountingSnapshot)
+
+
+@dataclass(frozen=True)
+class GoalRuntimeEvent:
+    type: str
+    turn_context: Any = None
+    token_usage: TokenUsage | None = None
+
+    @classmethod
+    def from_value(cls, value: Any) -> "GoalRuntimeEvent":
+        if isinstance(value, GoalRuntimeEvent):
+            return value
+        if isinstance(value, str):
+            return cls(value)
+        if isinstance(value, dict):
+            return cls(str(value.get("type")), value.get("turn_context"), value.get("token_usage"))
+        event_type = getattr(value, "type", None)
+        if event_type is None:
+            raise TypeError("goal runtime event must provide a type")
+        return cls(str(event_type), getattr(value, "turn_context", None), getattr(value, "token_usage", None))
+
+
+async def get_thread_goal(session: Any) -> ThreadGoal | None:
+    _ensure_goals_enabled(session)
+    state_db = await require_state_db_for_thread_goals(session)
+    goal = await _maybe_await(_call_required(_thread_goals(state_db), "get_thread_goal", _thread_id(session)))
+    return None if goal is None else protocol_goal_from_state(goal)
+
+
+async def create_thread_goal(session: Any, turn_context: Any, request: CreateGoalRequest | Any) -> ThreadGoal:
+    _ensure_goals_enabled(session)
+    if not isinstance(request, CreateGoalRequest):
+        request = CreateGoalRequest(request.objective, getattr(request, "token_budget", None))
+    objective = request.objective.strip()
+    validate_thread_goal_objective(objective)
+    state_db = await require_state_db_for_thread_goals(session)
+    await account_thread_goal_wall_clock_usage(session, state_db)
+    goal = await _maybe_await(
+        _call_required(
+            _thread_goals(state_db),
+            "insert_thread_goal",
+            _thread_id(session),
+            objective,
+            StateThreadGoalStatus.ACTIVE,
+            request.token_budget,
+        )
+    )
+    if goal is None:
+        raise ValueError(f"cannot create a new goal because thread {_thread_id(session)} already has a goal")
+    await set_thread_preview_from_goal_objective(state_db, _thread_id(session), goal.objective)
+    runtime = _goal_runtime(session)
+    runtime.budget_limit_reported_goal_id = None
+    await mark_active_goal_accounting(session, goal.goal_id, _turn_id(turn_context), await _total_token_usage(session))
+    protocol_goal = protocol_goal_from_state(goal)
+    await emit_thread_goal_updated(session, turn_context, protocol_goal)
+    return protocol_goal
+
+
+async def set_thread_goal(session: Any, turn_context: Any, request: SetGoalRequest | Any) -> ThreadGoal:
+    _ensure_goals_enabled(session)
+    if not isinstance(request, SetGoalRequest):
+        request = SetGoalRequest(
+            getattr(request, "objective", None),
+            getattr(request, "status", None),
+            getattr(request, "token_budget", None),
+        )
+    objective = request.objective.strip() if request.objective is not None else None
+    if objective is not None:
+        validate_thread_goal_objective(objective)
+    state_db = await require_state_db_for_thread_goals(session)
+    await account_thread_goal_wall_clock_usage(session, state_db)
+    goals = _thread_goals(state_db)
+    existing = await _maybe_await(_call_required(goals, "get_thread_goal", _thread_id(session)))
+    previous_status = existing.status if existing is not None else None
+    if objective is not None and existing is None:
+        goal = await _maybe_await(
+            _call_required(
+                goals,
+                "replace_thread_goal",
+                _thread_id(session),
+                objective,
+                state_goal_status_from_protocol(request.status or ThreadGoalStatus.ACTIVE),
+                request.token_budget,
+            )
+        )
+        replacing_goal = True
+    else:
+        update = {
+            "objective": objective,
+            "status": None if request.status is None else state_goal_status_from_protocol(request.status),
+            "token_budget": request.token_budget,
+            "expected_goal_id": None if existing is None else existing.goal_id,
+        }
+        goal = await _maybe_await(_call_required(goals, "update_thread_goal", _thread_id(session), update))
+        if goal is None:
+            raise ValueError(f"cannot update goal for thread {_thread_id(session)}: no goal exists")
+        replacing_goal = False
+    if objective is not None:
+        await set_thread_preview_from_goal_objective(state_db, _thread_id(session), goal.objective)
+    runtime = _goal_runtime(session)
+    runtime.budget_limit_reported_goal_id = None
+    if goal.status is StateThreadGoalStatus.ACTIVE and (replacing_goal or previous_status is not StateThreadGoalStatus.ACTIVE):
+        await mark_active_goal_accounting(session, goal.goal_id, _turn_id(turn_context), await _total_token_usage(session))
+    elif goal.status is not StateThreadGoalStatus.ACTIVE:
+        await clear_active_goal_accounting(session, turn_context)
+    protocol_goal = protocol_goal_from_state(goal)
+    await emit_thread_goal_updated(session, turn_context, protocol_goal)
+    return protocol_goal
+
+
+async def goal_runtime_apply(session: Any, event: GoalRuntimeEvent | str | dict[str, Any]) -> None:
+    runtime_event = GoalRuntimeEvent.from_value(event)
+    if runtime_event.type == "turn_started":
+        _goal_runtime(session).accounting.turn = GoalTurnAccountingSnapshot(
+            _turn_id(runtime_event.turn_context),
+            runtime_event.token_usage or TokenUsage(),
+        )
+    elif runtime_event.type == "tool_completed_goal":
+        await account_thread_goal_progress(session)
+    elif runtime_event.type in {"external_clear", "task_aborted"}:
+        await clear_stopped_thread_goal_runtime_state(session)
+    elif runtime_event.type == "thread_resumed":
+        goal = await get_thread_goal(session)
+        if goal is not None and goal.status is ThreadGoalStatus.ACTIVE:
+            _goal_runtime(session).accounting.wall_clock.mark_active_goal(_state_goal_id_from_protocol_goal(session, goal))
+
+
+async def require_state_db_for_thread_goals(session: Any) -> Any:
+    method = getattr(session, "require_state_db_for_thread_goals", None)
+    if callable(method):
+        return await _maybe_await(method())
+    runtime = _goal_runtime(session)
+    if runtime.state_db is not None:
+        return runtime.state_db
+    state_db = getattr(session, "state_db", None)
+    if state_db is None:
+        services = getattr(session, "services", None)
+        state_db = getattr(services, "state_db", None) if services is not None else None
+    if state_db is None:
+        raise RuntimeError("goals require a state DB with thread_goals support")
+    return state_db
+
+
+async def account_thread_goal_wall_clock_usage(session: Any, state_db: Any) -> None:
+    runtime = _goal_runtime(session)
+    goal_id = runtime.accounting.wall_clock.active_goal_id
+    if goal_id is None:
+        return
+    seconds = runtime.accounting.wall_clock.time_delta_since_last_accounting()
+    if seconds <= 0:
+        return
+    accounting = getattr(_thread_goals(state_db), "account_thread_goal_wall_clock_usage", None)
+    if callable(accounting):
+        await _maybe_await(accounting(_thread_id(session), goal_id, seconds))
+    runtime.accounting.wall_clock.mark_accounted(seconds)
+
+
+async def account_thread_goal_progress(session: Any) -> None:
+    runtime = _goal_runtime(session)
+    turn = runtime.accounting.turn
+    if turn is None or not turn.active_this_turn():
+        return
+    current = await _total_token_usage(session)
+    delta = turn.token_delta_since_last_accounting(current)
+    if delta > 0:
+        state_db = await require_state_db_for_thread_goals(session)
+        accounting = getattr(_thread_goals(state_db), "account_thread_goal_token_usage", None)
+        if callable(accounting):
+            await _maybe_await(accounting(_thread_id(session), turn.active_goal_id, delta))
+    turn.mark_accounted(current)
+
+
+async def mark_active_goal_accounting(session: Any, goal_id: str, turn_id: str | None, token_usage: TokenUsage) -> None:
+    runtime = _goal_runtime(session)
+    if turn_id is not None:
+        runtime.accounting.turn = GoalTurnAccountingSnapshot(turn_id, token_usage, goal_id)
+    runtime.accounting.wall_clock.mark_active_goal(goal_id)
+
+
+async def clear_active_goal_accounting(session: Any, turn_context: Any) -> None:
+    runtime = _goal_runtime(session)
+    turn = runtime.accounting.turn
+    if turn is not None and turn.turn_id == _turn_id(turn_context):
+        turn.clear_active_goal()
+    runtime.accounting.wall_clock.clear_active_goal()
+
+
+async def clear_stopped_thread_goal_runtime_state(session: Any) -> None:
+    runtime = _goal_runtime(session)
+    runtime.budget_limit_reported_goal_id = None
+    if runtime.accounting.turn is not None:
+        runtime.accounting.turn.clear_active_goal()
+    runtime.accounting.wall_clock.clear_active_goal()
+
+
+async def set_thread_preview_from_goal_objective(state_db: Any, thread_id: Any, objective: str) -> None:
+    setter = getattr(state_db, "set_thread_preview_from_goal_objective", None)
+    if callable(setter):
+        await _maybe_await(setter(thread_id, objective))
+        return
+    threads = getattr(state_db, "threads", None)
+    threads = threads() if callable(threads) else threads
+    setter = getattr(threads, "set_thread_preview_from_goal_objective", None)
+    if callable(setter):
+        await _maybe_await(setter(thread_id, objective))
+
+
+async def emit_thread_goal_updated(session: Any, turn_context: Any, goal: ThreadGoal) -> None:
+    event_payload = ThreadGoalUpdatedEvent(thread_id=_thread_id(session), turn_id=_turn_id(turn_context), goal=goal)
+    constructor = getattr(EventMsg, "thread_goal_updated", None)
+    event = constructor(event_payload) if callable(constructor) else EventMsg("thread_goal_updated", event_payload)
+    sender = getattr(session, "send_event", None)
+    if not callable(sender):
+        raise RuntimeError("goals require session.send_event to emit ThreadGoalUpdated")
+    await _maybe_await(sender(turn_context, event))
+
+
 def escape_xml_text(value: str) -> str:
     _ensure_str(value, "value")
     return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -285,20 +576,99 @@ def _ensure_thread_goal(goal: object) -> None:
         raise TypeError("goal must be a ThreadGoal")
 
 
+def _goal_runtime(session: Any) -> GoalRuntimeState:
+    runtime = getattr(session, "goal_runtime", None)
+    if runtime is None:
+        runtime = GoalRuntimeState()
+        setattr(session, "goal_runtime", runtime)
+    return runtime
+
+
+def _ensure_goals_enabled(session: Any) -> None:
+    enabled = getattr(session, "enabled", None)
+    if callable(enabled) and not (enabled("goals") or enabled("Goals")):
+        raise RuntimeError("goals feature is disabled")
+
+
+def _thread_goals(state_db: Any) -> Any:
+    thread_goals = getattr(state_db, "thread_goals", None)
+    thread_goals = thread_goals() if callable(thread_goals) else thread_goals
+    if thread_goals is None:
+        raise RuntimeError("state DB must provide thread_goals")
+    return thread_goals
+
+
+def _thread_id(session: Any) -> Any:
+    for name in ("conversation_id", "thread_id"):
+        value = getattr(session, name, None)
+        if value is not None:
+            return value
+    raise RuntimeError("goals require session.conversation_id")
+
+
+def _turn_id(turn_context: Any) -> str | None:
+    if turn_context is None:
+        return None
+    return getattr(turn_context, "sub_id", None) or getattr(turn_context, "turn_id", None)
+
+
+async def _total_token_usage(session: Any) -> TokenUsage:
+    total = getattr(session, "total_token_usage", None)
+    if callable(total):
+        value = await _maybe_await(total())
+        if isinstance(value, TokenUsage):
+            return value
+    return TokenUsage()
+
+
+def _state_goal_id_from_protocol_goal(session: Any, goal: ThreadGoal) -> str:
+    return getattr(goal, "goal_id", None) or f"{_thread_id(session)}:{goal.created_at}"
+
+
+def _call_required(target: Any, name: str, *args: Any) -> Any:
+    method = getattr(target, name, None)
+    if not callable(method):
+        raise RuntimeError(f"goals require {target!r}.{name}")
+    return method(*args)
+
+
+async def _maybe_await(value: Any) -> Any:
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
 __all__ = [
     "BUDGET_LIMIT_PROMPT_TEMPLATE",
     "CONTINUATION_PROMPT_TEMPLATE",
+    "CreateGoalRequest",
+    "GoalAccountingSnapshot",
+    "GoalRuntimeEvent",
+    "GoalRuntimeState",
+    "GoalTurnAccountingSnapshot",
     "GoalWallClockAccountingSnapshot",
     "OBJECTIVE_UPDATED_PROMPT_TEMPLATE",
+    "SetGoalRequest",
+    "account_thread_goal_progress",
     "budget_limit_prompt",
     "budget_limit_steering_item",
+    "clear_active_goal_accounting",
+    "clear_stopped_thread_goal_runtime_state",
     "continuation_prompt",
+    "create_thread_goal",
+    "emit_thread_goal_updated",
     "escape_xml_text",
+    "get_thread_goal",
     "goal_context_input_item",
+    "goal_runtime_apply",
     "goal_token_delta_for_usage",
+    "mark_active_goal_accounting",
     "objective_updated_prompt",
     "protocol_goal_from_state",
     "protocol_goal_status_from_state",
+    "require_state_db_for_thread_goals",
+    "set_thread_goal",
+    "set_thread_preview_from_goal_objective",
     "should_ignore_goal_for_mode",
     "state_goal_status_from_protocol",
     "validate_goal_budget",

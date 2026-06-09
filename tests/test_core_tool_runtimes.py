@@ -29,6 +29,7 @@ from pycodex.core import (
     PROXY_ENV_KEYS,
     ApplyPatchRequest,
     ApplyPatchFileSystemSandboxContext,
+    CoreShellActionProvider,
     DecisionSource,
     ExecApprovalRequirement,
     ExecResult,
@@ -3941,6 +3942,48 @@ class ToolRuntimesTests(unittest.TestCase):
         self.assertIs(preapproved.decision, Decision.ALLOW)
         self.assertIs(fresh_request.decision, Decision.PROMPT)
 
+    def test_execve_permission_request_hook_short_circuits_prompt(self) -> None:
+        # Rust source: codex-rs/core/src/tools/runtimes/shell/unix_escalation_tests.rs
+        # Rust test: execve_permission_request_hook_short_circuits_prompt.
+        class Session:
+            def __init__(self) -> None:
+                self.hook_payloads: list[Any] = []
+                self.guardian_calls = 0
+
+            async def run_permission_request_hooks(self, turn: object, call_id: str, payload: object) -> str:
+                self.hook_payloads.append((turn, call_id, payload))
+                return "allow"
+
+            async def review_approval_request(self, *_args: object) -> ReviewDecision:
+                self.guardian_calls += 1
+                return ReviewDecision.DENIED
+
+        session = Session()
+        turn = object()
+        provider = CoreShellActionProvider(
+            policy=(),
+            session=session,
+            turn=turn,
+            call_id="execve-hook-call",
+            tool_name="shell",
+            approval_policy=AskForApproval.ON_REQUEST,
+            permission_profile=PermissionProfile.read_only(),
+            file_system_sandbox_policy=PermissionProfile.read_only().file_system_sandbox_policy(),
+            sandbox_policy_cwd=Path("/repo"),
+            sandbox_permissions=SandboxPermissions.REQUIRE_ESCALATED,
+            approval_sandbox_permissions=SandboxPermissions.REQUIRE_ESCALATED,
+        )
+
+        decision = asyncio.run(provider.determine_action("/usr/bin/touch", ("touch", "/tmp/out"), Path("/repo")))
+
+        self.assertEqual(decision, ShellEscalationDecision.escalate(ShellEscalationExecution.unsandboxed()))
+        self.assertEqual(session.guardian_calls, 0)
+        self.assertEqual(len(session.hook_payloads), 1)
+        self.assertIs(session.hook_payloads[0][0], turn)
+        self.assertEqual(session.hook_payloads[0][1], "execve-hook-call")
+        self.assertEqual(session.hook_payloads[0][2].tool_input["command"], "/usr/bin/touch /tmp/out")
+        self.assertNotIn("description", session.hook_payloads[0][2].tool_input)
+
     def test_shell_escalation_policy_plan_matches_rust_determine_action_branching(self) -> None:
         # Rust source: codex-rs/core/src/tools/runtimes/shell/unix_escalation.rs
         # Behavior anchor: CoreShellActionProvider::determine_action selects
@@ -4138,6 +4181,8 @@ class ToolRuntimesTests(unittest.TestCase):
         )
 
     def test_shell_snapshot_wraps_shell_lc_command(self) -> None:
+        # Rust source: codex-rs/core/src/tools/runtimes/mod_tests.rs
+        # Rust test: maybe_wrap_shell_lc_with_snapshot_bootstraps_in_user_shell.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             snapshot_path = root / "snapshot.sh"
@@ -4157,7 +4202,69 @@ class ToolRuntimesTests(unittest.TestCase):
         self.assertIn("if . '", rewritten[2])
         self.assertIn("exec '/bin/bash' -c 'echo hello'", rewritten[2])
 
+    def test_shell_snapshot_wrap_escapes_single_quotes(self) -> None:
+        # Rust source: codex-rs/core/src/tools/runtimes/mod_tests.rs
+        # Rust test: maybe_wrap_shell_lc_with_snapshot_escapes_single_quotes.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot_path = root / "snapshot.sh"
+            snapshot_path.write_text("# Snapshot file\n")
+            shell = Shell(ShellType.ZSH, Path("/bin/zsh"), ShellSnapshot(snapshot_path, root))
+
+            rewritten = maybe_wrap_shell_lc_with_snapshot(
+                ("/bin/bash", "-lc", "echo 'hello'"),
+                shell,
+                root,
+                {},
+                {},
+            )
+
+        self.assertIn("exec '/bin/bash' -c 'echo '\"'\"'hello'\"'\"''", rewritten[2])
+
+    def test_shell_snapshot_wrap_uses_bash_bootstrap_shell(self) -> None:
+        # Rust source: codex-rs/core/src/tools/runtimes/mod_tests.rs
+        # Rust test: maybe_wrap_shell_lc_with_snapshot_uses_bash_bootstrap_shell.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot_path = root / "snapshot.sh"
+            snapshot_path.write_text("# Snapshot file\n")
+
+            bash_rewritten = maybe_wrap_shell_lc_with_snapshot(
+                ("/bin/zsh", "-lc", "echo hello"),
+                Shell(ShellType.BASH, Path("/bin/bash"), ShellSnapshot(snapshot_path, root)),
+                root,
+                {},
+                {},
+            )
+
+        self.assertEqual(bash_rewritten[0].replace("\\", "/"), "/bin/bash")
+        self.assertEqual(bash_rewritten[1], "-c")
+        self.assertIn("exec '/bin/zsh' -c 'echo hello'", bash_rewritten[2])
+
+    def test_shell_snapshot_wrap_uses_sh_bootstrap_shell(self) -> None:
+        # Rust source: codex-rs/core/src/tools/runtimes/mod_tests.rs
+        # Rust test: maybe_wrap_shell_lc_with_snapshot_uses_sh_bootstrap_shell.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot_path = root / "snapshot.sh"
+            snapshot_path.write_text("# Snapshot file\n")
+
+            sh_rewritten = maybe_wrap_shell_lc_with_snapshot(
+                ("/bin/bash", "-lc", "echo hello"),
+                Shell(ShellType.SH, Path("/bin/sh"), ShellSnapshot(snapshot_path, root)),
+                root,
+                {},
+                {},
+            )
+
+        self.assertEqual(sh_rewritten[0].replace("\\", "/"), "/bin/sh")
+        self.assertEqual(sh_rewritten[1], "-c")
+        self.assertIn("exec '/bin/bash' -c 'echo hello'", sh_rewritten[2])
+
     def test_shell_snapshot_wrap_preserves_trailing_args_and_thread_id_override(self) -> None:
+        # Rust source: codex-rs/core/src/tools/runtimes/mod_tests.rs
+        # Rust tests: maybe_wrap_shell_lc_with_snapshot_preserves_trailing_args
+        # and maybe_wrap_shell_lc_with_snapshot_restores_codex_thread_id_from_env.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             snapshot_path = root / "snapshot.sh"
@@ -4176,7 +4283,29 @@ class ToolRuntimesTests(unittest.TestCase):
         self.assertIn(CODEX_THREAD_ID_ENV_VAR, rewritten[2])
         self.assertIn("exec '/bin/zsh' -c 'printf '\"'\"'%s'\"'\"' \"$0\"' 'arg0'", rewritten[2])
 
+    def test_shell_snapshot_wrap_accepts_dot_alias_cwd(self) -> None:
+        # Rust source: codex-rs/core/src/tools/runtimes/mod_tests.rs
+        # Rust test: maybe_wrap_shell_lc_with_snapshot_accepts_dot_alias_cwd.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot_path = root / "snapshot.sh"
+            snapshot_path.write_text("# Snapshot file\n")
+            shell = Shell(ShellType.ZSH, Path("/bin/zsh"), ShellSnapshot(snapshot_path, root))
+
+            rewritten = maybe_wrap_shell_lc_with_snapshot(
+                ("/bin/bash", "-lc", "echo hello"),
+                shell,
+                root / ".",
+                {},
+                {},
+            )
+
+        self.assertEqual(rewritten[0], str(Path("/bin/zsh")))
+        self.assertIn("exec '/bin/bash' -c 'echo hello'", rewritten[2])
+
     def test_shell_snapshot_wrap_skips_mismatches(self) -> None:
+        # Rust source: codex-rs/core/src/tools/runtimes/mod_tests.rs
+        # Rust test: maybe_wrap_shell_lc_with_snapshot_skips_when_cwd_mismatch.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             other = root / "other"
@@ -4188,6 +4317,85 @@ class ToolRuntimesTests(unittest.TestCase):
 
             self.assertEqual(maybe_wrap_shell_lc_with_snapshot(command, shell, other, {}, {}), command)
             self.assertEqual(maybe_wrap_shell_lc_with_snapshot(command, shell, root, {}, {}, is_windows=True), command)
+
+    def test_shell_snapshot_wrap_restores_path_and_unset_overrides_without_embedding_secret(self) -> None:
+        # Rust source: codex-rs/core/src/tools/runtimes/mod_tests.rs
+        # Rust tests: maybe_wrap_shell_lc_with_snapshot_keeps_snapshot_path_without_override,
+        # maybe_wrap_shell_lc_with_snapshot_applies_explicit_path_override,
+        # maybe_wrap_shell_lc_with_snapshot_does_not_embed_override_values_in_argv,
+        # and maybe_wrap_shell_lc_with_snapshot_preserves_unset_override_variables.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot_path = root / "snapshot.sh"
+            snapshot_path.write_text(
+                "# Snapshot file\n"
+                "export PATH='/snapshot/bin'\n"
+                "export OPENAI_API_KEY='snapshot-value'\n"
+                "export CODEX_TEST_UNSET_OVERRIDE='snapshot-value'\n"
+            )
+            shell = Shell(ShellType.BASH, Path("/bin/bash"), ShellSnapshot(snapshot_path, root))
+
+            snapshot_path_rewrite = maybe_wrap_shell_lc_with_snapshot(
+                ("/bin/bash", "-lc", "printf '%s' \"$PATH\""),
+                shell,
+                root,
+                {},
+                {},
+            )
+            override_rewrite = maybe_wrap_shell_lc_with_snapshot(
+                ("/bin/bash", "-lc", "printf '%s' \"$PATH\""),
+                shell,
+                root,
+                {"PATH": "/worktree/bin"},
+                {"PATH": "/worktree/bin"},
+            )
+            secret_rewrite = maybe_wrap_shell_lc_with_snapshot(
+                ("/bin/bash", "-lc", "printf '%s' \"$OPENAI_API_KEY\""),
+                shell,
+                root,
+                {"OPENAI_API_KEY": "super-secret-value"},
+                {"OPENAI_API_KEY": "super-secret-value"},
+            )
+            unset_rewrite = maybe_wrap_shell_lc_with_snapshot(
+                ("/bin/bash", "-lc", "printf '%s' \"$CODEX_TEST_UNSET_OVERRIDE\""),
+                shell,
+                root,
+                {"CODEX_TEST_UNSET_OVERRIDE": "worktree-value"},
+                {},
+            )
+
+        self.assertIn("exec '/bin/bash' -c 'printf '\"'\"'%s'\"'\"' \"$PATH\"'", snapshot_path_rewrite[2])
+        self.assertIn('export PATH="${__CODEX_SNAPSHOT_OVERRIDE_0}"', override_rewrite[2])
+        self.assertNotIn("super-secret-value", secret_rewrite[2])
+        self.assertIn("unset CODEX_TEST_UNSET_OVERRIDE", unset_rewrite[2])
+
+    def test_shell_snapshot_wrap_restores_proxy_env_from_live_process_env(self) -> None:
+        # Rust source: codex-rs/core/src/tools/runtimes/mod_tests.rs
+        # Rust tests: maybe_wrap_shell_lc_with_snapshot_restores_proxy_env_from_process_env,
+        # maybe_wrap_shell_lc_with_snapshot_keeps_user_proxy_env_when_proxy_inactive,
+        # and maybe_wrap_shell_lc_with_snapshot_restores_live_env_when_snapshot_proxy_active.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshot_path = root / "snapshot.sh"
+            snapshot_path.write_text(
+                "# Snapshot file\n"
+                f"export {PROXY_ACTIVE_ENV_KEY}='1'\n"
+                "export HTTP_PROXY='http://127.0.0.1:8080'\n"
+                "export http_proxy='http://127.0.0.1:8080'\n"
+            )
+            shell = Shell(ShellType.BASH, Path("/bin/bash"), ShellSnapshot(snapshot_path, root))
+
+            rewritten = maybe_wrap_shell_lc_with_snapshot(
+                ("/bin/bash", "-lc", "printf '%s' \"$HTTP_PROXY\""),
+                shell,
+                root,
+                {},
+                {"HTTP_PROXY": "http://user.proxy:8080"},
+            )
+
+        self.assertIn("__CODEX_SNAPSHOT_PROXY_OVERRIDE_SET_", rewritten[2])
+        self.assertIn(f'if [ -n "$__CODEX_SNAPSHOT_PROXY_ENV_SET" ] || [ -n "${{{PROXY_ACTIVE_ENV_KEY}+x}}" ]; then', rewritten[2])
+        self.assertIn('export HTTP_PROXY="${__CODEX_SNAPSHOT_PROXY_OVERRIDE_', rewritten[2])
 
     def test_override_exports_and_shell_quoting_match_rust_helpers(self) -> None:
         captures, restores = build_override_exports_for_keys("__TEST", ("A", "B"))

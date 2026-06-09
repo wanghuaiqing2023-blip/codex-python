@@ -1215,7 +1215,21 @@ def _drop_last_user_turns_from_history(history: list[ResponseItem], num_turns: i
         cut_index = user_positions[0]
     else:
         cut_index = user_positions[len(user_positions) - num_turns]
+    while cut_index > 0 and _is_pre_turn_context_update(history[cut_index - 1]):
+        cut_index -= 1
     del history[cut_index:]
+
+
+def _is_pre_turn_context_update(item: ResponseItem) -> bool:
+    if item.type != "message":
+        return False
+    if item.role == "developer":
+        return True
+    if item.role != "user":
+        return False
+    from pycodex.core.thread_rollout_truncation import is_user_turn_boundary
+
+    return not is_user_turn_boundary(item)
 
 
 def materialize_session_rollout(
