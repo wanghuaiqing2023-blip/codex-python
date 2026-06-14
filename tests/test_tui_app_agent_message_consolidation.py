@@ -1,0 +1,80 @@
+from pycodex.tui.app.agent_message_consolidation import (
+    AgentMarkdownCell,
+    AgentMessageCell,
+    AgentMessageConsolidationApp,
+    TranscriptOverlay,
+    Tui,
+    consolidates_trailing_agent_message_cells,
+    deferred_history_cell_is_inserted_before_consolidation,
+    no_trailing_agent_cells_finishes_stream_reflow_only,
+    trailing_agent_message_run_start,
+)
+from pycodex.tui.app_event import ConsolidationScrollbackReflow
+
+
+def test_consolidates_trailing_agent_message_cells() -> None:
+    # Rust: app/agent_message_consolidation.rs replaces trailing AgentMessageCell run.
+    assert consolidates_trailing_agent_message_cells()
+
+
+def test_deferred_history_cell_is_inserted_before_consolidation() -> None:
+    # Rust inserts deferred cell into overlay/transcript before searching the trailing run.
+    assert deferred_history_cell_is_inserted_before_consolidation()
+
+
+def test_no_trailing_agent_cells_finishes_stream_reflow_only() -> None:
+    # Rust calls maybe_finish_stream_reflow when there is no trailing run to replace.
+    assert no_trailing_agent_cells_finishes_stream_reflow_only()
+
+
+def test_trailing_run_start_ignores_non_tail_agent_cells() -> None:
+    cells = [
+        AgentMessageCell(("old stream",), True),
+        AgentMarkdownCell.new("markdown", "/tmp/cwd"),
+        AgentMessageCell(("tail",), True),
+    ]
+
+    assert trailing_agent_message_run_start(cells) == 2
+
+
+def test_consolidation_without_overlay_replaces_transcript_without_frame_request() -> None:
+    app = AgentMessageConsolidationApp(
+        transcript_cells=[AgentMessageCell(("tail",), True)],
+        overlay=None,
+    )
+    tui = Tui()
+
+    consolidated = app.handle_consolidate_agent_message(
+        tui,
+        "tail",
+        "/tmp/cwd",
+        ConsolidationScrollbackReflow.IF_RESIZE_REFLOW_RAN,
+    )
+
+    assert app.transcript_cells == [consolidated]
+    assert tui.frame_requester.scheduled_frames == 0
+    assert app.maybe_finish_stream_reflow_calls == 1
+
+
+def test_dict_and_object_agent_message_cells_are_supported_semantically() -> None:
+    class ObjectAgentMessage:
+        kind = "AgentMessageCell"
+
+    app = AgentMessageConsolidationApp(
+        transcript_cells=[
+            {"kind": "AgentMessageCell"},
+            ObjectAgentMessage(),
+        ],
+        overlay=TranscriptOverlay([{"kind": "AgentMessageCell"}, ObjectAgentMessage()]),
+    )
+    tui = Tui()
+
+    consolidated = app.handle_consolidate_agent_message(
+        tui,
+        "source",
+        "/tmp/cwd",
+        ConsolidationScrollbackReflow.REQUIRED,
+    )
+
+    assert app.transcript_cells == [consolidated]
+    assert app.finish_required_stream_reflow_calls == 1

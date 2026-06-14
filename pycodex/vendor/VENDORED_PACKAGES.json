@@ -1,0 +1,188 @@
+{
+  "dist_info_root": "pycodex/vendor/_dist_info",
+  "generated_at": "2026-06-13T12:37:25.620343+00:00",
+  "license_root": "pycodex/vendor/licenses",
+  "package_root": "pycodex/vendor/_packages",
+  "packages": [
+    {
+      "copied_dist_info_files": 4,
+      "copied_license_files": 1,
+      "copied_package_files": 213,
+      "dist_info": "textual-0.43.2.dist-info",
+      "import_roots": [
+        "textual"
+      ],
+      "license_files": [
+        "textual-0.43.2.dist-info/LICENSE"
+      ],
+      "package": "textual",
+      "version": "0.43.2",
+      "wheel": "textual-0.43.2-py3-none-any.whl"
+    },
+    {
+      "copied_dist_info_files": 4,
+      "copied_license_files": 1,
+      "copied_package_files": 79,
+      "dist_info": "rich-13.8.1.dist-info",
+      "import_roots": [
+        "rich"
+      ],
+      "license_files": [
+        "rich-13.8.1.dist-info/LICENSE"
+      ],
+      "package": "rich",
+      "version": "13.8.1",
+      "wheel": "rich-13.8.1-py3-none-any.whl"
+    },
+    {
+      "copied_dist_info_files": 6,
+      "copied_license_files": 2,
+      "copied_package_files": 66,
+      "dist_info": "markdown_it_py-2.2.0.dist-info",
+      "import_roots": [
+        "markdown_it"
+      ],
+      "license_files": [
+        "markdown_it_py-2.2.0.dist-info/LICENSE",
+        "markdown_it_py-2.2.0.dist-info/LICENSE.markdown-it"
+      ],
+      "package": "markdown-it-py",
+      "version": "2.2.0",
+      "wheel": "markdown_it_py-2.2.0-py3-none-any.whl"
+    },
+    {
+      "copied_dist_info_files": 4,
+      "copied_license_files": 7,
+      "copied_package_files": 47,
+      "dist_info": "mdit_py_plugins-0.3.5.dist-info",
+      "import_roots": [
+        "mdit_py_plugins"
+      ],
+      "license_files": [
+        "mdit_py_plugins-0.3.5.dist-info/LICENSE",
+        "mdit_py_plugins/admon/LICENSE",
+        "mdit_py_plugins/container/LICENSE",
+        "mdit_py_plugins/deflist/LICENSE",
+        "mdit_py_plugins/footnote/LICENSE",
+        "mdit_py_plugins/front_matter/LICENSE",
+        "mdit_py_plugins/texmath/LICENSE"
+      ],
+      "package": "mdit-py-plugins",
+      "version": "0.3.5",
+      "wheel": "mdit_py_plugins-0.3.5-py3-none-any.whl"
+    },
+    {
+      "copied_dist_info_files": 5,
+      "copied_license_files": 1,
+      "copied_package_files": 4,
+      "dist_info": "linkify_it_py-2.0.3.dist-info",
+      "import_roots": [
+        "linkify_it"
+      ],
+      "license_files": [
+        "linkify_it_py-2.0.3.dist-info/LICENSE"
+      ],
+      "package": "linkify-it-py",
+      "version": "2.0.3",
+      "wheel": "linkify_it_py-2.0.3-py3-none-any.whl"
+    },
+    {
+      "copied_dist_info_files": 4,
+      "copied_license_files": 1,
+      "copied_package_files": 7,
+      "dist_info": "mdurl-0.1.2.dist-info",
+      "import_roots": [
+        "mdurl"
+      ],
+      "license_files": [
+        "mdurl-0.1.2.dist-info/LICENSE"
+      ],
+      "package": "mdurl",
+      "version": "0.1.2",
+      "wheel": "mdurl-0.1.2-py3-none-any.whl"
+    },
+    {
+      "copied_dist_info_files": 5,
+      "copied_license_files": 1,
+      "copied_package_files": 10,
+      "dist_info": "importlib_metadata-6.7.0.dist-info",
+      "import_roots": [
+        "importlib_metadata"
+      ],
+      "license_files": [
+        "importlib_metadata-6.7.0.dist-info/LICENSE"
+      ],
+      "package": "importlib-metadata",
+      "version": "6.7.0",
+      "wheel": "importlib_metadata-6.7.0-py3-none-any.whl"
+    },
+    {
+      "copied_dist_info_files": 4,
+      "copied_license_files": 1,
+      "copied_package_files": 1,
+      "dist_info": "typing_extensions-4.7.1.dist-info",
+      "import_roots": [
+        "typing_extensions.py"
+      ],
+      "license_files": [
+        "typing_extensions-4.7.1.dist-info/LICENSE"
+      ],
+      "package": "typing-extensions",
+      "version": "4.7.1",
+      "wheel": "typing_extensions-4.7.1-py3-none-any.whl"
+    },
+    {
+      "copied_dist_info_files": 6,
+      "copied_license_files": 1,
+      "copied_package_files": 321,
+      "dist_info": "pygments-2.17.2.dist-info",
+      "import_roots": [
+        "pygments"
+      ],
+      "license_files": [
+        "pygments-2.17.2.dist-info/licenses/LICENSE"
+      ],
+      "package": "pygments",
+      "version": "2.17.2",
+      "wheel": "pygments-2.17.2-py3-none-any.whl"
+    },
+    {
+      "copied_dist_info_files": 5,
+      "copied_license_files": 1,
+      "copied_package_files": 13,
+      "dist_info": "uc_micro_py-1.0.3.dist-info",
+      "import_roots": [
+        "uc_micro"
+      ],
+      "license_files": [
+        "uc_micro_py-1.0.3.dist-info/LICENSE"
+      ],
+      "package": "uc-micro-py",
+      "version": "1.0.3",
+      "wheel": "uc_micro_py-1.0.3-py3-none-any.whl"
+    },
+    {
+      "copied_dist_info_files": 5,
+      "copied_license_files": 1,
+      "copied_package_files": 2,
+      "dist_info": "zipp-3.15.0.dist-info",
+      "import_roots": [
+        "zipp"
+      ],
+      "license_files": [
+        "zipp-3.15.0.dist-info/LICENSE"
+      ],
+      "package": "zipp",
+      "version": "3.15.0",
+      "wheel": "zipp-3.15.0-py3-none-any.whl"
+    },
+    {
+      "filename": "typing_extensions-4.3.0-py3-none-any.whl",
+      "name": "typing-extensions",
+      "reason": "Textual 0.43.2 dependency; Python 3.7-compatible runtime shim.",
+      "sha256": "25642c956049920a5aa49edcdd6ab1e06d7e5d467fc00e0506c44ac86fbfca02",
+      "source": "https://files.pythonhosted.org/packages/ed/d6/2afc375a8d55b8be879d6b4986d4f69f01115e795e36827fd3a40166028b/typing_extensions-4.3.0-py3-none-any.whl",
+      "version": "4.3.0"
+    }
+  ]
+}

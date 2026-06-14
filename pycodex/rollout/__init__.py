@@ -1316,7 +1316,7 @@ def find_thread_names_by_ids(codex_home: Path, thread_ids: Iterable[str | uuid.U
     return names
 
 
-def find_thread_meta_by_name_str(codex_home: Path, name: str) -> tuple[Path, SessionMetaLine] | None:
+def find_thread_meta_by_name_str(codex_home: Path, name: str, state_db_ctx: Any = None) -> tuple[Path, SessionMetaLine] | None:
     """Find the newest indexed thread name with a readable rollout header."""
 
     if not name.strip():
@@ -1329,7 +1329,7 @@ def find_thread_meta_by_name_str(codex_home: Path, name: str) -> tuple[Path, Ses
         seen.add(entry.id)
         if entry.thread_name != name:
             continue
-        path = find_thread_path_by_id_str(codex_home, entry.id)
+        path = find_thread_path_by_id_str(codex_home, entry.id, state_db_ctx)
         if path is None:
             continue
         try:
@@ -1339,12 +1339,42 @@ def find_thread_meta_by_name_str(codex_home: Path, name: str) -> tuple[Path, Ses
     return None
 
 
-def find_thread_path_by_id_str(codex_home: Path, id_str: str) -> Path | None:
+def find_thread_path_by_id_str(codex_home: Path, id_str: str, state_db_ctx: Any = None) -> Path | None:
+    state_path = _state_db_thread_path_by_id(state_db_ctx, id_str, archived=False)
+    if state_path is not None:
+        return state_path
     return _find_thread_path_by_id_str_in_subdir(codex_home, SESSIONS_SUBDIR, id_str)
 
 
-def find_archived_thread_path_by_id_str(codex_home: Path, id_str: str) -> Path | None:
+def find_archived_thread_path_by_id_str(codex_home: Path, id_str: str, state_db_ctx: Any = None) -> Path | None:
+    state_path = _state_db_thread_path_by_id(state_db_ctx, id_str, archived=True)
+    if state_path is not None:
+        return state_path
     return _find_thread_path_by_id_str_in_subdir(codex_home, ARCHIVED_SESSIONS_SUBDIR, id_str)
+
+
+def _state_db_thread_path_by_id(state_db_ctx: Any, id_str: str, *, archived: bool) -> Path | None:
+    if state_db_ctx is None:
+        return None
+    finder = getattr(state_db_ctx, "find_thread_path_by_id", None)
+    if callable(finder):
+        try:
+            value = finder(id_str, archived=archived)
+        except TypeError:
+            value = finder(id_str)
+        return Path(value) if value is not None else None
+    finder = getattr(state_db_ctx, "thread_path_by_id", None)
+    if callable(finder):
+        value = finder(id_str)
+        return Path(value) if value is not None else None
+    paths = getattr(state_db_ctx, "paths_by_id", None)
+    if isinstance(paths, Mapping):
+        value = paths.get(id_str)
+        return Path(value) if value is not None else None
+    if isinstance(state_db_ctx, Mapping):
+        value = state_db_ctx.get(id_str)
+        return Path(value) if value is not None else None
+    return None
 
 
 def _find_thread_path_by_id_str_in_subdir(codex_home: Path, subdir: str, id_str: str) -> Path | None:

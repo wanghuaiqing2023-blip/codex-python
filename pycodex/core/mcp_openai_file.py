@@ -18,6 +18,12 @@ from typing import Any, TypeAlias
 JsonValue = Any
 
 
+OPENAI_FILE_PARAM_DESCRIPTION = (
+    "Document file payload. This parameter expects an absolute local file path. "
+    "If you want to upload a file, provide the absolute path to that file here."
+)
+
+
 @dataclass(frozen=True)
 class UploadedOpenAIFile:
     download_url: str
@@ -87,6 +93,34 @@ async def rewrite_mcp_tool_arguments_for_openai_files(
     if not changed:
         return arguments_value
     return rewritten_arguments
+
+
+def annotate_openai_file_params_schema(
+    input_schema: Mapping[str, JsonValue] | None,
+    openai_file_input_params: Sequence[str] | None,
+) -> dict[str, JsonValue] | None:
+    if input_schema is None:
+        return None
+    if not isinstance(input_schema, Mapping):
+        raise TypeError("input_schema must be a mapping or None")
+    params = _file_input_params(openai_file_input_params or ())
+    if not params:
+        return dict(input_schema)
+    schema = dict(input_schema)
+    properties = schema.get("properties")
+    if not isinstance(properties, Mapping):
+        return schema
+    rewritten_properties = dict(properties)
+    for field_name in params:
+        field_schema = rewritten_properties.get(field_name)
+        if not isinstance(field_schema, Mapping):
+            continue
+        updated = dict(field_schema)
+        updated["type"] = "string"
+        updated["description"] = OPENAI_FILE_PARAM_DESCRIPTION
+        rewritten_properties[field_name] = updated
+    schema["properties"] = rewritten_properties
+    return schema
 
 
 async def rewrite_argument_value_for_openai_files(
@@ -197,7 +231,9 @@ def _required_int(value: Mapping[str, JsonValue], key: str) -> int:
 
 __all__ = [
     "OpenAIFileUploader",
+    "OPENAI_FILE_PARAM_DESCRIPTION",
     "UploadedOpenAIFile",
+    "annotate_openai_file_params_schema",
     "build_uploaded_local_argument_value",
     "rewrite_argument_value_for_openai_files",
     "rewrite_mcp_tool_arguments_for_openai_files",

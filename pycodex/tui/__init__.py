@@ -1,17 +1,44 @@
-"""Python port entry point for Codex TUI.
+﻿"""Python port entry point for Codex TUI.
 
 Upstream Rust implementation for the terminal UI is in ``codex-rs/tui``.
-This module provides the public import shape expected by callers while keeping
-execution non-interactive until the full TUI is ported.
+This package mirrors the Rust ``codex-tui`` module boundaries so behavior can be
+ported module-by-module.
 """
 
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any
 
 
 class TUIUnavailableError(RuntimeError):
     """Backward-compatible exception class for callers that still import it."""
+
+
+class ExitReason(Enum):
+    """Python boundary for Rust ``codex_tui::ExitReason``."""
+
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class AppExitInfo:
+    """Python boundary for Rust ``codex_tui::AppExitInfo``."""
+
+    reason: ExitReason = ExitReason.UNKNOWN
+    metadata: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class Cli:
+    """Python boundary for Rust ``codex_tui::Cli``.
+
+    The concrete argparse mapping will be filled in from ``tui/src/cli.rs``.
+    """
+
+    raw_args: tuple[str, ...] = ()
 
 
 def run_tui(*_args: object, stderr: object | None = None, **_kwargs: object) -> int:
@@ -35,4 +62,18 @@ def run_tui(*_args: object, stderr: object | None = None, **_kwargs: object) -> 
     return 64
 
 
-__all__ = ["run_tui", "TUIUnavailableError"]
+async def run_main(*_args: object, **_kwargs: object) -> AppExitInfo:
+    """Python boundary for Rust ``codex_tui::run_main``."""
+
+    raise TUIUnavailableError("pycodex: codex_tui::run_main is not implemented yet")
+
+
+__all__ = [
+    "AppExitInfo",
+    "Cli",
+    "ExitReason",
+    "TUIUnavailableError",
+    "run_main",
+    "run_tui",
+]
+
