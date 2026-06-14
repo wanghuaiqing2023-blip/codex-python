@@ -1977,10 +1977,12 @@ def _render_local_http_review_result(result: UserTurnSamplingResult, review_requ
     summary["review_rollout_user_message"] = rollout_user_message
     session_events = tuple(getattr(result, "session_events", ()) or ())
     if review_request is not None:
+        non_terminal_events, terminal_events = _split_local_http_review_terminal_events(session_events)
         session_events = (
             EventMsg.with_payload("entered_review_mode", review_request),
-            *session_events,
+            *non_terminal_events,
             EventMsg.with_payload("exited_review_mode", ExitedReviewModeEvent(review_output)),
+            *terminal_events,
         )
     return replace(
         result,
@@ -2006,10 +2008,12 @@ def _render_local_http_interrupted_review_result(
     summary["review_rollout_user_message"] = render_local_http_review_interrupted_rollout_user_message()
     session_events = tuple(getattr(result, "session_events", ()) or ())
     if review_request is not None:
+        non_terminal_events, terminal_events = _split_local_http_review_terminal_events(session_events)
         session_events = (
             EventMsg.with_payload("entered_review_mode", review_request),
-            *session_events,
+            *non_terminal_events,
             EventMsg.with_payload("exited_review_mode", ExitedReviewModeEvent(None)),
+            *terminal_events,
         )
     return replace(
         result,
@@ -2018,6 +2022,17 @@ def _render_local_http_interrupted_review_result(
         stream_runtime_state_summary=summary,
         last_agent_message=rendered,
     )
+
+
+def _split_local_http_review_terminal_events(session_events: tuple[Any, ...]) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
+    terminal: list[Any] = []
+    non_terminal: list[Any] = []
+    for event in session_events:
+        if getattr(event, "type", None) in {"task_complete", "turn_complete"}:
+            terminal.append(event)
+        else:
+            non_terminal.append(event)
+    return tuple(non_terminal), tuple(terminal)
 
 
 def local_http_review_rollout_input_items(result: UserTurnSamplingResult) -> tuple[UserInput, ...]:

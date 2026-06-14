@@ -1,0 +1,115 @@
+﻿from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from pycodex.tui.line_truncation import Span
+from pycodex.tui.status.card import (
+    CHATGPT_USAGE_URL,
+    StatusContextWindowData,
+    StatusHistoryCell,
+    StatusRateLimitState,
+    StatusTokenUsageData,
+    decorate_workspace_sandbox_label,
+    format_model_provider,
+    new_status_output_with_rate_limits_handle,
+    sanitize_base_url,
+    status_approval_label,
+    status_permission_summary,
+    status_permissions_label,
+    workspace_root_suffix,
+)
+from pycodex.tui.status.rate_limits import RateLimitSnapshotDisplay, RateLimitWindowDisplay, StatusRateLimitData
+
+
+def test_status_handle_finish_rate_limit_refresh_updates_shared_state() -> None:
+    # Rust: StatusHistoryHandle::finish_rate_limit_refresh recomposes data and clears refreshing flag.
+    now = datetime(2026, 6, 12, 10, 0, tzinfo=timezone.utc)
+    output, handle = new_status_output_with_rate_limits_handle(
+        model_name="gpt-5",
+        directory=Path("/repo"),
+        rate_limits=[],
+        now=now,
+        refreshing_rate_limits=True,
+    )
+    snapshot = RateLimitSnapshotDisplay("codex", now, primary=RateLimitWindowDisplay(10.0, "soon", 300))
+
+    handle.finish_rate_limit_refresh([snapshot], now)
+
+    assert output.card.rate_limit_state.refreshing_rate_limits is False
+    assert output.card.rate_limit_state.rate_limits.kind == "available"
+    assert [row.label for row in output.card.rate_limit_state.rate_limits.rows] == ["5h limit"]
+
+
+def test_token_usage_and_context_window_spans_match_status_card_shape() -> None:
+    # Rust: token_usage_spans and context_window_spans build total/input/output and context details.
+    cell = StatusHistoryCell(
+        model_name="gpt-5",
+        token_usage=StatusTokenUsageData(
+            total=1234,
+            input=1000,
+            output=234,
+            context_window=StatusContextWindowData(88, 1200, 8000),
+        ),
+    )
+
+    assert [span.content for span in cell.token_usage_spans()] == ["1.2k", " total ", " (", "1.0k", " input", " + ", "234", " output", ")"]
+    assert [span.content for span in cell.context_window_spans() or ()] == ["88% left", " (", "1.2k", " used / ", "8.0k", ")"]
+
+
+def test_rate_limit_lines_cover_missing_stale_and_narrow_window_rows() -> None:
+    # Rust: rate_limit_lines chooses missing/stale warning copy and narrows window rows to summary.
+    formatter = __import__("pycodex.tui.status.format", fromlist=["FieldFormatter"]).FieldFormatter.from_labels(["5h limit", "Warning", "Limits"])
+    cell = StatusHistoryCell(model_name="gpt-5")
+
+    missing = cell.rate_limit_lines(StatusRateLimitState(StatusRateLimitData.missing(), False), 80, formatter)
+    assert "data not available yet" in "".join(span.content for span in missing[0].spans)
+
+    stale = StatusRateLimitData.stale([RateLimitSnapshotDisplay("unused", datetime.now(timezone.utc)).primary])  # type: ignore[list-item]
+    stale = StatusRateLimitData.stale([])
+    stale_lines = cell.rate_limit_lines(StatusRateLimitState(stale, True), 80, formatter)
+    assert "run /status again shortly" in "".join(span.content for span in stale_lines[-1].spans)
+
+    rows = StatusRateLimitData.available([])
+    assert "not available for this account" in "".join(span.content for span in cell.rate_limit_lines(StatusRateLimitState(rows), 80, formatter)[0].spans)
+
+
+def test_permission_label_helpers_match_rust_branches() -> None:
+    # Rust: status_permission_summary, workspace_root_suffix, status_permissions_label, status_approval_label.
+    assert status_permission_summary("read-only (network access enabled)") == "read-only with network access"
+    assert status_permission_summary("workspace-write") == "workspace"
+    assert workspace_root_suffix(["/repo", "/tmp/extra"], "/repo") == " [/tmp/extra]"
+    assert decorate_workspace_sandbox_label("workspace", " [/tmp/extra]") == "workspace [/tmp/extra]"
+    assert status_approval_label("on-request", "auto-review", "on-request") == "auto-review"
+    assert status_permissions_label("read-only", "enabled", "on-request", "read-only", "auto-review") == "Read Only (auto-review)"
+    assert status_permissions_label("workspace-write", "enabled", "on-request", "workspace", "on-request", " [/tmp/extra]") == "Workspace [/tmp/extra] (on-request)"
+    assert status_permissions_label("danger-full-access", "disabled", "never", "none", "never") == "Full Access"
+    assert status_permissions_label("custom", "enabled", "on-request", "workspace", "on-request", " [/tmp/extra]") == "Profile custom (workspace [/tmp/extra], on-request)"
+
+
+def test_model_provider_and_base_url_sanitizing_match_rust_contract() -> None:
+    # Rust: sanitize_base_url strips userinfo/query/fragment/trailing slash; default OpenAI provider hides row.
+    class Provider:
+        name = "OpenAI"
+        def is_openai(self) -> bool:
+            return True
+
+    class Config:
+        model_provider = Provider()
+        model_provider_id = "openai"
+
+    assert sanitize_base_url(" https://u:p@example.com:8443/path/?q=1#frag ") == "https://example.com:8443/path"
+    assert sanitize_base_url("not a url") is None
+    assert format_model_provider(Config(), None) is None
+    assert format_model_provider(Config(), "https://api.example.com/v1/") == "OpenAI - https://api.example.com/v1"
+
+
+def test_display_lines_include_usage_link_and_hyperlink_metadata() -> None:
+    # Rust: display_hyperlink_lines marks CHATGPT_USAGE_URL when visible in status output.
+    cell = StatusHistoryCell(model_name="gpt-5", show_chatgpt_usage_link=True)
+    text = "\n".join("".join(span.content for span in line.spans) for line in cell.display_lines(120))
+    hyperlink_rows = cell.display_hyperlink_lines(120)
+
+    assert "OpenAI Codex" in text
+    assert CHATGPT_USAGE_URL in text
+    assert any(row["hyperlinks"] for row in hyperlink_rows)

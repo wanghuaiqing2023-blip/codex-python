@@ -109,6 +109,25 @@ CYBER_VERIFY_URL = "https://chatgpt.com/cyber"
 CYBER_SAFETY_URL = "https://developers.openai.com/codex/concepts/cyber-safety"
 
 
+def resume_model_mismatch_warning_event(
+    previous_model: str | None,
+    current_model: str | None,
+) -> EventMsg | None:
+    """Build the Rust-style warning emitted when a resumed rollout changes models."""
+
+    if not isinstance(previous_model, str) or previous_model == "":
+        return None
+    if not isinstance(current_model, str) or current_model == "":
+        return None
+    if previous_model == current_model:
+        return None
+    message = (
+        "Resuming a conversation that was started with model "
+        f"`{previous_model}`, but the current model is `{current_model}`."
+    )
+    return EventMsg.with_payload("warning", WarningEvent(message))
+
+
 def _default_services() -> SimpleNamespace:
     return SimpleNamespace(unified_exec_manager=UnifiedExecProcessManager())
 
@@ -1207,6 +1226,7 @@ __all__ = [
     "InMemoryHistory",
     "InMemoryInputQueue",
     "InMemoryTurnContext",
+    "resume_model_mismatch_warning_event",
 ]
 
 

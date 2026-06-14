@@ -7,6 +7,7 @@ import math
 import os
 import re
 import inspect
+import importlib
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -55,6 +56,8 @@ class HttpTransportConfig:
     headers: Mapping[str, str] | None = None
     timeout: float | None = None
     turn_state: Any = None
+    enable_request_compression: bool = False
+    use_codex_backend_auth: bool = False
 
 
 def http_transport_config_from_provider(
@@ -88,7 +91,13 @@ def http_transport_config_from_provider(
     if model_client.state.include_timing_metrics:
         insert_header_if_valid(headers, "x-responsesapi-include-timing-metrics", "true")
     insert_header_if_valid(headers, "Originator", exec_originator_header_value())
-    return HttpTransportConfig(resolved_endpoint, headers=headers, timeout=timeout)
+    return HttpTransportConfig(
+        resolved_endpoint,
+        headers=headers,
+        timeout=timeout,
+        enable_request_compression=model_client.state.enable_request_compression,
+        use_codex_backend_auth=_auth_uses_codex_backend(resolved_auth),
+    )
 
 
 def send_prepared_http_sampling_request(
@@ -100,8 +109,9 @@ def send_prepared_http_sampling_request(
     """Send a prepared sampling request with the Python standard library."""
 
     json_request = _to_json_compatible(prepared.prepared_request)
-    body = json.dumps(json_request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     headers = _request_headers_for_config(config)
+    body = json.dumps(json_request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    body, headers = prepare_request_body_for_transport(body, headers, config)
     request = Request(config.endpoint, data=body, headers=headers, method="POST")
     open_fn = urlopen if opener is None else opener
     try:
@@ -153,6 +163,56 @@ def _request_headers_for_config(config: HttpTransportConfig) -> dict[str, str]:
         if isinstance(state, str):
             insert_header_if_valid(headers, X_CODEX_TURN_STATE_HEADER, state)
     return headers
+
+
+def prepare_request_body_for_transport(
+    body: bytes,
+    headers: Mapping[str, str] | None,
+    config: HttpTransportConfig,
+    *,
+    zstd_compress: Any = None,
+) -> tuple[bytes, dict[str, str]]:
+    if not isinstance(body, bytes):
+        raise TypeError("body must be bytes")
+    prepared_headers = dict(headers or {})
+    if not config.enable_request_compression or not config.use_codex_backend_auth:
+        return body, prepared_headers
+    compressor = zstd_compress if zstd_compress is not None else _zstd_compressor()
+    if compressor is None:
+        return body, prepared_headers
+    compressed = compressor(body)
+    if not isinstance(compressed, bytes):
+        raise TypeError("zstd compressor must return bytes")
+    prepared_headers["Content-Encoding"] = "zstd"
+    return compressed, prepared_headers
+
+
+def _zstd_compressor() -> Any | None:
+    try:
+        module = importlib.import_module("zstandard")
+    except ImportError:
+        return None
+    compressor_cls = getattr(module, "ZstdCompressor", None)
+    if compressor_cls is None:
+        return None
+    compressor = compressor_cls()
+    compress = getattr(compressor, "compress", None)
+    return compress if callable(compress) else None
+
+
+def _auth_uses_codex_backend(auth: Any) -> bool:
+    if auth is None or isinstance(auth, str):
+        return False
+    if isinstance(auth, Mapping):
+        value = auth.get("auth_mode") or auth.get("mode")
+    else:
+        value = getattr(auth, "auth_mode", None)
+        if callable(value):
+            value = value()
+    if value is None:
+        return False
+    normalized = str(value).lower()
+    return normalized in {"chatgpt", "chatgpt_auth", "chatgptauth", "codex_backend", "codex-backend"}
 
 
 def _record_turn_state_from_headers(turn_state: Any, headers: Any) -> None:
@@ -1379,6 +1439,7 @@ __all__ = [
     "http_sampling_stream_max_retries",
     "http_transport_config_from_provider",
     "model_client_http_sampler",
+    "prepare_request_body_for_transport",
     "response_items_from_responses_payload",
     "run_user_turn_http_sampling_from_session",
     "send_prepared_http_sampling_request",
