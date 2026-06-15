@@ -18,6 +18,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="ascii_animation",
     source="codex/codex-rs/tui/src/ascii_animation.rs",
+    status="complete",
 )
 
 Clock = Callable[[], float]

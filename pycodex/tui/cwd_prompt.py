@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, List, Optional, Set, Union
 
 from ._porting import RustTuiModule
 
@@ -17,6 +17,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="cwd_prompt",
     source="codex/codex-rs/tui/src/cwd_prompt.rs",
+    status="complete",
 )
 
 
@@ -45,7 +46,7 @@ class CwdSelection(Enum):
 @dataclass(frozen=True)
 class CwdPromptOutcome:
     kind: str
-    selection: CwdSelection | None = None
+    selection: Optional[CwdSelection] = None
 
     @classmethod
     def Selection(cls, selection: CwdSelection) -> "CwdPromptOutcome":
@@ -63,7 +64,7 @@ class KeyEvent:
     kind: str = "Press"
 
     @classmethod
-    def new(cls, code: str, modifiers: set[str] | None = None, kind: str = "Press") -> "KeyEvent":
+    def new(cls, code: str, modifiers: Optional[Set[str]] = None, kind: str = "Press") -> "KeyEvent":
         return cls(code=code, modifiers=frozenset(modifiers or set()), kind=kind)
 
 
@@ -82,13 +83,13 @@ class CwdPromptScreen:
     current_cwd: str
     session_cwd: str
     highlighted: CwdSelection = CwdSelection.Session
-    selected: CwdSelection | None = None
+    selected: Optional[CwdSelection] = None
     should_exit: bool = False
 
     @classmethod
     def new(
         cls,
-        request_frame: FrameRequester | None,
+        request_frame: Optional[FrameRequester],
         action: CwdPromptAction,
         current_cwd: str,
         session_cwd: str,
@@ -100,7 +101,7 @@ class CwdPromptScreen:
             session_cwd=session_cwd,
         )
 
-    def handle_key(self, key_event: KeyEvent | str) -> None:
+    def handle_key(self, key_event: Union[KeyEvent, str]) -> None:
         event = _key_event_from_any(key_event)
         if event.kind == "Release":
             return
@@ -137,10 +138,10 @@ class CwdPromptScreen:
     def is_done(self) -> bool:
         return self.should_exit or self.selected is not None
 
-    def selection(self) -> CwdSelection | None:
+    def selection(self) -> Optional[CwdSelection]:
         return self.selected
 
-    def render_lines(self) -> list[str]:
+    def render_lines(self) -> List[str]:
         action_verb = self.action.verb()
         action_past = self.action.past_participle()
         return [
@@ -165,8 +166,8 @@ def selection_option_row(index: int, label: str, highlighted: bool) -> str:
 async def run_cwd_selection_prompt(
     tui: Any,
     action: CwdPromptAction,
-    current_cwd: str | Path,
-    session_cwd: str | Path,
+    current_cwd: Union[str, Path],
+    session_cwd: Union[str, Path],
 ) -> CwdPromptOutcome:
     frame_requester = getattr(tui, "frame_requester", lambda: FrameRequester())()
     screen = CwdPromptScreen.new(
@@ -194,7 +195,7 @@ async def run_cwd_selection_prompt(
     return CwdPromptOutcome.Selection(screen.selection() or CwdSelection.Session)
 
 
-def render_ref(screen: CwdPromptScreen, area: Any = None, buf: Any = None) -> list[str]:
+def render_ref(screen: CwdPromptScreen, area: Any = None, buf: Any = None) -> List[str]:
     lines = screen.render_lines()
     if buf is not None and hasattr(buf, "draw"):
         buf.draw(lines, area)
@@ -210,7 +211,7 @@ def new_prompt() -> CwdPromptScreen:
     )
 
 
-def _key_event_from_any(value: KeyEvent | str) -> KeyEvent:
+def _key_event_from_any(value: Union[KeyEvent, str]) -> KeyEvent:
     if isinstance(value, KeyEvent):
         return value
     return KeyEvent.new(str(value))

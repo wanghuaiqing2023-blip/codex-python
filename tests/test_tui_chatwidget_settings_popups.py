@@ -8,6 +8,7 @@ from pycodex.tui.chatwidget.settings_popups import (
     RealtimeAudioDeviceKind,
     open_experimental_popup,
     open_personality_popup,
+    open_realtime_audio_device_selection,
     open_realtime_audio_device_selection_with_names,
     open_realtime_audio_popup,
     open_realtime_audio_restart_prompt,
@@ -77,6 +78,14 @@ class Widget:
         return self.microphone if kind == RealtimeAudioDeviceKind.MICROPHONE else self.speaker
 
 
+class WidthCell:
+    def __init__(self, value) -> None:
+        self.value = value
+
+    def get(self):
+        return self.value
+
+
 def test_open_theme_picker_delegates_or_builds_semantic_placeholder() -> None:
     widget = Widget()
 
@@ -85,6 +94,27 @@ def test_open_theme_picker_delegates_or_builds_semantic_placeholder() -> None:
     assert params.title == "Theme"
     assert params.items[0].name == "solarized"
     assert widget.bottom_pane.selection is params
+
+
+def test_open_theme_picker_passes_valid_u16_width_to_builder() -> None:
+    # Rust parity: open_theme_picker converts last_rendered_width to u16 when possible.
+    widget = Widget()
+    calls = []
+    expected = object()
+    widget.last_rendered_width = WidthCell(120)
+    widget.build_theme_picker_params = lambda theme, home, width: calls.append((theme, home, width)) or expected
+
+    assert open_theme_picker(widget) is expected
+    assert widget.bottom_pane.selection is expected
+    assert calls == [("solarized", None, 120)]
+
+    widget = Widget()
+    calls = []
+    widget.last_rendered_width = WidthCell(70000)
+    widget.build_theme_picker_params = lambda theme, home, width: calls.append((theme, home, width)) or expected
+
+    assert open_theme_picker(widget) is expected
+    assert calls == [("solarized", None, None)]
 
 
 def test_open_personality_popup_guards_startup_and_model_support_then_builds_items() -> None:
@@ -130,6 +160,49 @@ def test_realtime_audio_popup_and_device_selection_match_current_state() -> None
     assert params.items[2].actions == [
         AppEvent("PersistRealtimeAudioDeviceSelection", {"kind": RealtimeAudioDeviceKind.SPEAKER, "name": "Headphones"})
     ]
+
+
+def test_realtime_audio_device_selection_marks_available_current_device() -> None:
+    # Rust parity: current configured device is current when present in the listed devices,
+    # and no disabled "Unavailable" placeholder is inserted.
+    widget = Widget()
+    params = open_realtime_audio_device_selection_with_names(
+        widget,
+        RealtimeAudioDeviceKind.SPEAKER,
+        ["Desk Speaker", "Headphones"],
+    )
+
+    assert [item.name for item in params.items] == [
+        "System default",
+        "Desk Speaker",
+        "Headphones",
+    ]
+    assert params.items[0].is_current is False
+    assert params.items[1].is_current is True
+    assert params.items[1].is_disabled is False
+
+
+def test_realtime_audio_device_selection_wrapper_handles_success_error_and_linux_noop() -> None:
+    widget = Widget()
+
+    params = open_realtime_audio_device_selection(
+        widget,
+        RealtimeAudioDeviceKind.MICROPHONE,
+        lambda _kind: ["Studio Mic"],
+    )
+    assert params is widget.bottom_pane.selection
+    assert params.items[1].name == "Studio Mic"
+
+    widget = Widget()
+    def fail(_kind):
+        raise RuntimeError("backend down")
+
+    assert open_realtime_audio_device_selection(widget, RealtimeAudioDeviceKind.SPEAKER, fail) is None
+    assert widget.error_messages == ["Failed to load realtime speaker devices: backend down"]
+
+    widget = Widget()
+    assert open_realtime_audio_device_selection(widget, RealtimeAudioDeviceKind.SPEAKER, linux_noop=True) is None
+    assert widget.bottom_pane.selection is None
 
 
 def test_realtime_audio_restart_prompt_builds_restart_and_apply_later_choices() -> None:

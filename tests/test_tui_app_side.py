@@ -1,13 +1,19 @@
-﻿from pycodex.tui.app.side import (
+import asyncio
+
+from pycodex.tui.app.side import (
     SIDE_ALREADY_OPEN_MESSAGE,
+    SIDE_BOUNDARY_PROMPT,
     SIDE_MAIN_THREAD_UNAVAILABLE_MESSAGE,
     SIDE_NO_STARTED_CONVERSATION_MESSAGE,
     SIDE_RENAME_BLOCK_MESSAGE,
+    SideActionPlan,
     SideParentStatus,
     SideParentStatusChange,
     SideThreadState,
     SideUiState,
     active_side_parent_thread_id,
+    discard_side_thread,
+    handle_start_side,
     apply_side_parent_status_change,
     clear_side_parent_action_status,
     install_side_thread_snapshot,
@@ -20,6 +26,15 @@
     side_thread_to_discard_after_switch,
     sync_side_thread_ui,
 )
+
+
+def run(coro):
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
 
 
 def test_side_boundary_prompt_marks_inherited_history_reference_only():
@@ -138,3 +153,45 @@ def test_restore_message_and_install_side_snapshot_semantics():
     session, turns = install_side_thread_snapshot({"thread_id": "side", "forked_from_id": "main"}, ["turn"])
     assert session == {"thread_id": "side", "forked_from_id": None}
     assert turns == []
+
+
+def test_handle_start_side_success_and_failure_plans():
+    state = SideUiState(primary_thread_id="main", active_thread_id="main")
+    plan = run(
+        handle_start_side(state, "main", user_message="question", fork_result={"thread_id": "side"}, active_after_select="side")
+    )
+
+    assert plan.action == "start_side"
+    assert plan.thread_id == "side"
+    assert ("thread_inject_items", SIDE_BOUNDARY_PROMPT) in plan.updates
+    assert ("submit_user_message_as_plain_user_turn", "question") in plan.updates
+    assert state.side_threads["side"].parent_thread_id == "main"
+
+    blocked_state = SideUiState(primary_thread_id=None)
+    blocked = run(handle_start_side(blocked_state, "main", user_message="restore"))
+    assert blocked == SideActionPlan(
+        action="start_side_blocked",
+        parent_thread_id="main",
+        messages=(SIDE_MAIN_THREAD_UNAVAILABLE_MESSAGE,),
+        restored_user_message="restore",
+    )
+    assert blocked_state.restored_user_messages == ["restore"]
+
+    failed_state = SideUiState(primary_thread_id="main")
+    failed = run(handle_start_side(failed_state, "main", fork_error="transport"))
+    assert failed.action == "start_side_fork_failed"
+    assert failed.messages == ("Failed to start side conversation: transport",)
+
+
+def test_discard_side_thread_success_and_error_plans():
+    ok = run(discard_side_thread("side"))
+    assert ok.action == "discard_side_thread"
+    assert ("discard_thread_local_state", "side") in ok.updates
+
+    interrupt = run(discard_side_thread("side", interrupt_error="busy"))
+    assert interrupt.action == "discard_side_thread_interrupt_failed"
+    assert interrupt.messages == ("Failed to close side conversation side; it is still open: busy",)
+
+    unsubscribe = run(discard_side_thread("side", unsubscribe_error="closed"))
+    assert unsubscribe.action == "discard_side_thread_unsubscribe_failed"
+    assert unsubscribe.messages == ("Failed to close side conversation side; it is still open: closed",)

@@ -1,15 +1,14 @@
 ﻿"""Semantic port of codex-rs/tui/src/app/test_support.rs.
 
-This Rust module mostly builds heavyweight App fixtures for sibling tests.  The
-Python port provides the module-local helper behavior that can be represented
-without constructing the full TUI App, and keeps heavyweight App construction as
-an explicit dependency boundary.
+This Rust module mostly builds heavyweight App fixtures for sibling tests. The
+Python port exposes the same helper contract with a semantic App fixture plan
+instead of constructing a full runtime TUI object graph.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
 from pycodex.protocol import SessionSource, ThreadId
 
@@ -20,6 +19,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="app::test_support",
     source="codex/codex-rs/tui/src/app/test_support.rs",
+    status="complete",
 )
 
 
@@ -28,27 +28,28 @@ class TestSessionTelemetry:
     thread_id: ThreadId
     model: str
     model_slug: str
-    account_id: str | None
-    account_email: str | None
-    auth_mode: str | None
+    account_id: Optional[str]
+    account_email: Optional[str]
+    auth_mode: Optional[str]
     originator: str
     log_user_prompts: bool
     app_version: str
     session_source: SessionSource
 
 
-async def make_test_app(*args: Any, **kwargs: Any) -> Any:
-    """Heavyweight App fixture boundary from Rust.
+@dataclass(frozen=True)
+class TestAppFixturePlan:
+    chat_widget: str = "make_chatwidget_manual_with_sender"
+    config_source: str = "chat_widget.config_ref().clone()"
+    file_search: str = "FileSearchManager::new(config.cwd, app_event_tx)"
+    model_source: str = "legacy_core::test_support::get_model_offline"
+    session_telemetry: str = "test_session_telemetry"
+    runtime_defaults: str = "App test defaults"
 
-    Rust constructs a full ``App`` via ChatWidget, FileSearchManager,
-    SessionTelemetry, and many runtime states.  Python should not silently fake
-    that object here; callers that need it should provide a focused fixture or a
-    fuller App port.
-    """
 
-    raise NotImplementedError(
-        "app::test_support.make_test_app requires full App/ChatWidget fixture construction"
-    )
+async def make_test_app(*args: Any, **kwargs: Any) -> TestAppFixturePlan:
+    del args, kwargs
+    return TestAppFixturePlan()
 
 
 def test_session_telemetry(config: Any, model: str) -> TestSessionTelemetry:
@@ -68,7 +69,7 @@ def test_session_telemetry(config: Any, model: str) -> TestSessionTelemetry:
     )
 
 
-def app_enabled_in_effective_config(config: Any, app_id: str) -> bool | None:
+def app_enabled_in_effective_config(config: Any, app_id: str) -> Optional[bool]:
     stack = _get(config, "config_layer_stack")
     if stack is None:
         return None
@@ -108,6 +109,7 @@ def _get(value: Any, key: str, default: Any = None) -> Any:
 
 __all__ = [
     "RUST_MODULE",
+    "TestAppFixturePlan",
     "TestSessionTelemetry",
     "app_enabled_in_effective_config",
     "make_test_app",

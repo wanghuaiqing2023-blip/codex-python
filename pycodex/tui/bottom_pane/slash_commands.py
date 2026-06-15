@@ -10,7 +10,7 @@ callers can report a context-specific unavailable-command error.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Any, Iterable
+from typing import Any, Iterable, List, Optional, Tuple
 
 from .._porting import RustTuiModule
 from ..slash_command import SlashCommand, built_in_slash_commands
@@ -19,6 +19,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="bottom_pane::slash_commands",
     source="codex/codex-rs/tui/src/bottom_pane/slash_commands.rs",
+    status="complete",
 )
 
 
@@ -40,7 +41,7 @@ class SlashCommandItem:
     """
 
     kind: str
-    value: SlashCommand | ServiceTierCommand
+    value: Any
 
     @classmethod
     def builtin(cls, command: SlashCommand) -> "SlashCommandItem":
@@ -87,7 +88,7 @@ class BuiltinCommandFlags:
     side_conversation_active: bool = False
 
 
-def builtins_for_input(flags: BuiltinCommandFlags) -> list[tuple[str, SlashCommand]]:
+def builtins_for_input(flags: BuiltinCommandFlags) -> List[Tuple[str, SlashCommand]]:
     """Return built-ins visible/usable for the current input flags."""
 
     return [(name, command) for name, command in built_in_slash_commands() if _builtin_visible(command, flags)]
@@ -96,12 +97,12 @@ def builtins_for_input(flags: BuiltinCommandFlags) -> list[tuple[str, SlashComma
 def commands_for_input(
     flags: BuiltinCommandFlags,
     service_tier_commands: Iterable[ServiceTierCommand],
-) -> list[SlashCommandItem]:
+) -> List[SlashCommandItem]:
     """Return popup/dispatch command items with service tiers after ``/model``."""
 
     tiers = list(service_tier_commands)
     tiers_enabled = flags.service_tier_commands_enabled
-    commands: list[SlashCommandItem] = []
+    commands: List[SlashCommandItem] = []
 
     for _, command in builtins_for_input(flags):
         commands.append(SlashCommandItem.builtin(command))
@@ -113,7 +114,7 @@ def commands_for_input(
     return commands
 
 
-def find_builtin_command(name: str, flags: BuiltinCommandFlags) -> SlashCommand | None:
+def find_builtin_command(name: str, flags: BuiltinCommandFlags) -> Optional[SlashCommand]:
     """Find an exact built-in command after feature gating.
 
     Side-conversation popup hiding is intentionally ignored for exact lookup,
@@ -136,7 +137,7 @@ def find_slash_command(
     name: str,
     flags: BuiltinCommandFlags,
     service_tier_commands: Iterable[ServiceTierCommand],
-) -> SlashCommandItem | None:
+) -> Optional[SlashCommandItem]:
     """Find an exact built-in or enabled service-tier slash command."""
 
     builtin = find_builtin_command(name, flags)

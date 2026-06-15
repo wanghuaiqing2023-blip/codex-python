@@ -176,6 +176,34 @@ def test_capture_and_restore_thread_input_state_resizes_missing_records_and_keys
     assert restored.redraw_requests == 1
 
 
+def test_restore_none_clears_input_and_composer_state_and_autosend_flag_round_trips():
+    model = InputRestoreModel(
+        composer=ComposerDraftSnapshot(text="draft", remote_image_urls=["https://img"])
+    )
+    model.input_queue.pending_steers.append(PendingSteer(message("pending")))
+    model.input_queue.rejected_steers_queue.append(message("rejected"))
+    model.input_queue.queued_user_messages.append(QueuedUserMessage.from_message(message("queued")))
+    model.task_running = True
+    model.set_queue_autosend_suppressed(True)
+
+    model.restore_thread_input_state(None)
+
+    assert model.input_queue.suppress_queue_autosend is False
+    assert model.composer.text == ""
+    assert model.remote_image_urls == []
+    assert not model.input_queue.pending_steers
+    assert not model.input_queue.rejected_steers_queue
+    assert not model.input_queue.queued_user_messages
+    assert model.redraw_requests == 1
+
+
+def test_drain_pending_messages_for_restore_returns_none_without_pending_or_followups():
+    model = InputRestoreModel(composer=ComposerDraftSnapshot(text="draft"))
+
+    assert model.drain_pending_messages_for_restore() is None
+    assert model.composer.text == "draft"
+
+
 def test_merge_helpers_rebase_text_elements_and_apply_non_empty_overrides():
     first = message("abc", elements=[TextElement((0, 1), "first")])
     second = message("de", elements=[TextElement((0, 2), "second")])

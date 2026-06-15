@@ -104,8 +104,17 @@ def test_kitty_local_file_pet_image_uses_file_reference_without_inline_payload(t
     assert "a=d,d=I,i=49374,q=2;" in text
     assert "\x1b[4;3H" in text
     assert "a=T,t=f,f=100,c=4,r=5,q=2,i=49374;" in text
-    assert "cG5n" not in text
+    assert "a=T,f=100,c=4,r=5,q=2,i=49374;" not in text
     assert "\x1b8" in text
+
+
+def test_pet_picker_preview_image_uses_distinct_image_id(tmp_path):
+    output = StringIO()
+    state = PetImageRenderState()
+
+    render_pet_picker_preview_image(output, state, _draw(tmp_path))
+
+    assert "a=d,d=I,i=49375,q=2;" in output.getvalue()
 
 
 def test_sixel_pet_image_clears_cell_area_before_redrawing(tmp_path):

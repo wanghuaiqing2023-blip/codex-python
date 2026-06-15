@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from pycodex.tui.app.plugin_mentions import (
     PluginAvailability,
     PluginCapabilitySummary,
@@ -7,6 +9,7 @@ from pycodex.tui.app.plugin_mentions import (
     PluginListResponse,
     PluginMarketplaceEntry,
     PluginSummary,
+    fetch_plugin_mentions,
     plugin_mention_description,
     plugin_mention_display_name,
     plugin_mentions_from_list_response,
@@ -74,3 +77,66 @@ def test_plugin_mention_description_falls_back_to_non_empty_marketplace() -> Non
     assert plugin_mention_display_name(plugin) == "sample"
     assert plugin_mention_description("  marketplace  ", plugin) == "marketplace"
     assert plugin_mention_description("   ", plugin) is None
+
+
+def test_fetch_plugin_mentions_uses_request_handle_response() -> None:
+    response = PluginListResponse(
+        marketplaces=[
+            PluginMarketplaceEntry(
+                name="server-marketplace",
+                plugins=[plugin_summary("active")],
+            )
+        ]
+    )
+
+    async def request_plugin_list(cwd):
+        assert cwd == "repo"
+        return response
+
+    mentions = asyncio.run(fetch_plugin_mentions(request_plugin_list, "repo"))
+
+    assert mentions == [
+        PluginCapabilitySummary(
+            config_name="active@server-marketplace",
+            display_name="active",
+            description="server-marketplace",
+            has_skills=False,
+            mcp_server_names=[],
+            app_connector_ids=[],
+        )
+    ]
+
+
+def test_fetch_plugin_mentions_accepts_request_handle_method() -> None:
+    response = PluginListResponse(
+        marketplaces=[
+            PluginMarketplaceEntry(
+                name=" server-marketplace ",
+                plugins=[plugin_summary("active")],
+            )
+        ]
+    )
+
+    class Handle:
+        def __init__(self) -> None:
+            self.cwd = None
+
+        def request_plugin_list(self, cwd):
+            self.cwd = cwd
+            return response
+
+    handle = Handle()
+
+    mentions = asyncio.run(fetch_plugin_mentions(handle, "repo"))
+
+    assert handle.cwd == "repo"
+    assert mentions == [
+        PluginCapabilitySummary(
+            config_name="active@server-marketplace",
+            display_name="active",
+            description="server-marketplace",
+            has_skills=False,
+            mcp_server_names=[],
+            app_connector_ids=[],
+        )
+    ]

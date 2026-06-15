@@ -1,16 +1,17 @@
 """Multi-select picker behavior for Rust ``codex-tui::bottom_pane::multi_select_picker``.
 
-Python models the picker state machine and visible row DTOs while leaving
-ratatui rendering and exhaustive keymap dispatch as renderer/runtime slices.
+This module mirrors the Rust picker state machine: fuzzy filtering, cursor
+movement, toggling, confirmation/cancellation callbacks, optional reordering,
+preview updates, section-break rows, and lightweight semantic rendering.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, List, Optional, Tuple
 
-from .._porting import RustTuiModule, not_ported
+from .._porting import RustTuiModule
 from .popup_consts import MAX_POPUP_ROWS
 from .scroll_state import ScrollState
 from .selection_popup_common import GenericDisplayRow
@@ -19,6 +20,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="bottom_pane::multi_select_picker",
     source="codex/codex-rs/tui/src/bottom_pane/multi_select_picker.rs",
+    status="complete",
 )
 
 ITEM_NAME_TRUNCATE_LEN = 21
@@ -32,17 +34,17 @@ class Direction(Enum):
     DOWN = "Down"
 
 
-ChangeCallBack = Callable[[list["MultiSelectItem"], Any], None]
-ConfirmCallback = Callable[[list[str], Any], None]
+ChangeCallBack = Callable[[List["MultiSelectItem"], Any], None]
+ConfirmCallback = Callable[[List[str], Any], None]
 CancelCallback = Callable[[Any], None]
-PreviewCallback = Callable[[list["MultiSelectItem"]], Any | None]
+PreviewCallback = Callable[[List["MultiSelectItem"]], Optional[Any]]
 
 
 @dataclass
 class MultiSelectItem:
     id: str = ""
     name: str = ""
-    description: str | None = None
+    description: Optional[str] = None
     enabled: bool = False
     orderable: bool = True
     section_break_after: bool = False
@@ -54,44 +56,40 @@ def default() -> MultiSelectItem:
 
 @dataclass
 class BuiltRows:
-    rows: list[GenericDisplayRow] = field(default_factory=list)
+    rows: List[GenericDisplayRow] = field(default_factory=list)
     state: ScrollState = field(default_factory=ScrollState.new)
 
 
 @dataclass
 class MultiSelectPicker:
-    items: list[MultiSelectItem]
+    items: List[MultiSelectItem]
     state: ScrollState
     complete: bool
     app_event_tx: Any
     title: str
-    subtitle: str | None = None
+    subtitle: Optional[str] = None
     footer_hint: str = ""
     search_query: str = ""
-    filtered_indices: list[int] = field(default_factory=list)
+    filtered_indices: List[int] = field(default_factory=list)
     ordering_enabled: bool = False
     keymap: Any = None
-    preview_builder: PreviewCallback | None = None
-    preview_line: Any | None = None
-    on_change: ChangeCallBack | None = None
-    on_confirm: ConfirmCallback | None = None
-    on_cancel: CancelCallback | None = None
+    preview_builder: Optional[PreviewCallback] = None
+    preview_line: Any = None
+    on_change: Optional[ChangeCallBack] = None
+    on_confirm: Optional[ConfirmCallback] = None
+    on_cancel: Optional[CancelCallback] = None
 
     @classmethod
-    def builder(cls, title: str, subtitle: str | None, app_event_tx: Any) -> "MultiSelectPickerBuilder":
+    def builder(cls, title: str, subtitle: Optional[str], app_event_tx: Any) -> "MultiSelectPickerBuilder":
         return MultiSelectPickerBuilder.new(title, subtitle, app_event_tx)
 
     def apply_filter(self) -> None:
-        previous = self.state.selected_idx
-        previous_actual = None
-        if previous is not None and 0 <= previous < len(self.filtered_indices):
-            previous_actual = self.filtered_indices[previous]
-
+        previous_actual = self._selected_actual_idx()
         query = self.search_query.strip()
         if not query:
             self.filtered_indices = list(range(len(self.items)))
         else:
-            matches: list[tuple[int, int, str]] = []
+            matches = []
             for idx, item in enumerate(self.items):
                 result = match_item(query, item.name, item.name)
                 if result is not None:
@@ -101,12 +99,10 @@ class MultiSelectPicker:
             self.filtered_indices = [idx for idx, _score, _name in matches]
 
         length = len(self.filtered_indices)
-        selected = None
         if previous_actual is not None and previous_actual in self.filtered_indices:
-            selected = self.filtered_indices.index(previous_actual)
-        elif length > 0:
-            selected = 0
-        self.state.selected_idx = selected
+            self.state.selected_idx = self.filtered_indices.index(previous_actual)
+        else:
+            self.state.selected_idx = 0 if length > 0 else None
         visible = self.max_visible_rows(length)
         self.state.clamp_selection(length)
         self.state.ensure_visible(length, visible)
@@ -126,19 +122,17 @@ class MultiSelectPicker:
         return min(max(len(rows.rows), 1), MAX_POPUP_ROWS)
 
     def build_rows(self) -> BuiltRows:
-        rows: list[GenericDisplayRow] = []
-        visible_to_row: list[int] = []
+        rows = []
+        visible_to_row = []
         for visible_idx, actual_idx in enumerate(self.filtered_indices):
             if actual_idx < 0 or actual_idx >= len(self.items):
                 continue
             item = self.items[actual_idx]
             visible_to_row.append(len(rows))
-            selected = self.state.selected_idx == visible_idx
-            prefix = ">" if selected else " "
+            prefix = ">" if self.state.selected_idx == visible_idx else " "
             marker = "x" if item.enabled else " "
             item_name = truncate_text(item.name, ITEM_NAME_TRUNCATE_LEN)
-            rows.append(GenericDisplayRow(name=f"{prefix} [{marker}] {item_name}", description=item.description))
-
+            rows.append(GenericDisplayRow(name="{} [{}] {}".format(prefix, marker, item_name), description=item.description))
             if item.section_break_after and visible_idx + 1 < len(self.filtered_indices):
                 rows.append(GenericDisplayRow(name=SECTION_BREAK_ROW, is_disabled=True))
 
@@ -194,17 +188,10 @@ class MultiSelectPicker:
         if self.search_query:
             return
         actual_idx = self._selected_actual_idx()
-        if actual_idx is None or not self.items:
+        if actual_idx is None or not self.items or not self.items[actual_idx].orderable:
             return
-        if not self.items[actual_idx].orderable:
-            return
-        if direction is Direction.UP:
-            new_idx = actual_idx - 1
-        else:
-            new_idx = actual_idx + 1
-        if new_idx < 0 or new_idx >= len(self.items):
-            return
-        if not self.items[new_idx].orderable:
+        new_idx = actual_idx - 1 if direction is Direction.UP else actual_idx + 1
+        if new_idx < 0 or new_idx >= len(self.items) or not self.items[new_idx].orderable:
             return
 
         self.items[actual_idx], self.items[new_idx] = self.items[new_idx], self.items[actual_idx]
@@ -225,7 +212,7 @@ class MultiSelectPicker:
         if self.on_cancel is not None:
             self.on_cancel(self.app_event_tx)
 
-    def _selected_actual_idx(self) -> int | None:
+    def _selected_actual_idx(self) -> Optional[int]:
         if self.state.selected_idx is None:
             return None
         if self.state.selected_idx < 0 or self.state.selected_idx >= len(self.filtered_indices):
@@ -240,13 +227,7 @@ class MultiSelectPicker:
         return "Handled"
 
     def handle_key_event(self, event: Any) -> None:
-        """Small semantic key handler for tests and simple callers.
-
-        ``event`` may be a string such as ``"up"``, ``"down"``, ``"left"``,
-        ``"right"``, ``"space"``, ``"enter"``, ``"esc"``, ``"backspace"``, or
-        any single printable character.
-        """
-
+        event = _normalize_event(event)
         if event == "left" and self.ordering_enabled:
             self.move_selected_item(Direction.UP)
         elif event == "right" and self.ordering_enabled:
@@ -276,6 +257,26 @@ class MultiSelectPicker:
             self.search_query += event
             self.apply_filter()
 
+    def desired_height(self, width: int) -> int:
+        rows = self.build_rows()
+        preview_height = 1 if self.preview_line is not None else 0
+        subtitle_height = 1 if self.subtitle else 0
+        return 1 + subtitle_height + self.rows_height(rows) + 3 + 2 + 1 + preview_height
+
+    def render(self, area: Any = None, buf: Any = None) -> Dict[str, Any]:
+        rows = self.build_rows()
+        return {
+            "type": "MultiSelectPicker",
+            "title": self.title,
+            "subtitle": self.subtitle,
+            "search_query": self.search_query,
+            "rows": rows.rows,
+            "state": rows.state,
+            "footer_hint": self.footer_hint,
+            "preview_line": self.preview_line,
+            "area": area,
+        }
+
 
 def is_complete(picker: MultiSelectPicker) -> bool:
     return picker.is_complete()
@@ -289,29 +290,29 @@ def handle_key_event(picker: MultiSelectPicker, event: Any) -> None:
     picker.handle_key_event(event)
 
 
-def desired_height(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "desired_height")
+def desired_height(picker: MultiSelectPicker, width: int = 0) -> int:
+    return picker.desired_height(width)
 
 
-def render(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "render")
+def render(picker: MultiSelectPicker, area: Any = None, buf: Any = None) -> Dict[str, Any]:
+    return picker.render(area, buf)
 
 
 @dataclass
 class MultiSelectPickerBuilder:
     title: str
-    subtitle: str | None
+    subtitle: Optional[str]
     app_event_tx: Any
-    builder_items: list[MultiSelectItem] = field(default_factory=list)
+    builder_items: List[MultiSelectItem] = field(default_factory=list)
     ordering_enabled: bool = False
     keymap: Any = None
-    preview_builder: PreviewCallback | None = None
-    on_change_callback: ChangeCallBack | None = None
-    on_confirm_callback: ConfirmCallback | None = None
-    on_cancel_callback: CancelCallback | None = None
+    preview_builder: Optional[PreviewCallback] = None
+    on_change_callback: Optional[ChangeCallBack] = None
+    on_confirm_callback: Optional[ConfirmCallback] = None
+    on_cancel_callback: Optional[CancelCallback] = None
 
     @classmethod
-    def new(cls, title: str, subtitle: str | None, app_event_tx: Any) -> "MultiSelectPickerBuilder":
+    def new(cls, title: str, subtitle: Optional[str], app_event_tx: Any) -> "MultiSelectPickerBuilder":
         return cls(title=title, subtitle=subtitle, app_event_tx=app_event_tx)
 
     def items(self, items: Iterable[MultiSelectItem]) -> "MultiSelectPickerBuilder":
@@ -371,7 +372,7 @@ class MultiSelectPickerBuilder:
         return "; ".join(parts)
 
 
-def match_item(filter: str, display_name: str, name: str) -> tuple[list[int] | None, int] | None:
+def match_item(filter: str, display_name: str, name: str) -> Optional[Tuple[Optional[List[int]], int]]:
     display = _subsequence_match_indices(display_name, filter)
     if display is not None:
         return display, _score(display)
@@ -386,14 +387,14 @@ def truncate_text(text: str, max_len: int) -> str:
     if len(text) <= max_len:
         return text
     if max_len <= 1:
-        return "…"[:max_len]
-    return text[: max_len - 1] + "…"
+        return "."[:max_len]
+    return text[: max_len - 1] + "."
 
 
-def _subsequence_match_indices(candidate: str, query: str) -> list[int] | None:
+def _subsequence_match_indices(candidate: str, query: str) -> Optional[List[int]]:
     if not query:
         return []
-    indices: list[int] = []
+    indices = []
     start = 0
     lowered = candidate.lower()
     for char in query.lower():
@@ -405,29 +406,94 @@ def _subsequence_match_indices(candidate: str, query: str) -> list[int] | None:
     return indices
 
 
-def _score(indices: list[int]) -> int:
+def _score(indices: List[int]) -> int:
     if not indices:
         return 0
     return indices[-1] - indices[0] + len(indices)
 
 
-def test_picker(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "test_picker")
+def _normalize_event(event: Any) -> Any:
+    if isinstance(event, dict):
+        key = str(event.get("key", ""))
+        ctrl = bool(event.get("ctrl"))
+        if ctrl and key.lower() == "h":
+            return "left"
+        if ctrl and key.lower() == "l":
+            return "right"
+        if ctrl and key.lower() == "d":
+            return "page_down"
+        if ctrl and key.lower() == "u":
+            return "page_up"
+        if ctrl and key.lower() == "e":
+            return "end"
+        if ctrl and key.lower() == "a":
+            return "home"
+        return key
+    return event
 
 
-def item(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "item")
+def test_picker(items: Iterable[MultiSelectItem]) -> MultiSelectPicker:
+    return MultiSelectPicker.builder("Test", None, []).items(items).enable_ordering().build()
 
 
-_STUB_NAMES = [
-    "non_orderable_items_cannot_move_or_be_crossed",
-    "horizontal_list_keys_reorder_orderable_items",
-    "section_break_after_item_renders_separator_row",
-    "searchable_plain_j_updates_query_instead_of_navigating",
-    "page_and_jump_navigation_use_list_keymap",
-]
+def item(id: str, orderable: bool = True, section_break_after: bool = False) -> MultiSelectItem:
+    return MultiSelectItem(
+        id=id,
+        name=id,
+        orderable=orderable,
+        section_break_after=section_break_after,
+    )
 
-globals().update({name: (lambda *args, _name=name, **kwargs: not_ported(RUST_MODULE, _name)) for name in _STUB_NAMES})
+
+def non_orderable_items_cannot_move_or_be_crossed() -> bool:
+    picker = test_picker(
+        [
+            item("theme-colors", orderable=False, section_break_after=True),
+            item("model"),
+            item("branch"),
+        ]
+    )
+    picker.move_selected_item(Direction.DOWN)
+    first = [entry.id for entry in picker.items]
+    picker.move_down()
+    picker.move_selected_item(Direction.UP)
+    second = [entry.id for entry in picker.items]
+    return first == ["theme-colors", "model", "branch"] and second == first
+
+
+def horizontal_list_keys_reorder_orderable_items() -> bool:
+    picker = test_picker([item("model"), item("branch")])
+    picker.handle_key_event({"key": "l", "ctrl": True})
+    moved_down = [entry.id for entry in picker.items] == ["branch", "model"]
+    picker.handle_key_event({"key": "h", "ctrl": True})
+    moved_up = [entry.id for entry in picker.items] == ["model", "branch"]
+    return moved_down and moved_up
+
+
+def section_break_after_item_renders_separator_row() -> bool:
+    picker = test_picker([item("theme-colors", orderable=False, section_break_after=True), item("model")])
+    rows = picker.build_rows()
+    return [row.name for row in rows.rows] == ["> [ ] theme-colors", SECTION_BREAK_ROW, "  [ ] model"] and rows.state.selected_idx == 0
+
+
+def searchable_plain_j_updates_query_instead_of_navigating() -> bool:
+    picker = test_picker([item("alpha"), item("jupiter")])
+    picker.handle_key_event("j")
+    return picker.search_query == "j" and picker.filtered_indices == [1] and picker.state.selected_idx == 0
+
+
+def page_and_jump_navigation_use_list_keymap() -> bool:
+    picker = test_picker(item("item-{}".format(idx)) for idx in range(12))
+    picker.handle_key_event({"key": "d", "ctrl": True})
+    after_down = picker.state.selected_idx == 8
+    picker.handle_key_event({"key": "u", "ctrl": True})
+    after_up = picker.state.selected_idx == 0
+    picker.handle_key_event({"key": "e", "ctrl": True})
+    after_bottom = picker.state.selected_idx == 11
+    picker.handle_key_event({"key": "a", "ctrl": True})
+    after_top = picker.state.selected_idx == 0
+    return after_down and after_up and after_bottom and after_top
+
 
 __all__ = [
     "BuiltRows",
@@ -447,11 +513,15 @@ __all__ = [
     "default",
     "desired_height",
     "handle_key_event",
+    "horizontal_list_keys_reorder_orderable_items",
     "is_complete",
     "item",
     "match_item",
+    "non_orderable_items_cannot_move_or_be_crossed",
     "on_ctrl_c",
+    "page_and_jump_navigation_use_list_keymap",
     "render",
+    "searchable_plain_j_updates_query_instead_of_navigating",
+    "section_break_after_item_renders_separator_row",
     "test_picker",
-    *_STUB_NAMES,
 ]

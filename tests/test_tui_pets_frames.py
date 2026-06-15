@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import struct
+import zlib
 
 import pytest
 
@@ -81,10 +83,92 @@ def test_frame_crop_plan_matches_rust_row_column_offsets():
 
 
 def test_prepare_png_frames_requires_explicit_image_slicing_boundary(tmp_path):
-    with pytest.raises(NotImplementedError, match="prepare_png_frames image slicing"):
-        prepare_png_frames(TinyPet(), tmp_path / "frames")
+    spritesheet = tmp_path / "sheet.png"
+    _write_png_rgba8(
+        spritesheet,
+        2,
+        1,
+        bytes(
+            [
+                255,
+                0,
+                0,
+                255,
+                0,
+                255,
+                0,
+                255,
+            ]
+        ),
+    )
+    pet = TinyPet()
+    pet.spritesheet_path = spritesheet
+
+    frames = prepare_png_frames(pet, tmp_path / "frames")
+
+    assert len(frames) == 2
+    assert _read_png_rgba8(frames[0]) == (1, 1, bytes([255, 0, 0, 255]))
+    assert _read_png_rgba8(frames[1]) == (1, 1, bytes([0, 255, 0, 255]))
 
 
 def test_frame_crop_plan_rejects_grid_larger_than_frame_count():
     with pytest.raises(IndexError, match="pet frame index exceeds expected frame count"):
         frame_crop_plan(TinyPet(columns=2, rows=2, frame_count_value=3))
+
+
+def test_prepare_png_frames_rejects_crop_outside_spritesheet(tmp_path):
+    spritesheet = tmp_path / "small.png"
+    _write_png_rgba8(spritesheet, 1, 1, bytes([0, 0, 0, 255]))
+    pet = TinyPet(frame_width=2, frame_height=1, columns=1, rows=1, frame_count_value=1)
+    pet.spritesheet_path = spritesheet
+
+    with pytest.raises(ValueError, match="pet frame crop exceeds spritesheet bounds"):
+        prepare_png_frames(pet, tmp_path / "frames")
+
+
+def _write_png_rgba8(path, width, height, pixels):
+    raw = bytearray()
+    stride = width * 4
+    for row in range(height):
+        raw.append(0)
+        raw.extend(pixels[row * stride : (row + 1) * stride])
+    png = bytearray(b"\x89PNG\r\n\x1a\n")
+    png.extend(_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)))
+    png.extend(_chunk(b"IDAT", zlib.compress(bytes(raw))))
+    png.extend(_chunk(b"IEND", b""))
+    path.write_bytes(bytes(png))
+
+
+def _read_png_rgba8(path):
+    data = path.read_bytes()
+    assert data[:8] == b"\x89PNG\r\n\x1a\n"
+    pos = 8
+    width = height = None
+    idat = bytearray()
+    while pos + 8 <= len(data):
+        length = struct.unpack(">I", data[pos : pos + 4])[0]
+        kind = data[pos + 4 : pos + 8]
+        payload = data[pos + 8 : pos + 8 + length]
+        pos += 12 + length
+        if kind == b"IHDR":
+            width, height = struct.unpack(">II", payload[:8])
+        elif kind == b"IDAT":
+            idat.extend(payload)
+        elif kind == b"IEND":
+            break
+    raw = zlib.decompress(bytes(idat))
+    rows = []
+    stride = width * 4
+    cursor = 0
+    for _ in range(height):
+        assert raw[cursor] == 0
+        cursor += 1
+        rows.append(raw[cursor : cursor + stride])
+        cursor += stride
+    return width, height, b"".join(rows)
+
+
+def _chunk(kind, payload):
+    crc = zlib.crc32(kind)
+    crc = zlib.crc32(payload, crc) & 0xFFFFFFFF
+    return struct.pack(">I", len(payload)) + kind + payload + struct.pack(">I", crc)

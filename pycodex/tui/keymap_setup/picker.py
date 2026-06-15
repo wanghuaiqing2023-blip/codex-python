@@ -23,6 +23,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="keymap_setup::picker",
     source="codex/codex-rs/tui/src/keymap_setup/picker.rs",
+    status="complete",
 )
 
 KEYMAP_PICKER_VIEW_ID = "keymap-picker"

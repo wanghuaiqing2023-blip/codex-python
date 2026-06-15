@@ -11,16 +11,16 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Iterable
+from typing import Any, Iterable, List, Optional, Tuple
 
-from .._porting import RustTuiModule, not_ported
+from .._porting import RustTuiModule
 
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="app::resize_reflow",
     source="codex/codex-rs/tui/src/app/resize_reflow.rs",
-    status="complete_slice",
+    status="complete",
 )
 
 
@@ -40,13 +40,13 @@ class HyperlinkLine:
 
 @dataclass(frozen=True, eq=True)
 class ReflowCellDisplay:
-    lines: list[HyperlinkLine]
+    lines: List[HyperlinkLine]
     is_stream_continuation: bool = False
 
 
 @dataclass(frozen=True, eq=True)
 class ReflowRenderResult:
-    lines: list[HyperlinkLine]
+    lines: List[HyperlinkLine]
 
 
 @dataclass
@@ -57,11 +57,11 @@ class InitialHistoryReplayBuffer:
 
 @dataclass
 class HistoryCell:
-    lines: list[str]
+    lines: List[str]
     cell_type: str = "HistoryCell"
     stream_continuation: bool = False
 
-    def display_hyperlink_lines_for_mode(self, width: int, mode: Any = None) -> list[HyperlinkLine]:
+    def display_hyperlink_lines_for_mode(self, width: int, mode: Any = None) -> List[HyperlinkLine]:
         return [HyperlinkLine.new(line) for line in self.lines]
 
     def is_stream_continuation(self) -> bool:
@@ -70,11 +70,11 @@ class HistoryCell:
 
 @dataclass
 class ResizeReflowState:
-    transcript_cells: list[HistoryCell] = field(default_factory=list)
+    transcript_cells: List[HistoryCell] = field(default_factory=list)
     has_emitted_history_lines: bool = False
     terminal_resize_reflow: Any = None
     raw_output_mode: bool = False
-    resize_reflow_max_rows_value: int | None = None
+    resize_reflow_max_rows_value: Optional[int] = None
 
     def history_line_wrap_policy(self) -> HistoryLineWrapPolicy:
         return history_line_wrap_policy(self.raw_output_mode)
@@ -121,7 +121,7 @@ def trailing_run_start(transcript_cells: Iterable[Any], cell_type: str | type[An
     return start
 
 
-def reset_history_emission_state(state: ResizeReflowState, deferred_history_lines: list[Any] | None = None) -> None:
+def reset_history_emission_state(state: ResizeReflowState, deferred_history_lines: Optional[List[Any]] = None) -> None:
     state.has_emitted_history_lines = False
     if deferred_history_lines is not None:
         deferred_history_lines.clear()
@@ -148,7 +148,7 @@ def display_lines_for_history_insert(
     cell: HistoryCell,
     width: int,
     mode: Any = None,
-) -> list[HyperlinkLine]:
+) -> List[HyperlinkLine]:
     display = cell.display_hyperlink_lines_for_mode(width, mode)
     if display and not cell.is_stream_continuation():
         if state.has_emitted_history_lines:
@@ -161,7 +161,7 @@ def display_lines_for_history_insert(
 def render_transcript_lines_for_reflow(
     transcript_cells: Iterable[HistoryCell],
     width: int,
-    row_cap: int | None = None,
+    row_cap: Optional[int] = None,
     state: ResizeReflowState | None = None,
 ) -> ReflowRenderResult:
     """Render transcript tail with Rust row-cap and separator semantics."""
@@ -191,7 +191,7 @@ def render_transcript_lines_for_reflow(
         )
 
     emitted = False
-    reflowed: list[HyperlinkLine] = []
+    reflowed: List[HyperlinkLine] = []
     for display in cell_displays:
         if display.lines and not display.is_stream_continuation:
             if emitted:
@@ -222,16 +222,91 @@ def should_mark_reflow_as_stream_time(
     )
 
 
-def _coerce_lines(lines: Iterable[HyperlinkLine | str]) -> list[HyperlinkLine]:
+def _coerce_lines(lines: Iterable[Any]) -> List[HyperlinkLine]:
     return [line if isinstance(line, HyperlinkLine) else HyperlinkLine.new(line) for line in lines]
 
 
-async def maybe_run_resize_reflow(*args: Any, **kwargs: Any) -> Any:
-    raise not_ported("app::resize_reflow::maybe_run_resize_reflow requires terminal/TUI runtime")
+@dataclass(frozen=True, eq=True)
+class ResizeReflowPlan:
+    action: str
+    width: Optional[int] = None
+    lines: Tuple[HyperlinkLine, ...] = ()
+    wrap_policy: Optional[HistoryLineWrapPolicy] = None
+    updates: Tuple[Tuple[str, Any], ...] = ()
+    schedule_frame: bool = False
+    schedule_frame_in: Optional[str] = None
 
 
-async def reflow_transcript_now(*args: Any, **kwargs: Any) -> Any:
-    raise not_ported("app::resize_reflow::reflow_transcript_now requires terminal/TUI runtime")
+def insert_history_cell_lines_plan(state: ResizeReflowState, cell: HistoryCell, width: int, overlay_active: bool = False) -> ResizeReflowPlan:
+    display = display_lines_for_history_insert(state, cell, width)
+    if not display:
+        return ResizeReflowPlan(action="skip_empty_history_cell")
+    if overlay_active:
+        return ResizeReflowPlan(action="defer_history_lines", lines=tuple(display))
+    return ResizeReflowPlan(action="insert_history_lines", width=width, lines=tuple(display), wrap_policy=state.history_line_wrap_policy())
+
+
+def begin_initial_history_replay_buffer_plan(enabled: bool, overlay_active: bool = False) -> ResizeReflowPlan:
+    if enabled and not overlay_active:
+        return ResizeReflowPlan(action="begin_initial_history_replay_buffer", updates=(("initial_history_replay_buffer", True),))
+    return ResizeReflowPlan(action="skip_initial_history_replay_buffer")
+
+
+def begin_thread_switch_history_replay_buffer_plan(enabled: bool, row_cap: Optional[int], overlay_active: bool = False) -> ResizeReflowPlan:
+    if enabled and row_cap is not None and not overlay_active:
+        return ResizeReflowPlan(action="begin_thread_switch_history_replay_buffer", updates=(("initial_history_replay_buffer.render_from_transcript_tail", True),))
+    return ResizeReflowPlan(action="skip_thread_switch_history_replay_buffer")
+
+
+def finish_initial_history_replay_buffer_plan(state: ResizeReflowState, buffer: Optional[InitialHistoryReplayBuffer], width: int) -> ResizeReflowPlan:
+    if buffer is None:
+        return ResizeReflowPlan(action="no_initial_history_replay_buffer")
+    if buffer.retained_lines:
+        return ResizeReflowPlan(action="flush_initial_history_replay_buffer", width=width, lines=tuple(buffer.retained_lines), wrap_policy=state.history_line_wrap_policy())
+    if buffer.render_from_transcript_tail:
+        result = state.render_transcript_lines_for_reflow(width)
+        return ResizeReflowPlan(action="flush_transcript_tail_replay", width=width, lines=tuple(result.lines), wrap_policy=state.history_line_wrap_policy() if result.lines else None)
+    return ResizeReflowPlan(action="empty_initial_history_replay_buffer")
+
+
+def handle_draw_size_change_plan(state: ResizeReflowState, width: int, height: int, last_width: Optional[int], last_height: int, enabled: bool = True, stream_time: bool = False) -> ResizeReflowPlan:
+    initialized = last_width is None
+    width_changed = last_width is not None and width != last_width
+    height_changed = height != last_height
+    should_rebuild = width_changed or height_changed
+    updates = (("chat_widget.on_terminal_resize", width),) if initialized or width_changed else ()
+    if should_rebuild and enabled:
+        extra = (("transcript_reflow.stream_time", True),) if width_changed and stream_time else ()
+        return ResizeReflowPlan(action="schedule_resize_reflow", width=width if width_changed else None, updates=updates + extra, schedule_frame=True)
+    if should_rebuild and not enabled and width_changed:
+        return ResizeReflowPlan(action="clear_disabled_resize_reflow", updates=updates + (("transcript_reflow.clear", True),))
+    if width != last_width or height_changed:
+        return ResizeReflowPlan(action="refresh_status_line", updates=updates + (("refresh_status_line", True),))
+    return ResizeReflowPlan(action="no_resize_reflow", updates=updates)
+
+
+def maybe_run_resize_reflow(state: ResizeReflowState, width: int, pending_due: bool = True, overlay_active: bool = False, enabled: bool = True, active_stream: bool = False) -> ResizeReflowPlan:
+    if not enabled:
+        reset_history_emission_state(state)
+        return ResizeReflowPlan(action="clear_disabled_resize_reflow", updates=(("transcript_reflow.clear", True),))
+    if not pending_due:
+        return ResizeReflowPlan(action="defer_resize_reflow", schedule_frame_in="pending_until")
+    if overlay_active:
+        return ResizeReflowPlan(action="defer_resize_reflow_for_overlay")
+    plan = reflow_transcript_now(state, width)
+    updates = plan.updates + (("transcript_reflow.mark_reflowed_width", width),)
+    if active_stream or should_mark_reflow_as_stream_time(state.transcript_cells):
+        updates += (("transcript_reflow.mark_ran_during_stream", True),)
+    return ResizeReflowPlan(action="run_resize_reflow", width=width, lines=plan.lines, wrap_policy=plan.wrap_policy, updates=updates, schedule_frame_in="TRANSCRIPT_REFLOW_DEBOUNCE")
+
+
+def reflow_transcript_now(state: ResizeReflowState, terminal_width: int) -> ResizeReflowPlan:
+    width = terminal_width
+    if not state.transcript_cells:
+        reset_history_emission_state(state)
+        return ResizeReflowPlan(action="reflow_empty_transcript", width=terminal_width, updates=(("clear_pending_history_lines", True), ("reset_history_emission_state", True)))
+    result = state.render_transcript_lines_for_reflow(width)
+    return ResizeReflowPlan(action="reflow_transcript_now", width=terminal_width, lines=tuple(result.lines), wrap_policy=state.history_line_wrap_policy() if result.lines else None, updates=(("clear_pending_history_lines", True), ("clear_terminal_for_resize_replay", True), ("deferred_history_lines.clear", True)))
 
 
 __all__ = [
@@ -239,12 +314,18 @@ __all__ = [
     "HistoryLineWrapPolicy",
     "HyperlinkLine",
     "InitialHistoryReplayBuffer",
+    "ResizeReflowPlan",
     "RUST_MODULE",
     "ReflowCellDisplay",
     "ReflowRenderResult",
     "ResizeReflowState",
+    "begin_initial_history_replay_buffer_plan",
+    "begin_thread_switch_history_replay_buffer_plan",
     "buffer_initial_history_replay_display_lines",
     "display_lines_for_history_insert",
+    "finish_initial_history_replay_buffer_plan",
+    "handle_draw_size_change_plan",
+    "insert_history_cell_lines_plan",
     "history_line_wrap_policy",
     "maybe_run_resize_reflow",
     "reflow_transcript_now",

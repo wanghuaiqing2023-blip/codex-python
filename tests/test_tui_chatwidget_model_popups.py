@@ -8,6 +8,7 @@ from pycodex.tui.chatwidget.model_popups import (
     ReasoningEffortPreset,
     auto_model_order,
     custom_openai_base_url,
+    open_model_popup,
     open_model_popup_with_presets,
     open_plan_reasoning_scope_prompt,
     open_reasoning_popup,
@@ -52,6 +53,40 @@ def test_model_popup_filters_hidden_models_and_sorts_auto_models() -> None:
     assert [preset.model for preset in result.view.items[-1].actions[0].models] == ["legacy-model"]
 
 
+def test_all_models_item_is_current_when_current_model_is_not_auto() -> None:
+    # Rust parity: open_model_popup_with_presets marks "All models" current when
+    # none of the quick auto items match the active model.
+    context = ModelPopupContext(current_model="legacy-model")
+    result = open_model_popup_with_presets(
+        context,
+        [
+            _preset("codex-auto-fast"),
+            _preset("legacy-model"),
+        ],
+    )
+
+    assert result.view is not None
+    all_models = result.view.items[-1]
+    assert all_models.name == "All models"
+    assert all_models.is_current
+    assert all_models.description == (
+        "Choose a specific model and reasoning level (current: legacy-model)"
+    )
+
+
+def test_open_model_popup_guards_startup_and_catalog_refresh_errors() -> None:
+    # Rust parity: open_model_popup startup and model-catalog error branches.
+    startup = ModelPopupContext(current_model="x", session_configured=False)
+    startup_result = open_model_popup(startup, [_preset("codex-auto-fast")])
+    assert startup_result.info_message == "Model selection is disabled until startup completes."
+    assert startup.info_messages == [startup_result.info_message]
+
+    refreshing = ModelPopupContext(current_model="x", catalog_error=True)
+    refreshing_result = open_model_popup(refreshing, [_preset("codex-auto-fast")])
+    assert refreshing_result.info_message == "Models are being updated; please try /model again in a moment."
+    assert refreshing.info_messages == [refreshing_result.info_message]
+
+
 def test_all_models_popup_empty_returns_info_message() -> None:
     # Rust parity: open_all_models_popup empty branch.
     result = open_model_popup_with_presets(ModelPopupContext(current_model="x"), [_preset("hidden", show=False)])
@@ -93,6 +128,36 @@ def test_reasoning_popup_multiple_choices_marks_default_current_and_warning() ->
     assert result.view.initial_selected_idx == 0
     assert result.view.items[0].is_current
     assert "Plus plan rate limits" in (result.view.items[1].selected_description or "")
+
+
+def test_all_models_popup_dismiss_flags_depend_on_supported_effort_count() -> None:
+    # Rust parity: open_all_models_popup dismisses immediately only when the model has
+    # one supported reasoning effort; multi-effort models keep the parent for child accept.
+    context = ModelPopupContext(current_model="other")
+    result = open_model_popup_with_presets(
+        context,
+        [
+            ModelPreset(
+                model="single",
+                supported_reasoning_efforts=(
+                    ReasoningEffortPreset(ReasoningEffortConfig.Low, "low"),
+                ),
+            ),
+            ModelPreset(
+                model="multi",
+                supported_reasoning_efforts=(
+                    ReasoningEffortPreset(ReasoningEffortConfig.Low, "low"),
+                    ReasoningEffortPreset(ReasoningEffortConfig.High, "high"),
+                ),
+            ),
+        ],
+    )
+
+    assert result.view is not None
+    assert [(item.name, item.dismiss_on_select, item.dismiss_parent_on_child_accept) for item in result.view.items] == [
+        ("single", True, False),
+        ("multi", False, True),
+    ]
 
 
 def test_plan_mode_reasoning_scope_prompt_gate_matches_rust_noop_rules() -> None:

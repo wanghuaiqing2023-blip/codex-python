@@ -111,6 +111,50 @@ def test_tool_suggestion_open_confirm_accept_and_refresh_for_codex_apps():
     assert view.is_complete()
 
 
+def test_generic_external_action_completion_accepts_without_connector_refresh():
+    events = []
+    target = type(
+        "Target",
+        (),
+        {"thread_id": "thread-1", "server_name": "payments", "request_id": "request-2"},
+    )()
+    view = AppLinkView.new(
+        _params(
+            app_id="payment-123",
+            title="Action required",
+            description="Server: payments",
+            instructions="Complete the requested action in your browser, then return here.",
+            url="https://payments.example/checkout/123",
+            is_installed=True,
+            is_enabled=True,
+            suggestion_type=AppLinkSuggestionType.EXTERNAL_ACTION,
+            elicitation_target=target,
+        ),
+        events,
+    )
+
+    assert view.action_labels() == ["Open link", "Back"]
+    view.activate_selected_action()
+    assert view.screen is AppLinkScreen.INSTALL_CONFIRMATION
+    assert view.action_labels() == ["I finished", "Back"]
+
+    view.activate_selected_action()
+
+    assert events == [
+        {"type": "OpenUrlInBrowser", "url": "https://payments.example/checkout/123"},
+        {
+            "type": "ResolveElicitation",
+            "thread_id": "thread-1",
+            "server_name": "payments",
+            "request_id": "request-2",
+            "decision": "Accept",
+            "content": None,
+            "meta": None,
+        },
+    ]
+    assert view.is_complete()
+
+
 def test_decline_enable_suggestion_and_terminal_title_action():
     events = []
     target = type("Target", (), {"thread_id": "thread-1", "server_name": "codex_apps", "request_id": "request-1"})()

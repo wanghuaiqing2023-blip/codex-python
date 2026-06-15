@@ -11,6 +11,15 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Iterable, List, Optional, Tuple
 
+from .._porting import RustTuiModule
+
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="keymap_setup.actions",
+    source="codex/codex-rs/tui/src/keymap_setup/actions.rs",
+    status="complete",
+)
+
 
 class KeymapActionFeature(Enum):
     FAST_MODE = "fast_mode"
@@ -465,6 +474,7 @@ __all__ = [
     "KeymapActionFilter",
     "KeymapDebugActionMatch",
     "KeymapDebugBindingSource",
+    "RUST_MODULE",
     "action",
     "action_label",
     "binding_slot",

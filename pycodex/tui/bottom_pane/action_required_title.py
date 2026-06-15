@@ -16,6 +16,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="bottom_pane::action_required_title",
     source="codex/codex-rs/tui/src/bottom_pane/action_required_title.rs",
+    status="complete",
 )
 
 ACTION_REQUIRED_PREVIEW_PREFIX = "[ ! ] Action Required"

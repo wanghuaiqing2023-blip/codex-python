@@ -21,6 +21,7 @@ from pycodex.tui.pets.model import (
     load_animations,
     path_like,
     resolve_spritesheet_path,
+    validate_app_spritesheet_dimensions,
     sprite_indices,
     validate_frame_spec,
 )
@@ -159,6 +160,24 @@ def test_validation_errors_match_rust_contracts(tmp_path):
 
     with pytest.raises(ValueError, match="fallback missing does not exist"):
         load_animations({"wave": {"frames": [1], "loop": False, "fallback": "missing"}}, default_frame_count())
+
+
+def test_validate_app_spritesheet_dimensions_reads_real_png_header(tmp_path):
+    # Rust source: validate_app_spritesheet_dimensions delegates to image::image_dimensions.
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        b"\x00\x00\x00\rIHDR"
+        + catalog.SPRITESHEET_WIDTH.to_bytes(4, "big")
+        + catalog.SPRITESHEET_HEIGHT.to_bytes(4, "big")
+        + b"\x08\x06\x00\x00\x00"
+    )
+    path = tmp_path / "spritesheet.png"
+    path.write_bytes(png)
+
+    assert validate_app_spritesheet_dimensions(path) == (
+        catalog.SPRITESHEET_WIDTH,
+        catalog.SPRITESHEET_HEIGHT,
+    )
 
 
 def test_selector_and_path_helpers_match_rust_boundaries():

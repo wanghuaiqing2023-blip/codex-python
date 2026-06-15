@@ -7,6 +7,8 @@ from pycodex.tui.chatwidget.turn_runtime import (
     ChatWidgetTurnRuntime,
     ModeKind,
     PlanItem,
+    RateLimitErrorKind,
+    RateLimitReachedType,
     RuntimeMetricsSummary,
     StepStatus,
     TokenUsageInfo,
@@ -164,3 +166,102 @@ def test_interrupted_turn_message_matches_rust_branches() -> None:
         "Conversation interrupted - tell the model what to do differently. "
         "Something went wrong? Hit `/feedback` to report the issue."
     )
+
+
+def test_on_task_complete_records_markdown_separator_notifications_and_clears_state() -> None:
+    runtime = ChatWidgetTurnRuntime()
+    runtime.turn_lifecycle.start("now")
+    runtime.transcript.had_work_activity = True
+    runtime.transcript.needs_final_message_separator = True
+    runtime.running_commands.extend(["cmd"])
+    runtime.suppressed_exec_calls.extend(["call"])
+    runtime.last_unified_wait = object()
+    runtime.unified_exec_wait_streak = object()
+
+    runtime.on_task_complete(" final answer ", 2500, from_replay=False)
+
+    assert runtime.turn_lifecycle.agent_turn_running is False
+    assert runtime.bottom_pane.task_running is False
+    assert runtime.running_commands == []
+    assert runtime.suppressed_exec_calls == []
+    assert runtime.last_unified_wait is None
+    assert runtime.unified_exec_wait_streak is None
+    assert runtime.answer_stream_flushes == 1
+    assert runtime.unified_exec_wait_flushes == 1
+    assert runtime.history[-1]["kind"] == "final_message_separator"
+    assert runtime.history[-1]["elapsed_seconds"] == 2
+    assert runtime.notifications[-1] == {"kind": "agent_turn_complete", "response": "final answer"}
+    assert runtime.ambient_pet_notifications[-1] == {"kind": "review", "body": "final answer"}
+    assert runtime.pending_input_preview_refreshes == 1
+    assert runtime.pending_rate_limit_prompt_checks == 1
+
+
+def test_on_task_complete_from_replay_skips_notifications_and_separator_cleanup() -> None:
+    runtime = ChatWidgetTurnRuntime()
+    runtime.turn_lifecycle.start("now")
+    runtime.transcript.had_work_activity = True
+    runtime.transcript.needs_final_message_separator = True
+    runtime.transcript.saw_plan_item_this_turn = True
+
+    runtime.on_task_complete("replayed", 1000, from_replay=True)
+
+    assert runtime.history == []
+    assert runtime.notifications == []
+    assert runtime.ambient_pet_notifications == []
+    assert runtime.transcript.saw_plan_item_this_turn is True
+
+
+def test_on_task_complete_queued_followup_suppresses_waiting_notification() -> None:
+    runtime = ChatWidgetTurnRuntime()
+    runtime.input_queue.queued_follow_up_messages.append("next")
+
+    runtime.on_task_complete("answer", None, from_replay=False)
+
+    assert runtime.queued_input_send_attempts == 1
+    assert runtime.input_queue.queued_follow_up_messages == []
+    assert runtime.notifications == []
+
+
+def test_error_paths_finalize_turn_and_append_expected_history() -> None:
+    overloaded = ChatWidgetTurnRuntime()
+    overloaded.on_server_overloaded_error("   ")
+    assert overloaded.history[-1] == {"kind": "warning", "message": "Codex is currently experiencing high load."}
+    assert overloaded.queued_input_send_attempts == 1
+
+    generic = ChatWidgetTurnRuntime()
+    generic.on_error("boom")
+    assert generic.answer_stream_flushes == 1
+    assert generic.history[-1] == {"kind": "error", "message": "boom"}
+    assert generic.ambient_pet_notifications[-1] == {"kind": "failed", "body": None}
+
+    cyber = ChatWidgetTurnRuntime()
+    cyber.on_cyber_policy_error()
+    assert cyber.history[-1] == {"kind": "cyber_policy_error"}
+
+
+def test_rate_limit_error_maps_workspace_owner_and_member_branches() -> None:
+    owner = ChatWidgetTurnRuntime()
+    owner.codex_rate_limit_reached_type = RateLimitReachedType.WORKSPACE_OWNER_CREDITS_DEPLETED
+    owner.on_rate_limit_error(RateLimitErrorKind.USAGE_LIMIT, "ignored")
+    assert owner.codex_rate_limit_reached_type is RateLimitReachedType.WORKSPACE_OWNER_USAGE_LIMIT_REACHED
+    assert owner.history[-1]["message"].startswith("Usage limit reached.")
+
+    member = ChatWidgetTurnRuntime()
+    member.codex_rate_limit_reached_type = RateLimitReachedType.WORKSPACE_MEMBER_CREDITS_DEPLETED
+    member.on_rate_limit_error(RateLimitErrorKind.GENERIC, "add credits")
+    assert member.history[-1] == {"kind": "error", "message": "add credits"}
+    assert member.workspace_owner_nudges == ["credits"]
+
+
+def test_handle_non_retry_error_routes_cyber_rate_limit_and_generic_errors() -> None:
+    cyber = ChatWidgetTurnRuntime()
+    cyber.handle_non_retry_error("blocked", {"cyber_policy": True})
+    assert cyber.history[-1] == {"kind": "cyber_policy_error"}
+
+    overloaded = ChatWidgetTurnRuntime()
+    overloaded.handle_non_retry_error("busy", {"rate_limit_kind": "server_overloaded"})
+    assert overloaded.history[-1] == {"kind": "warning", "message": "busy"}
+
+    generic = ChatWidgetTurnRuntime()
+    generic.handle_non_retry_error("plain", None)
+    assert generic.history[-1] == {"kind": "error", "message": "plain"}

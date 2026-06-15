@@ -81,6 +81,12 @@ class ProtocolSmallModulesTests(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "rolloutIds must contain strings"):
             MemoryCitation.from_mapping({"entries": [], "rolloutIds": [123]})
 
+        with self.assertRaisesRegex(KeyError, "entries"):
+            MemoryCitation.from_mapping({"rolloutIds": []})
+
+        with self.assertRaisesRegex(KeyError, "rolloutIds"):
+            MemoryCitation.from_mapping({"entries": []})
+
     def test_network_policy_decision_payload(self):
         payload = NetworkPolicyDecisionPayload.from_mapping(
             {

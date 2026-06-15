@@ -1,7 +1,8 @@
-"""Parity tests for Rust ``codex-tui::bottom_pane::chat_composer::attachment_state``."""
+﻿"""Parity tests for Rust ``codex-tui::bottom_pane::chat_composer::attachment_state``."""
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import List, Optional, Tuple
 
 from pycodex.protocol.models import local_image_label_text
 from pycodex.tui.bottom_pane.chat_composer.attachment_state import AttachmentState
@@ -10,8 +11,8 @@ from pycodex.tui.bottom_pane.chat_composer.attachment_state import AttachmentSta
 class FakeTextArea:
     def __init__(self, cursor: int = 0) -> None:
         self._cursor = cursor
-        self.inserted: list[str] = []
-        self.replaced: list[tuple[str, str]] = []
+        self.inserted: List[str] = []
+        self.replaced: List[Tuple[str, str]] = []
 
     def cursor(self) -> int:
         return self._cursor
@@ -26,9 +27,9 @@ class FakeTextArea:
 
 @dataclass
 class FakeTextElement:
-    value: str | None
+    value: Optional[str]
 
-    def placeholder(self, text: str) -> str | None:
+    def placeholder(self, text: str) -> Optional[str]:
         return self.value
 
 
@@ -146,3 +147,4 @@ def test_remote_image_delete_relabels_local_images_and_rejects_modified_events()
     assert state.remote_image_urls() == []
     assert state.selected_remote_image_index is None
     assert state.local_images()[0].placeholder == local_image_label_text(1)
+

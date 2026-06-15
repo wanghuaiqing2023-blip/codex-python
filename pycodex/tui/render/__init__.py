@@ -15,6 +15,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="render",
     source="codex/codex-rs/tui/src/render/mod.rs",
+    status="complete",
 )
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .._porting import RustTuiModule
 from .backend import Backend, CrosstermBackend, Frame, Terminal, TestBackend, WindowSize
 from .buffer import Buffer, Cell
 from .crossterm import Attribute, ClearType, SetAttribute, SetBackgroundColor, SetForegroundColor
@@ -33,6 +34,13 @@ from .widgets import (
     render_stateful_ref,
 )
 
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="ratatui_bridge",
+    source="pycodex/tui/ratatui_bridge",
+    status="complete",
+)
+
 __all__ = [
     "Alignment",
     "Attribute",
@@ -58,6 +66,7 @@ __all__ = [
     "Position",
     "Rect",
     "Renderable",
+    "RUST_MODULE",
     "Rgb",
     "SetAttribute",
     "SetBackgroundColor",

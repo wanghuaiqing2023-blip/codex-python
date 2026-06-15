@@ -9,7 +9,12 @@ from typing import Any, Mapping, Optional, TextIO
 
 from .._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="notifications::osc9", source="codex/codex-rs/tui/src/notifications/osc9.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="notifications::osc9",
+    source="codex/codex-rs/tui/src/notifications/osc9.rs",
+    status="complete",
+)
 
 ESC = "\x1b"
 BEL = "\x07"

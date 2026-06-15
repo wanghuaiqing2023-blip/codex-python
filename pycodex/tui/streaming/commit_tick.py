@@ -11,12 +11,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import timedelta
 from enum import Enum
-from typing import Any, Protocol
+from typing import Any, List, Optional, Protocol, Tuple, Union
 
 from .._porting import RustTuiModule
 from .chunking import AdaptiveChunkingPolicy, ChunkingDecision, ChunkingMode, DrainPlan, QueueSnapshot
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="streaming::commit_tick", source="codex/codex-rs/tui/src/streaming/commit_tick.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="streaming::commit_tick",
+    source="codex/codex-rs/tui/src/streaming/commit_tick.rs",
+    status="complete",
+)
 
 
 class CommitTickScope(Enum):
@@ -30,7 +35,7 @@ class CommitTickScope(Enum):
 class CommitTickOutput:
     """Output produced by a single commit tick."""
 
-    cells: list[Any] = field(default_factory=list)
+    cells: List[Any] = field(default_factory=list)
     has_controller: bool = False
     all_idle: bool = True
 
@@ -38,11 +43,11 @@ class CommitTickOutput:
 class _StreamControllerLike(Protocol):
     def queued_lines(self) -> int: ...
 
-    def oldest_queued_age(self, now: float | int | timedelta) -> float | int | timedelta | None: ...
+    def oldest_queued_age(self, now: Union[float, int, timedelta]) -> Optional[Union[float, int, timedelta]]: ...
 
-    def on_commit_tick(self) -> tuple[Any | None, bool]: ...
+    def on_commit_tick(self) -> Tuple[Optional[Any], bool]: ...
 
-    def on_commit_tick_batch(self, max_lines: int) -> tuple[Any | None, bool]: ...
+    def on_commit_tick_batch(self, max_lines: int) -> Tuple[Optional[Any], bool]: ...
 
 
 def default() -> CommitTickOutput:
@@ -53,10 +58,10 @@ def default() -> CommitTickOutput:
 
 def run_commit_tick(
     policy: AdaptiveChunkingPolicy,
-    stream_controller: _StreamControllerLike | None,
-    plan_stream_controller: _StreamControllerLike | None,
+    stream_controller: Optional[_StreamControllerLike],
+    plan_stream_controller: Optional[_StreamControllerLike],
     scope: CommitTickScope,
-    now: float | int | timedelta,
+    now: Union[float, int, timedelta],
 ) -> CommitTickOutput:
     snapshot = stream_queue_snapshot(stream_controller, plan_stream_controller, now)
     decision = resolve_chunking_plan(policy, snapshot, now)
@@ -66,12 +71,12 @@ def run_commit_tick(
 
 
 def stream_queue_snapshot(
-    stream_controller: _StreamControllerLike | None,
-    plan_stream_controller: _StreamControllerLike | None,
-    now: float | int | timedelta,
+    stream_controller: Optional[_StreamControllerLike],
+    plan_stream_controller: Optional[_StreamControllerLike],
+    now: Union[float, int, timedelta],
 ) -> QueueSnapshot:
     queued_lines = 0
-    oldest_age: float | None = None
+    oldest_age: Optional[float] = None
 
     if stream_controller is not None:
         queued_lines += int(stream_controller.queued_lines())
@@ -86,7 +91,7 @@ def stream_queue_snapshot(
 def resolve_chunking_plan(
     policy: AdaptiveChunkingPolicy,
     snapshot: QueueSnapshot,
-    now: float | int | timedelta,
+    now: Union[float, int, timedelta],
 ) -> ChunkingDecision:
     # Rust logs mode transitions with tracing; Python preserves the state transition
     # contract and leaves observability to callers/tests.
@@ -95,8 +100,8 @@ def resolve_chunking_plan(
 
 def apply_commit_tick_plan(
     drain_plan: DrainPlan,
-    stream_controller: _StreamControllerLike | None,
-    plan_stream_controller: _StreamControllerLike | None,
+    stream_controller: Optional[_StreamControllerLike],
+    plan_stream_controller: Optional[_StreamControllerLike],
 ) -> CommitTickOutput:
     output = CommitTickOutput()
 
@@ -120,7 +125,7 @@ def apply_commit_tick_plan(
 def drain_stream_controller(
     controller: _StreamControllerLike,
     drain_plan: DrainPlan,
-) -> tuple[Any | None, bool]:
+) -> Tuple[Optional[Any], bool]:
     if drain_plan.is_single():
         return controller.on_commit_tick()
     return controller.on_commit_tick_batch(drain_plan.batch_size or 1)
@@ -129,16 +134,16 @@ def drain_stream_controller(
 def drain_plan_stream_controller(
     controller: _StreamControllerLike,
     drain_plan: DrainPlan,
-) -> tuple[Any | None, bool]:
+) -> Tuple[Optional[Any], bool]:
     if drain_plan.is_single():
         return controller.on_commit_tick()
     return controller.on_commit_tick_batch(drain_plan.batch_size or 1)
 
 
 def max_duration(
-    lhs: float | int | timedelta | None,
-    rhs: float | int | timedelta | None,
-) -> float | None:
+    lhs: Optional[Union[float, int, timedelta]],
+    rhs: Optional[Union[float, int, timedelta]],
+) -> Optional[float]:
     left = _duration_seconds_or_none(lhs)
     right = _duration_seconds_or_none(rhs)
     if left is None:
@@ -148,7 +153,7 @@ def max_duration(
     return max(left, right)
 
 
-def _duration_seconds_or_none(value: float | int | timedelta | None) -> float | None:
+def _duration_seconds_or_none(value: Optional[Union[float, int, timedelta]]) -> Optional[float]:
     if value is None:
         return None
     if isinstance(value, timedelta):

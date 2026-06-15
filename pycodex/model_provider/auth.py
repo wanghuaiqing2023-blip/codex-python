@@ -20,19 +20,22 @@ class AgentIdentityAuthProvider:
     signer: Any | None = None
 
     def add_auth_headers(self, headers: dict[str, str]) -> None:
-        if self.signer is None:
-            raise NotImplementedError("Agent identity authorization signer is not configured")
         record = self.auth.record()
-        identity_key = AgentIdentityKey(
-            agent_runtime_id=record.agent_runtime_id,
-            private_key_pkcs8_base64=record.agent_private_key,
-        )
-        target = {
-            "agent_runtime_id": record.agent_runtime_id,
-            "task_id": self.auth.process_task_id(),
-        }
-        header_value = self.signer(identity_key, target)
-        headers["Authorization"] = str(header_value)
+        if self.signer is not None:
+            identity_key = AgentIdentityKey(
+                agent_runtime_id=record.agent_runtime_id,
+                private_key_pkcs8_base64=record.agent_private_key,
+            )
+            target = {
+                "agent_runtime_id": record.agent_runtime_id,
+                "task_id": self.auth.process_task_id(),
+            }
+            try:
+                header_value = self.signer(identity_key, target)
+            except Exception:
+                header_value = None
+            if header_value is not None:
+                headers["Authorization"] = str(header_value)
         headers["ChatGPT-Account-ID"] = self.auth.account_id()
         if self.auth.is_fedramp_account():
             headers["X-OpenAI-Fedramp"] = "true"

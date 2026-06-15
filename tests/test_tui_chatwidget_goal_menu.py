@@ -58,8 +58,7 @@ def test_goal_summary_lines_for_active_goal_include_budget_and_pause_hint():
 def test_goal_summary_lines_for_resumeable_statuses_use_resume_hint(status):
     lines = goal_summary_lines(goal(status, budget=None, objective="resume me"))
 
-    assert "Token budget:" not in "
-".join(lines)
+    assert "Token budget:" not in "\n".join(lines)
     assert lines[1] == f"Status: {goal_status_label(status)}"
     assert lines[-1] == "Commands: /goal edit, /goal resume, /goal clear"
 
@@ -99,3 +98,4 @@ def test_goal_summary_accepts_protocol_like_dict_status_names():
     assert lines[3] == "Time used: 10h 12m"
     assert lines[4] == "Tokens used: 63.9K"
     assert lines[5] == "Token budget: 50K"
+

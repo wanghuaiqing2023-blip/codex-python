@@ -35,6 +35,12 @@ def test_resolve_editor_command_splits_and_rejects_empty() -> None:
     assert str(exc.value) == EditorError.EMPTY_COMMAND.value
 
 
+def test_resolve_editor_command_reports_parse_failed() -> None:
+    with pytest.raises(ExternalEditorError) as exc:
+        resolve_editor_command({"EDITOR": '"unterminated'})
+    assert str(exc.value) == EditorError.PARSE_FAILED.value
+
+
 @pytest.mark.asyncio
 async def test_run_editor_returns_updated_content(tmp_path: Path) -> None:
     # Rust source: external_editor.rs::tests::run_editor_returns_updated_content.

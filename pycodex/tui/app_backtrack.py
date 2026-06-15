@@ -15,7 +15,12 @@ from typing import Any, Iterable, Iterator, MutableSequence
 
 from ._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="app_backtrack", source="codex/codex-rs/tui/src/app_backtrack.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="app_backtrack",
+    source="codex/codex-rs/tui/src/app_backtrack.rs",
+    status="complete",
+)
 
 NO_PREVIOUS_MESSAGE_TO_EDIT = "No previous message to edit."
 USIZE_MAX = (1 << 64) - 1
@@ -547,6 +552,7 @@ def open_backtrack_preview_state(state: BacktrackState, transcript_cells: list[A
 
     if not has_backtrack_target(transcript_cells):
         reset_backtrack_state(state)
+        state.overlay_preview_active = False
         return BacktrackPreviewPlan(
             action="no_target",
             info_message=NO_PREVIOUS_MESSAGE_TO_EDIT,

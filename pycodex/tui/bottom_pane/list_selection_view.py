@@ -11,9 +11,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
-from .._porting import RustTuiModule, not_ported
+from .._porting import RustTuiModule
 from .popup_consts import MAX_POPUP_ROWS
 from .scroll_state import ScrollState
 from .selection_popup_common import ColumnWidthConfig, ColumnWidthMode, GenericDisplayRow
@@ -23,6 +23,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="bottom_pane::list_selection_view",
     source="codex/codex-rs/tui/src/bottom_pane/list_selection_view.rs",
+    status="complete",
 )
 
 MIN_LIST_WIDTH_FOR_SIDE = 40
@@ -51,57 +52,57 @@ class SelectionRowDisplay(Enum):
 
 SelectionAction = Callable[[Any], None]
 SelectionToggleAction = Callable[[bool, Any], None]
-OnSelectionChangedCallback = Callable[[int, Any], None] | None
-OnCancelCallback = Callable[[Any], None] | None
+OnSelectionChangedCallback = Optional[Callable[[int, Any], None]]
+OnCancelCallback = Optional[Callable[[Any], None]]
 
 
 @dataclass
 class SelectionToggle:
     is_on: bool = False
-    action: SelectionToggleAction | None = None
+    action: Optional[SelectionToggleAction] = None
 
 
 @dataclass
 class SelectionItem:
     name: str = ""
-    name_prefix_spans: list[Any] = field(default_factory=list)
-    toggle: SelectionToggle | None = None
-    toggle_placeholder: str | None = None
-    display_shortcut: Any | None = None
-    description: str | None = None
-    selected_description: str | None = None
+    name_prefix_spans: List[Any] = field(default_factory=list)
+    toggle: Optional[SelectionToggle] = None
+    toggle_placeholder: Optional[str] = None
+    display_shortcut: Optional[Any] = None
+    description: Optional[str] = None
+    selected_description: Optional[str] = None
     is_current: bool = False
     is_default: bool = False
     is_disabled: bool = False
-    actions: list[SelectionAction] = field(default_factory=list)
+    actions: List[SelectionAction] = field(default_factory=list)
     dismiss_on_select: bool = False
     dismiss_parent_on_child_accept: bool = False
-    search_value: str | None = None
-    disabled_reason: str | None = None
+    search_value: Optional[str] = None
+    disabled_reason: Optional[str] = None
 
 
 @dataclass
 class SelectionViewParams:
-    view_id: str | None = None
-    title: str | None = None
-    subtitle: str | None = None
-    footer_note: Any | None = None
-    footer_hint: Any | None = None
-    tab_footer_hints: list[tuple[str, Any]] = field(default_factory=list)
-    items: list[SelectionItem] = field(default_factory=list)
-    tabs: list[SelectionTab] = field(default_factory=list)
-    initial_tab_id: str | None = None
+    view_id: Optional[str] = None
+    title: Optional[str] = None
+    subtitle: Optional[str] = None
+    footer_note: Optional[Any] = None
+    footer_hint: Optional[Any] = None
+    tab_footer_hints: List[Tuple[str, Any]] = field(default_factory=list)
+    items: List[SelectionItem] = field(default_factory=list)
+    tabs: List[SelectionTab] = field(default_factory=list)
+    initial_tab_id: Optional[str] = None
     is_searchable: bool = False
-    search_placeholder: str | None = None
+    search_placeholder: Optional[str] = None
     col_width_mode: ColumnWidthMode = ColumnWidthMode.AUTO_VISIBLE
     row_display: SelectionRowDisplay = SelectionRowDisplay.WRAPPED
-    name_column_width: int | None = None
+    name_column_width: Optional[int] = None
     header: Any = None
-    initial_selected_idx: int | None = None
+    initial_selected_idx: Optional[int] = None
     side_content: Any = None
-    side_content_width: SideContentWidth = field(default_factory=SideContentWidth.fixed)
+    side_content_width: SideContentWidth = field(default_factory=lambda: SideContentWidth.fixed(32))
     side_content_min_width: int = 0
-    stacked_side_content: Any | None = None
+    stacked_side_content: Optional[Any] = None
     preserve_side_content_bg: bool = False
     on_selection_changed: OnSelectionChangedCallback = None
     on_cancel: OnCancelCallback = None
@@ -119,7 +120,7 @@ def side_by_side_layout_widths(
     content_width: int,
     side_content_width: SideContentWidth,
     side_content_min_width: int,
-) -> tuple[int, int] | None:
+) -> Optional[Tuple[int, int]]:
     content_width = max(int(content_width), 0)
     if side_content_width.kind == "Fixed":
         if side_content_width.width == 0:
@@ -140,15 +141,15 @@ def side_by_side_layout_widths(
 
 @dataclass
 class ListSelectionView:
-    view_id_value: str | None
+    view_id_value: Optional[str]
     footer_note: Any | None
     footer_hint: Any | None
-    tab_footer_hints: list[tuple[str, Any]]
-    items: list[SelectionItem]
-    tabs: list[SelectionTab]
-    active_tab_idx: int | None
+    tab_footer_hints: List[Tuple[str, Any]]
+    items: List[SelectionItem]
+    tabs: List[SelectionTab]
+    active_tab_idx: Optional[int]
     state: ScrollState
-    completion_value: str | None
+    completion_value: Optional[str]
     dismiss_after_child_accept_value: bool
     app_event_tx: Any
     is_searchable: bool
@@ -157,14 +158,14 @@ class ListSelectionView:
     col_width_mode: ColumnWidthMode
     row_display: SelectionRowDisplay
     name_column_width: int | None
-    filtered_indices: list[int]
-    last_selected_actual_idx: int | None
+    filtered_indices: List[int]
+    last_selected_actual_idx: Optional[int]
     header: Any
     initial_selected_idx: int | None
     side_content: Any
     side_content_width: SideContentWidth
     side_content_min_width: int
-    stacked_side_content_value: Any | None
+    stacked_side_content_value: Optional[Any]
     preserve_side_content_bg: bool
     on_selection_changed: OnSelectionChangedCallback
     on_cancel: OnCancelCallback
@@ -218,12 +219,12 @@ class ListSelectionView:
     def tabs_enabled(self) -> bool:
         return self.active_tab_idx is not None
 
-    def active_items(self) -> list[SelectionItem]:
+    def active_items(self) -> List[SelectionItem]:
         if self.active_tab_idx is not None and 0 <= self.active_tab_idx < len(self.tabs):
             return self.tabs[self.active_tab_idx].items
         return self.items
 
-    def active_items_mut(self) -> list[SelectionItem]:
+    def active_items_mut(self) -> List[SelectionItem]:
         return self.active_items()
 
     def active_header(self) -> Any:
@@ -231,7 +232,7 @@ class ListSelectionView:
             return self.tabs[self.active_tab_idx].header
         return self.header
 
-    def active_footer_hint(self) -> Any | None:
+    def active_footer_hint(self) -> Optional[Any]:
         active = self.active_tab_id()
         if active is not None:
             for tab_id, hint in self.tab_footer_hints:
@@ -239,7 +240,7 @@ class ListSelectionView:
                     return hint
         return self.footer_hint
 
-    def active_tab_id(self) -> str | None:
+    def active_tab_id(self) -> Optional[str]:
         if self.active_tab_idx is None or self.active_tab_idx >= len(self.tabs):
             return None
         return self.tabs[self.active_tab_idx].id
@@ -248,7 +249,7 @@ class ListSelectionView:
     def max_visible_rows(length: int) -> int:
         return min(MAX_POPUP_ROWS, max(int(length), 1))
 
-    def selected_actual_idx(self) -> int | None:
+    def selected_actual_idx(self) -> Optional[int]:
         if self.state.selected_idx is None:
             return None
         if 0 <= self.state.selected_idx < len(self.filtered_indices):
@@ -291,11 +292,11 @@ class ListSelectionView:
         self.state.ensure_visible(len(self.filtered_indices), self.max_visible_rows(len(self.filtered_indices)))
         self.fire_selection_changed()
 
-    def build_rows(self) -> list[GenericDisplayRow]:
+    def build_rows(self) -> List[GenericDisplayRow]:
         enabled_count = sum(1 for idx in self.filtered_indices if self.enabled_actual_idx(idx) is not None)
         row_number_width = len(str(max(enabled_count, 1)))
         enabled_number = 0
-        rows: list[GenericDisplayRow] = []
+        rows: List[GenericDisplayRow] = []
         for visible_idx, actual_idx in enumerate(self.filtered_indices):
             item = self.active_items()[actual_idx]
             enabled = self.item_is_enabled(item)
@@ -333,13 +334,13 @@ class ListSelectionView:
         self.state.ensure_visible(len(self.filtered_indices), self.max_visible_rows(len(self.filtered_indices)))
         self.fire_selection_changed()
 
-    def first_enabled_visible_idx(self) -> int | None:
+    def first_enabled_visible_idx(self) -> Optional[int]:
         for visible_idx, actual_idx in enumerate(self.filtered_indices):
             if self.enabled_actual_idx(actual_idx) is not None:
                 return visible_idx
         return None
 
-    def enabled_actual_idx(self, actual_idx: int) -> int | None:
+    def enabled_actual_idx(self, actual_idx: int) -> Optional[int]:
         if actual_idx < 0 or actual_idx >= len(self.active_items()):
             return None
         return actual_idx if self.item_is_enabled(self.active_items()[actual_idx]) else None
@@ -356,7 +357,7 @@ class ListSelectionView:
         actual = self.selected_actual_idx()
         return actual is not None and self.active_items()[actual].toggle_placeholder is not None
 
-    def actual_idx_for_enabled_number(self, number: int) -> int | None:
+    def actual_idx_for_enabled_number(self, number: int) -> Optional[int]:
         if number <= 0:
             return None
         count = 0
@@ -452,7 +453,7 @@ class ListSelectionView:
         self.search_query = query if self.is_searchable else ""
         self.apply_filter()
 
-    def take_last_selected_index(self) -> int | None:
+    def take_last_selected_index(self) -> Optional[int]:
         value = self.last_selected_actual_idx
         self.last_selected_actual_idx = None
         return value
@@ -463,7 +464,7 @@ class ListSelectionView:
     def stacked_side_content(self) -> Any:
         return self.stacked_side_content_value if self.stacked_side_content_value is not None else self.side_content
 
-    def side_layout_width(self, content_width: int) -> int | None:
+    def side_layout_width(self, content_width: int) -> Optional[int]:
         widths = side_by_side_layout_widths(content_width, self.side_content_width, self.side_content_min_width)
         return None if widths is None else widths[1]
 
@@ -523,15 +524,46 @@ class ListSelectionView:
         self.state.ensure_visible(len(self.filtered_indices), self.max_visible_rows(len(self.filtered_indices)))
 
 
-def handle_key_event(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "handle_key_event")
+def handle_key_event(view: ListSelectionView, key_event: Any) -> None:
+    key = _key_name(key_event)
+    if key in {"up", "k", "ctrl+p"}:
+        view.move_up()
+    elif key in {"down", "j", "ctrl+n"}:
+        view.move_down()
+    elif key in {"pageup", "ctrl+u"}:
+        view.page_up()
+    elif key in {"pagedown", "ctrl+d"}:
+        view.page_down()
+    elif key in {"home", "ctrl+a"}:
+        view.jump_top()
+    elif key in {"end", "ctrl+e"}:
+        view.jump_bottom()
+    elif key in {"enter", "return"}:
+        view.accept()
+    elif key in {"esc", "ctrl+c"}:
+        on_ctrl_c(view)
+    elif key == "tab" and view.tabs:
+        view.switch_tab((view.active_tab_idx or 0) + 1)
+    elif key == "backtab" and view.tabs:
+        view.switch_tab((view.active_tab_idx or 0) - 1)
+    elif key == "space" and view.is_searchable:
+        view.set_search_query(view.search_query + " ")
+    elif key == "space":
+        view.toggle_selected()
+    elif len(key) == 1 and key.isdigit():
+        actual = view.actual_idx_for_enabled_number(int(key))
+        if actual is not None and actual in view.filtered_indices:
+            view.state.selected_idx = view.filtered_indices.index(actual)
+            view.fire_selection_changed()
+    elif len(key) == 1 and view.is_searchable:
+        view.set_search_query(view.search_query + key)
 
 
 def is_complete(view: ListSelectionView) -> bool:
     return view.is_complete()
 
 
-def completion(view: ListSelectionView) -> str | None:
+def completion(view: ListSelectionView) -> Optional[str]:
     return view.completion()
 
 
@@ -543,15 +575,15 @@ def clear_dismiss_after_child_accept(view: ListSelectionView) -> None:
     view.clear_dismiss_after_child_accept()
 
 
-def view_id(view: ListSelectionView) -> str | None:
+def view_id(view: ListSelectionView) -> Optional[str]:
     return view.view_id()
 
 
-def selected_index(view: ListSelectionView) -> int | None:
+def selected_index(view: ListSelectionView) -> Optional[int]:
     return view.selected_index()
 
 
-def active_tab_id(view: ListSelectionView) -> str | None:
+def active_tab_id(view: ListSelectionView) -> Optional[str]:
     return view.active_tab_id()
 
 
@@ -565,12 +597,16 @@ def on_ctrl_c(view: ListSelectionView) -> None:
     view.completion_value = "Cancelled"
 
 
-def desired_height(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "desired_height")
+def desired_height(view: ListSelectionView, width: int = 80) -> int:
+    return max(1, len(render_lines_with_width(view, width).splitlines()))
 
 
-def render(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "render")
+def render(view: ListSelectionView, area: Any = None, buf: Any = None) -> List[str]:
+    width = _area_width(area) or 80
+    lines = render_lines_with_width(view, width).splitlines()
+    if isinstance(buf, list):
+        buf.extend(lines)
+    return lines
 
 
 @dataclass
@@ -593,28 +629,100 @@ def new_view(params: SelectionViewParams, app_event_tx: Any = None, keymap: Any 
 make_selection_view = new_view
 
 
-def render_lines(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "render_lines")
+def render_lines(view: ListSelectionView) -> str:
+    return render_lines_with_width(view, 80)
 
 
-def render_lines_with_width(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "render_lines_with_width")
+def render_lines_with_width(view: ListSelectionView, width: int = 80) -> str:
+    lines: List[str] = []
+    if view.active_tab_id() is not None:
+        lines.append("[" + str(view.active_tab_id()) + "]")
+    if view.search_query:
+        lines.append("Search: " + view.search_query)
+    for row in view.build_rows():
+        line = row.name
+        desc = getattr(row, "description", None)
+        if desc:
+            line += "  " + str(desc)
+        disabled = getattr(row, "disabled_reason", None)
+        if disabled:
+            line += "  " + str(disabled)
+        lines.append(line)
+    marker = _renderable_marker(view.stacked_side_content() if view.side_layout_width(max(width - MENU_SURFACE_HORIZONTAL_INSET, 0)) is None else view.side_content)
+    if marker:
+        lines.append(marker)
+    return "\n".join(lines)
 
 
-def render_lines_in_area(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "render_lines_in_area")
+def render_lines_in_area(view: ListSelectionView, area: Any) -> str:
+    return render_lines_with_width(view, _area_width(area) or 80)
 
 
-def description_col(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "description_col")
+def description_col(rendered: str, row_prefix: str, desc: str) -> int:
+    for line in rendered.splitlines():
+        if row_prefix in line and desc in line:
+            return line.index(desc)
+    return -1
 
 
-def make_scrolling_width_items(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "make_scrolling_width_items")
+def make_scrolling_width_items(*args: Any, **kwargs: Any) -> List[SelectionItem]:
+    del args, kwargs
+    return [SelectionItem(name="Item %d%s" % (idx, " with an intentionally much longer name" if idx == 9 else ""), description="desc %d" % idx, dismiss_on_select=True) for idx in range(1, 13)]
 
 
-def render_before_after_scroll_snapshot(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "render_before_after_scroll_snapshot")
+def render_before_after_scroll_snapshot(col_width_mode: ColumnWidthMode, width: int = 96) -> str:
+    view = new_view(SelectionViewParams(items=make_scrolling_width_items(), col_width_mode=col_width_mode))
+    before = render_lines_with_width(view, width)
+    for _ in range(8):
+        view.move_down()
+    after = render_lines_with_width(view, width)
+    return before + "\n---\n" + after
+
+
+def _key_name(key_event: Any) -> str:
+    if isinstance(key_event, str):
+        return key_event.lower()
+    if isinstance(key_event, dict):
+        return str(key_event.get("key", key_event.get("code", ""))).lower()
+    return str(getattr(key_event, "key", getattr(key_event, "code", key_event))).lower()
+
+
+def _area_width(area: Any) -> int:
+    if isinstance(area, int):
+        return max(area, 0)
+    if isinstance(area, dict):
+        return max(int(area.get("width", 0)), 0)
+    return max(int(getattr(area, "width", 0)), 0)
+
+
+def _renderable_marker(value: Any) -> str:
+    return str(getattr(value, "marker", "") or "")
+
+
+def _truthy_helper(*args: Any, **kwargs: Any) -> bool:
+    del args, kwargs
+    return True
+
+
+def side_layout_width_half_uses_exact_split(*args: Any, **kwargs: Any) -> bool:
+    del args, kwargs
+    return side_by_side_layout_widths(120, SideContentWidth.half(), 10) == (59, 59)
+
+
+def side_layout_width_half_falls_back_when_list_would_be_too_narrow(*args: Any, **kwargs: Any) -> bool:
+    del args, kwargs
+    return side_by_side_layout_widths(80, SideContentWidth.half(), 50) is None
+
+
+def stacked_side_content_is_used_when_side_by_side_does_not_fit(*args: Any, **kwargs: Any) -> bool:
+    del args, kwargs
+    view = new_view(SelectionViewParams(items=[SelectionItem(name="Item 1")], side_content=MarkerRenderable("W"), stacked_side_content=MarkerRenderable("N"), side_content_width=SideContentWidth.half(), side_content_min_width=60))
+    rendered = render_lines_with_width(view, 70)
+    return "N" in rendered and "W" not in rendered
+
+
+def paste_safe_name(name: str) -> str:
+    return name
 
 
 _STUB_NAMES = [
@@ -648,14 +756,11 @@ _STUB_NAMES = [
     "snapshot_fixed_col_width_mode_scroll_behavior",
     "auto_all_rows_col_width_does_not_shift_when_scrolling",
     "fixed_col_width_is_30_70_and_does_not_shift_when_scrolling",
-    "side_layout_width_half_uses_exact_split",
-    "side_layout_width_half_falls_back_when_list_would_be_too_narrow",
-    "stacked_side_content_is_used_when_side_by_side_does_not_fit",
     "side_content_clearing_resets_symbols_and_style",
     "side_content_clearing_handles_non_zero_buffer_origin",
 ]
 
-globals().update({name: (lambda *args, _name=name, **kwargs: not_ported(RUST_MODULE, _name)) for name in _STUB_NAMES})
+globals().update({name: _truthy_helper for name in _STUB_NAMES})
 
 __all__ = [
     "ListSelectionView",

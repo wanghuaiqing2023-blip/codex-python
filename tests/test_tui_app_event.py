@@ -59,6 +59,36 @@ def test_app_event_constructors_match_variant_payloads() -> None:
     assert AppEvent.open_keymap_capture("root", "submit", KeymapEditIntent.add_alternate()).kind == "OpenKeymapCapture"
 
 
+def test_app_event_struct_payload_constructors_preserve_none_and_enum_payloads() -> None:
+    # Rust source: AppEvent::RefreshRateLimits, RateLimitsLoaded, ConsolidateAgentMessage.
+    origin = RateLimitRefreshOrigin.status_command(7)
+    assert AppEvent.refresh_rate_limits(origin) == AppEvent("RefreshRateLimits", {"origin": origin})
+    assert AppEvent.rate_limits_loaded(origin, result=["snapshot"]) == AppEvent(
+        "RateLimitsLoaded",
+        {"origin": origin, "result": ["snapshot"]},
+    )
+
+    event = AppEvent.consolidate_agent_message(
+        source="**answer**",
+        cwd="/workspace",
+        scrollback_reflow=ConsolidationScrollbackReflow.REQUIRED,
+    )
+
+    assert event.kind == "ConsolidateAgentMessage"
+    assert event.payload == {
+        "source": "**answer**",
+        "cwd": "/workspace",
+        "scrollback_reflow": ConsolidationScrollbackReflow.REQUIRED,
+        "deferred_history_cell": None,
+    }
+
+    assert ThreadGoalSetMode.update_existing("complete") == ThreadGoalSetMode(
+        "UpdateExisting",
+        status="complete",
+        token_budget=None,
+    )
+
+
 def test_data_structs_preserve_rust_fields() -> None:
     response = HistoryLookupResponse(offset=3, log_id=99, entry=None)
     assert response.offset == 3

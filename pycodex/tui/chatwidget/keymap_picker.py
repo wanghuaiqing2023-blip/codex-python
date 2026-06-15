@@ -9,7 +9,7 @@ update to all live widget caches together.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, List, Optional, Tuple
 
 from .._porting import RustTuiModule
 
@@ -17,6 +17,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="chatwidget::keymap_picker",
     source="codex/codex-rs/tui/src/chatwidget/keymap_picker.rs",
+    status="complete",
 )
 
 KEYMAP_PICKER_VIEW_ID = "keymap-picker"
@@ -32,12 +33,12 @@ class KeymapActionFilter:
 @dataclass(frozen=True)
 class KeymapView:
     kind: str
-    view_id: str | None = None
-    context: str | None = None
-    action: str | None = None
+    view_id: Optional[str] = None
+    context: Optional[str] = None
+    action: Optional[str] = None
     intent: Any = None
-    selected_action: tuple[str, str] | None = None
-    filter: KeymapActionFilter | None = None
+    selected_action: Optional[Tuple[str, str]] = None
+    filter: Optional[KeymapActionFilter] = None
     config: Any = None
     runtime_keymap: Any = None
 
@@ -45,19 +46,19 @@ class KeymapView:
 @dataclass
 class KeymapPickerWidgetState:
     tui_keymap: Any = field(default_factory=dict)
-    runtime_keymap: Any | None = None
+    runtime_keymap: Any = None
     fast_mode_enabled: bool = False
     copy_last_response_binding: Any = None
     chat_keymap: Any = None
     queued_message_edit_hint_binding: Any = None
-    shown_selection_views: list[KeymapView] = field(default_factory=list)
-    shown_views: list[KeymapView] = field(default_factory=list)
-    errors: list[str] = field(default_factory=list)
+    shown_selection_views: List[KeymapView] = field(default_factory=list)
+    shown_views: List[KeymapView] = field(default_factory=list)
+    errors: List[str] = field(default_factory=list)
     redraws: int = 0
     bottom_pane_queued_message_edit_binding: Any = None
     bottom_pane_keymap_bindings: Any = None
     replace_active_result: bool = True
-    replace_calls: list[tuple[tuple[str, ...], KeymapView]] = field(default_factory=list)
+    replace_calls: List[Tuple[Tuple[str, ...], KeymapView]] = field(default_factory=list)
 
     def open_keymap_picker(self) -> None:
         runtime_or_error = self.runtime_keymap_from_config(self.tui_keymap)
@@ -135,7 +136,7 @@ class KeymapPickerWidgetState:
     def show_view(self, view: KeymapView) -> None:
         self.shown_views.append(view)
 
-    def replace_active_views_with_selection_view(self, view_ids: tuple[str, ...], params: KeymapView) -> bool:
+    def replace_active_views_with_selection_view(self, view_ids: Tuple[str, ...], params: KeymapView) -> bool:
         self.replace_calls.append((view_ids, params))
         return self.replace_active_result
 

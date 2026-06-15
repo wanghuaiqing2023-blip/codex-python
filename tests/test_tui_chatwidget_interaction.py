@@ -8,9 +8,11 @@ from pycodex.tui.chatwidget.interaction import (
     ExternalEditorState,
     FrameRequester,
     KeyBinding,
+    KeyEvent,
     apply_external_edit,
     arm_quit_shortcut,
     attach_image,
+    handle_key_event,
     can_run_ctrl_l_clear_now,
     copy_last_agent_markdown_with,
     handle_paste,
@@ -39,6 +41,7 @@ class Pane:
         self.empty = True
         self.flush_due = False
         self.in_burst = False
+        self.active_view = False
 
     def __getattr__(self, name):
         def recorder(*args):
@@ -66,6 +69,9 @@ class Pane:
 
     def recommended_paste_flush_delay(self):
         return "delay"
+
+    def has_active_view(self):
+        return self.active_view
 
 
 class Realtime:
@@ -111,6 +117,20 @@ class Widget:
         self.quit_shortcut_expires_at = None
         self.clipboard_lease = None
         self.thread_rename_block_message = None
+        self.copy_last_response_binding = KeyBinding("ctrl-y")
+        self.chat_keymap = SimpleNamespace(
+            edit_queued_message=KeyBinding("ctrl-e"),
+            interrupt_turn=KeyBinding("esc"),
+        )
+        self.input_queue = SimpleNamespace(
+            pending_steers=[],
+            submit_pending_steers_after_interrupt=False,
+        )
+        self.queued = []
+        self.reasoning_shortcut_handled = False
+        self.plugins_popup_handled = False
+        self.plan_nudge = False
+        self.collaboration_enabled = False
 
     def __getattr__(self, name):
         def recorder(*args):
@@ -133,6 +153,27 @@ class Widget:
     def submit_op(self, op):
         self.ops.append(op)
         return True
+
+    def handle_reasoning_shortcut(self, key_event):
+        return self.reasoning_shortcut_handled
+
+    def has_queued_follow_up_messages(self):
+        return bool(self.queued)
+
+    def pop_latest_queued_user_message(self):
+        return self.queued.pop() if self.queued else None
+
+    def should_handle_vim_insert_escape(self, key_event):
+        return False
+
+    def should_show_plan_mode_nudge(self):
+        return self.plan_nudge
+
+    def handle_plugins_popup_key_event(self, key_event):
+        return self.plugins_popup_handled
+
+    def collaboration_modes_enabled(self):
+        return self.collaboration_enabled
 
 
 def test_attach_image_warns_when_model_lacks_support_otherwise_attaches() -> None:
@@ -266,3 +307,56 @@ def test_ctrl_d_only_arms_when_composer_empty_and_modal_clear_then_second_press_
 
     assert on_ctrl_d(widget) is True
     assert ("request_quit_without_confirmation",) in widget.events
+
+
+def test_handle_key_event_routes_active_view_then_maybe_drains_queue() -> None:
+    widget = Widget()
+    widget.bottom_pane.active_view = True
+
+    handle_key_event(widget, KeyEvent("char", "x"))
+
+    assert ("handle_key_event", KeyEvent("char", "x")) in widget.bottom_pane.events
+    assert ("maybe_send_next_queued_input",) in widget.events
+
+
+def test_handle_key_event_copy_paste_queued_edit_interrupt_and_nudge_paths() -> None:
+    widget = Widget()
+    handle_key_event(widget, KeyEvent("char", "y", ("control",)))
+    assert ("copy_last_agent_markdown",) in widget.events
+
+    widget = Widget()
+    handle_key_event(widget, KeyEvent("char", "v", ("control",)), paste_image_fn=lambda: ("/tmp/p.png", object()))
+    assert ("attach_image", "/tmp/p.png") in widget.bottom_pane.events
+
+    widget = Widget()
+    widget.queued = ["queued message"]
+    handle_key_event(widget, KeyEvent("char", "e", ("control",)))
+    assert ("restore_user_message_to_composer", "queued message") in widget.events
+    assert ("request_redraw",) in widget.events
+
+    widget = Widget()
+    widget.bottom_pane.task_running = True
+    widget.input_queue.pending_steers = ["steer"]
+    handle_key_event(widget, KeyEvent("esc"))
+    assert widget.input_queue.submit_pending_steers_after_interrupt is True
+    assert widget.ops == [AppCommand.interrupt()]
+
+    widget = Widget()
+    widget.plan_nudge = True
+    handle_key_event(widget, KeyEvent("esc"))
+    assert ("dismiss_plan_mode_nudge",) in widget.events
+
+
+def test_handle_key_event_backtab_cycles_collaboration_otherwise_composer_handles() -> None:
+    widget = Widget()
+    widget.collaboration_enabled = True
+
+    handle_key_event(widget, KeyEvent("backtab"))
+
+    assert ("cycle_collaboration_mode",) in widget.events
+    assert ("refresh_plan_mode_nudge",) in widget.events
+
+    widget = Widget()
+    handle_key_event(widget, KeyEvent("enter"))
+    assert ("handle_key_event", KeyEvent("enter")) in widget.bottom_pane.events
+    assert ("handle_composer_input_result", None, False) in widget.events

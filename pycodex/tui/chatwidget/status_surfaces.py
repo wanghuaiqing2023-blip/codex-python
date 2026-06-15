@@ -20,6 +20,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="chatwidget::status_surfaces",
     source="codex/codex-rs/tui/src/chatwidget/status_surfaces.rs",
+    status="complete",
 )
 
 DEFAULT_STATUS_LINE_ITEMS = ("model-with-reasoning", "current-dir")
@@ -215,16 +216,42 @@ def parse_items_with_invalids(
     return items, invalid
 
 
-def permissions_display(*_: Any, **__: Any) -> str:
-    raise NotImplementedError(
-        "permissions_display depends on Rust permission-profile summarization and is outside this pure-helper slice"
+def permissions_display(config: Any) -> str:
+    """Return the status-line permissions label used by Rust Codex.
+
+    Rust first preserves a named active permission profile unless the id is an
+    internal ``:`` profile, then summarizes the effective profile into the
+    user-facing labels shown in the TUI.
+    """
+
+    permissions = _read_field(config, "permissions")
+    active_profile = _call_or_value(_read_field(permissions, "active_permission_profile"))
+    active_id = _read_field(active_profile, "id")
+    if isinstance(active_id, str) and active_id and not active_id.startswith(":"):
+        return active_id
+
+    permission_profile = _call_or_value(
+        _read_field(permissions, "effective_permission_profile")
     )
+    summary = _permission_profile_summary(permission_profile, config)
+    details = _strip_prefix(summary, "read-only")
+    if details is not None and "(network access enabled)" not in details:
+        return "Read Only"
+    details = _strip_prefix(summary, "workspace-write")
+    if details is not None and "(network access enabled)" not in details:
+        return "Workspace"
+    if _permission_profile_is_disabled(permission_profile):
+        return "Full Access"
+    return "Custom permissions"
 
 
-def approval_mode_display(*_: Any, **__: Any) -> str:
-    raise NotImplementedError(
-        "approval_mode_display depends on full Config permission policy state and is outside this pure-helper slice"
-    )
+def approval_mode_display(config: Any) -> str:
+    permissions = _read_field(config, "permissions")
+    approval_policy = _approval_policy_value(_read_field(permissions, "approval_policy"))
+    reviewer = _canonical_token(_read_field(config, "approvals_reviewer"))
+    if approval_policy == "on-request" and reviewer == "auto-review":
+        return "auto-review"
+    return approval_policy
 
 
 def _parse_status_or_title_item(value: Any) -> Any:
@@ -232,6 +259,89 @@ def _parse_status_or_title_item(value: Any) -> Any:
         return StatusLineItem.parse(value)
     except ValueError:
         return TerminalTitleItem.from_id(value)
+
+
+def _read_field(value: Any, name: str, default: Any = None) -> Any:
+    if value is None:
+        return default
+    if isinstance(value, dict):
+        return value.get(name, default)
+    return getattr(value, name, default)
+
+
+def _call_or_value(value: Any) -> Any:
+    if callable(value):
+        return value()
+    return value
+
+
+def _strip_prefix(value: str, prefix: str) -> str | None:
+    if value.startswith(prefix):
+        return value[len(prefix) :]
+    return None
+
+
+def _canonical_token(value: Any) -> str:
+    value = _call_or_value(value)
+    enum_value = _read_field(value, "value")
+    if enum_value is not None:
+        value = _call_or_value(enum_value)
+    enum_name = _read_field(value, "name")
+    if enum_name is not None:
+        value = enum_name
+    text = str(value).strip()
+    if "::" in text:
+        text = text.rsplit("::", 1)[-1]
+    return text.replace("_", "-").lower()
+
+
+def _approval_policy_value(value: Any) -> str:
+    value = _call_or_value(value)
+    nested = _read_field(value, "value")
+    if nested is not None:
+        value = _call_or_value(nested)
+    return _canonical_token(value)
+
+
+def _permission_profile_summary(profile: Any, config: Any) -> str:
+    summary = _read_field(profile, "summary")
+    if isinstance(summary, str):
+        return summary
+    summary = _read_field(config, "permission_profile_summary")
+    if isinstance(summary, str):
+        return summary
+
+    token = _canonical_token(profile)
+    network_enabled = _permission_profile_network_enabled(profile)
+    if token in {"read-only", "readonly"}:
+        return "read-only (network access enabled)" if network_enabled else "read-only"
+    if token in {"workspace-write", "workspacewrite"}:
+        return (
+            "workspace-write (network access enabled)"
+            if network_enabled
+            else "workspace-write"
+        )
+    if token in {"disabled", "full-access", "fullaccess"}:
+        return "disabled"
+    return token
+
+
+def _permission_profile_network_enabled(profile: Any) -> bool:
+    for name in (
+        "network_access",
+        "network_access_enabled",
+        "experimental_network_access",
+    ):
+        value = _read_field(profile, name)
+        if isinstance(value, bool):
+            return value
+    text = str(profile).lower()
+    return "(network access enabled)" in text or "network_access=true" in text
+
+
+def _permission_profile_is_disabled(profile: Any) -> bool:
+    token = _canonical_token(profile)
+    return token in {"disabled", "full-access", "fullaccess"}
 
 
 def _graphemes(text: str) -> list[str]:

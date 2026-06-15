@@ -1,4 +1,4 @@
-"""Experimental feature toggle view.
+﻿"""Experimental feature toggle view.
 
 Python port of Rust ``codex-tui::bottom_pane::experimental_features_view``.
 """
@@ -6,7 +6,7 @@ Python port of Rust ``codex-tui::bottom_pane::experimental_features_view``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .._porting import RustTuiModule
 from .popup_consts import MAX_POPUP_ROWS
@@ -15,6 +15,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="bottom_pane::experimental_features_view",
     source="codex/codex-rs/tui/src/bottom_pane/experimental_features_view.rs",
+    status="complete",
 )
 
 
@@ -29,7 +30,7 @@ class ExperimentalFeatureItem:
 @dataclass(frozen=True)
 class DisplayRow:
     name: str
-    description: str | None = None
+    description: Optional[str] = None
     selected: bool = False
 
 
@@ -41,13 +42,13 @@ class DisplayLine:
 
 @dataclass
 class ExperimentalFeaturesView:
-    features: list[ExperimentalFeatureItem]
+    features: List[ExperimentalFeatureItem]
     app_event_tx: Any = None
     keymap: Any = None
-    selected_idx: int | None = None
+    selected_idx: Optional[int] = None
     scroll_top: int = 0
     complete: bool = False
-    header: tuple[str, str] = (
+    header: Tuple[str, str] = (
         "Experimental features",
         "Toggle experimental features. Changes are saved to config.toml.",
     )
@@ -73,14 +74,14 @@ class ExperimentalFeaturesView:
     def visible_len(self) -> int:
         return len(self.features)
 
-    def build_rows(self) -> list[DisplayRow]:
-        rows: list[DisplayRow] = []
+    def build_rows(self) -> List[DisplayRow]:
+        rows = []
         for idx, item in enumerate(self.features):
             prefix = "›" if self.selected_idx == idx else " "
             marker = "x" if item.enabled else " "
             rows.append(
                 DisplayRow(
-                    name=f"{prefix} [{marker}] {item.name}",
+                    name="{} [{}] {}".format(prefix, marker, item.name),
                     description=item.description,
                     selected=self.selected_idx == idx,
                 )
@@ -147,21 +148,23 @@ class ExperimentalFeaturesView:
 
     def handle_key_event(self, key_event: Any) -> None:
         key = _key_name(key_event)
-        if key in {"up", "k"}:
+        if _keymap_pressed(self.keymap, "move_up", key_event, key) or key in {"up", "k"}:
             self.move_up()
-        elif key in {"down", "j"}:
+        elif _keymap_pressed(self.keymap, "move_down", key_event, key) or key in {"down", "j"}:
             self.move_down()
-        elif key in {"pageup", "page_up"}:
+        elif _keymap_pressed(self.keymap, "page_up", key_event, key) or key in {"pageup", "page_up"}:
             self.page_up()
-        elif key in {"pagedown", "page_down"}:
+        elif _keymap_pressed(self.keymap, "page_down", key_event, key) or key in {"pagedown", "page_down"}:
             self.page_down()
-        elif key in {"home", "g"}:
+        elif _keymap_pressed(self.keymap, "jump_top", key_event, key) or key in {"home", "g"}:
             self.jump_top()
-        elif key in {"end", "G".lower()}:
+        elif _keymap_pressed(self.keymap, "jump_bottom", key_event, key) or key in {"end", "shift+g"}:
             self.jump_bottom()
         elif key == " ":
             self.toggle_selected()
-        elif key in {"enter", "esc"}:
+        elif _keymap_pressed(self.keymap, "accept", key_event, key) or _keymap_pressed(
+            self.keymap, "cancel", key_event, key
+        ) or key in {"enter", "esc"}:
             self.on_ctrl_c()
 
     def is_complete(self) -> bool:
@@ -180,13 +183,14 @@ class ExperimentalFeaturesView:
         return "Handled"
 
     def desired_height(self, width: int) -> int:
+        del width
         rows_height = min(MAX_POPUP_ROWS, len(self.build_rows()))
         if not self.features:
             rows_height = 1
         header_height = len(self.header)
         return header_height + rows_height + 4
 
-    def render(self, area: Any = None, buf: Any = None) -> list[DisplayLine]:
+    def render(self, area: Any = None, buf: Any = None) -> List[DisplayLine]:
         width = _area_width(area)
         height = _area_height(area)
         if width == 0 or height == 0:
@@ -205,7 +209,10 @@ class ExperimentalFeaturesView:
         else:
             lines.append(DisplayLine("  No experimental features available for now", "empty"))
         lines.append(DisplayLine(self.footer_hint, "hint"))
-        return lines[:height]
+        rendered = lines[:height]
+        if buf is not None and hasattr(buf, "extend"):
+            buf.extend(rendered)
+        return rendered
 
     def _ensure_visible(self, length: int) -> None:
         if self.selected_idx is None:
@@ -234,7 +241,7 @@ def on_ctrl_c(view: ExperimentalFeaturesView) -> str:
     return view.on_ctrl_c()
 
 
-def render(view: ExperimentalFeaturesView, area: Any = None, buf: Any = None) -> list[DisplayLine]:
+def render(view: ExperimentalFeaturesView, area: Any = None, buf: Any = None) -> List[DisplayLine]:
     return view.render(area, buf)
 
 
@@ -258,7 +265,7 @@ def _key_name(key_event: Any) -> str:
     return text if text == " " else text.lower()
 
 
-def _send(target: Any, event: dict[str, Any]) -> None:
+def _send(target: Any, event: Dict[str, Any]) -> None:
     if target is None:
         return
     if hasattr(target, "send"):
@@ -289,6 +296,23 @@ def _area_height(area: Any) -> int:
     if isinstance(area, tuple) and len(area) >= 4:
         return int(area[3])
     return int(getattr(area, "height", 0))
+
+
+def _keymap_pressed(keymap: Any, binding_name: str, key_event: Any, key: str) -> bool:
+    if keymap is None:
+        return False
+    binding = getattr(keymap, binding_name, None)
+    if binding is None and isinstance(keymap, dict):
+        binding = keymap.get(binding_name)
+    if binding is None:
+        return False
+    if hasattr(binding, "is_pressed"):
+        return bool(binding.is_pressed(key_event))
+    if callable(binding):
+        return bool(binding(key_event))
+    if isinstance(binding, (set, list, tuple)):
+        return key in {str(item).lower() for item in binding}
+    return key == str(binding).lower()
 
 
 __all__ = [

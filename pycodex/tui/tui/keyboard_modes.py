@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Dict, List, Optional
 
 from .._porting import RustTuiModule
 
@@ -16,15 +16,11 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="tui::keyboard_modes",
     source="codex/codex-rs/tui/src/tui/keyboard_modes.rs",
-    status="complete_slice",
+    status="complete",
 )
 
 DISABLE_KEYBOARD_ENHANCEMENT_ENV_VAR = "CODEX_TUI_DISABLE_KEYBOARD_ENHANCEMENT"
-WINDOWS_TERM_PROGRAM: str | None = None
-
-
-class AnsiCommand(Protocol):
-    def write_ansi(self) -> str: ...
+WINDOWS_TERM_PROGRAM: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -65,7 +61,7 @@ class DisableModifyOtherKeys:
         return False
 
 
-def parse_bool_env(value: str | None) -> bool | None:
+def parse_bool_env(value: Optional[str]) -> Optional[bool]:
     if value is None:
         return None
     stripped = value.strip()
@@ -77,7 +73,7 @@ def parse_bool_env(value: str | None) -> bool | None:
 
 
 def keyboard_enhancement_disabled_for(
-    disable_env: str | None,
+    disable_env: Optional[str],
     is_wsl: bool,
     is_vscode_terminal: bool,
 ) -> bool:
@@ -87,47 +83,47 @@ def keyboard_enhancement_disabled_for(
     return bool(is_wsl and is_vscode_terminal)
 
 
-def running_in_wsl(env: dict[str, str] | None = None) -> bool:
+def running_in_wsl(env: Optional[Dict[str, str]] = None) -> bool:
     env = os.environ if env is None else env
     return bool(env.get("WSL_DISTRO_NAME") or env.get("WSL_INTEROP"))
 
 
-def term_program_is_vscode(value: str | None) -> bool:
+def term_program_is_vscode(value: Optional[str]) -> bool:
     return value is not None and value.lower() == "vscode"
 
 
 def vscode_terminal_detected(
-    linux_term_program: str | None,
-    windows_term_program_value: str | None,
+    linux_term_program: Optional[str],
+    windows_term_program_value: Optional[str],
 ) -> bool:
     return term_program_is_vscode(linux_term_program) or term_program_is_vscode(
         windows_term_program_value
     )
 
 
-def windows_term_program(env: dict[str, str] | None = None) -> str | None:
+def windows_term_program(env: Optional[Dict[str, str]] = None) -> Optional[str]:
     env = os.environ if env is None else env
     return WINDOWS_TERM_PROGRAM if WINDOWS_TERM_PROGRAM is not None else env.get("TERM_PROGRAM")
 
 
-def read_windows_term_program(output: str | bytes | None = None) -> str | None:
+def read_windows_term_program(output: Optional[Any] = None) -> Optional[str]:
     if output is None:
         return None
     text = output.decode("utf-8", errors="replace") if isinstance(output, bytes) else output
     for line in text.splitlines():
         value = line.rstrip("\r")
         if value.startswith("TERM_PROGRAM="):
-            found = value.removeprefix("TERM_PROGRAM=")
+            found = value[len("TERM_PROGRAM="):]
             return found if found.strip() else None
     return None
 
 
-def running_in_vscode_terminal(env: dict[str, str] | None = None) -> bool:
+def running_in_vscode_terminal(env: Optional[Dict[str, str]] = None) -> bool:
     env = os.environ if env is None else env
     return vscode_terminal_detected(env.get("TERM_PROGRAM"), windows_term_program(env))
 
 
-def keyboard_enhancement_disabled(env: dict[str, str] | None = None) -> bool:
+def keyboard_enhancement_disabled(env: Optional[Dict[str, str]] = None) -> bool:
     env = os.environ if env is None else env
     is_wsl = running_in_wsl(env)
     return keyboard_enhancement_disabled_for(
@@ -137,23 +133,23 @@ def keyboard_enhancement_disabled(env: dict[str, str] | None = None) -> bool:
     )
 
 
-def tmux_session_detected(tmux: str | None, tmux_pane: str | None) -> bool:
+def tmux_session_detected(tmux: Optional[str], tmux_pane: Optional[str]) -> bool:
     return tmux is not None or tmux_pane is not None
 
 
-def running_in_tmux_session(env: dict[str, str] | None = None) -> bool:
+def running_in_tmux_session(env: Optional[Dict[str, str]] = None) -> bool:
     env = os.environ if env is None else env
     return tmux_session_detected(env.get("TMUX"), env.get("TMUX_PANE"))
 
 
 def tmux_should_enable_modify_other_keys_for(
     running_in_tmux_session_value: bool,
-    extended_keys_format: str | None,
+    extended_keys_format: Optional[str],
 ) -> bool:
     return bool(running_in_tmux_session_value and extended_keys_format == "csi-u")
 
 
-def read_tmux_extended_keys_format(output: str | bytes | None = None) -> str | None:
+def read_tmux_extended_keys_format(output: Optional[Any] = None) -> Optional[str]:
     if output is None:
         return None
     text = output.decode("utf-8", errors="replace") if isinstance(output, bytes) else output
@@ -162,8 +158,8 @@ def read_tmux_extended_keys_format(output: str | bytes | None = None) -> str | N
 
 
 def tmux_should_enable_modify_other_keys(
-    env: dict[str, str] | None = None,
-    extended_keys_format: str | None = None,
+    env: Optional[Dict[str, str]] = None,
+    extended_keys_format: Optional[str] = None,
 ) -> bool:
     return tmux_should_enable_modify_other_keys_for(
         running_in_tmux_session(env),
@@ -171,11 +167,11 @@ def tmux_should_enable_modify_other_keys(
     )
 
 
-def ansi_for(command: AnsiCommand) -> str:
+def ansi_for(command: Any) -> str:
     return command.write_ansi()
 
 
-def write_ansi(command: AnsiCommand) -> str:
+def write_ansi(command: Any) -> str:
     return command.write_ansi()
 
 
@@ -193,9 +189,9 @@ def is_ansi_code_supported(command: Any) -> bool:
 
 
 def enable_keyboard_enhancement(
-    env: dict[str, str] | None = None,
-    extended_keys_format: str | None = None,
-) -> list[str]:
+    env: Optional[Dict[str, str]] = None,
+    extended_keys_format: Optional[str] = None,
+) -> List[str]:
     if keyboard_enhancement_disabled(env):
         return []
     commands = [ansi_for(DisableModifyOtherKeys()), "PushKeyboardEnhancementFlags"]
@@ -204,11 +200,11 @@ def enable_keyboard_enhancement(
     return commands
 
 
-def restore_keyboard_enhancement_stack() -> list[str]:
+def restore_keyboard_enhancement_stack() -> List[str]:
     return ["PopKeyboardEnhancementFlags", ansi_for(DisableModifyOtherKeys())]
 
 
-def reset_keyboard_reporting_after_exit() -> list[str]:
+def reset_keyboard_reporting_after_exit() -> List[str]:
     return [
         "PopKeyboardEnhancementFlags",
         ansi_for(ResetKeyboardEnhancementFlags()),

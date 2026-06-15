@@ -12,7 +12,12 @@ from typing import Any, Dict, Optional, Union
 
 from ._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="session_log", source="codex/codex-rs/tui/src/session_log.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="session_log",
+    source="codex/codex-rs/tui/src/session_log.rs",
+    status="complete",
+)
 
 
 @dataclass

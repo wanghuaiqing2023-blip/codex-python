@@ -11,11 +11,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple, Union
 
 from ._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="debug_config", source="codex/codex-rs/tui/src/debug_config.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="debug_config",
+    source="codex/codex-rs/tui/src/debug_config.rs",
+    status="complete",
+)
 
 
 class ConfigLayerSourceKind(str, Enum):
@@ -31,33 +36,33 @@ class ConfigLayerSourceKind(str, Enum):
 @dataclass(frozen=True)
 class ConfigLayerSource:
     kind: ConfigLayerSourceKind
-    file: str | None = None
-    dot_codex_folder: str | None = None
-    domain: str | None = None
-    key: str | None = None
+    file: Optional[str] = None
+    dot_codex_folder: Optional[str] = None
+    domain: Optional[str] = None
+    key: Optional[str] = None
 
 
 @dataclass(frozen=True)
 class ConfigLayerEntry:
     name: ConfigLayerSource
     config: Any = field(default_factory=dict)
-    disabled_reason: str | None = None
-    raw_toml_text: str | None = None
+    disabled_reason: Optional[str] = None
+    raw_toml_text: Optional[str] = None
 
     def is_disabled(self) -> bool:
         return self.disabled_reason is not None
 
-    def raw_toml(self) -> str | None:
+    def raw_toml(self) -> Optional[str]:
         return self.raw_toml_text
 
 
 @dataclass(frozen=True)
 class ConfigLayerStack:
-    layers: tuple[ConfigLayerEntry, ...] = ()
+    layers: Tuple[ConfigLayerEntry, ...] = ()
     requirements: Any = field(default_factory=dict)
     requirements_toml: Any = field(default_factory=dict)
 
-    def get_layers(self, ordering: str = "lowest_precedence_first", include_disabled: bool = True) -> list[ConfigLayerEntry]:
+    def get_layers(self, ordering: str = "lowest_precedence_first", include_disabled: bool = True) -> List[ConfigLayerEntry]:
         layers = list(self.layers)
         if not include_disabled:
             layers = [layer for layer in layers if not layer.is_disabled()]
@@ -68,7 +73,7 @@ class ConfigLayerStack:
 
 @dataclass(frozen=True)
 class PlainHistoryCell:
-    lines: tuple[str, ...]
+    lines: Tuple[str, ...]
 
     @classmethod
     def new(cls, lines: Iterable[str]) -> "PlainHistoryCell":
@@ -90,7 +95,7 @@ def _as_bool_string(value: Any) -> str:
     return str(value)
 
 
-def new_debug_config_output(config: Any, session_network_proxy: Any | None = None) -> PlainHistoryCell:
+def new_debug_config_output(config: Any, session_network_proxy: Any = None) -> PlainHistoryCell:
     stack = _get(config, "config_layer_stack", config)
     lines = render_debug_config_lines(stack)
 
@@ -118,7 +123,7 @@ def session_all_proxy_url(http_addr: str, socks_addr: str, socks_enabled: bool) 
     return f"http://{http_addr}"
 
 
-def render_debug_config_lines(stack: ConfigLayerStack | Any) -> list[str]:
+def render_debug_config_lines(stack: Any) -> List[str]:
     lines = ["/debug-config", "", "Config layer stack (lowest precedence first):"]
     layers = _call_or_default(stack, "get_layers", [])
     if not layers:
@@ -156,8 +161,8 @@ def _call_or_attr(obj: Any, name: str, default: Any) -> Any:
     return member() if callable(member) else _get(obj, name, default)
 
 
-def _render_requirement_lines(requirements: Any, requirements_toml: Any) -> list[str]:
-    rows: list[str] = []
+def _render_requirement_lines(requirements: Any, requirements_toml: Any) -> List[str]:
+    rows: List[str] = []
     specs = [
         ("allowed_approval_policies", "approval_policy"),
         ("allowed_approvals_reviewers", "approvals_reviewer"),
@@ -243,7 +248,7 @@ def _source_for(requirements: Any, key: str) -> Any:
     return _get(item, "source", item if key.endswith("_source") else None)
 
 
-def render_non_file_layer_details(layer: ConfigLayerEntry | Any) -> list[str]:
+def render_non_file_layer_details(layer: Any) -> List[str]:
     source = _get(layer, "name")
     kind = _source_kind(source)
     if kind is ConfigLayerSourceKind.SESSION_FLAGS:
@@ -253,8 +258,8 @@ def render_non_file_layer_details(layer: ConfigLayerEntry | Any) -> list[str]:
     return []
 
 
-def render_session_flag_details(config: Any) -> list[str]:
-    pairs: list[tuple[str, str]] = []
+def render_session_flag_details(config: Any) -> List[str]:
+    pairs: List[Tuple[str, str]] = []
     flatten_toml_key_values(config, None, pairs)
     if not pairs:
         return ["     - <none>"]
@@ -278,7 +283,7 @@ def format_managed_hooks_requirements(hooks: Any) -> str:
     return join_or_empty(parts)
 
 
-def render_mdm_layer_details(layer: ConfigLayerEntry | Any) -> list[str]:
+def render_mdm_layer_details(layer: Any) -> List[str]:
     raw = _call_or_attr(layer, "raw_toml", None)
     value = raw if raw is not None else format_toml_value(_get(layer, "config", {}))
     if value == "":
@@ -288,7 +293,7 @@ def render_mdm_layer_details(layer: ConfigLayerEntry | Any) -> list[str]:
     return [f"     MDM value: {value}"]
 
 
-def flatten_toml_key_values(value: Any, prefix: str | None, out: list[tuple[str, str]]) -> None:
+def flatten_toml_key_values(value: Any, prefix: Optional[str], out: List[Tuple[str, str]]) -> None:
     if isinstance(value, Mapping):
         for key in sorted(value):
             next_prefix = f"{prefix}.{key}" if prefix else str(key)
@@ -310,7 +315,7 @@ def format_toml_value(value: Any) -> str:
     return str(value)
 
 
-def requirement_line(name: str, value: str, source: Any | None) -> str:
+def requirement_line(name: str, value: str, source: Any = None) -> str:
     rendered_source = format_requirement_source(source) if source is not None else "<unspecified>"
     return f"  - {name}: {value} (source: {rendered_source})"
 
@@ -320,7 +325,7 @@ def join_or_empty(values: Iterable[str]) -> str:
     return "<empty>" if not values else ", ".join(values)
 
 
-def normalize_allowed_web_search_modes(modes: list[Any]) -> list[Any]:
+def normalize_allowed_web_search_modes(modes: List[Any]) -> List[Any]:
     if not modes:
         return ["disabled"]
     if "disabled" not in [str(mode) for mode in modes]:
@@ -347,7 +352,7 @@ def format_config_layer_source(source: Any) -> str:
     return str(source)
 
 
-def _source_kind(source: Any) -> ConfigLayerSourceKind | None:
+def _source_kind(source: Any) -> Optional[ConfigLayerSourceKind]:
     kind = _get(source, "kind", source)
     if isinstance(kind, ConfigLayerSourceKind):
         return kind
@@ -432,7 +437,7 @@ def format_residency_requirement(requirement: Any) -> str:
 
 
 def format_network_constraints(network: Any) -> str:
-    parts: list[str] = []
+    parts: List[str] = []
     for key in [
         "enabled",
         "http_port",
@@ -474,7 +479,7 @@ def format_network_unix_socket_permission(permission: Any) -> str:
     return "allow" if str(permission).lower().endswith("allow") else "none"
 
 
-def empty_toml_table() -> dict[str, Any]:
+def empty_toml_table() -> Dict[str, Any]:
     return {}
 
 

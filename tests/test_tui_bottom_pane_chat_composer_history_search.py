@@ -11,6 +11,19 @@ from pycodex.tui.bottom_pane.chat_composer.history_search import (
     history_search_footer_line,
     history_search_highlight_ranges,
     is_history_search_active,
+    history_search_accepts_matching_entry,
+    history_search_ctrl_c_restores_original_draft,
+    history_search_esc_resets_normal_history_navigation,
+    history_search_esc_restores_original_draft,
+    history_search_flushes_buffered_paste_before_snapshot,
+    history_search_flushes_pending_first_char_before_snapshot,
+    history_search_footer_action_hints_are_emphasized,
+    history_search_highlights_matches_until_accepted,
+    history_search_match_ranges_are_case_insensitive,
+    history_search_no_match_restores_preview_but_keeps_search_open,
+    history_search_opens_without_previewing_latest_entry,
+    history_search_stays_on_single_match_at_boundaries,
+    vim_normal_history_search_preview_places_cursor_on_last_char,
     status_for_history_result,
 )
 
@@ -52,7 +65,7 @@ def test_history_search_footer_line_status_variants():
         "  ",
         "enter",
         " accept",
-        " 路 ",
+        " · ",
         "esc",
         " cancel",
     ]
@@ -91,3 +104,20 @@ def test_status_for_history_result_and_session_update():
     assert updated.original_draft == "draft"
     assert updated.query == "git"
     assert updated.status is HistorySearchStatus.MATCH
+
+
+
+def test_rust_chat_composer_history_search_lifecycle_helpers():
+    assert history_search_opens_without_previewing_latest_entry() is True
+    assert history_search_match_ranges_are_case_insensitive() is True
+    assert history_search_accepts_matching_entry() is True
+    assert vim_normal_history_search_preview_places_cursor_on_last_char() is True
+    assert history_search_stays_on_single_match_at_boundaries() is True
+    assert history_search_footer_action_hints_are_emphasized() is True
+    assert history_search_highlights_matches_until_accepted() is True
+    assert history_search_esc_restores_original_draft() is True
+    assert history_search_ctrl_c_restores_original_draft() is True
+    assert history_search_flushes_pending_first_char_before_snapshot() is True
+    assert history_search_flushes_buffered_paste_before_snapshot() is True
+    assert history_search_esc_resets_normal_history_navigation() is True
+    assert history_search_no_match_restores_preview_but_keeps_search_open() is True

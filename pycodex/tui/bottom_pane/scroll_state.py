@@ -1,4 +1,4 @@
-"""Scroll/selection state for vertical list menus.
+﻿"""Scroll/selection state for vertical list menus.
 
 Port of Rust ``codex-tui::bottom_pane::scroll_state``.
 """
@@ -6,6 +6,7 @@ Port of Rust ``codex-tui::bottom_pane::scroll_state``.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 from .._porting import RustTuiModule
 
@@ -13,6 +14,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="bottom_pane::scroll_state",
     source="codex/codex-rs/tui/src/bottom_pane/scroll_state.rs",
+    status="complete",
 )
 
 
@@ -20,7 +22,7 @@ RUST_MODULE = RustTuiModule(
 class ScrollState:
     """Generic scroll/selection state for a vertical list menu."""
 
-    selected_idx: int | None = None
+    selected_idx: Optional[int] = None
     scroll_top: int = 0
 
     @classmethod
@@ -112,3 +114,4 @@ __all__ = [
     "RUST_MODULE",
     "ScrollState",
 ]
+

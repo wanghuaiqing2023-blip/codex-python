@@ -34,6 +34,30 @@ def test_lagged_and_disconnected_event_plans() -> None:
     assert disconnected.message == "lost"
 
 
+def test_top_level_app_server_event_delegates_notification_and_request() -> None:
+    """Rust codex-tui app::app_server_events::handle_app_server_event delegation branches."""
+
+    notification = plan_app_server_event(
+        {
+            "kind": "ServerNotification",
+            "notification": {"kind": "ThreadUpdated", "thread_id": "thread-b"},
+        },
+        primary_thread_id="thread-a",
+    )
+    request = plan_app_server_event(
+        {
+            "kind": "ServerRequest",
+            "request": {"kind": "Approval", "thread_id": "thread-a"},
+        },
+        primary_thread_id="thread-a",
+    )
+
+    assert notification.actions == ("enqueue_thread_notification",)
+    assert notification.thread_id == "thread-b"
+    assert request.actions == ("enqueue_primary_thread_request",)
+    assert request.thread_id == "thread-a"
+
+
 def test_server_request_resolved_dismisses_pending_request_when_found() -> None:
     pending = PendingRequests(resolved={"req-1": "approval"})
 
@@ -47,6 +71,9 @@ def test_server_request_resolved_dismisses_pending_request_when_found() -> None:
 
 
 def test_special_notification_branches_short_circuit_global_routing() -> None:
+    assert plan_server_notification_event({"kind": "McpServerStatusUpdated"}).actions == (
+        "refresh_mcp_expected_servers",
+    )
     assert plan_server_notification_event({"kind": "AccountRateLimitsUpdated"}).actions == (
         "update_rate_limit_snapshot",
     )
@@ -75,6 +102,13 @@ def test_thread_notification_routes_to_primary_or_named_thread() -> None:
     assert other.actions == ("enqueue_thread_notification",)
     assert other.thread_id == "thread-b"
     assert global_plan.actions == ("handle_global_server_notification",)
+
+
+def test_invalid_thread_notification_is_ignored_with_warning_plan() -> None:
+    invalid = plan_server_notification_event({"kind": "ThreadUpdated", "thread_id": ""})
+
+    assert invalid.actions == ("warn_invalid_thread_id",)
+    assert invalid.thread_id == ""
 
 
 def test_server_request_unsupported_threadless_and_thread_routing() -> None:

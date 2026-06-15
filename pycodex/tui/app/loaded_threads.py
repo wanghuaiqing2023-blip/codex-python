@@ -13,12 +13,10 @@ from .._porting import RustTuiModule
 
 
 RUST_MODULE = RustTuiModule(
-    path="app/loaded_threads.rs",
+    crate="codex-tui",
+    module="app::loaded_threads",
+    source="codex/codex-rs/tui/src/app/loaded_threads.rs",
     status="complete",
-    notes=(
-        "Ports the pure subagent spawn-tree discovery helper. Python uses "
-        "JSON-like semantic session-source data instead of Rust SessionSource."
-    ),
 )
 
 

@@ -12,19 +12,26 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Dict, Optional, Union
+from urllib.request import Request, urlopen
 
 from ._porting import RustTuiModule
-from .update_action import UpdateAction
+from . import npm_registry
+from .update_action import UpdateAction, get_update_action
 from .update_versions import extract_version_from_latest_tag, is_newer, is_source_build_version
 from .version import CODEX_CLI_VERSION
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="updates", source="codex/codex-rs/tui/src/updates.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="updates",
+    source="codex/codex-rs/tui/src/updates.rs",
+    status="complete",
+)
 
 VERSION_FILENAME = "version.json"
 HOMEBREW_CASK_API_URL = "https://formulae.brew.sh/api/cask/codex.json"
 LATEST_RELEASE_URL = "https://api.github.com/repos/openai/codex/releases/latest"
-NPM_PACKAGE_URL = "https://registry.npmjs.org/@openai/codex"
+NPM_PACKAGE_URL = npm_registry.PACKAGE_URL
 STALE_AFTER = timedelta(hours=20)
 
 
@@ -32,10 +39,10 @@ STALE_AFTER = timedelta(hours=20)
 class VersionInfo:
     latest_version: str
     last_checked_at: datetime
-    dismissed_version: str | None = None
+    dismissed_version: Optional[str] = None
 
     @classmethod
-    def from_mapping(cls, mapping: dict[str, Any]) -> "VersionInfo":
+    def from_mapping(cls, mapping: Dict[str, Any]) -> "VersionInfo":
         latest = mapping.get("latest_version")
         if not isinstance(latest, str):
             raise TypeError("latest_version must be a string")
@@ -45,8 +52,8 @@ class VersionInfo:
             raise TypeError("dismissed_version must be a string or null")
         return cls(latest_version=latest, last_checked_at=checked, dismissed_version=dismissed)
 
-    def to_mapping(self) -> dict[str, Any]:
-        data: dict[str, Any] = {
+    def to_mapping(self) -> Dict[str, Any]:
+        data: Dict[str, Any] = {
             "latest_version": self.latest_version,
             "last_checked_at": _format_datetime(self.last_checked_at),
         }
@@ -65,18 +72,18 @@ class HomebrewCaskInfo:
     version: str
 
 
-JsonGetter = Callable[[str], dict[str, Any] | Awaitable[dict[str, Any]]]
-BackgroundScheduler = Callable[[Path, UpdateAction | None], Any]
+JsonGetter = Callable[[str], Union[Dict[str, Any], Awaitable[Dict[str, Any]]]]
+BackgroundScheduler = Callable[[Path, Optional[UpdateAction]], Any]
 
 
 def get_upgrade_version(
     config: Any,
     *,
-    now: datetime | None = None,
+    now: Optional[datetime] = None,
     current_version: str = CODEX_CLI_VERSION,
-    action: UpdateAction | None = None,
-    background_scheduler: BackgroundScheduler | None = None,
-) -> str | None:
+    action: Optional[UpdateAction] = None,
+    background_scheduler: Optional[BackgroundScheduler] = None,
+) -> Optional[str]:
     if not _check_for_update_on_startup(config) or is_source_build_version(current_version):
         return None
 
@@ -88,8 +95,12 @@ def get_upgrade_version(
         info = None
 
     if info is None or info.last_checked_at < now - STALE_AFTER:
+        if action is None:
+            action = get_update_action()
         if background_scheduler is not None:
             background_scheduler(version_file, action)
+        else:
+            _schedule_background_update(version_file, action)
 
     if info is not None and is_newer(info.latest_version, current_version) is True:
         return info.latest_version
@@ -100,18 +111,18 @@ def version_filepath(config: Any) -> Path:
     return _codex_home(config) / VERSION_FILENAME
 
 
-def read_version_info(version_file: str | Path) -> VersionInfo:
+def read_version_info(version_file: Union[str, Path]) -> VersionInfo:
     contents = Path(version_file).read_text(encoding="utf-8")
     return VersionInfo.from_mapping(json.loads(contents))
 
 
 async def check_for_update(
-    version_file: str | Path,
-    action: UpdateAction | None,
+    version_file: Union[str, Path],
+    action: Optional[UpdateAction],
     *,
-    json_getter: JsonGetter | None = None,
-    ensure_version_ready: Callable[[dict[str, Any], str], Any] | None = None,
-    now: datetime | None = None,
+    json_getter: Optional[JsonGetter] = None,
+    ensure_version_ready: Optional[Callable[[Dict[str, Any], str], Any]] = None,
+    now: Optional[datetime] = None,
 ) -> None:
     latest_version = await fetch_latest_version_for_action(
         action,
@@ -132,10 +143,10 @@ async def check_for_update(
 
 
 async def fetch_latest_version_for_action(
-    action: UpdateAction | None,
+    action: Optional[UpdateAction],
     *,
-    json_getter: JsonGetter | None = None,
-    ensure_version_ready: Callable[[dict[str, Any], str], Any] | None = None,
+    json_getter: Optional[JsonGetter] = None,
+    ensure_version_ready: Optional[Callable[[Dict[str, Any], str], Any]] = None,
 ) -> str:
     if action is UpdateAction.BREW_UPGRADE:
         data = await _get_json(json_getter, HOMEBREW_CASK_API_URL)
@@ -148,7 +159,7 @@ async def fetch_latest_version_for_action(
         latest_version = await fetch_latest_github_release_version(json_getter=json_getter)
         package_info = await _get_json(json_getter, NPM_PACKAGE_URL)
         if ensure_version_ready is None:
-            raise NotImplementedError("npm_registry::ensure_version_ready is not wired for pycodex.tui.updates")
+            ensure_version_ready = npm_registry.ensure_version_ready
         result = ensure_version_ready(package_info, latest_version)
         if hasattr(result, "__await__"):
             await result
@@ -157,7 +168,7 @@ async def fetch_latest_version_for_action(
     return await fetch_latest_github_release_version(json_getter=json_getter)
 
 
-async def fetch_latest_github_release_version(*, json_getter: JsonGetter | None = None) -> str:
+async def fetch_latest_github_release_version(*, json_getter: Optional[JsonGetter] = None) -> str:
     data = await _get_json(json_getter, LATEST_RELEASE_URL)
     tag_name = data.get("tag_name")
     if not isinstance(tag_name, str):
@@ -168,11 +179,11 @@ async def fetch_latest_github_release_version(*, json_getter: JsonGetter | None 
 def get_upgrade_version_for_popup(
     config: Any,
     *,
-    now: datetime | None = None,
+    now: Optional[datetime] = None,
     current_version: str = CODEX_CLI_VERSION,
-    action: UpdateAction | None = None,
-    background_scheduler: BackgroundScheduler | None = None,
-) -> str | None:
+    action: Optional[UpdateAction] = None,
+    background_scheduler: Optional[BackgroundScheduler] = None,
+) -> Optional[str]:
     if not _check_for_update_on_startup(config) or is_source_build_version(current_version):
         return None
 
@@ -211,15 +222,32 @@ async def dismiss_version(config: Any, version: str) -> None:
     version_file.write_text(json.dumps(updated.to_mapping(), separators=(",", ":")) + "\n", encoding="utf-8")
 
 
-async def _get_json(json_getter: JsonGetter | None, url: str) -> dict[str, Any]:
+async def _get_json(json_getter: Optional[JsonGetter], url: str) -> Dict[str, Any]:
     if json_getter is None:
-        raise NotImplementedError("remote update HTTP client is not wired for pycodex.tui.updates")
+        return _read_json_url(url)
     value = json_getter(url)
     if hasattr(value, "__await__"):
         value = await value
     if not isinstance(value, dict):
         raise TypeError("json_getter must return a JSON object mapping")
     return value
+
+
+def _read_json_url(url: str) -> Dict[str, Any]:
+    request = Request(url, headers={"User-Agent": "pycodex-tui-update-check"})
+    with urlopen(request, timeout=10) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    if not isinstance(data, dict):
+        raise TypeError("remote update endpoint must return a JSON object mapping")
+    return data
+
+
+def _schedule_background_update(version_file: Path, action: Optional[UpdateAction]) -> None:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(check_for_update(version_file, action))
 
 
 def _check_for_update_on_startup(config: Any) -> bool:
@@ -251,7 +279,7 @@ def _format_datetime(value: datetime) -> str:
     return _utc(value).isoformat().replace("+00:00", "Z")
 
 
-def _utc(value: datetime | None) -> datetime:
+def _utc(value: Optional[datetime]) -> datetime:
     if value is None:
         return datetime.now(timezone.utc)
     if value.tzinfo is None:

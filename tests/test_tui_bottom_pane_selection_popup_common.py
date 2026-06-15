@@ -1,6 +1,8 @@
-"""Parity tests for Rust ``codex-tui::bottom_pane::selection_popup_common``."""
+﻿"""Parity tests for Rust ``codex-tui::bottom_pane::selection_popup_common``."""
 
 from pycodex.tui.bottom_pane.scroll_state import ScrollState
+from typing import List
+
 from pycodex.tui.bottom_pane.selection_popup_common import (
     ColumnWidthConfig,
     ColumnWidthMode,
@@ -39,7 +41,7 @@ def test_selected_rows_use_the_shared_accent_style_semantics() -> None:
     # Rust test: selected_rows_use_the_shared_accent_style.
     rows = [GenericDisplayRow(name="selected")]
     state = ScrollState(selected_idx=0)
-    rendered: list[Line] = []
+    rendered: List[Line] = []
 
     render_rows(Rect(0, 0, 16, 1), rendered, rows, state, max_results=1, empty_message="no rows")
 
@@ -80,7 +82,7 @@ def test_should_wrap_name_in_column_and_render_single_line_empty_placeholder() -
     assert should_wrap_name_in_column(GenericDisplayRow(name="option", description="desc", wrap_indent=2)) is True
     assert should_wrap_name_in_column(GenericDisplayRow(name="option", description="desc", wrap_indent=2, match_indices=[0])) is False
 
-    rendered: list[Line] = []
+    rendered: List[Line] = []
     assert render_rows_single_line(Rect(0, 0, 10, 1), rendered, [], ScrollState(), 5, "empty") == 1
     assert rendered == [Line.from_text("empty", "dim+italic")]
 
@@ -89,9 +91,21 @@ def test_menu_surface_render_empty_area_is_noop_and_measure_empty_rows_placehold
     # Rust source: render_menu_surface returns the original empty area without
     # painting, and measure_rows_height reserves one placeholder row for empty
     # row sets.
-    rendered: list[object] = []
+    rendered: List[object] = []
     empty = Rect(0, 0, 0, 5)
 
     assert render_menu_surface(empty, rendered) == empty
     assert rendered == []
     assert measure_rows_height([], ScrollState(), max_results=5, width=10) == 1
+
+
+def test_terminal_cell_width_truncation_keeps_wide_name_within_description_column() -> None:
+    # Rust source: build_full_line truncates by unicode_width terminal cells,
+    # not by Python codepoint count.
+    row = GenericDisplayRow(name="模型alpha", description="desc")
+
+    line = build_full_line(row, desc_col=6)
+
+    assert line.text.startswith("模型…")
+    assert "alpha" not in line.text
+

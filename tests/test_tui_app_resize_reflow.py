@@ -3,11 +3,19 @@
     HistoryLineWrapPolicy,
     HyperlinkLine,
     InitialHistoryReplayBuffer,
+    ResizeReflowPlan,
     ResizeReflowState,
+    begin_initial_history_replay_buffer_plan,
+    begin_thread_switch_history_replay_buffer_plan,
     buffer_initial_history_replay_display_lines,
     display_lines_for_history_insert,
+    finish_initial_history_replay_buffer_plan,
+    handle_draw_size_change_plan,
+    insert_history_cell_lines_plan,
+    maybe_run_resize_reflow,
     history_line_wrap_policy,
     render_transcript_lines_for_reflow,
+    reflow_transcript_now,
     reset_history_emission_state,
     should_mark_reflow_as_stream_time,
     trailing_run_start,
@@ -116,3 +124,44 @@ def test_reset_history_emission_state_clears_flag_and_deferred_lines():
 
     assert state.has_emitted_history_lines is False
     assert deferred == []
+
+
+def test_initial_replay_and_insert_history_runtime_paths_are_semantic_plans():
+    state = ResizeReflowState(raw_output_mode=True)
+    assert begin_initial_history_replay_buffer_plan(True) == ResizeReflowPlan(
+        action="begin_initial_history_replay_buffer",
+        updates=(("initial_history_replay_buffer", True),),
+    )
+    assert begin_thread_switch_history_replay_buffer_plan(True, 10).action == "begin_thread_switch_history_replay_buffer"
+
+    insert = insert_history_cell_lines_plan(state, HistoryCell(["hello"]), 80)
+    assert insert.action == "insert_history_lines"
+    assert insert.wrap_policy is HistoryLineWrapPolicy.Terminal
+
+    buffer = InitialHistoryReplayBuffer()
+    buffer_initial_history_replay_display_lines(buffer, ["tail"], 10)
+    flush = finish_initial_history_replay_buffer_plan(state, buffer, 80)
+    assert flush.action == "flush_initial_history_replay_buffer"
+    assert flush.lines == (HyperlinkLine("tail"),)
+
+
+def test_resize_scheduling_and_reflow_runtime_paths_are_semantic_plans():
+    state = ResizeReflowState(transcript_cells=[HistoryCell(["one"]), HistoryCell(["two"])])
+
+    scheduled = handle_draw_size_change_plan(state, width=100, height=24, last_width=80, last_height=24, stream_time=True)
+    assert scheduled.action == "schedule_resize_reflow"
+    assert scheduled.schedule_frame
+    assert ("transcript_reflow.stream_time", True) in scheduled.updates
+
+    reflow = reflow_transcript_now(state, 100)
+    assert reflow.action == "reflow_transcript_now"
+    assert reflow.wrap_policy is HistoryLineWrapPolicy.PreWrap
+    assert ("clear_terminal_for_resize_replay", True) in reflow.updates
+
+    run = maybe_run_resize_reflow(state, 100, pending_due=True)
+    assert run.action == "run_resize_reflow"
+    assert run.schedule_frame_in == "TRANSCRIPT_REFLOW_DEBOUNCE"
+
+    deferred = maybe_run_resize_reflow(state, 100, pending_due=False)
+    assert deferred.action == "defer_resize_reflow"
+    assert deferred.schedule_frame_in == "pending_until"

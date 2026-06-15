@@ -76,6 +76,21 @@ def test_pause_resume_finish_state_transitions_are_idempotent() -> None:
     assert not state.saved_stderr
 
 
+def test_pause_resume_without_owner_are_noops_and_keep_stderr_visible() -> None:
+    # Rust pause/resume return Ok(()) and do nothing when no guard owns stderr.
+    state = StderrState()
+
+    pause(state)
+    write_stderr("visible before owner\n", state)
+    resume(state)
+    write_stderr("still visible\n", state)
+
+    assert not state.owner_active
+    assert not state.saved_stderr
+    assert state.captured_output == ["visible before owner\n", "still visible\n"]
+    assert state.hidden_output == []
+
+
 def test_suppress_and_restore_locked_are_idempotent() -> None:
     state = StderrState()
 
@@ -108,3 +123,18 @@ def test_guard_drop_finishes_active_suppression_once() -> None:
     assert not state.saved_stderr
     assert state.hidden_output == ["hidden"]
     assert state.captured_output == ["visible"]
+
+
+def test_context_manager_drop_restores_visible_stderr_after_scope() -> None:
+    # Rust Drop for TerminalStderrGuard calls finish once when active.
+    state = StderrState()
+
+    with TerminalStderrGuard.install_suppression(state=state):
+        write_stderr("hidden in scope\n", state)
+
+    write_stderr("visible after scope\n", state)
+
+    assert not state.owner_active
+    assert not state.saved_stderr
+    assert state.hidden_output == ["hidden in scope\n"]
+    assert state.captured_output == ["visible after scope\n"]

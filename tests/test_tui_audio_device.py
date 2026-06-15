@@ -7,12 +7,14 @@ from pycodex.tui.audio_device import (
     SupportedStreamConfig,
     SupportedStreamConfigRange,
     configured_name,
+    devices,
     list_realtime_audio_device_names,
     missing_device_error,
     preferred_input_config,
     preferred_input_sample_rate,
     select_configured_input_device_and_config,
     select_configured_output_device_and_config,
+    set_audio_host_factory,
 )
 
 
@@ -28,6 +30,22 @@ def test_list_realtime_audio_device_names_deduplicates_and_skips_name_errors():
     )
 
     assert list_realtime_audio_device_names(RealtimeAudioDeviceKind.MICROPHONE, host=host) == ["Mic A", "Mic B"]
+
+
+def test_list_realtime_audio_device_names_uses_output_devices_for_speakers():
+    host = AudioHost(
+        output=[
+            AudioDevice("Speaker A"),
+            AudioDevice("Speaker A"),
+            AudioDevice("broken", name_error="no name"),
+            AudioDevice("Speaker B"),
+        ],
+    )
+
+    assert list_realtime_audio_device_names(RealtimeAudioDeviceKind.SPEAKER, host=host) == [
+        "Speaker A",
+        "Speaker B",
+    ]
 
 
 def test_preferred_input_sample_rate_clamps_to_supported_range():
@@ -60,6 +78,15 @@ def test_preferred_input_config_falls_back_to_default_when_no_supported_formats(
     )
 
     assert preferred_input_config(device) == fallback
+
+
+def test_preferred_input_config_reports_input_config_enumeration_error():
+    device = AudioDevice("Mic", input_configs_error="boom")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        preferred_input_config(device)
+
+    assert str(excinfo.value) == "failed to enumerate input audio configs: boom"
 
 
 def test_select_configured_device_prefers_matching_name_then_default():
@@ -112,6 +139,25 @@ def test_select_configured_device_reports_missing_default_without_configured_nam
     assert str(excinfo.value) == "no output audio device available"
 
 
+def test_devices_wraps_host_enumeration_errors_and_configured_lookup_is_best_effort():
+    host = AudioHost(input_devices_error="host offline")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        devices(host, RealtimeAudioDeviceKind.MICROPHONE)
+
+    assert str(excinfo.value) == "failed to enumerate input audio devices: host offline"
+
+    with pytest.raises(RuntimeError) as missing:
+        select_configured_input_device_and_config(
+            {"realtime_audio": {"microphone": "Configured"}},
+            host=host,
+        )
+
+    assert str(missing.value) == (
+        "configured microphone `Configured` was unavailable and no default input audio device was found"
+    )
+
+
 def test_select_configured_output_device_reports_default_config_error():
     default = AudioDevice("Default")
     host = AudioHost(output=[default], default_output=default)
@@ -143,3 +189,12 @@ def test_missing_device_error_messages_match_rust_text():
 def test_real_audio_enumeration_requires_injected_host():
     with pytest.raises(NotImplementedError):
         list_realtime_audio_device_names(RealtimeAudioDeviceKind.MICROPHONE)
+
+
+def test_runtime_host_factory_models_cpal_default_host_boundary():
+    host = AudioHost(input=[AudioDevice("Factory Mic")])
+    set_audio_host_factory(lambda: host)
+    try:
+        assert list_realtime_audio_device_names(RealtimeAudioDeviceKind.MICROPHONE) == ["Factory Mic"]
+    finally:
+        set_audio_host_factory(None)

@@ -8,11 +8,16 @@ paste-burst heuristics and ratatui buffer rendering remain explicit boundaries.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any, Dict, Iterable, List, Optional, Tuple, FrozenSet
 
 from .._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="public_widgets::composer_input", source="codex/codex-rs/tui/src/public_widgets/composer_input.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="public_widgets::composer_input",
+    source="codex/codex-rs/tui/src/public_widgets/composer_input.rs",
+    status="complete",
+)
 
 RECOMMENDED_FLUSH_DELAY_SECONDS = 0.05
 
@@ -20,7 +25,7 @@ RECOMMENDED_FLUSH_DELAY_SECONDS = 0.05
 @dataclass(frozen=True)
 class ComposerAction:
     kind: str
-    text: str | None = None
+    text: Optional[str] = None
 
     @classmethod
     def submitted(cls, text: str) -> "ComposerAction":
@@ -37,8 +42,8 @@ class ComposerInput:
     placeholder: str = "Compose new task"
     enhanced_keys_supported: bool = True
     disable_paste_burst: bool = False
-    hint_items: tuple[tuple[str, str], ...] | None = None
-    _events: list[Any] = field(default_factory=list)
+    hint_items: Optional[Tuple[Tuple[str, str], ...]] = None
+    _events: List[Any] = field(default_factory=list)
     _paste_burst_active: bool = False
 
     @classmethod
@@ -91,7 +96,7 @@ class ComposerInput:
         footer = 1
         return max(1, line_count + footer)
 
-    def cursor_pos(self, area: Any) -> tuple[int, int] | None:
+    def cursor_pos(self, area: Any) -> Optional[Tuple[int, int]]:
         x, y, width, height = _rect_parts(area)
         if width <= 0 or height <= 0:
             return None
@@ -102,7 +107,7 @@ class ComposerInput:
             return None
         return (x + col, y + row)
 
-    def render_ref(self, area: Any, buf: Any | None = None) -> dict[str, Any]:
+    def render_ref(self, area: Any, buf: Optional[Any] = None) -> Dict[str, Any]:
         x, y, width, height = _rect_parts(area)
         visible_text = self.text if self.text else self.placeholder
         lines = visible_text.split("\n")[: max(height, 0)]
@@ -134,7 +139,7 @@ def default() -> ComposerInput:
     return ComposerInput.new()
 
 
-def _event_parts(key: Any) -> tuple[str, frozenset[str]]:
+def _event_parts(key: Any) -> Tuple[str, FrozenSet[str]]:
     if isinstance(key, dict):
         code = str(key.get("code", key.get("key", "")))
         modifiers = key.get("modifiers") or ()
@@ -149,7 +154,7 @@ def _event_parts(key: Any) -> tuple[str, frozenset[str]]:
     return code, normalized
 
 
-def _rect_parts(area: Any) -> tuple[int, int, int, int]:
+def _rect_parts(area: Any) -> Tuple[int, int, int, int]:
     if isinstance(area, dict):
         return (int(area.get("x", 0)), int(area.get("y", 0)), int(area.get("width", 0)), int(area.get("height", 0)))
     if isinstance(area, (tuple, list)) and len(area) >= 4:

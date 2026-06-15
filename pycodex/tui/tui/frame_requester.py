@@ -6,7 +6,7 @@ Rust counterpart: ``codex-rs/tui/src/tui/frame_requester.rs``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, List, Optional
 
 from .._porting import RustTuiModule
 from .frame_rate_limiter import MIN_FRAME_INTERVAL, FrameRateLimiter
@@ -16,7 +16,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="tui::frame_requester",
     source="codex/codex-rs/tui/src/tui/frame_requester.rs",
-    status="complete_slice",
+    status="complete",
 )
 
 
@@ -24,7 +24,7 @@ RUST_MODULE = RustTuiModule(
 class DrawChannel:
     """Semantic broadcast channel collecting draw notifications."""
 
-    notifications: list[None] = field(default_factory=list)
+    notifications: List[None] = field(default_factory=list)
 
     def send(self) -> None:
         self.notifications.append(None)
@@ -40,11 +40,11 @@ class FrameScheduler:
     draw_tx: DrawChannel = field(default_factory=DrawChannel)
     rate_limiter: FrameRateLimiter = field(default_factory=FrameRateLimiter)
     now: int = 0
-    next_deadline: int | None = None
+    next_deadline: Optional[int] = None
     closed: bool = False
 
     @classmethod
-    def new(cls, draw_tx: DrawChannel | None = None) -> "FrameScheduler":
+    def new(cls, draw_tx: Optional[DrawChannel] = None) -> "FrameScheduler":
         return cls(draw_tx=draw_tx if draw_tx is not None else DrawChannel())
 
     def request_at(self, draw_at: int) -> None:
@@ -86,7 +86,7 @@ class FrameRequester:
     scheduler: FrameScheduler = field(default_factory=FrameScheduler)
 
     @classmethod
-    def new(cls, draw_tx: DrawChannel | None = None) -> "FrameRequester":
+    def new(cls, draw_tx: Optional[DrawChannel] = None) -> "FrameRequester":
         return cls(FrameScheduler.new(draw_tx))
 
     def schedule_frame(self) -> None:

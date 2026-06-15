@@ -4,6 +4,7 @@ Rust source: ``codex/codex-rs/tui/src/render/renderable.rs``.
 """
 
 from dataclasses import dataclass
+from typing import Optional, Tuple
 
 from pycodex.tui.render.renderable import (
     Buffer,
@@ -14,6 +15,7 @@ from pycodex.tui.render.renderable import (
     Insets,
     ParagraphRenderable,
     Rect,
+    RenderableItem,
     RowRenderable,
     desired_height,
     from_,
@@ -31,7 +33,7 @@ from pycodex.tui.ratatui_bridge import Wrap
 class FakeRenderable:
     height: int
     name: str
-    cursor: tuple[int, int] | None = None
+    cursor: Optional[Tuple[int, int]] = None
     style: str = "FakeCursor"
 
     def render(self, area: Rect, buf: Buffer) -> None:
@@ -41,7 +43,7 @@ class FakeRenderable:
     def desired_height(self, width: int) -> int:
         return self.height
 
-    def cursor_pos(self, area: Rect) -> tuple[int, int] | None:
+    def cursor_pos(self, area: Rect) -> Optional[Tuple[int, int]]:
         return self.cursor
 
     def cursor_style(self, area: Rect) -> str:
@@ -54,6 +56,21 @@ def test_text_and_none_renderables_match_basic_trait_impls() -> None:
     buf = Buffer.empty(Rect.new(0, 0, 12, 4))
     from_("hello").render(Rect.new(1, 2, 10, 1), buf)
     assert buf.row_plain(2) == " hello      "
+
+
+def test_renderable_item_owned_and_borrowed_forward_trait_methods() -> None:
+    # Rust: RenderableItem dispatches render/desired_height/cursor methods to either variant.
+    child = FakeRenderable(2, "x", cursor=(3, 4), style="OwnedCursor")
+    owned = RenderableItem.Owned(child)
+    borrowed = RenderableItem.Borrowed(child)
+
+    for item in (owned, borrowed):
+        buf = Buffer.empty(Rect.new(0, 0, 4, 2))
+        item.render(Rect.new(0, 0, 4, 2), buf)
+        assert buf.row_plain(0) == "x   "
+        assert item.desired_height(4) == 2
+        assert item.cursor_pos(Rect.new(0, 0, 4, 2)) == (3, 4)
+        assert item.cursor_style(Rect.new(0, 0, 4, 2)) == "OwnedCursor"
 
 
 def test_bridge_span_line_text_and_paragraph_are_renderable_like_ratatui_types() -> None:
@@ -96,6 +113,16 @@ def test_column_renderable_stacks_children_and_forwards_cursor() -> None:
     assert column.cursor_style(Rect.new(0, 0, 10, 10)) == "Bar"
 
 
+def test_column_renderable_new_is_empty_and_push_appends_owned_children() -> None:
+    column = ColumnRenderable.new()
+    assert column.desired_height(10) == 0
+    assert column.cursor_pos(Rect.new(0, 0, 10, 1)) is None
+    assert column.cursor_style(Rect.new(0, 0, 10, 1)) == DEFAULT_CURSOR_STYLE
+
+    column.push(FakeRenderable(1, "p"))
+    assert column.desired_height(10) == 1
+
+
 def test_column_renderable_clips_children_to_visible_area() -> None:
     # Rust: ColumnRenderable::render intersects each child area with the parent area.
     column = ColumnRenderable.with_(
@@ -130,6 +157,18 @@ def test_flex_renderable_gives_rounding_remainder_to_last_flex_child() -> None:
         Rect.new(0, 0, 10, 2),
         Rect.new(0, 2, 10, 3),
     ]
+
+
+def test_flex_renderable_empty_and_cursor_forwarding() -> None:
+    flex = FlexRenderable.new()
+    assert flex.desired_height(10) == 0
+    assert flex.cursor_pos(Rect.new(0, 0, 10, 2)) is None
+    assert flex.cursor_style(Rect.new(0, 0, 10, 2)) == DEFAULT_CURSOR_STYLE
+
+    flex.push(0, FakeRenderable(1, "a"))
+    flex.push(1, FakeRenderable(3, "b", cursor=(5, 6), style="FlexCursor"))
+    assert flex.cursor_pos(Rect.new(0, 0, 10, 4)) == (5, 6)
+    assert flex.cursor_style(Rect.new(0, 0, 10, 4)) == "FlexCursor"
 
 
 def test_row_renderable_lays_out_by_width_and_reports_max_height() -> None:

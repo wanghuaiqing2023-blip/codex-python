@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from . import default_client
 from .agent_identity import (
     AgentIdentityAuth,
     AgentIdentityAuthRecord,
@@ -27,6 +28,7 @@ __all__ = [
     "AgentIdentityAuthRecord",
     "AgentIdentityKey",
     "AgentTaskRegistrar",
+    "default_client",
     "CODEX_AGENT_IDENTITY_AUTHAPI_BASE_URL_ENV_VAR",
     "PROD_AGENT_IDENTITY_AUTHAPI_BASE_URL",
     "agent_identity_authapi_base_url",

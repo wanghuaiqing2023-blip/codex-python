@@ -12,32 +12,50 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 import tempfile
-from typing import Iterable
+from typing import Iterable, List, Optional, Union
 
 from .line_truncation import Line
+from ._porting import RustTuiModule
 
 
-def _source_to_plain_lines(source: str) -> list[Line]:
+class MarkdownStreamLine(Line):
+    def plain_text(self) -> str:
+        return "".join(span.content for span in self.spans)
+
+
+def _source_to_plain_lines(source: str) -> List[Line]:
     """Convert committed source text into semantic plain lines."""
 
-    return [Line.from_text(line) for line in source.splitlines()]
+    lines: List[Line] = []
+    for line in source.splitlines():
+        base = Line.from_text(line)
+        lines.append(MarkdownStreamLine(base.spans, base.style, base.alignment))
+    return lines
+
+
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="markdown_stream",
+    source="codex/codex-rs/tui/src/markdown_stream.rs",
+    status="complete",
+)
 
 
 @dataclass
 class MarkdownStreamCollector:
     """Collect streamed markdown deltas and commit only complete source lines."""
 
-    width: int | None = None
+    width: Optional[int] = None
     cwd: Path = field(default_factory=lambda: Path.cwd())
     buffer: str = ""
     committed_source_len: int = 0
     committed_line_count: int = 0
 
     @classmethod
-    def new(cls, width: int | None = None, cwd: str | Path | None = None) -> "MarkdownStreamCollector":
+    def new(cls, width: Optional[int] = None, cwd: Optional[Union[str, Path]] = None) -> "MarkdownStreamCollector":
         return cls(width=width, cwd=Path.cwd() if cwd is None else Path(cwd))
 
-    def set_width(self, width: int | None) -> None:
+    def set_width(self, width: Optional[int]) -> None:
         self.width = width
 
     def clear(self) -> None:
@@ -48,7 +66,7 @@ class MarkdownStreamCollector:
     def push_delta(self, delta: str) -> None:
         self.buffer += delta
 
-    def commit_complete_source(self) -> str | None:
+    def commit_complete_source(self) -> Optional[str]:
         """Return newly completed source through the last newline, if any."""
 
         newline_idx = self.buffer.rfind("\n")
@@ -76,7 +94,7 @@ class MarkdownStreamCollector:
         self.clear()
         return source
 
-    def commit_complete_lines(self) -> list[Line]:
+    def commit_complete_lines(self) -> List[Line]:
         """Semantic test helper for committed completed lines.
 
         Rust renders markdown into ratatui lines here. Python keeps the module
@@ -91,7 +109,7 @@ class MarkdownStreamCollector:
         self.committed_line_count += len(lines)
         return lines
 
-    def finalize_and_drain(self) -> list[Line]:
+    def finalize_and_drain(self) -> List[Line]:
         source = self.finalize_and_drain_source()
         lines = _source_to_plain_lines(source)
         self.committed_line_count = 0
@@ -108,7 +126,7 @@ def simulate_stream_markdown_for_tests(deltas: Iterable[str], finalize: bool) ->
     """Mirror Rust's stream simulation helper at the source-boundary level."""
 
     collector = MarkdownStreamCollector.new(None, test_cwd())
-    lines: list[Line] = []
+    lines: List[Line] = []
     for delta in deltas:
         collector.push_delta(delta)
         if "\n" in delta:
@@ -119,6 +137,7 @@ def simulate_stream_markdown_for_tests(deltas: Iterable[str], finalize: bool) ->
 
 
 __all__ = [
+    "RUST_MODULE",
     "MarkdownStreamCollector",
     "simulate_stream_markdown_for_tests",
     "test_cwd",

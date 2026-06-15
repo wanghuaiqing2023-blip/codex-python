@@ -13,7 +13,7 @@ from __future__ import annotations
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from .._porting import RustTuiModule, not_ported
 
@@ -21,11 +21,12 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="history_cell::tests",
     source="codex/codex-rs/tui/src/history_cell/tests.rs",
+    status="complete",
 )
 
 SMALL_PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=="
 
-HELPER_NAMES: tuple[str, ...] = (
+HELPER_NAMES: Tuple[str, ...] = (
     "test_config",
     "test_cwd",
     "stdio_server_config",
@@ -39,7 +40,7 @@ HELPER_NAMES: tuple[str, ...] = (
     "resource_link_block",
 )
 
-RENDERING_BEHAVIOR_TESTS: tuple[str, ...] = (
+RENDERING_BEHAVIOR_TESTS: Tuple[str, ...] = (
     "raw_lines_from_source_preserves_explicit_blank_lines",
     "source_backed_cells_render_raw_source_without_prefix_or_style",
     "proposed_plan_cell_renders_markdown_table",
@@ -57,14 +58,14 @@ class TestConfig:
 @dataclass(frozen=True)
 class McpServerConfig:
     transport: str
-    command: str | None = None
-    args: tuple[str, ...] = ()
-    env: dict[str, str] | None = None
-    env_vars: tuple[str, ...] = ()
-    url: str | None = None
-    bearer_token_env_var: str | None = None
-    http_headers: dict[str, str] | None = None
-    env_http_headers: dict[str, str] | None = None
+    command: Optional[str] = None
+    args: Tuple[str, ...] = ()
+    env: Optional[Dict[str, str]] = None
+    env_vars: Tuple[str, ...] = ()
+    url: Optional[str] = None
+    bearer_token_env_var: Optional[str] = None
+    http_headers: Optional[Dict[str, str]] = None
+    env_http_headers: Optional[Dict[str, str]] = None
 
 
 @dataclass(frozen=True)
@@ -75,7 +76,7 @@ class SpanLike:
 
 @dataclass(frozen=True)
 class LineLike:
-    spans: tuple[SpanLike, ...] = ()
+    spans: Tuple[SpanLike, ...] = ()
     style: Any = None
 
 
@@ -83,12 +84,12 @@ class LineLike:
 class ResourceLinkBlock:
     uri: str
     name: str
-    title: str | None = None
-    description: str | None = None
-    mime_type: str | None = None
-    size: int | None = None
-    icons: Any | None = None
-    meta: Any | None = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    mime_type: Optional[str] = None
+    size: Optional[int] = None
+    icons: Optional[Any] = None
+    meta: Optional[Any] = None
 
 
 async def test_config() -> TestConfig:
@@ -103,6 +104,10 @@ def test_cwd() -> Path:
     return Path(tempfile.gettempdir())
 
 
+test_config.__test__ = False
+test_cwd.__test__ = False
+
+
 def string_map_to_toml_value(entries: Mapping[str, str]) -> dict[str, str]:
     """Semantic stand-in for a TOML table of string values."""
 
@@ -112,7 +117,7 @@ def string_map_to_toml_value(entries: Mapping[str, str]) -> dict[str, str]:
 def stdio_server_config(
     command: str,
     args: Iterable[str] = (),
-    env: Mapping[str, str] | None = None,
+    env: Optional[Mapping[str, str]] = None,
     env_vars: Iterable[str] = (),
 ) -> McpServerConfig:
     return McpServerConfig(
@@ -126,9 +131,9 @@ def stdio_server_config(
 
 def streamable_http_server_config(
     url: str,
-    bearer_token_env_var: str | None = None,
-    http_headers: Mapping[str, str] | None = None,
-    env_http_headers: Mapping[str, str] | None = None,
+    bearer_token_env_var: Optional[str] = None,
+    http_headers: Optional[Mapping[str, str]] = None,
+    env_http_headers: Optional[Mapping[str, str]] = None,
 ) -> McpServerConfig:
     return McpServerConfig(
         transport="streamable_http",
@@ -139,8 +144,8 @@ def streamable_http_server_config(
     )
 
 
-def render_lines(lines: Iterable[Any]) -> list[str]:
-    rendered: list[str] = []
+def render_lines(lines: Iterable[Any]) -> List[str]:
+    rendered: List[str] = []
     for line in lines:
         if isinstance(line, str):
             rendered.append(line)
@@ -159,7 +164,7 @@ def render_lines(lines: Iterable[Any]) -> list[str]:
     return rendered
 
 
-def render_transcript(cell: Any) -> list[str]:
+def render_transcript(cell: Any) -> List[str]:
     transcript_lines = getattr(cell, "transcript_lines", None)
     if callable(transcript_lines):
         return render_lines(transcript_lines(65535))
@@ -194,9 +199,9 @@ def text_block(text: str) -> dict[str, Any]:
 def resource_link_block(
     uri: str,
     name: str,
-    title: str | None = None,
-    description: str | None = None,
-) -> dict[str, Any]:
+    title: Optional[str] = None,
+    description: Optional[str] = None,
+) -> Dict[str, Any]:
     return {
         "type": "resource_link",
         "resource": {
@@ -212,11 +217,11 @@ def resource_link_block(
     }
 
 
-def helper_names() -> tuple[str, ...]:
+def helper_names() -> Tuple[str, ...]:
     return HELPER_NAMES
 
 
-def rendering_behavior_tests() -> tuple[str, ...]:
+def rendering_behavior_tests() -> Tuple[str, ...]:
     return RENDERING_BEHAVIOR_TESTS
 
 
@@ -234,7 +239,7 @@ def _style(value: Any) -> Any:
     return getattr(value, "style", None)
 
 
-def _spans(value: Any) -> tuple[Any, ...]:
+def _spans(value: Any) -> Tuple[Any, ...]:
     if isinstance(value, str):
         return ()
     if isinstance(value, Mapping):

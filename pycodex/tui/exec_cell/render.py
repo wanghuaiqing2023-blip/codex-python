@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Any
+from typing import Any, Iterable, Optional
 
 from .._porting import RustTuiModule
 from ..line_truncation import Line, Span
 from .model import CommandOutput, ExecCall, ExecCell, UNIFIED_EXEC_INTERACTION, USER_SHELL
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="exec_cell::render", source="codex/codex-rs/tui/src/exec_cell/render.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="exec_cell::render",
+    source="codex/codex-rs/tui/src/exec_cell/render.rs",
+    status="complete",
+)
 
 TOOL_CALL_MAX_LINES = 5
 USER_SHELL_TOOL_CALL_MAX_LINES = 50
@@ -34,7 +39,7 @@ class OutputLinesParams:
 @dataclass(frozen=True)
 class OutputLines:
     lines: tuple[Line, ...]
-    omitted: int | None = None
+    omitted: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -67,7 +72,7 @@ def new_active_exec_command(
     command: Iterable[str],
     parsed: Iterable[Any],
     source: Any,
-    interaction_input: str | None,
+    interaction_input: Optional[str],
     animations_enabled: bool,
 ) -> ExecCell:
     return ExecCell.new(
@@ -85,7 +90,7 @@ def new_active_exec_command(
     )
 
 
-def format_unified_exec_interaction(command: Iterable[str], input: str | None = None) -> str:
+def format_unified_exec_interaction(command: Iterable[str], input: Optional[str] = None) -> str:
     command_list = [str(part) for part in command]
     command_display = _strip_bash_lc(command_list)
     if input:
@@ -131,7 +136,7 @@ def output_lines(output: CommandOutput | None, params: OutputLinesParams) -> Out
     return OutputLines(tuple(out), omitted)
 
 
-def activity_marker(_start_time: float | None, animations_enabled: bool) -> Span:
+def activity_marker(_start_time: Optional[float], animations_enabled: bool) -> Span:
     return Span("•" if not animations_enabled else "◐", DIM_STYLE)
 
 
@@ -149,13 +154,13 @@ class ExecCellRenderMixin:
         return _dim_line(f"...+{omitted} lines")
 
     @staticmethod
-    def output_ellipsis_line_with_prefix(omitted: int, prefix: Line | None = None) -> Line:
+    def output_ellipsis_line_with_prefix(omitted: int, prefix: Optional[Line] = None) -> Line:
         spans = list(prefix.spans) if prefix is not None else []
         spans.append(Span(ExecCellRenderMixin.output_ellipsis_text(omitted), DIM_STYLE))
         return Line.from_spans(spans)
 
     @staticmethod
-    def output_ellipsis_row_count(omitted: int, width: int, prefix: Line | None = None) -> int:
+    def output_ellipsis_row_count(omitted: int, width: int, prefix: Optional[Line] = None) -> int:
         return _screen_rows(ExecCellRenderMixin.output_ellipsis_line_with_prefix(omitted, prefix), width)
 
     @staticmethod
@@ -173,8 +178,8 @@ class ExecCellRenderMixin:
         lines: Iterable[Line],
         max_rows: int,
         width: int,
-        omitted_hint: int | None = None,
-        ellipsis_prefix: Line | None = None,
+        omitted_hint: Optional[int] = None,
+        ellipsis_prefix: Optional[Line] = None,
     ) -> list[Line]:
         source = list(lines)
         max_rows = int(max_rows)
@@ -389,7 +394,7 @@ def _parsed_kind(parsed: Any) -> str:
     return str(getattr(parsed, "kind", type(parsed).__name__))
 
 
-def _parsed_value(parsed: Any, key: str) -> str | None:
+def _parsed_value(parsed: Any, key: str) -> Optional[str]:
     if isinstance(parsed, dict):
         if key in parsed:
             return None if parsed[key] is None else str(parsed[key])

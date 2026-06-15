@@ -5,9 +5,10 @@ Rust counterpart: ``codex-rs/tui/src/app/app_server_requests.rs``.
 
 from __future__ import annotations
 
+import inspect
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Deque, Dict, Optional, Tuple
 
 from .._porting import RustTuiModule
 
@@ -16,8 +17,37 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="app::app_server_requests",
     source="codex/codex-rs/tui/src/app/app_server_requests.rs",
-    status="complete_slice",
+    status="complete",
 )
+
+
+@dataclass(frozen=True)
+class JSONRPCErrorError:
+    code: int
+    message: str
+    data: Any = None
+
+
+async def reject_app_server_request(
+    app_server_client: Any,
+    request_id: Any,
+    reason: str,
+) -> Optional[str]:
+    """Reject an app-server request with Rust's JSON-RPC error shape.
+
+    Rust returns ``Result<(), String>`` and maps transport errors to
+    ``failed to reject app-server request: {err}``. Python mirrors that as
+    ``None`` on success or the error string on failure.
+    """
+
+    error = JSONRPCErrorError(code=-32000, message=reason, data=None)
+    try:
+        result = app_server_client.reject_server_request(request_id, error)
+        if inspect.isawaitable(result):
+            await result
+        return None
+    except Exception as exc:
+        return "failed to reject app-server request: {0}".format(exc)
 
 
 @dataclass(frozen=True)
@@ -35,9 +65,9 @@ class UnsupportedAppServerRequest:
 @dataclass(frozen=True)
 class ResolvedAppServerRequest:
     kind: str
-    id: str | None = None
-    call_id: str | None = None
-    server_name: str | None = None
+    id: Optional[str] = None
+    call_id: Optional[str] = None
+    server_name: Optional[str] = None
     request_id: Any = None
 
     @classmethod
@@ -79,7 +109,7 @@ def _field(value: Any, name: str, default: Any = None) -> Any:
     return getattr(value, name, default)
 
 
-def _variant_and_payload(value: Any) -> tuple[str | None, Any, Any]:
+def _variant_and_payload(value: Any) -> Tuple[Optional[str], Any, Any]:
     variant = _field(value, "type", _field(value, "variant", _field(value, "kind")))
     if variant is not None:
         return str(variant), _field(value, "params", value), _field(value, "request_id")
@@ -101,11 +131,11 @@ def _decision_value(decision: Any) -> Any:
 
 @dataclass
 class PendingAppServerRequests:
-    exec_approvals: dict[str, Any] = field(default_factory=dict)
-    file_change_approvals: dict[str, Any] = field(default_factory=dict)
-    permissions_approvals: dict[str, Any] = field(default_factory=dict)
-    user_inputs: dict[str, deque[PendingUserInputRequest]] = field(default_factory=dict)
-    mcp_requests: dict[McpRequestKey, Any] = field(default_factory=dict)
+    exec_approvals: Dict[str, Any] = field(default_factory=dict)
+    file_change_approvals: Dict[str, Any] = field(default_factory=dict)
+    permissions_approvals: Dict[str, Any] = field(default_factory=dict)
+    user_inputs: Dict[str, Deque[PendingUserInputRequest]] = field(default_factory=dict)
+    mcp_requests: Dict[McpRequestKey, Any] = field(default_factory=dict)
 
     def clear(self) -> None:
         self.exec_approvals.clear()
@@ -114,7 +144,7 @@ class PendingAppServerRequests:
         self.user_inputs.clear()
         self.mcp_requests.clear()
 
-    def note_server_request(self, request: Any) -> UnsupportedAppServerRequest | None:
+    def note_server_request(self, request: Any) -> Optional[UnsupportedAppServerRequest]:
         variant, params, request_id = _variant_and_payload(request)
         if variant == "CommandExecutionRequestApproval":
             approval_id = _field(params, "approval_id") or _payload_id(params, "item_id")
@@ -160,7 +190,7 @@ class PendingAppServerRequests:
             )
         return None
 
-    def take_resolution(self, op: Any) -> AppServerRequestResolution | None:
+    def take_resolution(self, op: Any) -> Optional[AppServerRequestResolution]:
         variant, payload, _ = _variant_and_payload(op)
         if variant == "ExecApproval":
             id_ = _payload_id(payload, "id")
@@ -218,7 +248,7 @@ class PendingAppServerRequests:
             return AppServerRequestResolution(request_id, result)
         return None
 
-    def resolve_notification(self, request_id: Any) -> ResolvedAppServerRequest | None:
+    def resolve_notification(self, request_id: Any) -> Optional[ResolvedAppServerRequest]:
         for id_, value in list(self.exec_approvals.items()):
             if value == request_id:
                 del self.exec_approvals[id_]
@@ -254,7 +284,7 @@ class PendingAppServerRequests:
             return request_id in self.mcp_requests.values()
         return True
 
-    def pop_user_input_request_for_turn(self, turn_id: str) -> PendingUserInputRequest | None:
+    def pop_user_input_request_for_turn(self, turn_id: str) -> Optional[PendingUserInputRequest]:
         queue = self.user_inputs.get(str(turn_id))
         if not queue:
             return None
@@ -263,7 +293,7 @@ class PendingAppServerRequests:
             self.user_inputs.pop(str(turn_id), None)
         return pending
 
-    def remove_user_input_request(self, request_id: Any) -> PendingUserInputRequest | None:
+    def remove_user_input_request(self, request_id: Any) -> Optional[PendingUserInputRequest]:
         for turn_id, queue in list(self.user_inputs.items()):
             for index, pending in enumerate(queue):
                 if pending.request_id == request_id:
@@ -468,6 +498,7 @@ def same_turn_user_input_answers_resolve_app_server_requests_fifo() -> bool:
 
 __all__ = [
     "AppServerRequestResolution",
+    "JSONRPCErrorError",
     "McpRequestKey",
     "PendingAppServerRequests",
     "PendingUserInputRequest",
@@ -477,6 +508,7 @@ __all__ = [
     "correlates_mcp_elicitation_server_request_with_resolution",
     "does_not_mark_chatgpt_auth_refresh_as_unsupported",
     "rejects_dynamic_tool_calls_as_unsupported",
+    "reject_app_server_request",
     "resolve_notification_returns_resolved_exec_request",
     "resolve_notification_returns_resolved_mcp_request",
     "resolve_notification_returns_resolved_user_input_item_id",

@@ -1,4 +1,4 @@
-"""Markdown entry points and fence normalization for ``codex-tui::markdown``.
+﻿"""Markdown entry points and fence normalization for ``codex-tui::markdown``.
 
 Rust source: ``codex/codex-rs/tui/src/markdown.rs``.
 
@@ -12,12 +12,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, List, Optional, Tuple
 
 from ._porting import RustTuiModule
 from . import table_detect
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="markdown", source="codex/codex-rs/tui/src/markdown.rs")
+RUST_MODULE = RustTuiModule(crate="codex-tui", module="markdown", source="codex/codex-rs/tui/src/markdown.rs", status="complete")
 
 
 @dataclass(frozen=True)
@@ -31,7 +31,7 @@ class Fence:
 class MarkdownCandidateData:
     fence: Fence
     opening_range: range
-    content_ranges: list[range] = field(default_factory=list)
+    content_ranges: List[range] = field(default_factory=list)
 
 
 class ActiveFenceKind(Enum):
@@ -42,8 +42,8 @@ class ActiveFenceKind(Enum):
 @dataclass
 class ActiveFence:
     kind: ActiveFenceKind
-    fence: Fence | None = None
-    candidate: MarkdownCandidateData | None = None
+    fence: Optional[Fence] = None
+    candidate: Optional[MarkdownCandidateData] = None
 
     @classmethod
     def passthrough(cls, fence: Fence) -> "ActiveFence":
@@ -54,7 +54,7 @@ class ActiveFence:
         return cls(ActiveFenceKind.MARKDOWN_CANDIDATE, candidate=data)
 
 
-def append_markdown(markdown_source: str, width: int | None = None, cwd: Any = None, lines: list[Any] | None = None) -> list[Any]:
+def append_markdown(markdown_source: str, width: Optional[int] = None, cwd: Any = None, lines: Optional[List[Any]] = None) -> List[Any]:
     """Render markdown through the markdown_render dependency and append lines."""
     from . import markdown_render
 
@@ -66,12 +66,12 @@ def append_markdown(markdown_source: str, width: int | None = None, cwd: Any = N
     return lines
 
 
-def append_markdown_agent(markdown_source: str, width: int | None = None, lines: list[Any] | None = None) -> list[Any]:
+def append_markdown_agent(markdown_source: str, width: Optional[int] = None, lines: Optional[List[Any]] = None) -> List[Any]:
     """Normalize agent markdown fences, then delegate to ``append_markdown``."""
     return append_markdown(unwrap_markdown_fences(markdown_source), width, None, lines)
 
 
-def render_markdown_agent_with_links_and_cwd(markdown_source: str, width: int | None = None, cwd: Any = None) -> Any:
+def render_markdown_agent_with_links_and_cwd(markdown_source: str, width: Optional[int] = None, cwd: Any = None) -> Any:
     """Normalize agent markdown fences, then delegate to hyperlink markdown rendering."""
     from . import markdown_render
 
@@ -89,8 +89,8 @@ def unwrap_markdown_fences(markdown_source: str) -> str:
     if "```" not in source and "~~~" not in source:
         return source
 
-    out: list[str] = []
-    active: ActiveFence | None = None
+    out: List[str] = []
+    active: Optional[ActiveFence] = None
     offset = 0
 
     def push_source_range(source_range: range) -> None:
@@ -151,7 +151,7 @@ def unwrap_markdown_fences(markdown_source: str) -> str:
     return "".join(out)
 
 
-def strip_line_indent(line: str) -> str | None:
+def strip_line_indent(line: str) -> Optional[str]:
     """Strip trailing newline and up to three leading columns of indent."""
     without_newline = line[:-1] if line.endswith("\n") else line
     byte_idx = 0
@@ -170,7 +170,7 @@ def strip_line_indent(line: str) -> str | None:
     return without_newline[byte_idx:]
 
 
-def parse_open_fence(line: str) -> tuple[Fence, bool] | None:
+def parse_open_fence(line: str) -> Optional[Tuple[Fence, bool]]:
     trimmed = strip_line_indent(line)
     if trimmed is None:
         return None
@@ -201,7 +201,7 @@ def is_close_fence(line: str, fence: Fence) -> bool:
 
 
 def markdown_fence_contains_table(content: str, is_blockquoted_fence: bool) -> bool:
-    previous_line: str | None = None
+    previous_line: Optional[str] = None
     for line in content.splitlines():
         text = table_detect.strip_blockquote_prefix(line) if is_blockquoted_fence else line
         trimmed = text.strip()
@@ -219,13 +219,13 @@ def markdown_fence_contains_table(content: str, is_blockquoted_fence: bool) -> b
     return False
 
 
-def content_from_ranges(source: str, ranges: list[range]) -> str:
+def content_from_ranges(source: str, ranges: List[range]) -> str:
     return "".join(source[source_range.start : source_range.stop] for source_range in ranges)
 
 
 # Lightweight helpers mirroring Rust test-only functions for Python parity tests.
-def lines_to_strings(lines: list[Any]) -> list[str]:
-    out: list[str] = []
+def lines_to_strings(lines: List[Any]) -> List[str]:
+    out: List[str] = []
     for line in lines:
         spans = getattr(line, "spans", None)
         if spans is None:
@@ -269,3 +269,4 @@ __all__ = [
     "unwrap_markdown_fences",
     "unwrap_markdown_fences_repro_keeps_fence_without_header_delimiter_pair",
 ]
+

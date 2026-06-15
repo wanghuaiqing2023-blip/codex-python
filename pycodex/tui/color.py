@@ -6,7 +6,7 @@ Upstream source: ``codex/codex-rs/tui/src/color.rs``.
 from __future__ import annotations
 
 import math
-from typing import TypeAlias
+from typing import Tuple
 
 from ._porting import RustTuiModule
 
@@ -14,9 +14,10 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="color",
     source="codex/codex-rs/tui/src/color.rs",
+    status="complete",
 )
 
-Rgb: TypeAlias = tuple[int, int, int]
+Rgb = Tuple[int, int, int]
 
 
 def _channel(value: int, name: str) -> int:
@@ -68,7 +69,7 @@ def _srgb_to_linear(channel: int) -> float:
     return ((c + 0.055) / 1.055) ** 2.4
 
 
-def _rgb_to_xyz(r: int, g: int, b: int) -> tuple[float, float, float]:
+def _rgb_to_xyz(r: int, g: int, b: int) -> Tuple[float, float, float]:
     rl = _srgb_to_linear(r)
     gl = _srgb_to_linear(g)
     bl = _srgb_to_linear(b)
@@ -84,7 +85,7 @@ def _lab_f(t: float) -> float:
     return 7.787 * t + 16.0 / 116.0
 
 
-def _xyz_to_lab(x: float, y: float, z: float) -> tuple[float, float, float]:
+def _xyz_to_lab(x: float, y: float, z: float) -> Tuple[float, float, float]:
     xr = x / 0.95047
     yr = y / 1.00000
     zr = z / 1.08883

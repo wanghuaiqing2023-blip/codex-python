@@ -1,4 +1,4 @@
-﻿"""Semantic slice for Rust ``codex-tui::status::card``.
+"""Semantic slice for Rust ``codex-tui::status::card``.
 
 This module keeps the status-card data shaping behavior testable without
 replicating ratatui history-cell rendering or upstream protocol classes.
@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
 from urllib.parse import urlsplit, urlunsplit
 
 from .._porting import RustTuiModule
@@ -30,7 +30,12 @@ from .rate_limits import (
 )
 from .remote_connection import RemoteConnectionStatus
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="status::card", source="codex/codex-rs/tui/src/status/card.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="status::card",
+    source="codex/codex-rs/tui/src/status/card.rs",
+    status="complete",
+)
 
 CHATGPT_USAGE_URL = "https://chatgpt.com/codex/settings/usage"
 DIM_STYLE = {"dim": True}
@@ -51,7 +56,7 @@ class StatusTokenUsageData:
     total: int
     input: int
     output: int
-    context_window: StatusContextWindowData | None = None
+    context_window: Optional[StatusContextWindowData] = None
 
 
 @dataclass
@@ -62,10 +67,10 @@ class StatusRateLimitState:
 
 @dataclass(frozen=True)
 class CompositeStatusOutput:
-    command_lines: tuple[Line, ...]
+    command_lines: Tuple[Line, ...]
     card: "StatusHistoryCell"
 
-    def display_lines(self, width: int) -> tuple[Line, ...]:
+    def display_lines(self, width: int) -> Tuple[Line, ...]:
         return (*self.command_lines, *self.card.display_lines(width))
 
 
@@ -86,18 +91,18 @@ class StatusHistoryHandle:
 @dataclass
 class StatusHistoryCell:
     model_name: str
-    model_details: tuple[str, ...] = ()
+    model_details: Tuple[str, ...] = ()
     directory: Path = field(default_factory=lambda: Path.cwd())
     permissions: str = "<unknown>"
     agents_summary: str = "<none>"
-    collaboration_mode: str | None = None
-    model_provider: str | None = None
-    remote_connection: RemoteConnectionStatus | None = None
+    collaboration_mode: Optional[str] = None
+    model_provider: Optional[str] = None
+    remote_connection: Optional[RemoteConnectionStatus] = None
     show_chatgpt_usage_link: bool = False
-    account: StatusAccountDisplay | None = None
-    thread_name: str | None = None
-    session_id: str | None = None
-    forked_from: str | None = None
+    account: Optional[StatusAccountDisplay] = None
+    thread_name: Optional[str] = None
+    session_id: Optional[str] = None
+    forked_from: Optional[str] = None
     token_usage: StatusTokenUsageData = field(default_factory=lambda: StatusTokenUsageData(0, 0, 0))
     rate_limit_state: StatusRateLimitState = field(default_factory=lambda: StatusRateLimitState(StatusRateLimitData.missing()))
 
@@ -107,22 +112,22 @@ class StatusHistoryCell:
         *,
         model_name: str,
         model_details: Iterable[str] = (),
-        directory: str | Path | None = None,
+        directory: Optional[Union[str, Path]] = None,
         permissions: str = "<unknown>",
         agents_summary: str = "<none>",
-        collaboration_mode: str | None = None,
-        model_provider: str | None = None,
-        remote_connection: RemoteConnectionStatus | None = None,
+        collaboration_mode: Optional[str] = None,
+        model_provider: Optional[str] = None,
+        remote_connection: Optional[RemoteConnectionStatus] = None,
         show_chatgpt_usage_link: bool = False,
-        account: StatusAccountDisplay | None = None,
-        thread_name: str | None = None,
-        session_id: str | None = None,
-        forked_from: str | None = None,
-        token_usage: StatusTokenUsageData | None = None,
+        account: Optional[StatusAccountDisplay] = None,
+        thread_name: Optional[str] = None,
+        session_id: Optional[str] = None,
+        forked_from: Optional[str] = None,
+        token_usage: Optional[StatusTokenUsageData] = None,
         rate_limits: Iterable[RateLimitSnapshotDisplay] = (),
-        now: datetime | None = None,
+        now: Optional[datetime] = None,
         refreshing_rate_limits: bool = False,
-    ) -> tuple["StatusHistoryCell", StatusHistoryHandle]:
+    ) -> Tuple["StatusHistoryCell", StatusHistoryHandle]:
         snapshots = tuple(rate_limits)
         now = now or datetime.now().astimezone()
         rate_limit_data = (
@@ -150,7 +155,7 @@ class StatusHistoryCell:
         )
         return cell, StatusHistoryHandle(state)
 
-    def token_usage_spans(self) -> tuple[Span, ...]:
+    def token_usage_spans(self) -> Tuple[Span, ...]:
         total_fmt = format_tokens_compact(self.token_usage.total)
         input_fmt = format_tokens_compact(self.token_usage.input)
         output_fmt = format_tokens_compact(self.token_usage.output)
@@ -166,7 +171,7 @@ class StatusHistoryCell:
             Span(")", DIM_STYLE),
         )
 
-    def context_window_spans(self) -> tuple[Span, ...] | None:
+    def context_window_spans(self) -> Optional[Tuple[Span, ...]]:
         context = self.token_usage.context_window
         if context is None:
             return None
@@ -179,7 +184,7 @@ class StatusHistoryCell:
             Span(")", DIM_STYLE),
         )
 
-    def rate_limit_lines(self, state: StatusRateLimitState, available_inner_width: int, formatter: FieldFormatter) -> list[Line]:
+    def rate_limit_lines(self, state: StatusRateLimitState, available_inner_width: int, formatter: FieldFormatter) -> List[Line]:
         data = state.rate_limits
         if data.kind == "available":
             if not data.rows:
@@ -195,8 +200,8 @@ class StatusHistoryCell:
         message = "refresh requested; run /status again shortly." if state.refreshing_rate_limits else "data not available yet"
         return [formatter.line("Limits", [Span(message, DIM_STYLE)])]
 
-    def rate_limit_row_lines(self, rows: Iterable[StatusRateLimitRow], available_inner_width: int, formatter: FieldFormatter) -> list[Line]:
-        lines: list[Line] = []
+    def rate_limit_row_lines(self, rows: Iterable[StatusRateLimitRow], available_inner_width: int, formatter: FieldFormatter) -> List[Line]:
+        lines: List[Line] = []
         for row in rows:
             value = row.value
             if value.kind == "window":
@@ -222,7 +227,7 @@ class StatusHistoryCell:
                 lines.append(Line.from_spans(formatter.full_spans(row.label, [Span(value.text or "")])) )
         return lines
 
-    def collect_rate_limit_labels(self, state: StatusRateLimitState, seen: set[str], labels: list[str]) -> None:
+    def collect_rate_limit_labels(self, state: StatusRateLimitState, seen: Set[str], labels: List[str]) -> None:
         data = state.rate_limits
         if data.kind == "available":
             if not data.rows:
@@ -237,7 +242,7 @@ class StatusHistoryCell:
         else:
             push_label(labels, seen, "Limits")
 
-    def display_lines(self, width: int) -> tuple[Line, ...]:
+    def display_lines(self, width: int) -> Tuple[Line, ...]:
         available_inner_width = max(int(width) - 4, 0)
         if available_inner_width == 0:
             return ()
@@ -263,7 +268,7 @@ class StatusHistoryCell:
 
         formatter = FieldFormatter.from_labels(labels)
         value_width = formatter.value_width(available_inner_width)
-        lines: list[Line] = [Line.from_spans([Span(f"{FieldFormatter.INDENT}>_ ", DIM_STYLE), Span("OpenAI Codex", BOLD_STYLE), Span(" ", DIM_STYLE), Span(f"(v{CODEX_CLI_VERSION})", DIM_STYLE)]), Line(())]
+        lines: List[Line] = [Line.from_spans([Span(f"{FieldFormatter.INDENT}>_ ", DIM_STYLE), Span("OpenAI Codex", BOLD_STYLE), Span(" ", DIM_STYLE), Span(f"(v{CODEX_CLI_VERSION})", DIM_STYLE)]), Line(())]
         if self.show_chatgpt_usage_link:
             lines.append(Line.from_spans([Span("Visit ", CYAN_STYLE), Span(CHATGPT_USAGE_URL, UNDERLINED_CYAN_STYLE), Span(" for up-to-date", CYAN_STYLE)]))
             lines.append(Line.from_spans([Span("information on rate limits and credits", CYAN_STYLE)]))
@@ -302,10 +307,10 @@ class StatusHistoryCell:
         content_width = min(max((line_display_width(line) for line in lines), default=0), available_inner_width)
         return tuple(truncate_line_to_width(line, content_width) for line in lines)
 
-    def raw_lines(self) -> tuple[Line, ...]:
+    def raw_lines(self) -> Tuple[Line, ...]:
         return self.display_lines(2**16 - 1)
 
-    def display_hyperlink_lines(self, width: int) -> tuple[dict[str, Any], ...]:
+    def display_hyperlink_lines(self, width: int) -> Tuple[Dict[str, Any], ...]:
         out = []
         for line in self.display_lines(width):
             text = "".join(span.content for span in line.spans)
@@ -316,10 +321,10 @@ class StatusHistoryCell:
             out.append({"line": line, "hyperlinks": hyperlinks})
         return tuple(out)
 
-    def transcript_hyperlink_lines(self, width: int) -> tuple[dict[str, Any], ...]:
+    def transcript_hyperlink_lines(self, width: int) -> Tuple[Dict[str, Any], ...]:
         return self.display_hyperlink_lines(width)
 
-    def account_value(self) -> str | None:
+    def account_value(self) -> Optional[str]:
         account = self.account
         if account is None:
             return None
@@ -347,7 +352,7 @@ def new_status_output_with_rate_limits(*args: Any, **kwargs: Any) -> CompositeSt
     return cell
 
 
-def new_status_output_with_rate_limits_handle(**kwargs: Any) -> tuple[CompositeStatusOutput, StatusHistoryHandle]:
+def new_status_output_with_rate_limits_handle(**kwargs: Any) -> Tuple[CompositeStatusOutput, StatusHistoryHandle]:
     cell, handle = StatusHistoryCell.new(**kwargs)
     command = Line.from_spans([Span("/status", {"fg": "magenta"})])
     return CompositeStatusOutput((command,), cell), handle
@@ -364,7 +369,7 @@ def status_permission_summary(summary: str, *_args: Any, **_kwargs: Any) -> str:
     return text
 
 
-def workspace_root_suffix(workspace_roots: Iterable[str | Path], cwd: str | Path) -> str | None:
+def workspace_root_suffix(workspace_roots: Iterable[Union[str, Path]], cwd: Union[str, Path]) -> Optional[str]:
     cwd_text = str(cwd)
     extra = [str(root) for root in workspace_roots if str(root) != cwd_text]
     return f" [{', '.join(extra)}]" if extra else None
@@ -376,7 +381,7 @@ def status_permissions_label(
     approval_policy: str,
     sandbox: str,
     approval: str,
-    workspace_root_suffix: str | None = None,
+    workspace_root_suffix: Optional[str] = None,
 ) -> str:
     active_id = _active_profile_id(active_permission_profile)
     approval_policy = str(approval_policy)
@@ -403,7 +408,7 @@ def status_permissions_label(
     return f"Custom ({decorated}, {approval})"
 
 
-def decorate_workspace_sandbox_label(sandbox: str, workspace_root_suffix: str | None) -> str:
+def decorate_workspace_sandbox_label(sandbox: str, workspace_root_suffix: Optional[str]) -> str:
     if workspace_root_suffix and str(sandbox).startswith("workspace"):
         return f"{sandbox}{workspace_root_suffix}"
     return str(sandbox)
@@ -413,23 +418,23 @@ def status_approval_label(approval_policy: str, approvals_reviewer: str, approva
     return "auto-review" if str(approval_policy) == "on-request" and str(approvals_reviewer) == "auto-review" else str(approval)
 
 
-def display_lines(cell: StatusHistoryCell, width: int) -> tuple[Line, ...]:
+def display_lines(cell: StatusHistoryCell, width: int) -> Tuple[Line, ...]:
     return cell.display_lines(width)
 
 
-def raw_lines(cell: StatusHistoryCell) -> tuple[Line, ...]:
+def raw_lines(cell: StatusHistoryCell) -> Tuple[Line, ...]:
     return cell.raw_lines()
 
 
-def display_hyperlink_lines(cell: StatusHistoryCell, width: int) -> tuple[dict[str, Any], ...]:
+def display_hyperlink_lines(cell: StatusHistoryCell, width: int) -> Tuple[Dict[str, Any], ...]:
     return cell.display_hyperlink_lines(width)
 
 
-def transcript_hyperlink_lines(cell: StatusHistoryCell, width: int) -> tuple[dict[str, Any], ...]:
+def transcript_hyperlink_lines(cell: StatusHistoryCell, width: int) -> Tuple[Dict[str, Any], ...]:
     return cell.transcript_hyperlink_lines(width)
 
 
-def format_model_provider(config: Any, runtime_base_url: str | None = None) -> str | None:
+def format_model_provider(config: Any, runtime_base_url: Optional[str] = None) -> Optional[str]:
     provider = getattr(config, "model_provider", config)
     provider_name = str(getattr(provider, "name", "") or getattr(config, "model_provider_id", "")).strip()
     base_url = sanitize_base_url(runtime_base_url) if runtime_base_url is not None else None
@@ -439,7 +444,7 @@ def format_model_provider(config: Any, runtime_base_url: str | None = None) -> s
     return f"{provider_name} - {base_url}" if base_url else provider_name
 
 
-def sanitize_base_url(raw: str) -> str | None:
+def sanitize_base_url(raw: str) -> Optional[str]:
     trimmed = str(raw).strip()
     if not trimmed:
         return None
@@ -456,9 +461,9 @@ def sanitize_base_url(raw: str) -> str | None:
     return sanitized or None
 
 
-def _word_wrap(text: str, width: int) -> list[str]:
+def _word_wrap(text: str, width: int) -> List[str]:
     words = text.split(" ")
-    lines: list[str] = []
+    lines: List[str] = []
     current = ""
     for word in words:
         candidate = word if not current else f"{current} {word}"
@@ -473,7 +478,7 @@ def _word_wrap(text: str, width: int) -> list[str]:
     return lines or [""]
 
 
-def _active_profile_id(value: Any) -> str | None:
+def _active_profile_id(value: Any) -> Optional[str]:
     if value is None:
         return None
     if isinstance(value, str):

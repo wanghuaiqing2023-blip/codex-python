@@ -125,6 +125,7 @@ class _ExecState:
     oss: bool = False
     local_provider: str | None = None
     profile: ProfileV2Name | None = None
+    approval_policy: AskForApproval | None = None
     sandbox: SandboxMode | None = None
     dangerously_bypass_approvals_and_sandbox: bool = False
     dangerously_bypass_hook_trust: bool = False
@@ -163,6 +164,8 @@ _GLOBAL_VALUE_OPTIONS = {
     "--local-provider": "local_provider",
     "-p": "profile",
     "--profile": "profile",
+    "-a": "approval_policy",
+    "--ask-for-approval": "approval_policy",
     "-s": "sandbox",
     "--sandbox": "sandbox",
     "-C": "cwd",
@@ -193,6 +196,8 @@ _SUBCOMMAND_GLOBAL_VALUE_OPTIONS = {
     "--output-last-message",
     "-m",
     "--model",
+    "-a",
+    "--ask-for-approval",
 }
 
 _SUBCOMMAND_GLOBAL_FLAG_OPTIONS = {
@@ -410,6 +415,11 @@ def _store_global_value(dest: str, value: str, state: _ExecState, option: str) -
             state.profile = ProfileV2Name.parse(value)
         except ProfileV2NameParseError as exc:
             raise ExecCliParseError(str(exc)) from exc
+    elif dest == "approval_policy":
+        try:
+            state.approval_policy = AskForApproval.parse_cli(value)
+        except ConfigTypeParseError as exc:
+            raise ExecCliParseError(str(exc)) from exc
     elif dest == "sandbox":
         try:
             state.sandbox = SandboxMode.parse(value)
@@ -452,6 +462,7 @@ def _finish_exec(
         oss=state.oss,
         local_provider=state.local_provider,
         profile=state.profile,
+        approval_policy=state.approval_policy,
         sandbox=state.sandbox,
         dangerously_bypass_approvals_and_sandbox=state.dangerously_bypass_approvals_and_sandbox,
         dangerously_bypass_hook_trust=state.dangerously_bypass_hook_trust,

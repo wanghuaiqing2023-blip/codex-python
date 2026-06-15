@@ -9,7 +9,7 @@ two-stage behavior while using only Python's standard library.
 
 from __future__ import annotations
 
-from collections.abc import MutableMapping
+from collections.abc import Iterable, MutableMapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -56,6 +56,11 @@ class CliConfigOverrides:
 
         for override in self.parse_overrides():
             apply_single_override(target, override.path, override.value)
+
+    def build_layer(self) -> dict[str, Any]:
+        """Build the TOML-shaped override layer used by ``codex-config``."""
+
+        return build_cli_overrides_layer((override.path, override.value) for override in self.parse_overrides())
 
 
 def parse_override(raw: str) -> ConfigOverride:
@@ -118,4 +123,23 @@ def apply_single_override(target: MutableMapping[str, Any], path: str, value: An
             next_value = {}
             current[part] = next_value
         current = next_value
+
+
+def default_empty_table() -> dict[str, Any]:
+    """Return the empty TOML table used as the root override layer."""
+
+    return {}
+
+
+def build_cli_overrides_layer(cli_overrides: Iterable[tuple[str, Any] | ConfigOverride]) -> dict[str, Any]:
+    """Build a nested TOML-shaped mapping from parsed CLI overrides."""
+
+    root = default_empty_table()
+    for override in cli_overrides:
+        if isinstance(override, ConfigOverride):
+            apply_single_override(root, override.path, override.value)
+        else:
+            path, value = override
+            apply_single_override(root, path, value)
+    return root
 

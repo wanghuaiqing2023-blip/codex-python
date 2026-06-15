@@ -13,7 +13,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Deque, Iterable, Sequence
+from typing import Any, Deque, Iterable, List, Optional, Sequence, Tuple
 
 from .._porting import RustTuiModule
 
@@ -21,6 +21,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="chatwidget::input_restore",
     source="codex/codex-rs/tui/src/chatwidget/input_restore.rs",
+    status="complete",
 )
 
 
@@ -40,9 +41,9 @@ class InterruptedTurnNoticeMode(Enum):
 
 @dataclass(frozen=True)
 class TextElement:
-    byte_range: tuple[int, int]
+    byte_range: Tuple[int, int]
     kind: str = "text"
-    payload: Any | None = None
+    payload: Any = None
 
     def shift(self, offset: int) -> "TextElement":
         start, end = self.byte_range
@@ -69,7 +70,7 @@ class UserMessageHistoryOverride:
 @dataclass(frozen=True)
 class UserMessageHistoryRecord:
     kind: UserMessageHistoryRecordKind = UserMessageHistoryRecordKind.USER_MESSAGE_TEXT
-    override: UserMessageHistoryOverride | None = None
+    override: Optional[UserMessageHistoryOverride] = None
 
     @classmethod
     def text(cls) -> "UserMessageHistoryRecord":
@@ -95,10 +96,10 @@ class UserMessageHistoryRecord:
 @dataclass
 class UserMessage:
     text: str = ""
-    local_images: list[LocalImageAttachment] = field(default_factory=list)
-    remote_image_urls: list[str] = field(default_factory=list)
-    text_elements: list[TextElement] = field(default_factory=list)
-    mention_bindings: list[MentionBinding] = field(default_factory=list)
+    local_images: List[LocalImageAttachment] = field(default_factory=list)
+    remote_image_urls: List[str] = field(default_factory=list)
+    text_elements: List[TextElement] = field(default_factory=list)
+    mention_bindings: List[MentionBinding] = field(default_factory=list)
 
     @classmethod
     def from_text(cls, text: str) -> "UserMessage":
@@ -120,7 +121,7 @@ class QueuedUserMessage:
     action: QueuedInputAction = QueuedInputAction.PLAIN
 
     @classmethod
-    def from_message(cls, message: UserMessage | str) -> "QueuedUserMessage":
+    def from_message(cls, message: Any) -> "QueuedUserMessage":
         if isinstance(message, str):
             message = UserMessage.from_text(message)
         return cls(message)
@@ -146,7 +147,7 @@ class PendingSteerCompareKey:
 class PendingSteer:
     user_message: UserMessage
     history_record: UserMessageHistoryRecord = field(default_factory=UserMessageHistoryRecord.text)
-    compare_key: PendingSteerCompareKey | None = None
+    compare_key: Optional[PendingSteerCompareKey] = None
 
     def __post_init__(self) -> None:
         if self.compare_key is None:
@@ -156,11 +157,11 @@ class PendingSteer:
 @dataclass
 class ComposerDraftSnapshot:
     text: str = ""
-    local_images: list[LocalImageAttachment] = field(default_factory=list)
-    remote_image_urls: list[str] = field(default_factory=list)
-    text_elements: list[TextElement] = field(default_factory=list)
-    mention_bindings: list[MentionBinding] = field(default_factory=list)
-    pending_pastes: list[tuple[str, str]] = field(default_factory=list)
+    local_images: List[LocalImageAttachment] = field(default_factory=list)
+    remote_image_urls: List[str] = field(default_factory=list)
+    text_elements: List[TextElement] = field(default_factory=list)
+    mention_bindings: List[MentionBinding] = field(default_factory=list)
+    pending_pastes: List[Tuple[str, str]] = field(default_factory=list)
 
     def to_user_message(self) -> UserMessage:
         return UserMessage(
@@ -175,11 +176,11 @@ class ComposerDraftSnapshot:
 @dataclass
 class ThreadComposerState:
     text: str = ""
-    local_images: list[LocalImageAttachment] = field(default_factory=list)
-    remote_image_urls: list[str] = field(default_factory=list)
-    text_elements: list[TextElement] = field(default_factory=list)
-    mention_bindings: list[MentionBinding] = field(default_factory=list)
-    pending_pastes: list[tuple[str, str]] = field(default_factory=list)
+    local_images: List[LocalImageAttachment] = field(default_factory=list)
+    remote_image_urls: List[str] = field(default_factory=list)
+    text_elements: List[TextElement] = field(default_factory=list)
+    mention_bindings: List[MentionBinding] = field(default_factory=list)
+    pending_pastes: List[Tuple[str, str]] = field(default_factory=list)
 
     def has_content(self) -> bool:
         return bool(
@@ -194,7 +195,7 @@ class ThreadComposerState:
 
 @dataclass
 class ThreadInputState:
-    composer: ThreadComposerState | None = None
+    composer: Optional[ThreadComposerState] = None
     pending_steers: Deque[UserMessage] = field(default_factory=deque)
     pending_steer_history_records: Deque[UserMessageHistoryRecord] = field(default_factory=deque)
     pending_steer_compare_keys: Deque[PendingSteerCompareKey] = field(default_factory=deque)
@@ -205,8 +206,8 @@ class ThreadInputState:
         default_factory=deque
     )
     user_turn_pending_start: bool = False
-    current_collaboration_mode: Any | None = None
-    active_collaboration_mask: Any | None = None
+    current_collaboration_mode: Any = None
+    active_collaboration_mask: Any = None
     task_running: bool = False
     agent_turn_running: bool = False
 
@@ -231,6 +232,8 @@ class InputQueue:
         self.queued_user_messages.clear()
         self.queued_user_message_history_records.clear()
         self.user_turn_pending_start = False
+        self.submit_pending_steers_after_interrupt = False
+        self.suppress_queue_autosend = False
 
 
 @dataclass
@@ -238,21 +241,21 @@ class InputRestoreModel:
     """Semantic stand-in for ``ChatWidget`` fields touched by input_restore.rs."""
 
     input_queue: InputQueue = field(default_factory=InputQueue)
-    initial_user_message: UserMessage | None = None
+    initial_user_message: Optional[UserMessage] = None
     suppress_initial_user_message_submit: bool = False
     composer: ComposerDraftSnapshot = field(default_factory=ComposerDraftSnapshot)
-    remote_image_urls: list[str] = field(default_factory=list)
-    submitted_messages: list[tuple[UserMessage, UserMessageHistoryRecord]] = field(
+    remote_image_urls: List[str] = field(default_factory=list)
+    submitted_messages: List[Tuple[UserMessage, UserMessageHistoryRecord]] = field(
         default_factory=list
     )
-    restored_messages: list[UserMessage] = field(default_factory=list)
-    history_events: list[tuple[str, str]] = field(default_factory=list)
+    restored_messages: List[UserMessage] = field(default_factory=list)
+    history_events: List[Tuple[str, str]] = field(default_factory=list)
     redraw_requests: int = 0
     pending_preview_refreshes: int = 0
     finalized_turns: int = 0
     interrupted_turn_notice_mode: InterruptedTurnNoticeMode = InterruptedTurnNoticeMode.NORMAL
-    current_collaboration_mode: Any | None = None
-    active_collaboration_mask: Any | None = None
+    current_collaboration_mode: Any = None
+    active_collaboration_mask: Any = None
     task_running: bool = False
     agent_turn_running: bool = False
 
@@ -277,7 +280,7 @@ class InputRestoreModel:
 
     def pop_next_queued_user_message(
         self,
-    ) -> tuple[QueuedUserMessage, UserMessageHistoryRecord] | None:
+    ) -> Optional[Tuple[QueuedUserMessage, UserMessageHistoryRecord]]:
         queue = self.input_queue
         if not queue.rejected_steers_queue:
             if not queue.queued_user_messages:
@@ -297,7 +300,7 @@ class InputRestoreModel:
         )
         return QueuedUserMessage.from_message(message), history_record
 
-    def pop_latest_queued_user_message(self) -> UserMessage | None:
+    def pop_latest_queued_user_message(self) -> Optional[UserMessage]:
         queue = self.input_queue
         if queue.queued_user_messages:
             return user_message_for_restore(
@@ -341,19 +344,23 @@ class InputRestoreModel:
             if pending:
                 message, history_record = merge_user_messages_with_history_record(pending)
                 self.submit_user_message_with_history_record(message, history_record)
-            elif (combined := self.drain_pending_messages_for_restore()) is not None:
+            else:
+                combined = self.drain_pending_messages_for_restore()
+                if combined is not None:
+                    self.restore_user_message_to_composer(combined)
+        else:
+            combined = self.drain_pending_messages_for_restore()
+            if combined is not None:
                 self.restore_user_message_to_composer(combined)
-        elif (combined := self.drain_pending_messages_for_restore()) is not None:
-            self.restore_user_message_to_composer(combined)
 
         self.refresh_pending_input_preview()
         self.request_redraw()
 
-    def drain_pending_messages_for_restore(self) -> UserMessage | None:
+    def drain_pending_messages_for_restore(self) -> Optional[UserMessage]:
         if not self.input_queue.pending_steers and not self.has_queued_follow_up_messages():
             return None
 
-        to_merge: list[UserMessage] = []
+        to_merge: List[UserMessage] = []
         queue = self.input_queue
 
         rejected_messages = list(queue.rejected_steers_queue)
@@ -435,7 +442,7 @@ class InputRestoreModel:
             agent_turn_running=self.agent_turn_running,
         )
 
-    def restore_thread_input_state(self, input_state: ThreadInputState | None) -> None:
+    def restore_thread_input_state(self, input_state: Optional[ThreadInputState]) -> None:
         restored_task_running = bool(input_state and input_state.task_running)
         if input_state is None:
             self.agent_turn_running = False
@@ -543,14 +550,14 @@ def merge_user_messages(messages: Iterable[UserMessage]) -> UserMessage:
 
 
 def merge_user_messages_with_history_record(
-    messages: Iterable[tuple[UserMessage, UserMessageHistoryRecord]],
-) -> tuple[UserMessage, UserMessageHistoryRecord]:
+    messages: Iterable[Tuple[UserMessage, UserMessageHistoryRecord]],
+) -> Tuple[UserMessage, UserMessageHistoryRecord]:
     pairs = [(user_message_for_restore(message, record), record) for message, record in messages]
     merged = merge_user_messages(message for message, _ in pairs)
     if all(record.kind is UserMessageHistoryRecordKind.USER_MESSAGE_TEXT for _, record in pairs):
         return merged, UserMessageHistoryRecord.text()
 
-    history_segments: list[UserMessage] = []
+    history_segments: List[UserMessage] = []
     for message, record in pairs:
         if record.has_non_empty_override() and record.override is not None:
             history_segments.append(
@@ -573,9 +580,9 @@ def merge_user_messages_with_history_record(
 
 
 def _resize_records(
-    records: list[UserMessageHistoryRecord],
+    records: List[UserMessageHistoryRecord],
     length: int,
-) -> list[UserMessageHistoryRecord]:
+) -> List[UserMessageHistoryRecord]:
     if len(records) < length:
         records.extend(UserMessageHistoryRecord.text() for _ in range(length - len(records)))
     return records[:length]

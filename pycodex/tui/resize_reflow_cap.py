@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, Optional, Union
 
 from ._porting import RustTuiModule
 
@@ -15,6 +15,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="resize_reflow_cap",
     source="codex/codex-rs/tui/src/resize_reflow_cap.rs",
+    status="complete",
 )
 
 DEFAULT_TERMINAL_RESIZE_REFLOW_FALLBACK_MAX_ROWS = 1_000
@@ -44,10 +45,10 @@ class TerminalName(str, Enum):
 @dataclass(frozen=True)
 class TerminalInfo:
     name: TerminalName = TerminalName.UNKNOWN
-    term_program: str | None = None
-    version: str | None = None
-    term: str | None = None
-    multiplexer: Any | None = None
+    term_program: Optional[str] = None
+    version: Optional[str] = None
+    term: Optional[str] = None
+    multiplexer: Any = None
 
 
 class TerminalResizeReflowMaxRowsKind(str, Enum):
@@ -59,7 +60,7 @@ class TerminalResizeReflowMaxRowsKind(str, Enum):
 @dataclass(frozen=True)
 class TerminalResizeReflowMaxRows:
     kind: TerminalResizeReflowMaxRowsKind
-    limit: int | None = None
+    limit: Optional[int] = None
 
     @classmethod
     def auto(cls) -> "TerminalResizeReflowMaxRows":
@@ -79,7 +80,7 @@ class TerminalResizeReflowConfig:
     max_rows: TerminalResizeReflowMaxRows = TerminalResizeReflowMaxRows.auto()
 
 
-def _coerce_terminal_name(terminal_name: TerminalName | str) -> TerminalName:
+def _coerce_terminal_name(terminal_name: Union[TerminalName, str]) -> TerminalName:
     if isinstance(terminal_name, TerminalName):
         return terminal_name
     normalized = str(terminal_name)
@@ -89,7 +90,7 @@ def _coerce_terminal_name(terminal_name: TerminalName | str) -> TerminalName:
     return TerminalName.UNKNOWN
 
 
-def _coerce_max_rows(value: TerminalResizeReflowMaxRows | int | str | None) -> TerminalResizeReflowMaxRows:
+def _coerce_max_rows(value: Optional[Union[TerminalResizeReflowMaxRows, int, str]]) -> TerminalResizeReflowMaxRows:
     if isinstance(value, TerminalResizeReflowMaxRows):
         return value
     if value is None:
@@ -107,11 +108,11 @@ def _coerce_max_rows(value: TerminalResizeReflowMaxRows | int | str | None) -> T
 
 
 def resize_reflow_max_rows(
-    config: TerminalResizeReflowConfig | TerminalResizeReflowMaxRows | int | str | None,
+    config: Optional[Union[TerminalResizeReflowConfig, TerminalResizeReflowMaxRows, int, str]],
     *,
-    terminal: TerminalInfo | None = None,
+    terminal: Optional[TerminalInfo] = None,
     running_in_vscode_terminal: bool = False,
-) -> int | None:
+) -> Optional[int]:
     """Resolve the row cap for resize and initial replay.
 
     Rust reads terminal metadata from global probes. Python exposes those probes
@@ -133,7 +134,7 @@ def resize_reflow_max_rows_for(
     config: TerminalResizeReflowConfig,
     terminal: TerminalInfo,
     running_in_vscode_terminal: bool,
-) -> int | None:
+) -> Optional[int]:
     max_rows = _coerce_max_rows(config.max_rows)
     if max_rows.kind is TerminalResizeReflowMaxRowsKind.AUTO:
         return auto_resize_reflow_max_rows(terminal.name, running_in_vscode_terminal)
@@ -144,7 +145,7 @@ def resize_reflow_max_rows_for(
     return max_rows.limit
 
 
-def auto_resize_reflow_max_rows(terminal_name: TerminalName | str, running_in_vscode_terminal: bool) -> int:
+def auto_resize_reflow_max_rows(terminal_name: Union[TerminalName, str], running_in_vscode_terminal: bool) -> int:
     if running_in_vscode_terminal:
         return VSCODE_RESIZE_REFLOW_MAX_ROWS
 
@@ -160,7 +161,7 @@ def auto_resize_reflow_max_rows(terminal_name: TerminalName | str, running_in_vs
     return DEFAULT_TERMINAL_RESIZE_REFLOW_FALLBACK_MAX_ROWS
 
 
-def test_terminal(name: TerminalName | str) -> TerminalInfo:
+def test_terminal(name: Union[TerminalName, str]) -> TerminalInfo:
     return TerminalInfo(name=_coerce_terminal_name(name))
 
 

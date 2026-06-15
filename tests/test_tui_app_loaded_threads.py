@@ -1,8 +1,8 @@
-﻿from pycodex.tui.app.loaded_threads import (
+from pycodex.tui.app.loaded_threads import (
     LoadedSubagentThread,
     find_loaded_subagent_threads_for_primary,
     finds_loaded_subagent_tree_for_primary_thread,
-    test_thread,
+    test_thread as make_thread,
     thread_spawn_parent_thread_id,
     thread_spawn_source,
 )
@@ -25,8 +25,8 @@ def test_invalid_thread_ids_and_non_spawn_sources_are_ignored() -> None:
     # Rust skips invalid ThreadId parsing and non-subagent SessionSource values.
     threads = [
         {"id": "not-a-uuid", "source": thread_spawn_source(PRIMARY)},
-        test_thread(CHILD, {"cli": {}}, "Not", "spawned"),
-        test_thread(GRANDCHILD, thread_spawn_source(CHILD), "Nested", "worker"),
+        make_thread(CHILD, {"cli": {}}, "Not", "spawned"),
+        make_thread(GRANDCHILD, thread_spawn_source(CHILD), "Nested", "worker"),
     ]
 
     assert find_loaded_subagent_threads_for_primary(threads, PRIMARY) == []
@@ -37,13 +37,25 @@ def test_output_is_sorted_by_thread_id_not_input_order() -> None:
     first = "00000000-0000-0000-0000-000000000010"
     second = "00000000-0000-0000-0000-000000000011"
     threads = [
-        test_thread(second, thread_spawn_source(PRIMARY), "Second", "worker"),
-        test_thread(first, thread_spawn_source(PRIMARY), "First", "worker"),
+        make_thread(second, thread_spawn_source(PRIMARY), "Second", "worker"),
+        make_thread(first, thread_spawn_source(PRIMARY), "First", "worker"),
     ]
 
     assert find_loaded_subagent_threads_for_primary(threads, PRIMARY) == [
         LoadedSubagentThread(first, "First", "worker"),
         LoadedSubagentThread(second, "Second", "worker"),
+    ]
+
+
+def test_duplicate_thread_ids_use_latest_loaded_thread_metadata() -> None:
+    # Rust builds a HashMap with insert, so later duplicate thread ids overwrite earlier entries.
+    threads = [
+        make_thread(CHILD, thread_spawn_source(PRIMARY), "Old", "role"),
+        make_thread(CHILD, thread_spawn_source(PRIMARY), "New", "updated"),
+    ]
+
+    assert find_loaded_subagent_threads_for_primary(threads, PRIMARY) == [
+        LoadedSubagentThread(CHILD, "New", "updated"),
     ]
 
 

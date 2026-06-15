@@ -1,4 +1,4 @@
-"""Selection tab bar helpers.
+﻿"""Selection tab bar helpers.
 
 Port of Rust ``codex-tui::bottom_pane::selection_tabs`` using semantic lines
 instead of ratatui ``Line``/``Span`` values.
@@ -7,7 +7,7 @@ instead of ratatui ``Line``/``Span`` values.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, MutableSequence
+from typing import Any, List, MutableSequence, Tuple, Union
 
 from .._porting import RustTuiModule
 
@@ -15,6 +15,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="bottom_pane::selection_tabs",
     source="codex/codex-rs/tui/src/bottom_pane/selection_tabs.rs",
+    status="complete",
 )
 
 TAB_GAP_WIDTH = 2
@@ -35,7 +36,7 @@ class StyledSpan:
 
 @dataclass(frozen=True)
 class StyledLine:
-    spans: tuple[StyledSpan, ...]
+    spans: Tuple[StyledSpan, ...]
 
     @property
     def text(self) -> str:
@@ -51,20 +52,20 @@ class SelectionTab:
     id: str
     label: str
     header: Any = None
-    items: list[Any] = field(default_factory=list)
+    items: List[Any] = field(default_factory=list)
 
 
-def tab_bar_height(tabs: list[SelectionTab], active_idx: int, width: int) -> int:
+def tab_bar_height(tabs: List[SelectionTab], active_idx: int, width: int) -> int:
     if not tabs:
         return 0
     return min(len(tab_bar_lines(tabs, active_idx, width)), 2**16 - 1)
 
 
 def render_tab_bar(
-    tabs: list[SelectionTab],
+    tabs: List[SelectionTab],
     active_idx: int,
     area: Any,
-    buf: MutableSequence[str] | MutableSequence[StyledLine],
+    buf: Union[MutableSequence[str], MutableSequence[StyledLine]],
 ) -> None:
     """Render semantic tab lines into ``buf`` up to ``area.height``.
 
@@ -79,13 +80,13 @@ def render_tab_bar(
         buf.append(line)  # type: ignore[arg-type]
 
 
-def tab_bar_lines(tabs: list[SelectionTab], active_idx: int, width: int) -> list[StyledLine]:
+def tab_bar_lines(tabs: List[SelectionTab], active_idx: int, width: int) -> List[StyledLine]:
     if not tabs:
         return []
 
     max_width = max(int(width), 1)
-    lines: list[StyledLine] = []
-    current_spans: list[StyledSpan] = []
+    lines: List[StyledLine] = []
+    current_spans: List[StyledSpan] = []
     current_width = 0
 
     for idx, tab in enumerate(tabs):
@@ -110,7 +111,7 @@ def tab_bar_lines(tabs: list[SelectionTab], active_idx: int, width: int) -> list
     return lines
 
 
-def tab_unit(label: str, active: bool) -> list[StyledSpan]:
+def tab_unit(label: str, active: bool) -> List[StyledSpan]:
     if active:
         return [
             StyledSpan("[", "accent"),
@@ -137,3 +138,4 @@ __all__ = [
     "tab_bar_lines",
     "tab_unit",
 ]
+

@@ -1,4 +1,4 @@
-"""Attachment bookkeeping for the chat composer.
+﻿"""Attachment bookkeeping for the chat composer.
 
 Port of Rust ``codex-tui::bottom_pane::chat_composer::attachment_state``.
 The module is intentionally independent from the full textarea implementation:
@@ -10,17 +10,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, List, Optional, Tuple, Union
 
 from pycodex.protocol.models import local_image_label_text
 
-from ... import LocalImageAttachment
 from ..._porting import RustTuiModule
+from .. import LocalImageAttachment
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="bottom_pane::chat_composer::attachment_state",
     source="codex/codex-rs/tui/src/bottom_pane/chat_composer/attachment_state.rs",
+    status="complete",
 )
 
 
@@ -38,31 +39,31 @@ class RemoteImageLine:
 
 @dataclass
 class AttachmentState:
-    local_images_: list[AttachedImage] = field(default_factory=list)
-    remote_image_urls_: list[str] = field(default_factory=list)
-    selected_remote_image_index: int | None = None
+    local_images_: List[AttachedImage] = field(default_factory=list)
+    remote_image_urls_: List[str] = field(default_factory=list)
+    selected_remote_image_index: Optional[int] = None
 
     def is_empty(self) -> bool:
         return not self.local_images_ and not self.remote_image_urls_
 
-    def local_image_paths(self) -> list[Path]:
+    def local_image_paths(self) -> List[Path]:
         return [image.path for image in self.local_images_]
 
-    def local_images(self) -> list[LocalImageAttachment]:
+    def local_images(self) -> List[LocalImageAttachment]:
         return [
             LocalImageAttachment(placeholder=image.placeholder, path=image.path)
             for image in self.local_images_
         ]
 
-    def set_remote_image_urls(self, urls: list[str], textarea: Any) -> None:
+    def set_remote_image_urls(self, urls: List[str], textarea: Any) -> None:
         self.remote_image_urls_ = list(urls)
         self.selected_remote_image_index = None
         self.relabel_local_images(textarea)
 
-    def remote_image_urls(self) -> list[str]:
+    def remote_image_urls(self) -> List[str]:
         return list(self.remote_image_urls_)
 
-    def take_remote_image_urls(self, textarea: Any) -> list[str]:
+    def take_remote_image_urls(self, textarea: Any) -> List[str]:
         urls = self.remote_image_urls_
         self.remote_image_urls_ = []
         self.selected_remote_image_index = None
@@ -73,7 +74,7 @@ class AttachmentState:
         self.remote_image_urls_.clear()
         self.selected_remote_image_index = None
 
-    def reset_local_images(self, local_image_paths: list[Path | str], textarea: Any) -> None:
+    def reset_local_images(self, local_image_paths: List[Union[Path, str]], textarea: Any) -> None:
         self.local_images_.clear()
         self.local_images_.extend(
             AttachedImage(
@@ -91,7 +92,7 @@ class AttachmentState:
         textarea.insert_element(placeholder)
         self.local_images_.append(AttachedImage(placeholder=placeholder, path=Path(path)))
 
-    def prune_local_images_for_submission(self, text: str, text_elements: list[Any]) -> None:
+    def prune_local_images_for_submission(self, text: str, text_elements: List[Any]) -> None:
         if not self.local_images_:
             return
         placeholders = {
@@ -104,12 +105,12 @@ class AttachmentState:
             image for image in self.local_images_ if image.placeholder in placeholders
         ]
 
-    def take_recent_submission_images(self) -> list[Path]:
+    def take_recent_submission_images(self) -> List[Path]:
         images = self.local_images_
         self.local_images_ = []
         return [image.path for image in images]
 
-    def take_recent_submission_images_with_placeholders(self) -> list[LocalImageAttachment]:
+    def take_recent_submission_images_with_placeholders(self) -> List[LocalImageAttachment]:
         images = self.local_images_
         self.local_images_ = []
         return [
@@ -117,7 +118,7 @@ class AttachmentState:
             for image in images
         ]
 
-    def remote_image_lines(self) -> list[RemoteImageLine]:
+    def remote_image_lines(self) -> List[RemoteImageLine]:
         lines: list[RemoteImageLine] = []
         for index, _url in enumerate(self.remote_image_urls_):
             selected = self.selected_remote_image_index == index
@@ -132,7 +133,7 @@ class AttachmentState:
     def clear_remote_image_selection(self) -> None:
         self.selected_remote_image_index = None
 
-    def handle_remote_image_selection_key(self, key_event: Any, textarea: Any) -> tuple[str, bool] | None:
+    def handle_remote_image_selection_key(self, key_event: Any, textarea: Any) -> Optional[Tuple[str, bool]]:
         if (
             not self.remote_image_urls_
             or _key_modifiers(key_event) not in (None, "", "NONE")
@@ -167,7 +168,7 @@ class AttachmentState:
 
         return None
 
-    def remove_deleted_local_placeholders(self, removed_payloads: list[str], textarea: Any) -> bool:
+    def remove_deleted_local_placeholders(self, removed_payloads: List[str], textarea: Any) -> bool:
         previous_len = len(self.local_images_)
         removed = set(removed_payloads)
         self.local_images_ = [
@@ -200,7 +201,7 @@ class AttachmentState:
         self.relabel_local_images(textarea)
 
 
-def _element_placeholder(element: Any, text: str) -> str | None:
+def _element_placeholder(element: Any, text: str) -> Optional[str]:
     placeholder = getattr(element, "placeholder", None)
     if callable(placeholder):
         return placeholder(text)
@@ -231,3 +232,4 @@ __all__ = [
     "RUST_MODULE",
     "RemoteImageLine",
 ]
+

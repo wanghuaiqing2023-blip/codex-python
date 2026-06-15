@@ -16,7 +16,7 @@ import time
 
 from .._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="keymap_setup::debug", source="codex/codex-rs/tui/src/keymap_setup/debug.rs")
+RUST_MODULE = RustTuiModule(crate="codex-tui", module="keymap_setup::debug", source="codex/codex-rs/tui/src/keymap_setup/debug.rs", status="complete")
 
 MISSING_KEY_HINT_DELAY = 3.0
 SHORT_MISSING_KEY_HINT = "Tip: Codex can only inspect keys your terminal sends."
@@ -139,10 +139,19 @@ class KeymapDebugView:
     def handle_key_event(self, key_event: Any) -> None:
         if _event_kind(key_event) == "release":
             return
+        try:
+            detected = SemanticKeyBinding.from_event(key_event)
+        except Exception:
+            detected = SemanticKeyBinding("unsupported")
+        config_key = _key_event_to_config_key_spec(key_event)
+        try:
+            raw_event = key_event_debug_summary(key_event)
+        except Exception as exc:
+            raw_event = f"unsupported key event: {exc}"
         self.last_report = KeymapDebugReport(
-            detected=SemanticKeyBinding.from_event(key_event),
-            config_key=_key_event_to_config_key_spec(key_event),
-            raw_event=key_event_debug_summary(key_event),
+            detected=detected,
+            config_key=config_key,
+            raw_event=raw_event,
             matches=matching_actions_for_key_event(self.runtime_keymap, self.keymap_config, key_event),
         )
 
@@ -167,7 +176,7 @@ def build_keymap_debug_view(runtime_keymap: Any, keymap_config: Any, *, clock: C
     return KeymapDebugView(runtime_keymap=runtime_keymap, keymap_config=keymap_config, opened_at=clock(), clock=clock)
 
 
-def render(view: KeymapDebugView, area: Any = None, buf: Any = None) -> list[str]:
+def render(view: KeymapDebugView, area: Any = None, buf: Any = None) -> List[str]:
     return view.render(area, buf)
 
 
@@ -191,11 +200,11 @@ def prefer_esc_to_handle_key_event(view: KeymapDebugView) -> bool:
     return view.prefer_esc_to_handle_key_event()
 
 
-def next_frame_delay(view: KeymapDebugView) -> float | None:
+def next_frame_delay(view: KeymapDebugView) -> Optional[float]:
     return view.next_frame_delay()
 
 
-def push_wrapped_dim(lines: list[str], text: str, wrap_width: int, initial_indent: str, subsequent_indent: str) -> None:
+def push_wrapped_dim(lines: List[str], text: str, wrap_width: int, initial_indent: str, subsequent_indent: str) -> None:
     wrapped = textwrap.wrap(
         str(text),
         width=max(1, int(wrap_width)),
@@ -225,12 +234,12 @@ def key_modifiers_debug_label(modifiers: Any) -> str:
 
 
 def matching_actions_for_key_event(runtime_keymap: Any, keymap_config: Any, key_event: Any) -> List[KeymapDebugActionMatch]:
-    matcher = getattr(runtime_keymap, "matching_actions_for_key_event", None)
+    matcher = _get(runtime_keymap, "matching_actions_for_key_event", None)
     if callable(matcher):
-        return [KeymapDebugActionMatch.from_any(value) for value in matcher(keymap_config, key_event)]
-    matcher = getattr(keymap_config, "matching_actions_for_key_event", None)
+        return [KeymapDebugActionMatch.from_any(value) for value in _call_matcher(matcher, keymap_config, key_event)]
+    matcher = _get(keymap_config, "matching_actions_for_key_event", None)
     if callable(matcher):
-        return [KeymapDebugActionMatch.from_any(value) for value in matcher(runtime_keymap, key_event)]
+        return [KeymapDebugActionMatch.from_any(value) for value in _call_matcher(matcher, runtime_keymap, key_event)]
     raw_matches = _get(runtime_keymap, "matches", None)
     if raw_matches is None:
         raw_matches = _get(keymap_config, "matches", [])
@@ -248,11 +257,20 @@ def _key_event_to_config_key_spec(key_event: Any) -> Union[str, Exception]:
         return exc
 
 
+def _call_matcher(matcher: Any, context: Any, key_event: Any) -> Any:
+    try:
+        return matcher(context, key_event)
+    except TypeError:
+        return matcher(key_event)
+
+
 def _event_code(event: Any) -> str:
     if isinstance(event, dict):
         raw = event.get("code", event.get("key", ""))
     else:
         raw = getattr(event, "code", event)
+    if raw is None:
+        raise ValueError("unsupported key code")
     text = str(raw)
     lowered = text.lower()
     mapping = {"escape": "esc", "return": "enter", "uparrow": "up", "downarrow": "down"}
@@ -272,7 +290,7 @@ def _event_modifiers(event: Any) -> FrozenSet[str]:
     return _normalize_modifiers(raw)
 
 
-def _normalize_modifiers(modifiers: Any) -> frozenset[str]:
+def _normalize_modifiers(modifiers: Any) -> FrozenSet[str]:
     if modifiers is None:
         return frozenset()
     if isinstance(modifiers, str):

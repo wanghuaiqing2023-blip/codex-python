@@ -1,4 +1,4 @@
-"""Key/value record rendering for markdown tables.
+﻿"""Key/value record rendering for markdown tables.
 
 Upstream source: ``codex/codex-rs/tui/src/markdown_render/table_key_value.rs``.
 
@@ -18,6 +18,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="markdown_render::table_key_value",
     source="codex/codex-rs/tui/src/markdown_render/table_key_value.rs",
+    status="complete",
 )
 
 FIELD_LEADING_PADDING = 1
@@ -83,7 +84,7 @@ def expansive_cells_are_starved(
         expansive.append((kind, int_width, len(wrap_cell(cell, int_width))))
 
     cramped = sum(1 for _, _, height in expansive if height >= CRAMPED_EXPANSIVE_CELL_LINES)
-    if cramped >= 2:
+    if cramped >= 1:
         return True
     return any(
         kind == "narrative"
@@ -104,13 +105,11 @@ def render_records(
     """Render table rows as readable key/value records."""
 
     label_width = max((_display_width(_plain_text(header)) for header in headers), default=0)
-    minimum_value_width = (
-        MIN_ALIGNED_EXPANSIVE_VALUE_WIDTH
-        if any(_metric_kind(metric) != "compact" for metric in metrics)
-        else MIN_ALIGNED_COMPACT_VALUE_WIDTH
-    )
-    aligned_fields = available_width is None or (
-        FIELD_LEADING_PADDING + label_width + FIELD_GAP + minimum_value_width <= available_width
+    has_expansive_metrics = any(_metric_kind(metric) != "compact" for metric in metrics)
+    aligned_fields = (
+        not has_expansive_metrics
+        or available_width is None
+        or (FIELD_LEADING_PADDING + label_width + FIELD_GAP + MIN_ALIGNED_EXPANSIVE_VALUE_WIDTH <= available_width)
     )
 
     out: list[HyperlinkLine] = []
@@ -123,7 +122,11 @@ def render_records(
 
         if row_index + 1 < len(rows):
             separator_width = available_width if available_width is not None else widest_line_width(out)
-            out.append(HyperlinkLine.new(Line.from_text(TABLE_BODY_SEPARATOR_CHAR * separator_width, style=separator_style)))
+            out.append(
+                HyperlinkLine.new(
+                    Line.from_spans([Span(TABLE_BODY_SEPARATOR_CHAR * separator_width, separator_style)])
+                )
+            )
 
     return out
 
@@ -378,3 +381,4 @@ __all__ = [
     "widest_line_width",
     "wrap_cell",
 ]
+

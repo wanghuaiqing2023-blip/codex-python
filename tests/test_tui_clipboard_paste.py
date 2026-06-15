@@ -1,13 +1,26 @@
 from pathlib import Path
 
+import pycodex.tui.clipboard_paste as clipboard_paste
 from pycodex.tui.clipboard_paste import (
     EncodedImageFormat,
     PasteImageError,
+    PasteImageErrorKind,
     PastedImageInfo,
     convert_windows_path_to_wsl,
     fmt,
+    paste_image_as_png,
+    paste_image_to_temp_png,
     normalize_pasted_path,
     pasted_image_format,
+)
+
+
+PNG_2X3 = (
+    b"\x89PNG\r\n\x1a\n"
+    b"\x00\x00\x00\rIHDR"
+    b"\x00\x00\x00\x02"
+    b"\x00\x00\x00\x03"
+    b"\x08\x06\x00\x00\x00"
 )
 
 
@@ -78,3 +91,58 @@ def test_convert_windows_path_to_wsl_trims_drive_root_and_empty_components() -> 
     assert convert_windows_path_to_wsl(
         r"E:/Users//Alice\\Pictures/example.png"
     ) == Path("/mnt/e/Users/Alice/Pictures/example.png")
+
+
+def test_windows_clipboard_dump_probe_and_temp_file_semantics(monkeypatch, tmp_path) -> None:
+    image_path = tmp_path / "clipboard.png"
+    image_path.write_bytes(PNG_2X3)
+
+    monkeypatch.setattr(clipboard_paste.sys, "platform", "win32")
+    monkeypatch.setattr(
+        clipboard_paste,
+        "try_dump_windows_clipboard_image_with_info",
+        lambda: (str(image_path), PastedImageInfo(2, 3, EncodedImageFormat.PNG)),
+    )
+
+    png, info = paste_image_as_png()
+    assert png == PNG_2X3
+    assert info == PastedImageInfo(2, 3, EncodedImageFormat.PNG)
+
+    temp_path, temp_info = paste_image_to_temp_png()
+    assert temp_path.name.startswith("codex-clipboard-")
+    assert temp_path.suffix == ".png"
+    assert temp_path.read_bytes() == PNG_2X3
+    assert temp_info == info
+
+
+def test_wsl_fallback_maps_windows_path_and_probes_png_dimensions(monkeypatch, tmp_path) -> None:
+    mapped = tmp_path / "clipboard.png"
+    mapped.write_bytes(PNG_2X3)
+
+    monkeypatch.setattr(clipboard_paste, "is_probably_wsl", lambda: True)
+    monkeypatch.setattr(
+        clipboard_paste,
+        "try_dump_windows_clipboard_image_with_info",
+        lambda: (r"C:\Temp\clipboard.png", PastedImageInfo(0, 0, EncodedImageFormat.PNG)),
+    )
+    monkeypatch.setattr(clipboard_paste, "convert_windows_path_to_wsl", lambda path: mapped)
+
+    path, info = clipboard_paste.try_wsl_clipboard_fallback(
+        PasteImageError(PasteImageErrorKind.CLIPBOARD_UNAVAILABLE, "x")
+    )
+
+    assert path == mapped
+    assert info == PastedImageInfo(2, 3, EncodedImageFormat.PNG)
+
+
+def test_paste_image_as_png_reports_no_image_when_windows_dump_has_no_image(monkeypatch) -> None:
+    monkeypatch.setattr(clipboard_paste.sys, "platform", "win32")
+    monkeypatch.setattr(clipboard_paste, "try_dump_windows_clipboard_image_with_info", lambda: None)
+
+    try:
+        paste_image_as_png()
+    except PasteImageError as error:
+        assert error.kind is PasteImageErrorKind.NO_IMAGE
+        assert str(error) == "no image on clipboard: no image on clipboard"
+    else:
+        raise AssertionError("expected PasteImageError")

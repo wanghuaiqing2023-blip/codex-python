@@ -6,7 +6,7 @@ Python port of Rust ``codex-tui::bottom_pane::skill_popup``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any, Iterable, List, Optional, Tuple
 
 from .._porting import RustTuiModule
 from .popup_consts import MAX_POPUP_ROWS
@@ -15,6 +15,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="bottom_pane::skill_popup",
     source="codex/codex-rs/tui/src/bottom_pane/skill_popup.rs",
+    status="complete",
 )
 
 MENTION_NAME_TRUNCATE_LEN = 28
@@ -23,19 +24,19 @@ MENTION_NAME_TRUNCATE_LEN = 28
 @dataclass
 class MentionItem:
     display_name: str
-    description: str | None
+    description: Optional[str]
     insert_text: str
-    search_terms: list[str] = field(default_factory=list)
-    path: str | None = None
-    category_tag: str | None = None
+    search_terms: List[str] = field(default_factory=list)
+    path: Optional[str] = None
+    category_tag: Optional[str] = None
     sort_rank: int = 0
 
 
 @dataclass(frozen=True)
 class DisplayRow:
     name: str
-    description: str | None = None
-    match_indices: list[int] | None = None
+    description: Optional[str] = None
+    match_indices: Optional[List[int]] = None
     selected: bool = False
 
 
@@ -47,9 +48,9 @@ class DisplayLine:
 
 @dataclass
 class SkillPopup:
-    mentions: list[MentionItem]
+    mentions: List[MentionItem]
     query: str = ""
-    selected_idx: int | None = None
+    selected_idx: Optional[int] = None
     scroll_top: int = 0
 
     @classmethod
@@ -87,7 +88,7 @@ class SkillPopup:
         self.selected_idx = (current + 1) % length
         self._ensure_visible(length)
 
-    def selected_mention(self) -> MentionItem | None:
+    def selected_mention(self) -> Optional[MentionItem]:
         matches = self.filtered_items()
         if self.selected_idx is None or not (0 <= self.selected_idx < len(matches)):
             return None
@@ -104,27 +105,26 @@ class SkillPopup:
         self.selected_idx = max(0, min(self.selected_idx, length - 1))
         self._ensure_visible(length)
 
-    def filtered_items(self) -> list[int]:
+    def filtered_items(self) -> List[int]:
         return [idx for idx, _indices, _score in self.filtered()]
 
-    def rows_from_matches(self, matches: list[tuple[int, list[int] | None, int]]) -> list[DisplayRow]:
-        rows: list[DisplayRow] = []
+    def rows_from_matches(self, matches: List[Tuple[int, Optional[List[int]], int]]) -> List[DisplayRow]:
+        rows = []
         for visible_idx, (idx, indices, _score) in enumerate(matches):
             mention = self.mentions[idx]
-            description = _combined_description(mention.category_tag, mention.description)
             rows.append(
                 DisplayRow(
                     name=truncate_text(mention.display_name, MENTION_NAME_TRUNCATE_LEN),
-                    description=description,
+                    description=_combined_description(mention.category_tag, mention.description),
                     match_indices=indices,
                     selected=self.selected_idx == visible_idx,
                 )
             )
         return rows
 
-    def filtered(self) -> list[tuple[int, list[int] | None, int]]:
+    def filtered(self) -> List[Tuple[int, Optional[List[int]], int]]:
         filter_text = self.query.strip()
-        out: list[tuple[int, list[int] | None, int]] = []
+        out = []
         for idx, mention in enumerate(self.mentions):
             if not filter_text:
                 out.append((idx, None, 0))
@@ -136,17 +136,18 @@ class SkillPopup:
                 out.append((idx, indices, score))
                 continue
 
-            term_scores = [
-                score
-                for term in mention.search_terms
-                if term != mention.display_name
-                for _indices, score in [fuzzy_match(term, filter_text) or (None, None)]
-                if score is not None
-            ]
+            term_scores = []
+            for term in mention.search_terms:
+                if term == mention.display_name:
+                    continue
+                matched = fuzzy_match(term, filter_text)
+                if matched is not None:
+                    _indices, score = matched
+                    term_scores.append(score)
             if term_scores:
                 out.append((idx, None, min(term_scores)))
 
-        def key(row: tuple[int, list[int] | None, int]) -> tuple[Any, ...]:
+        def key(row: Tuple[int, Optional[List[int]], int]) -> Tuple[Any, ...]:
             idx, indices, score = row
             mention = self.mentions[idx]
             if filter_text:
@@ -156,17 +157,17 @@ class SkillPopup:
         out.sort(key=key)
         return out
 
-    def render_ref(self, area: Any = None, buf: Any = None) -> list[DisplayLine]:
+    def render_ref(self, area: Any = None, buf: Any = None) -> List[DisplayLine]:
         width = _area_width(area)
         height = _area_height(area)
         if width == 0 or height == 0:
             return []
         rows = self.rows_from_matches(self.filtered())
         visible_height = height - 2 if height > 2 else height
-        lines: list[DisplayLine] = []
+        lines = []
         if rows:
             for row in rows[self.scroll_top : self.scroll_top + min(MAX_POPUP_ROWS, visible_height)]:
-                prefix = "› " if row.selected else "  "
+                prefix = "> " if row.selected else "  "
                 lines.append(DisplayLine(prefix + row.name, "selected" if row.selected else "plain"))
                 if row.description:
                     lines.append(DisplayLine("  " + row.description, "description"))
@@ -189,7 +190,7 @@ class SkillPopup:
         self.scroll_top = max(0, min(self.scroll_top, max(0, length - visible)))
 
 
-def render_ref(popup: SkillPopup, area: Any = None, buf: Any = None) -> list[DisplayLine]:
+def render_ref(popup: SkillPopup, area: Any = None, buf: Any = None) -> List[DisplayLine]:
     return popup.render_ref(area, buf)
 
 
@@ -202,17 +203,17 @@ def truncate_text(text: str, max_len: int) -> str:
     if len(text) <= max_len:
         return text
     if max_len <= 1:
-        return "…"[:max_len]
-    return text[: max_len - 1] + "…"
+        return "."[:max_len]
+    return text[: max_len - 1] + "."
 
 
-def fuzzy_match(haystack: str, needle: str) -> tuple[list[int], int] | None:
+def fuzzy_match(haystack: str, needle: str) -> Optional[Tuple[List[int], int]]:
     needle_lower = needle.lower()
     haystack_lower = haystack.lower()
-    indices: list[int] = []
+    indices = []
     start = 0
-    for ch in needle_lower:
-        found = haystack_lower.find(ch, start)
+    for char in needle_lower:
+        found = haystack_lower.find(char, start)
         if found == -1:
             return None
         indices.append(found)
@@ -220,25 +221,23 @@ def fuzzy_match(haystack: str, needle: str) -> tuple[list[int], int] | None:
     return indices, _fuzzy_score(haystack, needle, indices)
 
 
-def _fuzzy_score(haystack: str, needle: str, indices: list[int]) -> int:
+def _fuzzy_score(haystack: str, needle: str, indices: List[int]) -> int:
     lower = haystack.lower()
     needle = needle.lower()
     if lower.startswith(needle):
         next_char = lower[len(needle) : len(needle) + 1]
         if next_char == " ":
-            prefix_bonus = 0
-        elif next_char in {"-", "_"}:
-            prefix_bonus = 1
-        else:
-            prefix_bonus = 2
-        return prefix_bonus
+            return 0
+        if next_char in {"-", "_"}:
+            return 1
+        return 2
     spread = indices[-1] - indices[0] if indices else 0
     return 10 + indices[0] + spread + len(haystack)
 
 
-def _combined_description(category_tag: str | None, description: str | None) -> str | None:
+def _combined_description(category_tag: Optional[str], description: Optional[str]) -> Optional[str]:
     if category_tag and description:
-        return f"{category_tag} {description}"
+        return "{} {}".format(category_tag, description)
     if category_tag:
         return category_tag
     if description:
@@ -248,11 +247,11 @@ def _combined_description(category_tag: str | None, description: str | None) -> 
 
 def mention_item(index: int) -> MentionItem:
     return MentionItem(
-        display_name=f"Mention {index:02}",
-        description=f"Description {index:02}",
-        insert_text=f"$mention-{index:02}",
-        search_terms=[f"mention-{index:02}"],
-        path=f"skill://mention-{index:02}",
+        display_name="Mention {:02}".format(index),
+        description="Description {:02}".format(index),
+        insert_text="$mention-{:02}".format(index),
+        search_terms=["mention-{:02}".format(index)],
+        path="skill://mention-{:02}".format(index),
         category_tag="[Skill]",
         sort_rank=1,
     )
@@ -260,14 +259,14 @@ def mention_item(index: int) -> MentionItem:
 
 def ranked_mention_item(
     display_name: str,
-    search_terms: list[str] | tuple[str, ...],
+    search_terms: Iterable[str],
     category_tag: str,
     sort_rank: int,
 ) -> MentionItem:
     return MentionItem(
         display_name=display_name,
         description=None,
-        insert_text=f"${display_name}",
+        insert_text="${}".format(display_name),
         search_terms=list(search_terms),
         path=None,
         category_tag=category_tag,
@@ -275,12 +274,68 @@ def ranked_mention_item(
     )
 
 
-def named_mention_item(display_name: str, search_terms: list[str] | tuple[str, ...]) -> MentionItem:
+def named_mention_item(display_name: str, search_terms: Iterable[str]) -> MentionItem:
     return ranked_mention_item(display_name, search_terms, "[Skill]", 1)
 
 
-def plugin_mention_item(display_name: str, search_terms: list[str] | tuple[str, ...]) -> MentionItem:
+def plugin_mention_item(display_name: str, search_terms: Iterable[str]) -> MentionItem:
     return ranked_mention_item(display_name, search_terms, "[Plugin]", 0)
+
+
+def filtered_mentions_preserve_results_beyond_popup_height() -> bool:
+    popup = SkillPopup.new(mention_item(idx) for idx in range(MAX_POPUP_ROWS + 2))
+    names = [popup.mentions[idx].display_name for idx in popup.filtered_items()]
+    return names == ["Mention {:02}".format(idx) for idx in range(MAX_POPUP_ROWS + 2)] and popup.calculate_required_height(72) == MAX_POPUP_ROWS + 2
+
+
+def scrolling_mentions_shifts_rendered_window_snapshot() -> bool:
+    popup = SkillPopup.new(mention_item(idx) for idx in range(MAX_POPUP_ROWS + 2))
+    for _ in range(MAX_POPUP_ROWS + 1):
+        popup.move_down()
+    rendered = popup.render_ref((0, 0, 72, popup.calculate_required_height(72)))
+    return popup.selected_idx == MAX_POPUP_ROWS + 1 and popup.scroll_top == 2 and rendered[0].text.startswith("  Mention 02")
+
+
+def display_name_match_sorting_beats_worse_secondary_search_term_matches() -> bool:
+    popup = SkillPopup.new(
+        [
+            named_mention_item("pr-review-triage", ["pr-review-triage"]),
+            named_mention_item("prd", ["prd"]),
+            named_mention_item("PR Babysitter", ["babysit-pr", "PR Babysitter"]),
+            named_mention_item("Plugin Creator", ["plugin-creator", "Plugin Creator"]),
+            named_mention_item("Logging Best Practices", ["logging-best-practices", "Logging Best Practices"]),
+        ]
+    )
+    popup.set_query("pr")
+    return [popup.mentions[idx].display_name for idx in popup.filtered_items()] == [
+        "PR Babysitter",
+        "pr-review-triage",
+        "prd",
+        "Plugin Creator",
+        "Logging Best Practices",
+    ]
+
+
+def query_match_score_sorts_before_plugin_rank_bias() -> bool:
+    popup = SkillPopup.new(
+        [
+            plugin_mention_item("GitHub", ["github", "pull requests", "pr"]),
+            named_mention_item("pr-review-triage", ["pr-review-triage"]),
+            named_mention_item("prd", ["prd"]),
+            named_mention_item("Plugin Creator", ["plugin-creator", "Plugin Creator"]),
+            named_mention_item("Logging Best Practices", ["logging-best-practices", "Logging Best Practices"]),
+            named_mention_item("PR Babysitter", ["babysit-pr", "PR Babysitter"]),
+        ]
+    )
+    popup.set_query("pr")
+    return [(popup.mentions[idx].display_name, popup.mentions[idx].category_tag) for idx in popup.filtered_items()] == [
+        ("PR Babysitter", "[Skill]"),
+        ("pr-review-triage", "[Skill]"),
+        ("prd", "[Skill]"),
+        ("Plugin Creator", "[Skill]"),
+        ("Logging Best Practices", "[Skill]"),
+        ("GitHub", "[Plugin]"),
+    ]
 
 
 def _area_width(area: Any) -> int:
@@ -310,12 +365,16 @@ __all__ = [
     "MentionItem",
     "RUST_MODULE",
     "SkillPopup",
+    "display_name_match_sorting_beats_worse_secondary_search_term_matches",
+    "filtered_mentions_preserve_results_beyond_popup_height",
     "fuzzy_match",
     "mention_item",
     "named_mention_item",
     "plugin_mention_item",
+    "query_match_score_sorts_before_plugin_rank_bias",
     "ranked_mention_item",
     "render_ref",
+    "scrolling_mentions_shifts_rendered_window_snapshot",
     "skill_popup_hint_line",
     "truncate_text",
 ]

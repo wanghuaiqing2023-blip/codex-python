@@ -9,7 +9,10 @@ from pycodex.tui.render.highlight import (
     MAX_HIGHLIGHT_LINES,
     OPAQUE_ALPHA,
     SemanticColor,
+    SemanticStyle,
     ThemeEntry,
+    diff_scope_background_rgbs_for_theme,
+    foreground_style_for_scopes_with_theme,
     ansi_palette_color,
     convert_syntect_color,
     custom_theme_path,
@@ -63,7 +66,7 @@ def test_parse_and_resolve_builtin_theme_names() -> None:
 
 
 def test_custom_theme_path_validation_and_listing(tmp_path: Path) -> None:
-    """Custom themes remain discoverable, but no-op highlighting does not parse theme scopes."""
+    """Rust: custom themes must parse successfully to be accepted/listed."""
     themes = tmp_path / "themes"
     themes.mkdir()
     _write_tmtheme(themes / "valid-custom.tmTheme")
@@ -71,17 +74,17 @@ def test_custom_theme_path_validation_and_listing(tmp_path: Path) -> None:
 
     assert custom_theme_path("valid-custom", tmp_path) == themes / "valid-custom.tmTheme"
     assert validate_theme_name("valid-custom", tmp_path) is None
-    assert validate_theme_name("broken-custom", tmp_path) is None
+    assert "could not be loaded" in validate_theme_name("broken-custom", tmp_path)
     assert "not found" in validate_theme_name("missing-custom", tmp_path)
 
     entries = list_available_themes(tmp_path)
     assert ThemeEntry("valid-custom", True) in entries
-    assert ThemeEntry("broken-custom", True) in entries
+    assert ThemeEntry("broken-custom", True) not in entries
     assert entries == sorted(entries, key=lambda entry: (entry.name.lower(), entry.name))
 
 
-def test_custom_tmtheme_noop_loader_keeps_file_boundary_without_scope_parsing(tmp_path: Path) -> None:
-    """No-op boundary: .tmTheme files are accepted but not parsed for token colors."""
+def test_custom_tmtheme_parser_extracts_scope_styles_and_diff_backgrounds(tmp_path: Path) -> None:
+    """Rust: TextMate theme scopes provide foreground styles and diff backgrounds."""
     themes = tmp_path / "themes"
     themes.mkdir()
     _write_tmtheme(
@@ -105,9 +108,15 @@ def test_custom_tmtheme_noop_loader_keeps_file_boundary_without_scope_parsing(tm
     assert theme.name == "custom-diff"
     assert theme.is_custom is True
     assert theme.path == themes / "custom-diff.tmTheme"
-    assert theme.foregrounds is None
-    assert theme.token_styles is None
-    assert theme.backgrounds is None
+    assert theme.foregrounds["keyword"] == (170, 187, 204)
+    assert theme.token_styles["keyword"] == SemanticStyle(
+        fg=SemanticColor("rgb", (170, 187, 204)),
+        bold=True,
+        italic=True,
+    )
+    assert diff_scope_background_rgbs_for_theme(theme).inserted == (16, 32, 48)
+    assert diff_scope_background_rgbs_for_theme(theme).deleted == (64, 80, 96)
+    assert foreground_style_for_scopes_with_theme(theme, ["missing", "keyword"]) == theme.token_styles["keyword"]
 
 
 def test_ansi_color_conversion_matches_rust_alpha_semantics() -> None:
@@ -134,11 +143,15 @@ def test_find_syntax_aliases_and_unknown_language_fallback() -> None:
     assert highlight_code_to_styled_spans("x", "xyzlang") is None
 
 
-def test_noop_highlighting_returns_none_even_for_known_languages() -> None:
-    """No-op boundary: real syntect/TextMate highlighting is intentionally deferred."""
+def test_semantic_highlighting_styles_rust_keywords() -> None:
+    """Python semantic slice: known languages return styled spans and preserve content."""
     lines = highlight_code_to_styled_spans("fn main() { let answer = 42; }", "rust")
 
-    assert lines is None
+    assert lines is not None
+    assert reconstructed(lines) == "fn main() { let answer = 42; }"
+    styled_tokens = [span.text for line in lines for span in line if span.style.bold]
+    assert "fn" in styled_tokens
+    assert "let" in styled_tokens
 
 
 def test_highlight_limits_and_content_preserving_fallback() -> None:

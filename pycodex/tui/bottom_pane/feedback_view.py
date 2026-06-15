@@ -1,4 +1,4 @@
-"""Feedback bottom-pane views and copy helpers.
+﻿"""Feedback bottom-pane views and copy helpers.
 
 Python port of Rust ``codex-tui::bottom_pane::feedback_view``.
 """
@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, List, Optional, Tuple
 
 from pycodex.feedback import DOCTOR_REPORT_ATTACHMENT_FILENAME
 from pycodex.feedback import FEEDBACK_DIAGNOSTICS_ATTACHMENT_FILENAME
@@ -25,12 +25,12 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="bottom_pane::feedback_view",
     source="codex/codex-rs/tui/src/bottom_pane/feedback_view.rs",
+    status="complete",
 )
 
 BASE_CLI_BUG_ISSUE_URL = "https://github.com/openai/codex/issues/new?template=3-cli.yml"
 CODEX_FEEDBACK_INTERNAL_URL = "http://go/codex-feedback-internal"
 GUTTER = "▌"
-
 
 class FeedbackAudience(Enum):
     OPEN_AI_EMPLOYEE = "OpenAiEmployee"
@@ -76,7 +76,7 @@ class SimpleTextArea:
             return 1
         return sum(max(1, (len(line) + width - 1) // width) for line in self.text_value.split("\n"))
 
-    def cursor_pos(self, x: int, y: int, width: int, height: int) -> tuple[int, int] | None:
+    def cursor_pos(self, x: int, y: int, width: int, height: int) -> Optional[Tuple[int, int]]:
         if width <= 0 or height <= 0:
             return None
         row = 0
@@ -96,7 +96,7 @@ class SimpleTextArea:
 @dataclass
 class FeedbackNoteView:
     category: FeedbackCategory
-    turn_id: str | None
+    turn_id: Optional[str]
     app_event_tx: Any
     include_logs: bool
     textarea: SimpleTextArea = field(default_factory=SimpleTextArea.new)
@@ -106,7 +106,7 @@ class FeedbackNoteView:
     def new(
         cls,
         category: FeedbackCategory,
-        turn_id: str | None,
+        turn_id: Optional[str],
         app_event_tx: Any,
         include_logs: bool,
     ) -> "FeedbackNoteView":
@@ -151,7 +151,7 @@ class FeedbackNoteView:
     def desired_height(self, width: int) -> int:
         return len(self.intro_lines(width)) + self.input_height(width) + 2
 
-    def cursor_pos(self, area: Any) -> tuple[int, int] | None:
+    def cursor_pos(self, area: Any) -> Optional[Tuple[int, int]]:
         width = _area_width(area)
         height = _area_height(area)
         if height < 2 or width <= 2:
@@ -167,7 +167,7 @@ class FeedbackNoteView:
             text_area_height,
         )
 
-    def render(self, area: Any = None, buf: Any = None) -> list[DisplayLine]:
+    def render(self, area: Any = None, buf: Any = None) -> List[DisplayLine]:
         width = _area_width(area)
         height = _area_height(area)
         if width == 0 or height == 0:
@@ -188,7 +188,7 @@ class FeedbackNoteView:
         text_height = min(8, max(1, self.textarea.desired_height(usable_width)))
         return min(9, text_height + 1)
 
-    def intro_lines(self, width: int) -> list[DisplayLine]:
+    def intro_lines(self, width: int) -> List[DisplayLine]:
         title, _placeholder = feedback_title_and_placeholder(self.category)
         return [DisplayLine(f"{gutter()}{title}", "title")]
 
@@ -213,11 +213,11 @@ def desired_height(view: FeedbackNoteView, width: int) -> int:
     return view.desired_height(width)
 
 
-def cursor_pos(view: FeedbackNoteView, area: Any) -> tuple[int, int] | None:
+def cursor_pos(view: FeedbackNoteView, area: Any) -> Optional[Tuple[int, int]]:
     return view.cursor_pos(area)
 
 
-def render(view: FeedbackNoteView, area: Any = None, buf: Any = None) -> list[DisplayLine]:
+def render(view: FeedbackNoteView, area: Any = None, buf: Any = None) -> List[DisplayLine]:
     return view.render(area, buf)
 
 
@@ -232,7 +232,7 @@ def gutter() -> str:
     return GUTTER
 
 
-def feedback_title_and_placeholder(category: FeedbackCategory) -> tuple[str, str]:
+def feedback_title_and_placeholder(category: FeedbackCategory) -> Tuple[str, str]:
     category = _category(category)
     common = "(optional) Write a short description to help us further"
     if category is FeedbackCategory.BAD_RESULT:
@@ -258,9 +258,9 @@ def feedback_classification(category: FeedbackCategory) -> str:
 
 @dataclass(frozen=True)
 class WebHyperlinkHistoryCell:
-    lines: list[DisplayLine]
+    lines: List[DisplayLine]
 
-    def display_lines(self, width: int) -> list[DisplayLine]:
+    def display_lines(self, width: int) -> List[DisplayLine]:
         return list(self.lines)
 
     def text(self) -> str:
@@ -307,7 +307,7 @@ def issue_url_for_category(
     category: FeedbackCategory,
     thread_id: str,
     feedback_audience: FeedbackAudience,
-) -> str | None:
+) -> Optional[str]:
     category = _category(category)
     if category is FeedbackCategory.GOOD_RESULT:
         return None
@@ -363,7 +363,7 @@ def feedback_upload_consent_params(
     app_event_tx: Any,
     category: FeedbackCategory,
     rollout_path: Any,
-    auto_review_rollout_filename: str | None,
+    auto_review_rollout_filename: Optional[str],
     include_windows_sandbox_log: bool,
     feedback_diagnostics: FeedbackDiagnostics,
 ) -> SelectionViewParams:
@@ -401,7 +401,7 @@ def upload_consent_header_lines(
     auto_review_rollout_filename: str | None,
     include_windows_sandbox_log: bool,
     feedback_diagnostics: FeedbackDiagnostics,
-) -> list[DisplayLine]:
+) -> List[DisplayLine]:
     lines = [
         DisplayLine("Upload logs?", "title"),
         DisplayLine(""),
@@ -426,7 +426,6 @@ def upload_consent_header_lines(
                 lines.append(DisplayLine(f"    - {detail}", "dim"))
     return lines
 
-
 def _category(category: FeedbackCategory) -> FeedbackCategory:
     if isinstance(category, FeedbackCategory):
         return category
@@ -437,7 +436,7 @@ def _category(category: FeedbackCategory) -> FeedbackCategory:
     return FeedbackCategory[normalized]
 
 
-def _diagnostics(feedback_diagnostics: FeedbackDiagnostics) -> list[Any]:
+def _diagnostics(feedback_diagnostics: FeedbackDiagnostics) -> List[Any]:
     value = getattr(feedback_diagnostics, "diagnostics", [])
     return value() if callable(value) else list(value)
 
@@ -541,3 +540,4 @@ __all__ = [
     "slack_feedback_url",
     "upload_consent_header_lines",
 ]
+

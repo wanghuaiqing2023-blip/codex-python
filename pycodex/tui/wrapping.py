@@ -23,6 +23,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="wrapping",
     source="codex/codex-rs/tui/src/wrapping.rs",
+    status="complete",
 )
 
 _DECORATIVE_MARKERS = {"-", "*", "+", "•", "◦", "▪", ">", "|", "┃", "│", "┆", "┊", "┋", "┇", "┈", "┉"}
@@ -358,7 +359,7 @@ def into_line_input(value: Any) -> LineInput:
 
 def slice_line_spans(line: Line, start: int, end: int) -> Line:
     text_pos = 0
-    spans: list[Span] = []
+    spans: List[Span] = []
     for span in line.spans:
         span_text = span.content
         span_end = text_pos + len(span_text)
@@ -430,6 +431,9 @@ def _take_line(
 
     limit_index = _char_index_for_width(text, width)
     break_at = text.rfind(" ", 0, limit_index + 1)
+    leading_spaces = len(text) - len(text.lstrip(" "))
+    if keep_leading and leading_spaces and break_at < leading_spaces < limit_index:
+        return text[:limit_index], text[limit_index:].lstrip(" ")
     if break_at > 0:
         return text[:break_at].rstrip(" "), text[break_at:].lstrip(" ")
 

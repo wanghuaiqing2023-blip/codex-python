@@ -7,20 +7,27 @@ Rust uses ``arboard`` and ``image`` crates for that platform integration.
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
+import struct
 import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional, Tuple
 from urllib.parse import unquote, urlparse
 
 from ._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="clipboard_paste", source="codex/codex-rs/tui/src/clipboard_paste.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="clipboard_paste",
+    source="codex/codex-rs/tui/src/clipboard_paste.rs",
+    status="complete",
+)
 
 
 class PasteImageErrorKind(Enum):
@@ -85,11 +92,26 @@ class PastedImageInfo:
     encoded_format: EncodedImageFormat
 
 
-def paste_image_as_png() -> tuple[bytes, PastedImageInfo]:
-    raise PasteImageError.clipboard_unavailable("clipboard image paste is unsupported by the Python stdlib backend")
+def paste_image_as_png() -> Tuple[bytes, PastedImageInfo]:
+    if sys.platform == "win32":
+        dumped = try_dump_windows_clipboard_image_with_info()
+        if dumped is None:
+            raise PasteImageError.no_image("no image on clipboard")
+        path, info = dumped
+        try:
+            return Path(path).read_bytes(), info
+        except OSError as exc:
+            raise PasteImageError.io_error(str(exc)) from None
+
+    if sys.platform == "android":
+        raise PasteImageError.clipboard_unavailable("clipboard image paste is unsupported on Android")
+
+    raise PasteImageError.clipboard_unavailable(
+        "clipboard image paste requires a platform clipboard backend"
+    )
 
 
-def paste_image_to_temp_png() -> tuple[Path, PastedImageInfo]:
+def paste_image_to_temp_png() -> Tuple[Path, PastedImageInfo]:
     try:
         png, info = paste_image_as_png()
     except PasteImageError as error:
@@ -108,32 +130,49 @@ def paste_image_to_temp_png() -> tuple[Path, PastedImageInfo]:
         raise PasteImageError.io_error(str(exc)) from None
 
 
-def try_wsl_clipboard_fallback(error: PasteImageError) -> tuple[Path, PastedImageInfo] | None:
+def try_wsl_clipboard_fallback(error: PasteImageError) -> Optional[Tuple[Path, PastedImageInfo]]:
     if not is_probably_wsl() or error.kind not in {
         PasteImageErrorKind.CLIPBOARD_UNAVAILABLE,
         PasteImageErrorKind.NO_IMAGE,
     }:
         return None
 
-    win_path = try_dump_windows_clipboard_image()
-    if not win_path:
+    dumped = try_dump_windows_clipboard_image_with_info()
+    if dumped is None:
         return None
+    win_path, info = dumped
     mapped = convert_windows_path_to_wsl(win_path)
     if mapped is None:
         return None
+    probed = _probe_png_info(mapped)
+    return mapped, probed or info
 
-    return mapped, PastedImageInfo(width=0, height=0, encoded_format=EncodedImageFormat.PNG)
+
+def try_dump_windows_clipboard_image() -> Optional[str]:
+    dumped = try_dump_windows_clipboard_image_with_info()
+    return dumped[0] if dumped else None
 
 
-def try_dump_windows_clipboard_image() -> str | None:
+def try_dump_windows_clipboard_image_with_info() -> Optional[Tuple[str, PastedImageInfo]]:
     script = (
         "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
-        "$img = Get-Clipboard -Format Image; "
+        "Add-Type -AssemblyName System.Drawing; "
+        "$img = $null; "
+        "try { $img = Get-Clipboard -Format Image } catch {} "
+        "if ($img -eq $null) { "
+        "  try { "
+        "    $files = Get-Clipboard -Format FileDropList; "
+        "    foreach ($f in $files) { "
+        "      try { $img = [System.Drawing.Image]::FromFile($f); break } catch {} "
+        "    } "
+        "  } catch {} "
+        "} "
         "if ($img -ne $null) { "
-        "$p=[System.IO.Path]::GetTempFileName(); "
-        "$p = [System.IO.Path]::ChangeExtension($p,'png'); "
-        "$img.Save($p,[System.Drawing.Imaging.ImageFormat]::Png); "
-        "Write-Output $p "
+        "  $p=[System.IO.Path]::GetTempFileName(); "
+        "  $p = [System.IO.Path]::ChangeExtension($p,'png'); "
+        "  $img.Save($p,[System.Drawing.Imaging.ImageFormat]::Png); "
+        "  $o=[pscustomobject]@{ path=$p; width=$img.Width; height=$img.Height }; "
+        "  $o | ConvertTo-Json -Compress "
         "} else { exit 1 }"
     )
     for cmd in ("powershell.exe", "pwsh", "powershell"):
@@ -142,13 +181,25 @@ def try_dump_windows_clipboard_image() -> str | None:
         except OSError:
             continue
         if output.returncode == 0:
-            path = output.stdout.strip()
-            if path:
-                return path
+            raw = output.stdout.strip()
+            if not raw:
+                continue
+            try:
+                data = json.loads(raw)
+                path = str(data["path"])
+                width = int(data["width"])
+                height = int(data["height"])
+            except Exception:
+                path = raw
+                info = _probe_png_info(Path(path))
+                if info is None:
+                    continue
+                return path, info
+            return path, PastedImageInfo(width, height, EncodedImageFormat.PNG)
     return None
 
 
-def normalize_pasted_path(pasted: str) -> Path | None:
+def normalize_pasted_path(pasted: str) -> Optional[Path]:
     pasted = pasted.strip()
     unquoted = _strip_matching_simple_quotes(pasted)
 
@@ -180,7 +231,7 @@ def _strip_matching_simple_quotes(text: str) -> str:
     return text
 
 
-def _file_url_to_path(parsed: Any) -> Path | None:
+def _file_url_to_path(parsed: Any) -> Optional[Path]:
     if parsed.netloc and parsed.netloc not in {"localhost"}:
         path_text = f"//{parsed.netloc}{parsed.path}"
     else:
@@ -204,7 +255,7 @@ def is_probably_wsl() -> bool:
     return "WSL_DISTRO_NAME" in os.environ or "WSL_INTEROP" in os.environ
 
 
-def convert_windows_path_to_wsl(input: str) -> Path | None:
+def convert_windows_path_to_wsl(input: str) -> Optional[Path]:
     if input.startswith("\\\\"):
         return None
     if len(input) < 2 or input[1] != ":":
@@ -220,7 +271,7 @@ def convert_windows_path_to_wsl(input: str) -> Path | None:
     return result
 
 
-def normalize_windows_path(input: str) -> Path | None:
+def normalize_windows_path(input: str) -> Optional[Path]:
     drive = (
         len(input) >= 3
         and input[0].isalpha()
@@ -239,7 +290,7 @@ def normalize_windows_path(input: str) -> Path | None:
     return Path(input)
 
 
-def pasted_image_format(path: str | os.PathLike[str]) -> EncodedImageFormat:
+def pasted_image_format(path: Any) -> EncodedImageFormat:
     text = os.fspath(path)
     normalized = text.replace("\\", "/")
     filename = normalized.rsplit("/", 1)[-1]
@@ -251,6 +302,22 @@ def pasted_image_format(path: str | os.PathLike[str]) -> EncodedImageFormat:
     if extension in {"jpg", "jpeg"}:
         return EncodedImageFormat.JPEG
     return EncodedImageFormat.OTHER
+
+
+def _probe_png_info(path: Path) -> Optional[PastedImageInfo]:
+    try:
+        with Path(path).open("rb") as handle:
+            header = handle.read(24)
+    except OSError:
+        return None
+    return _png_info_from_bytes(header)
+
+
+def _png_info_from_bytes(data: bytes) -> Optional[PastedImageInfo]:
+    if len(data) < 24 or data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR":
+        return None
+    width, height = struct.unpack(">II", data[16:24])
+    return PastedImageInfo(width=width, height=height, encoded_format=EncodedImageFormat.PNG)
 
 
 __all__ = [
@@ -268,5 +335,6 @@ __all__ = [
     "paste_image_to_temp_png",
     "pasted_image_format",
     "try_dump_windows_clipboard_image",
+    "try_dump_windows_clipboard_image_with_info",
     "try_wsl_clipboard_fallback",
 ]

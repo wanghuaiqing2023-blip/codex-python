@@ -1,4 +1,9 @@
+import asyncio
+
 from pycodex.tui.app.input import (
+    InputActionPlan,
+    KeyEvent,
+    MISSING_EDITOR_MESSAGE,
     EXTERNAL_EDITOR_HINT,
     SIDE_EDIT_PREVIOUS_UNAVAILABLE_MESSAGE,
     AppInputState,
@@ -6,6 +11,10 @@ from pycodex.tui.app.input import (
     reject_side_backtrack_esc,
     request_external_editor_launch,
     reset_external_editor_state,
+    apply_raw_output_mode,
+    handle_key_event,
+    launch_external_editor,
+    refresh_status_line,
     should_handle_backtrack_esc,
     should_reject_side_backtrack_esc,
 )
@@ -76,3 +85,75 @@ def test_external_editor_request_and_reset_state_transitions():
     assert state.external_editor_state == "Closed"
     assert state.footer_hint_override is None
     assert state.frame_requested is True
+
+def test_external_editor_launch_semantic_success_and_missing_editor():
+    state = AppInputState(external_editor_state="Requested")
+    applied = asyncio.run(launch_external_editor(state, editor_result="hello   \n"))
+    assert applied == InputActionPlan(
+        action="external_editor_apply",
+        updates=(("composer.external_edit", "hello"),),
+        schedule_frame=True,
+    )
+    assert state.external_editor_state == "Closed"
+
+    missing_state = AppInputState(external_editor_state="Requested")
+    missing = asyncio.run(launch_external_editor(missing_state, missing_editor=True))
+    assert missing.message == MISSING_EDITOR_MESSAGE
+    assert missing_state.errors == [MISSING_EDITOR_MESSAGE]
+
+
+def test_raw_output_refresh_and_key_dispatch_plans():
+    state = AppInputState(raw_output_mode=False)
+    assert apply_raw_output_mode(state, True, reflow_error="boom") == InputActionPlan(
+        action="apply_raw_output_mode",
+        updates=(("raw_output_mode", True), ("notify", False)),
+        message="Failed to redraw transcript: boom",
+        schedule_frame=True,
+    )
+
+    refreshed = refresh_status_line(state)
+    assert refreshed.updates == (("status_line_refreshed", True),)
+    assert state.status_line_refreshed is True
+
+    esc = asyncio.run(handle_key_event(AppInputState(), KeyEvent("esc")))
+    assert esc.action == "handle_backtrack_esc"
+
+    side = asyncio.run(handle_key_event(AppInputState(side_conversation_active=True), KeyEvent("esc")))
+    assert side.action == "reject_side_backtrack_esc"
+
+    editor = asyncio.run(handle_key_event(AppInputState(), KeyEvent("e"), command="open_external_editor"))
+    assert editor.action == "request_external_editor_launch"
+
+    clear = asyncio.run(handle_key_event(AppInputState(), KeyEvent("l"), command="clear_terminal"))
+    assert clear.action == "clear_terminal_ui"
+    assert clear.schedule_frame
+
+
+def test_enter_confirms_primed_backtrack_only_with_selection_and_empty_composer():
+    """Rust codex-tui app::input Enter confirms backtrack only when primed and selectable."""
+
+    confirm = asyncio.run(
+        handle_key_event(
+            AppInputState(backtrack_primed=True, backtrack_nth_user_message=1, composer_empty=True),
+            KeyEvent("enter"),
+        )
+    )
+    no_selection = asyncio.run(
+        handle_key_event(
+            AppInputState(backtrack_primed=True, backtrack_nth_user_message=None, composer_empty=True),
+            KeyEvent("enter"),
+        )
+    )
+    draft_text = asyncio.run(
+        handle_key_event(
+            AppInputState(backtrack_primed=True, backtrack_nth_user_message=1, composer_empty=False),
+            KeyEvent("enter"),
+        )
+    )
+
+    assert confirm == InputActionPlan(
+        action="confirm_backtrack",
+        updates=(("apply_backtrack_selection", True),),
+    )
+    assert no_selection.action == "forward_key_to_chat_widget"
+    assert draft_text.action == "forward_key_to_chat_widget"

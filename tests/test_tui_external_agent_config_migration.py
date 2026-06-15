@@ -1,4 +1,4 @@
-﻿import pytest
+import pytest
 
 from pycodex.tui.external_agent_config_migration import (
     ActionMenuOption,
@@ -10,6 +10,7 @@ from pycodex.tui.external_agent_config_migration import (
     PluginsMigration,
     is_ctrl_exit_combo,
     render_screen,
+    run_external_agent_config_migration_prompt,
     sample_items,
     sample_plugin_details,
     sample_project_path,
@@ -177,10 +178,31 @@ def test_ctrl_exit_combo_and_release_key_handling():
     assert screen.outcome() == ExternalAgentConfigMigrationOutcome.Exit()
 
 
-def test_interactive_prompt_runtime_boundary_is_explicit():
-    from pycodex.tui.external_agent_config_migration import run_external_agent_config_migration_prompt
+def test_interactive_prompt_skips_when_event_stream_ends():
+    import asyncio
 
-    with pytest.raises(NotImplementedError):
-        import asyncio
+    outcome = asyncio.run(run_external_agent_config_migration_prompt(None, sample_items(), sample_items(), None))
 
-        asyncio.run(run_external_agent_config_migration_prompt(None, [], [], None))
+    assert outcome == ExternalAgentConfigMigrationOutcome.Skip()
+
+
+def test_interactive_prompt_routes_key_events_to_screen():
+    import asyncio
+
+    items = sample_items()
+    outcome = asyncio.run(
+        run_external_agent_config_migration_prompt(
+            None,
+            items,
+            items,
+            None,
+            events=[
+                {"kind": "Key", "payload": "down"},
+                {"kind": "Key", "payload": "down"},
+                {"kind": "Key", "payload": "down"},
+                {"kind": "Key", "payload": "enter"},
+            ],
+        )
+    )
+
+    assert outcome == ExternalAgentConfigMigrationOutcome.Proceed(items)

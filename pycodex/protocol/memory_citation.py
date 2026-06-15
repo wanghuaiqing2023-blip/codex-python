@@ -101,8 +101,12 @@ class MemoryCitation:
     @classmethod
     def from_mapping(cls, value: JsonValue) -> "MemoryCitation":
         data = _mapping(value, "memory citation")
-        entries = data.get("entries", [])
-        rollout_ids = data.get("rolloutIds", [])
+        if "entries" not in data:
+            raise KeyError("entries")
+        if "rolloutIds" not in data:
+            raise KeyError("rolloutIds")
+        entries = data["entries"]
+        rollout_ids = data["rolloutIds"]
         if not isinstance(entries, list):
             raise TypeError("entries must be a list")
         if not isinstance(rollout_ids, list):

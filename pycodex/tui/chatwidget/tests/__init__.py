@@ -11,13 +11,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional, Tuple, Union
 
 from ..._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="chatwidget::tests", source="codex/codex-rs/tui/src/chatwidget/tests.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="chatwidget::tests",
+    source="codex/codex-rs/tui/src/chatwidget/tests.rs",
+    status="complete",
+)
 
-CHATWIDGET_TEST_MODULES: tuple[str, ...] = (
+CHATWIDGET_TEST_MODULES: Tuple[str, ...] = (
     "app_server",
     "approval_requests",
     "composer_submission",
@@ -40,7 +45,7 @@ CHATWIDGET_TEST_MODULES: tuple[str, ...] = (
     "terminal_title",
 )
 
-REEXPORTED_HELPERS: tuple[str, ...] = (
+REEXPORTED_HELPERS: Tuple[str, ...] = (
     "make_chatwidget_manual_with_sender",
     "set_chatgpt_auth",
     "set_fast_mode_test_catalog",
@@ -56,11 +61,11 @@ class ChatWidgetSnapshotAssertion:
 
     snapshot_name: str
     value: Any
-    inline_snapshot: str | None = None
-    snapshot_dir: Path | None = None
+    inline_snapshot: Optional[str] = None
+    snapshot_dir: Optional[Path] = None
 
 
-def chatwidget_snapshot_dir(source_root: str | Path = "codex/codex-rs/tui") -> Path:
+def chatwidget_snapshot_dir(source_root: Union[str, Path] = "codex/codex-rs/tui") -> Path:
     """Return the snapshot directory used by Rust chatwidget tests."""
 
     return Path(source_root) / "src" / "chatwidget" / "snapshots"
@@ -68,7 +73,7 @@ def chatwidget_snapshot_dir(source_root: str | Path = "codex/codex-rs/tui") -> P
 
 def chatwidget_snapshot_path(
     name: str,
-    source_root: str | Path = "codex/codex-rs/tui",
+    source_root: Union[str, Path] = "codex/codex-rs/tui",
 ) -> Path:
     """Return the expected snapshot file path for a Rust chatwidget snapshot."""
 
@@ -78,8 +83,8 @@ def chatwidget_snapshot_path(
 def make_chatwidget_snapshot_assertion(
     name: str,
     value: Any,
-    inline_snapshot: str | None = None,
-    source_root: str | Path = "codex/codex-rs/tui",
+    inline_snapshot: Optional[str] = None,
+    source_root: Union[str, Path] = "codex/codex-rs/tui",
 ) -> ChatWidgetSnapshotAssertion:
     """Build the Python equivalent of the Rust snapshot macro inputs."""
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 from pycodex.tui.pets import catalog
 from pycodex.tui.pets.picker import (
@@ -110,7 +111,8 @@ def test_picker_imports_legacy_avatar_manifests(tmp_path):
 
 
 def test_custom_pet_entries_skip_reserved_and_invalid_manifests(tmp_path):
-    _write_pet(tmp_path, "custom:bad", "Bad")
+    if os.name != "nt":
+        _write_pet(tmp_path, "custom:bad", "Bad")
     _write_pet(tmp_path, "disabled", "Disabled")
     invalid_dir = tmp_path / "pets" / "broken"
     invalid_dir.mkdir(parents=True)
@@ -119,6 +121,7 @@ def test_custom_pet_entries_skip_reserved_and_invalid_manifests(tmp_path):
     params = build_pet_picker_params(None, tmp_path, PetPickerPreviewState())
 
     names = [item.name for item in params.items]
-    assert "Bad" not in names
+    if os.name != "nt":
+        assert "Bad" not in names
     assert "Disabled" not in names
     assert "broken" not in names

@@ -10,7 +10,7 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, ClassVar, Optional, Tuple
 
 from .._porting import RustTuiModule
 
@@ -18,6 +18,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="bottom_pane::paste_burst",
     source="codex/codex-rs/tui/src/bottom_pane/paste_burst.rs",
+    status="complete",
 )
 
 PASTE_BURST_MIN_CHARS = 3
@@ -31,15 +32,15 @@ class CharDecision:
     """Semantic equivalent of Rust ``CharDecision``."""
 
     kind: str
-    retro_chars: int | None = None
+    retro_chars: Optional[int] = None
 
     @classmethod
     def begin_buffer(cls, retro_chars: int) -> "CharDecision":
         return cls("BeginBuffer", retro_chars)
 
-    BUFFER_APPEND: "CharDecision"
-    RETAIN_FIRST_CHAR: "CharDecision"
-    BEGIN_BUFFER_FROM_PENDING: "CharDecision"
+    BUFFER_APPEND: ClassVar["CharDecision"]
+    RETAIN_FIRST_CHAR: ClassVar["CharDecision"]
+    BEGIN_BUFFER_FROM_PENDING: ClassVar["CharDecision"]
 
 
 CharDecision.BUFFER_APPEND = CharDecision("BufferAppend")
@@ -62,7 +63,7 @@ class FlushResultKind(Enum):
 @dataclass(frozen=True)
 class FlushResult:
     kind: FlushResultKind
-    value: str | None = None
+    value: Optional[str] = None
 
     @classmethod
     def paste(cls, text: str) -> "FlushResult":
@@ -79,12 +80,12 @@ class FlushResult:
 
 @dataclass
 class PasteBurst:
-    last_plain_char_time: Any | None = None
+    last_plain_char_time: Optional[Any] = None
     consecutive_plain_char_burst: int = 0
-    burst_window_until: Any | None = None
+    burst_window_until: Optional[Any] = None
     buffer: str = ""
     active: bool = False
-    pending_first_char: tuple[str, Any] | None = None
+    pending_first_char: Optional[Tuple[str, Any]] = None
 
     @staticmethod
     def recommended_flush_delay() -> float:
@@ -116,7 +117,7 @@ class PasteBurst:
         self.pending_first_char = (ch, now)
         return CharDecision.RETAIN_FIRST_CHAR
 
-    def on_plain_char_no_hold(self, now: Any) -> CharDecision | None:
+    def on_plain_char_no_hold(self, now: Any) -> Optional[CharDecision]:
         self.note_plain_char(now)
 
         if self.active:
@@ -179,7 +180,7 @@ class PasteBurst:
             return True
         return False
 
-    def decide_begin_buffer(self, now: Any, before: str, retro_chars: int) -> RetroGrab | None:
+    def decide_begin_buffer(self, now: Any, before: str, retro_chars: int) -> Optional[RetroGrab]:
         start_byte = retro_start_index(before, retro_chars)
         grabbed = _slice_from_utf8_byte(before, start_byte)
         looks_pastey = any(ch.isspace() for ch in grabbed) or len(grabbed) >= 16
@@ -188,7 +189,7 @@ class PasteBurst:
             return RetroGrab(start_byte=start_byte, grabbed=grabbed)
         return None
 
-    def flush_before_modified_input(self) -> str | None:
+    def flush_before_modified_input(self) -> Optional[str]:
         if not self.is_active():
             return None
         self.active = False

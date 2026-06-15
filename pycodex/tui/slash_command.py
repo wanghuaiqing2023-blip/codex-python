@@ -1,4 +1,4 @@
-"""Slash command definitions for Rust ``codex-tui::slash_command``."""
+﻿"""Slash command definitions for Rust ``codex-tui::slash_command``."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import List, Tuple
 
 from ._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="slash_command", source="codex/codex-rs/tui/src/slash_command.rs")
+RUST_MODULE = RustTuiModule(crate="codex-tui", module="slash_command", source="codex/codex-rs/tui/src/slash_command.rs", status="complete")
 
 
 class SlashCommand(Enum):
@@ -235,3 +235,4 @@ __all__ = [
     "SlashCommand",
     "built_in_slash_commands",
 ]
+

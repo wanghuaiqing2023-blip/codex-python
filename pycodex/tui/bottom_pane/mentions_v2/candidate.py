@@ -13,6 +13,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="bottom_pane::mentions_v2::candidate",
     source="codex/codex-rs/tui/src/bottom_pane/mentions_v2/candidate.rs",
+    status="complete",
 )
 
 TAG_WIDTH = len("Plugin")

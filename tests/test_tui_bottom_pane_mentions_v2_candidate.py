@@ -41,7 +41,8 @@ def test_mention_type_span_applies_semantic_styles():
 def test_selection_file_and_tool_variants_preserve_fields():
     file_selection = Selection.File("src/main.rs")
     assert file_selection.kind == "File"
-    assert str(file_selection.file).endswith("src/main.rs")
+    assert file_selection.file is not None
+    assert file_selection.file.parts[-2:] == ("src", "main.rs")
 
     tool_selection = Selection.Tool("@skill", path="skills/demo")
     assert tool_selection.kind == "Tool"
@@ -68,3 +69,23 @@ def test_candidate_to_result_clones_candidate_fields_and_match_indices():
     assert result.selection == Selection.File("demo.py")
     assert result.match_indices == [0, 1, 4]
     assert result.score == 42
+
+
+def test_candidate_to_result_preserves_none_description_and_match_indices():
+    # Rust: Candidate::to_result clones optional description/match_indices and keeps i32 score.
+    candidate = Candidate(
+        display_name="tool",
+        description=None,
+        search_terms=["tool"],
+        mention_type=MentionType.SKILL,
+        selection=Selection.Tool("@tool"),
+    )
+
+    result = candidate.to_result(None, -7)
+
+    assert result.display_name == "tool"
+    assert result.description is None
+    assert result.mention_type is MentionType.SKILL
+    assert result.selection == Selection.Tool("@tool")
+    assert result.match_indices is None
+    assert result.score == -7

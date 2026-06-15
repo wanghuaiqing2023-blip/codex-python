@@ -1,4 +1,4 @@
-from pycodex.tui.bottom_pane.status_line_style import StatusLineAccent
+﻿from pycodex.tui.bottom_pane.status_line_style import StatusLineAccent
 from pycodex.tui.bottom_pane.status_line_style import STATUS_LINE_SEPARATOR
 from pycodex.tui.bottom_pane.status_line_style import line_text
 from pycodex.tui.bottom_pane.status_line_style import soften_status_line_color
@@ -10,7 +10,7 @@ from pycodex.tui.style import Style
 
 
 def test_status_line_separator_matches_rust_copy():
-    assert STATUS_LINE_SEPARATOR == " 路 "
+    assert STATUS_LINE_SEPARATOR == " · "
 
 
 def test_status_line_segments_preserve_order_and_plain_text():
@@ -25,7 +25,7 @@ def test_status_line_segments_preserve_order_and_plain_text():
     )
 
     assert line is not None
-    assert line_text(line) == "gpt-5 路 /repo 路 main"
+    assert line_text(line) == "gpt-5 · /repo · main"
     assert line.spans[0].style.fg == Color.named("cyan")
     assert "dim" not in line.spans[0].style.modifiers
     assert line.spans[2].style.fg == Color.named("green")
@@ -80,7 +80,7 @@ def test_status_line_segments_can_disable_theme_colors():
     )
 
     assert line is not None
-    assert line_text(line) == "gpt-5 路 Context 12% used"
+    assert line_text(line) == "gpt-5 · Context 12% used"
     assert line.spans[0].style.fg is None
     assert "dim" in line.spans[0].style.modifiers
     assert "dim" in line.spans[1].style.modifiers
@@ -138,3 +138,4 @@ def test_color_softening_helpers_match_rust_contract():
     assert soften_status_line_color(Color.rgb((255, 0, 0))) == Color.rgb((228, 11, 11))
     assert soften_status_line_color(Color.named("LightRed")) == Color.named("Red")
     assert soften_status_line_color(Color.named("white")) == Color.named("gray")
+

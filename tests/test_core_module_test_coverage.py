@@ -41,6 +41,8 @@ MODULE_TEST_ALIASES: dict[str, set[str]] = {
     "utils.__init__": {"test_core_utils_path_utils.py"},
     "bin.__init__": {"test_core_bin_config_schema.py"},
     "plugins.render": {"test_core_app_plugin_rendering.py"},
+    "otel_events": {"test_core_suite_otel.py"},
+    "safety_check_downgrade": {"test_core_suite_safety_check_downgrade.py"},
     "session.rollout_reconstruction": {"test_core_rollout_reexport.py"},
     "session.turn.prompt": {"test_core_turn_prompt.py"},
     "session.turn.request": {"test_core_turn_request.py"},

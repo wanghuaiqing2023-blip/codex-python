@@ -33,6 +33,20 @@ def test_truncate_line_to_width_keeps_zero_width_spans() -> None:
     )
 
 
+def test_truncate_line_to_width_counts_combining_marks_as_zero_width() -> None:
+    # Rust uses unicode_width::UnicodeWidthChar, where combining marks are zero-width.
+    line = Line.from_spans([Span("e\u0301x", style="accent")])
+    assert line_width(line) == 2
+    assert truncate_line_to_width(line, 1).spans == (Span("e\u0301", "accent"),)
+
+
+def test_truncate_line_to_width_does_not_include_wide_char_that_would_overflow() -> None:
+    # Rust stops before a char whose display width would exceed max_width.
+    line = Line.from_spans([Span("a你b", style="wide")])
+    assert truncate_line_to_width(line, 2).spans == (Span("a", "wide"),)
+    assert truncate_line_to_width(line, 3).spans == (Span("a你", "wide"),)
+
+
 def test_zero_width_truncation_drops_line_metadata_like_rust() -> None:
     line = Line.from_spans([Span("abc", style="text")], style="line", alignment="center")
     truncated = truncate_line_to_width(line, 0)
@@ -53,3 +67,13 @@ def test_truncate_line_with_ellipsis_if_overflow_appends_ellipsis() -> None:
 def test_truncate_line_with_ellipsis_returns_original_when_not_overflowing() -> None:
     line = Line.from_spans([Span("abc", style="text")])
     assert truncate_line_with_ellipsis_if_overflow(line, 3) is line
+
+
+def test_truncate_line_with_ellipsis_width_one_drops_original_metadata_like_rust() -> None:
+    # Rust calls truncate_line_to_width(line, max_width - 1); for width 1 this
+    # takes the zero-width path and the returned line has default metadata/style.
+    line = Line.from_spans([Span("abcdef", style="text")], style="line", alignment="right")
+    truncated = truncate_line_with_ellipsis_if_overflow(line, 1)
+    assert truncated.spans == (Span("…", None),)
+    assert truncated.style is None
+    assert truncated.alignment is None

@@ -1,13 +1,14 @@
-﻿"""Parity tests for codex-rs/tui/src/app/test_support.rs."""
+"""Parity tests for codex-rs/tui/src/app/test_support.rs."""
 
-import pytest
+import asyncio
 
 from pycodex.protocol import SessionSource
 from pycodex.tui.app.test_support import (
+    TestAppFixturePlan,
     TestSessionTelemetry,
     app_enabled_in_effective_config,
     make_test_app,
-    test_session_telemetry,
+    test_session_telemetry as build_test_session_telemetry,
 )
 
 
@@ -30,14 +31,16 @@ class ModelInfo:
     slug = "model-info-slug"
 
 
-@pytest.mark.asyncio
-async def test_make_test_app_is_explicit_heavyweight_boundary():
-    with pytest.raises(NotImplementedError, match="full App/ChatWidget fixture construction"):
-        await make_test_app()
+def test_make_test_app_returns_semantic_fixture_plan():
+    plan = asyncio.run(make_test_app())
+
+    assert plan == TestAppFixturePlan()
+    assert plan.chat_widget == "make_chatwidget_manual_with_sender"
+    assert plan.session_telemetry == "test_session_telemetry"
 
 
 def test_test_session_telemetry_matches_rust_test_defaults():
-    telemetry = test_session_telemetry(Config({}, model_slugs={"gpt-5": "gpt-5-slug"}), "gpt-5")
+    telemetry = build_test_session_telemetry(Config({}, model_slugs={"gpt-5": "gpt-5-slug"}), "gpt-5")
 
     assert isinstance(telemetry, TestSessionTelemetry)
     assert telemetry.model == "gpt-5"
@@ -52,8 +55,8 @@ def test_test_session_telemetry_matches_rust_test_defaults():
 
 
 def test_test_session_telemetry_falls_back_to_model_info_slug_or_model():
-    assert test_session_telemetry(Config({}, model_info=ModelInfo()), "o4").model_slug == "model-info-slug"
-    assert test_session_telemetry(Config({}), "o4").model_slug == "o4"
+    assert build_test_session_telemetry(Config({}, model_info=ModelInfo()), "o4").model_slug == "model-info-slug"
+    assert build_test_session_telemetry(Config({}), "o4").model_slug == "o4"
 
 
 def test_app_enabled_in_effective_config_reads_nested_apps_table():
@@ -70,3 +73,8 @@ def test_app_enabled_in_effective_config_returns_none_for_missing_or_non_bool_va
     assert app_enabled_in_effective_config(config, "empty") is None
     assert app_enabled_in_effective_config(config, "missing") is None
     assert app_enabled_in_effective_config(object(), "github") is None
+
+def test_app_enabled_in_effective_config_returns_none_without_apps_table():
+    assert app_enabled_in_effective_config(Config({}), "github") is None
+    assert app_enabled_in_effective_config(Config({"apps": "not-a-table"}), "github") is None
+

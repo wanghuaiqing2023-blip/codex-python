@@ -11,11 +11,16 @@ import asyncio
 import http.client
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Awaitable, Callable, Sequence
+from typing import Any, Awaitable, Callable, List, Optional, Sequence, Tuple, Union
 
 from ._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="oss_selection", source="codex/codex-rs/tui/src/oss_selection.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="oss_selection",
+    source="codex/codex-rs/tui/src/oss_selection.rs",
+    status="complete",
+)
 
 DEFAULT_LMSTUDIO_PORT = 1234
 DEFAULT_OLLAMA_PORT = 11434
@@ -64,17 +69,17 @@ MOVE_RIGHT_KEYS = ("right", "ctrl+l")
 
 @dataclass
 class OssSelectionWidget:
-    select_options: list[SelectOption]
-    provider_statuses: list[ProviderOption]
+    select_options: List[SelectOption]
+    provider_statuses: List[ProviderOption]
     selected_option: int = 0
     done: bool = False
-    selection: str | None = None
+    selection: Optional[str] = None
 
     @classmethod
     def new(
         cls,
-        lmstudio_status: ProviderStatus | str,
-        ollama_status: ProviderStatus | str,
+        lmstudio_status: Union[ProviderStatus, str],
+        ollama_status: Union[ProviderStatus, str],
     ) -> "OssSelectionWidget":
         ollama = _status(ollama_status)
         providers = [
@@ -87,7 +92,7 @@ class OssSelectionWidget:
     def get_confirmation_prompt_height(self, width: int) -> int:
         return len(self.confirmation_prompt_lines())
 
-    def confirmation_prompt_lines(self) -> list[str]:
+    def confirmation_prompt_lines(self) -> List[str]:
         lines = [
             "? Select an open-source provider",
             "",
@@ -103,7 +108,7 @@ class OssSelectionWidget:
         lines.append("  Press Enter to select - Ctrl+C to exit")
         return lines
 
-    def handle_key_event(self, key: Any) -> str | None:
+    def handle_key_event(self, key: Any) -> Optional[str]:
         if _key_kind(key) != "press":
             return self.selection if self.done else None
         self.handle_select_key(key)
@@ -142,7 +147,7 @@ class OssSelectionWidget:
     def desired_height(self, width: int) -> int:
         return self.get_confirmation_prompt_height(width) + len(self.select_options)
 
-    def render_semantic(self) -> list[str]:
+    def render_semantic(self) -> List[str]:
         lines = self.confirmation_prompt_lines()
         lines.append("Select provider?")
         buttons = []
@@ -154,11 +159,11 @@ class OssSelectionWidget:
         return lines
 
 
-def render_ref(widget: OssSelectionWidget, *args: Any, **kwargs: Any) -> list[str]:
+def render_ref(widget: OssSelectionWidget, *args: Any, **kwargs: Any) -> List[str]:
     return widget.render_semantic()
 
 
-def get_status_symbol_and_color(status: ProviderStatus | str) -> tuple[str, str]:
+def get_status_symbol_and_color(status: Union[ProviderStatus, str]) -> Tuple[str, str]:
     value = _status(status)
     if value is ProviderStatus.RUNNING:
         return "*", "green"
@@ -175,9 +180,10 @@ class OssProviderSelection:
 
 async def select_oss_provider(
     *,
-    lmstudio_status: ProviderStatus | str | None = None,
-    ollama_status: ProviderStatus | str | None = None,
-    selection_runner: Callable[[OssSelectionWidget], str | Awaitable[str]] | None = None,
+    lmstudio_status: Optional[Union[ProviderStatus, str]] = None,
+    ollama_status: Optional[Union[ProviderStatus, str]] = None,
+    selection_runner: Optional[Callable[[OssSelectionWidget], Union[str, Awaitable[str]]]] = None,
+    selection_events: Optional[Sequence[Any]] = None,
 ) -> OssProviderSelection:
     lm_status = _status(lmstudio_status) if lmstudio_status is not None else await check_lmstudio_status()
     ol_status = _status(ollama_status) if ollama_status is not None else await check_ollama_status()
@@ -188,12 +194,30 @@ async def select_oss_provider(
         return OssProviderSelection(OLLAMA_OSS_PROVIDER_ID, manually_selected=False)
 
     widget = OssSelectionWidget.new(lm_status, ol_status)
-    if selection_runner is None:
-        raise NotImplementedError("interactive OSS provider selection UI is a terminal runtime boundary")
-    selection = selection_runner(widget)
-    if hasattr(selection, "__await__"):
-        selection = await selection
+    if selection_runner is not None:
+        selection = selection_runner(widget)
+        if hasattr(selection, "__await__"):
+            selection = await selection
+    else:
+        selection = run_oss_selection_widget(widget, selection_events)
     return OssProviderSelection(str(selection), manually_selected=True)
+
+
+def run_oss_selection_widget(widget: OssSelectionWidget, events: Optional[Sequence[Any]] = None) -> str:
+    """Semantic equivalent of the Rust raw-mode key loop.
+
+    Rust redraws the widget, blocks on crossterm key events, and exits only
+    after ``handle_key_event`` returns a selection.  Python keeps that module
+    behavior deterministic with an injected event sequence; an exhausted event
+    stream follows Rust's Escape default to LM Studio.
+    """
+
+    for event in events or ():
+        selection = widget.handle_key_event(event)
+        if selection is not None:
+            return selection
+    widget.handle_key_event("esc")
+    return widget.selection or LMSTUDIO_OSS_PROVIDER_ID
 
 
 async def check_lmstudio_status() -> ProviderStatus:
@@ -235,7 +259,7 @@ def ctrl_h_l_move_provider_selection() -> tuple[int, int, int]:
     return initial, after_right, after_left
 
 
-def _status(value: ProviderStatus | str) -> ProviderStatus:
+def _status(value: Union[ProviderStatus, str]) -> ProviderStatus:
     if isinstance(value, ProviderStatus):
         return value
     raw = str(value).lower().replace("-", "_")

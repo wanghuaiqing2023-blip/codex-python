@@ -70,6 +70,10 @@ def is_unified_exec_source(source: Any) -> bool:
     return normalized in {
         CommandExecutionSource.UNIFIED_EXEC_STARTUP,
         CommandExecutionSource.UNIFIED_EXEC_INTERACTION,
+        "unifiedExecStartup",
+        "unifiedExecInteraction",
+        "unified_exec_startup",
+        "unified_exec_interaction",
     }
 
 
@@ -108,6 +112,8 @@ def _coerce_parsed_command(value: Any) -> ParsedCommand:
     if isinstance(value, ParsedCommand):
         return value
     if isinstance(value, dict):
+        if value.get("type") == "exec":
+            return ParsedCommand.unknown(cmd=str(value.get("cmd", "exec")))
         return ParsedCommand.from_mapping(value)
     into_core = getattr(value, "into_core", None)
     if callable(into_core):

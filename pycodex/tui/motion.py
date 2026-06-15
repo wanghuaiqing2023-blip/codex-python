@@ -18,6 +18,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="motion",
     source="codex/codex-rs/tui/src/motion.rs",
+    status="complete",
 )
 
 _ACTIVITY_BULLET = "•"

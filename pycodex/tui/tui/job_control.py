@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, List, Optional
 
 from .._porting import RustTuiModule
 from ..ratatui_bridge import Rect
@@ -17,7 +17,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="tui::job_control",
     source="codex/codex-rs/tui/src/tui/job_control.rs",
-    status="complete_slice",
+    status="complete",
 )
 
 SUSPEND_KEY = "Ctrl+Z"
@@ -32,14 +32,15 @@ class Position:
 @dataclass
 class Terminal:
     last_known_cursor_pos: Position = field(default_factory=Position)
-    cursor_position: Position | None = None
+    cursor_position: Optional[Position] = None
     viewport_area: Rect = field(default_factory=Rect)
     size_width: int = 80
     size_height: int = 24
+    size_error: Optional[str] = None
     entered_alt_screen: int = 0
     enabled_alt_scroll: int = 0
     cleared: int = 0
-    viewport_history: list[Rect] = field(default_factory=list)
+    viewport_history: List[Rect] = field(default_factory=list)
 
     def get_cursor_position(self) -> Position:
         if self.cursor_position is None:
@@ -50,7 +51,9 @@ class Terminal:
         self.viewport_area = area
         self.viewport_history.append(area)
 
-    def size(self) -> tuple[int, int]:
+    def size(self) -> Any:
+        if self.size_error is not None:
+            raise RuntimeError(self.size_error)
         return self.size_width, self.size_height
 
     def clear(self) -> None:
@@ -65,7 +68,7 @@ class ResumeAction(Enum):
 @dataclass(frozen=True)
 class PreparedResumeAction:
     kind: str
-    area: Rect | None = None
+    area: Optional[Rect] = None
 
     @classmethod
     def RestoreAltScreen(cls) -> "PreparedResumeAction":
@@ -84,7 +87,10 @@ class PreparedResumeAction:
         if self.kind == "RestoreAltScreen":
             terminal.entered_alt_screen += 1
             terminal.enabled_alt_scroll += 1
-            width, height = terminal.size()
+            try:
+                width, height = terminal.size()
+            except RuntimeError:
+                return
             terminal.set_viewport_area(Rect(0, 0, width, height))
             terminal.clear()
             return
@@ -102,10 +108,10 @@ class SuspendProcessTrace:
 
 @dataclass
 class SuspendContext:
-    resume_pending: ResumeAction | None = None
+    resume_pending: Optional[ResumeAction] = None
     suspend_cursor_y: int = 0
     suspend_trace: SuspendProcessTrace = field(default_factory=SuspendProcessTrace)
-    terminal_commands: list[Any] = field(default_factory=list)
+    terminal_commands: List[Any] = field(default_factory=list)
 
     @classmethod
     def new(cls) -> "SuspendContext":
@@ -123,8 +129,8 @@ class SuspendContext:
     def prepare_resume_action(
         self,
         terminal: Terminal,
-        alt_saved_viewport: Rect | None = None,
-    ) -> PreparedResumeAction | None:
+        alt_saved_viewport: Optional[Rect] = None,
+    ) -> Optional[PreparedResumeAction]:
         action = self.take_resume_action()
         if action is None:
             return None
@@ -150,13 +156,13 @@ class SuspendContext:
     def set_resume_action(self, value: ResumeAction) -> None:
         self.resume_pending = value
 
-    def take_resume_action(self) -> ResumeAction | None:
+    def take_resume_action(self) -> Optional[ResumeAction]:
         action = self.resume_pending
         self.resume_pending = None
         return action
 
 
-def suspend_process(trace: SuspendProcessTrace | None = None) -> SuspendProcessTrace:
+def suspend_process(trace: Optional[SuspendProcessTrace] = None) -> SuspendProcessTrace:
     trace = trace or SuspendProcessTrace()
     trace.restored += 1
     trace.stderr_paused += 1

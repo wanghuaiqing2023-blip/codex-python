@@ -30,6 +30,36 @@ class NetworkMode(str, Enum):
     LIMITED = "limited"
 
 
+@dataclass(frozen=True)
+class InjectedHeaderConfig:
+    name: str
+    secret_env_var: str | None = None
+    secret_file: str | None = None
+    prefix: str | None = None
+
+
+@dataclass(frozen=True)
+class MitmHookActionsConfig:
+    strip_request_headers: list[str] = field(default_factory=list)
+    inject_request_headers: list[InjectedHeaderConfig] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class MitmHookMatchConfig:
+    methods: list[str] = field(default_factory=list)
+    path_prefixes: list[str] = field(default_factory=list)
+    query: Mapping[str, list[str]] = field(default_factory=dict)
+    headers: Mapping[str, list[str]] = field(default_factory=dict)
+    body: JsonValue | None = None
+
+
+@dataclass(frozen=True)
+class MitmHookConfig:
+    host: str
+    matcher: MitmHookMatchConfig = field(default_factory=MitmHookMatchConfig)
+    actions: MitmHookActionsConfig = field(default_factory=MitmHookActionsConfig)
+
+
 @dataclass
 class NetworkProxyNetworkConfig:
     enabled: bool = False
@@ -182,14 +212,15 @@ class ConfigLayerSource:
     type: str
     file: Path | None = None
     dot_codex_folder: Path | None = None
+    profile: str | None = None
 
     @classmethod
     def system(cls, file: Path | str) -> "ConfigLayerSource":
         return cls("system", file=Path(file))
 
     @classmethod
-    def user(cls, file: Path | str) -> "ConfigLayerSource":
-        return cls("user", file=Path(file))
+    def user(cls, file: Path | str, profile: str | None = None) -> "ConfigLayerSource":
+        return cls("user", file=Path(file), profile=profile)
 
     @classmethod
     def project(cls, dot_codex_folder: Path | str) -> "ConfigLayerSource":
@@ -214,6 +245,8 @@ class ConfigLayerSource:
             object.__setattr__(self, "file", Path(self.file))
         if self.dot_codex_folder is not None and not isinstance(self.dot_codex_folder, Path):
             object.__setattr__(self, "dot_codex_folder", Path(self.dot_codex_folder))
+        if self.profile is not None and not isinstance(self.profile, str):
+            object.__setattr__(self, "profile", str(self.profile))
 
 
 @dataclass(frozen=True)
@@ -927,6 +960,10 @@ __all__ = [
     "ConfigLayersLoader",
     "NetworkConstraints",
     "NetworkDomainPermission",
+    "InjectedHeaderConfig",
+    "MitmHookActionsConfig",
+    "MitmHookConfig",
+    "MitmHookMatchConfig",
     "NetworkMode",
     "NetworkProxyAuditMetadata",
     "NetworkProxyBuilder",

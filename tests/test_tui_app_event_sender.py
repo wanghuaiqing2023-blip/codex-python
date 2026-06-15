@@ -93,3 +93,18 @@ def test_sender_accepts_send_method_targets() -> None:
     sender = AppEventSender.new(target)
     sender.compact()
     assert target.events == [AppEvent.codex_op(AppCommand.compact())]
+
+
+def test_sender_accepts_put_nowait_targets() -> None:
+    # Rust source: AppEventSender wraps a channel sender; put_nowait is Python's queue analogue.
+    class Target:
+        def __init__(self) -> None:
+            self.events: list[AppEvent] = []
+
+        def put_nowait(self, event: AppEvent) -> None:
+            self.events.append(event)
+
+    target = Target()
+    sender = AppEventSender.new(target)
+    sender.set_thread_name("queued")
+    assert target.events == [AppEvent.codex_op(AppCommand.set_thread_name("queued"))]

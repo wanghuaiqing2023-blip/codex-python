@@ -7,11 +7,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Callable, Dict, List, Optional, Set, Union
 
 from .._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="app::pending_interactive_replay", source="codex/codex-rs/tui/src/app/pending_interactive_replay.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="app::pending_interactive_replay",
+    source="codex/codex-rs/tui/src/app/pending_interactive_replay.rs",
+    status="complete",
+)
 
 
 @dataclass(frozen=True)
@@ -35,51 +40,51 @@ class PendingInteractiveRequestKind(str, Enum):
 @dataclass(frozen=True)
 class PendingInteractiveRequest:
     kind: PendingInteractiveRequestKind
-    turn_id: str | None = None
-    item_id: str | None = None
-    approval_id: str | None = None
-    elicitation_key: ElicitationRequestKey | None = None
+    turn_id: Optional[str] = None
+    item_id: Optional[str] = None
+    approval_id: Optional[str] = None
+    elicitation_key: Optional[ElicitationRequestKey] = None
 
 
 @dataclass(frozen=True)
 class ServerRequest:
     kind: str
     request_id: Any
-    params: dict[str, Any] = field(default_factory=dict)
+    params: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class ServerNotification:
     kind: str
-    request_id: Any | None = None
-    turn_id: str | None = None
-    item: dict[str, Any] | None = None
+    request_id: Optional[Any] = None
+    turn_id: Optional[str] = None
+    item: Optional[Dict[str, Any]] = None
 
 
 @dataclass(frozen=True)
 class AppCommand:
     kind: str
-    id: str | None = None
-    turn_id: str | None = None
-    server_name: str | None = None
-    request_id: Any | None = None
+    id: Optional[str] = None
+    turn_id: Optional[str] = None
+    server_name: Optional[str] = None
+    request_id: Optional[Any] = None
 
 
 @dataclass
 class PendingInteractiveReplayState:
-    exec_approval_call_ids: set[str] = field(default_factory=set)
-    exec_approval_call_ids_by_turn_id: dict[str, list[str]] = field(default_factory=dict)
-    patch_approval_call_ids: set[str] = field(default_factory=set)
-    patch_approval_call_ids_by_turn_id: dict[str, list[str]] = field(default_factory=dict)
-    elicitation_requests: set[ElicitationRequestKey] = field(default_factory=set)
-    request_permissions_call_ids: set[str] = field(default_factory=set)
-    request_permissions_call_ids_by_turn_id: dict[str, list[str]] = field(default_factory=dict)
-    request_user_input_call_ids: set[str] = field(default_factory=set)
-    request_user_input_call_ids_by_turn_id: dict[str, list[str]] = field(default_factory=dict)
-    pending_requests_by_request_id: dict[Any, PendingInteractiveRequest] = field(default_factory=dict)
+    exec_approval_call_ids: Set[str] = field(default_factory=set)
+    exec_approval_call_ids_by_turn_id: Dict[str, List[str]] = field(default_factory=dict)
+    patch_approval_call_ids: Set[str] = field(default_factory=set)
+    patch_approval_call_ids_by_turn_id: Dict[str, List[str]] = field(default_factory=dict)
+    elicitation_requests: Set[ElicitationRequestKey] = field(default_factory=set)
+    request_permissions_call_ids: Set[str] = field(default_factory=set)
+    request_permissions_call_ids_by_turn_id: Dict[str, List[str]] = field(default_factory=dict)
+    request_user_input_call_ids: Set[str] = field(default_factory=set)
+    request_user_input_call_ids_by_turn_id: Dict[str, List[str]] = field(default_factory=dict)
+    pending_requests_by_request_id: Dict[Any, PendingInteractiveRequest] = field(default_factory=dict)
 
     @staticmethod
-    def op_can_change_state(op: AppCommand | dict[str, Any] | Any) -> bool:
+    def op_can_change_state(op: Union[AppCommand, Dict[str, Any], Any]) -> bool:
         return _coerce_op(op).kind in {
             "ExecApproval",
             "PatchApproval",
@@ -89,7 +94,7 @@ class PendingInteractiveReplayState:
             "Shutdown",
         }
 
-    def note_outbound_op(self, op: AppCommand | dict[str, Any] | Any) -> None:
+    def note_outbound_op(self, op: Union[AppCommand, Dict[str, Any], Any]) -> None:
         op = _coerce_op(op)
         if op.kind == "ExecApproval" and op.id is not None:
             self.exec_approval_call_ids.discard(op.id)
@@ -119,7 +124,7 @@ class PendingInteractiveReplayState:
         elif op.kind == "Shutdown":
             self.clear()
 
-    def note_server_request(self, request: ServerRequest | dict[str, Any] | Any) -> None:
+    def note_server_request(self, request: Union[ServerRequest, Dict[str, Any], Any]) -> None:
         request = _coerce_request(request)
         p = request.params
         if request.kind == "CommandExecutionRequestApproval":
@@ -147,7 +152,7 @@ class PendingInteractiveReplayState:
             self.request_permissions_call_ids_by_turn_id.setdefault(turn_id, []).append(item_id)
             self.pending_requests_by_request_id[request.request_id] = PendingInteractiveRequest(PendingInteractiveRequestKind.REQUEST_PERMISSIONS, turn_id=turn_id, item_id=item_id)
 
-    def note_server_notification(self, notification: ServerNotification | dict[str, Any] | Any) -> None:
+    def note_server_notification(self, notification: Union[ServerNotification, Dict[str, Any], Any]) -> None:
         notification = _coerce_notification(notification)
         if notification.kind == "ItemStarted" and notification.item:
             item_id = str(notification.item.get("id"))
@@ -167,7 +172,7 @@ class PendingInteractiveReplayState:
         elif notification.kind == "ThreadClosed":
             self.clear()
 
-    def note_evicted_server_request(self, request: ServerRequest | dict[str, Any] | Any) -> None:
+    def note_evicted_server_request(self, request: Union[ServerRequest, Dict[str, Any], Any]) -> None:
         request = _coerce_request(request)
         p = request.params
         if request.kind == "CommandExecutionRequestApproval":
@@ -187,7 +192,7 @@ class PendingInteractiveReplayState:
             self.remove_call_id_from_turn_map_entry(self.request_permissions_call_ids_by_turn_id, str(p.get("turn_id")), str(p.get("item_id")))
         self._retain_pending(lambda pending: not self.request_matches_server_request(pending, request))
 
-    def should_replay_snapshot_request(self, request: ServerRequest | dict[str, Any] | Any) -> bool:
+    def should_replay_snapshot_request(self, request: Union[ServerRequest, Dict[str, Any], Any]) -> bool:
         request = _coerce_request(request)
         p = request.params
         if request.kind == "CommandExecutionRequestApproval":
@@ -229,14 +234,14 @@ class PendingInteractiveReplayState:
         self._retain_pending(lambda p: not (p.kind == PendingInteractiveRequestKind.PATCH_APPROVAL and p.turn_id == turn_id))
 
     @staticmethod
-    def remove_call_id_from_turn_map(call_ids_by_turn_id: dict[str, list[str]], call_id: str) -> None:
+    def remove_call_id_from_turn_map(call_ids_by_turn_id: Dict[str, List[str]], call_id: str) -> None:
         for turn_id in list(call_ids_by_turn_id):
             call_ids_by_turn_id[turn_id] = [queued for queued in call_ids_by_turn_id[turn_id] if queued != call_id]
             if not call_ids_by_turn_id[turn_id]:
                 del call_ids_by_turn_id[turn_id]
 
     @staticmethod
-    def remove_call_id_from_turn_map_entry(call_ids_by_turn_id: dict[str, list[str]], turn_id: str, call_id: str) -> None:
+    def remove_call_id_from_turn_map_entry(call_ids_by_turn_id: Dict[str, List[str]], turn_id: str, call_id: str) -> None:
         if turn_id not in call_ids_by_turn_id:
             return
         call_ids_by_turn_id[turn_id] = [queued for queued in call_ids_by_turn_id[turn_id] if queued != call_id]
@@ -275,7 +280,7 @@ class PendingInteractiveReplayState:
             self.remove_call_id_from_turn_map_entry(self.request_user_input_call_ids_by_turn_id, pending.turn_id or "", pending.item_id)
 
     @staticmethod
-    def request_matches_server_request(pending: PendingInteractiveRequest, request: ServerRequest | dict[str, Any] | Any) -> bool:
+    def request_matches_server_request(pending: PendingInteractiveRequest, request: Union[ServerRequest, Dict[str, Any], Any]) -> bool:
         request = _coerce_request(request)
         p = request.params
         if pending.kind == PendingInteractiveRequestKind.EXEC_APPROVAL and request.kind == "CommandExecutionRequestApproval":
@@ -290,31 +295,31 @@ class PendingInteractiveReplayState:
             return pending.turn_id == str(p.get("turn_id")) and pending.item_id == str(p.get("item_id"))
         return False
 
-    def _retain_pending(self, predicate: Any) -> None:
+    def _retain_pending(self, predicate: Callable[[PendingInteractiveRequest], bool]) -> None:
         self.pending_requests_by_request_id = {key: pending for key, pending in self.pending_requests_by_request_id.items() if predicate(pending)}
 
 
 class ThreadEventStore:
     def __init__(self, capacity: int = 8):
         self.capacity = capacity
-        self.events: list[ServerRequest | ServerNotification] = []
+        self.events: List[Union[ServerRequest, ServerNotification]] = []
         self.pending_interactive_replay = PendingInteractiveReplayState()
 
     @classmethod
     def new(cls, capacity: int) -> "ThreadEventStore":
         return cls(capacity)
 
-    def push_request(self, request: ServerRequest | dict[str, Any] | Any) -> None:
+    def push_request(self, request: Union[ServerRequest, Dict[str, Any], Any]) -> None:
         request = _coerce_request(request)
         self.pending_interactive_replay.note_server_request(request)
         self._push(request)
 
-    def push_notification(self, notification: ServerNotification | dict[str, Any] | Any) -> None:
+    def push_notification(self, notification: Union[ServerNotification, Dict[str, Any], Any]) -> None:
         notification = _coerce_notification(notification)
         self.pending_interactive_replay.note_server_notification(notification)
         self._push(notification)
 
-    def note_outbound_op(self, op: AppCommand | dict[str, Any] | Any) -> None:
+    def note_outbound_op(self, op: Union[AppCommand, Dict[str, Any], Any]) -> None:
         self.pending_interactive_replay.note_outbound_op(op)
 
     def snapshot(self) -> "ThreadEventSnapshot":
@@ -327,7 +332,7 @@ class ThreadEventStore:
     def has_pending_thread_user_input(self) -> bool:
         return self.pending_interactive_replay.has_pending_thread_user_input()
 
-    def _push(self, event: ServerRequest | ServerNotification) -> None:
+    def _push(self, event: Union[ServerRequest, ServerNotification]) -> None:
         self.events.append(event)
         if len(self.events) > self.capacity:
             evicted = self.events.pop(0)
@@ -337,14 +342,14 @@ class ThreadEventStore:
 
 @dataclass(frozen=True)
 class ThreadEventSnapshot:
-    events: list[ServerRequest | ServerNotification]
+    events: List[Union[ServerRequest, ServerNotification]]
 
 
 def request_user_input_request(call_id: str, turn_id: str, request_id: Any = 1) -> ServerRequest:
     return ServerRequest("ToolRequestUserInput", request_id, {"turn_id": turn_id, "item_id": call_id})
 
 
-def exec_approval_request(call_id: str, approval_id: str | None = None, turn_id: str = "turn-1", request_id: Any = 2) -> ServerRequest:
+def exec_approval_request(call_id: str, approval_id: Optional[str] = None, turn_id: str = "turn-1", request_id: Any = 2) -> ServerRequest:
     return ServerRequest("CommandExecutionRequestApproval", request_id, {"turn_id": turn_id, "item_id": call_id, "approval_id": approval_id})
 
 
@@ -472,7 +477,7 @@ def thread_event_snapshot_drops_pending_requests_when_thread_closes() -> bool:
     return all(not (isinstance(event, ServerRequest) and event.kind == "CommandExecutionRequestApproval") for event in store.snapshot().events)
 
 
-def _coerce_request(request: ServerRequest | dict[str, Any] | Any) -> ServerRequest:
+def _coerce_request(request: Union[ServerRequest, Dict[str, Any], Any]) -> ServerRequest:
     if isinstance(request, ServerRequest):
         return request
     if isinstance(request, dict):
@@ -480,7 +485,7 @@ def _coerce_request(request: ServerRequest | dict[str, Any] | Any) -> ServerRequ
     return ServerRequest(str(getattr(request, "kind", getattr(request, "type", request.__class__.__name__))), getattr(request, "request_id"), dict(getattr(request, "params", {}) or {}))
 
 
-def _coerce_notification(notification: ServerNotification | dict[str, Any] | Any) -> ServerNotification:
+def _coerce_notification(notification: Union[ServerNotification, Dict[str, Any], Any]) -> ServerNotification:
     if isinstance(notification, ServerNotification):
         return notification
     if isinstance(notification, dict):
@@ -488,7 +493,7 @@ def _coerce_notification(notification: ServerNotification | dict[str, Any] | Any
     return ServerNotification(str(getattr(notification, "kind", getattr(notification, "type", notification.__class__.__name__))), request_id=getattr(notification, "request_id", None), turn_id=getattr(notification, "turn_id", None), item=getattr(notification, "item", None))
 
 
-def _coerce_op(op: AppCommand | dict[str, Any] | Any) -> AppCommand:
+def _coerce_op(op: Union[AppCommand, Dict[str, Any], Any]) -> AppCommand:
     if isinstance(op, AppCommand):
         return op
     if isinstance(op, dict):

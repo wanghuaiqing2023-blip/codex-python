@@ -8,7 +8,14 @@ from pycodex.tui.bottom_pane.multi_select_picker import (
     MultiSelectItem,
     MultiSelectPicker,
     SECTION_BREAK_ROW,
+    desired_height,
+    horizontal_list_keys_reorder_orderable_items,
     match_item,
+    non_orderable_items_cannot_move_or_be_crossed,
+    page_and_jump_navigation_use_list_keymap,
+    render,
+    searchable_plain_j_updates_query_instead_of_navigating,
+    section_break_after_item_renders_separator_row,
 )
 
 
@@ -145,3 +152,15 @@ def test_match_item_display_then_canonical_fallback():
     assert match_item("jp", "jupiter", "jupiter")[0] == [0, 2]
     assert match_item("sk", "Pretty Name", "skill-name")[0] is None
     assert match_item("zz", "Pretty Name", "skill-name") is None
+
+
+def test_rust_named_semantic_helpers_cover_internal_tests_and_rendering():
+    picker = _picker([_item("model"), _item("branch")])
+
+    assert non_orderable_items_cannot_move_or_be_crossed()
+    assert horizontal_list_keys_reorder_orderable_items()
+    assert section_break_after_item_renders_separator_row()
+    assert searchable_plain_j_updates_query_instead_of_navigating()
+    assert page_and_jump_navigation_use_list_keymap()
+    assert desired_height(picker, 80) >= 1
+    assert render(picker)["type"] == "MultiSelectPicker"

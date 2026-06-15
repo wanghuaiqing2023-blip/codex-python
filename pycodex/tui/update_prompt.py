@@ -10,19 +10,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, List, Optional, Protocol
+from typing import Any, List, Optional
 
 from ._porting import RustTuiModule
 from .ratatui_bridge import Buffer, Clear, Line, Rect, Span, Style
 from .update_action import UpdateAction
 from .version import CODEX_CLI_VERSION
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="update_prompt", source="codex/codex-rs/tui/src/update_prompt.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="update_prompt",
+    source="codex/codex-rs/tui/src/update_prompt.rs",
+    status="complete",
+)
 
 RELEASE_NOTES_URL = "https://github.com/openai/codex/releases/latest"
 
 
-class FrameRequesterLike(Protocol):
+class FrameRequesterLike:
     def schedule_frame(self) -> Any: ...
 
 
@@ -211,7 +216,9 @@ async def run_update_prompt_if_needed(
     """
 
     if latest_version is None:
-        if updates_module is None or not hasattr(updates_module, "get_upgrade_version_for_popup"):
+        if updates_module is None:
+            from . import updates as updates_module
+        if not hasattr(updates_module, "get_upgrade_version_for_popup"):
             return UpdatePromptOutcome.continue_()
         maybe_version = updates_module.get_upgrade_version_for_popup(config)
         latest_version = await maybe_version if hasattr(maybe_version, "__await__") else maybe_version
@@ -220,7 +227,7 @@ async def run_update_prompt_if_needed(
 
     if update_action is None:
         if update_action_provider is None:
-            return UpdatePromptOutcome.continue_()
+            from .update_action import get_update_action as update_action_provider
         maybe_action = update_action_provider()
         update_action = await maybe_action if hasattr(maybe_action, "__await__") else maybe_action
     if update_action is None:

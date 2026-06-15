@@ -13,6 +13,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="token_usage",
     source="codex/codex-rs/tui/src/token_usage.rs",
+    status="complete",
 )
 
 BASELINE_TOKENS = 12000

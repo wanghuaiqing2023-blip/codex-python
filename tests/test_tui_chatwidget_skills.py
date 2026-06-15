@@ -5,9 +5,13 @@ from types import SimpleNamespace
 from pycodex.tui.chatwidget.skills import (
     AppInfo,
     ProtocolSkillMetadata,
+    SkillDependencies,
+    SkillInterface,
+    SkillToolDependency,
     SkillMetadata,
     SkillsListEntry,
     ToolMentions,
+    annotate_skill_reads_in_parsed_cmd,
     app_id_from_path,
     collect_tool_mentions,
     enabled_skills_for_mentions,
@@ -111,6 +115,25 @@ def test_skill_response_mapping_and_enabled_mentions() -> None:
     assert [core.name for core in enabled_skills_for_mentions([skill, disabled])] == ["docs"]
 
 
+def test_protocol_skill_to_core_copies_interface_dependencies_scope_and_plugin_none() -> None:
+    skill = ProtocolSkillMetadata(
+        name="docs",
+        path="/repo/SKILL.md",
+        interface={"display_name": "Docs", "short_description": "Short"},
+        dependencies={"tools": [{"type": "mcp", "value": "server", "description": "Server"}]},
+        scope={"kind": "workspace"},
+    )
+
+    core = protocol_skill_to_core(skill)
+
+    assert core.interface == SkillInterface(display_name="Docs", short_description="Short")
+    assert core.dependencies == SkillDependencies(
+        tools=(SkillToolDependency(type="mcp", value="server", description="Server"),)
+    )
+    assert core.scope == {"kind": "workspace"}
+    assert core.plugin_id is None
+
+
 class Pane:
     def __init__(self) -> None:
         self.selection = None
@@ -189,3 +212,19 @@ def test_set_skills_from_response_updates_all_and_enabled_mentions() -> None:
 
     assert widget.skills_all == [skill]
     assert widget.set_skills_value[0].name == "docs"
+
+
+def test_annotate_skill_reads_in_parsed_cmd_only_rewrites_matching_skill_md_reads() -> None:
+    widget = Widget()
+    widget.skills_all = [ProtocolSkillMetadata(name="docs", path="/repo/SKILL.md")]
+    parsed = [
+        {"kind": "Read", "name": "SKILL.md", "path": "/repo/SKILL.md"},
+        {"kind": "Read", "name": "README.md", "path": "/repo/README.md"},
+        {"kind": "Exec", "name": "SKILL.md", "path": "/repo/SKILL.md"},
+    ]
+
+    annotated = annotate_skill_reads_in_parsed_cmd(widget, parsed)
+
+    assert annotated[0]["name"] == "SKILL.md (docs skill)"
+    assert annotated[1] == parsed[1]
+    assert annotated[2] == parsed[2]

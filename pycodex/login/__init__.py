@@ -9,6 +9,7 @@ In this port, the concrete implementation currently lives in
 from __future__ import annotations
 
 from pycodex.cli import login as _login_impl
+from pycodex.login.auth import default_client
 from pycodex.login.auth_env_telemetry import (
     AuthEnvTelemetry,
     AuthEnvTelemetryMetadata,
@@ -45,6 +46,7 @@ __all__ = [
     "AuthDotJson",
     "auth_file_path",
     "delete_auth_file",
+    "default_client",
     "read_auth_json",
     "resolve_auth_mode",
     "run_chatgpt_login",
@@ -97,6 +99,7 @@ def __getattr__(name: str):
         "resolve_provider_auth_program",
         "run_provider_auth_command",
         "try_parse_error_message",
+        "default_client",
     }:
         return globals()[name]
     if name not in __all__:

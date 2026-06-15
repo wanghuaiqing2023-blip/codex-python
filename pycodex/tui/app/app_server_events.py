@@ -10,38 +10,43 @@ without depending on the full TUI runtime object graph.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any, Dict, List, Optional, Tuple
 
-from .._porting import RustTuiModule, not_ported
+from .._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="app::app_server_events", source="codex/codex-rs/tui/src/app/app_server_events.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="app::app_server_events",
+    source="codex/codex-rs/tui/src/app/app_server_events.rs",
+    status="complete",
+)
 
 
 @dataclass(frozen=True)
 class AppServerEventPlan:
-    actions: tuple[str, ...]
-    thread_id: str | None = None
-    message: str | None = None
-    notification: Any | None = None
-    request: Any | None = None
-    rejection: Any | None = None
+    actions: Tuple[str, ...]
+    thread_id: Optional[str] = None
+    message: Optional[str] = None
+    notification: Any = None
+    request: Any = None
+    rejection: Any = None
 
 
 @dataclass
 class PendingRequests:
-    unsupported: Any | None = None
-    resolved: dict[str, Any] = field(default_factory=dict)
-    noted: list[Any] = field(default_factory=list)
+    unsupported: Any = None
+    resolved: Dict[str, Any] = field(default_factory=dict)
+    noted: List[Any] = field(default_factory=list)
 
-    def note_server_request(self, request: Any) -> Any | None:
+    def note_server_request(self, request: Any) -> Any:
         self.noted.append(request)
         return self.unsupported
 
-    def resolve_notification(self, request_id: str) -> Any | None:
+    def resolve_notification(self, request_id: str) -> Any:
         return self.resolved.pop(request_id, None)
 
 
-def refresh_mcp_startup_expected_servers_from_config(config: Any) -> list[str]:
+def refresh_mcp_startup_expected_servers_from_config(config: Any) -> List[str]:
     servers = _get(_get(config, "mcp_servers", {}), "get", None)
     if callable(servers):
         servers = servers()
@@ -54,8 +59,8 @@ def refresh_mcp_startup_expected_servers_from_config(config: Any) -> list[str]:
 def plan_app_server_event(
     event: Any,
     *,
-    primary_thread_id: str | None = None,
-    pending_requests: Any | None = None,
+    primary_thread_id: Optional[str] = None,
+    pending_requests: Any = None,
 ) -> AppServerEventPlan:
     kind = _variant(event)
     if kind == "Lagged":
@@ -81,8 +86,8 @@ def plan_app_server_event(
 def plan_server_notification_event(
     notification: Any,
     *,
-    primary_thread_id: str | None = None,
-    pending_requests: Any | None = None,
+    primary_thread_id: Optional[str] = None,
+    pending_requests: Any = None,
 ) -> AppServerEventPlan:
     kind = _variant(notification)
     if kind == "ServerRequestResolved":
@@ -121,8 +126,8 @@ def plan_server_notification_event(
 def plan_server_request_event(
     request: Any,
     *,
-    primary_thread_id: str | None = None,
-    pending_requests: Any | None = None,
+    primary_thread_id: Optional[str] = None,
+    pending_requests: Any = None,
 ) -> AppServerEventPlan:
     unsupported = _note_pending_request(pending_requests, request)
     if unsupported is not None:
@@ -143,7 +148,7 @@ def plan_server_request_event(
 @dataclass(frozen=True)
 class _ThreadTarget:
     kind: str
-    thread_id: str | None = None
+    thread_id: Optional[str] = None
 
 
 def _notification_thread_target(notification: Any) -> _ThreadTarget:
@@ -158,21 +163,21 @@ def _notification_thread_target(notification: Any) -> _ThreadTarget:
     return _ThreadTarget("Thread", thread_id)
 
 
-def _request_thread_id(request: Any) -> str | None:
+def _request_thread_id(request: Any) -> Optional[str]:
     thread_id = _get(request, "thread_id", None)
     payload = _payload(request, "request", request)
     thread_id = _get(payload, "thread_id", thread_id)
     return None if thread_id is None or str(thread_id) == "" else str(thread_id)
 
 
-def _note_pending_request(pending_requests: Any | None, request: Any) -> Any | None:
+def _note_pending_request(pending_requests: Any, request: Any) -> Any:
     if pending_requests is None:
         return None
     note = getattr(pending_requests, "note_server_request", None)
     return note(request) if callable(note) else None
 
 
-def _resolve_pending(pending_requests: Any | None, request_id: Any) -> Any | None:
+def _resolve_pending(pending_requests: Any, request_id: Any) -> Any:
     if pending_requests is None or request_id is None:
         return None
     resolve = getattr(pending_requests, "resolve_notification", None)

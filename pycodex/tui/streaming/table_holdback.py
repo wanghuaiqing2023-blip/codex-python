@@ -8,7 +8,7 @@ pipe tables can be re-rendered as later rows arrive.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import List, Optional
 
 from .._porting import RustTuiModule
 from ..table_detect import (
@@ -20,7 +20,12 @@ from ..table_detect import (
     strip_blockquote_prefix,
 )
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="streaming::table_holdback", source="codex/codex-rs/tui/src/streaming/table_holdback.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="streaming::table_holdback",
+    source="codex/codex-rs/tui/src/streaming/table_holdback.rs",
+    status="complete",
+)
 
 
 @dataclass(frozen=True)
@@ -28,8 +33,8 @@ class TableHoldbackState:
     """Semantic equivalent of Rust ``TableHoldbackState`` variants."""
 
     kind: str
-    header_start: int | None = None
-    table_start: int | None = None
+    header_start: Optional[int] = None
+    table_start: Optional[int] = None
 
     @classmethod
     def none(cls) -> "TableHoldbackState":
@@ -65,10 +70,10 @@ class TableHoldbackScanner:
     """Incremental append-only scanner for table holdback state."""
 
     source_offset: int = 0
-    fence_tracker: FenceTracker | None = None
-    previous_line: PreviousLineState | None = None
-    pending_header_start: int | None = None
-    confirmed_table_start: int | None = None
+    fence_tracker: Optional[FenceTracker] = None
+    previous_line: Optional[PreviousLineState] = None
+    pending_header_start: Optional[int] = None
+    confirmed_table_start: Optional[int] = None
 
     def __post_init__(self) -> None:
         if self.fence_tracker is None:
@@ -135,7 +140,7 @@ class TableHoldbackScanner:
         self.source_offset += _byte_len(source_line)
 
 
-def table_candidate_text(line: str) -> str | None:
+def table_candidate_text(line: str) -> Optional[str]:
     stripped = strip_blockquote_prefix(line).strip()
     return stripped if parse_table_segments(stripped) is not None else None
 
@@ -147,9 +152,9 @@ class ParsedLine:
     source_start: int
 
 
-def parse_lines_with_fence_state(source: str) -> list[ParsedLine]:
+def parse_lines_with_fence_state(source: str) -> List[ParsedLine]:
     tracker = FenceTracker.new()
-    lines: list[ParsedLine] = []
+    lines: List[ParsedLine] = []
     source_start = 0
 
     for raw_line in source.split("\n"):
@@ -186,7 +191,7 @@ def table_holdback_state(source: str) -> TableHoldbackState:
     return TableHoldbackState.none()
 
 
-def _split_inclusive_newline(source: str) -> list[str]:
+def _split_inclusive_newline(source: str) -> List[str]:
     if source == "":
         return []
     parts = source.splitlines(keepends=True)

@@ -1,4 +1,4 @@
-from pycodex.tui.bottom_pane.popup_consts import (
+﻿from pycodex.tui.bottom_pane.popup_consts import (
     MAX_POPUP_ROWS,
     accept_cancel_hint_line,
     standard_popup_hint_line,
@@ -19,7 +19,7 @@ def test_standard_popup_hint_line_uses_enter_and_escape() -> None:
 
 def test_standard_popup_hint_line_for_keymap_uses_primary_bindings() -> None:
     keymap = ListKeymap(accept=[alt("a"), plain("Enter")], cancel=[plain("q"), plain("Esc")])
-    assert standard_popup_hint_line_for_keymap(keymap) == "Press 鈱?+ a to confirm or q to go back"
+    assert standard_popup_hint_line_for_keymap(keymap) == "Press ⌥ + a to confirm or q to go back"
 
 
 def test_accept_cancel_hint_line_handles_missing_bindings() -> None:
@@ -35,3 +35,4 @@ def test_accept_cancel_hint_line_uses_rust_key_hint_display_labels() -> None:
         accept_cancel_hint_line(ctrl("PageUp"), "to accept", shift("PageDown"), "to cancel")
         == "Press ctrl + pgup to accept or shift + pgdn to cancel"
     )
+

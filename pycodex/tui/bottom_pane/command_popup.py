@@ -8,7 +8,7 @@ rows instead of ratatui buffer mutation.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any, Iterable, List, Optional, Tuple, Union
 
 from .._porting import RustTuiModule
 from ..slash_command import SlashCommand
@@ -32,6 +32,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="bottom_pane::command_popup",
     source="codex/codex-rs/tui/src/bottom_pane/command_popup.rs",
+    status="complete",
 )
 
 ALIAS_COMMANDS = (SlashCommand.QUIT, SlashCommand.BTW)
@@ -43,7 +44,7 @@ class CommandItem:
     """Rust ``CommandItem`` semantic enum."""
 
     kind: str
-    value: SlashCommand | ServiceTierCommand
+    value: Union[SlashCommand, ServiceTierCommand]
 
     @classmethod
     def builtin(cls, command: SlashCommand) -> "CommandItem":
@@ -95,17 +96,17 @@ class CommandPopupFlags:
 @dataclass
 class CommandPopup:
     command_filter: str = ""
-    commands: list[CommandItem] = field(default_factory=list)
+    commands: List[CommandItem] = field(default_factory=list)
     state: ScrollState = field(default_factory=ScrollState.new)
 
     @classmethod
     def new(
         cls,
-        flags: CommandPopupFlags | None = None,
+        flags: Optional[CommandPopupFlags] = None,
         service_tier_commands: Iterable[ServiceTierCommand] = (),
     ) -> "CommandPopup":
         flags = flags or CommandPopupFlags()
-        commands: list[CommandItem] = []
+        commands: List[CommandItem] = []
         for item in commands_for_input(flags.to_builtin_flags(), tuple(service_tier_commands)):
             if item.kind == "Builtin":
                 command = item.value
@@ -140,7 +141,7 @@ class CommandPopup:
             COMMAND_COLUMN_WIDTH,
         )
 
-    def filtered(self) -> list[tuple[CommandItem, list[int] | None]]:
+    def filtered(self) -> List[Tuple[CommandItem, Optional[List[int]]]]:
         filter_text = self.command_filter.strip()
         if not filter_text:
             return [
@@ -151,8 +152,8 @@ class CommandPopup:
 
         filter_lower = filter_text.lower()
         filter_chars = len(filter_text)
-        exact: list[tuple[CommandItem, list[int] | None]] = []
-        prefix: list[tuple[CommandItem, list[int] | None]] = []
+        exact: List[Tuple[CommandItem, Optional[List[int]]]] = []
+        prefix: List[Tuple[CommandItem, Optional[List[int]]]] = []
 
         for command in self.commands:
             display = command.command()
@@ -165,14 +166,14 @@ class CommandPopup:
 
         return exact + prefix
 
-    def filtered_items(self) -> list[CommandItem]:
+    def filtered_items(self) -> List[CommandItem]:
         return [command for command, _indices in self.filtered()]
 
     def rows_from_matches(
         self,
-        matches: Iterable[tuple[CommandItem, list[int] | None]],
-    ) -> list[GenericDisplayRow]:
-        rows: list[GenericDisplayRow] = []
+        matches: Iterable[Tuple[CommandItem, Optional[List[int]]]],
+    ) -> List[GenericDisplayRow]:
+        rows: List[GenericDisplayRow] = []
         for item, indices in matches:
             rows.append(
                 GenericDisplayRow(
@@ -199,7 +200,7 @@ class CommandPopup:
         self.state.move_down_wrap(length)
         self.state.ensure_visible(length, min(MAX_POPUP_ROWS, length))
 
-    def selected_item(self) -> CommandItem | None:
+    def selected_item(self) -> Optional[CommandItem]:
         matches = self.filtered_items()
         if self.state.selected_idx is None:
             return None

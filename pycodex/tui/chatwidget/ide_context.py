@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, List, Optional, Tuple
 
 from .._porting import RustTuiModule
 
@@ -17,6 +17,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="chatwidget::ide_context",
     source="codex/codex-rs/tui/src/chatwidget/ide_context.rs",
+    status="complete",
 )
 
 
@@ -43,7 +44,7 @@ class IdeContextState:
 @dataclass
 class IdeContextDeps:
     fetch_ide_context: Callable[[Path], Any]
-    apply_ide_context_to_user_input: Callable[[Any, list[Any]], None]
+    apply_ide_context_to_user_input: Callable[[Any, List[Any]], None]
     has_prompt_context: Callable[[Any], bool]
 
 
@@ -52,9 +53,9 @@ class IdeContextWidgetState:
     cwd: Path
     deps: IdeContextDeps
     ide_context: IdeContextState = field(default_factory=IdeContextState)
-    info_messages: list[tuple[str, str | None]] = field(default_factory=list)
-    error_messages: list[str] = field(default_factory=list)
-    indicator_active: bool | None = None
+    info_messages: List[Tuple[str, Optional[str]]] = field(default_factory=list)
+    error_messages: List[str] = field(default_factory=list)
+    indicator_active: Optional[bool] = None
 
     def handle_ide_command(self) -> None:
         if self.ide_context.is_enabled():
@@ -66,7 +67,7 @@ class IdeContextWidgetState:
             self.add_ide_context_status_message()
 
     def handle_ide_command_args(self, args: str) -> None:
-        arg = str(args).lower()
+        arg = str(args).strip().lower()
         if arg == "":
             self.handle_ide_command()
         elif arg == "on":
@@ -81,7 +82,7 @@ class IdeContextWidgetState:
         else:
             self.add_error_message("Usage: /ide [on|off|status]")
 
-    def maybe_apply_ide_context(self, items: list[Any]) -> None:
+    def maybe_apply_ide_context(self, items: List[Any]) -> None:
         if not self.ide_context.is_enabled():
             return
         try:
@@ -126,7 +127,7 @@ class IdeContextWidgetState:
     def sync_ide_context_status_indicator(self) -> None:
         self.indicator_active = self.ide_context.is_enabled()
 
-    def add_info_message(self, message: str, hint: str | None = None) -> None:
+    def add_info_message(self, message: str, hint: Optional[str] = None) -> None:
         self.info_messages.append((message, hint))
 
     def add_error_message(self, message: str) -> None:
@@ -141,7 +142,7 @@ def handle_ide_command_args(widget: Any, args: str) -> None:
     _adapter(widget).handle_ide_command_args(args)
 
 
-def maybe_apply_ide_context(widget: Any, items: list[Any]) -> None:
+def maybe_apply_ide_context(widget: Any, items: List[Any]) -> None:
     _adapter(widget).maybe_apply_ide_context(items)
 
 

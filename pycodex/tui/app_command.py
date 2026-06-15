@@ -10,11 +10,16 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Optional, Union
 
 from ._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="app_command", source="codex/codex-rs/tui/src/app_command.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="app_command",
+    source="codex/codex-rs/tui/src/app_command.rs",
+    status="complete",
+)
 
 
 @dataclass(frozen=True)
@@ -22,7 +27,7 @@ class AppCommand:
     """Semantic equivalent of Rust ``app_command::AppCommand`` variants."""
 
     kind: str
-    payload: dict[str, Any] = field(default_factory=dict)
+    payload: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def interrupt(cls) -> "AppCommand":
@@ -33,12 +38,15 @@ class AppCommand:
         return cls("CleanBackgroundTerminals")
 
     @classmethod
-    def realtime_conversation_start(cls, transport: Any | None, voice: Any | None) -> "AppCommand":
-        return cls("RealtimeConversationStart", {"transport": transport, "voice": voice})
+    def realtime_conversation_start(cls, transport: Optional[Any], voice: Optional[Any]) -> "AppCommand":
+        return cls(
+            "RealtimeConversationStart",
+            {"transport": deepcopy(transport), "voice": deepcopy(voice)},
+        )
 
     @classmethod
     def realtime_conversation_audio(cls, frame: Any) -> "AppCommand":
-        return cls("RealtimeConversationAudio", {"frame": frame})
+        return cls("RealtimeConversationAudio", {"frame": deepcopy(frame)})
 
     @classmethod
     def realtime_conversation_close(cls) -> "AppCommand":
@@ -51,77 +59,77 @@ class AppCommand:
     @classmethod
     def user_turn(
         cls,
-        items: list[Any],
-        cwd: str | Path,
+        items: List[Any],
+        cwd: Union[str, Path],
         approval_policy: Any,
-        active_permission_profile: Any | None,
+        active_permission_profile: Optional[Any],
         model: str,
-        effort: Any | None,
-        summary: Any | None,
-        service_tier: Any | None,
-        final_output_json_schema: Any | None,
-        collaboration_mode: Any | None,
-        personality: Any | None,
+        effort: Optional[Any],
+        summary: Optional[Any],
+        service_tier: Optional[Any],
+        final_output_json_schema: Optional[Any],
+        collaboration_mode: Optional[Any],
+        personality: Optional[Any],
     ) -> "AppCommand":
         return cls(
             "UserTurn",
             {
-                "items": list(items),
+                "items": deepcopy(list(items)),
                 "cwd": Path(cwd),
                 "approval_policy": approval_policy,
                 "approvals_reviewer": None,
-                "active_permission_profile": active_permission_profile,
+                "active_permission_profile": deepcopy(active_permission_profile),
                 "model": model,
-                "effort": effort,
-                "summary": summary,
-                "service_tier": service_tier,
-                "final_output_json_schema": final_output_json_schema,
-                "collaboration_mode": collaboration_mode,
-                "personality": personality,
+                "effort": deepcopy(effort),
+                "summary": deepcopy(summary),
+                "service_tier": deepcopy(service_tier),
+                "final_output_json_schema": deepcopy(final_output_json_schema),
+                "collaboration_mode": deepcopy(collaboration_mode),
+                "personality": deepcopy(personality),
             },
         )
 
     @classmethod
     def override_turn_context(
         cls,
-        cwd: str | Path | None = None,
-        approval_policy: Any | None = None,
-        approvals_reviewer: Any | None = None,
-        permission_profile: Any | None = None,
-        active_permission_profile: Any | None = None,
-        windows_sandbox_level: Any | None = None,
-        model: str | None = None,
-        effort: Any | None = None,
-        summary: Any | None = None,
-        service_tier: Any | None = None,
-        collaboration_mode: Any | None = None,
-        personality: Any | None = None,
+        cwd: Optional[Union[str, Path]] = None,
+        approval_policy: Optional[Any] = None,
+        approvals_reviewer: Optional[Any] = None,
+        permission_profile: Optional[Any] = None,
+        active_permission_profile: Optional[Any] = None,
+        windows_sandbox_level: Optional[Any] = None,
+        model: Optional[str] = None,
+        effort: Optional[Any] = None,
+        summary: Optional[Any] = None,
+        service_tier: Optional[Any] = None,
+        collaboration_mode: Optional[Any] = None,
+        personality: Optional[Any] = None,
     ) -> "AppCommand":
         return cls(
             "OverrideTurnContext",
             {
                 "cwd": None if cwd is None else Path(cwd),
                 "approval_policy": approval_policy,
-                "approvals_reviewer": approvals_reviewer,
-                "permission_profile": permission_profile,
-                "active_permission_profile": active_permission_profile,
-                "windows_sandbox_level": windows_sandbox_level,
+                "approvals_reviewer": deepcopy(approvals_reviewer),
+                "permission_profile": deepcopy(permission_profile),
+                "active_permission_profile": deepcopy(active_permission_profile),
+                "windows_sandbox_level": deepcopy(windows_sandbox_level),
                 "model": model,
-                "effort": effort,
-                "summary": summary,
-                "service_tier": service_tier,
-                "collaboration_mode": collaboration_mode,
-                "personality": personality,
+                "effort": deepcopy(effort),
+                "summary": deepcopy(summary),
+                "service_tier": deepcopy(service_tier),
+                "collaboration_mode": deepcopy(collaboration_mode),
+                "personality": deepcopy(personality),
             },
         )
 
     @classmethod
-    def exec_approval(cls, id: str, turn_id: str | None, decision: Any) -> "AppCommand":
-        return cls("ExecApproval", {"id": id, "turn_id": turn_id, "decision": decision})
+    def exec_approval(cls, id: str, turn_id: Optional[str], decision: Any) -> "AppCommand":
+        return cls("ExecApproval", {"id": id, "turn_id": turn_id, "decision": deepcopy(decision)})
 
     @classmethod
     def patch_approval(cls, id: str, decision: Any) -> "AppCommand":
-        return cls("PatchApproval", {"id": id, "decision": decision})
+        return cls("PatchApproval", {"id": id, "decision": deepcopy(decision)})
 
     @classmethod
     def resolve_elicitation(
@@ -129,8 +137,8 @@ class AppCommand:
         server_name: str,
         request_id: Any,
         decision: Any,
-        content: Any | None,
-        meta: Any | None,
+        content: Optional[Any],
+        meta: Optional[Any],
     ) -> "AppCommand":
         return cls(
             "ResolveElicitation",
@@ -138,25 +146,25 @@ class AppCommand:
                 "server_name": server_name,
                 "request_id": request_id,
                 "decision": decision,
-                "content": content,
-                "meta": meta,
+                "content": deepcopy(content),
+                "meta": deepcopy(meta),
             },
         )
 
     @classmethod
     def user_input_answer(cls, id: str, response: Any) -> "AppCommand":
-        return cls("UserInputAnswer", {"id": id, "response": response})
+        return cls("UserInputAnswer", {"id": id, "response": deepcopy(response)})
 
     @classmethod
     def request_permissions_response(cls, id: str, response: Any) -> "AppCommand":
-        return cls("RequestPermissionsResponse", {"id": id, "response": response})
+        return cls("RequestPermissionsResponse", {"id": id, "response": deepcopy(response)})
 
     @classmethod
     def reload_user_config(cls) -> "AppCommand":
         return cls("ReloadUserConfig")
 
     @classmethod
-    def list_skills(cls, cwds: list[str | Path], force_reload: bool) -> "AppCommand":
+    def list_skills(cls, cwds: List[Union[str, Path]], force_reload: bool) -> "AppCommand":
         return cls("ListSkills", {"cwds": [Path(cwd) for cwd in cwds], "force_reload": force_reload})
 
     @classmethod
@@ -177,11 +185,11 @@ class AppCommand:
 
     @classmethod
     def review(cls, target: Any) -> "AppCommand":
-        return cls("Review", {"target": target})
+        return cls("Review", {"target": deepcopy(target)})
 
     @classmethod
     def approve_guardian_denied_action(cls, event: Any) -> "AppCommand":
-        return cls("ApproveGuardianDeniedAction", {"event": event})
+        return cls("ApproveGuardianDeniedAction", {"event": deepcopy(event)})
 
     def is_review(self) -> bool:
         return self.kind == "Review"

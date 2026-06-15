@@ -109,3 +109,36 @@ def test_post_construct_sync_calls_bottom_pane_and_widget_hooks() -> None:
     assert "sync_mentions_v2_enabled" in widget_calls
     assert "update_collaboration_mode_indicator" in widget_calls
     assert "refresh_status_surfaces" in widget_calls
+
+
+def test_constructor_wires_keymap_service_tier_rate_limit_and_pet_hooks() -> None:
+    cfg = config()
+    cfg.tui_raw_output_mode = True
+    cfg.tui_keymap = {
+        "app": {"copy": "ctrl+shift+c"},
+        "chat": {"edit_queued_message": "alt+e"},
+    }
+    pet_calls = []
+
+    widget = new_with_app_event(
+        ChatWidgetInit(config=cfg, frame_requester="frame", app_event_tx="tx", model="gpt"),
+        factories={
+            "effective_service_tier": lambda config, model, catalog: ("tier", model),
+            "terminal_info": lambda: "terminal-info",
+            "start_configured_pet_load_if_needed": lambda *args: pet_calls.append(args),
+        },
+    )
+
+    bottom_calls = widget.bottom_pane.calls
+    widget_calls = [name for name, _ in widget.calls]
+
+    assert widget.raw_output_mode is True
+    assert widget.effective_service_tier == ("tier", "gpt")
+    assert widget.current_terminal_info == "terminal-info"
+    assert widget.copy_last_response_binding == "ctrl+shift+c"
+    assert widget.chat_keymap == {"edit_queued_message": "alt+e"}
+    assert widget.queued_message_edit_hint_binding == "alt+e"
+    assert ("set_keymap_bindings", (cfg.tui_keymap,)) in bottom_calls
+    assert ("set_queued_message_edit_binding", ("alt+e",)) in bottom_calls
+    assert "prefetch_rate_limits" in widget_calls
+    assert pet_calls == [(cfg, True, "frame", "tx")]

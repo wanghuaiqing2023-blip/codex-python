@@ -9,11 +9,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Iterable, Protocol
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
 
 from .._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="chatwidget::settings_popups", source="codex/codex-rs/tui/src/chatwidget/settings_popups.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="chatwidget::settings_popups",
+    source="codex/codex-rs/tui/src/chatwidget/settings_popups.rs",
+    status="complete",
+)
 
 __all__ = [
     "AppEvent",
@@ -26,6 +31,7 @@ __all__ = [
     "SelectionViewParams",
     "open_experimental_popup",
     "open_personality_popup",
+    "open_realtime_audio_device_selection",
     "open_realtime_audio_device_selection_with_names",
     "open_realtime_audio_popup",
     "open_realtime_audio_restart_prompt",
@@ -55,27 +61,27 @@ class RealtimeAudioDeviceKind(str, Enum):
 @dataclass(frozen=True)
 class AppEvent:
     kind: str
-    payload: dict[str, Any] = field(default_factory=dict)
+    payload: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class SelectionItem:
     name: str
-    description: str | None = None
+    description: Optional[str] = None
     is_current: bool = False
     is_disabled: bool = False
-    disabled_reason: str | None = None
-    actions: list[AppEvent] = field(default_factory=list)
+    disabled_reason: Optional[str] = None
+    actions: List[AppEvent] = field(default_factory=list)
     dismiss_on_select: bool = False
 
 
 @dataclass
 class SelectionViewParams:
-    title: str | None = None
-    subtitle: str | None = None
-    footer_hint: str | None = "Enter to select, Esc to cancel"
-    items: list[SelectionItem] = field(default_factory=list)
-    header: str | None = None
+    title: Optional[str] = None
+    subtitle: Optional[str] = None
+    footer_hint: Optional[str] = "Enter to select, Esc to cancel"
+    items: List[SelectionItem] = field(default_factory=list)
+    header: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -88,10 +94,10 @@ class ExperimentalFeatureItem:
 
 @dataclass(frozen=True)
 class ExperimentalFeaturesView:
-    features: tuple[ExperimentalFeatureItem, ...]
+    features: Tuple[ExperimentalFeatureItem, ...]
 
 
-class SettingsPopupsWidget(Protocol):
+class SettingsPopupsWidget:
     config: Any
     bottom_pane: Any
 
@@ -125,7 +131,7 @@ def open_theme_picker(widget: Any) -> Any:
     return params
 
 
-def open_personality_popup(widget: Any) -> SelectionViewParams | None:
+def open_personality_popup(widget: Any) -> Optional[SelectionViewParams]:
     if not widget.is_session_configured():
         widget.add_info_message(
             "Personality selection is disabled until startup completes.",
@@ -189,9 +195,32 @@ def open_realtime_audio_popup(widget: Any) -> SelectionViewParams:
     return params
 
 
+def open_realtime_audio_device_selection(
+    widget: Any,
+    kind: Union[RealtimeAudioDeviceKind, str],
+    list_device_names: Optional[Callable[[RealtimeAudioDeviceKind], Iterable[str]]] = None,
+    linux_noop: bool = False,
+) -> Optional[SelectionViewParams]:
+    kind = _audio_kind(kind)
+    if linux_noop:
+        return None
+    if list_device_names is None:
+        list_device_names = getattr(widget, "list_realtime_audio_device_names", None)
+    if list_device_names is None:
+        raise NotImplementedError(
+            "open_realtime_audio_device_selection requires a list_realtime_audio_device_names provider"
+        )
+    try:
+        device_names = list(list_device_names(kind))
+    except Exception as exc:
+        widget.add_error_message(f"Failed to load realtime {kind.noun()} devices: {exc}")
+        return None
+    return open_realtime_audio_device_selection_with_names(widget, kind, device_names)
+
+
 def open_realtime_audio_device_selection_with_names(
     widget: Any,
-    kind: RealtimeAudioDeviceKind | str,
+    kind: Union[RealtimeAudioDeviceKind, str],
     device_names: Iterable[str],
 ) -> SelectionViewParams:
     kind = _audio_kind(kind)
@@ -239,7 +268,7 @@ def open_realtime_audio_device_selection_with_names(
     return params
 
 
-def open_realtime_audio_restart_prompt(widget: Any, kind: RealtimeAudioDeviceKind | str) -> SelectionViewParams:
+def open_realtime_audio_restart_prompt(widget: Any, kind: Union[RealtimeAudioDeviceKind, str]) -> SelectionViewParams:
     kind = _audio_kind(kind)
     params = SelectionViewParams(
         header=f"Restart {kind.title()} now?\nConfiguration is saved. Restart local audio to use it immediately.",
@@ -283,7 +312,7 @@ def open_experimental_popup(widget: Any) -> ExperimentalFeaturesView:
     return view
 
 
-def personality_label(personality: Personality | str) -> str:
+def personality_label(personality: Union[Personality, str]) -> str:
     personality = _personality(personality)
     return {
         Personality.NONE: "None",
@@ -292,7 +321,7 @@ def personality_label(personality: Personality | str) -> str:
     }[personality]
 
 
-def personality_description(personality: Personality | str) -> str:
+def personality_description(personality: Union[Personality, str]) -> str:
     personality = _personality(personality)
     return {
         Personality.NONE: "No personality instructions.",
@@ -301,22 +330,22 @@ def personality_description(personality: Personality | str) -> str:
     }[personality]
 
 
-def _personality(value: Personality | str) -> Personality:
+def _personality(value: Union[Personality, str]) -> Personality:
     return value if isinstance(value, Personality) else Personality(str(value))
 
 
-def _audio_kind(value: RealtimeAudioDeviceKind | str) -> RealtimeAudioDeviceKind:
+def _audio_kind(value: Union[RealtimeAudioDeviceKind, str]) -> RealtimeAudioDeviceKind:
     return value if isinstance(value, RealtimeAudioDeviceKind) else RealtimeAudioDeviceKind(str(value))
 
 
-def _maybe_call(target: Any, method_name: str) -> Any | None:
+def _maybe_call(target: Any, method_name: str) -> Optional[Any]:
     method = getattr(target, method_name, None)
     if method is None:
         return None
     return method()
 
 
-def _last_width(widget: Any) -> int | None:
+def _last_width(widget: Any) -> Optional[int]:
     width = getattr(widget, "last_rendered_width", None)
     if hasattr(width, "get"):
         width = width.get()

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable, List, Optional, Union
 
 from .._porting import RustTuiModule
 from ..bottom_pane.list_selection_view import SelectionItem, SelectionViewParams
@@ -16,6 +16,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="chatwidget::review_popups",
     source="codex/codex-rs/tui/src/chatwidget/review_popups.rs",
+    status="complete",
 )
 
 
@@ -29,14 +30,14 @@ class CommitLogEntry:
 @dataclass(frozen=True)
 class ReviewPopupAction:
     kind: str
-    cwd: Path | None = None
-    branch: str | None = None
-    sha: str | None = None
-    title: str | None = None
-    instructions: str | None = None
+    cwd: Optional[Path] = None
+    branch: Optional[str] = None
+    sha: Optional[str] = None
+    title: Optional[str] = None
+    instructions: Optional[str] = None
 
 
-def open_review_popup(cwd: str | Path) -> SelectionViewParams:
+def open_review_popup(cwd: Union[str, Path]) -> SelectionViewParams:
     cwd_path = Path(cwd)
     return SelectionViewParams(
         title="Select a review preset",
@@ -70,9 +71,21 @@ def open_review_popup(cwd: str | Path) -> SelectionViewParams:
     )
 
 
+def show_review_branch_picker(
+    cwd: Union[str, Path],
+    local_git_branches: Callable[[Path], Iterable[str]],
+    current_branch_name: Callable[[Path], Optional[str]],
+) -> SelectionViewParams:
+    cwd_path = Path(cwd)
+    return show_review_branch_picker_with_branches(
+        local_git_branches(cwd_path),
+        current_branch_name(cwd_path),
+    )
+
+
 def show_review_branch_picker_with_branches(
     branches: Iterable[str],
-    current_branch: str | None,
+    current_branch: Optional[str],
 ) -> SelectionViewParams:
     current = current_branch or "(detached HEAD)"
     items = [
@@ -93,10 +106,18 @@ def show_review_branch_picker_with_branches(
     )
 
 
+def show_review_commit_picker(
+    cwd: Union[str, Path],
+    recent_commits: Callable[[Path, int], Iterable[CommitLogEntry]],
+    limit: int = 100,
+) -> SelectionViewParams:
+    return show_review_commit_picker_with_entries(recent_commits(Path(cwd), limit))
+
+
 def show_review_commit_picker_with_entries(
     entries: Iterable[CommitLogEntry],
 ) -> SelectionViewParams:
-    items: list[SelectionItem] = []
+    items = []  # type: List[SelectionItem]
     for entry in entries:
         items.append(
             SelectionItem(
@@ -121,7 +142,7 @@ def show_review_commit_picker_with_entries(
     )
 
 
-def show_review_custom_prompt() -> dict[str, str]:
+def show_review_custom_prompt() -> dict:
     return {
         "title": "Custom review instructions",
         "placeholder": "Type instructions and press Enter",
@@ -129,7 +150,7 @@ def show_review_custom_prompt() -> dict[str, str]:
     }
 
 
-def custom_review_prompt_action(prompt: str) -> ReviewPopupAction | None:
+def custom_review_prompt_action(prompt: str) -> Optional[ReviewPopupAction]:
     trimmed = prompt.strip()
     if not trimmed:
         return None
@@ -142,7 +163,9 @@ __all__ = [
     "ReviewPopupAction",
     "custom_review_prompt_action",
     "open_review_popup",
+    "show_review_branch_picker",
     "show_review_branch_picker_with_branches",
+    "show_review_commit_picker",
     "show_review_commit_picker_with_entries",
     "show_review_custom_prompt",
 ]

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pycodex.tui.chatwidget.ide_context import IdeContextDeps, IdeContextState, IdeContextWidgetState
+from pycodex.tui.chatwidget.ide_context import IdeContextDeps, IdeContextState, IdeContextWidgetState, handle_ide_command_args, maybe_apply_ide_context, sync_ide_context_status_indicator
 
 
 class IdeError(Exception):
@@ -142,3 +142,25 @@ def test_maybe_apply_ide_context_warns_once_until_context_available():
     state.maybe_apply_ide_context(items)
     assert state.ide_context.prompt_fetch_warned is False
     assert items[-1] == {"ide_context": {"ok": True}}
+
+
+def test_handle_ide_command_args_trims_and_lowercases_like_rust_ascii_lowercase() -> None:
+    state = widget(has_prompt=False)
+
+    state.handle_ide_command_args("  ON  ")
+
+    assert state.ide_context.is_enabled() is True
+    assert state.info_messages[-1] == ("IDE context is on.", "Connected to your IDE.")
+
+
+def test_free_function_wrappers_route_to_widget_state_methods() -> None:
+    state = widget()
+    items = ["message"]
+
+    handle_ide_command_args(state, "on")
+    maybe_apply_ide_context(state, items)
+    sync_ide_context_status_indicator(state)
+
+    assert state.ide_context.is_enabled() is True
+    assert state.indicator_active is True
+    assert items[-1]["ide_context"]["cwd"] == Path("/repo")

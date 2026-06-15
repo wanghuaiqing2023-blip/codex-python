@@ -14,6 +14,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="startup_error",
     source="codex/codex-rs/tui/src/startup_error.rs",
+    status="complete",
 )
 
 

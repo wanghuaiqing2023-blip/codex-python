@@ -1,10 +1,12 @@
-"""Behavior port for Rust ``codex-tui::tooltips``."""
+﻿"""Behavior port for Rust ``codex-tui::tooltips``."""
 
 from __future__ import annotations
 
 import platform
 import random
 import re
+import threading
+import urllib.request
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from enum import Enum
@@ -19,7 +21,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
     tomllib = None
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="tooltips", source="codex/codex-rs/tui/src/tooltips.rs")
+RUST_MODULE = RustTuiModule(crate="codex-tui", module="tooltips", source="codex/codex-rs/tui/src/tooltips.rs", status="complete")
 
 ANNOUNCEMENT_TIP_URL = "https://raw.githubusercontent.com/openai/codex/main/announcement_tip.toml"
 SOURCE_TOOLTIPS_PATH = Path(__file__).resolve().parents[2] / "codex" / "codex-rs" / "tui" / "tooltips.txt"
@@ -31,7 +33,7 @@ APP_TOOLTIP = "Try the **Codex App**. Run 'codex app' or visit https://chatgpt.c
 FAST_TOOLTIP = "*New* Use **/fast** to enable our fastest inference with increased plan usage."
 OTHER_TOOLTIP = "*New* Build faster with the **Codex App**. Run 'codex app' or visit https://chatgpt.com/codex?app-landing-page=true"
 OTHER_TOOLTIP_NON_MAC = "*New* Build faster with Codex."
-FREE_GO_TOOLTIP = "*New* For a limited time, Codex is included in your plan for free — let’s build together."
+FREE_GO_TOOLTIP = "*New* For a limited time, Codex is included in your plan for free 鈥?let鈥檚 build together."
 
 _RAW_TOOLTIPS_SNAPSHOT = """Use /compact when the conversation gets long to summarize history and free up context.
 Start a fresh idea with /new; the previous session stays in history.
@@ -176,7 +178,7 @@ class AnnouncementTip:
         return True
 
 
-def experimental_tooltips(features: Optional[Iterable[Any]] = None) -> list[str]:
+def experimental_tooltips(features: Optional[Iterable[Any]] = None) -> List[str]:
     if features is None:
         return []
     result: List[str] = []
@@ -239,15 +241,17 @@ def tooltips() -> List[str]:
     return tips
 
 
-def all_tooltips(features: Optional[Iterable[Any]] = None) -> list[str]:
+def all_tooltips(features: Optional[Iterable[Any]] = None) -> List[str]:
     return [*tooltips(), *experimental_tooltips(features)]
 
 
 def prewarm(fetcher: Any = None) -> None:
-    global ANNOUNCEMENT_TIP
-    if fetcher is not None:
-        ANNOUNCEMENT_TIP = fetcher()
+    def worker() -> None:
+        global ANNOUNCEMENT_TIP
+        ANNOUNCEMENT_TIP = init_announcement_tip_in_thread(fetcher)
 
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
 
 def fetch_announcement_tip(plan: Any = None) -> Optional[str]:
     if ANNOUNCEMENT_TIP is None:
@@ -260,10 +264,16 @@ def init_announcement_tip_in_thread(fetcher: Any = None) -> Optional[str]:
 
 
 def blocking_init_announcement_tip(fetcher: Any = None) -> Optional[str]:
-    if fetcher is None:
-        raise NotImplementedError("announcement tip HTTP fetch is not wired for pycodex.tui.tooltips")
-    return fetcher(ANNOUNCEMENT_TIP_URL)
-
+    try:
+        if fetcher is not None:
+            return fetcher(ANNOUNCEMENT_TIP_URL)
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        request = urllib.request.Request(ANNOUNCEMENT_TIP_URL, headers={"User-Agent": "pycodex-tui"})
+        with opener.open(request, timeout=2.0) as response:
+            charset = response.headers.get_content_charset() or "utf-8"
+            return response.read().decode(charset)
+    except Exception:
+        return None
 
 def parse_announcement_tip_toml(
     text: str,
@@ -493,7 +503,7 @@ def _parse_toml_scalar_or_list(value: str) -> Any:
     raise ValueError("unsupported announcement TOML scalar")
 
 
-def _parse_date(value: Optional[str]) -> date | None:
+def _parse_date(value: Optional[str]) -> Optional[date]:
     return date.fromisoformat(value) if value is not None else None
 
 
@@ -605,3 +615,4 @@ __all__ = [
     "random_tooltip_returns_some_tip_when_available",
     "tooltips",
 ]
+

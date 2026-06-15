@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 import os
-from typing import Iterator
+from typing import Any, Callable, Iterator, List, Optional, Tuple, Union
 
 from ._porting import RustTuiModule
 from .color import Rgb
@@ -18,6 +18,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="terminal_palette",
     source="codex/codex-rs/tui/src/terminal_palette.rs",
+    status="complete",
 )
 
 
@@ -33,7 +34,7 @@ class Color:
     """Semantic equivalent for the subset of ratatui ``Color`` used here."""
 
     kind: str
-    value: Rgb | int | None = None
+    value: Optional[Union[Rgb, int]] = None
 
     @classmethod
     def default(cls) -> "Color":
@@ -46,12 +47,13 @@ class DefaultColors:
     bg: Rgb
 
 
-_default_colors_cache: DefaultColors | None = None
+_default_colors_cache: Optional[DefaultColors] = None
 _default_colors_attempted = False
+_default_color_query_backend: Optional[Callable[[], Optional[DefaultColors]]] = None
 
 
-def _xterm_colors() -> tuple[Rgb, ...]:
-    system: list[Rgb] = [
+def _xterm_colors() -> Tuple[Rgb, ...]:
+    system: List[Rgb] = [
         (0, 0, 0),
         (128, 0, 0),
         (0, 128, 0),
@@ -75,7 +77,7 @@ def _xterm_colors() -> tuple[Rgb, ...]:
     return tuple(system + cube + greys)
 
 
-XTERM_COLORS: tuple[Rgb, ...] = _xterm_colors()
+XTERM_COLORS: Tuple[Rgb, ...] = _xterm_colors()
 
 
 def stdout_color_level() -> StdoutColorLevel:
@@ -114,13 +116,13 @@ def _u8_rgb(rgb: Rgb) -> Rgb:
     return (r, g, b)
 
 
-def xterm_fixed_colors() -> Iterator[tuple[int, Rgb]]:
+def xterm_fixed_colors() -> Iterator[Tuple[int, Rgb]]:
     """Iterate over stable xterm colors, skipping theme-dependent first 16."""
 
     return iter(enumerate(XTERM_COLORS[16:], start=16))
 
 
-def best_color(target: Rgb, color_level: StdoutColorLevel | None = None) -> Color:
+def best_color(target: Rgb, color_level: Optional[StdoutColorLevel] = None) -> Color:
     """Return the closest color the terminal can display."""
 
     level = stdout_color_level() if color_level is None else color_level
@@ -138,13 +140,19 @@ def best_color(target: Rgb, color_level: StdoutColorLevel | None = None) -> Colo
 def requery_default_colors() -> None:
     """Refresh cached default colors when a backend can query them.
 
-    The Python port has no terminal probing backend yet, so this is a no-op.
+    Rust avoids retrying after an attempted-but-unavailable query. The Python
+    port preserves that cache boundary and delegates the actual terminal query
+    to a small stdlib-compatible backend hook.
     """
 
-    return None
+    global _default_colors_attempted, _default_colors_cache
+    if _default_colors_attempted and _default_colors_cache is None:
+        return
+    _default_colors_cache = _query_default_colors()
+    _default_colors_attempted = True
 
 
-def set_default_colors_from_startup_probe(colors: DefaultColors | object | None) -> None:
+def set_default_colors_from_startup_probe(colors: Optional[Union[DefaultColors, object]]) -> None:
     """Seed the default color cache from startup probe results."""
 
     global _default_colors_attempted, _default_colors_cache
@@ -160,18 +168,64 @@ def set_default_colors_from_startup_probe(colors: DefaultColors | object | None)
     _default_colors_attempted = True
 
 
-def default_colors() -> DefaultColors | None:
+def set_default_color_query_backend(
+    backend: Optional[Callable[[], Optional[DefaultColors]]],
+) -> None:
+    """Install a terminal default-color query backend for runtime adapters."""
+
+    global _default_color_query_backend
+    _default_color_query_backend = backend
+
+
+def default_colors() -> Optional[DefaultColors]:
+    global _default_colors_attempted, _default_colors_cache
+    if not _default_colors_attempted:
+        _default_colors_cache = _query_default_colors()
+        _default_colors_attempted = True
     return _default_colors_cache
 
 
-def default_fg() -> Rgb | None:
+def default_fg() -> Optional[Rgb]:
     colors = default_colors()
     return colors.fg if colors is not None else None
 
 
-def default_bg() -> Rgb | None:
+def default_bg() -> Optional[Rgb]:
     colors = default_colors()
     return colors.bg if colors is not None else None
+
+
+def _query_default_colors() -> Optional[DefaultColors]:
+    if _default_color_query_backend is not None:
+        return _default_color_query_backend()
+
+    try:
+        from . import terminal_probe
+    except Exception:
+        return None
+
+    default_colors_fn = getattr(terminal_probe, "default_colors", None)
+    if default_colors_fn is None:
+        return None
+
+    timeout = getattr(terminal_probe, "DEFAULT_TIMEOUT", None)
+    try:
+        probed = default_colors_fn(timeout) if timeout is not None else default_colors_fn()
+    except Exception:
+        return None
+    return _coerce_default_colors(probed)
+
+
+def _coerce_default_colors(colors: Any) -> Optional[DefaultColors]:
+    if colors is None:
+        return None
+    if isinstance(colors, DefaultColors):
+        return colors
+    fg = getattr(colors, "fg", None)
+    bg = getattr(colors, "bg", None)
+    if fg is None or bg is None:
+        return None
+    return DefaultColors(fg=fg, bg=bg)
 
 
 __all__ = [
@@ -187,6 +241,7 @@ __all__ = [
     "indexed_color",
     "requery_default_colors",
     "rgb_color",
+    "set_default_color_query_backend",
     "set_default_colors_from_startup_probe",
     "stdout_color_level",
     "xterm_fixed_colors",

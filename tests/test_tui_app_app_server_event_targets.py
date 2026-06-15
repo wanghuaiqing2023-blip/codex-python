@@ -1,8 +1,8 @@
-﻿from pycodex.tui.app.app_server_event_targets import (
+from pycodex.tui.app.app_server_event_targets import (
     ServerNotificationThreadTarget,
     server_notification_thread_target,
     server_request_thread_id,
-    test_thread_settings,
+    test_thread_settings as make_thread_settings,
 )
 
 
@@ -39,7 +39,20 @@ def test_thread_settings_updated_notifications_route_to_threads():
     notification = {
         "ThreadSettingsUpdated": {
             "thread_id": thread_id,
-            "thread_settings": test_thread_settings(),
+            "thread_settings": make_thread_settings(),
+        }
+    }
+
+    assert server_notification_thread_target(notification) == ServerNotificationThreadTarget.Thread(thread_id)
+
+
+def test_thread_started_notification_routes_from_nested_thread_id():
+    """Rust codex-tui app::app_server_event_targets::ThreadStarted uses notification.thread.id."""
+
+    thread_id = "00000000-0000-0000-0000-000000000407"
+    notification = {
+        "ThreadStarted": {
+            "thread": {"id": thread_id},
         }
     }
 
@@ -69,7 +82,7 @@ def test_invalid_notification_thread_id_is_reported_not_global():
     """Rust codex-tui app::app_server_event_targets::ServerNotificationThreadTarget::InvalidThreadId."""
 
     target = server_notification_thread_target(
-        {"ThreadSettingsUpdated": {"thread_id": "not-a-thread-id", "thread_settings": test_thread_settings()}}
+        {"ThreadSettingsUpdated": {"thread_id": "not-a-thread-id", "thread_settings": make_thread_settings()}}
     )
 
     assert target == ServerNotificationThreadTarget.InvalidThreadId("not-a-thread-id")

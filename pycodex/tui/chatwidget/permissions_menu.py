@@ -6,7 +6,7 @@ Upstream source: ``codex/codex-rs/tui/src/chatwidget/permissions_menu.rs``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Iterable
+from typing import Dict, Iterable, List, Optional
 
 from .._porting import RustTuiModule
 from ..app_event import PermissionProfileSelection
@@ -16,6 +16,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="chatwidget::permissions_menu",
     source="codex/codex-rs/tui/src/chatwidget/permissions_menu.rs",
+    status="complete",
 )
 
 AUTO_REVIEW_DESCRIPTION = (
@@ -36,7 +37,7 @@ class ApprovalPreset:
 @dataclass(frozen=True)
 class CustomPermissionProfileSummary:
     id: str
-    description: str | None = None
+    description: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -48,21 +49,21 @@ class PermissionMenuAction:
 
 @dataclass
 class PermissionMenuConfig:
-    active_profile_id: str | None = None
+    active_profile_id: Optional[str] = None
     approval_policy: str = "on-request"
     approvals_reviewer: str = "user"
     guardian_approval_enabled: bool = False
-    custom_permission_profiles: tuple[CustomPermissionProfileSummary, ...] = ()
-    disabled_reasons: dict[str, str] = field(default_factory=dict)
+    custom_permission_profiles: tuple = ()
+    disabled_reasons: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
 class PermissionMenuResult:
-    view: SelectionViewParams | None = None
-    errors: list[str] = field(default_factory=list)
+    view: Optional[SelectionViewParams] = None
+    errors: List[str] = field(default_factory=list)
 
 
-def builtin_approval_presets() -> list[ApprovalPreset]:
+def builtin_approval_presets() -> List[ApprovalPreset]:
     return [
         ApprovalPreset(
             id="read-only",
@@ -90,7 +91,7 @@ def builtin_approval_presets() -> list[ApprovalPreset]:
 
 def open_permission_profiles_popup(
     config: PermissionMenuConfig,
-    presets: Iterable[ApprovalPreset] | None = None,
+    presets: Optional[Iterable[ApprovalPreset]] = None,
 ) -> PermissionMenuResult:
     preset_list = list(builtin_approval_presets() if presets is None else presets)
     by_id = {preset.id: preset for preset in preset_list}
@@ -199,7 +200,7 @@ def permission_profile_selection_item(
     label: str,
     id: str,
     description: str,
-    active_profile_id: str | None,
+    active_profile_id: Optional[str],
 ) -> SelectionItem:
     selection = PermissionProfileSelection(
         profile_id=id,
@@ -218,7 +219,7 @@ def permission_profile_selection_item(
 
 def permission_profile_selection_actions(
     selection: PermissionProfileSelection,
-) -> list[PermissionMenuAction]:
+) -> List[PermissionMenuAction]:
     return [PermissionMenuAction(kind="select_permission_profile", selection=selection)]
 
 
@@ -226,9 +227,9 @@ def permission_mode_actions(
     _preset: ApprovalPreset,
     _label: str,
     _approvals_reviewer: str,
-    profile_selection: PermissionProfileSelection | None,
+    profile_selection: Optional[PermissionProfileSelection],
     return_to_permissions: bool,
-) -> list[PermissionMenuAction]:
+) -> List[PermissionMenuAction]:
     if profile_selection is None:
         raise NotImplementedError(
             "approval preset actions without a PermissionProfileSelection are outside permissions_menu"
@@ -242,7 +243,7 @@ def permission_mode_actions(
     ]
 
 
-def _first_missing_required_preset(by_id: dict[str, ApprovalPreset]) -> str | None:
+def _first_missing_required_preset(by_id: Dict[str, ApprovalPreset]) -> Optional[str]:
     for required in ("read-only", "auto", "full-access"):
         if required not in by_id:
             return required

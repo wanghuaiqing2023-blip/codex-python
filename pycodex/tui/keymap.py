@@ -12,7 +12,12 @@ from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Sequence, Set
 
 from ._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="keymap", source="codex/codex-rs/tui/src/keymap.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="keymap",
+    source="codex/codex-rs/tui/src/keymap.rs",
+    status="complete",
+)
 
 MOD_CONTROL = "CONTROL"
 MOD_ALT = "ALT"

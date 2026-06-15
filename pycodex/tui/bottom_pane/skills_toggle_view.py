@@ -6,7 +6,7 @@ Python port of Rust ``codex-tui::bottom_pane::skills_toggle_view``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .._porting import RustTuiModule
 from .popup_consts import MAX_POPUP_ROWS
@@ -15,6 +15,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="bottom_pane::skills_toggle_view",
     source="codex/codex-rs/tui/src/bottom_pane/skills_toggle_view.rs",
+    status="complete",
 )
 
 SEARCH_PLACEHOLDER = "Type to search skills"
@@ -34,7 +35,7 @@ class SkillsToggleItem:
 @dataclass(frozen=True)
 class DisplayRow:
     name: str
-    description: str | None = None
+    description: Optional[str] = None
     selected: bool = False
 
 
@@ -46,15 +47,15 @@ class DisplayLine:
 
 @dataclass
 class SkillsToggleView:
-    items: list[SkillsToggleItem]
+    items: List[SkillsToggleItem]
     app_event_tx: Any = None
     keymap: Any = None
-    selected_idx: int | None = None
+    selected_idx: Optional[int] = None
     scroll_top: int = 0
     complete: bool = False
     search_query: str = ""
-    filtered_indices: list[int] = field(default_factory=list)
-    header: tuple[str, str] = (
+    filtered_indices: List[int] = field(default_factory=list)
+    header: Tuple[str, str] = (
         "Enable/Disable Skills",
         "Turn skills on or off. Your changes are saved automatically.",
     )
@@ -88,11 +89,11 @@ class SkillsToggleView:
         if not filter_text:
             self.filtered_indices = list(range(len(self.items)))
         else:
-            matches: list[tuple[int, int]] = []
+            matches = []
             for idx, item in enumerate(self.items):
-                match = match_skill(filter_text, item.name, item.skill_name)
-                if match is not None:
-                    _indices, score = match
+                matched = match_skill(filter_text, item.name, item.skill_name)
+                if matched is not None:
+                    _indices, score = matched
                     matches.append((idx, score))
             matches.sort(key=lambda pair: (pair[1], self.items[pair[0]].name))
             self.filtered_indices = [idx for idx, _score in matches]
@@ -105,16 +106,16 @@ class SkillsToggleView:
         self._clamp_selection()
         self._ensure_visible()
 
-    def build_rows(self) -> list[DisplayRow]:
-        rows: list[DisplayRow] = []
+    def build_rows(self) -> List[DisplayRow]:
+        rows = []
         for visible_idx, actual_idx in enumerate(self.filtered_indices):
             item = self.items[actual_idx]
             selected = self.selected_idx == visible_idx
-            prefix = "›" if selected else " "
+            prefix = ">" if selected else " "
             marker = "x" if item.enabled else " "
             rows.append(
                 DisplayRow(
-                    name=f"{prefix} [{marker}] {truncate_skill_name(item.name)}",
+                    name="{} [{}] {}".format(prefix, marker, truncate_skill_name(item.name)),
                     description=item.description,
                     selected=selected,
                 )
@@ -139,20 +140,18 @@ class SkillsToggleView:
 
     def page_up(self) -> None:
         length = self.visible_len()
-        visible = self.max_visible_rows(length)
         if length == 0:
             return
         current = self.selected_idx if self.selected_idx is not None else 0
-        self.selected_idx = max(0, current - visible)
+        self.selected_idx = max(0, current - self.max_visible_rows(length))
         self._ensure_visible()
 
     def page_down(self) -> None:
         length = self.visible_len()
-        visible = self.max_visible_rows(length)
         if length == 0:
             return
         current = self.selected_idx if self.selected_idx is not None else 0
-        self.selected_idx = min(length - 1, current + visible)
+        self.selected_idx = min(length - 1, current + self.max_visible_rows(length))
         self._ensure_visible()
 
     def jump_top(self) -> None:
@@ -169,17 +168,12 @@ class SkillsToggleView:
         self._ensure_visible()
 
     def toggle_selected(self) -> None:
-        if self.selected_idx is None:
-            return
-        if not (0 <= self.selected_idx < len(self.filtered_indices)):
+        if self.selected_idx is None or not (0 <= self.selected_idx < len(self.filtered_indices)):
             return
         actual_idx = self.filtered_indices[self.selected_idx]
         item = self.items[actual_idx]
         item.enabled = not item.enabled
-        _send(
-            self.app_event_tx,
-            {"type": "SetSkillEnabled", "path": item.path, "enabled": item.enabled},
-        )
+        _send(self.app_event_tx, {"type": "SetSkillEnabled", "path": item.path, "enabled": item.enabled})
 
     def close(self) -> None:
         if self.complete:
@@ -192,7 +186,7 @@ class SkillsToggleView:
     def rows_width(total_width: int) -> int:
         return max(0, int(total_width) - 2)
 
-    def rows_height(self, rows: list[DisplayRow]) -> int:
+    def rows_height(self, rows: List[DisplayRow]) -> int:
         return min(MAX_POPUP_ROWS, max(1, len(rows)))
 
     def handle_key_event(self, key_event: Any) -> None:
@@ -234,7 +228,7 @@ class SkillsToggleView:
         rows = self.build_rows()
         return len(self.header) + self.rows_height(rows) + 6
 
-    def render(self, area: Any = None, buf: Any = None) -> list[DisplayLine]:
+    def render(self, area: Any = None, buf: Any = None) -> List[DisplayLine]:
         width = _area_width(area)
         height = _area_height(area)
         if width == 0 or height == 0:
@@ -285,11 +279,11 @@ def truncate_skill_name(name: str) -> str:
     if len(text) <= SKILL_NAME_TRUNCATE_LEN:
         return text
     if SKILL_NAME_TRUNCATE_LEN <= 1:
-        return "…"[:SKILL_NAME_TRUNCATE_LEN]
-    return text[: SKILL_NAME_TRUNCATE_LEN - 1] + "…"
+        return "."[:SKILL_NAME_TRUNCATE_LEN]
+    return text[: SKILL_NAME_TRUNCATE_LEN - 1] + "."
 
 
-def match_skill(filter_text: str, display_name: str, skill_name: str) -> tuple[list[int] | None, int] | None:
+def match_skill(filter_text: str, display_name: str, skill_name: str) -> Optional[Tuple[Optional[List[int]], int]]:
     display = _subsequence_match_indices(filter_text, display_name)
     if display is not None:
         return display, _score(display, display_name)
@@ -316,7 +310,7 @@ def desired_height(view: SkillsToggleView, width: int) -> int:
     return view.desired_height(width)
 
 
-def render(view: SkillsToggleView, area: Any = None, buf: Any = None) -> list[DisplayLine]:
+def render(view: SkillsToggleView, area: Any = None, buf: Any = None) -> List[DisplayLine]:
     return view.render(area, buf)
 
 
@@ -327,21 +321,21 @@ def skills_toggle_hint_line(keymap: Any = None) -> str:
     if accept == space:
         accept = None
     if accept and cancel:
-        return f"Press {space} or {accept} to toggle; {cancel} to close"
+        return "Press {} or {} to toggle; {} to close".format(space, accept, cancel)
     if accept:
-        return f"Press {space} or {accept} to toggle"
+        return "Press {} or {} to toggle".format(space, accept)
     if cancel:
-        return f"Press {space} to toggle; {cancel} to close"
-    return f"Press {space} to toggle"
+        return "Press {} to toggle; {} to close".format(space, cancel)
+    return "Press {} to toggle".format(space)
 
 
-def _subsequence_match_indices(needle: str, haystack: str) -> list[int] | None:
+def _subsequence_match_indices(needle: str, haystack: str) -> Optional[List[int]]:
     needle = needle.lower()
     haystack_lower = haystack.lower()
-    indices: list[int] = []
+    indices = []
     pos = 0
-    for ch in needle:
-        found = haystack_lower.find(ch, pos)
+    for char in needle:
+        found = haystack_lower.find(char, pos)
         if found == -1:
             return None
         indices.append(found)
@@ -349,17 +343,21 @@ def _subsequence_match_indices(needle: str, haystack: str) -> list[int] | None:
     return indices
 
 
-def _score(indices: list[int], haystack: str) -> int:
+def _score(indices: List[int], haystack: str) -> int:
     if not indices:
         return 0
     spread = indices[-1] - indices[0]
-    start_penalty = indices[0]
-    return spread + start_penalty + len(haystack)
+    return spread + indices[0] + len(haystack)
 
 
 def _key_name(key_event: Any) -> str:
     if isinstance(key_event, str):
         return key_event if key_event == " " else key_event.lower()
+    if isinstance(key_event, dict):
+        value = key_event.get("key") or key_event.get("code") or key_event.get("name")
+        if value is not None:
+            text = str(value)
+            return text if text == " " else text.lower()
     for attr in ("key", "code", "name"):
         value = getattr(key_event, attr, None)
         if value is not None:
@@ -377,11 +375,13 @@ def _is_plain_text_key(key_event: Any) -> bool:
 def _has_control_or_alt(key_event: Any) -> bool:
     if isinstance(key_event, str):
         return False
+    if isinstance(key_event, dict):
+        return bool(key_event.get("ctrl") or key_event.get("control") or key_event.get("alt"))
     modifiers = str(getattr(key_event, "modifiers", "")).lower()
     return "control" in modifiers or "ctrl" in modifiers or "alt" in modifiers
 
 
-def _send(target: Any, event: dict[str, Any]) -> None:
+def _send(target: Any, event: Dict[str, Any]) -> None:
     if target is None:
         return
     if hasattr(target, "send"):
@@ -394,7 +394,7 @@ def _send(target: Any, event: dict[str, Any]) -> None:
         target.events.append(event)
 
 
-def _list_skills(target: Any, args: list[Any], force_reload: bool) -> None:
+def _list_skills(target: Any, args: List[Any], force_reload: bool) -> None:
     if target is None:
         return
     if hasattr(target, "list_skills"):
@@ -403,7 +403,7 @@ def _list_skills(target: Any, args: list[Any], force_reload: bool) -> None:
         _send(target, {"type": "ListSkills", "args": args, "force_reload": force_reload})
 
 
-def _primary_binding(bindings: Any) -> str | None:
+def _primary_binding(bindings: Any) -> Optional[str]:
     if not bindings:
         return None
     if isinstance(bindings, str):

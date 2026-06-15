@@ -8,11 +8,16 @@ instead of ratatui views or boxed event-channel closures.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Set, Tuple
 
 from .._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="chatwidget::skills", source="codex/codex-rs/tui/src/chatwidget/skills.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="chatwidget::skills",
+    source="codex/codex-rs/tui/src/chatwidget/skills.rs",
+    status="complete",
+)
 
 TOOL_MENTION_SIGIL = "$"
 COMMON_ENV_VARS = {
@@ -32,39 +37,39 @@ COMMON_ENV_VARS = {
 
 @dataclass(frozen=True)
 class SkillInterface:
-    display_name: str | None = None
-    short_description: str | None = None
-    icon_small: str | None = None
-    icon_large: str | None = None
-    brand_color: str | None = None
-    default_prompt: str | None = None
+    display_name: Optional[str] = None
+    short_description: Optional[str] = None
+    icon_small: Optional[str] = None
+    icon_large: Optional[str] = None
+    brand_color: Optional[str] = None
+    default_prompt: Optional[str] = None
 
 
 @dataclass(frozen=True)
 class SkillToolDependency:
-    type: str | None = None
-    value: str | None = None
-    description: str | None = None
-    transport: str | None = None
-    command: str | None = None
-    url: str | None = None
+    type: Optional[str] = None
+    value: Optional[str] = None
+    description: Optional[str] = None
+    transport: Optional[str] = None
+    command: Optional[str] = None
+    url: Optional[str] = None
 
 
 @dataclass(frozen=True)
 class SkillDependencies:
-    tools: tuple[SkillToolDependency, ...] = ()
+    tools: Tuple[SkillToolDependency, ...] = ()
 
 
 @dataclass(frozen=True)
 class SkillMetadata:
     name: str
-    description: str | None = None
-    short_description: str | None = None
-    interface: SkillInterface | None = None
-    dependencies: SkillDependencies | None = None
+    description: Optional[str] = None
+    short_description: Optional[str] = None
+    interface: Optional[SkillInterface] = None
+    dependencies: Optional[SkillDependencies] = None
     path_to_skills_md: str = ""
-    scope: Any | None = None
-    plugin_id: str | None = None
+    scope: Optional[Any] = None
+    plugin_id: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -72,22 +77,22 @@ class ProtocolSkillMetadata:
     name: str
     path: str
     enabled: bool = True
-    description: str | None = None
-    short_description: str | None = None
-    interface: SkillInterface | Mapping[str, Any] | None = None
-    dependencies: SkillDependencies | Mapping[str, Any] | None = None
-    scope: Any | None = None
+    description: Optional[str] = None
+    short_description: Optional[str] = None
+    interface: Optional[Any] = None
+    dependencies: Optional[Any] = None
+    scope: Optional[Any] = None
 
 
 @dataclass(frozen=True)
 class SkillsListEntry:
     cwd: str
-    skills: tuple[ProtocolSkillMetadata, ...] = ()
+    skills: Tuple[ProtocolSkillMetadata, ...] = ()
 
 
 @dataclass(frozen=True)
 class SkillsListResponse:
-    data: tuple[SkillsListEntry, ...] = ()
+    data: Tuple[SkillsListEntry, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -96,23 +101,23 @@ class AppInfo:
     name: str
     is_accessible: bool = True
     is_enabled: bool = True
-    description: str | None = None
+    description: Optional[str] = None
 
 
 @dataclass(frozen=True)
 class SelectionItem:
     name: str
-    description: str | None = None
-    actions: tuple[tuple[str, Any], ...] = ()
+    description: Optional[str] = None
+    actions: Tuple[Tuple[str, Any], ...] = ()
     dismiss_on_select: bool = False
 
 
 @dataclass(frozen=True)
 class SelectionViewParams:
     title: str
-    subtitle: str | None = None
-    items: tuple[SelectionItem, ...] = ()
-    footer_hint: str | None = "Enter to select, Esc to cancel"
+    subtitle: Optional[str] = None
+    items: Tuple[SelectionItem, ...] = ()
+    footer_hint: Optional[str] = "Enter to select, Esc to cancel"
 
 
 @dataclass(frozen=True)
@@ -131,8 +136,8 @@ class SkillsToggleView:
 
 @dataclass
 class ToolMentions:
-    names: set[str] = field(default_factory=set)
-    linked_paths: dict[str, str] = field(default_factory=dict)
+    names: Set[str] = field(default_factory=set)
+    linked_paths: Dict[str, str] = field(default_factory=dict)
 
 
 def open_skills_list(widget: Any) -> None:
@@ -163,7 +168,7 @@ def open_skills_menu(widget: Any) -> SelectionViewParams:
     return params
 
 
-def open_manage_skills_popup(widget: Any) -> SkillsToggleView | None:
+def open_manage_skills_popup(widget: Any) -> Optional[SkillsToggleView]:
     if not widget.skills_all:
         widget.add_info_message("No skills available.", None)
         return None
@@ -216,13 +221,13 @@ def handle_manage_skills_closed(widget: Any) -> None:
         )
 
 
-def set_skills_from_response(widget: Any, response: SkillsListResponse | Mapping[str, Any]) -> None:
+def set_skills_from_response(widget: Any, response: Any) -> None:
     skills = skills_for_cwd(widget.config.cwd, _get(response, "data", ()))
     widget.skills_all = skills
     widget.set_skills(enabled_skills_for_mentions(skills))
 
 
-def annotate_skill_reads_in_parsed_cmd(widget: Any, parsed_cmd: list[Any]) -> list[Any]:
+def annotate_skill_reads_in_parsed_cmd(widget: Any, parsed_cmd: List[Any]) -> List[Any]:
     if not widget.skills_all:
         return parsed_cmd
     skill_by_path = {skill.path: skill.name for skill in widget.skills_all}
@@ -237,14 +242,14 @@ def annotate_skill_reads_in_parsed_cmd(widget: Any, parsed_cmd: list[Any]) -> li
     return result
 
 
-def skills_for_cwd(cwd: str, skills_entries: list[SkillsListEntry] | tuple[SkillsListEntry, ...]) -> list[ProtocolSkillMetadata]:
+def skills_for_cwd(cwd: str, skills_entries: Sequence[SkillsListEntry]) -> List[ProtocolSkillMetadata]:
     for entry in skills_entries:
         if _get(entry, "cwd") == cwd:
             return list(_get(entry, "skills", ()))
     return []
 
 
-def enabled_skills_for_mentions(skills: list[ProtocolSkillMetadata] | tuple[ProtocolSkillMetadata, ...]) -> list[SkillMetadata]:
+def enabled_skills_for_mentions(skills: Sequence[ProtocolSkillMetadata]) -> List[SkillMetadata]:
     return [
         core
         for skill in skills
@@ -254,7 +259,7 @@ def enabled_skills_for_mentions(skills: list[ProtocolSkillMetadata] | tuple[Prot
     ]
 
 
-def protocol_skill_to_core(skill: ProtocolSkillMetadata | Mapping[str, Any]) -> SkillMetadata | None:
+def protocol_skill_to_core(skill: Any) -> Optional[SkillMetadata]:
     name = _get(skill, "name", None)
     path = _get(skill, "path", None)
     if not name or not path:
@@ -280,16 +285,16 @@ def collect_tool_mentions(text: str, mention_paths: Mapping[str, str]) -> ToolMe
 
 
 def find_skill_mentions_with_tool_mentions(
-    mentions: ToolMentions, skills: list[SkillMetadata] | tuple[SkillMetadata, ...]
-) -> list[SkillMetadata]:
+    mentions: ToolMentions, skills: Sequence[SkillMetadata]
+) -> List[SkillMetadata]:
     mention_skill_paths = {
         normalize_skill_path(path)
         for path in mentions.linked_paths.values()
         if is_skill_path(path)
     }
-    seen_names: set[str] = set()
-    seen_paths: set[str] = set()
-    matches: list[SkillMetadata] = []
+    seen_names: Set[str] = set()
+    seen_paths: Set[str] = set()
+    matches: List[SkillMetadata] = []
 
     for skill in skills:
         if skill.path_to_skills_md in seen_paths:
@@ -312,18 +317,18 @@ def find_skill_mentions_with_tool_mentions(
 
 def find_app_mentions(
     mentions: ToolMentions,
-    apps: list[AppInfo] | tuple[AppInfo, ...],
-    skill_names_lower: set[str],
-) -> list[AppInfo]:
-    explicit_names: set[str] = set()
-    selected_ids: set[str] = set()
+    apps: Sequence[AppInfo],
+    skill_names_lower: Set[str],
+) -> List[AppInfo]:
+    explicit_names: Set[str] = set()
+    selected_ids: Set[str] = set()
     for name, path in mentions.linked_paths.items():
         connector_id = app_id_from_path(path)
         if connector_id is not None:
             explicit_names.add(name)
             selected_ids.add(connector_id)
 
-    slug_counts: dict[str, int] = {}
+    slug_counts: Dict[str, int] = {}
     for app_info in apps:
         if is_app_mentionable(app_info):
             slug = connector_mention_slug(app_info)
@@ -344,7 +349,7 @@ def find_app_mentions(
     return [app_info for app_info in apps if is_app_mentionable(app_info) and app_info.id in selected_ids]
 
 
-def is_app_mentionable(app: AppInfo | Mapping[str, Any]) -> bool:
+def is_app_mentionable(app: Any) -> bool:
     return bool(_get(app, "is_accessible", False) and _get(app, "is_enabled", False))
 
 
@@ -353,8 +358,8 @@ def extract_tool_mentions_from_text(text: str) -> ToolMentions:
 
 
 def extract_tool_mentions_from_text_with_sigil(text: str, sigil: str) -> ToolMentions:
-    names: set[str] = set()
-    linked_paths: dict[str, str] = {}
+    names: Set[str] = set()
+    linked_paths: Dict[str, str] = {}
     index = 0
     while index < len(text):
         char = text[index]
@@ -385,7 +390,7 @@ def extract_tool_mentions_from_text_with_sigil(text: str, sigil: str) -> ToolMen
     return ToolMentions(names, linked_paths)
 
 
-def parse_linked_tool_mention(text: str, start: int, sigil: str = TOOL_MENTION_SIGIL) -> tuple[str, str, int] | None:
+def parse_linked_tool_mention(text: str, start: int, sigil: str = TOOL_MENTION_SIGIL) -> Optional[Tuple[str, str, int]]:
     if start + 1 >= len(text) or text[start + 1] != sigil:
         return None
     name_start = start + 2
@@ -425,15 +430,15 @@ def is_skill_path(path: str) -> bool:
 
 
 def normalize_skill_path(path: str) -> str:
-    return path.removeprefix("skill://")
+    return _strip_prefix(path, "skill://")
 
 
-def app_id_from_path(path: str) -> str | None:
-    value = path.removeprefix("app://")
+def app_id_from_path(path: str) -> Optional[str]:
+    value = _strip_prefix(path, "app://")
     return value if value != path and value else None
 
 
-def connector_mention_slug(app: AppInfo | Mapping[str, Any]) -> str:
+def connector_mention_slug(app: Any) -> str:
     name = _get(app, "name")
     slug_chars = []
     previous_dash = False
@@ -459,13 +464,13 @@ def skill_description(skill: SkillMetadata) -> str:
     return skill.short_description or skill.description or ""
 
 
-def _coerce_interface(value: SkillInterface | Mapping[str, Any] | None) -> SkillInterface | None:
+def _coerce_interface(value: Optional[Any]) -> Optional[SkillInterface]:
     if value is None or isinstance(value, SkillInterface):
         return value
     return SkillInterface(**{field: value.get(field) for field in SkillInterface.__dataclass_fields__})
 
 
-def _coerce_dependencies(value: SkillDependencies | Mapping[str, Any] | None) -> SkillDependencies | None:
+def _coerce_dependencies(value: Optional[Any]) -> Optional[SkillDependencies]:
     if value is None or isinstance(value, SkillDependencies):
         return value
     tools = tuple(
@@ -497,7 +502,7 @@ def _with_fields(value: Any, **updates: Any) -> Any:
     return clone
 
 
-def _get(value: Mapping[str, Any] | Any, key: str, default: Any = ...):
+def _get(value: Any, key: str, default: Any = ...):
     if isinstance(value, Mapping):
         if default is ...:
             return value[key]
@@ -505,6 +510,12 @@ def _get(value: Mapping[str, Any] | Any, key: str, default: Any = ...):
     if default is ...:
         return getattr(value, key)
     return getattr(value, key, default)
+
+
+def _strip_prefix(value: str, prefix: str) -> str:
+    if value.startswith(prefix):
+        return value[len(prefix) :]
+    return value
 
 
 __all__ = [

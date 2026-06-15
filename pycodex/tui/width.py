@@ -1,18 +1,18 @@
-"""Width guards for transcript rendering with fixed prefix columns.
+﻿"""Width guards for transcript rendering with fixed prefix columns.
 
 Upstream source: ``codex/codex-rs/tui/src/width.rs``.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Optional
 
-from ._porting import RustTuiModule, not_ported
+from ._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="width", source="codex/codex-rs/tui/src/width.rs")
+RUST_MODULE = RustTuiModule(crate="codex-tui", module="width", source="codex/codex-rs/tui/src/width.rs", status="complete")
 
 
-def _require_rust_unsigned(value: int, name: str, *, bits: int | None = None) -> int:
+def _require_rust_unsigned(value: int, name: str, *, bits: Optional[int] = None) -> int:
     if not isinstance(value, int):
         raise TypeError(f"{name} must be an int")
     if value < 0:
@@ -22,7 +22,7 @@ def _require_rust_unsigned(value: int, name: str, *, bits: int | None = None) ->
     return value
 
 
-def usable_content_width(total_width: int, reserved_cols: int) -> int | None:
+def usable_content_width(total_width: int, reserved_cols: int) -> Optional[int]:
     """Return usable content width after reserving fixed columns.
 
     Mirrors Rust ``usable_content_width(total_width: usize, reserved_cols:
@@ -36,7 +36,7 @@ def usable_content_width(total_width: int, reserved_cols: int) -> int | None:
     return remaining if remaining > 0 else None
 
 
-def usable_content_width_u16(total_width: int, reserved_cols: int) -> int | None:
+def usable_content_width_u16(total_width: int, reserved_cols: int) -> Optional[int]:
     """``u16`` convenience wrapper around :func:`usable_content_width`."""
 
     total_width = _require_rust_unsigned(total_width, "total_width", bits=16)
@@ -48,3 +48,4 @@ __all__ = [
     "usable_content_width",
     "usable_content_width_u16",
 ]
+

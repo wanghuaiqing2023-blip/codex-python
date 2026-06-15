@@ -9,16 +9,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Dict, List, Optional, Tuple
 
-from .._porting import RustTuiModule, not_ported
+from .._porting import RustTuiModule
 
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="app::side",
     source="codex/codex-rs/tui/src/app/side.rs",
-    status="complete_slice",
+    status="complete",
 )
 
 SIDE_RENAME_BLOCK_MESSAGE = "Side conversations are ephemeral and cannot be renamed."
@@ -82,7 +82,7 @@ class SideParentStatus(str, Enum):
         return self in {SideParentStatus.NeedsInput, SideParentStatus.NeedsApproval}
 
     @classmethod
-    def for_request(cls, request: Any) -> "SideParentStatus | None":
+    def for_request(cls, request: Any) -> Optional["SideParentStatus"]:
         variant = _variant_name(request)
         if variant == "ToolRequestUserInput":
             return cls.NeedsInput
@@ -107,7 +107,7 @@ class SideParentStatusChangeKind(str, Enum):
 @dataclass(frozen=True, eq=True)
 class SideParentStatusChange:
     kind: SideParentStatusChangeKind
-    status: SideParentStatus | None = None
+    status: Optional[SideParentStatus] = None
 
     @classmethod
     def Set(cls, status: SideParentStatus) -> "SideParentStatusChange":
@@ -145,7 +145,7 @@ class SideParentStatusChange:
 @dataclass
 class SideThreadState:
     parent_thread_id: str
-    parent_status: SideParentStatus | None = None
+    parent_status: Optional[SideParentStatus] = None
 
     @classmethod
     def new(cls, parent_thread_id: Any) -> "SideThreadState":
@@ -154,18 +154,18 @@ class SideThreadState:
 
 @dataclass
 class SideUiState:
-    primary_thread_id: str | None = None
-    active_thread_id: str | None = None
-    side_threads: dict[str, SideThreadState] = field(default_factory=dict)
-    rename_block_message: str | None = None
+    primary_thread_id: Optional[str] = None
+    active_thread_id: Optional[str] = None
+    side_threads: Dict[str, SideThreadState] = field(default_factory=dict)
+    rename_block_message: Optional[str] = None
     side_conversation_active: bool = False
     interrupted_turn_notice_mode: str = "Default"
-    side_context_label: str | None = None
-    errors: list[str] = field(default_factory=list)
-    restored_user_messages: list[Any] = field(default_factory=list)
+    side_context_label: Optional[str] = None
+    errors: List[str] = field(default_factory=list)
+    restored_user_messages: List[Any] = field(default_factory=list)
 
 
-def side_developer_instructions(existing_instructions: str | None = None) -> str:
+def side_developer_instructions(existing_instructions: Optional[str] = None) -> str:
     if existing_instructions is not None and existing_instructions.strip():
         return f"{existing_instructions}\n\n{SIDE_DEVELOPER_INSTRUCTIONS}"
     return SIDE_DEVELOPER_INSTRUCTIONS
@@ -191,7 +191,7 @@ def side_start_error_message(err: Any) -> str:
     return f"Failed to start side conversation: {message}"
 
 
-def side_start_block_message(primary_thread_id: Any | None, side_threads: dict[Any, Any] | None) -> str | None:
+def side_start_block_message(primary_thread_id: Optional[Any], side_threads: Optional[Dict[Any, Any]]) -> Optional[str]:
     if primary_thread_id is None:
         return SIDE_MAIN_THREAD_UNAVAILABLE_MESSAGE
     if side_threads:
@@ -199,7 +199,7 @@ def side_start_block_message(primary_thread_id: Any | None, side_threads: dict[A
     return None
 
 
-def sync_side_thread_ui(state: SideUiState, thread_label: dict[str, str] | None = None) -> None:
+def sync_side_thread_ui(state: SideUiState, thread_label: Optional[Dict[str, str]] = None) -> None:
     active_thread_id = state.active_thread_id
     side_state = state.side_threads.get(active_thread_id or "") if active_thread_id is not None else None
     if side_state is None:
@@ -213,7 +213,7 @@ def sync_side_thread_ui(state: SideUiState, thread_label: dict[str, str] | None 
     state.side_conversation_active = True
     state.interrupted_turn_notice_mode = "Suppress"
     parent_is_main = state.primary_thread_id == side_state.parent_thread_id
-    parts: list[str] = []
+    parts: List[str] = []
     if parent_is_main:
         parts.append("from main thread")
     else:
@@ -225,12 +225,12 @@ def sync_side_thread_ui(state: SideUiState, thread_label: dict[str, str] | None 
     state.side_context_label = "Side " + " | ".join(parts)
 
 
-def active_side_parent_thread_id(state: SideUiState) -> str | None:
+def active_side_parent_thread_id(state: SideUiState) -> Optional[str]:
     side_state = state.side_threads.get(state.active_thread_id or "")
     return None if side_state is None else side_state.parent_thread_id
 
 
-def set_side_parent_status(state: SideUiState, parent_thread_id: Any, status: SideParentStatus | None) -> bool:
+def set_side_parent_status(state: SideUiState, parent_thread_id: Any, status: Optional[SideParentStatus]) -> bool:
     changed = False
     parent = str(parent_thread_id)
     for side_state in state.side_threads.values():
@@ -262,7 +262,7 @@ def apply_side_parent_status_change(state: SideUiState, parent_thread_id: Any, c
     return clear_side_parent_action_status(state, parent_thread_id)
 
 
-def side_thread_to_discard_after_switch(current_displayed_thread_id: Any | None, side_threads: dict[Any, Any], target_thread_id: Any) -> str | None:
+def side_thread_to_discard_after_switch(current_displayed_thread_id: Optional[Any], side_threads: Dict[Any, Any], target_thread_id: Any) -> Optional[str]:
     if current_displayed_thread_id is None:
         return None
     current = str(current_displayed_thread_id)
@@ -271,12 +271,12 @@ def side_thread_to_discard_after_switch(current_displayed_thread_id: Any | None,
     return current
 
 
-def restore_side_user_message(state: SideUiState, user_message: Any | None) -> None:
+def restore_side_user_message(state: SideUiState, user_message: Optional[Any]) -> None:
     if user_message is not None:
         state.restored_user_messages.append(user_message)
 
 
-def install_side_thread_snapshot(session: dict[str, Any], forked_turns: list[Any] | None = None) -> tuple[dict[str, Any], list[Any]]:
+def install_side_thread_snapshot(session: Dict[str, Any], forked_turns: Optional[List[Any]] = None) -> Tuple[Dict[str, Any], List[Any]]:
     copied = dict(session)
     copied["forked_from_id"] = None
     return copied, []
@@ -309,12 +309,105 @@ def _turn_status(notification: Any) -> str | None:
     return getattr(turn, "status", None)
 
 
-async def handle_start_side(*args: Any, **kwargs: Any) -> Any:
-    raise not_ported("app::side::handle_start_side requires app-server fork/inject/select runtime")
+@dataclass(frozen=True, eq=True)
+class SideActionPlan:
+    action: str
+    thread_id: Optional[str] = None
+    parent_thread_id: Optional[str] = None
+    updates: Tuple[Tuple[str, Any], ...] = ()
+    messages: Tuple[str, ...] = ()
+    restored_user_message: Optional[Any] = None
+    continue_run: bool = True
 
 
-async def discard_side_thread(*args: Any, **kwargs: Any) -> Any:
-    raise not_ported("app::side::discard_side_thread requires app-server interrupt/unsubscribe runtime")
+async def discard_side_thread(thread_id: Any, interrupt_error: Any = None, unsubscribe_error: Any = None) -> SideActionPlan:
+    side_thread_id = str(thread_id)
+    if interrupt_error is not None:
+        message = "Failed to close side conversation %s; it is still open: %s" % (side_thread_id, interrupt_error)
+        return SideActionPlan(action="discard_side_thread_interrupt_failed", thread_id=side_thread_id, messages=(message,))
+    if unsubscribe_error is not None:
+        message = "Failed to close side conversation %s; it is still open: %s" % (side_thread_id, unsubscribe_error)
+        return SideActionPlan(action="discard_side_thread_unsubscribe_failed", thread_id=side_thread_id, messages=(message,))
+    return SideActionPlan(
+        action="discard_side_thread",
+        thread_id=side_thread_id,
+        updates=(("interrupt_side_thread", side_thread_id), ("thread_unsubscribe", side_thread_id), ("discard_thread_local_state", side_thread_id)),
+    )
+
+
+async def handle_start_side(
+    state: SideUiState,
+    parent_thread_id: Any,
+    user_message: Optional[Any] = None,
+    fork_result: Optional[Dict[str, Any]] = None,
+    fork_error: Any = None,
+    inject_error: Any = None,
+    select_error: Any = None,
+    active_after_select: Optional[Any] = None,
+) -> SideActionPlan:
+    block = side_start_block_message(state.primary_thread_id, state.side_threads)
+    if block is not None:
+        restore_side_user_message(state, user_message)
+        sync_side_thread_ui(state)
+        state.errors.append(block)
+        return SideActionPlan(action="start_side_blocked", parent_thread_id=str(parent_thread_id), messages=(block,), restored_user_message=user_message)
+    if fork_error is not None:
+        restore_side_user_message(state, user_message)
+        message = side_start_error_message(fork_error)
+        state.side_context_label = None
+        state.errors.append(message)
+        return SideActionPlan(action="start_side_fork_failed", parent_thread_id=str(parent_thread_id), messages=(message,), restored_user_message=user_message)
+    child_thread_id = str((fork_result or {}).get("thread_id", (fork_result or {}).get("child_thread_id", "side")))
+    if inject_error is not None:
+        restore_side_user_message(state, user_message)
+        message = "Failed to prepare side conversation %s: %s" % (child_thread_id, inject_error)
+        state.errors.append(message)
+        return SideActionPlan(
+            action="start_side_inject_failed",
+            thread_id=child_thread_id,
+            parent_thread_id=str(parent_thread_id),
+            updates=(("discard_side_thread_or_keep_visible", child_thread_id),),
+            messages=(message,),
+            restored_user_message=user_message,
+        )
+    if select_error is not None:
+        restore_side_user_message(state, user_message)
+        message = "Failed to switch into side conversation %s: %s" % (child_thread_id, select_error)
+        state.errors.append(message)
+        return SideActionPlan(
+            action="start_side_select_failed",
+            thread_id=child_thread_id,
+            parent_thread_id=str(parent_thread_id),
+            updates=(("discard_side_thread_or_keep_visible", child_thread_id), ("maybe_restore_parent_thread", str(parent_thread_id))),
+            messages=(message,),
+            restored_user_message=user_message,
+        )
+    if active_after_select is not None and str(active_after_select) != child_thread_id:
+        restore_side_user_message(state, user_message)
+        message = "Failed to switch into side conversation %s." % child_thread_id
+        state.errors.append(message)
+        return SideActionPlan(
+            action="start_side_not_active_after_select",
+            thread_id=child_thread_id,
+            parent_thread_id=str(parent_thread_id),
+            updates=(("discard_side_thread_or_keep_visible", child_thread_id),),
+            messages=(message,),
+            restored_user_message=user_message,
+        )
+    state.side_threads[child_thread_id] = SideThreadState.new(parent_thread_id)
+    state.active_thread_id = child_thread_id
+    sync_side_thread_ui(state)
+    updates = (
+        ("telemetry.counter", "codex.thread.side"),
+        ("refresh_in_memory_config_from_disk_best_effort", "starting a side conversation"),
+        ("fork_thread", str(parent_thread_id)),
+        ("install_side_thread_snapshot", child_thread_id),
+        ("thread_inject_items", SIDE_BOUNDARY_PROMPT),
+        ("select_agent_thread_and_discard_side", child_thread_id),
+    )
+    if user_message is not None:
+        updates += (("submit_user_message_as_plain_user_turn", user_message),)
+    return SideActionPlan(action="start_side", thread_id=child_thread_id, parent_thread_id=str(parent_thread_id), updates=updates)
 
 
 __all__ = [
@@ -325,6 +418,7 @@ __all__ = [
     "SIDE_MAIN_THREAD_UNAVAILABLE_MESSAGE",
     "SIDE_NO_STARTED_CONVERSATION_MESSAGE",
     "SIDE_RENAME_BLOCK_MESSAGE",
+    "SideActionPlan",
     "SideParentStatus",
     "SideParentStatusChange",
     "SideParentStatusChangeKind",

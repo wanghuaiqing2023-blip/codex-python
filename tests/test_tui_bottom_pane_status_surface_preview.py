@@ -82,7 +82,7 @@ def test_status_line_for_items_maps_status_items_to_preview_values():
     line = data.status_line_for_items(["ModelName", "CurrentDir", "GitBranch"], True)
 
     assert line is not None
-    assert line_text(line) == "gpt-live 路 /repo 路 main"
+    assert line_text(line) == "gpt-live \u00b7 /repo \u00b7 main"
     assert line.spans[0].style.fg is not None
 
 

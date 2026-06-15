@@ -13,7 +13,7 @@ import shlex
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Optional, Tuple
 
 from .._porting import RustTuiModule
 
@@ -44,15 +44,15 @@ class GuardianAssessmentActionKind(Enum):
 @dataclass(frozen=True)
 class GuardianAssessmentAction:
     kind: GuardianAssessmentActionKind
-    command: str | None = None
-    program: str | None = None
-    argv: tuple[str, ...] = ()
-    files: tuple[Path, ...] = ()
-    target: str | None = None
-    server: str | None = None
-    tool_name: str | None = None
-    connector_name: str | None = None
-    reason: str | None = None
+    command: Optional[str] = None
+    program: Optional[str] = None
+    argv: Tuple[str, ...] = ()
+    files: Tuple[Path, ...] = ()
+    target: Optional[str] = None
+    server: Optional[str] = None
+    tool_name: Optional[str] = None
+    connector_name: Optional[str] = None
+    reason: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -64,25 +64,25 @@ class GuardianAssessmentEvent:
 
 @dataclass(frozen=True)
 class ExecApprovalRequestEvent:
-    command: tuple[str, ...]
-    approval_id: str | None = None
-    reason: str | None = None
-    available_decisions: tuple[str, ...] = ()
-    network_approval_context: Any | None = None
-    additional_permissions: Any | None = None
+    command: Tuple[str, ...]
+    approval_id: Optional[str] = None
+    reason: Optional[str] = None
+    available_decisions: Tuple[str, ...] = ()
+    network_approval_context: Optional[Any] = None
+    additional_permissions: Optional[Any] = None
 
     def effective_approval_id(self) -> str:
         return self.approval_id or ""
 
-    def effective_available_decisions(self) -> tuple[str, ...]:
+    def effective_available_decisions(self) -> Tuple[str, ...]:
         return self.available_decisions
 
 
 @dataclass(frozen=True)
 class ApplyPatchApprovalRequestEvent:
     call_id: str
-    changes: dict[Path, Any]
-    reason: str | None = None
+    changes: Dict[Path, Any]
+    reason: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -102,23 +102,23 @@ class UserInputQuestion:
 
 @dataclass(frozen=True)
 class ToolRequestUserInputParams:
-    questions: tuple[UserInputQuestion, ...]
+    questions: Tuple[UserInputQuestion, ...]
 
 
 @dataclass(frozen=True)
 class RequestPermissionsEvent:
     call_id: str
-    reason: str | None
+    reason: Optional[str]
     permissions: Any
 
 
 @dataclass
 class DeferredToolRequestQueue:
-    exec_approvals: list[ExecApprovalRequestEvent] = field(default_factory=list)
-    apply_patch_approvals: list[ApplyPatchApprovalRequestEvent] = field(default_factory=list)
-    elicitations: list[tuple[str, ElicitationParams]] = field(default_factory=list)
-    user_inputs: list[ToolRequestUserInputParams] = field(default_factory=list)
-    permission_requests: list[RequestPermissionsEvent] = field(default_factory=list)
+    exec_approvals: List[ExecApprovalRequestEvent] = field(default_factory=list)
+    apply_patch_approvals: List[ApplyPatchApprovalRequestEvent] = field(default_factory=list)
+    elicitations: List[Tuple[str, ElicitationParams]] = field(default_factory=list)
+    user_inputs: List[ToolRequestUserInputParams] = field(default_factory=list)
+    permission_requests: List[RequestPermissionsEvent] = field(default_factory=list)
 
     def push_exec_approval(self, ev: ExecApprovalRequestEvent) -> None:
         self.exec_approvals.append(ev)
@@ -139,24 +139,24 @@ class DeferredToolRequestQueue:
 @dataclass(frozen=True)
 class ApprovalRequestPlan:
     kind: str
-    data: dict[str, Any]
+    data: Dict[str, Any]
 
 
 @dataclass(frozen=True)
 class NotificationPlan:
     kind: str
-    data: dict[str, Any]
+    data: Dict[str, Any]
 
 
 @dataclass(frozen=True)
 class HistoryCellPlan:
     kind: str
-    data: dict[str, Any]
+    data: Dict[str, Any]
 
 
 @dataclass
 class PendingGuardianReviewStatus:
-    pending: dict[str, str] = field(default_factory=dict)
+    pending: Dict[str, str] = field(default_factory=dict)
 
     def start_or_update(self, id: str, detail: str) -> None:
         self.pending[id] = detail
@@ -167,7 +167,7 @@ class PendingGuardianReviewStatus:
     def is_empty(self) -> bool:
         return not self.pending
 
-    def status_indicator_state(self) -> dict[str, Any] | None:
+    def status_indicator_state(self) -> Dict[str, Any] | None:
         if not self.pending:
             return None
         details = list(self.pending.values())
@@ -188,17 +188,17 @@ class ToolRequestsModel:
     )
     current_status_kind: str = "working"
     deferred_queue: DeferredToolRequestQueue = field(default_factory=DeferredToolRequestQueue)
-    notifications: list[NotificationPlan] = field(default_factory=list)
-    approval_requests: list[ApprovalRequestPlan] = field(default_factory=list)
-    elicitation_forms: list[Any] = field(default_factory=list)
-    app_link_views: list[Any] = field(default_factory=list)
-    declined_elicitations: list[tuple[str, str]] = field(default_factory=list)
-    user_input_requests: list[ToolRequestUserInputParams] = field(default_factory=list)
-    boxed_history: list[HistoryCellPlan] = field(default_factory=list)
-    recent_auto_review_denials: list[GuardianAssessmentEvent] = field(default_factory=list)
-    ambient_pet_notifications: list[str] = field(default_factory=list)
-    status_updates: list[dict[str, Any]] = field(default_factory=list)
-    status_headers: list[str] = field(default_factory=list)
+    notifications: List[NotificationPlan] = field(default_factory=list)
+    approval_requests: List[ApprovalRequestPlan] = field(default_factory=list)
+    elicitation_forms: List[Any] = field(default_factory=list)
+    app_link_views: List[Any] = field(default_factory=list)
+    declined_elicitations: List[Tuple[str, str]] = field(default_factory=list)
+    user_input_requests: List[ToolRequestUserInputParams] = field(default_factory=list)
+    boxed_history: List[HistoryCellPlan] = field(default_factory=list)
+    recent_auto_review_denials: List[GuardianAssessmentEvent] = field(default_factory=list)
+    ambient_pet_notifications: List[str] = field(default_factory=list)
+    status_updates: List[Dict[str, Any]] = field(default_factory=list)
+    status_headers: List[str] = field(default_factory=list)
     answer_stream_flushes: int = 0
     redraw_requests: int = 0
     status_indicator_ensures: int = 0
@@ -394,7 +394,7 @@ class ToolRequestsModel:
     def request_redraw(self) -> None:
         self.redraw_requests += 1
 
-    def set_status(self, header: str, details: list[str], details_max_lines: int) -> None:
+    def set_status(self, header: str, details: List[str], details_max_lines: int) -> None:
         self.current_status_kind = "guardian_review"
         self.status_updates.append(
             {"header": header, "details": details, "details_max_lines": details_max_lines}
@@ -408,12 +408,12 @@ class ToolRequestsModel:
         self.boxed_history.append(cell)
 
 
-def permission_request_summary(subject: str, reason: str | None) -> str:
+def permission_request_summary(subject: str, reason: Optional[str]) -> str:
     reason = reason.strip() if reason else ""
     return f"{subject}: {reason}" if reason else subject
 
 
-def guardian_action_summary(action: GuardianAssessmentAction) -> str | None:
+def guardian_action_summary(action: GuardianAssessmentAction) -> Optional[str]:
     if action.kind is GuardianAssessmentActionKind.COMMAND:
         return action.command or ""
     if action.kind is GuardianAssessmentActionKind.EXECVE:
@@ -433,7 +433,7 @@ def guardian_action_summary(action: GuardianAssessmentAction) -> str | None:
     return None
 
 
-def guardian_command(action: GuardianAssessmentAction) -> tuple[str, ...] | None:
+def guardian_command(action: GuardianAssessmentAction) -> Optional[Tuple[str, ...]]:
     if action.kind is GuardianAssessmentActionKind.COMMAND:
         if not action.command:
             return None
@@ -490,7 +490,7 @@ def guardian_terminal_summary(action: GuardianAssessmentAction, decision: str) -
     return guardian_action_summary(action) or "<unrenderable guardian action>"
 
 
-def user_input_request_summary(questions: tuple[UserInputQuestion, ...]) -> str | None:
+def user_input_request_summary(questions: Tuple[UserInputQuestion, ...]) -> Optional[str]:
     if not questions:
         return None
     first = questions[0]
@@ -500,7 +500,7 @@ def user_input_request_summary(questions: tuple[UserInputQuestion, ...]) -> str 
     return summary[:30]
 
 
-def shell_join(command: tuple[str, ...]) -> str:
+def shell_join(command: Tuple[str, ...]) -> str:
     return shlex.join(command) if command else ""
 
 

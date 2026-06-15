@@ -14,11 +14,16 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass
-from typing import Any, Callable, TextIO
+from typing import Any, Callable, Optional, Sequence, TextIO, Union
 
 from ._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="clipboard_copy", source="codex/codex-rs/tui/src/clipboard_copy.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="clipboard_copy",
+    source="codex/codex-rs/tui/src/clipboard_copy.rs",
+    status="complete",
+)
 
 OSC52_MAX_RAW_BYTES = 100_000
 STDERR_SUPPRESSION_MUTEX = None
@@ -54,7 +59,7 @@ class CopyEnvironment:
     tmux_session: bool
 
 
-def copy_to_clipboard(text: str) -> ClipboardLease | None:
+def copy_to_clipboard(text: str) -> Optional[ClipboardLease]:
     """Copy text using the Rust backend selection order."""
 
     return copy_to_clipboard_with(
@@ -71,7 +76,7 @@ def copy_to_clipboard(text: str) -> ClipboardLease | None:
     )
 
 
-def _as_error(err: Exception | str) -> str:
+def _as_error(err: Union[Exception, str]) -> str:
     return str(err)
 
 
@@ -80,9 +85,9 @@ def copy_to_clipboard_with(
     environment: CopyEnvironment,
     tmux_copy_fn: Callable[[str], None],
     osc52_copy_fn: Callable[[str], None],
-    arboard_copy_fn: Callable[[str], ClipboardLease | None],
+    arboard_copy_fn: Callable[[str], Optional[ClipboardLease]],
     wsl_copy_fn: Callable[[str], None],
-) -> ClipboardLease | None:
+) -> Optional[ClipboardLease]:
     """Core Rust copy decision tree with injected backends."""
 
     if environment.ssh_session:
@@ -174,7 +179,7 @@ def is_wsl_session() -> bool:
         return False
 
 
-def arboard_copy(_text: str) -> ClipboardLease | None:
+def arboard_copy(_text: str) -> Optional[ClipboardLease]:
     raise ClipboardCopyError("native clipboard unavailable: arboard backend is not available in Python")
 
 
@@ -242,7 +247,7 @@ def tmux_clipboard_copy_ready(
         raise ClipboardCopyError("tmux clipboard forwarding is unavailable: missing Ms capability")
 
 
-def tmux_command_output(args: list[str] | tuple[str, ...]) -> str:
+def tmux_command_output(args: Sequence[str]) -> str:
     try:
         completed = subprocess.run(["tmux", *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
     except OSError as exc:
@@ -284,7 +289,7 @@ def osc52_copy(text: str) -> None:
     write_osc52_to_writer(sys.stdout, sequence)
 
 
-def write_osc52_to_writer(writer: TextIO | Any, sequence: str) -> None:
+def write_osc52_to_writer(writer: Union[TextIO, Any], sequence: str) -> None:
     try:
         writer.write(sequence)
     except Exception as exc:

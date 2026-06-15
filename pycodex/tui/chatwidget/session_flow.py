@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, List, Optional, Tuple, Union
 
 from .._porting import RustTuiModule
 
@@ -21,6 +21,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="chatwidget::session_flow",
     source="codex/codex-rs/tui/src/chatwidget/session_flow.rs",
+    status="complete",
 )
 
 
@@ -32,27 +33,27 @@ class SessionConfiguredDisplay(Enum):
 
 @dataclass(frozen=True)
 class MessageHistoryMetadata:
-    log_id: str | None = None
+    log_id: Optional[str] = None
     entry_count: int = 0
 
 
 @dataclass(frozen=True)
 class PermissionProfileSnapshot:
-    permission_profile: Any | None = None
-    active_permission_profile: Any | None = None
+    permission_profile: Optional[Any] = None
+    active_permission_profile: Optional[Any] = None
 
 
 @dataclass
 class CollaborationModeState:
-    model: str | None = None
-    reasoning_effort: Any | None = None
-    developer_instructions: Any | None = None
+    model: Optional[str] = None
+    reasoning_effort: Optional[Any] = None
+    developer_instructions: Optional[Any] = None
 
     def with_updates(
         self,
-        model: str | None,
-        reasoning_effort: Any | None,
-        developer_instructions: Any | None,
+        model: Optional[str],
+        reasoning_effort: Optional[Any],
+        developer_instructions: Optional[Any],
     ) -> "CollaborationModeState":
         return CollaborationModeState(
             model=model if model is not None else self.model,
@@ -63,30 +64,30 @@ class CollaborationModeState:
 
 @dataclass
 class CollaborationModeMask:
-    reasoning_effort: Any | None = None
+    reasoning_effort: Optional[Any] = None
 
 
 @dataclass
 class ThreadSessionState:
     thread_id: str
-    cwd: Path | str
+    cwd: Union[Path, str]
     model: str
-    reasoning_effort: Any | None = None
-    message_history: MessageHistoryMetadata | None = None
-    network_proxy: Any | None = None
-    thread_name: str | None = None
-    forked_from_id: str | None = None
-    fork_parent_title: str | None = None
-    rollout_path: Path | str | None = None
-    runtime_workspace_roots: tuple[Path | str, ...] = ()
-    service_tier: str | None = None
-    approval_policy: Any | None = None
-    permission_profile: Any | None = None
-    active_permission_profile: Any | None = None
-    approvals_reviewer: Any | None = None
-    personality: Any | None = None
-    collaboration_mode: str | None = None
-    instruction_source_paths: tuple[Path | str, ...] = ()
+    reasoning_effort: Optional[Any] = None
+    message_history: Optional[MessageHistoryMetadata] = None
+    network_proxy: Optional[Any] = None
+    thread_name: Optional[str] = None
+    forked_from_id: Optional[str] = None
+    fork_parent_title: Optional[str] = None
+    rollout_path: Optional[Union[Path, str]] = None
+    runtime_workspace_roots: Tuple[Union[Path, str], ...] = ()
+    service_tier: Optional[str] = None
+    approval_policy: Optional[Any] = None
+    permission_profile: Optional[Any] = None
+    active_permission_profile: Optional[Any] = None
+    approvals_reviewer: Optional[Any] = None
+    personality: Optional[Any] = None
+    collaboration_mode: Optional[str] = None
+    instruction_source_paths: Tuple[Union[Path, str], ...] = ()
 
 
 @dataclass
@@ -94,15 +95,15 @@ class SessionInfoCellPlan:
     model: str
     thread_id: str
     display_welcome_banner: bool
-    plan_type: Any | None = None
+    plan_type: Optional[Any] = None
     show_fast_status: bool = False
-    startup_tooltip_override: Any | None = None
+    startup_tooltip_override: Optional[Any] = None
 
 
 @dataclass
 class ForkedThreadEvent:
     forked_from_id: str
-    fork_parent_title: str | None = None
+    fork_parent_title: Optional[str] = None
 
     def line_text(self) -> str:
         title = self.fork_parent_title.strip() if self.fork_parent_title else ""
@@ -113,49 +114,49 @@ class ForkedThreadEvent:
 
 @dataclass
 class RenameConfirmationPlan:
-    thread_id: str | None
+    thread_id: Optional[str]
     thread_name: str
 
 
 @dataclass
 class SessionFlowModel:
-    thread_id: str | None = None
-    thread_name: str | None = None
-    forked_from: str | None = None
-    current_rollout_path: Path | None = None
-    current_cwd: Path | None = None
-    config_cwd: Path | None = None
-    workspace_roots: list[Path] = field(default_factory=list)
-    permissions_workspace_roots: list[Path] = field(default_factory=list)
-    approval_policy: Any | None = None
-    permission_snapshot: PermissionProfileSnapshot | None = None
-    approvals_reviewer: Any | None = None
-    personality: Any | None = None
-    effective_service_tier: str | None = None
-    session_network_proxy: Any | None = None
-    instruction_source_paths: list[Path] = field(default_factory=list)
+    thread_id: Optional[str] = None
+    thread_name: Optional[str] = None
+    forked_from: Optional[str] = None
+    current_rollout_path: Optional[Path] = None
+    current_cwd: Optional[Path] = None
+    config_cwd: Optional[Path] = None
+    workspace_roots: List[Path] = field(default_factory=list)
+    permissions_workspace_roots: List[Path] = field(default_factory=list)
+    approval_policy: Optional[Any] = None
+    permission_snapshot: Optional[PermissionProfileSnapshot] = None
+    approvals_reviewer: Optional[Any] = None
+    personality: Optional[Any] = None
+    effective_service_tier: Optional[str] = None
+    session_network_proxy: Optional[Any] = None
+    instruction_source_paths: List[Path] = field(default_factory=list)
     current_collaboration_mode: CollaborationModeState = field(default_factory=CollaborationModeState)
-    active_collaboration_mask: CollaborationModeMask | None = None
-    current_goal_status_indicator: Any | None = None
-    current_goal_status: Any | None = None
-    status_line_project_root_name_cache: Any | None = None
-    startup_tooltip_override: Any | None = None
+    active_collaboration_mask: Optional[CollaborationModeMask] = None
+    current_goal_status_indicator: Optional[Any] = None
+    current_goal_status: Optional[Any] = None
+    status_line_project_root_name_cache: Optional[Any] = None
+    startup_tooltip_override: Optional[Any] = None
     show_welcome_banner: bool = False
-    plan_type: Any | None = None
+    plan_type: Optional[Any] = None
     suppress_initial_user_message_submit: bool = False
     suppress_session_configured_redraw: bool = False
-    initial_user_message: Any | None = None
+    initial_user_message: Optional[Any] = None
     connectors_feature_enabled: bool = False
     active_cell_is_session_header: bool = False
 
-    bottom_history_metadata: tuple[str, str | None, int] | None = None
-    queue_submissions: bool | None = None
-    skills: Any | None = "unset"
-    submitted_user_messages: list[Any] = field(default_factory=list)
-    applied_session_info_cells: list[SessionInfoCellPlan] = field(default_factory=list)
-    forked_thread_events: list[ForkedThreadEvent] = field(default_factory=list)
-    rename_confirmation_cells: list[RenameConfirmationPlan] = field(default_factory=list)
-    emitted_history_lines: list[str] = field(default_factory=list)
+    bottom_history_metadata: Optional[Tuple[str, Optional[str], int]] = None
+    queue_submissions: Optional[bool] = None
+    skills: Optional[Any] = "unset"
+    submitted_user_messages: List[Any] = field(default_factory=list)
+    applied_session_info_cells: List[SessionInfoCellPlan] = field(default_factory=list)
+    forked_thread_events: List[ForkedThreadEvent] = field(default_factory=list)
+    rename_confirmation_cells: List[RenameConfirmationPlan] = field(default_factory=list)
+    emitted_history_lines: List[str] = field(default_factory=list)
     redraw_requests: int = 0
     copy_history_resets: int = 0
     review_denial_resets: int = 0
@@ -169,7 +170,7 @@ class SessionFlowModel:
     plugins_command_syncs: int = 0
     goal_command_syncs: int = 0
     plugin_mention_refreshes: int = 0
-    skills_refreshes: list[bool] = field(default_factory=list)
+    skills_refreshes: List[bool] = field(default_factory=list)
     connector_prefetches: int = 0
     active_cell_revision_bumps: int = 0
     saw_copy_source_this_turn: bool = True
@@ -199,7 +200,7 @@ class SessionFlowModel:
         self,
         session: ThreadSessionState,
         display: SessionConfiguredDisplay,
-        fork_parent_title: str | None,
+        fork_parent_title: Optional[str],
     ) -> None:
         self.copy_history_resets += 1
         history = session.message_history or MessageHistoryMetadata()
@@ -296,13 +297,13 @@ class SessionFlowModel:
     def emit_forked_thread_event(
         self,
         forked_from_id: str,
-        fork_parent_title: str | None,
+        fork_parent_title: Optional[str],
     ) -> None:
         event = ForkedThreadEvent(str(forked_from_id), fork_parent_title)
         self.forked_thread_events.append(event)
         self.emitted_history_lines.append(event.line_text())
 
-    def on_thread_name_updated(self, thread_id: str, thread_name: str | None) -> None:
+    def on_thread_name_updated(self, thread_id: str, thread_name: Optional[str]) -> None:
         if self.thread_id != thread_id:
             return
         if thread_name is not None:
@@ -314,7 +315,7 @@ class SessionFlowModel:
         self.request_redraw()
         self.maybe_send_next_queued_input()
 
-    def set_skills(self, skills: Any | None) -> None:
+    def set_skills(self, skills: Optional[Any]) -> None:
         self.skills = skills
 
     def current_model(self) -> str:
@@ -323,7 +324,7 @@ class SessionFlowModel:
     def initial_collaboration_mask(
         self,
         model: str,
-        reasoning_effort: Any | None,
+        reasoning_effort: Optional[Any],
     ) -> CollaborationModeMask:
         return CollaborationModeMask(reasoning_effort=reasoning_effort)
 
@@ -334,7 +335,7 @@ class SessionFlowModel:
         self.update_collaboration_mode_indicator()
         self.refresh_plan_mode_nudge()
 
-    def should_show_fast_status(self, model: str, service_tier: str | None) -> bool:
+    def should_show_fast_status(self, model: str, service_tier: Optional[str]) -> bool:
         return service_tier == "flex"
 
     def apply_session_info_cell(self, cell: SessionInfoCellPlan) -> None:

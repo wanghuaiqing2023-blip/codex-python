@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from ..._porting import RustTuiModule
 from . import AuthModeWidget, ContinueWithDeviceCodeState, SignInState, mark_url_hyperlink
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="onboarding::auth::headless_chatgpt_login", source="codex/codex-rs/tui/src/onboarding/auth/headless_chatgpt_login.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="onboarding::auth::headless_chatgpt_login",
+    source="codex/codex-rs/tui/src/onboarding/auth/headless_chatgpt_login.rs",
+    status="complete",
+)
 
 
 @dataclass(frozen=True)
@@ -18,7 +23,7 @@ class LoginAccountRequest:
     params: str = "ChatgptDeviceCode"
 
 
-def start_headless_chatgpt_login(widget: AuthModeWidget, request_id: str | None = None) -> LoginAccountRequest:
+def start_headless_chatgpt_login(widget: AuthModeWidget, request_id: Optional[str] = None) -> LoginAccountRequest:
     request_id = request_id or str(uuid4())
     widget.sign_in_state = SignInState.chatgpt_device_code(ContinueWithDeviceCodeState.pending(request_id))
     widget.request_frame.schedule_frame()
@@ -28,7 +33,7 @@ def start_headless_chatgpt_login(widget: AuthModeWidget, request_id: str | None 
     return request
 
 
-def render_device_code_login(widget: AuthModeWidget, area: Any, buf: Any, state: ContinueWithDeviceCodeState) -> list[str]:
+def render_device_code_login(widget: AuthModeWidget, area: Any, buf: Any, state: ContinueWithDeviceCodeState) -> List[str]:
     banner = "Finish signing in via your browser" if state.is_showing_copyable_auth() else "Preparing device code login"
     if widget.animations_enabled and not widget.animations_suppressed:
         widget.request_frame.schedule_frame_in(0.1)
@@ -63,7 +68,7 @@ def set_device_code_state_for_active_attempt(
     request_frame: Any,
     request_id: str,
     next_state: ContinueWithDeviceCodeState,
-) -> tuple[bool, SignInState]:
+) -> Tuple[bool, SignInState]:
     if not device_code_attempt_matches(sign_in_state, request_id):
         return False, sign_in_state
     if hasattr(request_frame, "schedule_frame"):
@@ -74,10 +79,10 @@ def set_device_code_state_for_active_attempt(
 def set_device_code_error_for_active_attempt(
     sign_in_state: SignInState,
     request_frame: Any,
-    error: dict[str, str | None] | Any,
+    error: Any,
     request_id: str,
     message: str,
-) -> tuple[bool, SignInState]:
+) -> Tuple[bool, SignInState]:
     if not device_code_attempt_matches(sign_in_state, request_id):
         return False, sign_in_state
     if isinstance(error, dict):
@@ -110,7 +115,7 @@ def apply_device_code_response(widget: AuthModeWidget, request_id: str, response
 
 
 def apply_device_code_error(widget: AuthModeWidget, request_id: str, message: str) -> bool:
-    error: dict[str, str | None] = {"message": widget.error}
+    error: Dict[str, Optional[str]] = {"message": widget.error}
     updated, next_state = set_device_code_error_for_active_attempt(widget.sign_in_state, widget.request_frame, error, request_id, message)
     if updated:
         widget.sign_in_state = next_state

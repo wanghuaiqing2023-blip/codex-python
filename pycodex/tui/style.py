@@ -7,13 +7,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Optional, Union
 
 from ._porting import RustTuiModule
 from .color import Rgb
 from .color import blend
 from .color import is_light
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="style", source="codex/codex-rs/tui/src/style.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="style",
+    source="codex/codex-rs/tui/src/style.rs",
+    status="complete",
+)
 
 LIGHT_BG_ACCENT_RGB: Rgb = (0, 95, 135)
 TABLE_SEPARATOR_FG_ALPHA: float = 0.20
@@ -31,7 +37,7 @@ class Color:
     """Semantic color value used by the Python TUI render model."""
 
     kind: str
-    value: Rgb | str
+    value: Union[Rgb, str]
 
     @classmethod
     def rgb(cls, rgb: Rgb) -> "Color":
@@ -49,8 +55,8 @@ CYAN = Color.named("cyan")
 class Style:
     """Small semantic equivalent of ratatui ``Style`` for this module."""
 
-    fg: Color | None = None
-    bg: Color | None = None
+    fg: Optional[Color] = None
+    bg: Optional[Color] = None
     modifiers: frozenset[str] = field(default_factory=frozenset)
 
     def with_fg(self, color: Color) -> "Style":
@@ -81,11 +87,11 @@ def best_color(rgb: Rgb) -> Color:
     return Color.rgb(rgb)
 
 
-def default_bg() -> Rgb | None:
+def default_bg() -> Optional[Rgb]:
     return None
 
 
-def default_fg() -> Rgb | None:
+def default_fg() -> Optional[Rgb]:
     return None
 
 
@@ -109,27 +115,27 @@ def accent_style() -> Style:
     return accent_style_for(default_bg())
 
 
-def user_message_style_for(terminal_bg: Rgb | None) -> Style:
+def user_message_style_for(terminal_bg: Optional[Rgb]) -> Style:
     if terminal_bg is None:
         return Style()
     return Style().with_bg(user_message_bg(terminal_bg))
 
 
-def proposed_plan_style_for(terminal_bg: Rgb | None) -> Style:
+def proposed_plan_style_for(terminal_bg: Optional[Rgb]) -> Style:
     if terminal_bg is None:
         return Style()
     return Style().with_bg(proposed_plan_bg(terminal_bg))
 
 
-def accent_style_for(terminal_bg: Rgb | None) -> Style:
+def accent_style_for(terminal_bg: Optional[Rgb]) -> Style:
     if terminal_bg is not None and is_light(terminal_bg):
         return Style().with_fg(best_color(LIGHT_BG_ACCENT_RGB)).bold()
     return Style().with_fg(CYAN).bold()
 
 
 def table_separator_style_for(
-    terminal_fg: Rgb | None,
-    terminal_bg: Rgb | None,
+    terminal_fg: Optional[Rgb],
+    terminal_bg: Optional[Rgb],
     color_level: StdoutColorLevel,
 ) -> Style:
     if terminal_fg is None or terminal_bg is None:

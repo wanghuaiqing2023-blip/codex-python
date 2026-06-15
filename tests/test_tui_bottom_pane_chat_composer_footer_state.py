@@ -1,4 +1,4 @@
-"""Parity tests for Rust ``codex-tui::bottom_pane::chat_composer::footer_state``."""
+﻿"""Parity tests for Rust ``codex-tui::bottom_pane::chat_composer::footer_state``."""
 
 from dataclasses import dataclass
 
@@ -53,7 +53,7 @@ def test_status_line_text_handles_none_string_and_duck_typed_lines() -> None:
 
     @dataclass
     class ForeignLine:
-        spans: tuple[ForeignSpan, ...]
+        spans: "tuple[ForeignSpan, ...]"
 
     assert FooterState().status_line_text() is None
     assert FooterState(status_line_value="ready").status_line_text() == "ready"
@@ -70,3 +70,4 @@ def test_footer_state_preserves_field_defaults_and_mutability() -> None:
     assert state.status_line_enabled is False
     state.hint_override = [("Esc", "cancel")]
     assert state.hint_override == [("Esc", "cancel")]
+

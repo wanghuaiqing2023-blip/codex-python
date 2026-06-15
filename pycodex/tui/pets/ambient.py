@@ -14,15 +14,18 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 import time
-from typing import Any, Mapping, Sequence
+from typing import Any, List, Mapping, Optional, Sequence, Tuple, Union
 
-from .._porting import RustTuiModule, not_ported
+from .._porting import RustTuiModule
+from . import frames as frame_cache
+from .image_protocol import ProtocolSelection
 from .model import Animation, AnimationFrame, Pet
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="pets::ambient",
     source="codex/codex-rs/tui/src/pets/ambient.rs",
+    status="complete",
 )
 
 PET_TARGET_HEIGHT_PX = 75
@@ -81,10 +84,16 @@ class PetNotification:
     updated_at: float
 
     @classmethod
-    def new(cls, kind: PetNotificationKind, body: str | None = None, *, now: float | None = None) -> "PetNotification":
+    def new(
+        cls,
+        kind: PetNotificationKind,
+        body: Optional[str] = None,
+        *,
+        now: Optional[float] = None,
+    ) -> "PetNotification":
         return cls(kind=kind, body=body if body is not None else kind.fallback_body(), updated_at=_now(now))
 
-    def is_expired(self, now: float | None = None) -> bool:
+    def is_expired(self, now: Optional[float] = None) -> bool:
         return max(0.0, _now(now) - self.updated_at) >= self.kind.lifetime()
 
 
@@ -111,25 +120,64 @@ class ImageSize:
 @dataclass(frozen=True)
 class AnimationFrameTick:
     sprite_index: int
-    delay: float | None
+    delay: Optional[float]
 
 
 @dataclass
 class AmbientPet:
     pet: Pet
     support: Any
-    frames: list[Path]
+    frames: List[Path]
     sixel_dir: Path
     frame_requester: Any = None
-    notification: PetNotification | None = None
+    notification: Optional[PetNotification] = None
     animation_started_at: float = field(default_factory=time.monotonic)
     animations_enabled: bool = True
 
     @classmethod
-    def load(cls, *args: Any, **kwargs: Any) -> "AmbientPet":
-        return not_ported(RUST_MODULE, "AmbientPet.load runtime pet/frame-cache loading")
+    def load(
+        cls,
+        selected_pet: Optional[str],
+        codex_home: Union[str, Path],
+        frame_requester: Any,
+        animations_enabled: bool,
+        *,
+        now: Optional[float] = None,
+        support: Any = None,
+        frame_preparer: Any = None,
+    ) -> "AmbientPet":
+        home = Path(codex_home)
+        pet = Pet.load_with_codex_home(selected_pet or "codex", home)
+        cache_dir = (
+            home
+            / "cache"
+            / "tui-pets"
+            / "frame-cache"
+            / pet.id
+            / pet.frame_cache_key()
+        )
+        frame_dir = cache_dir / "frames"
+        sixel_dir = cache_dir / "sixel"
+        preparer = frame_cache.prepare_png_frames if frame_preparer is None else frame_preparer
+        frames = [Path(path) for path in preparer(pet, frame_dir)]
+        return cls(
+            pet=pet,
+            support=default_image_support() if support is None else support,
+            frames=frames,
+            sixel_dir=sixel_dir,
+            frame_requester=frame_requester,
+            notification=None,
+            animation_started_at=_now(now),
+            animations_enabled=animations_enabled,
+        )
 
-    def set_notification(self, kind: PetNotificationKind, body: str | None = None, *, now: float | None = None) -> None:
+    def set_notification(
+        self,
+        kind: PetNotificationKind,
+        body: Optional[str] = None,
+        *,
+        now: Optional[float] = None,
+    ) -> None:
         timestamp = _now(now)
         self.notification = PetNotification.new(kind, body, now=timestamp)
         self.animation_started_at = timestamp
@@ -150,7 +198,7 @@ class AmbientPet:
             if scheduler is not None:
                 scheduler(delay)
 
-    def next_frame_delay(self, *, now: float | None = None) -> float | None:
+    def next_frame_delay(self, *, now: Optional[float] = None) -> Optional[float]:
         if self._protocol() is None or not self.animations_enabled:
             return None
         animation = self.current_animation(now=now)
@@ -159,7 +207,13 @@ class AmbientPet:
         tick = current_animation_frame(animation, max(0.0, _now(now) - self.animation_started_at))
         return None if tick is None else tick.delay
 
-    def draw_request(self, area: Any, composer_bottom_y: int, *, now: float | None = None) -> AmbientPetDraw | None:
+    def draw_request(
+        self,
+        area: Any,
+        composer_bottom_y: int,
+        *,
+        now: Optional[float] = None,
+    ) -> Optional[AmbientPetDraw]:
         protocol = self._protocol()
         if protocol is None:
             return None
@@ -187,7 +241,7 @@ class AmbientPet:
             sixel_dir=self.sixel_dir,
         )
 
-    def preview_draw_request(self, area: Any) -> AmbientPetDraw | None:
+    def preview_draw_request(self, area: Any) -> Optional[AmbientPetDraw]:
         protocol = self._protocol()
         if protocol is None:
             return None
@@ -211,12 +265,12 @@ class AmbientPet:
             sixel_dir=self.sixel_dir,
         )
 
-    def visible_notification(self, *, now: float | None = None) -> PetNotification | None:
+    def visible_notification(self, *, now: Optional[float] = None) -> Optional[PetNotification]:
         if self.notification is None or self.notification.is_expired(now):
             return None
         return self.notification
 
-    def current_animation(self, *, now: float | None = None) -> Animation | None:
+    def current_animation(self, *, now: Optional[float] = None) -> Optional[Animation]:
         notification = self.visible_notification(now=now)
         animation_name = "idle" if notification is None else notification.kind.animation_name()
         animation = self.pet.animations.get(animation_name) or self.pet.animations.get("idle")
@@ -230,7 +284,7 @@ class AmbientPet:
                     return fallback
         return animation
 
-    def current_frame_path(self, *, now: float | None = None) -> Path | None:
+    def current_frame_path(self, *, now: Optional[float] = None) -> Optional[Path]:
         animation = self.current_animation(now=now)
         if animation is None:
             sprite_index = 0
@@ -241,12 +295,12 @@ class AmbientPet:
             sprite_index = animation.frames[0].sprite_index if animation.frames else 0
         return self.frame_path_for_sprite_index(sprite_index)
 
-    def first_idle_frame_path(self) -> Path | None:
+    def first_idle_frame_path(self) -> Optional[Path]:
         idle = self.pet.animations.get("idle")
         sprite_index = 0 if idle is None or not idle.frames else idle.frames[0].sprite_index
         return self.frame_path_for_sprite_index(sprite_index)
 
-    def frame_path_for_sprite_index(self, sprite_index: int) -> Path | None:
+    def frame_path_for_sprite_index(self, sprite_index: int) -> Optional[Path]:
         if not self.frames:
             return None
         index = min(int(sprite_index), len(self.frames) - 1)
@@ -258,7 +312,7 @@ class AmbientPet:
         columns = max(1, round(rows / aspect))
         return ImageSize(columns=columns, rows=rows, height_px=PET_TARGET_HEIGHT_PX)
 
-    def _protocol(self) -> str | None:
+    def _protocol(self) -> Optional[str]:
         support = self.support
         if support is None:
             return None
@@ -281,10 +335,10 @@ def composer_gap_rows() -> int:
 
 
 def default_image_support() -> Any:
-    return not_ported(RUST_MODULE, "default_image_support terminal protocol probing")
+    return ProtocolSelection.AUTO.resolve()
 
 
-def current_animation_frame(animation: Animation, elapsed: float) -> AnimationFrameTick | None:
+def current_animation_frame(animation: Animation, elapsed: float) -> Optional[AnimationFrameTick]:
     if len(animation.frames) <= 1:
         if not animation.frames:
             return None
@@ -306,7 +360,7 @@ def current_animation_frame(animation: Animation, elapsed: float) -> AnimationFr
     return frame_at_elapsed(animation, elapsed_seconds)
 
 
-def frame_at_elapsed(animation: Animation, elapsed: float) -> AnimationFrameTick | None:
+def frame_at_elapsed(animation: Animation, elapsed: float) -> Optional[AnimationFrameTick]:
     remaining = max(0.0, elapsed)
     for frame in animation.frames:
         frame_seconds = max(float(frame.duration), 1e-9)
@@ -358,11 +412,11 @@ def test_ambient_pet(*, frame_requester: Any = None, animations_enabled: bool = 
     )
 
 
-def _now(now: float | None) -> float:
+def _now(now: Optional[float]) -> float:
     return time.monotonic() if now is None else float(now)
 
 
-def _rect(area: Any) -> tuple[int, int, int, int]:
+def _rect(area: Any) -> Tuple[int, int, int, int]:
     if isinstance(area, Mapping):
         return (int(area["x"]), int(area["y"]), int(area["width"]), int(area["height"]))
     if isinstance(area, Sequence) and not isinstance(area, (str, bytes)):

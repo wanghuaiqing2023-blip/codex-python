@@ -150,7 +150,41 @@ def test_voice_capture_stop_sets_flag_and_clears_stream():
     assert capture.stopped_flag() is True
     assert capture.stream is None
     assert capture.last_peak_arc() == 123
-    with pytest.raises(NotImplementedError):
-        VoiceCapture.start_realtime(config=None, tx=None)
-    with pytest.raises(NotImplementedError):
-        RealtimeAudioPlayer.start(config=None)
+
+
+class StreamConfig:
+    sample_rate = 48_000
+    channels = 2
+    sample_format = "i16"
+
+
+class AudioConfig:
+    def select_realtime_input_device_and_config(self):
+        return object(), StreamConfig()
+
+    def select_realtime_output_device_and_config(self):
+        return object(), StreamConfig()
+
+
+def test_voice_capture_start_realtime_uses_semantic_input_stream_and_sends_audio():
+    sender = AppEventSender()
+
+    capture = VoiceCapture.start_realtime(AudioConfig(), sender)
+    capture.stream.push([100, 300, 200, 400])
+
+    assert capture.stream.played is True
+    assert capture.last_peak == 400
+    assert decode_i16(sender.chunks[0].data) == [200]
+    capture.stop()
+    assert capture.stopped_flag() is True
+
+
+def test_realtime_audio_player_start_uses_semantic_output_stream():
+    player = RealtimeAudioPlayer.start(AudioConfig())
+    player.queue.extend([100, 300])
+    output = [0, 0, 0, 0]
+
+    player.stream.fill(output)
+
+    assert player.stream.played is True
+    assert output == [100, 300, 0, 0]

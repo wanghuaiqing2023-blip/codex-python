@@ -52,6 +52,11 @@ def test_build_action_required_title_text_omits_none_values_but_keeps_prefix() -
     assert build_action_required_title_text("prefix", [TerminalTitleItem.SPINNER], [], lambda item: "ignored") == "prefix"
 
 
+def test_build_action_required_title_text_with_no_items_returns_prefix() -> None:
+    # Rust source: parts starts as vec![prefix.to_string()] and is joined even when items is empty.
+    assert build_action_required_title_text("prefix", [], [], lambda item: "ignored") == "prefix"
+
+
 def test_build_action_required_title_text_preserves_order_duplicates_and_skips_callbacks() -> None:
     seen: list[TerminalTitleItem] = []
 

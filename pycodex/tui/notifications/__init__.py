@@ -4,13 +4,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, Optional, Union
 
 from .._porting import RustTuiModule
 from .bel import BelBackend
 from .osc9 import Osc9Backend
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="notifications", source="codex/codex-rs/tui/src/notifications/mod.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="notifications",
+    source="codex/codex-rs/tui/src/notifications/mod.rs",
+    status="complete",
+)
 
 
 class NotificationMethod(Enum):
@@ -38,24 +43,24 @@ class TerminalName(Enum):
 
 @dataclass(frozen=True)
 class TerminalInfo:
-    name: TerminalName | str
-    term_program: str | None = None
-    version: str | None = None
-    term: str | None = None
+    name: Union[TerminalName, str]
+    term_program: Optional[str] = None
+    version: Optional[str] = None
+    term: Optional[str] = None
     multiplexer: Any = None
 
 
 @dataclass
 class DesktopNotificationBackend:
     kind: NotificationMethod
-    backend: Osc9Backend | BelBackend
+    backend: Union[Osc9Backend, BelBackend]
 
     @classmethod
     def for_method(
         cls,
-        method: NotificationMethod | str,
+        method: Union[NotificationMethod, str],
         *,
-        terminal: TerminalInfo | Any | None = None,
+        terminal: Any = None,
         stream: Any = None,
     ) -> "DesktopNotificationBackend":
         method = _coerce_method(method)
@@ -77,15 +82,15 @@ class DesktopNotificationBackend:
 
 
 def detect_backend(
-    method: NotificationMethod | str,
+    method: Union[NotificationMethod, str],
     *,
-    terminal: TerminalInfo | Any | None = None,
+    terminal: Any = None,
     stream: Any = None,
 ) -> DesktopNotificationBackend:
     return DesktopNotificationBackend.for_method(method, terminal=terminal, stream=stream)
 
 
-def supports_osc9(terminal: TerminalInfo | Any) -> bool:
+def supports_osc9(terminal: Any) -> bool:
     name = _terminal_name(terminal)
     return name in {
         TerminalName.GHOSTTY,
@@ -96,8 +101,11 @@ def supports_osc9(terminal: TerminalInfo | Any) -> bool:
     }
 
 
-def test_terminal(name: TerminalName | str) -> TerminalInfo:
+def test_terminal(name: Union[TerminalName, str]) -> TerminalInfo:
     return TerminalInfo(name=name)
+
+
+test_terminal.__test__ = False
 
 
 def selects_osc9_method() -> bool:
@@ -138,7 +146,7 @@ def supports_osc9_for_unsupported_terminals() -> bool:
     )
 
 
-def _coerce_method(method: NotificationMethod | str) -> NotificationMethod:
+def _coerce_method(method: Union[NotificationMethod, str]) -> NotificationMethod:
     if isinstance(method, NotificationMethod):
         return method
     normalized = str(method).lower()
@@ -155,7 +163,7 @@ def _coerce_method(method: NotificationMethod | str) -> NotificationMethod:
     return mapping[normalized]
 
 
-def _terminal_name(terminal: TerminalInfo | Any) -> TerminalName | str:
+def _terminal_name(terminal: Any) -> Union[TerminalName, str]:
     raw = terminal.get("name") if isinstance(terminal, dict) else getattr(terminal, "name", terminal)
     if isinstance(raw, TerminalName):
         return raw
@@ -166,7 +174,7 @@ def _terminal_name(terminal: TerminalInfo | Any) -> TerminalName | str:
     return text
 
 
-def _is_tmux(terminal: TerminalInfo | Any | None) -> bool:
+def _is_tmux(terminal: Any) -> bool:
     if terminal is None:
         return False
     mux = terminal.get("multiplexer") if isinstance(terminal, dict) else getattr(terminal, "multiplexer", None)

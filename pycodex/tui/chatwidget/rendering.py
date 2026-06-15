@@ -7,19 +7,24 @@ DTOs and render logs instead of terminal buffers.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, List, Optional, Tuple
 
 from .._porting import RustTuiModule
 from ..ratatui_bridge import Rect
 from ..render.renderable import EmptyRenderable, FlexRenderable, InsetRenderable, Insets
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="chatwidget::rendering", source="codex/codex-rs/tui/src/chatwidget/rendering.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="chatwidget::rendering",
+    source="codex/codex-rs/tui/src/chatwidget/rendering.rs",
+    status="complete",
+)
 
 
 @dataclass
 class RenderLog:
-    entries: list[tuple[str, Any]] = field(default_factory=list)
+    entries: List[Tuple[str, Any]] = field(default_factory=list)
 
     def append(self, kind: str, payload: Any) -> None:
         self.entries.append((kind, payload))
@@ -36,11 +41,32 @@ class BottomPaneComposerReserveRenderable:
     def desired_height(self, width: int) -> int:
         return self.bottom_pane.desired_height_with_composer_right_reserve(width, self.right_reserve)
 
-    def cursor_pos(self, area: Rect) -> tuple[int, int] | None:
+    def cursor_pos(self, area: Rect) -> Optional[Tuple[int, int]]:
         return self.bottom_pane.cursor_pos_with_composer_right_reserve(area, self.right_reserve)
 
     def cursor_style(self, area: Rect) -> str:
         return self.bottom_pane.cursor_style_with_composer_right_reserve(area, self.right_reserve)
+
+
+@dataclass
+class BottomPaneTopInsetRenderable:
+    child: BottomPaneComposerReserveRenderable
+    top: int = 1
+
+    def _child_area(self, area: Rect) -> Rect:
+        return area.inset(Insets(top=self.top))
+
+    def render(self, area: Rect, log: RenderLog) -> None:
+        self.child.render(self._child_area(area), log)
+
+    def desired_height(self, width: int) -> int:
+        return self.child.desired_height(width)
+
+    def cursor_pos(self, area: Rect) -> Optional[Tuple[int, int]]:
+        return self.child.cursor_pos(self._child_area(area))
+
+    def cursor_style(self, area: Rect) -> str:
+        return self.child.cursor_style(self._child_area(area))
 
 
 @dataclass
@@ -90,15 +116,14 @@ def as_renderable(widget: Any) -> FlexRenderable:
     flex.push(0, active_hook_renderable)
     flex.push(
         0,
-        InsetRenderable.new(
+        BottomPaneTopInsetRenderable(
             BottomPaneComposerReserveRenderable(widget.bottom_pane, active_cell_right_reserve),
-            Insets(top=1),
         ),
     )
     return flex
 
 
-def render(widget: Any, area: Rect, log: RenderLog | None = None) -> RenderLog:
+def render(widget: Any, area: Rect, log: Optional[RenderLog] = None) -> RenderLog:
     log = log or RenderLog()
     as_renderable(widget).render(area, log)
     widget.last_rendered_width = area.width
@@ -109,12 +134,16 @@ def desired_height(widget: Any, width: int) -> int:
     return as_renderable(widget).desired_height(width)
 
 
-def cursor_pos(widget: Any, area: Rect) -> tuple[int, int] | None:
-    return as_renderable(widget).cursor_pos(area)
+def cursor_pos(widget: Any, area: Rect) -> Optional[Tuple[int, int]]:
+    reserve = widget.ambient_pet_wrap_reserved_cols()
+    renderable = BottomPaneComposerReserveRenderable(widget.bottom_pane, reserve)
+    return renderable.cursor_pos(area.inset(Insets(top=1)))
 
 
 def cursor_style(widget: Any, area: Rect) -> str:
-    return as_renderable(widget).cursor_style(area)
+    reserve = widget.ambient_pet_wrap_reserved_cols()
+    renderable = BottomPaneComposerReserveRenderable(widget.bottom_pane, reserve)
+    return renderable.cursor_style(area.inset(Insets(top=1)))
 
 
 def _saturating_add(left: int, right: int) -> int:

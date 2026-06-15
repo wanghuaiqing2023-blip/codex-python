@@ -6,6 +6,7 @@ from pycodex.tui.chatwidget.windows_sandbox_prompts import (
     clear_windows_sandbox_setup_status_plan,
     describe_permission_profile,
     maybe_prompt_windows_sandbox_enable,
+    maybe_prompt_windows_sandbox_enable_plan,
     windows_sandbox_enable_prompt_plan,
     windows_sandbox_fallback_prompt_plan,
     windows_sandbox_setup_status_plan,
@@ -57,6 +58,33 @@ def test_world_writable_warning_confirmation_actions_and_samples() -> None:
     )
 
 
+def test_world_writable_warning_failed_scan_and_profile_selection_branch() -> None:
+    # Rust: chatwidget::windows_sandbox_prompts::open_world_writable_warning_confirmation
+    # uses the failed-scan warning text and lets profile_selection override preset actions.
+    plan = world_writable_warning_confirmation_plan(
+        mode_label="Read-Only mode",
+        sample_paths=["C:/unsafe"],
+        extra_count=0,
+        failed_scan=True,
+        preset=object(),
+        profile_selection=object(),
+    )
+
+    assert "couldn't complete the world-writable scan" in plan.header_lines[0]
+    assert "Read-Only mode" in plan.header_lines[0]
+    assert "  - C:/unsafe" in plan.header_lines
+    assert "and 0 more" not in plan.header_lines
+    assert plan.items[0].actions == (
+        "skip_next_world_writable_scan",
+        "apply_permission_profile_selection",
+    )
+    assert plan.items[1].actions == (
+        "update_world_writable_warning_acknowledged",
+        "persist_world_writable_warning_acknowledged",
+        "apply_permission_profile_selection",
+    )
+
+
 def test_windows_sandbox_enable_prompt_legacy_and_elevated() -> None:
     legacy = windows_sandbox_enable_prompt_plan(elevated_nux_enabled=False)
     elevated = windows_sandbox_enable_prompt_plan(elevated_nux_enabled=True)
@@ -92,6 +120,20 @@ def test_maybe_prompt_and_setup_status_plans() -> None:
         windows_sandbox_level="Enabled",
         has_auto_preset=True,
     )
+    prompt = maybe_prompt_windows_sandbox_enable_plan(
+        show_now=True,
+        windows_sandbox_level="Disabled",
+        has_auto_preset=True,
+        elevated_nux_enabled=False,
+    )
+    assert prompt is not None
+    assert prompt.items[0].name == "Enable experimental sandbox"
+    assert maybe_prompt_windows_sandbox_enable_plan(
+        show_now=False,
+        windows_sandbox_level="Disabled",
+        has_auto_preset=True,
+        elevated_nux_enabled=True,
+    ) is None
     assert windows_sandbox_setup_status_plan() == (
         "disable_composer_input",
         "ensure_status_indicator",

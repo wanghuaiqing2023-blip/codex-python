@@ -1,4 +1,4 @@
-"""Transcript cell conversion for ``codex-tui::resume_picker::transcript``.
+ï»¿"""Transcript cell conversion for ``codex-tui::resume_picker::transcript``.
 
 Rust source: ``codex/codex-rs/tui/src/resume_picker/transcript.rs``.
 
@@ -11,12 +11,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Dict, List, Optional, Tuple
 
 from .._porting import RustTuiModule
 from ..git_action_directives import parse_assistant_markdown
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="resume_picker::transcript", source="codex/codex-rs/tui/src/resume_picker/transcript.rs")
+RUST_MODULE = RustTuiModule(crate="codex-tui", module="resume_picker::transcript", source="codex/codex-rs/tui/src/resume_picker/transcript.rs", status="complete")
 
 
 class RawReasoningVisibility(Enum):
@@ -28,12 +28,12 @@ class RawReasoningVisibility(Enum):
 class TranscriptCell:
     kind: str
     text: str = ""
-    lines: tuple[str, ...] = ()
-    cwd: str | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
+    lines: Tuple[str, ...] = ()
+    cwd: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
-TranscriptCells = list[TranscriptCell]
+TranscriptCells = List[TranscriptCell]
 
 
 async def load_session_transcript(
@@ -91,10 +91,10 @@ def thread_to_transcript_cells(
     return cells
 
 
-def fallback_transcript_cell(item: Any) -> TranscriptCell | None:
+def fallback_transcript_cell(item: Any) -> Optional[TranscriptCell]:
     kind = _item_kind(item)
-    lines: list[str]
-    metadata: dict[str, Any] = {"source_kind": kind}
+    lines: List[str]
+    metadata: Dict[str, Any] = {"source_kind": kind}
 
     if kind == "HookPrompt":
         lines = [f"hook prompt: {str(_get(fragment, 'text', '')).strip()}" for fragment in _get(item, "fragments", [])]
@@ -102,7 +102,7 @@ def fallback_transcript_cell(item: Any) -> TranscriptCell | None:
         command = str(_get(item, "command", ""))
         status = _debug_value(_get(item, "status", ""))
         exit_code = _get(item, "exit_code", None)
-        suffix = f" ¡¤ exit {exit_code}" if exit_code is not None else ""
+        suffix = f" Â· exit {exit_code}" if exit_code is not None else ""
         lines = [f"$ {command}", f"status: {status}{suffix}"]
         output = _get(item, "aggregated_output", None)
         if output is not None and str(output).strip():
@@ -110,23 +110,23 @@ def fallback_transcript_cell(item: Any) -> TranscriptCell | None:
     elif kind == "FileChange":
         changes = _get(item, "changes", [])
         status = _debug_value(_get(item, "status", ""))
-        lines = [f"file changes: {status} ¡¤ {len(changes)} changes"]
+        lines = [f"file changes: {status} Â· {len(changes)} changes"]
     elif kind == "McpToolCall":
-        lines = [f"mcp tool: {_get(item, 'server', '')}/{_get(item, 'tool', '')} ¡¤ {_debug_value(_get(item, 'status', ''))}"]
+        lines = [f"mcp tool: {_get(item, 'server', '')}/{_get(item, 'tool', '')} Â· {_debug_value(_get(item, 'status', ''))}"]
     elif kind == "DynamicToolCall":
         namespace = _get(item, "namespace", None)
         tool = str(_get(item, "tool", ""))
         name = f"{namespace}/{tool}" if namespace is not None else tool
-        lines = [f"tool: {name} ¡¤ {_debug_value(_get(item, 'status', ''))}"]
+        lines = [f"tool: {name} Â· {_debug_value(_get(item, 'status', ''))}"]
     elif kind == "CollabAgentToolCall":
-        lines = [f"agent tool: {_debug_value(_get(item, 'tool', ''))} ¡¤ {_debug_value(_get(item, 'status', ''))}"]
+        lines = [f"agent tool: {_debug_value(_get(item, 'tool', ''))} Â· {_debug_value(_get(item, 'status', ''))}"]
     elif kind == "WebSearch":
         lines = [f"web search: {_get(item, 'query', '')}"]
     elif kind == "ImageView":
         lines = [f"image: {_path_text(_get(item, 'path', ''))}"]
     elif kind == "ImageGeneration":
         saved_path = _get(item, "saved_path", None)
-        saved = f" ¡¤ {_path_text(saved_path)}" if saved_path is not None else ""
+        saved = f" Â· {_path_text(saved_path)}" if saved_path is not None else ""
         lines = [f"image generation: {_get(item, 'status', '')}{saved}"]
     elif kind == "EnteredReviewMode":
         lines = [f"review started: {_get(item, 'review', '')}"]
@@ -142,12 +142,12 @@ def fallback_transcript_cell(item: Any) -> TranscriptCell | None:
     return TranscriptCell("plain", "\n".join(lines), tuple(lines), metadata=metadata) if lines else None
 
 
-def _user_message_cell(item: Any, cwd: str | None) -> TranscriptCell:
+def _user_message_cell(item: Any, cwd: Optional[str]) -> TranscriptCell:
     content = list(_get(item, "content", []))
-    text_parts: list[str] = []
-    local_image_paths: list[str] = []
-    remote_image_urls: list[str] = []
-    text_elements: list[Any] = []
+    text_parts: List[str] = []
+    local_image_paths: List[str] = []
+    remote_image_urls: List[str] = []
+    text_elements: List[Any] = []
     for entry in content:
         text = _user_input_text(entry)
         if text is not None:
@@ -175,11 +175,11 @@ def _user_message_cell(item: Any, cwd: str | None) -> TranscriptCell:
     )
 
 
-def _thread_items(thread: Any) -> list[Any]:
+def _thread_items(thread: Any) -> List[Any]:
     turns = _get(thread, "turns", [])
     if isinstance(turns, dict):
         turns = turns.values()
-    items: list[Any] = []
+    items: List[Any] = []
     for turn in turns:
         turn_items = _get(turn, "items", [])
         items.extend(list(turn_items))
@@ -219,7 +219,7 @@ def _normalize_kind(raw: str) -> str:
     return mapping.get(compact, raw)
 
 
-def _user_input_text(entry: Any) -> str | None:
+def _user_input_text(entry: Any) -> Optional[str]:
     if isinstance(entry, str):
         return entry
     for key in ("text", "message", "content"):
@@ -241,7 +241,7 @@ def _get(obj: Any, key: str, default: Any = None) -> Any:
     return getattr(obj, key, default)
 
 
-def _path_text(path: Any) -> str | None:
+def _path_text(path: Any) -> Optional[str]:
     if path is None:
         return None
     as_path = getattr(path, "as_path", None)
@@ -265,3 +265,4 @@ __all__ = [
     "load_session_transcript",
     "thread_to_transcript_cells",
 ]
+

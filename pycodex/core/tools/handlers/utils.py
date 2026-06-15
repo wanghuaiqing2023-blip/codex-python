@@ -238,7 +238,11 @@ async def apply_granted_turn_permissions(
     granted_session_permissions = await _maybe_await(_call_attr(session, "granted_session_permissions"))
     granted_turn_permissions = await _maybe_await(_call_attr(session, "granted_turn_permissions"))
     granted_permissions = merge_permission_profiles(granted_session_permissions, granted_turn_permissions)
-    effective_permissions = merge_permission_profiles(additional_permissions, granted_permissions)
+    effective_permissions = (
+        _merge_grants_into_missing_permission_dimensions(granted_permissions, additional_permissions)
+        if additional_permissions is not None
+        else granted_permissions
+    )
     permissions_preapproved = (
         permissions_are_preapproved(effective_permissions, granted_permissions, cwd)
         if effective_permissions is not None and granted_permissions is not None
@@ -280,6 +284,21 @@ def merge_permission_profiles(
     file_system = _merge_file_system_permissions(left.file_system, right.file_system)
     merged = normalize_additional_permissions(AdditionalPermissionProfile(network=network, file_system=file_system))
     return None if merged.is_empty() else merged
+
+
+def _merge_grants_into_missing_permission_dimensions(
+    granted: AdditionalPermissionProfile | None,
+    requested: AdditionalPermissionProfile,
+) -> AdditionalPermissionProfile:
+    requested = normalize_additional_permissions(requested)
+    if granted is None:
+        return requested
+    granted = normalize_additional_permissions(granted)
+    merged = AdditionalPermissionProfile(
+        network=requested.network if requested.network is not None else granted.network,
+        file_system=requested.file_system if requested.file_system is not None else granted.file_system,
+    )
+    return normalize_additional_permissions(merged)
 
 
 def intersect_permission_profiles(

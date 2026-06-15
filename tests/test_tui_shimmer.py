@@ -23,7 +23,7 @@ def test_shimmer_sweep_uses_padding_period_and_cosine_band() -> None:
     assert [span.style for span in spans] == [
         ShimmerStyle(modifier="bold"),
         ShimmerStyle(modifier="bold"),
-        ShimmerStyle(),
+        ShimmerStyle(modifier="bold"),
     ]
 
 

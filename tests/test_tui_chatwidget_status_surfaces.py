@@ -1,6 +1,5 @@
 from datetime import datetime, timedelta, timezone
-
-import pytest
+from types import SimpleNamespace
 
 from pycodex.tui.bottom_pane.status_line_setup import StatusLineItem
 from pycodex.tui.bottom_pane.title_setup import TerminalTitleItem
@@ -8,8 +7,10 @@ from pycodex.tui.chatwidget.status_surfaces import (
     TERMINAL_TITLE_ACTION_REQUIRED_PREFIX,
     TERMINAL_TITLE_ACTION_REQUIRED_PREFIX_HIDDEN,
     action_required_terminal_title_prefix_at,
+    approval_mode_display,
     five_hour_status_window,
     parse_items_with_invalids,
+    permissions_display,
     status_surface_selections,
     terminal_title_spinner_frame_at,
     truncate_terminal_title_part,
@@ -99,11 +100,51 @@ def test_terminal_title_truncation_and_animation_helpers() -> None:
     )
 
 
-def test_framework_config_displays_are_explicitly_outside_slice() -> None:
-    # Rust boundary: permissions_display/approval_mode_display need full Config permission state.
-    from pycodex.tui.chatwidget import status_surfaces
+def test_permissions_display_matches_rust_profile_summary_rules() -> None:
+    # Rust parity: permissions_display preserves named active profiles, then summarizes effective profile.
+    custom_profile = SimpleNamespace(id="team-safe")
+    permissions = SimpleNamespace(
+        active_permission_profile=lambda: custom_profile,
+        effective_permission_profile=lambda: "read-only",
+    )
+    assert permissions_display(SimpleNamespace(permissions=permissions)) == "team-safe"
 
-    with pytest.raises(NotImplementedError):
-        status_surfaces.permissions_display(object())
-    with pytest.raises(NotImplementedError):
-        status_surfaces.approval_mode_display(object())
+    permissions = SimpleNamespace(
+        active_permission_profile=lambda: SimpleNamespace(id=":read-only"),
+        effective_permission_profile=lambda: "read-only",
+    )
+    assert permissions_display(SimpleNamespace(permissions=permissions)) == "Read Only"
+
+    permissions = SimpleNamespace(
+        active_permission_profile=lambda: None,
+        effective_permission_profile=lambda: SimpleNamespace(
+            value="workspace-write",
+            network_access=False,
+        ),
+    )
+    assert permissions_display(SimpleNamespace(permissions=permissions)) == "Workspace"
+
+    permissions = SimpleNamespace(
+        active_permission_profile=lambda: None,
+        effective_permission_profile=lambda: SimpleNamespace(
+            value="workspace-write",
+            network_access=True,
+        ),
+    )
+    assert permissions_display(SimpleNamespace(permissions=permissions)) == "Custom permissions"
+
+    permissions = SimpleNamespace(
+        active_permission_profile=lambda: None,
+        effective_permission_profile=lambda: "disabled",
+    )
+    assert permissions_display(SimpleNamespace(permissions=permissions)) == "Full Access"
+
+
+def test_approval_mode_display_matches_auto_review_special_case() -> None:
+    # Rust parity: approval_mode_display maps on-request + AutoReview to auto-review.
+    permissions = SimpleNamespace(approval_policy=SimpleNamespace(value=lambda: "on-request"))
+    config = SimpleNamespace(permissions=permissions, approvals_reviewer="auto-review")
+    assert approval_mode_display(config) == "auto-review"
+
+    config = SimpleNamespace(permissions=permissions, approvals_reviewer="human")
+    assert approval_mode_display(config) == "on-request"

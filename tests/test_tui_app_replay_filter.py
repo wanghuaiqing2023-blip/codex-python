@@ -49,3 +49,21 @@ def test_dict_and_object_shaped_inputs_are_supported():
 
     assert snapshot_has_pending_interactive_request({"events": [Event()]}) is True
     assert event_is_notice({"kind": "Notification", "notification": {"kind": "Warning"}}) is True
+
+
+def test_enum_like_payload_class_names_match_rust_variants():
+    class PermissionsRequestApproval:
+        pass
+
+    class GuardianWarning:
+        pass
+
+    assert (
+        snapshot_has_pending_interactive_request(
+            ThreadEventSnapshot(
+                [ThreadBufferedEvent.request(PermissionsRequestApproval())]
+            )
+        )
+        is True
+    )
+    assert event_is_notice(ThreadBufferedEvent.notification(GuardianWarning())) is True

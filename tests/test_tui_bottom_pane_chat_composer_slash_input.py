@@ -11,10 +11,12 @@ from pycodex.tui.bottom_pane.chat_composer.slash_input import (
     args_elements,
     command_popup_filter_text,
     command_under_cursor,
+    complete_selected_slash_command_preserving_existing_draft_tail_as_inline_args,
     prepared_args,
     queued_input_action,
     selected_command_completion,
     selected_command_dispatches_immediately_on_tab,
+    sync_slash_command_elements,
 )
 from pycodex.tui.bottom_pane.slash_commands import BuiltinCommandFlags, SlashCommandItem
 from pycodex.tui.slash_command import SlashCommand
@@ -132,3 +134,107 @@ def test_args_elements_translate_full_text_ranges_to_argument_ranges():
 
     assert [element.byte_range for element in shifted] == [ByteRange(0, 4), ByteRange(5, 9)]
     assert [element.placeholder_for_conversion_only() for element in shifted] == ["overlap", "file"]
+
+
+def test_slash_completion_preserves_existing_draft_tail_for_inline_arg_commands():
+    review = SlashCommandItem.builtin(SlashCommand.REVIEW)
+
+    result = complete_selected_slash_command_preserving_existing_draft_tail_as_inline_args(
+        "/review the diff",
+        len("/re".encode("utf-8")),
+        review,
+    )
+
+    assert result is not None
+    assert result.text == "/review view the diff"
+    assert result.cursor == len(result.text.encode("utf-8"))
+
+
+def test_slash_completion_does_not_preserve_tail_for_other_commands_or_suffixes():
+    model = SlashCommandItem.builtin(SlashCommand.MODEL)
+    review = SlashCommandItem.builtin(SlashCommand.REVIEW)
+
+    assert (
+        complete_selected_slash_command_preserving_existing_draft_tail_as_inline_args(
+            "/mopreserve this draft",
+            len("/mo".encode("utf-8")),
+            model,
+        )
+        is None
+    )
+
+    result = complete_selected_slash_command_preserving_existing_draft_tail_as_inline_args(
+        "/review",
+        len("/re".encode("utf-8")),
+        review,
+    )
+
+    assert result is not None
+    assert result.text == "/review "
+
+
+def test_slash_completion_reports_text_element_ranges_to_unmark():
+    review = SlashCommandItem.builtin(SlashCommand.REVIEW)
+    element = TextElement.new(ByteRange(1, len("/review".encode("utf-8"))), "/review")
+
+    result = complete_selected_slash_command_preserving_existing_draft_tail_as_inline_args(
+        "/review the diff",
+        len("/re".encode("utf-8")),
+        review,
+        [element],
+    )
+
+    assert result is not None
+    assert result.ranges_to_unmark == ((1, len("/review".encode("utf-8"))),)
+
+
+def test_slash_completion_accepts_existing_args_from_slash_cursor_without_extra_space():
+    # Rust parity: when cursor <= 1, replace the whole command token and preserve a
+    # whitespace-prefixed tail without adding another separator.
+    review = SlashCommandItem.builtin(SlashCommand.REVIEW)
+
+    result = complete_selected_slash_command_preserving_existing_draft_tail_as_inline_args(
+        "/review inspect this",
+        1,
+        review,
+    )
+
+    assert result is not None
+    assert result.text == "/review inspect this"
+    assert result.cursor == len(result.text.encode("utf-8"))
+
+
+def test_sync_slash_command_elements_reports_stale_and_missing_ranges():
+    slash = _slash_input()
+    current = TextElement.new(ByteRange(0, len("/model".encode("utf-8"))), "/model")
+    stale = TextElement.new(ByteRange(9, 15), "/stale")
+
+    result = sync_slash_command_elements(
+        slash,
+        "/review body",
+        len("/review".encode("utf-8")),
+        [current, stale],
+    )
+
+    assert result.desired_range == (0, len("/review".encode("utf-8")))
+    assert result.add_range == (0, len("/review".encode("utf-8")))
+    assert result.stale_ranges == ((0, len("/model".encode("utf-8"))), (9, 15))
+
+
+def test_sync_slash_command_elements_keeps_existing_desired_and_ignores_non_slash_elements():
+    # Rust parity: existing desired slash element prevents add_element_range, and
+    # non slash-shaped text elements are not considered stale.
+    slash = _slash_input()
+    desired = TextElement.new(ByteRange(0, len("/review".encode("utf-8"))), "/review")
+    non_slash = TextElement.new(ByteRange(8, 12), "body")
+
+    result = sync_slash_command_elements(
+        slash,
+        "/review body",
+        len("/review".encode("utf-8")),
+        [desired, non_slash],
+    )
+
+    assert result.desired_range == (0, len("/review".encode("utf-8")))
+    assert result.add_range is None
+    assert result.stale_ranges == ()

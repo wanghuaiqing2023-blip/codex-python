@@ -8,7 +8,7 @@ from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Set, Tuple
 
 from ._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="key_hint", source="codex/codex-rs/tui/src/key_hint.rs")
+RUST_MODULE = RustTuiModule(crate="codex-tui", module="key_hint", source="codex/codex-rs/tui/src/key_hint.rs", status="complete")
 
 ALT_PREFIX = "⌥ + "
 CTRL_PREFIX = "ctrl + "
@@ -386,6 +386,7 @@ __all__ = [
     "shift_letter_binding_preserves_other_modifiers_with_uppercase_compat",
     "shifted_letter_binding_matches_uppercase_char_events",
 ]
+
 
 
 

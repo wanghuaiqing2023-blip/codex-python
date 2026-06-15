@@ -1,14 +1,21 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from pycodex.tui.app.background_requests import (
+    BackgroundRequestPlan,
     FeedbackUploadParams,
     PluginListResponse,
     PluginMarketplaceEntry,
     build_feedback_upload_params,
+    fetch_account_rate_limits,
+    fetch_connectors_list,
     hide_cli_only_plugin_marketplaces,
     marketplace_add_source_for_request,
+    fetch_marketplace_add,
+    request_plugin_list,
+    write_plugin_enabled,
     mcp_inventory_maps_from_statuses,
 )
 
@@ -95,4 +102,58 @@ def test_build_feedback_upload_params_omits_rollout_path_without_logs() -> None:
         include_logs=False,
         extra_log_files=None,
         tags=None,
+    )
+
+
+def test_request_plugin_list_plans_absolute_cwd_rpc(tmp_path: Path) -> None:
+    plan = asyncio.run(request_plugin_list(object(), tmp_path))
+
+    assert plan == BackgroundRequestPlan(
+        request="PluginList",
+        request_id_prefix="plugin-list",
+        params={"cwds": [str(tmp_path)], "marketplace_kinds": None},
+        error_context="plugin/list failed in TUI",
+    )
+
+
+def test_rate_limits_and_connectors_launchers_include_completion_metadata() -> None:
+    """Rust codex-tui app::background_requests refresh_rate_limits/fetch_connectors_list events."""
+
+    rate_limits = asyncio.run(fetch_account_rate_limits(object()))
+    connectors = asyncio.run(fetch_connectors_list(object(), True, "thread-1"))
+
+    assert rate_limits == BackgroundRequestPlan(
+        request="GetAccountRateLimits",
+        request_id_prefix="account-rate-limits",
+        params={},
+        error_context="account/rateLimits/read failed in TUI",
+        completion_event="RateLimitsLoaded",
+    )
+    assert connectors == BackgroundRequestPlan(
+        request="AppsList",
+        request_id_prefix="apps-list",
+        params={"cursor": None, "limit": None, "thread_id": "thread-1", "force_refetch": True},
+        error_context="app/list failed in TUI",
+        completion_event="ConnectorsLoaded",
+    )
+
+
+def test_marketplace_add_and_plugin_enabled_write_are_semantic_rpc_plans(tmp_path: Path) -> None:
+    add = asyncio.run(fetch_marketplace_add(object(), tmp_path, "./marketplace#main"))
+    assert add.request == "MarketplaceAdd"
+    assert add.request_id_prefix == "marketplace-add"
+    assert add.params["source"] == f"{(tmp_path / 'marketplace').resolve()}#main"
+    assert add.completion_event == "MarketplaceAddLoaded"
+
+    write = asyncio.run(write_plugin_enabled(object(), "sample", False))
+    assert write == BackgroundRequestPlan(
+        request="ConfigValueWrite",
+        request_id_prefix="plugin-enable",
+        params={
+            "key_path": "plugins.sample",
+            "value": {"enabled": False},
+            "merge_strategy": "Upsert",
+        },
+        error_context="config/value/write failed while updating plugin enablement in TUI",
+        completion_event="PluginEnabledSet",
     )

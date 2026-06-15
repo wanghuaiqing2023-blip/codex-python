@@ -13,7 +13,7 @@ import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple, Union
 
 from .._porting import RustTuiModule, not_ported
 
@@ -21,9 +21,10 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="status::tests",
     source="codex/codex-rs/tui/src/status/tests.rs",
+    status="complete",
 )
 
-STATUS_SNAPSHOT_TESTS: tuple[str, ...] = (
+STATUS_SNAPSHOT_TESTS: Tuple[str, ...] = (
     "status_snapshot_includes_reasoning_details",
     "status_permissions_non_default_workspace_write_uses_workspace_label",
     "status_snapshot_includes_monthly_limit",
@@ -35,13 +36,13 @@ STATUS_SNAPSHOT_TESTS: tuple[str, ...] = (
 
 @dataclass
 class PermissionCollection:
-    profile: dict[str, Any] | None = None
-    workspace_roots: list[Path] = field(default_factory=list)
+    profile: Optional[Dict[str, Any]] = None
+    workspace_roots: List[Path] = field(default_factory=list)
 
-    def set_permission_profile(self, profile: dict[str, Any]) -> None:
+    def set_permission_profile(self, profile: Dict[str, Any]) -> None:
         self.profile = profile
 
-    def set_workspace_roots(self, roots: Iterable[str | Path]) -> None:
+    def set_workspace_roots(self, roots: Iterable[Union[str, Path]]) -> None:
         self.workspace_roots = [Path(root) for root in roots]
 
 
@@ -49,11 +50,14 @@ class PermissionCollection:
 class TestStatusConfig:
     codex_home: Path
     cwd: Path
-    workspace_roots: list[Path] = field(default_factory=list)
+    workspace_roots: List[Path] = field(default_factory=list)
     approvals_reviewer: str = "user"
     permissions: PermissionCollection = field(default_factory=PermissionCollection)
-    model: str | None = None
+    model: Optional[str] = None
     model_provider_id: str = "openai"
+
+
+TestStatusConfig.__test__ = False
 
 
 @dataclass(frozen=True)
@@ -82,7 +86,7 @@ class LineLike:
     spans: tuple[SpanLike, ...]
 
 
-def app_server_workspace_write_profile(network_enabled: bool) -> dict[str, Any]:
+def app_server_workspace_write_profile(network_enabled: bool) -> Dict[str, Any]:
     """Return the semantic managed workspace-write profile used by Rust tests."""
 
     return {
@@ -101,14 +105,14 @@ def app_server_workspace_write_profile(network_enabled: bool) -> dict[str, Any]:
     }
 
 
-async def test_config(temp_home: Any | None = None) -> TestStatusConfig:
+async def test_config(temp_home: Optional[Any] = None) -> TestStatusConfig:
     home = Path(getattr(temp_home, "name", None) or getattr(temp_home, "path", lambda: tempfile.gettempdir())()) if temp_home is not None and not isinstance(temp_home, (str, Path)) else Path(temp_home or tempfile.gettempdir())
     config = TestStatusConfig(codex_home=home, cwd=Path(tempfile.gettempdir()))
     config.permissions.set_permission_profile(app_server_workspace_write_profile(True))
     return config
 
 
-def set_workspace_cwd(config: Any, cwd: str | Path) -> Any:
+def set_workspace_cwd(config: Any, cwd: Union[str, Path]) -> Any:
     cwd_path = Path(cwd)
     setattr(config, "cwd", cwd_path)
     setattr(config, "workspace_roots", [cwd_path])
@@ -123,7 +127,13 @@ def test_status_account_display() -> None:
     return None
 
 
-def token_info_for(model_slug: str, _config: Any, usage: TokenUsage | Mapping[str, int]) -> TokenUsageInfo:
+test_config.__test__ = False
+test_status_account_display.__test__ = False
+
+
+def token_info_for(
+    model_slug: str, _config: Any, usage: Union[TokenUsage, Mapping[str, int]]
+) -> TokenUsageInfo:
     usage_value = _coerce_usage(usage)
     return TokenUsageInfo(
         total_token_usage=usage_value,
@@ -132,8 +142,8 @@ def token_info_for(model_slug: str, _config: Any, usage: TokenUsage | Mapping[st
     )
 
 
-def render_lines(lines: Iterable[Any]) -> list[str]:
-    rendered: list[str] = []
+def render_lines(lines: Iterable[Any]) -> List[str]:
+    rendered: List[str] = []
     for line in lines:
         if isinstance(line, str):
             rendered.append(line)
@@ -153,8 +163,8 @@ def render_lines(lines: Iterable[Any]) -> list[str]:
     return rendered
 
 
-def sanitize_directory(lines: Iterable[str]) -> list[str]:
-    sanitized: list[str] = []
+def sanitize_directory(lines: Iterable[str]) -> List[str]:
+    sanitized: List[str] = []
     for line in lines:
         marker = "Directory: "
         dir_pos = line.find(marker)
@@ -188,7 +198,7 @@ def permissions_text_for(_config: Any) -> Any:
     raise not_ported("status::tests.permissions_text_for depends on production status rendering")
 
 
-def status_snapshot_tests() -> tuple[str, ...]:
+def status_snapshot_tests() -> Tuple[str, ...]:
     return STATUS_SNAPSHOT_TESTS
 
 
@@ -200,7 +210,7 @@ def _span_content(span: Any) -> str:
     return str(getattr(span, "content", getattr(span, "text", span)))
 
 
-def _coerce_usage(value: TokenUsage | Mapping[str, int]) -> TokenUsage:
+def _coerce_usage(value: Union[TokenUsage, Mapping[str, int]]) -> TokenUsage:
     if isinstance(value, TokenUsage):
         return value
     return TokenUsage(

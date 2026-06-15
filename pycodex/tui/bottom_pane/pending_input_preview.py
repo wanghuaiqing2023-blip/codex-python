@@ -8,22 +8,25 @@ from __future__ import annotations
 
 import textwrap
 from dataclasses import dataclass, field
-from typing import Any, MutableSequence
+from typing import Any, List, MutableSequence, Optional
 
 from .._porting import RustTuiModule
+from ..key_hint import alt as key_hint_alt
+from ..key_hint import plain as key_hint_plain
 from ..ratatui_bridge import Rect
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="bottom_pane::pending_input_preview",
     source="codex/codex-rs/tui/src/bottom_pane/pending_input_preview.rs",
+    status="complete",
 )
 
 PREVIEW_LINE_LIMIT = 3
-SECTION_PREFIX = "* "
-ITEM_PREFIX = "  -> "
+SECTION_PREFIX = "• "
+ITEM_PREFIX = "  ↳ "
 CONTINUATION_PREFIX = "    "
-OVERFLOW_PREFIX = "    ..."
+OVERFLOW_PREFIX = "    …"
 
 
 @dataclass(frozen=True)
@@ -34,26 +37,26 @@ class RenderedLine:
 
 @dataclass
 class PendingInputPreview:
-    pending_steers: list[str] = field(default_factory=list)
-    rejected_steers: list[str] = field(default_factory=list)
-    queued_messages: list[str] = field(default_factory=list)
-    edit_binding: Any | None = "Alt+Up"
-    interrupt_binding: Any | None = "Esc"
+    pending_steers: List[str] = field(default_factory=list)
+    rejected_steers: List[str] = field(default_factory=list)
+    queued_messages: List[str] = field(default_factory=list)
+    edit_binding: Optional[Any] = field(default_factory=lambda: key_hint_alt("Up"))
+    interrupt_binding: Optional[Any] = field(default_factory=lambda: key_hint_plain("Esc"))
 
     @classmethod
     def new(cls) -> "PendingInputPreview":
         return cls()
 
-    def set_edit_binding(self, binding: Any | None) -> None:
+    def set_edit_binding(self, binding: Optional[Any]) -> None:
         self.edit_binding = binding
 
-    def set_interrupt_binding(self, binding: Any | None) -> None:
+    def set_interrupt_binding(self, binding: Optional[Any]) -> None:
         self.interrupt_binding = binding
 
     @staticmethod
     def push_truncated_preview_lines(
-        lines: list[RenderedLine],
-        wrapped: list[RenderedLine],
+        lines: List[RenderedLine],
+        wrapped: List[RenderedLine],
         overflow_line: RenderedLine,
     ) -> None:
         wrapped_len = len(wrapped)
@@ -62,11 +65,11 @@ class PendingInputPreview:
             lines.append(overflow_line)
 
     @staticmethod
-    def push_section_header(lines: list[RenderedLine], width: int, header: str) -> None:
-        wrapped = _wrap_text(SECTION_PREFIX + header, width, subsequent_indent="  ")
-        lines.extend(RenderedLine(line, "dim") for line in wrapped)
+    def push_section_header(lines: List[RenderedLine], width: int, header: str) -> None:
+        del width
+        lines.append(RenderedLine(SECTION_PREFIX + header, "dim"))
 
-    def as_renderable(self, width: int) -> list[RenderedLine]:
+    def as_renderable(self, width: int) -> List[RenderedLine]:
         if (
             not self.pending_steers
             and not self.rejected_steers
@@ -74,7 +77,7 @@ class PendingInputPreview:
         ) or width < 4:
             return []
 
-        lines: list[RenderedLine] = []
+        lines: List[RenderedLine] = []
 
         if self.pending_steers:
             header = "Messages to be submitted after next tool call"
@@ -123,9 +126,9 @@ def desired_height(preview: PendingInputPreview, width: int) -> int:
     return preview.desired_height(width)
 
 
-def _preview_lines(message: str, width: int, *, italic: bool) -> list[RenderedLine]:
+def _preview_lines(message: str, width: int, *, italic: bool) -> List[RenderedLine]:
     style = "dim+italic" if italic else "dim"
-    out: list[RenderedLine] = []
+    out: List[RenderedLine] = []
     first = True
     for raw_line in message.splitlines() or [""]:
         initial = ITEM_PREFIX if first else CONTINUATION_PREFIX
@@ -135,7 +138,7 @@ def _preview_lines(message: str, width: int, *, italic: bool) -> list[RenderedLi
     return out
 
 
-def _wrap_preview_text(text: str, width: int, *, initial_indent: str, subsequent_indent: str) -> list[str]:
+def _wrap_preview_text(text: str, width: int, *, initial_indent: str, subsequent_indent: str) -> List[str]:
     width = max(width, 1)
     if _is_url_like_token(text):
         return [initial_indent + text]
@@ -149,7 +152,7 @@ def _wrap_preview_text(text: str, width: int, *, initial_indent: str, subsequent
     ) or [initial_indent]
 
 
-def _wrap_text(text: str, width: int, *, subsequent_indent: str) -> list[str]:
+def _wrap_text(text: str, width: int, *, subsequent_indent: str) -> List[str]:
     width = max(width, 1)
     return textwrap.wrap(
         text,
@@ -168,6 +171,9 @@ def _is_url_like_token(text: str) -> bool:
 
 
 def _binding_text(binding: Any) -> str:
+    display_label = getattr(binding, "display_label", None)
+    if callable(display_label):
+        return str(display_label())
     return str(binding)
 
 

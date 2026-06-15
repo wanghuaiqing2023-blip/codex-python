@@ -6,7 +6,7 @@ Python port of Rust ``codex-tui::bottom_pane::unified_exec_footer``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any, Iterable, List, Optional
 
 from .._porting import RustTuiModule
 from ..live_wrap import take_prefix_by_width
@@ -15,6 +15,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="bottom_pane::unified_exec_footer",
     source="codex/codex-rs/tui/src/bottom_pane/unified_exec_footer.rs",
+    status="complete",
 )
 
 
@@ -30,7 +31,7 @@ class FooterLine:
 class UnifiedExecFooter:
     """Tracks active unified-exec processes and renders a compact summary."""
 
-    processes: list[str] = field(default_factory=list)
+    processes: List[str] = field(default_factory=list)
 
     @classmethod
     def new(cls) -> "UnifiedExecFooter":
@@ -46,14 +47,14 @@ class UnifiedExecFooter:
     def is_empty(self) -> bool:
         return not self.processes
 
-    def summary_text(self) -> str | None:
+    def summary_text(self) -> Optional[str]:
         if not self.processes:
             return None
         count = len(self.processes)
         plural = "" if count == 1 else "s"
         return f"{count} background terminal{plural} running 路 /ps to view 路 /stop to close"
 
-    def render_lines(self, width: int) -> list[FooterLine]:
+    def render_lines(self, width: int) -> List[FooterLine]:
         width = int(width)
         if width < 4:
             return []
@@ -62,9 +63,18 @@ class UnifiedExecFooter:
             return []
         message = f"  {summary}"
         truncated, _suffix, _taken = take_prefix_by_width(message, width)
+        for separator in ("\u8def", "璺?", "·"):
+            suffix_with_space = f" {separator} "
+            if truncated.endswith(suffix_with_space):
+                truncated = truncated[: -len(suffix_with_space)] + " "
+                break
+            suffix = f" {separator}"
+            if truncated.endswith(suffix):
+                truncated = truncated[: -len(suffix)] + " "
+                break
         return [FooterLine(truncated, dim=True)]
 
-    def render(self, area: Any = None, buf: Any = None) -> list[FooterLine]:
+    def render(self, area: Any = None, buf: Any = None) -> List[FooterLine]:
         width = _area_width(area)
         height = _area_height(area)
         if width <= 0 or height <= 0:
@@ -75,7 +85,7 @@ class UnifiedExecFooter:
         return len(self.render_lines(width))
 
 
-def render(footer: UnifiedExecFooter, area: Any = None, buf: Any = None) -> list[FooterLine]:
+def render(footer: UnifiedExecFooter, area: Any = None, buf: Any = None) -> List[FooterLine]:
     return footer.render(area, buf)
 
 

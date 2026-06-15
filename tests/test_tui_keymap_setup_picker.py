@@ -3,6 +3,7 @@
 from pycodex.tui.keymap_setup.actions import KEYMAP_ACTIONS, KeymapActionFilter
 from pycodex.tui.keymap_setup.picker import (
     KEYMAP_ALL_TAB_ID,
+    KEYMAP_CONTEXT_TABS,
     KEYMAP_DEBUG_TAB_ID,
     KEYMAP_PICKER_VIEW_ID,
     action_count_line,
@@ -140,3 +141,12 @@ def test_name_column_width_uses_display_width_like_rust_unicode_width() -> None:
     assert _display_width("a宽") == 3
 
 
+
+
+def test_context_tabs_are_appended_between_unbound_and_debug_in_rust_order() -> None:
+    params = build_keymap_picker_params({}, {})
+    context_ids = [tab.id for tab in KEYMAP_CONTEXT_TABS]
+
+    assert [tab.id for tab in params.tabs[4:-1]] == context_ids
+    assert params.tabs[-1].id == KEYMAP_DEBUG_TAB_ID
+    assert [tab.label for tab in params.tabs[4:-1]] == [tab.label for tab in KEYMAP_CONTEXT_TABS]

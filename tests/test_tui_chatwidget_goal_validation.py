@@ -1,10 +1,12 @@
 ﻿"""Parity tests for codex-rs/tui/src/chatwidget/goal_validation.rs."""
 
 from pycodex.protocol import MAX_THREAD_GOAL_OBJECTIVE_CHARS
+from pycodex.protocol.user_input import ByteRange, TextElement
 from pycodex.tui.chatwidget.goal_validation import (
     GOAL_TOO_LONG_FILE_HINT,
     GoalObjectiveValidationSource,
     GoalValidationMixin,
+    expand_pending_pastes_like_rust,
     goal_objective_is_allowed,
     goal_objective_with_pending_pastes_is_allowed,
 )
@@ -24,9 +26,6 @@ class FakeBottomPane:
 
     def drain_pending_submission_state(self):
         self.drained += 1
-
-    def expand_pending_pastes(self, args, text_elements, pending_pastes):
-        return args + "".join(pending_pastes), text_elements
 
 
 class FakeWidget:
@@ -78,25 +77,55 @@ def test_queued_goal_objective_rejects_oversized_objective_without_live_cleanup(
 
 def test_pending_paste_validation_uses_expanded_trimmed_length():
     widget = FakeWidget()
-    widget.bottom_pane.pending_pastes = ["x" * (MAX_THREAD_GOAL_OBJECTIVE_CHARS + 1)]
+    placeholder = "[Pasted text #1]"
+    widget.bottom_pane.pending_pastes = [(placeholder, "x" * (MAX_THREAD_GOAL_OBJECTIVE_CHARS + 1))]
+    text = "/goal " + placeholder
+    text_elements = [TextElement.new(ByteRange(6, 6 + len(placeholder)), placeholder)]
 
-    assert goal_objective_with_pending_pastes_is_allowed(widget, "/goal ", []) is False
+    assert goal_objective_with_pending_pastes_is_allowed(widget, text, text_elements) is False
 
     assert "4,007 characters" in widget.errors[0]
     assert widget.bottom_pane.composer_updates == [("", [], [])]
 
 
-def test_pending_paste_validation_requires_expander_when_pending_pastes_exist():
+def test_pending_paste_validation_without_text_elements_matches_rust_no_expand_fast_path():
     widget = FakeWidget()
-    widget.bottom_pane.pending_pastes = ["large"]
-    delattr(widget.bottom_pane, "expand_pending_pastes")
+    widget.bottom_pane.pending_pastes = [("[Pasted text #1]", "large")]
 
-    try:
-        goal_objective_with_pending_pastes_is_allowed(widget, "/goal ", [])
-    except NotImplementedError as exc:
-        assert "pending paste expansion requires" in str(exc)
-    else:
-        raise AssertionError("expected NotImplementedError")
+    assert goal_objective_with_pending_pastes_is_allowed(widget, "/goal ", []) is True
+    assert widget.errors == []
+
+
+def test_expand_pending_pastes_replaces_placeholders_fifo_and_rebases_survivors():
+    # Rust: ChatComposer::expand_pending_pastes indexes pending pastes by
+    # placeholder, consumes replacements FIFO, drops replaced placeholder
+    # elements, and rebases surviving elements into the rebuilt byte stream.
+    text = "A [P] B [P] C [KEEP]"
+    first_start = len("A ")
+    first_end = first_start + len("[P]")
+    second_start = len("A [P] B ")
+    second_end = second_start + len("[P]")
+    keep_start = len("A [P] B [P] C ")
+    keep_end = keep_start + len("[KEEP]")
+    elements = [
+        TextElement.new(ByteRange(first_start, first_end), "[P]"),
+        TextElement.new(ByteRange(second_start, second_end), "[P]"),
+        TextElement.new(ByteRange(keep_start, keep_end), "[KEEP]"),
+    ]
+
+    expanded, rebuilt_elements = expand_pending_pastes_like_rust(
+        text,
+        elements,
+        [("[P]", "one"), ("[P]", "two")],
+    )
+
+    assert expanded == "A one B two C [KEEP]"
+    assert len(rebuilt_elements) == 1
+    assert rebuilt_elements[0].byte_range == ByteRange(
+        len("A one B two C "),
+        len("A one B two C [KEEP]"),
+    )
+    assert rebuilt_elements[0].placeholder(expanded) == "[KEEP]"
 
 
 def test_mixin_exposes_rust_impl_method_shape():

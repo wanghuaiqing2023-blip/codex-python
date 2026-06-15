@@ -52,6 +52,7 @@ from pycodex.exec import (
     build_exec_config_bootstrap_plan,
     direct_resume_thread_id,
     ensure_exec_trusted_directory,
+    exec_session_config_from_bootstrap_plan,
     exec_trusted_directory_check,
     parse_exec_args,
     prepare_exec_run_plan,
@@ -153,7 +154,7 @@ class CliParseError(ValueError):
     """Raised when arguments do not match the ported Codex CLI surface."""
 
 
-@dataclass(frozen=True)
+@dataclass
 class ParsedCli:
     """Parsed top-level Codex CLI invocation."""
 
@@ -207,7 +208,11 @@ class ParsedCli:
 
         if self.command != "exec":
             raise CliParseError("Parsed CLI invocation is not an exec command")
-        reject_remote_mode_for_subcommand(self.remote, self.remote_auth_token_env, "exec")
+        reject_remote_mode_for_subcommand(
+            self.remote if "remote" in self.root_options else None,
+            self.remote_auth_token_env if "remote_auth_token_env" in self.root_options else None,
+            "exec",
+        )
 
         exec_cli = parse_exec_args(
             self.command_args,
@@ -295,7 +300,7 @@ def parse_args(argv: Iterable[str] | None = None) -> ParsedCli:
         command = COMMANDS_BY_NAME.get(token)
         if command is not None and not positional:
             raw_command_args = tuple(tokens[i + 1 :])
-            if command.name not in _REMOTE_INTERACTIVE_SUBCOMMANDS:
+            if command.name not in _REMOTE_ROOT_OPTION_SUBCOMMANDS:
                 reject_remote_mode_for_subcommand(
                     state.remote,
                     state.remote_auth_token_env,
@@ -1529,8 +1534,10 @@ def _store_value(dest: str, value: str, state: _ParseState, option: str) -> None
         state.disable.append(value)
     elif dest == "remote":
         state.remote = value
+        state.root_options[dest] = value
     elif dest == "remote_auth_token_env":
         state.remote_auth_token_env = value
+        state.root_options[dest] = value
     elif dest == "image":
         state.images.extend(part for part in value.split(",") if part)
     elif dest == "add_dir":
@@ -2174,7 +2181,15 @@ def main(
         parsed.config_overrides_with_feature_toggles()
         if parsed.strict_config:
             _reject_unsupported_strict_config_command(parsed.command, parsed.command_args)
-        if parsed.command is not None and parsed.command not in _REMOTE_INTERACTIVE_SUBCOMMANDS:
+        if parsed.command == "exec" and (
+            parsed.remote is not None or parsed.remote_auth_token_env is not None
+        ) and local_http_exec_enabled(os.environ):
+            reject_remote_mode_for_subcommand(
+                parsed.remote,
+                parsed.remote_auth_token_env,
+                "exec",
+            )
+        if parsed.command is not None and parsed.command not in _REMOTE_ROOT_OPTION_SUBCOMMANDS:
             reject_remote_mode_for_subcommand(
                 parsed.remote,
                 parsed.remote_auth_token_env,
@@ -8037,21 +8052,9 @@ def _build_exec_session_config(
 ) -> ExecSessionConfig:
     """Build the minimal session config for remote execution startup."""
 
-    return ExecSessionConfig(
-        model=bootstrap.harness_overrides.model,
-        model_provider_id=bootstrap.harness_overrides.model_provider,
-        cwd=bootstrap.config_cwd,
-        workspace_roots=bootstrap.harness_overrides.additional_writable_roots,
-        user_instructions=bootstrap.user_instructions,
-        instruction_sources=bootstrap.instruction_sources,
-        startup_warnings=bootstrap.startup_warnings,
-        approval_policy=bootstrap.harness_overrides.approval_policy or AskForApproval.NEVER,
-        ephemeral=bool(bootstrap.harness_overrides.ephemeral),
-        show_raw_agent_reasoning=bool(bootstrap.harness_overrides.show_raw_agent_reasoning),
+    return replace(
+        exec_session_config_from_bootstrap_plan(bootstrap),
         exec_policy_rules=tuple(exec_policy_rules),
-        allow_login_shell=bootstrap.allow_login_shell,
-        exec_permission_approvals_enabled=bootstrap.exec_permission_approvals_enabled,
-        request_permissions_tool_enabled=bootstrap.request_permissions_tool_enabled,
     )
 
 
@@ -8103,7 +8106,7 @@ def _print_local_app_server_connect_hint(
 ) -> None:
     if endpoint.kind != "unix_socket" or endpoint.socket_path is None:
         print(
-            f"pycodex: failed to connect to remote execution endpoint {endpoint.endpoint}.",
+            f"pycodex: failed to connect to remote execution endpoint `{endpoint.endpoint}`.",
             file=stderr,
         )
         if connect_error:
@@ -8186,7 +8189,16 @@ def _run_noninteractive_exec(
     out = sys.stdout if stdout is None else stdout
     try:
         if parsed.command == "exec":
-            exec_cli = parsed.exec_cli()
+            if (
+                parsed.remote is not None or parsed.remote_auth_token_env is not None
+            ) and not local_http_exec_enabled(os.environ):
+                exec_cli = parse_exec_args(
+                    parsed.command_args,
+                    root_config_overrides=parsed.config_overrides_with_feature_toggles(),
+                )
+                exec_cli = _inherit_exec_root_options(exec_cli, parsed)
+            else:
+                exec_cli = parsed.exec_cli()
         elif parsed.command in {"review", "resume"}:
             if parsed.command == "review":
                 reject_remote_mode_for_subcommand(parsed.remote, parsed.remote_auth_token_env, "review")
@@ -8500,6 +8512,11 @@ def _run_noninteractive_exec(
         return 1
 
     if result.error_message is not None:
+        if parsed.remote is not None:
+            print(
+                f"pycodex: failed to connect to remote execution endpoint `{remote_arg}`.",
+                file=stderr,
+            )
         print(result.error_message, file=stderr)
     if not result.ok and parsed.remote is None:
         _print_local_app_server_connect_hint(
@@ -8630,7 +8647,7 @@ def _app_server_daemon_subcommand_name(args: tuple[str, ...]) -> str:
     return "app-server daemon"
 
 
-_REMOTE_INTERACTIVE_SUBCOMMANDS = {"resume", "fork", "exec", "review"}
+_REMOTE_ROOT_OPTION_SUBCOMMANDS = {"resume", "fork", "exec", "review"}
 
 
 def reject_remote_mode_for_subcommand(

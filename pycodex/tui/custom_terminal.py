@@ -9,11 +9,16 @@ from __future__ import annotations
 import unicodedata
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, FrozenSet, Iterable, List, Optional, Tuple, Union
 
 from ._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="custom_terminal", source="codex/codex-rs/tui/src/custom_terminal.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="custom_terminal",
+    source="codex/codex-rs/tui/src/custom_terminal.rs",
+    status="complete",
+)
 
 ESC = "\x1b"
 BEL = "\x07"
@@ -23,7 +28,7 @@ def display_width(s: str) -> int:
     text = str(s)
     if ESC not in text:
         return _visible_width(text)
-    visible: list[str] = []
+    visible: List[str] = []
     i = 0
     while i < len(text):
         if text[i] == ESC and i + 1 < len(text) and text[i + 1] == "]":
@@ -77,7 +82,7 @@ class Cell:
     symbol: str = " "
     fg: str = "Reset"
     bg: str = "Reset"
-    modifier: frozenset[str] = field(default_factory=frozenset)
+    modifier: FrozenSet[str] = field(default_factory=frozenset)
     skip: bool = False
 
     def set_symbol(self, symbol: str) -> "Cell":
@@ -88,7 +93,7 @@ class Cell:
 @dataclass
 class Buffer:
     area: Rect
-    content: list[Cell]
+    content: List[Cell]
 
     @classmethod
     def empty(cls, area: Rect) -> "Buffer":
@@ -101,7 +106,7 @@ class Buffer:
     def reset(self) -> None:
         self.content = [Cell() for _ in range(self.area.width * self.area.height)]
 
-    def cell_mut(self, pos: tuple[int, int]) -> Cell | None:
+    def cell_mut(self, pos: Tuple[int, int]) -> Optional[Cell]:
         x, y = pos
         if x < 0 or y < 0 or x >= self.area.width or y >= self.area.height:
             return None
@@ -130,7 +135,7 @@ class DrawCommand:
     kind: str
     x: int
     y: int
-    cell: Cell | None = None
+    cell: Optional[Cell] = None
     bg: str = "Reset"
 
     @classmethod
@@ -147,7 +152,7 @@ class DrawCommand:
 
 @dataclass
 class Frame:
-    cursor_position: Position | None
+    cursor_position: Optional[Position]
     cursor_style: str
     viewport_area: Rect
     buffer: Buffer
@@ -181,7 +186,7 @@ class CaptureBackend:
     def new(cls, width: int, height: int) -> "CaptureBackend":
         return cls(bytearray(), Size(width, height), Position(0, 0))
 
-    def write(self, data: str | bytes) -> None:
+    def write(self, data: Union[str, bytes]) -> None:
         if isinstance(data, str):
             data = data.encode()
         self.output_bytes.extend(data)
@@ -214,7 +219,7 @@ class CaptureBackend:
 @dataclass
 class Terminal:
     backend_value: CaptureBackend
-    buffers: list[Buffer]
+    buffers: List[Buffer]
     current: int
     hidden_cursor: bool
     viewport_area: Rect
@@ -382,8 +387,8 @@ class Terminal:
 
 @dataclass(frozen=True)
 class ModifierDiff:
-    from_modifiers: frozenset[str]
-    to_modifiers: frozenset[str]
+    from_modifiers: FrozenSet[str]
+    to_modifiers: FrozenSet[str]
 
     def queue(self, writer: CaptureBackend) -> None:
         for removed in sorted(self.from_modifiers - self.to_modifiers):
@@ -392,10 +397,10 @@ class ModifierDiff:
             writer.write(f"<{added}>")
 
 
-def diff_buffers(a: Buffer, b: Buffer) -> list[DrawCommand]:
+def diff_buffers(a: Buffer, b: Buffer) -> List[DrawCommand]:
     previous_buffer = a.content
     next_buffer = b.content
-    updates: list[DrawCommand] = []
+    updates: List[DrawCommand] = []
     if a.area.width == 0 or a.area.height == 0:
         return updates
 
@@ -434,7 +439,7 @@ def diff_buffers(a: Buffer, b: Buffer) -> list[DrawCommand]:
 
 
 def draw(writer: CaptureBackend, commands: Iterable[DrawCommand]) -> None:
-    last_pos: Position | None = None
+    last_pos: Optional[Position] = None
     for command in commands:
         if last_pos is None or not (command.x == last_pos.x + 1 and command.y == last_pos.y):
             writer.write(f"\x1b[{command.y + 1};{command.x + 1}H")

@@ -11,18 +11,24 @@ from __future__ import annotations
 from dataclasses import dataclass
 import io
 import json
+import os
 from pathlib import Path
+import socket
+import stat
+import struct
 import sys
 import tempfile
 import time
-from typing import Any, BinaryIO
+import uuid
+from typing import Any, BinaryIO, Dict, Optional, Union
 
-from .._porting import RustTuiModule, not_ported
+from .._porting import RustTuiModule
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="ide_context::ipc",
     source="codex/codex-rs/tui/src/ide_context/ipc.rs",
+    status="complete",
 )
 
 IDE_CONTEXT_REQUEST_TIMEOUT = 5.0
@@ -106,8 +112,14 @@ def hint_with_retry(message: str) -> str:
 IdeContextStream = Any
 
 
-def fetch_ide_context(workspace_root: str | Path) -> Any:
-    return not_ported(RUST_MODULE, "fetch_ide_context")
+def fetch_ide_context(workspace_root: Union[str, Path]) -> Any:
+    if os.name != "posix" and sys.platform != "win32":
+        raise IdeContextError("UnsupportedPlatform")
+    return fetch_ide_context_from_socket(
+        default_ipc_socket_path(),
+        workspace_root,
+        IDE_CONTEXT_REQUEST_TIMEOUT,
+    )
 
 
 def default_ipc_socket_path() -> Path:
@@ -119,12 +131,27 @@ def default_ipc_socket_path() -> Path:
     return Path()
 
 
-def fetch_ide_context_from_socket(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "fetch_ide_context_from_socket")
+def fetch_ide_context_from_socket(
+    socket_path: Union[str, Path],
+    workspace_root: Union[str, Path],
+    timeout: float,
+) -> Any:
+    deadline = time.monotonic() + timeout
+    try:
+        stream = connect_stream(socket_path, deadline)
+    except OSError as exc:
+        raise IdeContextError("Connect", exc) from exc
+    return fetch_ide_context_from_stream(stream, workspace_root, None, deadline)
 
 
-def connect_stream(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "connect_stream")
+def connect_stream(socket_path: Union[str, Path], deadline: float) -> Any:
+    if sys.platform == "win32":
+        from .windows_pipe import WindowsPipeStream
+
+        return WindowsPipeStream.connect(Path(socket_path), deadline)
+    if os.name == "posix":
+        return UnixDeadlineStream.connect(Path(socket_path), deadline)
+    raise IdeContextError("UnsupportedPlatform")
 
 
 @dataclass
@@ -133,8 +160,11 @@ class UnixDeadlineStream:
     deadline: float
 
     @classmethod
-    def connect(cls, *args: Any, **kwargs: Any) -> "UnixDeadlineStream":
-        return not_ported(RUST_MODULE, "UnixDeadlineStream.connect")
+    def connect(cls, socket_path: Union[str, Path], deadline: float) -> "UnixDeadlineStream":
+        stream = connect_unix_stream_before_deadline(Path(socket_path), deadline)
+        wrapped = cls.new(stream, deadline)
+        validate_unix_peer_owner(wrapped)
+        return wrapped
 
     @classmethod
     def new(cls, stream: Any, deadline: float) -> "UnixDeadlineStream":
@@ -144,10 +174,43 @@ class UnixDeadlineStream:
         self.deadline = deadline
 
     def wait_for_ready(self, *args: Any, **kwargs: Any) -> None:
-        return not_ported(RUST_MODULE, "UnixDeadlineStream.wait_for_ready")
+        ensure_deadline_not_expired(self.deadline)
+
+    def read(self, size: int) -> bytes:
+        if size <= 0:
+            return b""
+        while True:
+            self.wait_for_ready()
+            self.stream.settimeout(_remaining_timeout(self.deadline))
+            try:
+                return self.stream.recv(size)
+            except InterruptedError:
+                continue
+            except BlockingIOError:
+                continue
+            except TimeoutError as exc:
+                raise deadline_timeout_io_error() from exc
+
+    def write(self, data: bytes) -> int:
+        if not data:
+            return 0
+        while True:
+            self.wait_for_ready()
+            self.stream.settimeout(_remaining_timeout(self.deadline))
+            try:
+                return self.stream.send(data)
+            except InterruptedError:
+                continue
+            except BlockingIOError:
+                continue
+            except TimeoutError as exc:
+                raise deadline_timeout_io_error() from exc
+
+    def flush(self) -> None:
+        return None
 
 
-def answer_unsupported_request(stream: BinaryIO, message: dict[str, Any]) -> None:
+def answer_unsupported_request(stream: BinaryIO, message: Dict[str, Any]) -> None:
     request_id = message.get("requestId")
     if isinstance(request_id, str):
         _write_outbound_frame(
@@ -161,14 +224,24 @@ def answer_unsupported_request(stream: BinaryIO, message: dict[str, Any]) -> Non
         )
 
 
-def fetch_ide_context_from_stream(stream: BinaryIO, workspace_root: str | Path, request_id: str | None = None) -> Any:
-    request_id = request_id or "request-id"
+def fetch_ide_context_from_stream(
+    stream: BinaryIO,
+    workspace_root: Union[str, Path],
+    request_id: Optional[str] = None,
+    deadline: Optional[float] = None,
+) -> Any:
+    request_id = request_id or str(uuid.uuid4())
+    deadline = deadline or time.monotonic() + IDE_CONTEXT_REQUEST_TIMEOUT
     write_ide_context_request(stream, request_id, workspace_root)
-    response = read_response_frame(stream, request_id, time.monotonic() + IDE_CONTEXT_REQUEST_TIMEOUT)
+    response = read_response_frame(stream, request_id, deadline)
     return extract_ide_context(response)
 
 
-def write_ide_context_request(stream: BinaryIO, request_id: str, workspace_root: str | Path) -> None:
+def write_ide_context_request(
+    stream: BinaryIO,
+    request_id: str,
+    workspace_root: Union[str, Path],
+) -> None:
     write_frame(
         stream,
         {
@@ -182,18 +255,18 @@ def write_ide_context_request(stream: BinaryIO, request_id: str, workspace_root:
     )
 
 
-def write_frame(stream: BinaryIO, message: dict[str, Any]) -> None:
+def write_frame(stream: BinaryIO, message: Dict[str, Any]) -> None:
     payload = json.dumps(message, separators=(",", ":")).encode("utf-8")
     if len(payload) > 0xFFFFFFFF:
         raise OSError("IDE context payload exceeds u32 length")
-    stream.write(len(payload).to_bytes(4, "little"))
-    stream.write(payload)
+    _stream_write_all(stream, len(payload).to_bytes(4, "little"))
+    _stream_write_all(stream, payload)
     flush = getattr(stream, "flush", None)
     if callable(flush):
         flush()
 
 
-def read_frame(stream: BinaryIO, deadline: float | None = None) -> dict[str, Any]:
+def read_frame(stream: BinaryIO, deadline: Optional[float] = None) -> Dict[str, Any]:
     len_bytes = read_exact_before_deadline(stream, 4, deadline)
     length = int.from_bytes(len_bytes, "little")
     if length > MAX_IPC_FRAME_BYTES:
@@ -208,11 +281,15 @@ def read_frame(stream: BinaryIO, deadline: float | None = None) -> dict[str, Any
     return value
 
 
-def read_exact_before_deadline(stream: BinaryIO, size: int, deadline: float | None = None) -> bytes:
+def read_exact_before_deadline(
+    stream: BinaryIO,
+    size: int,
+    deadline: Optional[float] = None,
+) -> bytes:
     chunks = bytearray()
     while len(chunks) < size:
         ensure_deadline_not_expired(deadline)
-        part = stream.read(size - len(chunks))
+        part = _stream_read(stream, size - len(chunks))
         if part == b"":
             raise IdeContextError("Read", EOFError("failed to fill whole IDE context frame"))
         chunks.extend(part)
@@ -220,7 +297,11 @@ def read_exact_before_deadline(stream: BinaryIO, size: int, deadline: float | No
     return bytes(chunks)
 
 
-def read_response_frame(stream: BinaryIO, request_id: str, deadline: float | None = None) -> dict[str, Any]:
+def read_response_frame(
+    stream: BinaryIO,
+    request_id: str,
+    deadline: Optional[float] = None,
+) -> Dict[str, Any]:
     while True:
         ensure_deadline_not_expired(deadline)
         message = read_frame(stream, deadline)
@@ -251,7 +332,7 @@ def read_response_frame(stream: BinaryIO, request_id: str, deadline: float | Non
             raise IdeContextError("InvalidResponse", "IDE context message did not include a type")
 
 
-def ensure_deadline_not_expired(deadline: float | None) -> None:
+def ensure_deadline_not_expired(deadline: Optional[float]) -> None:
     if deadline is not None and time.monotonic() >= deadline:
         raise timeout_error()
 
@@ -264,7 +345,7 @@ def deadline_timeout_io_error() -> TimeoutError:
     return TimeoutError("timed out waiting for IDE context")
 
 
-def extract_ide_context(response: dict[str, Any]) -> Any:
+def extract_ide_context(response: Dict[str, Any]) -> Any:
     ensure_success_response(response)
     try:
         return response["result"]["ideContext"]
@@ -275,7 +356,7 @@ def extract_ide_context(response: dict[str, Any]) -> Any:
         ) from exc
 
 
-def ensure_success_response(response: dict[str, Any]) -> None:
+def ensure_success_response(response: Dict[str, Any]) -> None:
     result_type = response.get("resultType")
     if result_type == "success":
         return
@@ -284,23 +365,84 @@ def ensure_success_response(response: dict[str, Any]) -> None:
     raise IdeContextError("InvalidResponse", "response did not include a success or error resultType")
 
 
-def connect_unix_stream_before_deadline(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "connect_unix_stream_before_deadline")
+def connect_unix_stream_before_deadline(socket_path: Path, deadline: float) -> socket.socket:
+    validate_unix_socket_path(socket_path)
+    stream = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    stream.settimeout(_remaining_timeout(deadline))
+    try:
+        stream.connect(str(socket_path))
+    except Exception:
+        stream.close()
+        raise
+    return stream
 
 
-def validate_unix_socket_path(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "validate_unix_socket_path")
+def validate_unix_socket_path(socket_path: Union[str, Path]) -> None:
+    if os.name != "posix":
+        return
+    path = Path(socket_path)
+    uid = os.getuid()
+    parent = path.parent
+    if not parent:
+        raise PermissionError("IDE context socket has no parent directory")
+    parent_metadata = os.stat(str(parent), follow_symlinks=False)
+    if not stat.S_ISDIR(parent_metadata.st_mode) or parent_metadata.st_uid != uid:
+        raise PermissionError("IDE context socket directory is not owned by the current user")
+    if parent_metadata.st_mode & 0o022:
+        raise PermissionError("IDE context socket directory is writable by other users")
+    socket_metadata = os.stat(str(path), follow_symlinks=False)
+    if not stat.S_ISSOCK(socket_metadata.st_mode) or socket_metadata.st_uid != uid:
+        raise PermissionError("IDE context socket is not owned by the current user")
 
 
-def validate_unix_peer_owner(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "validate_unix_peer_owner")
+def validate_unix_peer_owner(stream: UnixDeadlineStream) -> None:
+    if os.name != "posix":
+        return
+    sock = stream.stream
+    if hasattr(socket, "SO_PEERCRED"):
+        credentials = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+        _pid, uid, _gid = struct.unpack("3i", credentials)
+        if uid != os.getuid():
+            raise PermissionError("IDE context provider is not owned by the current user")
 
 
 def _is_timed_out(value: Any) -> bool:
     return isinstance(value, TimeoutError) or "timed out" in str(value).lower()
 
 
-def _write_outbound_frame(stream: BinaryIO, message: dict[str, Any]) -> None:
+def _remaining_timeout(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise deadline_timeout_io_error()
+    return remaining
+
+
+def _stream_read(stream: BinaryIO, size: int) -> bytes:
+    try:
+        part = stream.read(size)
+        if isinstance(part, int):
+            buffer = bytearray(size)
+            read_count = part
+            return bytes(buffer[:read_count])
+        return part
+    except TypeError:
+        buffer = bytearray(size)
+        read_count = stream.read(buffer)
+        return bytes(buffer[:read_count])
+
+
+def _stream_write_all(stream: BinaryIO, data: bytes) -> None:
+    written = 0
+    while written < len(data):
+        result = stream.write(data[written:])
+        if result is None:
+            return
+        if result == 0:
+            raise OSError("failed to write whole IDE context frame")
+        written += int(result)
+
+
+def _write_outbound_frame(stream: BinaryIO, message: Dict[str, Any]) -> None:
     if isinstance(stream, io.BytesIO):
         position = stream.tell()
         stream.seek(0, io.SEEK_END)

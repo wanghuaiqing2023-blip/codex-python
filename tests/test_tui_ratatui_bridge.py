@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 from pycodex.tui import textual_compat
+from pycodex.tui import ratatui_bridge
 from pycodex.tui.ratatui_bridge import (
     Alignment,
     Block,
@@ -31,6 +32,11 @@ from pycodex.tui.ratatui_bridge import (
     render_to_buffer,
     render_to_rich_text,
 )
+
+
+def test_ratatui_bridge_module_marker_is_complete_for_python_semantic_bridge() -> None:
+    assert ratatui_bridge.RUST_MODULE.module == "ratatui_bridge"
+    assert ratatui_bridge.RUST_MODULE.status == "complete"
 
 
 def test_style_patch_and_modifiers_preserve_ratatui_like_semantics() -> None:

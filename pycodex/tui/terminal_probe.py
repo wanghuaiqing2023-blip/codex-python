@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import Enum
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, List, Optional, Tuple
 
 from ._porting import RustTuiModule
 
@@ -22,6 +22,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="terminal_probe",
     source="codex/codex-rs/tui/src/terminal_probe.rs",
+    status="complete",
 )
 
 DEFAULT_TIMEOUT = timedelta(milliseconds=100)
@@ -35,15 +36,15 @@ class Position:
 
 @dataclass(frozen=True)
 class DefaultColors:
-    fg: tuple[int, int, int]
-    bg: tuple[int, int, int]
+    fg: Tuple[int, int, int]
+    bg: Tuple[int, int, int]
 
 
 @dataclass
 class StartupProbe:
-    cursor_position: Position | None = None
-    default_colors: DefaultColors | None = None
-    keyboard_enhancement_supported: bool | None = None
+    cursor_position: Optional[Position] = None
+    default_colors: Optional[DefaultColors] = None
+    keyboard_enhancement_supported: Optional[bool] = None
 
 
 class StartupKeyboardEnhancementProbe(Enum):
@@ -63,6 +64,8 @@ class Tty:
 
     @classmethod
     def open(cls) -> "Tty":
+        if _tty_factory is not None:
+            return _tty_factory()
         raise NotImplementedError(
             "terminal_probe.Tty.open requires a real nonblocking terminal handle implementation"
         )
@@ -81,11 +84,26 @@ def dup_file(fd: int) -> Any:
     raise NotImplementedError("terminal_probe.dup_file is a Unix file-descriptor operation")
 
 
+_tty_factory: Optional[Callable[[], Tty]] = None
+
+
+def set_tty_factory(factory: Optional[Callable[[], Tty]]) -> None:
+    """Install a runtime TTY factory for terminal probe adapters.
+
+    Rust owns the concrete duplicated-stdio/nonblocking-tty path. Python keeps
+    that side effect explicit: parsers and state transitions are implemented
+    here, while real terminal I/O must be supplied by a runtime adapter.
+    """
+
+    global _tty_factory
+    _tty_factory = factory
+
+
 def drop(value: Any) -> None:
     return None
 
 
-def default_colors(timeout: timedelta = DEFAULT_TIMEOUT) -> DefaultColors | None:
+def default_colors(timeout: timedelta = DEFAULT_TIMEOUT) -> Optional[DefaultColors]:
     tty = Tty.open()
     tty.write_all(b"\x1B]10;?\x1B\\\x1B]11;?\x1B\\")
     return read_until(tty, timeout, parse_default_colors)
@@ -103,16 +121,15 @@ def startup(
     return read_startup_probe(tty, timeout, keyboard_probe)
 
 
-def read_until(tty: Any, timeout: timedelta, parse: Callable[[bytes], Any | None]) -> Any | None:
+def read_until(tty: Any, timeout: timedelta, parse: Callable[[bytes], Optional[Any]]) -> Optional[Any]:
     buffer = bytearray()
-    tty.read_available(buffer)
-    value = parse(bytes(buffer))
-    if value is not None:
-        return value
-    if not tty.poll_readable(timeout):
-        return None
-    tty.read_available(buffer)
-    return parse(bytes(buffer))
+    while True:
+        tty.read_available(buffer)
+        value = parse(bytes(buffer))
+        if value is not None:
+            return value
+        if not tty.poll_readable(timeout):
+            return None
 
 
 def read_startup_probe(
@@ -123,20 +140,16 @@ def read_startup_probe(
     buffer = bytearray()
     probe = StartupProbe()
     saw_supported_keyboard = False
-    tty.read_available(buffer)
-    saw_supported_keyboard = update_startup_probe(
-        probe, saw_supported_keyboard, bytes(buffer), keyboard_probe
-    )
-    if startup_probe_complete(probe, keyboard_probe):
-        return probe
-    if tty.poll_readable(timeout):
+    while True:
         tty.read_available(buffer)
         saw_supported_keyboard = update_startup_probe(
             probe, saw_supported_keyboard, bytes(buffer), keyboard_probe
         )
-    if not startup_probe_complete(probe, keyboard_probe):
-        finish_startup_probe(probe, keyboard_probe, saw_supported_keyboard)
-    return probe
+        if startup_probe_complete(probe, keyboard_probe):
+            return probe
+        if not tty.poll_readable(timeout):
+            finish_startup_probe(probe, keyboard_probe, saw_supported_keyboard)
+            return probe
 
 
 def update_startup_probe(
@@ -188,7 +201,7 @@ def finish_startup_probe(
         probe.keyboard_enhancement_supported = True if saw_supported_keyboard else None
 
 
-def parse_cursor_position(buffer: bytes) -> Position | None:
+def parse_cursor_position(buffer: bytes) -> Optional[Position]:
     for start in find_all_subslices(buffer, b"\x1B["):
         rest = buffer[start + 2 :]
         try:
@@ -211,7 +224,7 @@ def parse_cursor_position(buffer: bytes) -> Position | None:
     return None
 
 
-def parse_osc_color(buffer: bytes, slot: int) -> tuple[int, int, int] | None:
+def parse_osc_color(buffer: bytes, slot: int) -> Optional[Tuple[int, int, int]]:
     prefix = f"\x1B]{slot};".encode()
     start = find_subslice(buffer, prefix)
     if start is None:
@@ -229,7 +242,7 @@ def parse_osc_color(buffer: bytes, slot: int) -> tuple[int, int, int] | None:
     return parse_osc_rgb(payload)
 
 
-def parse_default_colors(buffer: bytes) -> DefaultColors | None:
+def parse_default_colors(buffer: bytes) -> Optional[DefaultColors]:
     fg = parse_osc_color(buffer, 10)
     bg = parse_osc_color(buffer, 11)
     if fg is None or bg is None:
@@ -237,7 +250,7 @@ def parse_default_colors(buffer: bytes) -> DefaultColors | None:
     return DefaultColors(fg=fg, bg=bg)
 
 
-def osc_payload_end(buffer: bytes) -> tuple[int, int] | None:
+def osc_payload_end(buffer: bytes) -> Optional[Tuple[int, int]]:
     idx = 0
     while idx < len(buffer):
         byte = buffer[idx]
@@ -249,7 +262,7 @@ def osc_payload_end(buffer: bytes) -> tuple[int, int] | None:
     return None
 
 
-def parse_osc_rgb(payload: str) -> tuple[int, int, int] | None:
+def parse_osc_rgb(payload: str) -> Optional[Tuple[int, int, int]]:
     stripped = payload.strip()
     if ":" not in stripped:
         return None
@@ -261,13 +274,13 @@ def parse_osc_rgb(payload: str) -> tuple[int, int, int] | None:
     expected = 4 if lowered == "rgba" else 3
     if len(parts) != expected:
         return None
-    components = [parse_osc_component(part) for part in parts]
+    components: List[Optional[int]] = [parse_osc_component(part) for part in parts]
     if any(component is None for component in components):
         return None
-    return components[0], components[1], components[2]  # type: ignore[return-value]
+    return int(components[0]), int(components[1]), int(components[2])
 
 
-def parse_osc_component(component: str) -> int | None:
+def parse_osc_component(component: str) -> Optional[int]:
     try:
         if len(component) == 2:
             return int(component, 16)
@@ -290,7 +303,7 @@ def parse_keyboard_enhancement_support(buffer: bytes) -> KeyboardProbeState:
     return KeyboardProbeState.Pending
 
 
-def find_keyboard_flags(buffer: bytes) -> int | None:
+def find_keyboard_flags(buffer: bytes) -> Optional[int]:
     for start in find_all_subslices(buffer, b"\x1B[?"):
         rest = buffer[start + 3 :]
         try:
@@ -307,7 +320,7 @@ def find_keyboard_flags(buffer: bytes) -> int | None:
     return None
 
 
-def find_primary_device_attributes(buffer: bytes) -> bool | None:
+def find_primary_device_attributes(buffer: bytes) -> Optional[bool]:
     for start in find_all_subslices(buffer, b"\x1B[?"):
         rest = buffer[start + 3 :]
         try:
@@ -319,7 +332,7 @@ def find_primary_device_attributes(buffer: bytes) -> bool | None:
     return None
 
 
-def find_subslice(haystack: bytes, needle: bytes) -> int | None:
+def find_subslice(haystack: bytes, needle: bytes) -> Optional[int]:
     if needle == b"":
         return 0
     idx = haystack.find(needle)
@@ -358,6 +371,7 @@ __all__ = [
     "parse_osc_rgb",
     "read_startup_probe",
     "read_until",
+    "set_tty_factory",
     "startup",
     "startup_probe_complete",
     "update_startup_probe",

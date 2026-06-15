@@ -10,11 +10,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Mapping, Protocol
+from typing import Any, Dict, Mapping, Optional, Protocol, Tuple, Type, Union
 
 from .._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="chatwidget::protocol_requests", source="codex/codex-rs/tui/src/chatwidget/protocol_requests.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="chatwidget::protocol_requests",
+    source="codex/codex-rs/tui/src/chatwidget/protocol_requests.rs",
+    status="complete",
+)
 
 __all__ = [
     "GuardianAssessmentDecisionSource",
@@ -67,23 +72,23 @@ class GuardianAssessmentDecisionSource(str, Enum):
 @dataclass(frozen=True)
 class ServerRequest:
     kind: str
-    id: str | None = None
+    id: Optional[str] = None
     params: Any = None
-    request_id: str | None = None
+    request_id: Optional[str] = None
 
 
 @dataclass(frozen=True)
 class GuardianAssessmentEvent:
     id: str
-    target_item_id: str | None
+    target_item_id: Optional[str]
     turn_id: str
     started_at_ms: int
-    completed_at_ms: int | None
+    completed_at_ms: Optional[int]
     status: GuardianAssessmentStatus
-    risk_level: GuardianRiskLevel | None
-    user_authorization: GuardianUserAuthorization | None
-    rationale: str | None
-    decision_source: GuardianAssessmentDecisionSource | None
+    risk_level: Optional[GuardianRiskLevel]
+    user_authorization: Optional[GuardianUserAuthorization]
+    rationale: Optional[str]
+    decision_source: Optional[GuardianAssessmentDecisionSource]
     action: Any
 
 
@@ -93,8 +98,8 @@ class ProtocolRequestsWidget(Protocol):
 
 def handle_server_request(
     widget: Any,
-    request: ServerRequest | Mapping[str, Any] | Any,
-    replay_kind: Any | None = None,
+    request: Union[ServerRequest, Mapping[str, Any], Any],
+    replay_kind: Optional[Any] = None,
 ) -> None:
     """Route a server request to the matching focused chat-widget flow."""
 
@@ -141,8 +146,8 @@ def on_guardian_review_notification(
     id: str,
     turn_id: str,
     started_at_ms: int,
-    review: Mapping[str, Any] | Any,
-    completion: tuple[int, Any] | None,
+    review: Union[Mapping[str, Any], Any],
+    completion: Optional[Tuple[int, Any]],
     action: Any,
 ) -> GuardianAssessmentEvent:
     completed_at_ms = None
@@ -178,26 +183,26 @@ def on_turn_diff(widget: Any, unified_diff: str) -> None:
     _call(widget, "refresh_status_line")
 
 
-def on_deprecation_notice(widget: Any, summary: str, details: str | None) -> None:
+def on_deprecation_notice(widget: Any, summary: str, details: Optional[str]) -> None:
     _call(widget, "add_to_history", {"kind": "deprecation_notice", "summary": summary, "details": details})
     _call(widget, "request_redraw")
 
 
-def exec_approval_request_from_params(params: Any, fallback_cwd: Any) -> dict[str, Any]:
+def exec_approval_request_from_params(params: Any, fallback_cwd: Any) -> Dict[str, Any]:
     data = _as_dict(params)
     data.setdefault("cwd", fallback_cwd)
     return data
 
 
-def patch_approval_request_from_params(params: Any) -> dict[str, Any]:
+def patch_approval_request_from_params(params: Any) -> Dict[str, Any]:
     return _as_dict(params)
 
 
-def request_permissions_from_params(params: Any) -> dict[str, Any]:
+def request_permissions_from_params(params: Any) -> Dict[str, Any]:
     return _as_dict(params)
 
 
-def _as_dict(value: Any) -> dict[str, Any]:
+def _as_dict(value: Any) -> Dict[str, Any]:
     if value is None:
         return {}
     if isinstance(value, Mapping):
@@ -207,14 +212,14 @@ def _as_dict(value: Any) -> dict[str, Any]:
     raise TypeError(f"cannot convert params to semantic request dict: {type(value).__name__}")
 
 
-def _kind(value: ServerRequest | Mapping[str, Any] | Any) -> str:
+def _kind(value: Union[ServerRequest, Mapping[str, Any], Any]) -> str:
     raw = _get(value, "kind", _get(value, "type", None))
     if raw is None:
         raise ValueError("request is missing a kind/type discriminator")
     return _enum_name(raw)
 
 
-def _get(value: Mapping[str, Any] | Any, key: str, default: Any = ...):
+def _get(value: Union[Mapping[str, Any], Any], key: str, default: Any = ...):
     if isinstance(value, Mapping):
         if default is ...:
             return value[key]
@@ -242,7 +247,7 @@ def _assessment_status(value: Any) -> GuardianAssessmentStatus:
     return GuardianAssessmentStatus(name)
 
 
-def _optional_enum(value: Any | None, enum_type: type[Enum]) -> Any | None:
+def _optional_enum(value: Optional[Any], enum_type: Type[Enum]) -> Optional[Any]:
     if value is None:
         return None
     return enum_type(_enum_name(value))

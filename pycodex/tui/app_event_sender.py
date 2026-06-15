@@ -14,7 +14,12 @@ from typing import Any, Callable
 from ._porting import RustTuiModule
 from .app_command import AppCommand
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="app_event_sender", source="codex/codex-rs/tui/src/app_event_sender.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="app_event_sender",
+    source="codex/codex-rs/tui/src/app_event_sender.rs",
+    status="complete",
+)
 
 
 @dataclass(frozen=True)

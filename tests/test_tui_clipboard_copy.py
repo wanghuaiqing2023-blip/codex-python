@@ -1,5 +1,6 @@
 import base64
 import io
+from typing import List
 
 import pytest
 
@@ -34,7 +35,7 @@ def test_osc52_sequence_matches_rust_encoding_tests() -> None:
     # Rust source: clipboard_copy.rs::tests::osc52_encoding_roundtrips.
     text = "# Hello\n\n```rust\nfn main() {}\n```\n"
     sequence = osc52_sequence(text, tmux=False)
-    encoded = sequence.removeprefix("\x1b]52;c;").removesuffix("\x07")
+    encoded = sequence[len("\x1b]52;c;") : -len("\x07")]
     assert base64.b64decode(encoded) == text.encode()
 
     assert osc52_sequence("hello", tmux=True) == "\x1bPtmux;\x1b\x1b]52;c;aGVsbG8=\x07\x1b\\"
@@ -80,7 +81,7 @@ def test_write_osc52_to_writer_distinguishes_write_and_flush_errors() -> None:
 
 
 def test_ssh_uses_terminal_clipboard_and_skips_native() -> None:
-    calls: list[str] = []
+    calls: List[str] = []
 
     result = copy_to_clipboard_with(
         "hello",
@@ -116,7 +117,7 @@ def test_ssh_error_messages_match_rust() -> None:
 
 
 def test_ssh_inside_tmux_prefers_tmux_then_osc52_fallback() -> None:
-    calls: list[str] = []
+    calls: List[str] = []
     result = copy_to_clipboard_with(
         "hello",
         remote_tmux_environment(),
@@ -158,7 +159,7 @@ def test_tmux_clipboard_copy_ready_matches_rust_boundaries() -> None:
 
 def test_local_uses_native_first_and_preserves_lease() -> None:
     lease = ClipboardLease.test()
-    calls: list[str] = []
+    calls: List[str] = []
 
     result = copy_to_clipboard_with(
         "hello",
@@ -174,7 +175,7 @@ def test_local_uses_native_first_and_preserves_lease() -> None:
 
 
 def test_local_fallback_order_and_errors_match_rust() -> None:
-    calls: list[str] = []
+    calls: List[str] = []
     result = copy_to_clipboard_with(
         "hello",
         local_environment(),
@@ -204,7 +205,7 @@ def test_local_fallback_order_and_errors_match_rust() -> None:
 
 
 def test_local_wsl_uses_powershell_then_terminal_fallback() -> None:
-    calls: list[str] = []
+    calls: List[str] = []
     result = copy_to_clipboard_with(
         "hello",
         local_wsl_environment(),

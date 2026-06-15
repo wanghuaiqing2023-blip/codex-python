@@ -1,6 +1,7 @@
-"""Parity tests for Rust ``codex-tui::bottom_pane::selection_tabs``."""
+﻿"""Parity tests for Rust ``codex-tui::bottom_pane::selection_tabs``."""
 
 from dataclasses import dataclass
+from typing import List
 
 from pycodex.tui.bottom_pane.selection_tabs import (
     TAB_GAP_WIDTH,
@@ -14,7 +15,7 @@ from pycodex.tui.bottom_pane.selection_tabs import (
 )
 
 
-def _tabs(*labels: str) -> list[SelectionTab]:
+def _tabs(*labels: str) -> List[SelectionTab]:
     return [SelectionTab(id=label.lower(), label=label) for label in labels]
 
 
@@ -52,14 +53,14 @@ def test_render_tab_bar_appends_only_lines_that_fit_area_height() -> None:
         width: int
         height: int
 
-    rendered: list[StyledLine] = []
+    rendered: List[StyledLine] = []
     render_tab_bar(_tabs("One", "Two", "Three"), active_idx=1, area=Area(width=12, height=1), buf=rendered)
 
     assert [line.text for line in rendered] == ["One  [Two]"]
 
 
 def test_render_tab_bar_accepts_mapping_area() -> None:
-    rendered: list[StyledLine] = []
+    rendered: List[StyledLine] = []
     render_tab_bar(_tabs("A", "B"), active_idx=0, area={"width": 20, "height": 2}, buf=rendered)
 
     assert [line.text for line in rendered] == ["[A]  B"]
@@ -72,3 +73,4 @@ def test_active_index_out_of_range_leaves_all_tabs_inactive() -> None:
 
     assert [line.text for line in lines] == ["One  Two"]
     assert [span.style for span in lines[0].spans] == ["dim", "plain", "dim"]
+

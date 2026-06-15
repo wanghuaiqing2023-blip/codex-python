@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Mapping, Protocol
+from typing import Any, Dict, List, Optional, Protocol, Set, Tuple
 
 from .._porting import RustTuiModule
 from .skills import (
@@ -21,7 +21,12 @@ from .skills import (
     is_app_mentionable,
 )
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="chatwidget::input_submission", source="codex/codex-rs/tui/src/chatwidget/input_submission.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="chatwidget::input_submission",
+    source="codex/codex-rs/tui/src/chatwidget/input_submission.rs",
+    status="complete",
+)
 
 __all__ = [
     "AppCommand",
@@ -99,20 +104,20 @@ class UserMessageHistoryRecord:
 @dataclass(frozen=True)
 class UserInput:
     kind: str
-    payload: dict[str, Any]
+    payload: Dict[str, Any]
 
 
 @dataclass(frozen=True)
 class AppCommand:
     kind: str
-    payload: dict[str, Any] = field(default_factory=dict)
+    payload: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def run_user_shell_command(cls, command: str) -> "AppCommand":
         return cls("RunUserShellCommand", {"command": command})
 
     @classmethod
-    def user_turn(cls, items: list[UserInput], **payload: Any) -> "AppCommand":
+    def user_turn(cls, items: List[UserInput], **payload: Any) -> "AppCommand":
         return cls("UserTurn", {"items": items, **payload})
 
 
@@ -133,7 +138,7 @@ class InputSubmissionWidget(Protocol):
 def user_message_from_submission(
     widget: Any,
     text: str,
-    text_elements: list[Any] | tuple[Any, ...],
+    text_elements: Any,
 ) -> UserMessage:
     return UserMessage(
         text=text,
@@ -172,7 +177,7 @@ def submit_user_message_with_shell_escape_policy(
     widget: Any,
     user_message: UserMessage,
     shell_escape_policy: ShellEscapePolicy,
-) -> AppCommand | None:
+) -> Optional[AppCommand]:
     _, command = submit_user_message_with_history_and_shell_escape_policy(
         widget,
         user_message,
@@ -187,7 +192,7 @@ def submit_user_message_with_history_and_shell_escape_policy(
     user_message: UserMessage,
     history_record: UserMessageHistoryRecord,
     shell_escape_policy: ShellEscapePolicy,
-) -> tuple[bool, AppCommand | None]:
+) -> Tuple[bool, Optional[AppCommand]]:
     if not widget.is_session_configured():
         widget.input_queue.queued_user_messages.appendleft(user_message)
         widget.input_queue.queued_user_message_history_records.appendleft(history_record)
@@ -308,8 +313,8 @@ def restore_blocked_image_submission(
     widget.request_redraw()
 
 
-def _user_inputs_from_message(widget: Any, user_message: UserMessage) -> list[UserInput]:
-    items: list[UserInput] = []
+def _user_inputs_from_message(widget: Any, user_message: UserMessage) -> List[UserInput]:
+    items: List[UserInput] = []
     for image_url in user_message.remote_image_urls:
         items.append(UserInput("Image", {"url": image_url, "detail": None}))
     for image in user_message.local_images:
@@ -324,14 +329,14 @@ def _user_inputs_from_message(widget: Any, user_message: UserMessage) -> list[Us
 
     mentions = collect_tool_mentions(user_message.text, {})
     bound_names = {binding.mention for binding in user_message.mention_bindings}
-    skill_names_lower: set[str] = set()
-    selected_skill_paths: set[str] = set()
+    skill_names_lower: Set[str] = set()
+    selected_skill_paths: Set[str] = set()
 
     skills = widget.bottom_pane.skills()
     if skills is not None:
         skill_names_lower = {skill.name.lower() for skill in skills}
         for binding in user_message.mention_bindings:
-            path = binding.path.removeprefix("skill://")
+            path = _strip_prefix(binding.path, "skill://")
             for skill in skills:
                 if skill.path_to_skills_md == path and skill.path_to_skills_md not in selected_skill_paths:
                     selected_skill_paths.add(skill.path_to_skills_md)
@@ -343,11 +348,11 @@ def _user_inputs_from_message(widget: Any, user_message: UserMessage) -> list[Us
             selected_skill_paths.add(skill.path_to_skills_md)
             items.append(UserInput("Skill", {"name": skill.name, "path": skill.path_to_skills_md}))
 
-    selected_plugin_ids: set[str] = set()
+    selected_plugin_ids: Set[str] = set()
     plugins = widget.plugins_for_mentions()
     if plugins is not None:
         for binding in user_message.mention_bindings:
-            plugin_id = binding.path.removeprefix("plugin://")
+            plugin_id = _strip_prefix(binding.path, "plugin://")
             if plugin_id == binding.path or not plugin_id or plugin_id in selected_plugin_ids:
                 continue
             for plugin in plugins:
@@ -356,11 +361,11 @@ def _user_inputs_from_message(widget: Any, user_message: UserMessage) -> list[Us
                     items.append(UserInput("Mention", {"name": plugin.display_name, "path": binding.path}))
                     break
 
-    selected_app_ids: set[str] = set()
+    selected_app_ids: Set[str] = set()
     apps = widget.connectors_for_mentions()
     if apps is not None:
         for binding in user_message.mention_bindings:
-            app_id = binding.path.removeprefix("app://")
+            app_id = _strip_prefix(binding.path, "app://")
             if app_id == binding.path or not app_id or app_id in selected_app_ids:
                 continue
             for app in apps:
@@ -389,7 +394,10 @@ def user_message_for_restore(user_message: UserMessage, history_record: UserMess
     return user_message
 
 
-def user_message_display_for_history(user_message: UserMessage, history_record: UserMessageHistoryRecord) -> dict[str, Any]:
+def user_message_display_for_history(
+    user_message: UserMessage,
+    history_record: UserMessageHistoryRecord,
+) -> Dict[str, Any]:
     restored = user_message_for_restore(user_message, history_record)
     return {
         "text": restored.text,
@@ -400,7 +408,7 @@ def user_message_display_for_history(user_message: UserMessage, history_record: 
     }
 
 
-def pending_steer_compare_key_from_items(items: list[UserInput]) -> tuple[Any, ...]:
+def pending_steer_compare_key_from_items(items: List[UserInput]) -> Tuple[Any, ...]:
     return tuple((item.kind, tuple(sorted(item.payload.items()))) for item in items)
 
 
@@ -411,7 +419,11 @@ def encode_history_mentions(text: str, mention_bindings: tuple[MentionBinding, .
     return result
 
 
-def _history_text(text: str, history_record: UserMessageHistoryRecord, mention_bindings: tuple[MentionBinding, ...]) -> str | None:
+def _history_text(
+    text: str,
+    history_record: UserMessageHistoryRecord,
+    mention_bindings: Tuple[MentionBinding, ...],
+) -> Optional[str]:
     if history_record.kind is UserMessageHistoryRecordKind.USER_MESSAGE_TEXT and text:
         return encode_history_mentions(text, mention_bindings)
     if history_record.kind is UserMessageHistoryRecordKind.OVERRIDE and history_record.text:
@@ -421,7 +433,7 @@ def _history_text(text: str, history_record: UserMessageHistoryRecord, mention_b
 
 def _connector_mention_slug(app: Any) -> str:
     name = getattr(app, "name", "")
-    chars: list[str] = []
+    chars: List[str] = []
     prev_dash = False
     for char in name.lower():
         if char.isascii() and char.isalnum():
@@ -431,3 +443,9 @@ def _connector_mention_slug(app: Any) -> str:
             chars.append("-")
             prev_dash = True
     return "".join(chars).strip("-")
+
+
+def _strip_prefix(value: str, prefix: str) -> str:
+    if value.startswith(prefix):
+        return value[len(prefix) :]
+    return value

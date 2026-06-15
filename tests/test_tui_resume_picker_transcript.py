@@ -1,4 +1,4 @@
-"""Parity tests for Rust ``codex-tui::resume_picker::transcript``.
+ï»¿"""Parity tests for Rust ``codex-tui::resume_picker::transcript``.
 
 Rust source: ``codex/codex-rs/tui/src/resume_picker/transcript.rs``.
 """
@@ -73,19 +73,19 @@ def test_fallback_transcript_cell_formats_tool_and_command_items() -> None:
         "aggregated_output": "line 1\nline 2\n",
     })
     assert command is not None
-    assert command.lines == ("$ cargo test", "status: Failed ¡¤ exit 101", "  line 1", "  line 2")
+    assert command.lines == ("$ cargo test", "status: Failed Â· exit 101", "  line 1", "  line 2")
 
-    assert fallback_transcript_cell({"kind": "FileChange", "status": "Done", "changes": [1, 2]}).text == "file changes: Done ¡¤ 2 changes"
-    assert fallback_transcript_cell({"kind": "McpToolCall", "server": "srv", "tool": "lookup", "status": "Ok"}).text == "mcp tool: srv/lookup ¡¤ Ok"
-    assert fallback_transcript_cell({"kind": "DynamicToolCall", "namespace": "ns", "tool": "run", "status": "Ok"}).text == "tool: ns/run ¡¤ Ok"
-    assert fallback_transcript_cell({"kind": "DynamicToolCall", "tool": "run", "status": "Ok"}).text == "tool: run ¡¤ Ok"
+    assert fallback_transcript_cell({"kind": "FileChange", "status": "Done", "changes": [1, 2]}).text == "file changes: Done Â· 2 changes"
+    assert fallback_transcript_cell({"kind": "McpToolCall", "server": "srv", "tool": "lookup", "status": "Ok"}).text == "mcp tool: srv/lookup Â· Ok"
+    assert fallback_transcript_cell({"kind": "DynamicToolCall", "namespace": "ns", "tool": "run", "status": "Ok"}).text == "tool: ns/run Â· Ok"
+    assert fallback_transcript_cell({"kind": "DynamicToolCall", "tool": "run", "status": "Ok"}).text == "tool: run Â· Ok"
 
 
 def test_fallback_transcript_cell_formats_misc_items_and_skips_owned_core_types() -> None:
     assert fallback_transcript_cell({"kind": "HookPrompt", "fragments": [{"text": "  review me  "}]}).text == "hook prompt: review me"
     assert fallback_transcript_cell({"kind": "WebSearch", "query": "codex"}).text == "web search: codex"
     assert fallback_transcript_cell({"kind": "ImageView", "path": "/tmp/a.png"}).text == "image: /tmp/a.png"
-    assert fallback_transcript_cell({"kind": "ImageGeneration", "status": "done", "saved_path": "/tmp/out.png"}).text == "image generation: done ¡¤ /tmp/out.png"
+    assert fallback_transcript_cell({"kind": "ImageGeneration", "status": "done", "saved_path": "/tmp/out.png"}).text == "image generation: done Â· /tmp/out.png"
     assert fallback_transcript_cell({"kind": "EnteredReviewMode", "review": "abc"}).text == "review started: abc"
     assert fallback_transcript_cell({"kind": "ExitedReviewMode", "review": "abc"}).text == "review finished: abc"
     assert fallback_transcript_cell({"kind": "ContextCompaction"}).text == "context compacted"
@@ -106,3 +106,4 @@ def test_load_session_transcript_reads_include_turns_true() -> None:
 
     assert app.calls == [("thread-1", True)]
     assert cells[0].kind == "proposed_plan"
+

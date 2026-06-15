@@ -21,7 +21,12 @@ from typing import Any, Dict, List, Mapping, Optional, Protocol, Sequence, Union
 
 from ._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="config_update", source="codex/codex-rs/tui/src/config_update.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="config_update",
+    source="codex/codex-rs/tui/src/config_update.rs",
+    status="complete",
+)
 
 SERVICE_TIER_DEFAULT_REQUEST_VALUE = "default"
 

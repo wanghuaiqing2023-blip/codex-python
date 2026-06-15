@@ -10,7 +10,9 @@ from pycodex.tui.chatwidget.permission_popups import (
     PermissionProfile,
     PermissionProfileSelection,
     builtin_approval_presets,
+    open_approvals_popup,
     open_auto_review_denials_popup,
+    approve_recent_auto_review_denial,
     open_full_access_confirmation,
     open_permissions_popup,
     permission_mode_actions,
@@ -81,6 +83,27 @@ def test_open_permissions_popup_builds_current_agent_and_guardian_auto_review_it
     assert params.items[2].actions[0].kind == "OpenFullAccessConfirmation"
 
 
+def test_open_approvals_popup_aliases_permissions_popup() -> None:
+    widget = Widget()
+
+    params = open_approvals_popup(widget)
+
+    assert params is widget.bottom_pane.params
+    assert params.title == "Update Model Permissions"
+
+
+def test_open_permissions_popup_delegates_explicit_permission_profile_mode() -> None:
+    # Rust parity: open_permissions_popup immediately delegates when
+    # explicit_permission_profile_mode is enabled.
+    widget = Widget()
+    widget.config.explicit_permission_profile_mode = True
+    expected = object()
+    widget.open_permission_profiles_popup = lambda: expected
+
+    assert open_permissions_popup(widget) is expected
+    assert widget.bottom_pane.params is None
+
+
 def test_permission_mode_actions_require_confirmation_for_unacknowledged_full_access() -> None:
     widget = Widget()
     full_access = next(preset for preset in builtin_approval_presets(widget.config.cwd) if preset.id == "full-access")
@@ -126,6 +149,47 @@ def test_permission_mode_actions_apply_selection_when_profile_selection_is_prese
     assert actions == [AppEvent("SelectPermissionProfile", {"selection": selection})]
 
 
+def test_permission_mode_actions_route_windows_auto_mode_confirmations() -> None:
+    widget = Widget()
+    widget.config.windows_sandbox_level = "Disabled"
+    preset = builtin_approval_presets(widget.config.cwd)[1]
+
+    actions = permission_mode_actions(
+        widget,
+        preset,
+        "Agent",
+        ApprovalsReviewer.USER,
+        profile_selection=None,
+        return_to_permissions=True,
+    )
+
+    assert actions[0].kind == "OpenWindowsSandboxEnablePrompt"
+
+    widget.config.windows_sandbox_level = None
+    widget.world_writable_warning_details = lambda: (["/repo"], 2, False)
+    actions = permission_mode_actions(
+        widget,
+        preset,
+        "Agent",
+        ApprovalsReviewer.USER,
+        profile_selection=None,
+        return_to_permissions=True,
+    )
+
+    assert actions == [
+        AppEvent(
+            "OpenWorldWritableWarningConfirmation",
+            {
+                "preset": preset,
+                "profile_selection": None,
+                "sample_paths": ["/repo"],
+                "extra_count": 2,
+                "failed_scan": False,
+            },
+        )
+    ]
+
+
 def test_preset_matches_current_special_cases_full_read_only_and_auto() -> None:
     cwd = "/repo"
     presets = {preset.id: preset for preset in builtin_approval_presets(cwd)}
@@ -161,6 +225,22 @@ class Denials:
         return tuple(self._events)
 
 
+class MutableDenials:
+    def __init__(self, events) -> None:
+        self._events = {event.id: event for event in events}
+
+    def take(self, id):
+        return self._events.pop(id, None)
+
+
+class Tx:
+    def __init__(self) -> None:
+        self.events = []
+
+    def send(self, event) -> None:
+        self.events.append(event)
+
+
 def test_open_auto_review_denials_popup_empty_and_nonempty_paths() -> None:
     widget = Widget()
     widget.review = SimpleNamespace(recent_auto_review_denials=Denials(()))
@@ -180,3 +260,31 @@ def test_open_auto_review_denials_popup_empty_and_nonempty_paths() -> None:
         AppEvent("ApproveRecentAutoReviewDenial", {"thread_id": "thread-1", "id": "d1"})
     ]
     assert widget.redraws == 1
+
+
+def test_approve_recent_auto_review_denial_consumes_event_and_reports_missing() -> None:
+    # Rust parity: approve_recent_auto_review_denial removes the denial, submits the
+    # approval op, and reports an error when the id is stale.
+    widget = Widget()
+    widget.app_event_tx = Tx()
+    denial = SimpleNamespace(id="d1", action="rm -rf", rationale="unsafe")
+    widget.review = SimpleNamespace(recent_auto_review_denials=MutableDenials((denial,)))
+
+    events = approve_recent_auto_review_denial(widget, "thread-1", "d1")
+
+    assert events == widget.app_event_tx.events
+    assert events == [
+        AppEvent(
+            "SubmitThreadOp",
+            {
+                "thread_id": "thread-1",
+                "op": ("approve_guardian_denied_action", denial),
+            },
+        )
+    ]
+    assert widget.info_messages[-1][0] == (
+        "Approval recorded for one retry of the selected auto-review denial."
+    )
+
+    assert approve_recent_auto_review_denial(widget, "thread-1", "d1") is None
+    assert widget.error_messages[-1] == "That auto-review denial is no longer available."

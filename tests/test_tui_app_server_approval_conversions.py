@@ -9,6 +9,7 @@ from pycodex.protocol.models import (
     FileSystemPath,
     FileSystemPermissions,
     FileSystemSandboxEntry,
+    FileSystemSpecialPath,
     NetworkPermissions,
 )
 from pycodex.protocol.request_permissions import RequestPermissionProfile
@@ -43,11 +44,25 @@ def test_converts_file_update_changes_to_display_delete_and_update() -> None:
     }
 
 
+def test_duplicate_file_update_paths_keep_last_hashmap_value() -> None:
+    # Rust source: file_update_changes_to_display collects into HashMap<PathBuf, FileChange>.
+    changes = [
+        FileUpdateChange(path="same.txt", kind=PatchChangeKind.ADD, diff="first\n"),
+        FileUpdateChange(path="same.txt", kind=PatchChangeKind.DELETE, diff="second\n"),
+    ]
+
+    assert file_update_changes_to_display(changes) == {
+        Path("same.txt"): FileChange.delete("second\n"),
+    }
+
+
 def test_converts_request_permissions_into_granted_permissions() -> None:
     # Rust: converts_request_permissions_into_granted_permissions
+    read_only = Path.cwd() / "tmp" / "read-only"
+    write = Path.cwd() / "tmp" / "write"
     file_system = FileSystemPermissions.from_read_write_roots(
-        read=[absolute_path("/tmp/read-only")],
-        write=[absolute_path("/tmp/write")],
+        read=[absolute_path(read_only)],
+        write=[absolute_path(write)],
     )
     request = RequestPermissionProfile(
         network=NetworkPermissions(enabled=True),
@@ -63,7 +78,7 @@ def test_converts_request_permissions_into_granted_permissions() -> None:
 def test_converts_request_permissions_into_canonical_granted_permissions() -> None:
     # Rust: converts_request_permissions_into_canonical_granted_permissions
     root_entry = FileSystemSandboxEntry(
-        path=FileSystemPath.special("root"),
+        path=FileSystemPath.special(FileSystemSpecialPath.root()),
         access=FileSystemAccessMode.WRITE,
     )
     file_system = FileSystemPermissions(entries=(root_entry,))

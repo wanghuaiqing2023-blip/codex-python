@@ -10,11 +10,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Iterable
+from typing import Dict, Iterable, List, Optional, Set, Union
 
 from .._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="chatwidget::mcp_startup", source="codex/codex-rs/tui/src/chatwidget/mcp_startup.rs")
+RUST_MODULE = RustTuiModule(crate="codex-tui", module="chatwidget::mcp_startup", source="codex/codex-rs/tui/src/chatwidget/mcp_startup.rs", status="complete")
 
 MCP_STARTUP_SINGLE_HEADER_PREFIX = "Booting MCP server:"
 MCP_STARTUP_MULTI_HEADER_PREFIX = "Starting MCP servers"
@@ -30,7 +30,7 @@ class McpStartupStatusKind(Enum):
 @dataclass(frozen=True)
 class McpStartupStatus:
     kind: McpStartupStatusKind
-    error: str | None = None
+    error: Optional[str] = None
 
     @classmethod
     def starting(cls) -> "McpStartupStatus":
@@ -58,21 +58,21 @@ class McpStartupStatus:
 @dataclass(frozen=True)
 class McpServerStatusUpdatedNotification:
     name: str
-    status: str | McpStartupStatusKind
-    error: str | None = None
+    status: Union[str, McpStartupStatusKind]
+    error: Optional[str] = None
 
 
 @dataclass
 class McpStartupModel:
-    expected_servers: set[str] | None = None
-    startup_status: dict[str, McpStartupStatus] | None = None
+    expected_servers: Optional[Set[str]] = None
+    startup_status: Optional[Dict[str, McpStartupStatus]] = None
     ignore_updates_until_next_start: bool = False
     allow_terminal_only_next_round: bool = False
     pending_next_round_saw_starting: bool = False
-    pending_next_round: dict[str, McpStartupStatus] = field(default_factory=dict)
+    pending_next_round: Dict[str, McpStartupStatus] = field(default_factory=dict)
     status_header: str = ""
     task_running: bool = False
-    warnings: list[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
     redraw_requests: int = 0
     task_running_updates: int = 0
     reasoning_restores: int = 0
@@ -130,13 +130,13 @@ class McpStartupModel:
         self._update_status_header_for_starting()
         self.request_redraw()
 
-    def finish_mcp_startup(self, failed: list[str], cancelled: list[str]) -> None:
+    def finish_mcp_startup(self, failed: List[str], cancelled: List[str]) -> None:
         if cancelled:
             self.on_warning(
                 "MCP startup interrupted. The following servers were not initialized: "
                 + ", ".join(cancelled)
             )
-        parts: list[str] = []
+        parts: List[str] = []
         if failed:
             parts.append("failed: " + ", ".join(failed))
         if parts:
@@ -165,8 +165,8 @@ class McpStartupModel:
         server_names = set(self.startup_status)
         if self.expected_servers is not None:
             server_names.update(self.expected_servers)
-        failed: list[str] = []
-        cancelled: list[str] = []
+        failed: List[str] = []
+        cancelled: List[str] = []
         for name in sorted(server_names):
             state = self.startup_status.get(name)
             if state is None or state.kind in {McpStartupStatusKind.CANCELLED, McpStartupStatusKind.STARTING}:

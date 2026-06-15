@@ -6,17 +6,20 @@ import asyncio
 import os
 import shlex
 import shutil
-import subprocess
-import sys
 import tempfile
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Optional, Sequence
 
 from ._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="external_editor", source="codex/codex-rs/tui/src/external_editor.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="external_editor",
+    source="codex/codex-rs/tui/src/external_editor.rs",
+    status="complete",
+)
 
 
 class EditorError(Enum):
@@ -36,7 +39,7 @@ def resolve_windows_program(program: str) -> Path:
     return Path(resolved) if resolved else Path(program)
 
 
-def resolve_editor_command(env: dict[str, str] | None = None) -> list[str]:
+def resolve_editor_command(env: Optional[Dict[str, str]] = None) -> List[str]:
     """Resolve editor command from ``VISUAL`` first, then ``EDITOR``."""
 
     source = os.environ if env is None else env
@@ -56,13 +59,13 @@ def resolve_editor_command(env: dict[str, str] | None = None) -> list[str]:
     return parts
 
 
-async def run_editor(seed: str, editor_cmd: list[str] | tuple[str, ...]) -> str:
+async def run_editor(seed: str, editor_cmd: Sequence[str]) -> str:
     """Write seed to a temp ``.md`` file, run editor, return updated content."""
 
     if not editor_cmd:
         raise ExternalEditorError("editor command is empty")
 
-    tmp_path: str | None = None
+    tmp_path: Optional[str] = None
     try:
         with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False, encoding="utf-8") as handle:
             tmp_path = handle.name
@@ -91,8 +94,8 @@ async def run_editor(seed: str, editor_cmd: list[str] | tuple[str, ...]) -> str:
 
 @dataclass
 class EnvGuard:
-    visual: str | None
-    editor: str | None
+    visual: Optional[str]
+    editor: Optional[str]
 
     @classmethod
     def new(cls) -> "EnvGuard":
@@ -108,7 +111,7 @@ def drop(value: Any) -> None:
         value.restore()
 
 
-def restore_env(key: str, value: str | None) -> None:
+def restore_env(key: str, value: Optional[str]) -> None:
     if value is None:
         os.environ.pop(key, None)
     else:

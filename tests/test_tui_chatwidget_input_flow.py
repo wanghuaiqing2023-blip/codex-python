@@ -181,3 +181,18 @@ def test_set_queue_submissions_until_session_configured_gate():
     assert InputFlowModel(session_configured=False).set_queue_submissions_until_session_configured(True) is True
     assert InputFlowModel(session_configured=True).set_queue_submissions_until_session_configured(True) is False
     assert InputFlowModel(session_configured=False).set_queue_submissions_until_session_configured(False) is False
+
+
+def test_maybe_send_next_drains_rejected_steers_before_queued_messages() -> None:
+    from pycodex.tui.chatwidget.input_flow import QueuedUserMessage
+
+    model = InputFlowModel()
+    model.input_queue.rejected_steers_queue.append(UserMessage("rejected"))
+    model.input_queue.queued_user_messages.append(QueuedUserMessage(UserMessage("queued")))
+    model.input_queue.queued_user_message_history_records.append("queued-history")
+
+    assert model.maybe_send_next_queued_input() is True
+
+    assert model.submitted_messages_with_history[0][0].text == "rejected"
+    assert model.submitted_messages_with_history[0][1] == "UserMessageText"
+    assert model.queued_user_message_texts() == ["queued"]

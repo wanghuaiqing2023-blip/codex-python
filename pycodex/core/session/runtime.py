@@ -292,6 +292,9 @@ class InMemoryInputQueue:
         pending = _turn_state_pending_input_items(turn_state)
         items = tuple(pending)
         pending.clear()
+        if self.items:
+            items = items + tuple(self.items)
+            self.items.clear()
         accepts_mailbox = _accepts_mailbox_delivery_for_current_turn(turn_state)
         if accepts_mailbox and self.mailbox_pending_mails:
             items = items + tuple(await self.drain_mailbox_input_items())
@@ -303,6 +306,8 @@ class InMemoryInputQueue:
             return bool(self.items) or bool(self.mailbox_pending_mails)
         pending = _turn_state_pending_input_items(turn_state)
         if pending:
+            return True
+        if self.items:
             return True
         return _accepts_mailbox_delivery_for_current_turn(turn_state) and bool(self.mailbox_pending_mails)
 

@@ -1,4 +1,4 @@
-"""Thread event buffering and replay state for the TUI app.
+﻿"""Thread event buffering and replay state for the TUI app.
 
 Rust reference: codex-rs/tui/src/app/thread_events.rs.
 """
@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Dict, List, Optional, Union
 
 from .._porting import RustTuiModule
 from .pending_interactive_replay import (
@@ -17,7 +17,12 @@ from .pending_interactive_replay import (
     ServerRequest,
 )
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="app::thread_events", source="codex/codex-rs/tui/src/app/thread_events.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="app::thread_events",
+    source="codex/codex-rs/tui/src/app/thread_events.rs",
+    status="complete",
+)
 
 
 class SideParentStatus(str, Enum):
@@ -29,15 +34,15 @@ class SideParentStatus(str, Enum):
 class Turn:
     id: str
     status: str
-    items: list[Any] = field(default_factory=list)
+    items: List[Any] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
 class ThreadEventSnapshot:
-    session: Any | None = None
-    turns: list[Turn] = field(default_factory=list)
-    events: list["ThreadBufferedEvent"] = field(default_factory=list)
-    input_state: Any | None = None
+    session: Optional[Any] = None
+    turns: List[Turn] = field(default_factory=list)
+    events: List["ThreadBufferedEvent"] = field(default_factory=list)
+    input_state: Optional[Any] = None
 
 
 @dataclass(frozen=True)
@@ -73,16 +78,16 @@ class FeedbackThreadEvent:
 @dataclass
 class ThreadEventStore:
     capacity: int
-    session: Any | None = None
-    turns: list[Turn] = field(default_factory=list)
-    buffer: list[ThreadBufferedEvent] = field(default_factory=list)
+    session: Optional[Any] = None
+    turns: List[Turn] = field(default_factory=list)
+    buffer: List[ThreadBufferedEvent] = field(default_factory=list)
     pending_interactive_replay: PendingInteractiveReplayState = field(default_factory=PendingInteractiveReplayState)
-    _active_turn_id: str | None = None
-    input_state: Any | None = None
+    _active_turn_id: Optional[str] = None
+    input_state: Optional[Any] = None
     active: bool = False
 
     @staticmethod
-    def event_survives_session_refresh(event: ThreadBufferedEvent | dict[str, Any] | Any) -> bool:
+    def event_survives_session_refresh(event: Union[ThreadBufferedEvent, Dict[str, Any], Any]) -> bool:
         event = _coerce_event(event)
         if event.kind == "Request":
             return True
@@ -97,24 +102,24 @@ class ThreadEventStore:
         return cls(capacity=int(capacity))
 
     @classmethod
-    def new_with_session(cls, capacity: int, session: Any, turns: list[Any]) -> "ThreadEventStore":
+    def new_with_session(cls, capacity: int, session: Any, turns: List[Any]) -> "ThreadEventStore":
         store = cls.new(capacity)
         store.set_session(session, turns)
         return store
 
-    def set_session(self, session: Any, turns: list[Any]) -> None:
+    def set_session(self, session: Any, turns: List[Any]) -> None:
         self.session = session
         self.set_turns(turns)
 
     def rebase_buffer_after_session_refresh(self) -> None:
         self.buffer = [event for event in self.buffer if self.event_survives_session_refresh(event)]
 
-    def set_turns(self, turns: list[Any]) -> None:
+    def set_turns(self, turns: List[Any]) -> None:
         coerced = [_coerce_turn(turn) for turn in turns]
         self._active_turn_id = next((turn.id for turn in reversed(coerced) if turn.status == "InProgress"), None)
         self.turns = coerced
 
-    def push_notification(self, notification: ServerNotification | dict[str, Any] | Any) -> None:
+    def push_notification(self, notification: Union[ServerNotification, Dict[str, Any], Any]) -> None:
         notification = _coerce_notification(notification)
         self.pending_interactive_replay.note_server_notification(notification)
         if notification.kind == "TurnStarted":
@@ -125,19 +130,19 @@ class ThreadEventStore:
             self._active_turn_id = None
         self._push(ThreadBufferedEvent.notification(notification))
 
-    def push_request(self, request: ServerRequest | dict[str, Any] | Any) -> None:
+    def push_request(self, request: Union[ServerRequest, Dict[str, Any], Any]) -> None:
         request = _coerce_request(request)
         self.pending_interactive_replay.note_server_request(request)
         self._push(ThreadBufferedEvent.request(request))
 
-    def pending_replay_requests(self) -> list[ServerRequest]:
+    def pending_replay_requests(self) -> List[ServerRequest]:
         return [
             event.payload
             for event in self.buffer
             if event.kind == "Request" and self.pending_interactive_replay.should_replay_snapshot_request(event.payload)
         ]
 
-    def file_change_changes(self, turn_id: str, item_id: str) -> list[Any] | None:
+    def file_change_changes(self, turn_id: str, item_id: str) -> Optional[List[Any]]:
         for event in reversed(self.buffer):
             if event.kind == "Notification" and _variant_name(event.payload) in {"ItemStarted", "ItemCompleted"}:
                 if turn_id_matches(turn_id, _notification_turn_id(event.payload)):
@@ -168,24 +173,24 @@ class ThreadEventStore:
         ]
         return ThreadEventSnapshot(self.session, list(self.turns), events, self.input_state)
 
-    def note_outbound_op(self, op: AppCommand | dict[str, Any] | Any) -> None:
+    def note_outbound_op(self, op: Union[AppCommand, Dict[str, Any], Any]) -> None:
         self.pending_interactive_replay.note_outbound_op(op)
 
     @staticmethod
-    def op_can_change_pending_replay_state(op: AppCommand | dict[str, Any] | Any) -> bool:
+    def op_can_change_pending_replay_state(op: Union[AppCommand, Dict[str, Any], Any]) -> bool:
         return PendingInteractiveReplayState.op_can_change_state(op)
 
     def has_pending_thread_approvals(self) -> bool:
         return self.pending_interactive_replay.has_pending_thread_approvals()
 
-    def side_parent_pending_status(self) -> SideParentStatus | None:
+    def side_parent_pending_status(self) -> Optional[SideParentStatus]:
         if self.pending_interactive_replay.has_pending_thread_user_input():
             return SideParentStatus.NEEDS_INPUT
         if self.pending_interactive_replay.has_pending_thread_approvals():
             return SideParentStatus.NEEDS_APPROVAL
         return None
 
-    def active_turn_id(self) -> str | None:
+    def active_turn_id(self) -> Optional[str]:
         return self._active_turn_id
 
     def clear_active_turn_id(self) -> None:
@@ -203,7 +208,7 @@ def turn_id_matches(request_turn_id: str, candidate_turn_id: str) -> bool:
     return request_turn_id == "" or request_turn_id == candidate_turn_id
 
 
-def file_change_item_changes(item: Any, item_id: str) -> list[Any] | None:
+def file_change_item_changes(item: Any, item_id: str) -> Optional[List[Any]]:
     if item is None:
         return None
     if isinstance(item, dict):
@@ -217,18 +222,18 @@ def file_change_item_changes(item: Any, item_id: str) -> list[Any] | None:
 
 @dataclass
 class ThreadEventChannel:
-    sender: list[ThreadBufferedEvent]
-    receiver: list[ThreadBufferedEvent] | None
+    sender: List[ThreadBufferedEvent]
+    receiver: Optional[List[ThreadBufferedEvent]]
     store: ThreadEventStore
 
     @classmethod
     def new(cls, capacity: int) -> "ThreadEventChannel":
-        queue: list[ThreadBufferedEvent] = []
+        queue: List[ThreadBufferedEvent] = []
         return cls(queue, queue, ThreadEventStore.new(capacity))
 
     @classmethod
-    def new_with_session(cls, capacity: int, session: Any, turns: list[Any]) -> "ThreadEventChannel":
-        queue: list[ThreadBufferedEvent] = []
+    def new_with_session(cls, capacity: int, session: Any, turns: List[Any]) -> "ThreadEventChannel":
+        queue: List[ThreadBufferedEvent] = []
         return cls(queue, queue, ThreadEventStore.new_with_session(capacity, session, turns))
 
 
@@ -236,8 +241,11 @@ def test_thread_session(thread_id: str = "thread-1", cwd: str = "/tmp/project") 
     return {"thread_id": thread_id, "cwd": cwd}
 
 
-def test_turn(turn_id: str, status: str, items: list[Any] | None = None) -> Turn:
+def test_turn(turn_id: str, status: str, items: List[Any] | None = None) -> Turn:
     return Turn(turn_id, status, list(items or []))
+
+
+test_turn.__test__ = False
 
 
 def turn_started_notification(thread_id: str, turn_id: str) -> ServerNotification:
@@ -256,7 +264,7 @@ def hook_completed_notification(thread_id: str, turn_id: str) -> ServerNotificat
     return ServerNotification("HookCompleted", turn_id=turn_id, item={"thread_id": thread_id})
 
 
-def exec_approval_request(thread_id: str, turn_id: str, item_id: str, approval_id: str | None = None) -> ServerRequest:
+def exec_approval_request(thread_id: str, turn_id: str, item_id: str, approval_id: Optional[str] = None) -> ServerRequest:
     return ServerRequest("CommandExecutionRequestApproval", 1, {"thread_id": thread_id, "turn_id": turn_id, "item_id": item_id, "approval_id": approval_id})
 
 
@@ -304,7 +312,7 @@ def thread_event_store_rebase_preserves_hook_notifications() -> bool:
     return [event.payload for event in store.snapshot().events] == [started, completed]
 
 
-def _coerce_event(event: ThreadBufferedEvent | dict[str, Any] | Any) -> ThreadBufferedEvent:
+def _coerce_event(event: Union[ThreadBufferedEvent, Dict[str, Any], Any]) -> ThreadBufferedEvent:
     if isinstance(event, ThreadBufferedEvent):
         return event
     if isinstance(event, dict):
@@ -312,7 +320,7 @@ def _coerce_event(event: ThreadBufferedEvent | dict[str, Any] | Any) -> ThreadBu
     return ThreadBufferedEvent(str(getattr(event, "kind", getattr(event, "type", event.__class__.__name__))), getattr(event, "payload", None))
 
 
-def _coerce_request(request: ServerRequest | dict[str, Any] | Any) -> ServerRequest:
+def _coerce_request(request: Union[ServerRequest, Dict[str, Any], Any]) -> ServerRequest:
     if isinstance(request, ServerRequest):
         return request
     if isinstance(request, dict):
@@ -320,7 +328,7 @@ def _coerce_request(request: ServerRequest | dict[str, Any] | Any) -> ServerRequ
     return ServerRequest(str(getattr(request, "kind", getattr(request, "type", request.__class__.__name__))), getattr(request, "request_id"), dict(getattr(request, "params", {}) or {}))
 
 
-def _coerce_notification(notification: ServerNotification | dict[str, Any] | Any) -> ServerNotification:
+def _coerce_notification(notification: Union[ServerNotification, Dict[str, Any], Any]) -> ServerNotification:
     if isinstance(notification, ServerNotification):
         return notification
     if isinstance(notification, dict):
@@ -328,7 +336,7 @@ def _coerce_notification(notification: ServerNotification | dict[str, Any] | Any
     return ServerNotification(str(getattr(notification, "kind", getattr(notification, "type", notification.__class__.__name__))), getattr(notification, "request_id", None), getattr(notification, "turn_id", None), getattr(notification, "item", None))
 
 
-def _coerce_turn(turn: Turn | dict[str, Any] | Any) -> Turn:
+def _coerce_turn(turn: Union[Turn, Dict[str, Any], Any]) -> Turn:
     if isinstance(turn, Turn):
         return turn
     if isinstance(turn, dict):
@@ -346,7 +354,7 @@ def _variant_name(value: Any) -> str:
     return str(getattr(value, "kind", getattr(value, "type", getattr(value, "variant", value.__class__.__name__))))
 
 
-def _turn_id_from_notification(notification: ServerNotification) -> str | None:
+def _turn_id_from_notification(notification: ServerNotification) -> Optional[str]:
     return notification.turn_id
 
 
