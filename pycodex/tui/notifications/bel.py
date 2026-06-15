@@ -1,4 +1,4 @@
-"""Behavior port for Rust ``codex-tui::notifications::bel``."""
+﻿"""Behavior port for Rust ``codex-tui::notifications::bel``."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Any, Optional, TextIO
 
 from .._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="notifications::bel", source="codex/codex-rs/tui/src/notifications/bel.rs")
+RUST_MODULE = RustTuiModule(crate="codex-tui", module="notifications::bel", source="codex/codex-rs/tui/src/notifications/bel.rs", status="complete")
 
 BEL = "\x07"
 
@@ -62,3 +62,4 @@ __all__ = [
     "is_ansi_code_supported",
     "write_ansi",
 ]
+

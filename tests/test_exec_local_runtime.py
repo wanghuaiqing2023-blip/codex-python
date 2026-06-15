@@ -2292,9 +2292,9 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         session_events = tuple(result.session_events)
         self.assertEqual(session_events[0].type, "entered_review_mode")
         self.assertEqual(session_events[0].payload.user_facing_hint, "current changes")
-        self.assertEqual(session_events[-1].type, "exited_review_mode")
-        self.assertEqual(session_events[-1].payload.review_output.overall_explanation, "No findings.")
-        self.assertEqual(session_events[-1].payload.review_output.overall_confidence_score, 0.91)
+        exit_event = next(event for event in reversed(session_events) if event.type == "exited_review_mode")
+        self.assertEqual(exit_event.payload.review_output.overall_explanation, "No findings.")
+        self.assertEqual(exit_event.payload.review_output.overall_confidence_score, 0.91)
         rollout_input = local_http_review_rollout_input_items(result)
         self.assertEqual(len(rollout_input), 1)
         self.assertIn("full review output from reviewer model", rollout_input[0].text)
@@ -2373,8 +2373,9 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any("project instructions must not enter review" in text for text in input_texts))
         self.assertEqual(final_text_from_local_http_exec_result(result), "Core review ok.")
         session_events = tuple(result.session_events)
-        self.assertEqual([session_events[0].type, session_events[-1].type], ["entered_review_mode", "exited_review_mode"])
-        self.assertEqual(session_events[-1].payload.review_output.overall_confidence_score, 0.87)
+        self.assertEqual(session_events[0].type, "entered_review_mode")
+        exit_event = next(event for event in reversed(session_events) if event.type == "exited_review_mode")
+        self.assertEqual(exit_event.payload.review_output.overall_confidence_score, 0.87)
 
     async def test_run_exec_review_http_sampling_plain_text_output_emits_review_lifecycle(self) -> None:
         class PlainReviewResponse:
@@ -2426,8 +2427,9 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
 
         session_events = tuple(result.session_events)
-        self.assertEqual([session_events[0].type, session_events[-1].type], ["entered_review_mode", "exited_review_mode"])
-        self.assertEqual(session_events[-1].payload.review_output.overall_explanation, "Looks good from here.")
+        self.assertEqual(session_events[0].type, "entered_review_mode")
+        exit_event = next(event for event in reversed(session_events) if event.type == "exited_review_mode")
+        self.assertEqual(exit_event.payload.review_output.overall_explanation, "Looks good from here.")
         self.assertEqual(final_text_from_local_http_exec_result(result), "Looks good from here.")
 
     async def test_run_exec_review_http_sampling_shell_tools_hide_view_image(self) -> None:

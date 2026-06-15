@@ -10,7 +10,12 @@ from typing import Any, Iterable
 
 from .._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="app::replay_filter", source="codex/codex-rs/tui/src/app/replay_filter.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="app::replay_filter",
+    source="codex/codex-rs/tui/src/app/replay_filter.rs",
+    status="complete",
+)
 
 PENDING_INTERACTIVE_REQUEST_KINDS = {
     "CommandExecutionRequestApproval",

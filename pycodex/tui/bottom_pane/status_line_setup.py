@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Iterable
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 from .._porting import RustTuiModule
 from .multi_select_picker import MultiSelectItem, MultiSelectPicker
@@ -14,6 +14,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="bottom_pane::status_line_setup",
     source="codex/codex-rs/tui/src/bottom_pane/status_line_setup.rs",
+    status="complete",
 )
 
 STATUS_LINE_USE_THEME_COLORS_ITEM_ID = "status-line-use-theme-colors"
@@ -71,7 +72,7 @@ class StatusLineItem(Enum):
         return _PREVIEW_ITEMS[self]
 
 
-_ALIASES: dict[str, StatusLineItem] = {}
+_ALIASES: Dict[str, StatusLineItem] = {}
 _DESCRIPTIONS = {
     StatusLineItem.MODEL_NAME: "Current model name",
     StatusLineItem.MODEL_WITH_REASONING: "Current model name with reasoning level",
@@ -140,9 +141,16 @@ class StatusLineSetupView:
     picker: MultiSelectPicker
 
     @classmethod
-    def new(cls, status_line_items: Iterable[str] | None, use_theme_colors: bool, preview_data: StatusSurfacePreviewData | None, app_event_tx: Any, list_keymap: Any = None) -> "StatusLineSetupView":
+    def new(
+        cls,
+        status_line_items: Optional[Iterable[str]],
+        use_theme_colors: bool,
+        preview_data: Optional[StatusSurfacePreviewData],
+        app_event_tx: Any,
+        list_keymap: Any = None,
+    ) -> "StatusLineSetupView":
         preview_data = preview_data or StatusSurfacePreviewData()
-        used_ids: set[str] = set()
+        used_ids: Set[str] = set()
         items = [MultiSelectItem(id=STATUS_LINE_USE_THEME_COLORS_ITEM_ID, name="Use theme colors", description="Apply colors from the active /theme", enabled=use_theme_colors, orderable=False, section_break_after=True)]
         if status_line_items is not None:
             for raw_id in status_line_items:
@@ -160,9 +168,9 @@ class StatusLineSetupView:
             if item_id not in used_ids:
                 items.append(cls.status_line_select_item(item, False, preview_data))
 
-        def preview_builder(current_items: list[MultiSelectItem]) -> Any | None:
+        def preview_builder(current_items: List[MultiSelectItem]) -> Any:
             theme_colors = next((item.enabled for item in current_items if item.id == STATUS_LINE_USE_THEME_COLORS_ITEM_ID), True)
-            selected = []
+            selected: List[StatusLineItem] = []
             for picker_item in current_items:
                 if picker_item.enabled:
                     try:
@@ -171,9 +179,9 @@ class StatusLineSetupView:
                         pass
             return preview_data.status_line_for_items(selected, theme_colors)
 
-        def on_confirm(ids: list[str], app_event: Any) -> None:
+        def on_confirm(ids: List[str], app_event: Any) -> None:
             theme_colors = STATUS_LINE_USE_THEME_COLORS_ITEM_ID in ids
-            selected_items = []
+            selected_items: List[StatusLineItem] = []
             for item_id in ids:
                 try:
                     selected_items.append(StatusLineItem.parse(item_id))
@@ -232,7 +240,7 @@ def parse_status_line_item(value: Any) -> StatusLineItem:
     return StatusLineItem.parse(value)
 
 
-def parse_status_line_items(values: Iterable[Any]) -> list[StatusLineItem]:
+def parse_status_line_items(values: Iterable[Any]) -> List[StatusLineItem]:
     return [StatusLineItem.parse(value) for value in values]
 
 
@@ -264,7 +272,7 @@ def render_lines(view: StatusLineSetupView, width: int) -> str:
     return view.render_lines(width)
 
 
-def line_text(line: Any | None) -> str | None:
+def line_text(line: Any) -> Optional[str]:
     if line is None:
         return None
     if isinstance(line, str):
@@ -278,7 +286,7 @@ def line_text(line: Any | None) -> str | None:
     return str(line)
 
 
-def _send(target: Any, event: dict[str, Any]) -> None:
+def _send(target: Any, event: Dict[str, Any]) -> None:
     if target is None:
         return
     if hasattr(target, "send"):
@@ -290,5 +298,18 @@ def _send(target: Any, event: dict[str, Any]) -> None:
 
 
 __all__ = [
-    "RUST_MODULE", "STATUS_LINE_USE_THEME_COLORS_ITEM_ID", "StatusLineItem", "StatusLineSetupView", "parse_status_line_item", "parse_status_line_items", "status_line_select_item", "handle_key_event", "is_complete", "on_ctrl_c", "render", "desired_height", "render_lines", "line_text",
+    "RUST_MODULE",
+    "STATUS_LINE_USE_THEME_COLORS_ITEM_ID",
+    "StatusLineItem",
+    "StatusLineSetupView",
+    "parse_status_line_item",
+    "parse_status_line_items",
+    "status_line_select_item",
+    "handle_key_event",
+    "is_complete",
+    "on_ctrl_c",
+    "render",
+    "desired_height",
+    "render_lines",
+    "line_text",
 ]

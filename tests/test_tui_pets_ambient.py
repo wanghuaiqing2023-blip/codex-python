@@ -14,6 +14,7 @@ from pycodex.tui.pets.ambient import (
     test_ambient_pet,
     test_animation,
 )
+from pycodex.tui.pets import catalog
 from pycodex.tui.pets.model import Animation, AnimationFrame, Pet
 
 
@@ -113,3 +114,36 @@ def test_draw_request_rejects_unsupported_or_too_small_layout():
     assert pet.draw_request((0, 0, 8, 20), composer_bottom_y=12) is None
     assert pet.draw_request((0, 0, 20, 20), composer_bottom_y=4) is None
     assert composer_gap_rows() == 1
+
+
+def test_ambient_pet_load_resolves_pet_and_frame_cache_paths(tmp_path):
+    pet_dir = tmp_path / "pets" / "chefito"
+    pet_dir.mkdir(parents=True)
+    (pet_dir / "pet.json").write_text(
+        '{"id":"chefito","displayName":"Chefito","spritesheetPath":"spritesheet.webp"}',
+        encoding="utf-8",
+    )
+    catalog.write_test_spritesheet(pet_dir / "spritesheet.webp")
+    calls = []
+
+    def preparer(pet, frame_dir):
+        calls.append((pet.id, frame_dir))
+        return [frame_dir / "frame_000.png"]
+
+    ambient = AmbientPet.load(
+        "chefito",
+        tmp_path,
+        frame_requester=None,
+        animations_enabled=False,
+        now=123.0,
+        support="Kitty",
+        frame_preparer=preparer,
+    )
+
+    assert ambient.pet.id == "chefito"
+    assert ambient.frames == [calls[0][1] / "frame_000.png"]
+    assert calls[0][1].parts[-1] == "frames"
+    assert calls[0][1].parts[-3] == "chefito"
+    assert ambient.sixel_dir == calls[0][1].parent / "sixel"
+    assert ambient.animation_started_at == 123.0
+    assert ambient.image_enabled()

@@ -7,14 +7,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, List, Optional
 
-from .._porting import RustTuiModule, not_ported
+from .._porting import RustTuiModule
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="app::plugin_mentions",
     source="codex/codex-rs/tui/src/app/plugin_mentions.rs",
+    status="complete",
 )
 
 
@@ -25,8 +26,8 @@ class PluginAvailability(str, Enum):
 
 @dataclass(eq=True)
 class PluginInterface:
-    display_name: str | None = None
-    short_description: str | None = None
+    display_name: Optional[str] = None
+    short_description: Optional[str] = None
 
 
 @dataclass(eq=True)
@@ -35,31 +36,31 @@ class PluginSummary:
     name: str
     installed: bool = True
     enabled: bool = True
-    availability: PluginAvailability | str = PluginAvailability.Available
-    interface: PluginInterface | dict[str, Any] | None = None
+    availability: Any = PluginAvailability.Available
+    interface: Any = None
 
 
 @dataclass(eq=True)
 class PluginMarketplaceEntry:
     name: str
-    plugins: list[Any] = field(default_factory=list)
+    plugins: List[Any] = field(default_factory=list)
 
 
 @dataclass(eq=True)
 class PluginListResponse:
-    marketplaces: list[Any] = field(default_factory=list)
-    marketplace_load_errors: list[Any] = field(default_factory=list)
-    featured_plugin_ids: list[str] = field(default_factory=list)
+    marketplaces: List[Any] = field(default_factory=list)
+    marketplace_load_errors: List[Any] = field(default_factory=list)
+    featured_plugin_ids: List[str] = field(default_factory=list)
 
 
 @dataclass(eq=True)
 class PluginCapabilitySummary:
     config_name: str
     display_name: str
-    description: str | None
+    description: Optional[str]
     has_skills: bool = False
-    mcp_server_names: list[str] = field(default_factory=list)
-    app_connector_ids: list[str] = field(default_factory=list)
+    mcp_server_names: List[str] = field(default_factory=list)
+    app_connector_ids: List[str] = field(default_factory=list)
 
 
 def _get_attr_or_key(value: Any, key: str, default: Any = None) -> Any:
@@ -79,12 +80,23 @@ def _availability_value(value: Any) -> str:
     return text
 
 
-async def fetch_plugin_mentions(*_args: Any, **_kwargs: Any) -> Any:
-    raise not_ported("app::plugin_mentions.fetch_plugin_mentions app-server RPC is not ported")
+async def fetch_plugin_mentions(request_handle: Any, cwd: Any = None) -> List[PluginCapabilitySummary]:
+    response = None
+    if hasattr(request_handle, "request_plugin_list"):
+        response = request_handle.request_plugin_list(cwd)
+    elif hasattr(request_handle, "plugin_list"):
+        response = request_handle.plugin_list(cwd)
+    elif callable(request_handle):
+        response = request_handle(cwd)
+    else:
+        response = request_handle
+    if hasattr(response, "__await__"):
+        response = await response
+    return plugin_mentions_from_list_response(response)
 
 
-def plugin_mentions_from_list_response(response: Any) -> list[PluginCapabilitySummary]:
-    mentions: list[PluginCapabilitySummary] = []
+def plugin_mentions_from_list_response(response: Any) -> List[PluginCapabilitySummary]:
+    mentions = []
     for marketplace in _get_attr_or_key(response, "marketplaces", []) or []:
         marketplace_name = str(_get_attr_or_key(marketplace, "name", ""))
         for plugin in _get_attr_or_key(marketplace, "plugins", []) or []:
@@ -100,7 +112,7 @@ def plugin_is_eligible_for_mentions(plugin: Any) -> bool:
     ) != PluginAvailability.DisabledByAdmin.value
 
 
-def plugin_mention_from_summary(marketplace_name: str, plugin: Any) -> PluginCapabilitySummary | None:
+def plugin_mention_from_summary(marketplace_name: str, plugin: Any) -> Optional[PluginCapabilitySummary]:
     if not plugin_is_eligible_for_mentions(plugin):
         return None
     return PluginCapabilitySummary(
@@ -123,7 +135,7 @@ def plugin_mention_display_name(plugin: Any) -> str:
     return str(_get_attr_or_key(plugin, "name", ""))
 
 
-def plugin_mention_description(marketplace_name: str, plugin: Any) -> str | None:
+def plugin_mention_description(marketplace_name: str, plugin: Any) -> Optional[str]:
     interface = _get_attr_or_key(plugin, "interface")
     description = _get_attr_or_key(interface, "short_description") if interface is not None else None
     if description is not None:

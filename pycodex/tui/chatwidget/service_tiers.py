@@ -6,7 +6,7 @@ Upstream source: ``codex/codex-rs/tui/src/chatwidget/service_tiers.rs``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any, Iterable, List, Optional, Tuple
 
 from .._porting import RustTuiModule
 from ..bottom_pane.slash_commands import ServiceTierCommand
@@ -25,6 +25,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="chatwidget::service_tiers",
     source="codex/codex-rs/tui/src/chatwidget/service_tiers.rs",
+    status="complete",
 )
 
 SPEED_TIER_FAST = "fast"
@@ -36,14 +37,14 @@ class ServiceTierSelectionEvent:
     """Semantic event emitted by Rust ``set_service_tier_selection``."""
 
     kind: str
-    service_tier: str | None
+    service_tier: Optional[str]
 
     @classmethod
-    def override_turn_context(cls, service_tier: str | None) -> "ServiceTierSelectionEvent":
+    def override_turn_context(cls, service_tier: Optional[str]) -> "ServiceTierSelectionEvent":
         return cls("override_turn_context", service_tier)
 
     @classmethod
-    def persist_selection(cls, service_tier: str | None) -> "ServiceTierSelectionEvent":
+    def persist_selection(cls, service_tier: Optional[str]) -> "ServiceTierSelectionEvent":
         return cls("persist_selection", service_tier)
 
 
@@ -53,18 +54,20 @@ class ChatWidgetServiceTierState:
 
     config: Config = field(default_factory=Config)
     model: str = ""
-    models: tuple[Any, ...] = ()
+    models: Tuple[Any, ...] = ()
     has_chatgpt_account: bool = False
     user_turn_pending_or_running: bool = False
     modal_or_popup_active: bool = False
-    effective_service_tier: str | None = None
-    events: list[ServiceTierSelectionEvent] = field(default_factory=list)
+    effective_service_tier: Optional[str] = None
+    events: List[ServiceTierSelectionEvent] = field(default_factory=list)
+    service_tier_commands_enabled: bool = False
+    service_tier_commands: Tuple[ServiceTierCommand, ...] = ()
     model_dependent_surface_refreshes: int = 0
 
     def __post_init__(self) -> None:
         self.refresh_effective_service_tier()
 
-    def set_service_tier(self, service_tier: str | None) -> None:
+    def set_service_tier(self, service_tier: Optional[str]) -> None:
         self.config = Config(
             service_tier=service_tier,
             features=self.config.features,
@@ -73,16 +76,16 @@ class ChatWidgetServiceTierState:
         self.refresh_effective_service_tier()
         self.refresh_model_dependent_surfaces()
 
-    def current_service_tier(self) -> str | None:
+    def current_service_tier(self) -> Optional[str]:
         return self.effective_service_tier
 
-    def configured_service_tier(self) -> str | None:
+    def configured_service_tier(self) -> Optional[str]:
         return self.config.service_tier
 
-    def service_tier_update_for_core(self) -> str | None:
+    def service_tier_update_for_core(self) -> Optional[Any]:
         return resolve_service_tier_update_for_core(self.config, self.current_model(), self._models_or_default())
 
-    def should_show_fast_status(self, model: str, service_tier: str | None) -> bool:
+    def should_show_fast_status(self, model: str, service_tier: Optional[str]) -> bool:
         return (
             service_tier == ServiceTierPresetFast.request_value()
             and self.model_supports_service_tier(model, service_tier)
@@ -119,7 +122,11 @@ class ChatWidgetServiceTierState:
         )
         self.set_service_tier_selection(next_tier)
 
-    def current_model_service_tier_commands(self) -> list[ServiceTierCommand]:
+    def sync_service_tier_commands(self) -> None:
+        self.service_tier_commands_enabled = self.fast_mode_enabled()
+        self.service_tier_commands = tuple(self.current_model_service_tier_commands())
+
+    def current_model_service_tier_commands(self) -> List[ServiceTierCommand]:
         model = self.current_model()
         for preset in self._models_or_default():
             if _preset_model(preset) != model:
@@ -134,7 +141,7 @@ class ChatWidgetServiceTierState:
             ]
         return []
 
-    def set_service_tier_selection(self, service_tier: str | None) -> None:
+    def set_service_tier_selection(self, service_tier: Optional[str]) -> None:
         self.set_service_tier(service_tier)
         self.events.append(ServiceTierSelectionEvent.override_turn_context(service_tier))
         self.events.append(ServiceTierSelectionEvent.persist_selection(service_tier))
@@ -145,7 +152,7 @@ class ChatWidgetServiceTierState:
                 return preset_supports_service_tier(preset, service_tier)
         return False
 
-    def current_model_fast_service_tier(self) -> ServiceTierCommand | None:
+    def current_model_fast_service_tier(self) -> Optional[ServiceTierCommand]:
         for tier in self.current_model_service_tier_commands():
             if tier.name.lower() == SPEED_TIER_FAST:
                 return tier
@@ -164,7 +171,7 @@ class ChatWidgetServiceTierState:
     def current_model(self) -> str:
         return self.model
 
-    def _models_or_default(self) -> tuple[Any, ...]:
+    def _models_or_default(self) -> Tuple[Any, ...]:
         return tuple(_list_models(self.models))
 
 
@@ -203,7 +210,7 @@ def _preset_model(preset: Any) -> str:
     return str(_get(preset, "model", ""))
 
 
-def fast_mode_config(enabled: bool, service_tier: str | None = None) -> Config:
+def fast_mode_config(enabled: bool, service_tier: Optional[str] = None) -> Config:
     return Config(
         service_tier=service_tier,
         features=FeatureSet(frozenset({FAST_MODE_FEATURE}) if enabled else frozenset()),

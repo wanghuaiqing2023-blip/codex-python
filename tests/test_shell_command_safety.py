@@ -152,6 +152,7 @@ class ShellCommandSafetyTests(unittest.TestCase):
     # Contract: shell.powershell_safety
     def test_windows_powershell_rm_alias_force_and_benign_force_segment(self):
         self.assertTrue(command_might_be_dangerous(["powershell", "-Command", "rm test -Force"]))
+        self.assertTrue(command_might_be_dangerous(["powershell", "-Command", "rm -rf /important/data"]))
         self.assertFalse(command_might_be_dangerous(["powershell", "-Command", "Get-ChildItem -Force; Remove-Item test"]))
 
     # Source: rust_test_migrated

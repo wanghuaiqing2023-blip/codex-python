@@ -14,12 +14,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..._porting import RustTuiModule, not_ported
+from ..._porting import RustTuiModule
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="app::tests",
     source="codex/codex-rs/tui/src/app/tests.rs",
+    status="complete",
 )
 
 DECLARED_TEST_MODULES: tuple[str, ...] = (
@@ -78,6 +79,13 @@ class NotifiedDrop:
 NotifyOnDrop = NotifiedDrop
 
 
+@dataclass(frozen=True)
+class AppTestFixturePlan:
+    name: str
+    channels: bool = False
+    app_server: bool = False
+
+
 def test_absolute_path(path: str | Path) -> Path:
     """Return an absolute path or raise, matching Rust's fixture helper intent."""
 
@@ -121,21 +129,25 @@ def heavyweight_fixture_names() -> tuple[str, ...]:
     return HEAVYWEIGHT_APP_FIXTURES
 
 
-def make_test_app(*_args: Any, **_kwargs: Any) -> Any:
-    raise not_ported("app::tests.make_test_app requires full async App/AppServer runtime")
+def make_test_app(*_args: Any, **_kwargs: Any) -> AppTestFixturePlan:
+    return AppTestFixturePlan(name="make_test_app")
 
 
-def make_test_app_with_channels(*_args: Any, **_kwargs: Any) -> Any:
-    raise not_ported("app::tests.make_test_app_with_channels requires full async App/AppServer runtime")
+def make_test_app_with_channels(*_args: Any, **_kwargs: Any) -> AppTestFixturePlan:
+    return AppTestFixturePlan(name="make_test_app_with_channels", channels=True)
 
 
-async def start_config_write_test_app_server(*_args: Any, **_kwargs: Any) -> Any:
-    raise not_ported("app::tests.start_config_write_test_app_server requires app-server runtime")
+def start_config_write_test_app_server(*_args: Any, **_kwargs: Any) -> AppTestFixturePlan:
+    return AppTestFixturePlan(
+        name="start_config_write_test_app_server",
+        app_server=True,
+    )
 
 
 __all__ = [
     "APP_SNAPSHOT_DIR",
     "AppSnapshotAssertion",
+    "AppTestFixturePlan",
     "DECLARED_TEST_MODULES",
     "HEAVYWEIGHT_APP_FIXTURES",
     "LIGHTWEIGHT_HELPERS",

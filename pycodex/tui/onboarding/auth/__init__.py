@@ -1,16 +1,21 @@
-﻿"""Semantic slice for Rust ``codex-tui::onboarding::auth``."""
+"""Semantic slice for Rust ``codex-tui::onboarding::auth``."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..._porting import RustTuiModule
 from ...key_hint import KeyEvent, is_pressed
 from .. import keys
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="onboarding::auth", source="codex/codex-rs/tui/src/onboarding/auth.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="onboarding::auth",
+    source="codex/codex-rs/tui/src/onboarding/auth.rs",
+    status="complete",
+)
 
 API_KEY_DISABLED_MESSAGE = "API key login is disabled."
 
@@ -41,9 +46,9 @@ class ContinueInBrowserState:
 @dataclass(frozen=True)
 class ContinueWithDeviceCodeState:
     request_id: str
-    login_id_value: str | None = None
-    verification_url: str | None = None
-    user_code: str | None = None
+    login_id_value: Optional[str] = None
+    verification_url: Optional[str] = None
+    user_code: Optional[str] = None
 
     @classmethod
     def pending(cls, request_id: str) -> "ContinueWithDeviceCodeState":
@@ -53,7 +58,7 @@ class ContinueWithDeviceCodeState:
     def ready(cls, request_id: str, login_id: str, verification_url: str, user_code: str) -> "ContinueWithDeviceCodeState":
         return cls(str(request_id), str(login_id), str(verification_url), str(user_code))
 
-    def login_id(self) -> str | None:
+    def login_id(self) -> Optional[str]:
         return self.login_id_value
 
     def is_showing_copyable_auth(self) -> bool:
@@ -86,7 +91,7 @@ class SignInState:
         return cls("chatgpt_success")
 
     @classmethod
-    def api_key_entry(cls, state: ApiKeyInputState | None = None) -> "SignInState":
+    def api_key_entry(cls, state: Optional[ApiKeyInputState] = None) -> "SignInState":
         return cls("api_key_entry", state or ApiKeyInputState())
 
     @classmethod
@@ -96,14 +101,14 @@ class SignInState:
 
 @dataclass(frozen=True)
 class AccountLoginCompletedNotification:
-    login_id: str | None
+    login_id: Optional[str]
     success: bool
-    error: str | None = None
+    error: Optional[str] = None
 
 
 @dataclass(frozen=True)
 class AccountUpdatedNotification:
-    auth_mode: str | None = None
+    auth_mode: Optional[str] = None
 
 
 @dataclass
@@ -121,15 +126,15 @@ class FrameRequester:
 class AuthModeWidget:
     request_frame: FrameRequester = field(default_factory=FrameRequester)
     highlighted_mode: SignInOption = SignInOption.CHATGPT
-    error: str | None = None
+    error: Optional[str] = None
     sign_in_state: SignInState = field(default_factory=SignInState.pick_mode)
     login_status: str = "not_authenticated"
     app_server_request_handle: Any = None
-    forced_login_method: str | None = None
+    forced_login_method: Optional[str] = None
     animations_enabled: bool = True
     animations_suppressed: bool = False
-    cancelled_login_ids: list[str] = field(default_factory=list)
-    login_requests: list[tuple[str, Any]] = field(default_factory=list)
+    cancelled_login_ids: List[str] = field(default_factory=list)
+    login_requests: List[Tuple[str, Any]] = field(default_factory=list)
 
     def set_animations_suppressed(self, suppressed: bool) -> None:
         self.animations_suppressed = bool(suppressed)
@@ -152,10 +157,10 @@ class AuthModeWidget:
         self.set_error(None)
         self.request_frame.schedule_frame()
 
-    def set_error(self, message: str | None) -> None:
+    def set_error(self, message: Optional[str]) -> None:
         self.error = message
 
-    def error_message(self) -> str | None:
+    def error_message(self) -> Optional[str]:
         return self.error
 
     def is_api_key_entry_active(self) -> bool:
@@ -331,7 +336,7 @@ class AuthModeWidget:
     def get_step_state(self) -> StepState:
         return StepState.COMPLETE if self.sign_in_state.kind in {"chatgpt_success", "api_key_configured"} else StepState.IN_PROGRESS
 
-    def render_ref(self, _area: Any = None, _buf: Any = None) -> list[str]:
+    def render_ref(self, _area: Any = None, _buf: Any = None) -> List[str]:
         state = self.sign_in_state.kind
         if state == "pick_mode":
             return self.render_pick_mode()
@@ -347,7 +352,7 @@ class AuthModeWidget:
             return ["Enter API key", "*" * len(self.sign_in_state.payload.value)]
         return ["API key configured"]
 
-    def render_pick_mode(self) -> list[str]:
+    def render_pick_mode(self) -> List[str]:
         lines = ["Sign in with ChatGPT to use Codex as part of your paid plan", "or connect an API key for usage-based billing"]
         for index, option in enumerate(self.displayed_sign_in_options(), start=1):
             marker = ">" if option is self.highlighted_mode else " "
@@ -358,7 +363,7 @@ class AuthModeWidget:
             lines.append(self.error)
         return lines
 
-    def render_continue_in_browser(self) -> list[str]:
+    def render_continue_in_browser(self) -> List[str]:
         state = self.sign_in_state.payload
         lines = ["Finish signing in via your browser"]
         if state.auth_url:
@@ -368,7 +373,7 @@ class AuthModeWidget:
         return lines
 
 
-def cancel_login_attempt(request_handle: Any, login_id: str) -> dict[str, Any]:
+def cancel_login_attempt(request_handle: Any, login_id: str) -> Dict[str, Any]:
     request = {"method": "CancelLoginAccount", "params": {"login_id": str(login_id)}}
     if hasattr(request_handle, "requests"):
         request_handle.requests.append(request)
@@ -396,6 +401,8 @@ def _mark_hyperlink(buf: Any, _area: Any, url: str, require_cyan_underlined: boo
     sanitized = "".join(ch for ch in str(url) if ord(ch) >= 0x20 and ch != "\x7f")
     if isinstance(buf, list):
         for cell in buf:
+            if not isinstance(cell, dict):
+                continue
             underlined = bool(cell.get("underlined") or cell.get("underline"))
             cyan = str(cell.get("fg", "")).lower() == "cyan"
             if underlined and (cyan or not require_cyan_underlined):
@@ -415,7 +422,7 @@ def _event_code(event: Any) -> str:
     return mapping.get(code.lower(), code)
 
 
-def _event_modifiers(event: Any) -> frozenset[str]:
+def _event_modifiers(event: Any) -> frozenset:
     if isinstance(event, KeyEvent):
         return event.modifiers
     if isinstance(event, dict):

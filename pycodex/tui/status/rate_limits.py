@@ -4,13 +4,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable
+from typing import Any, Iterable, Optional
 
 from .._porting import RustTuiModule
 from ..text_formatting import capitalize_first
 from .helpers import format_reset_timestamp
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="status::rate_limits", source="codex/codex-rs/tui/src/status/rate_limits.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="status::rate_limits",
+    source="codex/codex-rs/tui/src/status/rate_limits.rs",
+    status="complete",
+)
 
 STATUS_LIMIT_BAR_SEGMENTS = 20
 STATUS_LIMIT_BAR_FILLED = "█"
@@ -21,12 +26,12 @@ RATE_LIMIT_STALE_THRESHOLD_MINUTES = 15
 @dataclass(frozen=True)
 class StatusRateLimitValue:
     kind: str
-    percent_used: float | None = None
-    resets_at: str | None = None
-    text: str | None = None
+    percent_used: Optional[float] = None
+    resets_at: Optional[str] = None
+    text: Optional[str] = None
 
     @classmethod
-    def window(cls, percent_used: float, resets_at: str | None) -> "StatusRateLimitValue":
+    def window(cls, percent_used: float, resets_at: Optional[str]) -> "StatusRateLimitValue":
         return cls("window", percent_used=float(percent_used), resets_at=resets_at)
 
     @classmethod
@@ -65,8 +70,8 @@ class StatusRateLimitData:
 @dataclass(frozen=True)
 class RateLimitWindowDisplay:
     used_percent: float
-    resets_at: str | None = None
-    window_minutes: int | None = None
+    resets_at: Optional[str] = None
+    window_minutes: Optional[int] = None
 
     @classmethod
     def from_window(cls, window: Any, captured_at: datetime) -> "RateLimitWindowDisplay":
@@ -86,7 +91,7 @@ class RateLimitWindowDisplay:
 class CreditsSnapshotDisplay:
     has_credits: bool
     unlimited: bool
-    balance: str | None = None
+    balance: Optional[str] = None
 
     @classmethod
     def from_snapshot(cls, value: Any) -> "CreditsSnapshotDisplay":
@@ -101,9 +106,9 @@ class CreditsSnapshotDisplay:
 class RateLimitSnapshotDisplay:
     limit_name: str
     captured_at: datetime
-    primary: RateLimitWindowDisplay | None = None
-    secondary: RateLimitWindowDisplay | None = None
-    credits: CreditsSnapshotDisplay | None = None
+    primary: Optional[RateLimitWindowDisplay] = None
+    secondary: Optional[RateLimitWindowDisplay] = None
+    credits: Optional[CreditsSnapshotDisplay] = None
 
 
 def rate_limit_snapshot_display(snapshot: Any, captured_at: datetime) -> RateLimitSnapshotDisplay:
@@ -127,7 +132,7 @@ def from_(value: Any) -> CreditsSnapshotDisplay:
     return CreditsSnapshotDisplay.from_snapshot(value)
 
 
-def compose_rate_limit_data(snapshot: RateLimitSnapshotDisplay | None, now: datetime) -> StatusRateLimitData:
+def compose_rate_limit_data(snapshot: Optional[RateLimitSnapshotDisplay], now: datetime) -> StatusRateLimitData:
     if snapshot is None:
         return StatusRateLimitData.missing()
     return compose_rate_limit_data_many([snapshot], now)
@@ -187,7 +192,7 @@ def format_status_limit_summary(percent_remaining: float) -> str:
     return f"{float(percent_remaining):.0f}% left"
 
 
-def credit_status_row(credits: CreditsSnapshotDisplay) -> StatusRateLimitRow | None:
+def credit_status_row(credits: CreditsSnapshotDisplay) -> Optional[StatusRateLimitRow]:
     if not credits.has_credits:
         return None
     if credits.unlimited:
@@ -200,7 +205,7 @@ def credit_status_row(credits: CreditsSnapshotDisplay) -> StatusRateLimitRow | N
     return StatusRateLimitRow("Credits", StatusRateLimitValue.text_value(f"{display_balance} credits"))
 
 
-def format_credit_balance(raw: str) -> str | None:
+def format_credit_balance(raw: str) -> Optional[str]:
     trimmed = str(raw).strip()
     if not trimmed:
         return None
@@ -215,16 +220,16 @@ def format_credit_balance(raw: str) -> str | None:
     except ValueError:
         return None
     if value > 0.0:
-        return str(round(value))
+        return str(int(value + 0.5))
     return None
 
 
-def limit_label_for_window(window_minutes: int | None, is_secondary: bool) -> str:
+def limit_label_for_window(window_minutes: Optional[int], is_secondary: bool) -> str:
     duration = get_limits_duration(window_minutes) if window_minutes is not None else None
     return duration or fallback_limit_label(is_secondary)
 
 
-def get_limits_duration(window_minutes: int) -> str | None:
+def get_limits_duration(window_minutes: int) -> Optional[str]:
     minutes = max(int(window_minutes), 0)
     hour = 60
     windows = [
@@ -250,11 +255,11 @@ def _get(value: Any, name: str, default: Any = None) -> Any:
     return getattr(value, name, default)
 
 
-def _optional_int(value: Any) -> int | None:
+def _optional_int(value: Any) -> Optional[int]:
     return None if value is None else int(value)
 
 
-def _optional_str(value: Any) -> str | None:
+def _optional_str(value: Any) -> Optional[str]:
     return None if value is None else str(value)
 
 

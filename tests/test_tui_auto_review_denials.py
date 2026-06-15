@@ -57,6 +57,7 @@ def test_action_summary_variants_follow_rust_text():
     assert action_summary(GuardianAssessmentAction.apply_patch(["a.py", "b.py"])) == "apply_patch touching 2 files"
     assert action_summary(GuardianAssessmentAction.network_access("example.com")) == "network access to example.com"
     assert action_summary(GuardianAssessmentAction.mcp_tool_call("server", "tool", "connector")) == "MCP tool on connector"
+    assert action_summary(GuardianAssessmentAction.mcp_tool_call("server", "tool")) == "MCP tool on server"
     assert action_summary(GuardianAssessmentAction.request_permissions("need files")) == "permission request: need files"
     assert action_summary(GuardianAssessmentAction.request_permissions()) == "permission request"
 

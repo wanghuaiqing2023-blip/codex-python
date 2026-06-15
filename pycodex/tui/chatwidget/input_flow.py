@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .._porting import RustTuiModule
 
@@ -20,6 +20,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="chatwidget::input_flow",
     source="codex/codex-rs/tui/src/chatwidget/input_flow.rs",
+    status="complete",
 )
 
 
@@ -61,10 +62,10 @@ class TextElement:
 @dataclass
 class UserMessage:
     text: str = ""
-    local_images: list[Any] = field(default_factory=list)
-    remote_image_urls: list[str] = field(default_factory=list)
-    text_elements: list[TextElement] = field(default_factory=list)
-    mention_bindings: list[Any] = field(default_factory=list)
+    local_images: List[Any] = field(default_factory=list)
+    remote_image_urls: List[str] = field(default_factory=list)
+    text_elements: List[TextElement] = field(default_factory=list)
+    mention_bindings: List[Any] = field(default_factory=list)
 
     def is_empty_for_submission(self) -> bool:
         return not self.text and not self.local_images and not self.remote_image_urls
@@ -81,21 +82,21 @@ class QueuedUserMessage:
 
 @dataclass
 class CollaborationModeMask:
-    mode: ModeKind | None = None
-    reasoning_effort: Any | None = None
+    mode: Optional[ModeKind] = None
+    reasoning_effort: Any = None
 
 
 @dataclass
 class InputResult:
     kind: InputResultKind
     text: str = ""
-    text_elements: list[TextElement] = field(default_factory=list)
+    text_elements: List[TextElement] = field(default_factory=list)
     action: QueuedInputAction = QueuedInputAction.PLAIN
-    command: Any | None = None
-    args: str | None = None
+    command: Any = None
+    args: Optional[str] = None
 
     @classmethod
-    def submitted(cls, text: str, text_elements: list[TextElement] | None = None) -> "InputResult":
+    def submitted(cls, text: str, text_elements: Optional[List[TextElement]] = None) -> "InputResult":
         return cls(InputResultKind.SUBMITTED, text=text, text_elements=text_elements or [])
 
     @classmethod
@@ -103,7 +104,7 @@ class InputResult:
         cls,
         text: str,
         action: QueuedInputAction,
-        text_elements: list[TextElement] | None = None,
+        text_elements: Optional[List[TextElement]] = None,
     ) -> "InputResult":
         return cls(
             InputResultKind.QUEUED,
@@ -125,7 +126,7 @@ class InputResult:
         cls,
         command: Any,
         args: str,
-        text_elements: list[TextElement] | None = None,
+        text_elements: Optional[List[TextElement]] = None,
     ) -> "InputResult":
         return cls(
             InputResultKind.COMMAND_WITH_ARGS,
@@ -146,13 +147,13 @@ class RunningCommand:
 
 @dataclass
 class InputQueue:
-    queued_user_messages: list[QueuedUserMessage] = field(default_factory=list)
-    queued_user_message_history_records: list[str] = field(default_factory=list)
-    rejected_steers_queue: list[UserMessage] = field(default_factory=list)
+    queued_user_messages: List[QueuedUserMessage] = field(default_factory=list)
+    queued_user_message_history_records: List[str] = field(default_factory=list)
+    rejected_steers_queue: List[UserMessage] = field(default_factory=list)
     user_turn_pending_start: bool = False
     suppress_queue_autosend: bool = False
 
-    def preview(self) -> dict[str, int]:
+    def preview(self) -> Dict[str, int]:
         return {
             "queued_messages": len(self.queued_user_messages),
             "pending_steers": 0,
@@ -166,30 +167,31 @@ class InputFlowModel:
     plan_streaming_in_tui: bool = False
     task_running: bool = False
     agent_turn_running: bool = False
-    running_commands: dict[str, RunningCommand] = field(default_factory=dict)
+    running_commands: Dict[str, RunningCommand] = field(default_factory=dict)
     input_queue: InputQueue = field(default_factory=InputQueue)
-    active_collaboration_mask: CollaborationModeMask | None = None
-    plan_mode_reasoning_effort: Any | None = None
+    active_collaboration_mask: Optional[CollaborationModeMask] = None
+    plan_mode_reasoning_effort: Any = None
     bottom_pane_modal_active: bool = False
 
-    submitted_messages: list[UserMessage] = field(default_factory=list)
-    submitted_messages_with_history: list[tuple[UserMessage, str]] = field(default_factory=list)
-    slash_dispatches: list[Any] = field(default_factory=list)
-    service_tier_dispatches: list[Any] = field(default_factory=list)
-    slash_with_args_dispatches: list[tuple[Any, str | None, list[TextElement]]] = field(
+    submitted_messages: List[UserMessage] = field(default_factory=list)
+    submitted_messages_with_history: List[Tuple[UserMessage, str]] = field(default_factory=list)
+    slash_dispatches: List[Any] = field(default_factory=list)
+    service_tier_dispatches: List[Any] = field(default_factory=list)
+    slash_with_args_dispatches: List[Tuple[Any, Optional[str], List[TextElement]]] = field(
         default_factory=list
     )
-    pending_input_previews: list[dict[str, int]] = field(default_factory=list)
-    status_headers: list[str] = field(default_factory=list)
-    error_messages: list[str] = field(default_factory=list)
-    collaboration_masks_set: list[CollaborationModeMask] = field(default_factory=list)
-    reasoning_buffer: list[str] = field(default_factory=list)
-    full_reasoning_buffer: list[str] = field(default_factory=list)
+    pending_input_previews: List[Dict[str, int]] = field(default_factory=list)
+    status_headers: List[str] = field(default_factory=list)
+    error_messages: List[str] = field(default_factory=list)
+    collaboration_masks_set: List[CollaborationModeMask] = field(default_factory=list)
+    reasoning_buffer: List[str] = field(default_factory=list)
+    full_reasoning_buffer: List[str] = field(default_factory=list)
     plan_mode_nudge_refreshes: int = 0
     maybe_send_calls: int = 0
 
-    queued_slash_handler: Callable[[UserMessage], QueueDrain] | None = None
-    queued_shell_handler: Callable[[UserMessage], QueueDrain] | None = None
+    queue_submissions_enabled: bool = False
+    queued_slash_handler: Optional[Callable[[UserMessage], QueueDrain]] = None
+    queued_shell_handler: Optional[Callable[[UserMessage], QueueDrain]] = None
 
     def handle_composer_input_result(
         self,
@@ -239,14 +241,20 @@ class InputFlowModel:
         self.queue_user_message_with_options(user_message, QueuedInputAction.PLAIN)
 
     def set_queue_submissions_until_session_configured(self, queue: bool) -> bool:
-        return bool(queue and not self.is_session_configured())
+        self.queue_submissions_enabled = bool(queue and not self.is_session_configured())
+        return self.queue_submissions_enabled
 
     def queue_user_message_with_options(
         self,
         user_message: UserMessage,
         action: QueuedInputAction,
     ) -> None:
-        if not self.is_session_configured() or self.is_user_turn_pending_or_running():
+        if (
+            not self.is_session_configured()
+            or self.is_plan_streaming_in_tui()
+            or self.is_user_turn_pending_or_running()
+            or (self.only_user_shell_commands_running() and not user_message.text.startswith("!"))
+        ):
             self.input_queue.queued_user_messages.append(QueuedUserMessage(user_message, action))
             self.input_queue.queued_user_message_history_records.append("UserMessageText")
             self.refresh_pending_input_preview()
@@ -315,12 +323,12 @@ class InputFlowModel:
         else:
             self.submit_user_message(user_message)
 
-    def queued_user_message_texts(self) -> list[str]:
+    def queued_user_message_texts(self) -> List[str]:
         return [message.text for message in self.input_queue.rejected_steers_queue] + [
             queued.user_message.text for queued in self.input_queue.queued_user_messages
         ]
 
-    def pop_next_queued_user_message(self) -> tuple[QueuedUserMessage, str] | None:
+    def pop_next_queued_user_message(self) -> Optional[Tuple[QueuedUserMessage, str]]:
         if self.input_queue.rejected_steers_queue:
             message = self.input_queue.rejected_steers_queue.pop(0)
             return QueuedUserMessage(message), "UserMessageText"
@@ -337,7 +345,7 @@ class InputFlowModel:
     def user_message_from_submission(
         self,
         text: str,
-        text_elements: list[TextElement],
+        text_elements: List[TextElement],
     ) -> UserMessage:
         return UserMessage(text=text, text_elements=list(text_elements))
 
@@ -381,8 +389,8 @@ class InputFlowModel:
     def handle_slash_command_with_args_dispatch(
         self,
         command: Any,
-        args: str | None,
-        text_elements: list[TextElement],
+        args: Optional[str],
+        text_elements: List[TextElement],
     ) -> None:
         self.slash_with_args_dispatches.append((command, args, text_elements))
 

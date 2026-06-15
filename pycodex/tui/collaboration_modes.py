@@ -16,6 +16,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="collaboration_modes",
     source="codex/codex-rs/tui/src/collaboration_modes.rs",
+    status="complete",
 )
 
 

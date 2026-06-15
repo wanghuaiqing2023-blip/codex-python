@@ -1,4 +1,4 @@
-"""Preview data for configurable status surfaces.
+﻿"""Preview data for configurable status surfaces.
 
 Python port of Rust ``codex-tui::bottom_pane::status_surface_preview``.
 """
@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Iterable
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .._porting import RustTuiModule
 from .status_line_style import StyledLine
@@ -17,6 +17,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="bottom_pane::status_surface_preview",
     source="codex/codex-rs/tui/src/bottom_pane/status_surface_preview.rs",
+    status="complete",
 )
 
 
@@ -49,7 +50,7 @@ class StatusSurfacePreviewItem(Enum):
     TASK_PROGRESS = "TaskProgress"
 
     @classmethod
-    def iter(cls) -> tuple["StatusSurfacePreviewItem", ...]:
+    def iter(cls) -> Tuple["StatusSurfacePreviewItem", ...]:
         return tuple(cls)
 
     def placeholder(self) -> str:
@@ -94,11 +95,11 @@ class PreviewValue:
 
 @dataclass
 class StatusSurfacePreviewData:
-    values: dict[StatusSurfacePreviewItem, PreviewValue]
+    values: Dict[StatusSurfacePreviewItem, PreviewValue]
 
     def __init__(
         self,
-        values: dict[StatusSurfacePreviewItem, PreviewValue] | None = None,
+        values: Optional[Dict[StatusSurfacePreviewItem, PreviewValue]] = None,
     ) -> None:
         self.values = values if values is not None else {}
         if values is None:
@@ -106,7 +107,7 @@ class StatusSurfacePreviewData:
                 self.set_placeholder(item, item.placeholder())
 
     @classmethod
-    def from_iter(cls, values: Iterable[tuple[Any, Any]]) -> "StatusSurfacePreviewData":
+    def from_iter(cls, values: Iterable[Tuple[Any, Any]]) -> "StatusSurfacePreviewData":
         data = cls()
         for item, value in values:
             data.set_live(item, value)
@@ -136,18 +137,18 @@ class StatusSurfacePreviewData:
         copy = rate_limit_preview_copy(self.live_value_for(item) or "")
         return copy.description if copy is not None else fallback
 
-    def value_for(self, item: Any) -> str | None:
+    def value_for(self, item: Any) -> Optional[str]:
         value = self.values.get(_preview_item(item))
         return value.text if value is not None else None
 
-    def live_value_for(self, item: Any) -> str | None:
+    def live_value_for(self, item: Any) -> Optional[str]:
         value = self.values.get(_preview_item(item))
         if value is None or value.is_placeholder:
             return None
         return value.text
 
-    def status_line_for_items(self, items: Iterable[Any], use_theme_colors: bool) -> StyledLine | None:
-        segments: list[tuple[Any, str]] = []
+    def status_line_for_items(self, items: Iterable[Any], use_theme_colors: bool) -> Optional[StyledLine]:
+        segments: List[Tuple[Any, str]] = []
         for item in items:
             value = self.value_for(_status_line_item_to_preview_item(item))
             if value is not None:
@@ -165,7 +166,7 @@ class RateLimitPreviewCopy:
     description: str
 
 
-def rate_limit_preview_copy(value: str) -> RateLimitPreviewCopy | None:
+def rate_limit_preview_copy(value: str) -> Optional[RateLimitPreviewCopy]:
     value = value.lstrip()
     for prefix, name, description in _RATE_LIMIT_COPIES:
         if value.startswith(prefix):
@@ -284,7 +285,7 @@ def _normalize_rust_case(name: str) -> str:
 
 
 def _snake_to_enum_name(name: str) -> str:
-    chars: list[str] = []
+    chars: List[str] = []
     for idx, ch in enumerate(name):
         if ch.isupper() and idx > 0:
             chars.append("_")
@@ -301,3 +302,4 @@ __all__ = [
     "default",
     "rate_limit_preview_copy",
 ]
+

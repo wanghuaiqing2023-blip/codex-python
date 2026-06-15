@@ -10,11 +10,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Mapping, Protocol
+from typing import Any, Mapping, Optional, Sequence, Tuple, Union
 
 from .._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="chatwidget::replay", source="codex/codex-rs/tui/src/chatwidget/replay.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="chatwidget::replay",
+    source="codex/codex-rs/tui/src/chatwidget/replay.rs",
+    status="complete",
+)
 
 __all__ = [
     "AgentMessageItem",
@@ -53,12 +58,12 @@ class Turn:
     """Semantic subset of app-server ``Turn`` used by replay."""
 
     id: str
-    items: tuple[Any, ...] = ()
-    status: TurnStatus | str = TurnStatus.OTHER
-    error: Any | None = None
-    started_at: Any | None = None
-    completed_at: Any | None = None
-    duration_ms: int | None = None
+    items: Tuple[Any, ...] = ()
+    status: Union[TurnStatus, str] = TurnStatus.OTHER
+    error: Optional[Any] = None
+    started_at: Optional[Any] = None
+    completed_at: Optional[Any] = None
+    duration_ms: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -73,10 +78,10 @@ class TurnCompletedNotification:
 class ThreadItemRenderSource:
     """Equivalent of Rust ``ThreadItemRenderSource`` for replay dispatch."""
 
-    replay_kind: ReplayKind | str | None = None
+    replay_kind: Optional[Union[ReplayKind, str]] = None
 
     @classmethod
-    def replay(cls, replay_kind: ReplayKind | str) -> "ThreadItemRenderSource":
+    def replay(cls, replay_kind: Union[ReplayKind, str]) -> "ThreadItemRenderSource":
         return cls(replay_kind=replay_kind)
 
     @classmethod
@@ -91,30 +96,32 @@ class ThreadItemRenderSource:
 class AgentMessageItem:
     """Semantic replacement for Rust ``AgentMessageItem``."""
 
-    id: str | None
-    content: tuple[Mapping[str, Any], ...]
-    phase: Any | None = None
-    memory_citation: Any | None = None
+    id: Optional[str]
+    content: Tuple[Mapping[str, Any], ...]
+    phase: Optional[Any] = None
+    memory_citation: Optional[Any] = None
 
 
-class ReplayWidget(Protocol):
+class ReplayWidget:
     """Protocol documenting the widget callbacks used by this module."""
 
     config: Any
-    last_non_retry_error: Any | None
-    thread_id: Any | None
+    last_non_retry_error: Optional[Any]
+    thread_id: Optional[Any]
 
     def on_task_started(self) -> None: ...
 
     def handle_turn_completed_notification(
-        self, notification: TurnCompletedNotification, replay_kind: ReplayKind | str | None
+        self,
+        notification: TurnCompletedNotification,
+        replay_kind: Optional[Union[ReplayKind, str]],
     ) -> None: ...
 
 
 def replay_thread_turns(
     widget: ReplayWidget,
-    turns: list[Turn | Mapping[str, Any] | Any],
-    replay_kind: ReplayKind | str,
+    turns: Sequence[Union[Turn, Mapping[str, Any], Any]],
+    replay_kind: Union[ReplayKind, str],
 ) -> None:
     """Replay turns into ``widget`` using Rust ``ChatWidget`` ordering.
 
@@ -155,9 +162,9 @@ def replay_thread_turns(
 
 def replay_thread_item(
     widget: Any,
-    item: Mapping[str, Any] | Any,
+    item: Union[Mapping[str, Any], Any],
     turn_id: str,
-    replay_kind: ReplayKind | str,
+    replay_kind: Union[ReplayKind, str],
 ) -> None:
     """Replay one item with ``ThreadItemRenderSource::Replay`` semantics."""
 
@@ -166,7 +173,7 @@ def replay_thread_item(
 
 def handle_thread_item(
     widget: Any,
-    item: Mapping[str, Any] | Any,
+    item: Union[Mapping[str, Any], Any],
     turn_id: str,
     render_source: ThreadItemRenderSource,
 ) -> None:
@@ -245,7 +252,7 @@ def handle_thread_item(
         _call(widget, "request_redraw")
 
 
-def _coerce_turn(turn: Turn | Mapping[str, Any] | Any) -> Turn:
+def _coerce_turn(turn: Union[Turn, Mapping[str, Any], Any]) -> Turn:
     if isinstance(turn, Turn):
         return turn
     return Turn(
@@ -266,7 +273,7 @@ def _call(target: Any, method_name: str, *args: Any) -> Any:
     return method(*args)
 
 
-def _get(value: Mapping[str, Any] | Any, key: str, default: Any = ...):
+def _get(value: Union[Mapping[str, Any], Any], key: str, default: Any = ...):
     if isinstance(value, Mapping):
         if default is ...:
             return value[key]
@@ -276,7 +283,7 @@ def _get(value: Mapping[str, Any] | Any, key: str, default: Any = ...):
     return getattr(value, key, default)
 
 
-def _item_kind(item: Mapping[str, Any] | Any) -> str:
+def _item_kind(item: Union[Mapping[str, Any], Any]) -> str:
     raw_kind = _get(item, "kind", None) or _get(item, "type", None)
     if raw_kind is None:
         raise ValueError("ThreadItem is missing a 'kind' or 'type' discriminator")
@@ -292,17 +299,17 @@ def _status_name(value: Any) -> str:
     return text
 
 
-def _replay_kind_name(value: ReplayKind | str | None) -> str | None:
+def _replay_kind_name(value: Optional[Union[ReplayKind, str]]) -> Optional[str]:
     if value is None:
         return None
     return _status_name(value)
 
 
-def _thread_id_string(thread_id: Any | None) -> str:
+def _thread_id_string(thread_id: Optional[Any]) -> str:
     return "" if thread_id is None else str(thread_id)
 
 
-def _convert_memory_citation(citation: Any | None) -> Any | None:
+def _convert_memory_citation(citation: Optional[Any]) -> Optional[Any]:
     if citation is None:
         return None
     entries = tuple(_get(citation, "entries", ()) or ())

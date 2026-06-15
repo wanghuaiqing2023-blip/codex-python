@@ -8,7 +8,7 @@ the same behavior contract with semantic ``Rect`` objects, a simple recording
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Iterable, List, Optional, Protocol, Tuple, Union, runtime_checkable
+from typing import Any, Iterable, List, Optional, Tuple, Union
 
 from .._porting import RustTuiModule
 from ..line_truncation import Line, Span
@@ -21,6 +21,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="render::renderable",
     source="codex/codex-rs/tui/src/render/renderable.rs",
+    status="complete",
 )
 
 DEFAULT_CURSOR_STYLE = "DefaultUserShape"
@@ -42,12 +43,18 @@ class Insets:
         return cls(top=v, left=h, bottom=v, right=h)
 
 
-@runtime_checkable
-class Renderable(Protocol):
-    def render(self, area: Rect, buf: Buffer) -> None: ...
-    def desired_height(self, width: int) -> int: ...
-    def cursor_pos(self, area: Rect) -> Optional[Tuple[int, int]]: ...
-    def cursor_style(self, area: Rect) -> Any: ...
+class Renderable:
+    def render(self, area: Rect, buf: Buffer) -> None:
+        raise NotImplementedError
+
+    def desired_height(self, width: int) -> int:
+        raise NotImplementedError
+
+    def cursor_pos(self, area: Rect) -> Optional[Tuple[int, int]]:
+        return None
+
+    def cursor_style(self, area: Rect) -> Any:
+        return DEFAULT_CURSOR_STYLE
 
 
 class EmptyRenderable:
@@ -418,8 +425,9 @@ class InsetRenderable:
         return self.child.cursor_style(area.inset(self.insets))
 
 
-class RenderableExt(Protocol):
-    def inset(self, insets: Insets) -> RenderableItem: ...
+class RenderableExt:
+    def inset(self, insets: Insets) -> RenderableItem:
+        raise NotImplementedError
 
 
 def inset(value: Any, insets: Insets) -> RenderableItem:

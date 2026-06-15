@@ -4,7 +4,9 @@ from pycodex.tui.chatwidget.review_popups import (
     CommitLogEntry,
     custom_review_prompt_action,
     open_review_popup,
+    show_review_branch_picker,
     show_review_branch_picker_with_branches,
+    show_review_commit_picker,
     show_review_commit_picker_with_entries,
     show_review_custom_prompt,
 )
@@ -50,6 +52,17 @@ def test_branch_picker_uses_detached_head_fallback() -> None:
     assert view.items[0].name == "(detached HEAD) -> main"
 
 
+def test_branch_picker_wrapper_uses_git_providers() -> None:
+    # Rust parity: ChatWidget::show_review_branch_picker delegates to branch/current-branch helpers.
+    view = show_review_branch_picker(
+        Path("/repo"),
+        lambda cwd: ["main"] if cwd == Path("/repo") else [],
+        lambda cwd: "topic" if cwd == Path("/repo") else None,
+    )
+
+    assert view.items[0].name == "topic -> main"
+
+
 def test_commit_picker_shows_subjects_without_timestamps_and_searches_sha() -> None:
     # Rust parity: review_commit_picker_shows_subjects_without_timestamps.
     view = show_review_commit_picker_with_entries(
@@ -67,6 +80,30 @@ def test_commit_picker_shows_subjects_without_timestamps_and_searches_sha() -> N
     assert view.items[0].actions[0].kind == "review_commit"
     assert view.items[0].actions[0].sha == "1111111deadbeef"
     assert view.items[0].actions[0].title == "Add new feature X"
+
+
+def test_commit_picker_wrapper_uses_recent_commit_provider_with_limit_100() -> None:
+    # Rust parity: ChatWidget::show_review_commit_picker requests recent commits with limit 100.
+    calls = []
+
+    def recent(cwd, limit):
+        calls.append((cwd, limit))
+        return [CommitLogEntry(sha="abc", subject="Subject")]
+
+    view = show_review_commit_picker(Path("/repo"), recent)
+
+    assert calls == [(Path("/repo"), 100)]
+    assert view.items[0].name == "Subject"
+
+
+def test_commit_picker_with_no_entries_preserves_searchable_empty_view_shape() -> None:
+    # Rust still constructs the searchable selection view even when recent_commits returns empty.
+    view = show_review_commit_picker_with_entries([])
+
+    assert view.title == "Select a commit to review"
+    assert view.is_searchable
+    assert view.search_placeholder == "Type to search commits"
+    assert view.items == []
 
 
 def test_custom_prompt_view_metadata_and_trimmed_submit_behavior() -> None:

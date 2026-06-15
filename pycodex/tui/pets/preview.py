@@ -32,6 +32,9 @@ class PetPickerPreviewStatus(Enum):
     Ready = "ready"
     Error = "error"
 
+    def __call__(self) -> "PetPickerPreviewStatus":
+        return self
+
 
 @dataclass
 class PetPickerPreviewInner:

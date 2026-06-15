@@ -1,4 +1,4 @@
-"""Model migration prompt semantics for Rust ``codex-tui::model_migration``."""
+﻿"""Model migration prompt semantics for Rust ``codex-tui::model_migration``."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Any, List, Optional, Set
 
 from ._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="model_migration", source="codex/codex-rs/tui/src/model_migration.rs")
+RUST_MODULE = RustTuiModule(crate="codex-tui", module="model_migration", source="codex/codex-rs/tui/src/model_migration.rs", status="complete")
 
 
 class ModelMigrationOutcome(Enum):
@@ -313,3 +313,4 @@ __all__ = [
     "render_ref",
     "run_model_migration_prompt",
 ]
+

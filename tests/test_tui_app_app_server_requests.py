@@ -64,6 +64,36 @@ def test_resolve_notification_returns_resolved_mcp_request():
     assert resolve_notification_returns_resolved_mcp_request()
 
 
+def test_mcp_elicitation_resolution_requires_matching_server_name_and_request_id():
+    """Rust McpRequestKey includes both server_name and request_id."""
+
+    pending = PendingAppServerRequests()
+    pending.note_server_request(
+        {"McpServerElicitationRequest": {"request_id": 12, "server_name": "example"}}
+    )
+
+    assert pending.take_resolution(
+        {
+            "type": "ResolveElicitation",
+            "server_name": "other",
+            "request_id": 12,
+            "decision": "accept",
+            "content": {"answer": "yes"},
+            "meta": None,
+        }
+    ) is None
+    assert pending.take_resolution(
+        {
+            "type": "ResolveElicitation",
+            "server_name": "example",
+            "request_id": 12,
+            "decision": "accept",
+            "content": {"answer": "yes"},
+            "meta": None,
+        }
+    ) == AppServerRequestResolution(12, {"action": "accept", "content": {"answer": "yes"}})
+
+
 def test_resolve_notification_returns_resolved_user_input_item_id():
     """Rust codex-tui app::app_server_requests::resolve_notification_returns_resolved_user_input_item_id."""
 

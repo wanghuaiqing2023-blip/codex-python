@@ -2,9 +2,12 @@ import unittest
 
 from pycodex.config import (
     CliConfigOverrides,
+    ConfigOverride,
     ConfigOverrideError,
     apply_single_override,
+    build_cli_overrides_layer,
     canonicalize_override_key,
+    default_empty_table,
     parse_toml_value,
 )
 from pycodex.config.overrides import parse_override
@@ -87,6 +90,69 @@ class ConfigOverrideTests(unittest.TestCase):
         overrides.apply_on_mapping(target)
 
         self.assertEqual(target, {"model": "gpt-5.2", "approval_policy": "never"})
+
+    def test_default_empty_table_returns_empty_mapping(self):
+        # Rust crate: codex-config
+        # Rust module: src/overrides.rs
+        # Rust source: default_empty_table returns TomlValue::Table(Default::default()).
+        self.assertEqual(default_empty_table(), {})
+
+    def test_build_cli_overrides_layer_applies_dotted_paths_in_order(self):
+        # Rust source: build_cli_overrides_layer applies each parsed path/value.
+        layer = build_cli_overrides_layer(
+            [
+                ("model", "gpt-5.2"),
+                ("features.web_search_request", True),
+                ("features.use_legacy_landlock", False),
+            ]
+        )
+
+        self.assertEqual(
+            layer,
+            {
+                "model": "gpt-5.2",
+                "features": {
+                    "web_search_request": True,
+                    "use_legacy_landlock": False,
+                },
+            },
+        )
+
+    def test_build_cli_overrides_layer_replaces_non_mapping_intermediate(self):
+        # Rust source: apply_toml_override replaces a non-table intermediate
+        # with a table before continuing.
+        layer = build_cli_overrides_layer(
+            [
+                ("features", False),
+                ("features.use_legacy_landlock", True),
+            ]
+        )
+
+        self.assertEqual(layer, {"features": {"use_legacy_landlock": True}})
+
+    def test_build_cli_overrides_layer_accepts_config_override_objects(self):
+        layer = build_cli_overrides_layer(
+            [
+                ConfigOverride("sandbox", "read-only"),
+                ConfigOverride("shell_environment_policy.inherit", "all"),
+            ]
+        )
+
+        self.assertEqual(
+            layer,
+            {
+                "sandbox": "read-only",
+                "shell_environment_policy": {"inherit": "all"},
+            },
+        )
+
+    def test_cli_config_overrides_build_layer_uses_parsed_values(self):
+        overrides = CliConfigOverrides(["model='gpt-5.2'", "features.web_search_request=true"])
+
+        self.assertEqual(
+            overrides.build_layer(),
+            {"model": "gpt-5.2", "features": {"web_search_request": True}},
+        )
 
     def test_canonicalize_override_key_leaves_other_keys_unchanged(self):
         self.assertEqual(canonicalize_override_key("model"), "model")

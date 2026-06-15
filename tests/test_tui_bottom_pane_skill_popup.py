@@ -1,9 +1,13 @@
 from pycodex.tui.bottom_pane.popup_consts import MAX_POPUP_ROWS
 from pycodex.tui.bottom_pane.skill_popup import MentionItem
 from pycodex.tui.bottom_pane.skill_popup import SkillPopup
+from pycodex.tui.bottom_pane.skill_popup import display_name_match_sorting_beats_worse_secondary_search_term_matches
+from pycodex.tui.bottom_pane.skill_popup import filtered_mentions_preserve_results_beyond_popup_height
 from pycodex.tui.bottom_pane.skill_popup import mention_item
 from pycodex.tui.bottom_pane.skill_popup import named_mention_item
 from pycodex.tui.bottom_pane.skill_popup import plugin_mention_item
+from pycodex.tui.bottom_pane.skill_popup import query_match_score_sorts_before_plugin_rank_bias
+from pycodex.tui.bottom_pane.skill_popup import scrolling_mentions_shifts_rendered_window_snapshot
 from pycodex.tui.bottom_pane.skill_popup import skill_popup_hint_line
 
 
@@ -12,7 +16,7 @@ def test_filtered_mentions_preserve_results_beyond_popup_height():
 
     filtered_names = [popup.mentions[idx].display_name for idx in popup.filtered_items()]
 
-    assert filtered_names == [f"Mention {idx:02}" for idx in range(MAX_POPUP_ROWS + 2)]
+    assert filtered_names == ["Mention {:02}".format(idx) for idx in range(MAX_POPUP_ROWS + 2)]
     assert popup.calculate_required_height(72) == MAX_POPUP_ROWS + 2
 
 
@@ -24,7 +28,7 @@ def test_scrolling_mentions_shifts_rendered_window_and_selection():
 
     assert popup.selected_idx == MAX_POPUP_ROWS + 1
     assert popup.scroll_top == 2
-    assert popup.selected_mention().display_name == f"Mention {MAX_POPUP_ROWS + 1:02}"
+    assert popup.selected_mention().display_name == "Mention {:02}".format(MAX_POPUP_ROWS + 1)
     rendered = popup.render_ref((0, 0, 72, popup.calculate_required_height(72)))
     assert rendered[0].text.startswith("  Mention 02")
 
@@ -93,7 +97,7 @@ def test_rows_description_composition_and_truncation():
 
     row = popup.rows_from_matches(popup.filtered())[0]
 
-    assert row.name.endswith("…")
+    assert row.name.endswith(".")
     assert row.description == "[Skill] Useful skill"
     assert row.selected is True
 
@@ -110,3 +114,10 @@ def test_set_mentions_query_clamp_empty_and_hint_line():
     popup.set_query("zzz")
     assert popup.selected_mention() is None
     assert skill_popup_hint_line() == "Press Enter to insert or Esc to close"
+
+
+def test_rust_named_semantic_helpers_cover_internal_behavior():
+    assert filtered_mentions_preserve_results_beyond_popup_height()
+    assert scrolling_mentions_shifts_rendered_window_snapshot()
+    assert display_name_match_sorting_beats_worse_secondary_search_term_matches()
+    assert query_match_score_sorts_before_plugin_rank_bias()

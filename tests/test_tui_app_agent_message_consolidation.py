@@ -22,6 +22,35 @@ def test_deferred_history_cell_is_inserted_before_consolidation() -> None:
     assert deferred_history_cell_is_inserted_before_consolidation()
 
 
+def test_deferred_non_agent_cell_breaks_trailing_run_before_consolidation() -> None:
+    # Rust inserts deferred_history_cell before trailing_run_start; a non-agent deferred
+    # cell therefore prevents replacing the earlier provisional agent message.
+    deferred = AgentMarkdownCell.new("deferred", "/tmp/cwd")
+    first = AgentMessageCell(("streaming",), True)
+    app = AgentMessageConsolidationApp(
+        transcript_cells=[first],
+        overlay=TranscriptOverlay([first]),
+    )
+    tui = Tui()
+
+    consolidated = app.handle_consolidate_agent_message(
+        tui,
+        "streaming",
+        "/tmp/cwd",
+        ConsolidationScrollbackReflow.REQUIRED,
+        deferred_history_cell=deferred,
+    )
+
+    assert consolidated is None
+    assert app.transcript_cells == [first, deferred]
+    assert app.overlay is not None
+    assert app.overlay.inserted_cells == [deferred]
+    assert app.overlay.consolidated_ranges == []
+    assert app.maybe_finish_stream_reflow_calls == 1
+    assert app.finish_required_stream_reflow_calls == 0
+    assert tui.frame_requester.scheduled_frames == 0
+
+
 def test_no_trailing_agent_cells_finishes_stream_reflow_only() -> None:
     # Rust calls maybe_finish_stream_reflow when there is no trailing run to replace.
     assert no_trailing_agent_cells_finishes_stream_reflow_only()

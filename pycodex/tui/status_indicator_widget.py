@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 import time
-from typing import Any, Callable
+from typing import Any, Callable, List, Optional
 
 from ._porting import RustTuiModule
 from .line_truncation import Line, Span, truncate_line_with_ellipsis_if_overflow, _display_width
@@ -21,6 +21,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="status_indicator_widget",
     source="codex/codex-rs/tui/src/status_indicator_widget.rs",
+    status="complete",
 )
 
 STATUS_DETAILS_DEFAULT_MAX_LINES = 3
@@ -42,7 +43,7 @@ class KeyBinding:
 
 @dataclass
 class FrameRequester:
-    scheduled: list[float] = field(default_factory=list)
+    scheduled: List[float] = field(default_factory=list)
 
     def schedule_frame(self) -> None:
         self.scheduled.append(0.0)
@@ -66,11 +67,11 @@ class StatusIndicatorWidget:
     animations_enabled: bool
     clock: Callable[[], float] = time.monotonic
     header_text: str = "Working"
-    details_text: str | None = None
+    details_text: Optional[str] = None
     details_max_lines: int = STATUS_DETAILS_DEFAULT_MAX_LINES
-    inline_message: str | None = None
+    inline_message: Optional[str] = None
     show_interrupt_hint: bool = True
-    interrupt_binding: KeyBinding | None = field(default_factory=lambda: KeyBinding("esc"))
+    interrupt_binding: Optional[KeyBinding] = field(default_factory=lambda: KeyBinding("esc"))
     elapsed_running: float = 0.0
     last_resume_at: float = field(default_factory=time.monotonic)
     is_paused: bool = False
@@ -78,8 +79,8 @@ class StatusIndicatorWidget:
     @classmethod
     def new(
         cls,
-        app_event_tx: AppEventSender | None = None,
-        frame_requester: FrameRequester | None = None,
+        app_event_tx: Optional[AppEventSender] = None,
+        frame_requester: Optional[FrameRequester] = None,
         animations_enabled: bool = True,
         *,
         clock: Callable[[], float] = time.monotonic,
@@ -101,7 +102,7 @@ class StatusIndicatorWidget:
 
     def update_details(
         self,
-        details: str | None,
+        details: Optional[str],
         capitalization: StatusDetailsCapitalization,
         max_lines: int,
     ) -> None:
@@ -116,7 +117,7 @@ class StatusIndicatorWidget:
             else trimmed
         )
 
-    def update_inline_message(self, message: str | None) -> None:
+    def update_inline_message(self, message: Optional[str]) -> None:
         if message is None:
             self.inline_message = None
             return
@@ -126,13 +127,13 @@ class StatusIndicatorWidget:
     def header(self) -> str:
         return self.header_text
 
-    def details(self) -> str | None:
+    def details(self) -> Optional[str]:
         return self.details_text
 
     def set_interrupt_hint_visible(self, visible: bool) -> None:
         self.show_interrupt_hint = bool(visible)
 
-    def set_interrupt_binding(self, binding: KeyBinding | str | None) -> None:
+    def set_interrupt_binding(self, binding: Any) -> None:
         if binding is None or isinstance(binding, KeyBinding):
             self.interrupt_binding = binding
         else:
@@ -169,7 +170,7 @@ class StatusIndicatorWidget:
     def elapsed_seconds(self) -> int:
         return self.elapsed_seconds_at(self.clock())
 
-    def wrapped_details_lines(self, width: int) -> list[Line]:
+    def wrapped_details_lines(self, width: int) -> List[Line]:
         if self.details_text is None or width == 0:
             return []
         prefix_width = _display_width(DETAILS_PREFIX)
@@ -188,14 +189,16 @@ class StatusIndicatorWidget:
             last = out[-1]
             if last.spans:
                 span = last.spans[-1]
-                span.content = span.content[:max_base_len] + "…"
-                span.style = "dim"
+                out[-1] = Line([
+                    *last.spans[:-1],
+                    Span(span.content[:max_base_len] + "…", style="dim"),
+                ])
         return out
 
     def desired_height(self, width: int) -> int:
         return 1 + len(self.wrapped_details_lines(width))
 
-    def render_lines(self, width: int, height: int | None = None, now: float | None = None) -> list[Line]:
+    def render_lines(self, width: int, height: Optional[int] = None, now: Optional[float] = None) -> List[Line]:
         if width <= 0 or height == 0:
             return []
         if self.animations_enabled:
@@ -204,7 +207,7 @@ class StatusIndicatorWidget:
         pretty_elapsed = fmt_elapsed_compact(self.elapsed_seconds_at(render_now))
         motion_mode = MotionMode.from_animations_enabled(self.animations_enabled)
 
-        spans: list[Span] = []
+        spans: List[Span] = []
         indicator = activity_indicator(
             self.last_resume_at,
             motion_mode,
@@ -236,7 +239,7 @@ class StatusIndicatorWidget:
             lines.extend(self.wrapped_details_lines(width)[: max(0, max_height - 1)])
         return lines[:max_height]
 
-    def render(self, area: Any = None, buf: Any = None) -> list[Line]:
+    def render(self, area: Any = None, buf: Any = None) -> List[Line]:
         width = getattr(area, "width", 80) if area is not None else 80
         height = getattr(area, "height", None) if area is not None else None
         lines = self.render_lines(width, height)
@@ -263,7 +266,7 @@ def desired_height(widget: StatusIndicatorWidget, width: int) -> int:
     return widget.desired_height(width)
 
 
-def render(widget: StatusIndicatorWidget, area: Any = None, buf: Any = None) -> list[Line]:
+def render(widget: StatusIndicatorWidget, area: Any = None, buf: Any = None) -> List[Line]:
     return widget.render(area, buf)
 
 

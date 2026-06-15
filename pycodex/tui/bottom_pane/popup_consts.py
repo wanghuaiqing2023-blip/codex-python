@@ -1,14 +1,14 @@
-"""Shared popup constants for Rust ``codex-tui::bottom_pane::popup_consts``."""
+﻿"""Shared popup constants for Rust ``codex-tui::bottom_pane::popup_consts``."""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from .._porting import RustTuiModule
 from .. import key_hint
 from ..keymap import ListKeymap, KeyBinding, plain, primary_binding
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="bottom_pane::popup_consts", source="codex/codex-rs/tui/src/bottom_pane/popup_consts.rs")
+RUST_MODULE = RustTuiModule(crate="codex-tui", module="bottom_pane::popup_consts", source="codex/codex-rs/tui/src/bottom_pane/popup_consts.rs", status="complete")
 
 MAX_POPUP_ROWS = 8
 
@@ -48,9 +48,9 @@ def standard_popup_hint_line_for_keymap(list_keymap: ListKeymap) -> str:
 
 
 def accept_cancel_hint_line(
-    accept: KeyBinding | None,
+    accept: Optional[KeyBinding],
     accept_label: str,
-    cancel: KeyBinding | None,
+    cancel: Optional[KeyBinding],
     cancel_label: str,
 ) -> str:
     if accept is not None and cancel is not None:
@@ -69,3 +69,4 @@ __all__ = [
     "standard_popup_hint_line",
     "standard_popup_hint_line_for_keymap",
 ]
+

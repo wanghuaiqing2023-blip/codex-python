@@ -6,11 +6,16 @@ import asyncio
 import uuid
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Protocol, TypeAlias
+from typing import Any, Dict, List, Optional, Protocol, Union
 
 from ._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="workspace_command", source="codex/codex-rs/tui/src/workspace_command.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="workspace_command",
+    source="codex/codex-rs/tui/src/workspace_command.rs",
+    status="complete",
+)
 
 
 class WorkspaceCommandExecutor(Protocol):
@@ -18,16 +23,16 @@ class WorkspaceCommandExecutor(Protocol):
         ...
 
 
-WorkspaceCommandRunner: TypeAlias = WorkspaceCommandExecutor
+WorkspaceCommandRunner = WorkspaceCommandExecutor
 
 
 @dataclass(frozen=True)
 class WorkspaceCommand:
     """Describes a bounded non-interactive workspace command."""
 
-    argv: list[str]
-    cwd_path: Path | None = None
-    env_overrides: dict[str, str | None] = field(default_factory=dict)
+    argv: List[str]
+    cwd_path: Optional[Path] = None
+    env_overrides: Dict[str, Optional[str]] = field(default_factory=dict)
     timeout_seconds: float = 5.0
     output_bytes_cap: int = 64 * 1024
     disable_output_cap_flag: bool = False
@@ -36,7 +41,7 @@ class WorkspaceCommand:
     def new(cls, argv: Any) -> "WorkspaceCommand":
         return cls(argv=[str(item) for item in argv])
 
-    def cwd(self, cwd: str | Path) -> "WorkspaceCommand":
+    def cwd(self, cwd: Union[str, Path]) -> "WorkspaceCommand":
         return replace(self, cwd_path=Path(cwd))
 
     def env(self, key: str, value: str) -> "WorkspaceCommand":
@@ -115,7 +120,7 @@ class AppServerWorkspaceCommandRunner:
         return WorkspaceCommandOutput(exit_code=int(exit_code), stdout=str(stdout), stderr=str(stderr))
 
     @staticmethod
-    def _build_request(command: WorkspaceCommand) -> dict[str, Any]:
+    def _build_request(command: WorkspaceCommand) -> Dict[str, Any]:
         timeout_ms = int(command.timeout_seconds * 1000)
         if timeout_ms > 9_223_372_036_854_775_807:
             timeout_ms = 9_223_372_036_854_775_807

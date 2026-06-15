@@ -7,65 +7,35 @@ Rust source:
 
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable
 
-from pycodex.protocol import ModelInfo, ModelPreset, ModelsResponse
+from pycodex.protocol import ModelPreset, ModelsResponse
 
-
-@dataclass
-class ModelsManagerConfig:
-    model_context_window: int | None = None
-    model_auto_compact_token_limit: int | None = None
-    tool_output_token_limit: int | None = None
-    base_instructions: str | None = None
-    personality_enabled: bool = False
-    model_supports_reasoning_summaries: bool | None = None
-    model_catalog: dict[str, Any] | None = None
-
-
-CACHE_FILE = "models_cache.json"
-
+from .cache import (
+    CACHE_FILE,
+    ModelsCache,
+    ModelsCacheManager,
+    models_response_from_fetch_result,
+)
+from .collaboration_mode_presets import (
+    KNOWN_MODE_NAMES_TEMPLATE_KEY,
+    builtin_collaboration_mode_presets,
+    default_mode_instructions,
+    format_mode_names,
+)
+from .config import ModelsManagerConfig
+from .model_presets import (
+    HIDE_GPT5_1_MIGRATION_PROMPT_CONFIG,
+    HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG,
+    model_presets_from_models,
+)
 
 class RefreshStrategy(str, Enum):
     OFFLINE = "offline"
     ONLINE_IF_UNCACHED = "online_if_uncached"
-
-
-@dataclass(frozen=True)
-class ModelsCache:
-    fetched_at: datetime
-    etag: str | None = None
-    client_version: str | None = None
-    models: tuple[ModelInfo, ...] = ()
-
-    @classmethod
-    def from_mapping(cls, value: dict[str, Any]) -> "ModelsCache":
-        fetched_at = value.get("fetched_at")
-        if not isinstance(fetched_at, str):
-            raise TypeError("models cache fetched_at must be a string")
-        models = tuple(_model_info_from_cache_item(item) for item in value.get("models", ()))
-        return cls(
-            fetched_at=_parse_cache_datetime(fetched_at),
-            etag=value.get("etag") if isinstance(value.get("etag"), str) else None,
-            client_version=value.get("client_version") if isinstance(value.get("client_version"), str) else None,
-            models=models,
-        )
-
-    def to_mapping(self) -> dict[str, Any]:
-        return {
-            "fetched_at": self.fetched_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
-            "etag": self.etag,
-            "client_version": self.client_version,
-            "models": [{"slug": model.slug} for model in self.models],
-        }
-
-    def to_presets(self) -> list[ModelPreset]:
-        return [ModelPreset.from_model_info(model) for model in sorted(self.models, key=lambda item: item.priority)]
 
 
 class CachedModelsManager:
@@ -85,29 +55,29 @@ class CachedModelsManager:
         self.client_version = client_version_to_whole(client_version)
         self.ttl = ttl
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.cache_manager = ModelsCacheManager(self.cache_path, self.ttl, clock=self.clock)
 
     @property
     def cache_path(self) -> Path:
         return self.codex_home / CACHE_FILE
 
     def read_cache(self) -> ModelsCache | None:
-        try:
-            data = json.loads(self.cache_path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return None
-        return ModelsCache.from_mapping(data)
+        self._sync_cache_manager()
+        return self.cache_manager.load()
 
     def write_cache(self, cache: ModelsCache) -> None:
-        self.codex_home.mkdir(parents=True, exist_ok=True)
-        self.cache_path.write_text(json.dumps(cache.to_mapping(), indent=2), encoding="utf-8")
+        self._sync_cache_manager()
+        self.cache_manager.save_internal(cache)
 
     async def list_models(self, refresh_strategy: Any = RefreshStrategy.ONLINE_IF_UNCACHED) -> list[ModelPreset]:
         strategy = _refresh_strategy_value(refresh_strategy)
         cache = self.read_cache()
         if strategy == RefreshStrategy.OFFLINE.value:
             return [] if cache is None else cache.to_presets()
-        if cache is not None and self._cache_is_usable(cache):
-            return cache.to_presets()
+        self._sync_cache_manager()
+        fresh = self.cache_manager.load_fresh(self.client_version)
+        if fresh is not None:
+            return fresh.to_presets()
         cache = self._fetch_and_store()
         return cache.to_presets()
 
@@ -116,30 +86,35 @@ class CachedModelsManager:
             raise TypeError("etag must be a string")
         cache = self.read_cache()
         if cache is not None and cache.etag == etag:
-            self.write_cache(ModelsCache(self._now(), etag=cache.etag, client_version=self.client_version, models=cache.models))
+            self._sync_cache_manager()
+            self.cache_manager.renew_cache_ttl()
             return
         self._fetch_and_store()
 
     def _cache_is_usable(self, cache: ModelsCache) -> bool:
-        return cache.client_version == self.client_version and self._now() - cache.fetched_at <= self.ttl
+        return cache.client_version == self.client_version and cache.is_fresh(self.ttl, now=self._now())
 
     def _fetch_and_store(self) -> ModelsCache:
-        response = self.fetch_models()
-        etag = None
-        if isinstance(response, tuple):
-            response, etag = response
-        if not isinstance(response, ModelsResponse):
-            response = ModelsResponse.from_mapping(response)
-        cache = ModelsCache(self._now(), etag=etag, client_version=self.client_version, models=response.models)
-        self.write_cache(cache)
+        response, etag = models_response_from_fetch_result(self.fetch_models())
+        self._sync_cache_manager()
+        self.cache_manager.persist_cache(response.models, etag, self.client_version)
+        cache = self.cache_manager.load()
+        if cache is None:
+            raise FileNotFoundError("cache not found after persist")
         return cache
 
     def _now(self) -> datetime:
         now = self.clock()
         return now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
 
+    def _sync_cache_manager(self) -> None:
+        self.cache_manager.cache_ttl = self.ttl
+        self.cache_manager.clock = self.clock
+
 
 def bundled_models_response() -> dict[str, Any]:
+    import json
+
     root = Path(__file__).resolve().parents[2]
     models_json = root / "codex" / "codex-rs" / "models-manager" / "models.json"
     return json.loads(models_json.read_text(encoding="utf-8"))
@@ -154,54 +129,81 @@ def client_version_to_whole(version: str | None = None) -> str:
     return ".".join(parts[:3])
 
 
-def _parse_cache_datetime(value: str) -> datetime:
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
-
-
-def _model_info_from_cache_item(value: Any) -> ModelInfo:
-    if isinstance(value, ModelInfo):
-        return value
-    if isinstance(value, dict):
-        if set(value) == {"slug"}:
-            from .test_support import model_info_from_slug
-
-            return model_info_from_slug(str(value["slug"]))
-        return ModelInfo.from_mapping(value)
-    if isinstance(value, str):
-        from .test_support import model_info_from_slug
-
-        return model_info_from_slug(value)
-    raise TypeError("models cache entries must be ModelInfo, mapping, or slug")
-
-
 def _refresh_strategy_value(value: Any) -> str:
     raw = getattr(value, "value", value)
     return str(raw).lower()
 
 
-from .test_support import (  # noqa: E402
-    builtin_collaboration_mode_presets,
-    construct_model_info_from_candidates,
-    construct_model_info_offline_for_tests,
-    get_model_offline_for_tests,
+from .model_info import (  # noqa: E402
+    BASE_INSTRUCTIONS,
+    DEFAULT_PERSONALITY_HEADER,
+    LOCAL_FRIENDLY_TEMPLATE,
+    LOCAL_PRAGMATIC_TEMPLATE,
+    PERSONALITY_PLACEHOLDER,
+    local_personality_messages_for_slug,
     model_info_from_slug,
     with_config_overrides,
+)
+from .manager import (  # noqa: E402
+    DEFAULT_MODEL_CACHE_TTL,
+    MODEL_CACHE_FILE,
+    CachedModelsManager,
+    ModelsEndpointClient,
+    OpenAiModelsManager,
+    RefreshStrategy,
+    StaticModelsManager,
+    build_available_models,
+    construct_model_info_from_candidates,
+    current_auth_uses_codex_backend,
+    default_model_from_available,
+    find_model_by_longest_prefix,
+    find_model_by_namespaced_suffix,
+    is_chatgpt_auth_mode,
+    load_remote_models_from_file,
+)
+from .test_support import (  # noqa: E402
+    construct_model_info_offline_for_tests,
+    get_model_offline_for_tests,
 )
 
 
 __all__ = [
+    "BASE_INSTRUCTIONS",
     "CACHE_FILE",
     "CachedModelsManager",
+    "DEFAULT_MODEL_CACHE_TTL",
+    "DEFAULT_PERSONALITY_HEADER",
+    "HIDE_GPT5_1_MIGRATION_PROMPT_CONFIG",
+    "HIDE_GPT_5_1_CODEX_MAX_MIGRATION_PROMPT_CONFIG",
+    "KNOWN_MODE_NAMES_TEMPLATE_KEY",
+    "LOCAL_FRIENDLY_TEMPLATE",
+    "LOCAL_PRAGMATIC_TEMPLATE",
     "ModelsCache",
+    "ModelsCacheManager",
     "ModelsManagerConfig",
+    "MODEL_CACHE_FILE",
+    "ModelsEndpointClient",
+    "PERSONALITY_PLACEHOLDER",
+    "OpenAiModelsManager",
     "RefreshStrategy",
+    "StaticModelsManager",
     "builtin_collaboration_mode_presets",
+    "build_available_models",
     "bundled_models_response",
     "client_version_to_whole",
     "construct_model_info_from_candidates",
     "construct_model_info_offline_for_tests",
+    "current_auth_uses_codex_backend",
+    "default_mode_instructions",
+    "default_model_from_available",
+    "find_model_by_longest_prefix",
+    "find_model_by_namespaced_suffix",
+    "format_mode_names",
     "get_model_offline_for_tests",
+    "is_chatgpt_auth_mode",
+    "load_remote_models_from_file",
+    "local_personality_messages_for_slug",
     "model_info_from_slug",
+    "model_presets_from_models",
     "with_config_overrides",
 ]

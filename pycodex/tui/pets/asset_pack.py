@@ -12,17 +12,20 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import shutil
-from typing import Any, Callable
+from typing import Any, Callable, Optional, Sequence, Union
 from urllib.parse import urlparse
 from urllib.request import urlopen
 from uuid import uuid4
 
-from .._porting import RustTuiModule, not_ported
+from .._porting import RustTuiModule
+from . import catalog
+from .model import _image_dimensions
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="pets::asset_pack",
     source="codex/codex-rs/tui/src/pets/asset_pack.rs",
+    status="complete",
 )
 
 PET_PACK_VERSION = "v1"
@@ -32,17 +35,17 @@ PET_DOWNLOAD_TIMEOUT = 60
 PET_MAX_DOWNLOAD_BYTES = 4 * 1024 * 1024
 
 
-def builtin_spritesheet_path(codex_home: str | os.PathLike[str], file: str) -> Path:
+def builtin_spritesheet_path(codex_home: Union[str, os.PathLike[str]], file: str) -> Path:
     return pack_dir(codex_home) / "assets" / file
 
 
 def ensure_builtin_pet(
-    codex_home: str | os.PathLike[str],
+    codex_home: Union[str, os.PathLike[str]],
     pet: Any,
     *,
-    validate_fn: Callable[[Path], None] | None = None,
-    download_fn: Callable[[str, int], bytes] | None = None,
-    install_fn: Callable[[Path, Path], None] | None = None,
+    validate_fn: Optional[Callable[[Path], None]] = None,
+    download_fn: Optional[Callable[[str, int], bytes]] = None,
+    install_fn: Optional[Callable[[Path, Path], None]] = None,
 ) -> None:
     """Ensure a built-in spritesheet exists and passes structural validation."""
 
@@ -93,7 +96,7 @@ def builtin_pet_url(pet: Any) -> str:
     return url
 
 
-def pack_dir(codex_home: str | os.PathLike[str]) -> Path:
+def pack_dir(codex_home: Union[str, os.PathLike[str]]) -> Path:
     return Path(codex_home) / PET_PACK_DIR / PET_PACK_VERSION
 
 
@@ -111,7 +114,10 @@ def download_bytes_with_limit(url: str, max_bytes: int) -> bytes:
     return data
 
 
-def install_downloaded_spritesheet(staging: str | os.PathLike[str], destination: str | os.PathLike[str]) -> None:
+def install_downloaded_spritesheet(
+    staging: Union[str, os.PathLike[str]],
+    destination: Union[str, os.PathLike[str]],
+) -> None:
     shutil.move(str(staging), str(destination))
 
 
@@ -123,18 +129,27 @@ def validate_download_url(value: str) -> None:
         raise ValueError(f"unsupported pet asset download URL scheme {parsed.scheme}")
 
 
-def validate_cached_spritesheet(path: str | os.PathLike[str]) -> None:
-    return not_ported(RUST_MODULE, "validate_cached_spritesheet")
+def validate_cached_spritesheet(path: Union[str, os.PathLike[str]]) -> None:
+    path_obj = Path(path)
+    width, height = _image_dimensions(path_obj)
+    if width != catalog.SPRITESHEET_WIDTH or height != catalog.SPRITESHEET_HEIGHT:
+        raise ValueError(
+            "invalid pet spritesheet dimensions for "
+            f"{path_obj}: expected {catalog.SPRITESHEET_WIDTH}x{catalog.SPRITESHEET_HEIGHT}, "
+            f"got {width}x{height}"
+        )
 
 
 def write_test_pack(
-    codex_home: str | os.PathLike[str],
+    codex_home: Union[str, os.PathLike[str]],
     *,
-    builtin_pets: list[Any] | tuple[Any, ...] | None = None,
-    write_test_spritesheet: Callable[[Path], None] | None = None,
+    builtin_pets: Optional[Sequence[Any]] = None,
+    write_test_spritesheet: Optional[Callable[[Path], None]] = None,
 ) -> None:
-    if builtin_pets is None or write_test_spritesheet is None:
-        return not_ported(RUST_MODULE, "write_test_pack")
+    if builtin_pets is None:
+        builtin_pets = catalog.BUILTIN_PETS
+    if write_test_spritesheet is None:
+        write_test_spritesheet = catalog.write_test_spritesheet
     assets_dir = pack_dir(codex_home) / "assets"
     assets_dir.mkdir(parents=True, exist_ok=True)
     for pet in builtin_pets:

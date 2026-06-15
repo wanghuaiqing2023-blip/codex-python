@@ -163,6 +163,16 @@ from .auth import bearer_auth_for_provider as bearer_auth_for_provider
 from .auth import resolve_provider_auth as resolve_provider_auth
 from .auth import unauthenticated_auth_provider as unauthenticated_auth_provider
 from .bearer_auth_provider import BearerAuthProvider as BearerAuthProvider
+from .models_endpoint import OpenAiModelsEndpoint as OpenAiModelsEndpoint
+from .provider import ConfiguredModelProvider as ConfiguredModelProvider
+from .provider import DEFAULT_APPROVAL_REVIEW_PREFERRED_MODEL as DEFAULT_APPROVAL_REVIEW_PREFERRED_MODEL
+from .provider import ModelProvider as ModelProvider
+from .provider import ProviderAccountError as ProviderAccountError
+from .provider import ProviderAccountResult as ProviderAccountResult
+from .provider import ProviderAccountState as ProviderAccountState
+from .provider import ProviderCapabilities as ProviderCapabilities
+from .provider import SharedModelProvider as SharedModelProvider
+from .provider import create_model_provider as create_model_provider
 
 
 __all__ = [
@@ -171,6 +181,7 @@ __all__ = [
     "CoreAuthProvider",
     "DEFAULT_APPROVAL_REVIEW_PREFERRED_MODEL",
     "ModelProvider",
+    "OpenAiModelsEndpoint",
     "ProviderAccountError",
     "ProviderAccountResult",
     "ProviderAccountState",

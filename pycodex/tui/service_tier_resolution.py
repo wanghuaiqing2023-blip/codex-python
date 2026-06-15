@@ -15,6 +15,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="service_tier_resolution",
     source="codex/codex-rs/tui/src/service_tier_resolution.rs",
+    status="complete",
 )
 
 FAST_MODE_FEATURE = "fast_mode"

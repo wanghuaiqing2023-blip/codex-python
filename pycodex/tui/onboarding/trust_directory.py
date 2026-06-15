@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Optional, Tuple
 
 from .._porting import RustTuiModule
 
@@ -20,6 +20,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="onboarding::trust_directory",
     source="codex/codex-rs/tui/src/onboarding/trust_directory.rs",
+    status="complete",
 )
 
 TRUST_PROMPT = (
@@ -43,7 +44,7 @@ class StepState(Enum):
 class TrustDirectoryRenderPlan:
     cwd: str
     trust_target: str
-    lines: tuple[str, ...]
+    lines: Tuple[str, ...]
     highlighted: TrustDirectorySelection
     show_git_root_warning: bool
     show_windows_create_sandbox_hint: bool
@@ -55,17 +56,19 @@ class TrustDirectoryWidget:
     trust_target: Path
     show_windows_create_sandbox_hint: bool = False
     should_quit_value: bool = False
-    selection: TrustDirectorySelection | None = None
+    selection: Optional[TrustDirectorySelection] = None
     highlighted: TrustDirectorySelection = TrustDirectorySelection.Trust
-    error: str | None = None
+    error: Optional[str] = None
 
     def render_ref(self, area: Any = None, buf: Any = None) -> TrustDirectoryRenderPlan:
-        lines: list[str] = [f"> You are in {self.cwd}", ""]
+        cwd = _display_path(self.cwd)
+        trust_target = _display_path(self.trust_target)
+        lines: list[str] = [f"> You are in {cwd}", ""]
         show_git_root_warning = self.cwd != self.trust_target
         if show_git_root_warning:
             lines.append(
                 "  Note: You're in a subdirectory of a Git project. Trusting will apply to "
-                f"the repository root: {self.trust_target}"
+                f"the repository root: {trust_target}"
             )
             lines.append("")
         lines.append(f"  {TRUST_PROMPT}")
@@ -79,8 +82,8 @@ class TrustDirectoryWidget:
         suffix = " to continue and create a sandbox..." if self.show_windows_create_sandbox_hint else " to continue"
         lines.append(f"  Press Enter{suffix}")
         return TrustDirectoryRenderPlan(
-            cwd=str(self.cwd),
-            trust_target=str(self.trust_target),
+            cwd=cwd,
+            trust_target=trust_target,
             lines=tuple(lines),
             highlighted=self.highlighted,
             show_git_root_warning=show_git_root_warning,
@@ -136,6 +139,10 @@ def get_step_state(widget: TrustDirectoryWidget) -> StepState:
 def selection_option_row(idx: int, text: str, highlighted: bool) -> str:
     marker = "›" if highlighted else " "
     return f"{marker} {idx + 1}. {text}"
+
+
+def _display_path(path: Path) -> str:
+    return str(path).replace("\\", "/")
 
 
 def _key_kind(key_event: Any) -> str:

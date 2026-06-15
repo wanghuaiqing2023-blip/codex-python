@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 
 import pytest
@@ -37,11 +38,15 @@ def test_owned_handle_raw_returns_inner_handle() -> None:
     assert OwnedHandle(42).raw() == 42
 
 
-def test_overlapped_cancel_timeout_returns_timeout_error() -> None:
-    err = OverlappedOperation().cancel_and_timeout(OwnedHandle(1))
+def test_windows_transport_entrypoints_are_platform_guarded_off_windows() -> None:
+    if os.name == "nt":
+        pytest.skip("platform guard is only observable off Windows")
 
-    assert isinstance(err, TimeoutError)
-    assert str(err) == "timed out waiting for IDE context"
+    with pytest.raises(OSError, match="only available on Windows"):
+        WindowsPipeStream.connect(r"\\.\pipe\codex-test", time.monotonic())
+
+    with pytest.raises(OSError, match="only available on Windows"):
+        OverlappedOperation.new()
 
 
 def test_token_user_buffer_rejects_empty_buffer() -> None:

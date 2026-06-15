@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, List, Optional, Tuple
 
 from .._porting import RustTuiModule
 from .popup_consts import MAX_POPUP_ROWS
@@ -14,6 +14,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="bottom_pane::file_search_popup",
     source="codex/codex-rs/tui/src/bottom_pane/file_search_popup.rs",
+    status="complete",
 )
 
 
@@ -22,24 +23,24 @@ class FileMatch:
     score: int
     path: Path
     match_type: str = "File"
-    root: Path | None = None
-    indices: list[int] | None = None
+    root: Optional[Path] = None
+    indices: Optional[List[int]] = None
 
 
 @dataclass(frozen=True)
 class GenericDisplayRow:
     name: str
-    match_indices: list[int] | None = None
-    description: str | None = None
-    category_tag: str | None = None
+    match_indices: Optional[List[int]] = None
+    description: Optional[str] = None
+    category_tag: Optional[str] = None
     is_disabled: bool = False
-    disabled_reason: str | None = None
+    disabled_reason: Optional[str] = None
 
 
 @dataclass(frozen=True)
 class RenderedFileSearchPopup:
-    rows: tuple[GenericDisplayRow, ...]
-    selected_idx: int | None
+    rows: Tuple[GenericDisplayRow, ...]
+    selected_idx: Optional[int]
     scroll_top: int
     empty_message: str
     max_rows: int = MAX_POPUP_ROWS
@@ -50,7 +51,7 @@ class FileSearchPopup:
     display_query: str = ""
     pending_query: str = ""
     waiting: bool = True
-    matches: list[FileMatch] = field(default_factory=list)
+    matches: List[FileMatch] = field(default_factory=list)
     state: ScrollState = field(default_factory=ScrollState.new)
 
     @classmethod
@@ -92,7 +93,7 @@ class FileSearchPopup:
         self.state.move_down_wrap(length)
         self.state.ensure_visible(length, min(length, MAX_POPUP_ROWS))
 
-    def selected_match(self) -> Path | None:
+    def selected_match(self) -> Optional[Path]:
         idx = self.state.selected_idx
         if idx is None or idx < 0 or idx >= len(self.matches):
             return None
@@ -101,7 +102,7 @@ class FileSearchPopup:
     def calculate_required_height(self) -> int:
         return max(1, min(len(self.matches), MAX_POPUP_ROWS))
 
-    def rows(self) -> list[GenericDisplayRow]:
+    def rows(self) -> List[GenericDisplayRow]:
         return [
             GenericDisplayRow(
                 name=str(match.path),

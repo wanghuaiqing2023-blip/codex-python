@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Optional, Sequence, Tuple
 
 from .._porting import RustTuiModule
 
@@ -19,6 +19,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="onboarding::welcome",
     source="codex/codex-rs/tui/src/onboarding/welcome.rs",
+    status="complete",
 )
 
 MIN_ANIMATION_HEIGHT = 37
@@ -33,11 +34,11 @@ class StepState(Enum):
 
 @dataclass
 class AsciiAnimationModel:
-    variants: tuple[tuple[str, ...], ...] = (("frame-a",), ("frame-b",))
+    variants: Tuple[Tuple[str, ...], ...] = (("frame-a",), ("frame-b",))
     variant_idx: int = 0
     scheduled_frames: int = 0
 
-    def current_frame(self) -> tuple[str, ...]:
+    def current_frame(self) -> Tuple[str, ...]:
         return self.variants[self.variant_idx]
 
     def schedule_next_frame(self) -> None:
@@ -51,10 +52,10 @@ class AsciiAnimationModel:
 
 @dataclass(frozen=True)
 class WelcomeRenderPlan:
-    area: tuple[int, int, int, int]
+    area: Tuple[int, int, int, int]
     cleared: bool
     show_animation: bool
-    lines: tuple[str, ...]
+    lines: Tuple[str, ...]
     welcome_row: int
     wrap_trim: bool = False
 
@@ -66,7 +67,7 @@ class WelcomeWidget:
     animations_enabled: bool = True
     animation: AsciiAnimationModel = field(default_factory=AsciiAnimationModel)
     animations_suppressed: bool = False
-    layout_area: tuple[int, int, int, int] | None = None
+    layout_area: Optional[Tuple[int, int, int, int]] = None
 
     @classmethod
     def new(cls, is_logged_in: bool, request_frame: Any = None, animations_enabled: bool = True) -> "WelcomeWidget":
@@ -126,14 +127,14 @@ def get_step_state(widget: WelcomeWidget) -> StepState:
     return widget.get_step_state()
 
 
-def row_containing(lines: Sequence[str], needle: str) -> int | None:
+def row_containing(lines: Sequence[str], needle: str) -> Optional[int]:
     for index, line in enumerate(lines):
         if needle in line:
             return index
     return None
 
 
-def _rect(area: Any) -> tuple[int, int, int, int]:
+def _rect(area: Any) -> Tuple[int, int, int, int]:
     if isinstance(area, Mapping):
         return (int(area["x"]), int(area["y"]), int(area["width"]), int(area["height"]))
     if isinstance(area, Sequence) and not isinstance(area, (str, bytes)):

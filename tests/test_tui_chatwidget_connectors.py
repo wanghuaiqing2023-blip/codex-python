@@ -10,6 +10,7 @@ from pycodex.tui.chatwidget.connectors import (
     ConnectorsCacheState,
     ConnectorsSnapshot,
     ConnectorsState,
+    ConnectorsWidgetState,
     connector_brief_description,
     connector_description,
     connector_status_label,
@@ -138,3 +139,87 @@ def test_final_snapshot_preserves_existing_enabled_flags_and_update_enabled_chan
     assert state.cache.snapshot.connectors[0].is_enabled is False
     assert state.update_connector_enabled("drive", False) is False
     assert state.update_connector_enabled("missing", True) is False
+
+
+def test_widget_refresh_prefetch_and_disabled_output_paths() -> None:
+    disabled = ConnectorsWidgetState(features_apps_enabled=False, has_chatgpt_account=True)
+    disabled.refresh_connectors(force_refetch=True)
+    disabled.add_connectors_output()
+
+    assert disabled.sent_fetches == []
+    assert disabled.info_messages == [("Apps are disabled.", "Enable the apps feature to use $ or /apps.")]
+
+    widget = ConnectorsWidgetState()
+    widget.prefetch_connectors()
+    assert widget.sent_fetches == [False]
+    assert widget.connectors.cache.kind == "Loading"
+
+
+def test_widget_add_connectors_output_ready_empty_failed_and_loading_paths() -> None:
+    ready = ConnectorsWidgetState(connectors=ConnectorsState(cache=ConnectorsCacheState.Ready(snapshot(app("drive")))))
+    ready.add_connectors_output()
+    assert ready.sent_fetches == [True]
+    assert ready.shown_selection_views[-1]["items"][0]["id"] == "drive"
+    assert ready.redraws == 1
+
+    empty = ConnectorsWidgetState(connectors=ConnectorsState(cache=ConnectorsCacheState.Ready(snapshot())))
+    empty.add_connectors_output()
+    assert empty.info_messages == [("No apps available.", None)]
+
+    failed = ConnectorsWidgetState(connectors=ConnectorsState(cache=ConnectorsCacheState.Failed("boom")))
+    failed.add_connectors_output()
+    assert failed.history == [{"kind": "error", "message": "boom"}]
+
+    loading = ConnectorsWidgetState(replace_selection_view_result=False)
+    loading.add_connectors_output()
+    assert loading.shown_selection_views[-1]["items"][0]["name"] == "Loading apps..."
+
+
+def test_widget_on_connectors_loaded_updates_bottom_snapshot_popup_and_pending_refetch() -> None:
+    widget = ConnectorsWidgetState()
+    widget.connectors.begin_refresh(connectors_enabled=True, force_refetch=False)
+    widget.connectors.begin_refresh(connectors_enabled=True, force_refetch=True)
+
+    widget.on_connectors_loaded(snapshot(app("partial", accessible=True)), is_final=False)
+    assert widget.bottom_pane_snapshot.connectors[0].id == "partial"
+    assert widget.connectors.partial_snapshot is not None
+
+    widget.selected_index = 0
+    widget.on_connectors_loaded(snapshot(app("final", accessible=True)), is_final=True)
+    assert widget.connectors.cache.kind == "Ready"
+    assert widget.bottom_pane_snapshot.connectors[0].id == "final"
+    assert widget.sent_fetches == [True]
+    assert widget.replaced_selection_views[-1][0] == "connectors"
+
+
+def test_widget_on_connectors_loaded_error_retains_ready_or_falls_back_to_partial_or_failed() -> None:
+    ready_snapshot = snapshot(app("ready"))
+    ready = ConnectorsWidgetState(connectors=ConnectorsState(cache=ConnectorsCacheState.Ready(ready_snapshot)))
+    ready.on_connectors_loaded("failed", is_final=True)
+    assert ready.connectors.cache.snapshot is ready_snapshot
+    assert ready.bottom_pane_snapshot is ready_snapshot
+
+    partial_snapshot = snapshot(app("partial"))
+    partial = ConnectorsWidgetState(connectors=ConnectorsState(cache=ConnectorsCacheState.Loading(), partial_snapshot=partial_snapshot))
+    partial.on_connectors_loaded("failed", is_final=True)
+    assert partial.connectors.cache.snapshot == partial_snapshot
+    assert partial.bottom_pane_snapshot == partial_snapshot
+
+    failed = ConnectorsWidgetState(connectors=ConnectorsState(cache=ConnectorsCacheState.Loading()))
+    failed.on_connectors_loaded("failed", is_final=True)
+    assert failed.connectors.cache == ConnectorsCacheState.Failed("failed")
+    assert failed.bottom_pane_snapshot is None
+
+
+def test_widget_update_connector_enabled_refreshes_popup_and_snapshot_only_on_change() -> None:
+    widget = ConnectorsWidgetState(connectors=ConnectorsState(cache=ConnectorsCacheState.Ready(snapshot(app("drive", enabled=False)))))
+
+    widget.update_connector_enabled("drive", True)
+
+    assert widget.connectors.cache.snapshot.connectors[0].is_enabled is True
+    assert widget.bottom_pane_snapshot.connectors[0].is_enabled is True
+    assert widget.replaced_selection_views[-1][0] == "connectors"
+
+    before = len(widget.replaced_selection_views)
+    widget.update_connector_enabled("drive", True)
+    assert len(widget.replaced_selection_views) == before

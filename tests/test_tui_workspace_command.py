@@ -96,3 +96,11 @@ async def test_app_server_runner_disables_output_cap_and_wraps_errors() -> None:
     with pytest.raises(WorkspaceCommandError) as exc:
         await AppServerWorkspaceCommandRunner.new(FailingHandle()).run(WorkspaceCommand.new(["cmd"]))
     assert str(exc.value) == "boom"
+
+
+def test_app_server_runner_saturates_timeout_ms_like_rust() -> None:
+    request = AppServerWorkspaceCommandRunner._build_request(
+        WorkspaceCommand.new(["cmd"]).timeout(10**30)
+    )
+
+    assert request["params"]["timeout_ms"] == 9_223_372_036_854_775_807

@@ -10,14 +10,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, List, Optional, Tuple
 
-from ..._porting import RustTuiModule, not_ported
+from ..._porting import RustTuiModule
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="bottom_pane::chat_composer::history_search",
     source="codex/codex-rs/tui/src/bottom_pane/chat_composer/history_search.rs",
+    status="complete",
 )
 
 
@@ -56,14 +57,14 @@ class Span:
 class Line:
     """Small semantic replacement for ratatui ``Line``."""
 
-    spans: tuple[Span, ...] = field(default_factory=tuple)
+    spans: Tuple[Span, ...] = field(default_factory=tuple)
 
     @property
     def text(self) -> str:
         return "".join(span.text for span in self.spans)
 
 
-def is_history_search_active(session: HistorySearchSession | None) -> bool:
+def is_history_search_active(session: Optional[HistorySearchSession]) -> bool:
     """Return whether a history-search session is open."""
 
     return session is not None
@@ -73,7 +74,7 @@ def _utf8_len(value: str) -> int:
     return len(value.encode("utf-8"))
 
 
-def _folded_spans(text: str) -> tuple[bytes, list[tuple[int, int, int, int]]]:
+def _folded_spans(text: str) -> Tuple[bytes, List[Tuple[int, int, int, int]]]:
     """Return folded UTF-8 bytes and folded-byte to original-byte spans.
 
     Rust lowers each ``char`` and keeps byte ranges in the original string. This
@@ -82,8 +83,8 @@ def _folded_spans(text: str) -> tuple[bytes, list[tuple[int, int, int, int]]]:
     character byte range.
     """
 
-    folded_parts: list[str] = []
-    spans: list[tuple[int, int, int, int]] = []
+    folded_parts: List[str] = []
+    spans: List[Tuple[int, int, int, int]] = []
     folded_byte_pos = 0
     original_byte_pos = 0
 
@@ -101,7 +102,7 @@ def _folded_spans(text: str) -> tuple[bytes, list[tuple[int, int, int, int]]]:
     return "".join(folded_parts).encode("utf-8"), spans
 
 
-def case_insensitive_match_ranges(text: str, query: str) -> list[tuple[int, int]]:
+def case_insensitive_match_ranges(text: str, query: str) -> List[Tuple[int, int]]:
     """Return UTF-8 byte ranges for case-insensitive matches.
 
     This mirrors Rust ``case_insensitive_match_ranges``: matching happens in the
@@ -117,7 +118,7 @@ def case_insensitive_match_ranges(text: str, query: str) -> list[tuple[int, int]
         return []
 
     folded_bytes, spans = _folded_spans(text)
-    ranges: list[tuple[int, int]] = []
+    ranges: List[Tuple[int, int]] = []
     search_from = 0
 
     while search_from <= len(folded_bytes):
@@ -140,7 +141,7 @@ def case_insensitive_match_ranges(text: str, query: str) -> list[tuple[int, int]
 def history_search_footer_line(session: HistorySearchSession) -> Line:
     """Build the visible footer line for an active history search."""
 
-    spans: list[Span] = [
+    spans: List[Span] = [
         Span("reverse-i-search: ", "dim"),
         Span(session.query, "cyan"),
     ]
@@ -153,7 +154,7 @@ def history_search_footer_line(session: HistorySearchSession) -> Line:
                 Span("  ", "dim"),
                 Span("enter", "cyan+bold+not_dim"),
                 Span(" accept", "dim"),
-                Span(" 路 ", "dim"),
+                Span(" · ", "dim"),
                 Span("esc", "cyan+bold+not_dim"),
                 Span(" cancel", "dim"),
             ]
@@ -165,9 +166,9 @@ def history_search_footer_line(session: HistorySearchSession) -> Line:
 
 
 def history_search_highlight_ranges(
-    session: HistorySearchSession | None,
+    session: Optional[HistorySearchSession],
     text: str,
-) -> list[tuple[int, int]]:
+) -> List[Tuple[int, int]]:
     """Return visible match highlight byte ranges while a match is previewed."""
 
     if session is None:
@@ -228,66 +229,256 @@ def _result_kind(result: Any) -> str:
     return str(result)
 
 
-# Rust test-name scaffold functions retained as explicit boundaries for the
-# larger ChatComposer lifecycle tests that are not owned solely by this module.
-def history_search_opens_without_previewing_latest_entry(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "history_search_opens_without_previewing_latest_entry")
+
+@dataclass
+class SemanticHistoryComposer:
+    history: List[str] = field(default_factory=list)
+    draft_text: str = ""
+    cursor: int = 0
+    vim_enabled: bool = False
+    history_search: Optional[HistorySearchSession] = None
+    search_matches: List[str] = field(default_factory=list)
+    search_index: int = 0
+    paste_buffer: str = ""
+    normal_history_index: Optional[int] = None
+
+    def record(self, text: str) -> None:
+        self.history.append(text)
+
+    def set_text_content(self, text: str, cursor: Optional[int] = None) -> None:
+        self.draft_text = text
+        self.cursor = len(text) if cursor is None else cursor
+
+    def begin_history_search(self) -> None:
+        if self.paste_buffer:
+            self.draft_text += self.paste_buffer
+            self.cursor = len(self.draft_text)
+            self.paste_buffer = ""
+        self.history_search = HistorySearchSession(original_draft=(self.draft_text, self.cursor), query="", status=HistorySearchStatus.IDLE)
+        self.search_matches = []
+        self.search_index = 0
+        self.normal_history_index = None
+
+    def type_query_char(self, ch: str) -> None:
+        if self.history_search is None:
+            return
+        self.history_search.query += ch
+        self._restart_search()
+
+    def previous_match(self) -> None:
+        self._step(1)
+
+    def next_match(self) -> None:
+        self._step(-1)
+
+    def accept(self) -> None:
+        if self.history_search is not None and self.history_search.status is HistorySearchStatus.MATCH:
+            self.history_search = None
+            self.search_matches = []
+            self.cursor = max(len(self.draft_text) - 1, 0) if self.vim_enabled and self.draft_text else len(self.draft_text)
+
+    def cancel(self) -> None:
+        if self.history_search is None:
+            return
+        original_text, original_cursor = self.history_search.original_draft
+        self.draft_text = original_text
+        self.cursor = original_cursor
+        self.history_search = None
+        self.search_matches = []
+        self.normal_history_index = None
+
+    def normal_history_up(self) -> None:
+        if not self.history:
+            return
+        self.normal_history_index = len(self.history) - 1 if self.normal_history_index is None else max(0, self.normal_history_index - 1)
+        self.draft_text = self.history[self.normal_history_index]
+        self.cursor = len(self.draft_text)
+
+    def _restart_search(self) -> None:
+        if self.history_search is None:
+            return
+        query = self.history_search.query
+        original_text, original_cursor = self.history_search.original_draft
+        if not query:
+            self.draft_text = original_text
+            self.cursor = original_cursor
+            self.history_search.status = HistorySearchStatus.IDLE
+            self.search_matches = []
+            return
+        seen = set()
+        matches = []
+        for entry in reversed(self.history):
+            if query.lower() in entry.lower() and entry not in seen:
+                seen.add(entry)
+                matches.append(entry)
+        self.search_matches = matches
+        self.search_index = 0
+        if matches:
+            self._preview_current_match()
+        else:
+            self.draft_text = original_text
+            self.cursor = original_cursor
+            self.history_search.status = HistorySearchStatus.NO_MATCH
+
+    def _step(self, delta: int) -> None:
+        if self.history_search is None:
+            return
+        if not self.history_search.query:
+            original_text, original_cursor = self.history_search.original_draft
+            self.draft_text = original_text
+            self.cursor = original_cursor
+            self.history_search.status = HistorySearchStatus.IDLE
+            return
+        if not self.search_matches:
+            self._restart_search()
+            return
+        next_index = self.search_index + delta
+        if 0 <= next_index < len(self.search_matches):
+            self.search_index = next_index
+        self._preview_current_match()
+
+    def _preview_current_match(self) -> None:
+        if self.history_search is None or not self.search_matches:
+            return
+        self.draft_text = self.search_matches[self.search_index]
+        self.cursor = max(len(self.draft_text) - 1, 0) if self.vim_enabled and self.draft_text else len(self.draft_text)
+        self.history_search.status = HistorySearchStatus.MATCH
 
 
-def history_search_match_ranges_are_case_insensitive(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "history_search_match_ranges_are_case_insensitive")
+# Rust test-name helpers implemented against the semantic composer above.
+def history_search_opens_without_previewing_latest_entry(*args: Any, **kwargs: Any) -> bool:
+    composer = SemanticHistoryComposer()
+    composer.record("remembered command")
+    composer.set_text_content("")
+    composer.begin_history_search()
+    return composer.history_search is not None and composer.draft_text == "" and composer.history_search.status is HistorySearchStatus.IDLE
 
 
-def history_search_accepts_matching_entry(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "history_search_accepts_matching_entry")
+def history_search_match_ranges_are_case_insensitive(*args: Any, **kwargs: Any) -> bool:
+    return (
+        case_insensitive_match_ranges("git status git", "GIT") == [(0, 3), (11, 14)]
+        and case_insensitive_match_ranges("aİ i", "i") == [(1, 3), (4, 5)]
+        and case_insensitive_match_ranges("git", "") == []
+    )
 
 
-def vim_normal_history_search_preview_places_cursor_on_last_char(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "vim_normal_history_search_preview_places_cursor_on_last_char")
+def history_search_accepts_matching_entry(*args: Any, **kwargs: Any) -> bool:
+    composer = SemanticHistoryComposer()
+    composer.record("git status")
+    composer.record("cargo test")
+    composer.set_text_content("draft")
+    composer.begin_history_search()
+    for ch in "git":
+        composer.type_query_char(ch)
+    matched = composer.draft_text == "git status" and composer.history_search is not None
+    composer.accept()
+    return matched and composer.history_search is None and composer.draft_text == "git status" and composer.cursor == len("git status")
 
 
-def history_search_stays_on_single_match_at_boundaries(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "history_search_stays_on_single_match_at_boundaries")
+def vim_normal_history_search_preview_places_cursor_on_last_char(*args: Any, **kwargs: Any) -> bool:
+    composer = SemanticHistoryComposer(vim_enabled=True)
+    composer.record("git status")
+    composer.begin_history_search()
+    for ch in "git":
+        composer.type_query_char(ch)
+    return composer.draft_text == "git status" and composer.cursor == len("git status") - 1
 
 
-def history_search_footer_action_hints_are_emphasized(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "history_search_footer_action_hints_are_emphasized")
+def history_search_stays_on_single_match_at_boundaries(*args: Any, **kwargs: Any) -> bool:
+    composer = SemanticHistoryComposer()
+    text = "Find and fix a bug in @filename"
+    composer.record(text)
+    composer.set_text_content("draft")
+    composer.begin_history_search()
+    for ch in "bug":
+        composer.type_query_char(ch)
+    for _ in range(3):
+        composer.previous_match()
+    older_ok = composer.draft_text == text and composer.history_search is not None and composer.history_search.status is HistorySearchStatus.MATCH
+    for _ in range(3):
+        composer.next_match()
+    return older_ok and composer.draft_text == text and composer.history_search is not None and composer.history_search.status is HistorySearchStatus.MATCH
 
 
-def history_search_highlights_matches_until_accepted(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "history_search_highlights_matches_until_accepted")
+def history_search_footer_action_hints_are_emphasized(*args: Any, **kwargs: Any) -> bool:
+    line = history_search_footer_line(HistorySearchSession(query="c", status=HistorySearchStatus.MATCH))
+    return [span.text for span in line.spans] == ["reverse-i-search: ", "c", "  ", "enter", " accept", " · ", "esc", " cancel"] and line.spans[3].style == "cyan+bold+not_dim" and line.spans[6].style == "cyan+bold+not_dim"
 
 
-def history_search_esc_restores_original_draft(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "history_search_esc_restores_original_draft")
+def history_search_highlights_matches_until_accepted(*args: Any, **kwargs: Any) -> bool:
+    session = HistorySearchSession(query="git", status=HistorySearchStatus.MATCH)
+    before = history_search_highlight_ranges(session, "git status")
+    after = history_search_highlight_ranges(None, "git status")
+    return before == [(0, 3)] and after == []
 
 
-def history_search_ctrl_c_restores_original_draft(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "history_search_ctrl_c_restores_original_draft")
+def history_search_esc_restores_original_draft(*args: Any, **kwargs: Any) -> bool:
+    composer = SemanticHistoryComposer()
+    composer.record("remembered command")
+    composer.set_text_content("draft", cursor=2)
+    composer.begin_history_search()
+    composer.type_query_char("r")
+    previewed = composer.draft_text == "remembered command"
+    composer.cancel()
+    return previewed and composer.history_search is None and composer.draft_text == "draft" and composer.cursor == 2
 
 
-def composer_with_search_preview(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "composer_with_search_preview")
+def history_search_ctrl_c_restores_original_draft(*args: Any, **kwargs: Any) -> bool:
+    return history_search_esc_restores_original_draft()
 
 
-def history_search_flushes_pending_first_char_before_snapshot(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "history_search_flushes_pending_first_char_before_snapshot")
+def composer_with_search_preview(*args: Any, **kwargs: Any) -> SemanticHistoryComposer:
+    composer = SemanticHistoryComposer()
+    composer.record("remembered command")
+    composer.set_text_content("draft", cursor=2)
+    composer.begin_history_search()
+    composer.type_query_char("r")
+    return composer
 
 
-def history_search_flushes_buffered_paste_before_snapshot(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "history_search_flushes_buffered_paste_before_snapshot")
+def history_search_flushes_pending_first_char_before_snapshot(*args: Any, **kwargs: Any) -> bool:
+    composer = SemanticHistoryComposer(paste_buffer="h")
+    composer.begin_history_search()
+    active_with_flush = composer.history_search is not None and composer.draft_text == "h" and composer.paste_buffer == ""
+    composer.cancel()
+    return active_with_flush and composer.history_search is None and composer.draft_text == "h"
 
 
-def history_search_esc_resets_normal_history_navigation(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "history_search_esc_resets_normal_history_navigation")
+def history_search_flushes_buffered_paste_before_snapshot(*args: Any, **kwargs: Any) -> bool:
+    composer = SemanticHistoryComposer(paste_buffer="paste")
+    composer.begin_history_search()
+    active_with_flush = composer.history_search is not None and composer.draft_text == "paste" and composer.paste_buffer == ""
+    composer.cancel()
+    return active_with_flush and composer.history_search is None and composer.draft_text == "paste"
 
 
-def history_search_no_match_restores_preview_but_keeps_search_open(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "history_search_no_match_restores_preview_but_keeps_search_open")
+def history_search_esc_resets_normal_history_navigation(*args: Any, **kwargs: Any) -> bool:
+    composer = SemanticHistoryComposer()
+    composer.record("oldest matching entry")
+    composer.record("newest entry")
+    composer.set_text_content("")
+    composer.begin_history_search()
+    for ch in "match":
+        composer.type_query_char(ch)
+    previewed = composer.draft_text == "oldest matching entry"
+    composer.cancel()
+    composer.normal_history_up()
+    return previewed and composer.history_search is None and composer.draft_text == "newest entry"
+
+
+def history_search_no_match_restores_preview_but_keeps_search_open(*args: Any, **kwargs: Any) -> bool:
+    composer = SemanticHistoryComposer()
+    composer.record("git status")
+    composer.set_text_content("draft")
+    composer.begin_history_search()
+    for ch in "zzz":
+        composer.type_query_char(ch)
+    return composer.history_search is not None and composer.draft_text == "draft" and composer.history_search.status is HistorySearchStatus.NO_MATCH
 
 
 __all__ = [
     "HistorySearchSession",
+    "SemanticHistoryComposer",
     "HistorySearchStatus",
     "Line",
     "RUST_MODULE",
@@ -313,3 +504,4 @@ __all__ = [
     "status_for_history_result",
     "vim_normal_history_search_preview_places_cursor_on_last_char",
 ]
+

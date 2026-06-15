@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import unicodedata
-from typing import Any, Iterable
+from typing import Any, Iterable, List, Tuple
 
 from ._porting import RustTuiModule
 
@@ -19,6 +19,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="line_truncation",
     source="codex/codex-rs/tui/src/line_truncation.rs",
+    status="complete",
 )
 
 
@@ -34,7 +35,7 @@ class Span:
 class Line:
     """Semantic equivalent of Rust ``ratatui::text::Line`` for this module."""
 
-    spans: tuple[Span, ...]
+    spans: Tuple[Span, ...]
     style: Any = None
     alignment: Any = None
 
@@ -45,7 +46,7 @@ class Line:
     @classmethod
     def from_spans(
         cls,
-        spans: Iterable[Span | str],
+        spans: Iterable[Any],
         *,
         style: Any = None,
         alignment: Any = None,
@@ -56,7 +57,7 @@ class Line:
         return iter(self.spans)
 
 
-def _coerce_span(span: Span | str | Any) -> Span:
+def _coerce_span(span: Any) -> Span:
     if isinstance(span, Span):
         return span
     if isinstance(span, str):
@@ -66,7 +67,7 @@ def _coerce_span(span: Span | str | Any) -> Span:
     return Span(str(content), style)
 
 
-def _coerce_line(line: Line | str | Iterable[Span | str] | Any) -> Line:
+def _coerce_line(line: Any) -> Line:
     if isinstance(line, Line):
         return line
     if isinstance(line, str):
@@ -96,14 +97,14 @@ def _display_width(text: str) -> int:
     return sum(_char_display_width(ch) for ch in text)
 
 
-def line_width(line: Line | str | Iterable[Span | str] | Any) -> int:
+def line_width(line: Any) -> int:
     """Return display width for all spans in a line."""
 
     coerced = _coerce_line(line)
     return sum(_display_width(span.content) for span in coerced.spans)
 
 
-def truncate_line_to_width(line: Line | str | Iterable[Span | str] | Any, max_width: int) -> Line:
+def truncate_line_to_width(line: Any, max_width: int) -> Line:
     """Truncate a styled line to ``max_width`` display columns."""
 
     if max_width < 0:
@@ -113,7 +114,7 @@ def truncate_line_to_width(line: Line | str | Iterable[Span | str] | Any, max_wi
         return Line(())
 
     used = 0
-    spans_out: list[Span] = []
+    spans_out: List[Span] = []
 
     for span in coerced.spans:
         span_width = _display_width(span.content)
@@ -143,7 +144,7 @@ def truncate_line_to_width(line: Line | str | Iterable[Span | str] | Any, max_wi
 
 
 def truncate_line_with_ellipsis_if_overflow(
-    line: Line | str | Iterable[Span | str] | Any,
+    line: Any,
     max_width: int,
 ) -> Line:
     """Truncate a styled line and append an ellipsis on overflow."""

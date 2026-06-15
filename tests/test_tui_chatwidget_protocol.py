@@ -62,6 +62,50 @@ def test_handle_server_notification_turn_started_sets_turn_id_and_skips_resume_s
     assert ("on_task_started",) not in widget.events
 
 
+def test_thread_token_usage_updated_maps_app_server_usage_to_token_info() -> None:
+    widget = Widget()
+
+    handle_server_notification(
+        widget,
+        ServerNotification(
+            "ThreadTokenUsageUpdated",
+            {
+                "token_usage": {
+                    "total": {
+                        "total_tokens": 100,
+                        "input_tokens": 60,
+                        "cached_input_tokens": 10,
+                        "output_tokens": 30,
+                        "reasoning_output_tokens": 5,
+                    },
+                    "last": {
+                        "total_tokens": 20,
+                        "input_tokens": 12,
+                        "cached_input_tokens": 2,
+                        "output_tokens": 8,
+                        "reasoning_output_tokens": 1,
+                    },
+                    "model_context_window": 200000,
+                }
+            },
+        ),
+        None,
+    )
+
+    _, token_info = widget.events[-1]
+    assert token_info.total_token_usage.total_tokens == 100
+    assert token_info.total_token_usage.input_tokens == 60
+    assert token_info.total_token_usage.cached_input_tokens == 10
+    assert token_info.total_token_usage.output_tokens == 30
+    assert token_info.total_token_usage.reasoning_output_tokens == 5
+    assert token_info.last_token_usage.total_tokens == 20
+    assert token_info.last_token_usage.input_tokens == 12
+    assert token_info.last_token_usage.cached_input_tokens == 2
+    assert token_info.last_token_usage.output_tokens == 8
+    assert token_info.last_token_usage.reasoning_output_tokens == 1
+    assert token_info.model_context_window == 200000
+
+
 def test_handle_turn_completed_completed_interrupted_and_failed_paths() -> None:
     widget = Widget()
     handle_turn_completed_notification(widget, {"turn": {"id": "t1", "status": TurnStatus.COMPLETED, "duration_ms": 10}}, None)

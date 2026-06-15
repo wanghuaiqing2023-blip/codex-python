@@ -22,6 +22,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="tui::event_stream",
     source="codex/codex-rs/tui/src/tui/event_stream.rs",
+    status="complete",
 )
 
 EventResult = Any
@@ -398,5 +399,6 @@ __all__ = [
     "resize_event_maps_to_resize",
     "resume_wakes_paused_stream",
     "resume_wakes_pending_stream",
-    "setup",`r`n]
+    "setup",
+]
 

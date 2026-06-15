@@ -10,7 +10,12 @@ from typing import Any, Callable, List, Optional, Protocol, Union
 from ._porting import RustTuiModule
 from .app_event import AppEvent
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="file_search", source="codex/codex-rs/tui/src/file_search.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="file_search",
+    source="codex/codex-rs/tui/src/file_search.rs",
+    status="complete",
+)
 
 
 class FileSearchSession(Protocol):

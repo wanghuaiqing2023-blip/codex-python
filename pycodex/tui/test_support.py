@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, is_dataclass
 from enum import Enum
 from pathlib import PurePosixPath
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, Optional, Type, TypeVar, Union
 
 from pycodex.protocol import SessionSource
 
@@ -22,6 +22,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="test_support",
     source="codex/codex-rs/tui/src/test_support.rs",
+    status="complete",
 )
 
 T = TypeVar("T")
@@ -65,11 +66,14 @@ class TestPathBuf:
         return str(PurePosixPath("/", text))
 
 
+TestPathBuf.__test__ = False
+
+
 class PathBufExt:
     """Compatibility wrapper mirroring the Rust test helper trait shape."""
 
     @staticmethod
-    def abs(path: str | TestPathBuf) -> TestPathBuf:
+    def abs(path: Union[str, TestPathBuf]) -> TestPathBuf:
         return path if isinstance(path, TestPathBuf) else test_path_buf(str(path))
 
 
@@ -81,19 +85,23 @@ def test_path_display(path: str) -> str:
     return test_path_buf(path).display()
 
 
-def session_source_cli(target: Callable[[Any], T] | type[T] | None = None) -> T | SessionSource:
+test_path_buf.__test__ = False
+test_path_display.__test__ = False
+
+
+def session_source_cli(target: Optional[Union[Callable[[Any], T], Type[T]]] = None) -> Union[T, SessionSource]:
     return from_app_server_wire(SessionSource.cli(), target)
 
 
-def skill_scope_user(target: Callable[[Any], T] | type[T] | None = None) -> T | SkillScope:
+def skill_scope_user(target: Optional[Union[Callable[[Any], T], Type[T]]] = None) -> Union[T, SkillScope]:
     return from_app_server_wire(SkillScope.USER, target)
 
 
-def skill_scope_repo(target: Callable[[Any], T] | type[T] | None = None) -> T | SkillScope:
+def skill_scope_repo(target: Optional[Union[Callable[[Any], T], Type[T]]] = None) -> Union[T, SkillScope]:
     return from_app_server_wire(SkillScope.REPO, target)
 
 
-def from_app_server_wire(value: Any, target: Callable[[Any], T] | type[T] | None = None) -> Any:
+def from_app_server_wire(value: Any, target: Optional[Union[Callable[[Any], T], Type[T]]] = None) -> Any:
     """Round-trip an app-server wire value into an optional target shape.
 
     Rust serializes to ``serde_json::Value`` and immediately deserializes into

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Iterable
+from typing import Any, Iterable, List, Optional, Tuple
 
 from .._porting import RustTuiModule
 from .popup_consts import MAX_POPUP_ROWS
@@ -20,6 +20,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="bottom_pane::memories_settings_view",
     source="codex/codex-rs/tui/src/bottom_pane/memories_settings_view.rs",
+    status="complete",
 )
 
 MEMORIES_DOC_URL = "https://developers.openai.com/codex/memories"
@@ -40,8 +41,8 @@ class MemoriesMenuItem:
     kind: str
     name: str
     description: str
-    setting: MemoriesSetting | None = None
-    action: MemoriesAction | None = None
+    setting: Optional[MemoriesSetting] = None
+    action: Optional[MemoriesAction] = None
     enabled: bool = False
 
     @classmethod
@@ -74,8 +75,8 @@ class MemoriesMenuItem:
 class RenderedMemoriesSettings:
     title: str
     subtitle: str
-    rows: tuple[str, ...]
-    docs_link: str | None
+    rows: Tuple[str, ...]
+    docs_link: Optional[str]
     footer_hint: str
     desired_height: int
 
@@ -87,8 +88,8 @@ class MemoriesSettingsView:
         self,
         use_memories: bool,
         generate_memories: bool,
-        app_event_tx: Any | None = None,
-        keymap: Any | None = None,
+        app_event_tx: Optional[Any] = None,
+        keymap: Optional[Any] = None,
     ) -> None:
         self.items = [
             MemoriesMenuItem.setting_item(
@@ -112,20 +113,20 @@ class MemoriesSettingsView:
         self.state = ScrollState()
         if self.items:
             self.state.selected_idx = 0
-        self.reset_confirmation: ScrollState | None = None
+        self.reset_confirmation: Optional[ScrollState] = None
         self.complete = False
         self.app_event_tx = app_event_tx
         self.docs_link = MEMORIES_DOC_URL
         self.keymap = keymap
-        self.emitted_events: list[dict[str, Any]] = []
+        self.emitted_events: List[dict] = []
 
     @classmethod
     def new(
         cls,
         use_memories: bool,
         generate_memories: bool,
-        app_event_tx: Any | None = None,
-        keymap: Any | None = None,
+        app_event_tx: Optional[Any] = None,
+        keymap: Optional[Any] = None,
     ) -> "MemoriesSettingsView":
         return cls(use_memories, generate_memories, app_event_tx, keymap)
 
@@ -133,13 +134,13 @@ class MemoriesSettingsView:
         if self.items and self.state.selected_idx is None:
             self.state.selected_idx = 0
 
-    def settings_header(self) -> tuple[str, str]:
+    def settings_header(self) -> Tuple[str, str]:
         return (
             "Memories",
             "Choose how Codex uses and creates memories. Changes are saved to config.toml",
         )
 
-    def reset_confirmation_header(self) -> tuple[str, str]:
+    def reset_confirmation_header(self) -> Tuple[str, str]:
         return (
             "Reset all memories?",
             "This clears local memory files and rollout summaries for the current Codex home.",
@@ -154,7 +155,7 @@ class MemoriesSettingsView:
     def visible_len(self) -> int:
         return 2 if self.reset_confirmation is not None else len(self.items)
 
-    def build_rows(self) -> list[str]:
+    def build_rows(self) -> List[str]:
         if self.reset_confirmation is not None:
             selected = self.reset_confirmation.selected_idx
             return [
@@ -167,7 +168,7 @@ class MemoriesSettingsView:
             ]
 
         selected = self.state.selected_idx
-        rows: list[str] = []
+        rows: List[str] = []
         for index, item in enumerate(self.items):
             label = item.name
             if item.kind == "setting":
@@ -310,7 +311,7 @@ class MemoriesSettingsView:
         else:
             self.complete = True
 
-    def _emit(self, event: dict[str, Any]) -> None:
+    def _emit(self, event: dict) -> None:
         self.emitted_events.append(event)
         sender = self.app_event_tx
         if sender is None:
@@ -341,7 +342,7 @@ class MemoriesSettingsView:
     def desired_height(self, width: int = 80) -> int:
         return self.render(width).desired_height
 
-    def render_lines(self, width: int = 80) -> list[str]:
+    def render_lines(self, width: int = 80) -> List[str]:
         rendered = self.render(width)
         lines = [rendered.title, rendered.subtitle, *rendered.rows]
         if rendered.docs_link is not None:

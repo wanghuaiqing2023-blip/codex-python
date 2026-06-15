@@ -4,6 +4,9 @@ import pycodex.tui.tui.keyboard_modes as km
 def test_keyboard_enhancement_env_flag_parses_common_values_matches_rust() -> None:
     # Rust: tui/keyboard_modes.rs keyboard_enhancement_env_flag_parses_common_values
     assert km.keyboard_enhancement_env_flag_parses_common_values()
+    assert km.parse_bool_env(" yes ") is True
+    assert km.parse_bool_env(" FALSE ") is False
+    assert km.parse_bool_env("  unexpected  ") is None
 
 
 def test_keyboard_enhancement_auto_disables_for_vscode_in_wsl_matches_rust() -> None:
@@ -24,6 +27,8 @@ def test_keyboard_enhancement_env_flag_overrides_auto_detection_matches_rust() -
 def test_vscode_terminal_detection_uses_linux_and_windows_term_program_matches_rust() -> None:
     # Rust: vscode_terminal_detection_uses_linux_and_windows_term_program
     assert km.vscode_terminal_detection_uses_linux_and_windows_term_program()
+    assert km.vscode_terminal_detected("VSCode", None)
+    assert km.vscode_terminal_detected(None, "VsCoDe")
 
 
 def test_tmux_session_detection_accepts_tmux_or_tmux_pane_matches_rust() -> None:
@@ -63,6 +68,14 @@ def test_enable_keyboard_enhancement_returns_semantic_command_sequence() -> None
         {km.DISABLE_KEYBOARD_ENHANCEMENT_ENV_VAR: "1"},
         "csi-u",
     ) == []
+    assert km.enable_keyboard_enhancement({}, "csi-u") == [
+        "\x1b[>4;0m",
+        "PushKeyboardEnhancementFlags",
+    ]
+    assert km.enable_keyboard_enhancement(env, "xterm") == [
+        "\x1b[>4;0m",
+        "PushKeyboardEnhancementFlags",
+    ]
 
 
 def test_restore_and_reset_sequences_preserve_rust_order() -> None:
@@ -82,3 +95,18 @@ def test_read_helpers_parse_command_output_semantics() -> None:
     assert km.read_windows_term_program("TERM_PROGRAM=\r\n") is None
     assert km.read_tmux_extended_keys_format(" csi-u\n") == "csi-u"
     assert km.read_tmux_extended_keys_format("\n") is None
+
+
+def test_keyboard_command_winapi_paths_are_unsupported_like_rust_windows_impls() -> None:
+    for command in (
+        km.ResetKeyboardEnhancementFlags(),
+        km.EnableModifyOtherKeys(),
+        km.DisableModifyOtherKeys(),
+    ):
+        try:
+            command.execute_winapi()
+        except OSError as exc:
+            assert "legacy Windows API" in str(exc)
+        else:
+            raise AssertionError("legacy WinAPI execution should be unsupported")
+        assert command.is_ansi_code_supported() is False

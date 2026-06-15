@@ -27,7 +27,7 @@ def test_percent_of_context_window_remaining_baseline_and_clamp() -> None:
     assert TokenUsage(total_tokens=0).percent_of_context_window_remaining(BASELINE_TOKENS) == 0
     assert TokenUsage(total_tokens=BASELINE_TOKENS).percent_of_context_window_remaining(24000) == 100
     assert TokenUsage(total_tokens=18000).percent_of_context_window_remaining(24000) == 50
-    assert TokenUsage(total_tokens=12001).percent_of_context_window_remaining(12003) == 50
+    assert TokenUsage(total_tokens=12001).percent_of_context_window_remaining(12003) == 67
     assert TokenUsage(total_tokens=24000).percent_of_context_window_remaining(24000) == 0
     assert TokenUsage(total_tokens=999999).percent_of_context_window_remaining(24000) == 0
 

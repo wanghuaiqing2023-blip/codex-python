@@ -361,7 +361,16 @@ class CodexThread:
             recorder = getattr(session, "record_context_updates_and_set_reference_context_item", None)
             if callable(recorder):
                 await _maybe_await(recorder(turn_context))
-        await _call_required(session, "inject_no_new_turn", list(items), turn_context)
+        if session.__class__.__name__ == "InMemoryCodexSession":
+            response_items = [_response_input_item_to_response_item(item) for item in items]
+            previous_active_turn = getattr(session, "active_turn", None)
+            try:
+                session.active_turn = None
+                await _call_required(session, "inject_no_new_turn", response_items, turn_context)
+            finally:
+                session.active_turn = previous_active_turn
+        else:
+            await _call_required(session, "inject_no_new_turn", items, turn_context)
         await _call_required(session, "flush_rollout")
 
     def rollout_path(self) -> Path | None:

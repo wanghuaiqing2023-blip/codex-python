@@ -19,6 +19,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="shimmer",
     source="codex/codex-rs/tui/src/shimmer.rs",
+    status="complete",
 )
 
 PROCESS_START = time.monotonic()
@@ -96,3 +97,4 @@ __all__ = [
     "shimmer_spans",
     "supports_truecolor_stdout",
 ]
+

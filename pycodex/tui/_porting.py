@@ -17,6 +17,7 @@ class RustTuiModule:
     crate: str
     module: str
     source: str
+    status: str = "interface scaffold"
 
 
 def not_ported(module: RustTuiModule, item: str) -> NoReturn:

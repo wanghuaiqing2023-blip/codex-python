@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from pycodex.tui.public_widgets.composer_input import ComposerAction, ComposerInput, default
 
@@ -78,3 +78,29 @@ def test_desired_height_cursor_and_render_ref_are_semantic_boundaries() -> None:
 
 def test_recommended_flush_delay_is_positive_duration_slice() -> None:
     assert ComposerInput.recommended_flush_delay() > 0
+
+
+def test_disable_paste_burst_keeps_paste_handled_without_active_burst() -> None:
+    composer = ComposerInput(disable_paste_burst=True)
+
+    assert composer.handle_paste("chunk") is True
+
+    assert composer.text == "chunk"
+    assert composer.is_in_paste_burst() is False
+    assert composer.flush_paste_burst_if_due() is False
+
+
+def test_input_paste_and_flush_drain_app_events_like_rust_wrapper() -> None:
+    composer = ComposerInput.new()
+    composer._events.extend(["queued"])
+
+    composer.input({"code": "a"})
+    assert composer._events == []
+
+    composer._events.extend(["queued"])
+    composer.handle_paste("b")
+    assert composer._events == []
+
+    composer._events.extend(["queued"])
+    composer.flush_paste_burst_if_due()
+    assert composer._events == []

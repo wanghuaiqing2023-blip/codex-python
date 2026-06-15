@@ -10,11 +10,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import Enum
-from typing import Any
+from typing import Optional, Union
 
 from .._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="streaming::chunking", source="codex/codex-rs/tui/src/streaming/chunking.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="streaming::chunking",
+    source="codex/codex-rs/tui/src/streaming/chunking.rs",
+    status="complete",
+)
 
 # Durations are represented as seconds to keep the policy dependency-free while
 # preserving Rust's millisecond thresholds exactly enough for behavior tests.
@@ -29,6 +34,7 @@ REENTER_CATCH_UP_HOLD = 0.250
 
 SEVERE_QUEUE_DEPTH_LINES = 64
 SEVERE_OLDEST_AGE = 0.300
+TIME_EPSILON = 1e-9
 
 
 class ChunkingMode(Enum):
@@ -43,7 +49,7 @@ class QueueSnapshot:
     """Snapshot of queued display rows used by the adaptive policy."""
 
     queued_lines: int
-    oldest_age: float | None = None
+    oldest_age: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -51,7 +57,7 @@ class DrainPlan:
     """Drain plan returned by ``AdaptiveChunkingPolicy.decide``."""
 
     kind: str
-    batch_size: int | None = None
+    batch_size: Optional[int] = None
 
     @classmethod
     def single(cls) -> "DrainPlan":
@@ -87,8 +93,8 @@ class AdaptiveChunkingPolicy:
     """
 
     _mode: ChunkingMode = ChunkingMode.SMOOTH
-    below_exit_threshold_since: float | None = None
-    last_catch_up_exit_at: float | None = None
+    below_exit_threshold_since: Optional[float] = None
+    last_catch_up_exit_at: Optional[float] = None
 
     def mode(self) -> ChunkingMode:
         return self._mode
@@ -98,7 +104,11 @@ class AdaptiveChunkingPolicy:
         self.below_exit_threshold_since = None
         self.last_catch_up_exit_at = None
 
-    def decide(self, snapshot: QueueSnapshot, now: float | int | timedelta) -> ChunkingDecision:
+    def decide(
+        self,
+        snapshot: QueueSnapshot,
+        now: Union[float, int, timedelta],
+    ) -> ChunkingDecision:
         now_seconds = _duration_seconds(now)
 
         if snapshot.queued_lines == 0:
@@ -120,7 +130,11 @@ class AdaptiveChunkingPolicy:
 
         return ChunkingDecision(self._mode, entered_catch_up, drain_plan)
 
-    def maybe_enter_catch_up(self, snapshot: QueueSnapshot, now: float | int | timedelta) -> bool:
+    def maybe_enter_catch_up(
+        self,
+        snapshot: QueueSnapshot,
+        now: Union[float, int, timedelta],
+    ) -> bool:
         now_seconds = _duration_seconds(now)
         if not should_enter_catch_up(snapshot):
             return False
@@ -130,7 +144,11 @@ class AdaptiveChunkingPolicy:
         self.below_exit_threshold_since = None
         return True
 
-    def maybe_exit_catch_up(self, snapshot: QueueSnapshot, now: float | int | timedelta) -> None:
+    def maybe_exit_catch_up(
+        self,
+        snapshot: QueueSnapshot,
+        now: Union[float, int, timedelta],
+    ) -> None:
         now_seconds = _duration_seconds(now)
         if not should_exit_catch_up(snapshot):
             self.below_exit_threshold_since = None
@@ -140,18 +158,18 @@ class AdaptiveChunkingPolicy:
             self.below_exit_threshold_since = now_seconds
             return
 
-        if now_seconds - self.below_exit_threshold_since >= EXIT_HOLD:
+        if now_seconds - self.below_exit_threshold_since + TIME_EPSILON >= EXIT_HOLD:
             self._mode = ChunkingMode.SMOOTH
             self.below_exit_threshold_since = None
             self.note_catch_up_exit(now_seconds)
 
-    def note_catch_up_exit(self, now: float | int | timedelta) -> None:
+    def note_catch_up_exit(self, now: Union[float, int, timedelta]) -> None:
         self.last_catch_up_exit_at = _duration_seconds(now)
 
-    def reentry_hold_active(self, now: float | int | timedelta) -> bool:
+    def reentry_hold_active(self, now: Union[float, int, timedelta]) -> bool:
         if self.last_catch_up_exit_at is None:
             return False
-        return _duration_seconds(now) - self.last_catch_up_exit_at < REENTER_CATCH_UP_HOLD
+        return _duration_seconds(now) - self.last_catch_up_exit_at + TIME_EPSILON < REENTER_CATCH_UP_HOLD
 
 
 def should_enter_catch_up(snapshot: QueueSnapshot) -> bool:
@@ -174,14 +192,14 @@ def is_severe_backlog(snapshot: QueueSnapshot) -> bool:
     return snapshot.oldest_age is not None and snapshot.oldest_age >= SEVERE_OLDEST_AGE
 
 
-def snapshot(queued_lines: int, oldest_age_ms: int | float | None) -> QueueSnapshot:
+def snapshot(queued_lines: int, oldest_age_ms: Optional[Union[int, float]]) -> QueueSnapshot:
     """Test/helper constructor matching Rust tests' millisecond snapshot helper."""
 
     oldest_age = None if oldest_age_ms is None else float(oldest_age_ms) / 1000.0
     return QueueSnapshot(int(queued_lines), oldest_age)
 
 
-def _duration_seconds(value: float | int | timedelta) -> float:
+def _duration_seconds(value: Union[float, int, timedelta]) -> float:
     if isinstance(value, timedelta):
         return value.total_seconds()
     return float(value)

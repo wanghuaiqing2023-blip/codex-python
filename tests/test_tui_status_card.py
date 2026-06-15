@@ -53,8 +53,8 @@ def test_token_usage_and_context_window_spans_match_status_card_shape() -> None:
         ),
     )
 
-    assert [span.content for span in cell.token_usage_spans()] == ["1.2k", " total ", " (", "1.0k", " input", " + ", "234", " output", ")"]
-    assert [span.content for span in cell.context_window_spans() or ()] == ["88% left", " (", "1.2k", " used / ", "8.0k", ")"]
+    assert [span.content for span in cell.token_usage_spans()] == ["1.23K", " total ", " (", "1K", " input", " + ", "234", " output", ")"]
+    assert [span.content for span in cell.context_window_spans() or ()] == ["88% left", " (", "1.2K", " used / ", "8K", ")"]
 
 
 def test_rate_limit_lines_cover_missing_stale_and_narrow_window_rows() -> None:

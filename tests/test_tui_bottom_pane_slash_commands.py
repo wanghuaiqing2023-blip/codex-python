@@ -54,7 +54,12 @@ def test_feature_gated_builtin_commands_are_hidden() -> None:
     # Rust tests: goal/realtime/settings hidden when their feature flags are disabled.
     flags = all_enabled_flags()
 
+    assert find_builtin_command("elevate-sandbox", replace(flags, allow_elevate_sandbox=False)) is None
+    assert find_builtin_command("plan", replace(flags, collaboration_modes_enabled=False)) is None
+    assert find_builtin_command("apps", replace(flags, connectors_enabled=False)) is None
+    assert find_builtin_command("plugins", replace(flags, plugins_command_enabled=False)) is None
     assert find_builtin_command("goal", replace(flags, goal_command_enabled=False)) is None
+    assert find_builtin_command("personality", replace(flags, personality_command_enabled=False)) is None
     assert find_builtin_command("realtime", replace(flags, realtime_conversation_enabled=False)) is None
     assert (
         find_builtin_command(
@@ -118,3 +123,15 @@ def test_has_slash_command_prefix_uses_visible_command_items() -> None:
     assert has_slash_command_prefix("mdl", all_enabled_flags(), [tier]) is True
     assert has_slash_command_prefix("fst", all_enabled_flags(), [tier]) is True
     assert has_slash_command_prefix("fst", replace(all_enabled_flags(), service_tier_commands_enabled=False), [tier]) is False
+
+
+def test_commands_for_input_filters_side_conversation_service_tiers_twice() -> None:
+    # Rust source applies side-conversation gating once through builtins and
+    # again after service tiers are inserted after /model.
+    tier = ServiceTierCommand(id="priority", name="fast", description="fastest inference")
+    flags = replace(all_enabled_flags(), side_conversation_active=True)
+
+    items = commands_for_input(flags, [tier])
+
+    assert SlashCommandItem.service_tier(tier) not in items
+    assert [item.command() for item in items] == ["ide", "copy", "raw", "diff", "mention", "status"]

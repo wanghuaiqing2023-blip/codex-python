@@ -65,6 +65,15 @@ def test_handle_thread_session_applies_session_state_and_normal_header():
     assert model.emitted_history_lines == ["* Thread forked from Parent thread (parent)"]
     assert model.connector_prefetches == 1
     assert model.redraw_requests == 1
+    assert model.saw_copy_source_this_turn is False
+    assert model.skills_refreshes == [True]
+    assert model.service_tier_syncs == 1
+    assert model.model_display_refreshes == 1
+    assert model.status_surface_refreshes == 1
+    assert model.personality_command_syncs == 1
+    assert model.plugins_command_syncs == 1
+    assert model.goal_command_syncs == 1
+    assert model.plugin_mention_refreshes == 1
 
 
 def test_quiet_session_clears_existing_session_header_and_suppresses_fork_event():
@@ -147,3 +156,25 @@ def test_thread_name_update_only_applies_to_active_thread():
     model.on_thread_name_updated("thread-1", None)
     assert model.thread_name is None
     assert len(model.rename_confirmation_cells) == 1
+
+
+def test_set_skills_passes_through_to_bottom_pane_state():
+    model = SessionFlowModel()
+    skills = {"python": "enabled"}
+
+    model.set_skills(skills)
+
+    assert model.skills is skills
+
+
+def test_normal_session_resets_copy_source_and_runs_refresh_side_effects():
+    model = SessionFlowModel(saw_copy_source_this_turn=True)
+
+    model.handle_thread_session(session(service_tier=None))
+
+    assert model.saw_copy_source_this_turn is False
+    assert model.skills_refreshes == [True]
+    assert model.applied_session_info_cells[0].show_fast_status is False
+    assert model.service_tier_syncs == 1
+    assert model.model_display_refreshes == 1
+    assert model.status_surface_refreshes == 1

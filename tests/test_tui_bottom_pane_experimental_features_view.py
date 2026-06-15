@@ -1,4 +1,4 @@
-from pycodex.tui.bottom_pane.experimental_features_view import ExperimentalFeatureItem
+﻿from pycodex.tui.bottom_pane.experimental_features_view import ExperimentalFeatureItem
 from pycodex.tui.bottom_pane.experimental_features_view import ExperimentalFeaturesView
 from pycodex.tui.bottom_pane.experimental_features_view import experimental_popup_hint_line
 
@@ -63,6 +63,9 @@ def test_toggle_selected_and_key_events():
     view.handle_key_event(" ")
     assert view.features[1].enabled is True
 
+    view.handle_key_event("enter")
+    assert view.is_complete()
+
 
 def test_on_ctrl_c_saves_updates_and_completes_only_when_features_exist():
     events = []
@@ -95,3 +98,24 @@ def test_rows_width_hint_desired_height_and_render_empty_state():
     assert lines[0].text == "Experimental features"
     assert any("No experimental features" in line.text for line in lines)
     assert lines[-1].style == "hint"
+
+
+def test_render_zero_area_is_noop_and_buf_receives_lines():
+    view = ExperimentalFeaturesView.new(_items(1))
+    buf = []
+
+    assert view.render((0, 0, 0, 10), buf) == []
+    assert buf == []
+
+    lines = view.render((0, 0, 40, 10), buf)
+    assert buf == lines
+
+
+def test_keymap_bindings_are_honored_before_default_fallbacks():
+    view = ExperimentalFeaturesView.new(_items(3), keymap={"move_down": {"ctrl+n"}, "accept": {"ctrl+s"}})
+
+    view.handle_key_event("ctrl+n")
+    assert view.selected_idx == 1
+
+    view.handle_key_event("ctrl+s")
+    assert view.is_complete()

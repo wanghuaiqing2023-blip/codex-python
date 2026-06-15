@@ -1217,8 +1217,18 @@ def local_http_exec_initial_messages_from_rollout(path: Path | str) -> tuple[Eve
 
 def _event_msg_mapping(message: EventMsg | Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(message, EventMsg):
-        return message.to_mapping()
-    return dict(message)
+        return _drop_none_values(message.to_mapping())
+    return _drop_none_values(dict(message))
+
+
+def _drop_none_values(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _drop_none_values(item) for key, item in value.items() if item is not None}
+    if isinstance(value, list):
+        return [_drop_none_values(item) for item in value]
+    if isinstance(value, tuple):
+        return [_drop_none_values(item) for item in value]
+    return value
 
 
 async def run_exec_user_turn_default_local_http_sampling(

@@ -15,6 +15,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="status::helpers",
     source="codex/codex-rs/tui/src/status/helpers.rs",
+    status="complete",
 )
 
 _TEAM_LIKE_PLANS = {"Team", "SelfServeBusinessUsageBased"}
@@ -22,7 +23,7 @@ _BUSINESS_LIKE_PLANS = {"Business", "EnterpriseCbpUsageBased", "Enterprise"}
 
 
 def normalize_agents_display_path(path: str | Path) -> str:
-    return str(Path(path))
+    return Path(path).as_posix()
 
 
 def compose_model_display(model_name: str, entries: Iterable[tuple[str, str]]) -> tuple[str, list[str]]:
@@ -89,11 +90,19 @@ def format_tokens_compact(value: int) -> str:
 
 def format_directory_display(directory: str | Path, max_width: int | None = None) -> str:
     path = Path(directory)
-    rel = relativize_to_home(path)
-    if rel is not None:
-        formatted = "~" if str(rel) in {"", "."} else f"~{Path('/').anchor}{rel}"
+    home = Path.home()
+    try:
+        rel_to_home = path.relative_to(home)
+    except ValueError:
+        rel_to_home = None
+    if rel_to_home is not None:
+        formatted = "~" if str(rel_to_home) in {"", "."} else f"~/{rel_to_home.as_posix()}"
     else:
-        formatted = str(path)
+        rel = relativize_to_home(path)
+        if rel is not None:
+            formatted = "~" if str(rel) in {"", "."} else f"~/{Path(rel).as_posix()}"
+        else:
+            formatted = path.as_posix()
     if max_width is not None:
         if max_width == 0:
             return ""

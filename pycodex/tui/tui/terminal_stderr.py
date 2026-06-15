@@ -6,7 +6,7 @@ Rust counterpart: ``codex-rs/tui/src/tui/terminal_stderr.rs``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, List, Optional
 
 from .._porting import RustTuiModule
 
@@ -15,7 +15,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="tui::terminal_stderr",
     source="codex/codex-rs/tui/src/tui/terminal_stderr.rs",
-    status="complete_slice",
+    status="complete",
 )
 
 
@@ -23,14 +23,14 @@ RUST_MODULE = RustTuiModule(
 class StderrState:
     owner_active: bool = False
     saved_stderr: bool = False
-    captured_output: list[str] = field(default_factory=list)
-    hidden_output: list[str] = field(default_factory=list)
+    captured_output: List[str] = field(default_factory=list)
+    hidden_output: List[str] = field(default_factory=list)
 
 
 STDERR_STATE = StderrState()
 
 
-def lock_state(state: StderrState | None = None) -> StderrState:
+def lock_state(state: Optional[StderrState] = None) -> StderrState:
     return STDERR_STATE if state is None else state
 
 
@@ -63,7 +63,7 @@ class TerminalStderrGuard:
     def install(
         cls,
         *,
-        state: StderrState | None = None,
+        state: Optional[StderrState] = None,
         stdout_is_terminal: bool = True,
         stderr_is_terminal: bool = True,
         same_device: bool = True,
@@ -82,7 +82,7 @@ class TerminalStderrGuard:
     def install_suppression(
         cls,
         *,
-        state: StderrState | None = None,
+        state: Optional[StderrState] = None,
     ) -> "TerminalStderrGuard":
         target_state = lock_state(state)
         if target_state.owner_active:
@@ -107,19 +107,19 @@ def drop(guard: TerminalStderrGuard) -> None:
     guard.drop()
 
 
-def pause(state: StderrState | None = None) -> None:
+def pause(state: Optional[StderrState] = None) -> None:
     target_state = lock_state(state)
     if target_state.owner_active:
         restore_locked(target_state)
 
 
-def resume(state: StderrState | None = None) -> None:
+def resume(state: Optional[StderrState] = None) -> None:
     target_state = lock_state(state)
     if target_state.owner_active:
         suppress_locked(target_state)
 
 
-def finish(state: StderrState | None = None) -> None:
+def finish(state: Optional[StderrState] = None) -> None:
     target_state = lock_state(state)
     if target_state.owner_active:
         restore_locked(target_state)
@@ -131,11 +131,11 @@ class CapturedStderr:
     state: StderrState
 
     @classmethod
-    def start(cls, state: StderrState | None = None) -> "CapturedStderr":
+    def start(cls, state: Optional[StderrState] = None) -> "CapturedStderr":
         return cls(lock_state(state))
 
 
-def write_stderr(message: str, state: StderrState | None = None) -> None:
+def write_stderr(message: str, state: Optional[StderrState] = None) -> None:
     target_state = lock_state(state)
     if target_state.saved_stderr:
         target_state.hidden_output.append(message)

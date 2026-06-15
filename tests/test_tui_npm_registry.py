@@ -73,3 +73,24 @@ def test_package_info_requires_object_maps_like_serde() -> None:
 
     with pytest.raises(TypeError, match="versions must be an object"):
         NpmPackageInfo.from_mapping({"dist-tags": {}, "versions": []})
+
+
+def test_package_info_rejects_non_string_fields_like_serde() -> None:
+    with pytest.raises(TypeError, match="dist-tags.latest must be a string"):
+        NpmPackageInfo.from_mapping({"dist-tags": {"latest": 123}, "versions": {}})
+
+    with pytest.raises(TypeError, match="dist.tarball must be a string"):
+        NpmPackageInfo.from_mapping(
+            {
+                "dist-tags": {"latest": "1.2.3"},
+                "versions": {"1.2.3": {"dist": {"tarball": 123, "integrity": "sha"}}},
+            }
+        )
+
+    with pytest.raises(TypeError, match="dist.integrity must be a string"):
+        NpmPackageInfo.from_mapping(
+            {
+                "dist-tags": {"latest": "1.2.3"},
+                "versions": {"1.2.3": {"dist": {"tarball": "url", "integrity": 123}}},
+            }
+        )

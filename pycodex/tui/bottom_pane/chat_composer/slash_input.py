@@ -10,11 +10,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, List, Optional, Sequence, Tuple
 
 from pycodex.protocol.user_input import ByteRange, TextElement
 
-from ..._porting import RustTuiModule, not_ported
+from ..._porting import RustTuiModule
 from ..prompt_args import parse_slash_name
 from ..slash_commands import (
     BuiltinCommandFlags,
@@ -29,6 +29,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="bottom_pane::chat_composer::slash_input",
     source="codex/codex-rs/tui/src/bottom_pane/chat_composer/slash_input.rs",
+    status="complete",
 )
 
 
@@ -44,7 +45,7 @@ class SubmissionValidation:
     """Rust ``SubmissionValidation`` with payload support for UnknownCommand."""
 
     kind: str
-    command: str | None = None
+    command: Optional[str] = None
 
     @classmethod
     def valid(cls) -> "SubmissionValidation":
@@ -84,8 +85,26 @@ class CommandPopupSnapshot:
     """Small semantic boundary for Rust ``CommandPopup`` construction."""
 
     flags: BuiltinCommandFlags
-    service_tier_commands: tuple[ServiceTierCommand, ...] = ()
+    service_tier_commands: Tuple[ServiceTierCommand, ...] = ()
     filter_text: str = ""
+
+
+@dataclass(frozen=True)
+class SlashCompletionResult:
+    """Semantic result of Rust's draft-tail-preserving slash completion."""
+
+    text: str
+    cursor: int
+    ranges_to_unmark: Tuple[Tuple[int, int], ...] = ()
+
+
+@dataclass(frozen=True)
+class SlashElementSyncResult:
+    """Semantic result of Rust ``sync_slash_command_elements``."""
+
+    desired_range: Optional[Tuple[int, int]]
+    add_range: Optional[Tuple[int, int]]
+    stale_ranges: Tuple[Tuple[int, int], ...] = ()
 
 
 @dataclass
@@ -95,14 +114,14 @@ class SlashInput:
     enabled: bool
     is_bash_mode: bool
     command_flags: BuiltinCommandFlags = field(default_factory=BuiltinCommandFlags)
-    service_tier_commands: tuple[ServiceTierCommand, ...] = ()
+    service_tier_commands: Tuple[ServiceTierCommand, ...] = ()
 
     @classmethod
     def new(
         cls,
         enabled: bool,
         is_bash_mode: bool,
-        command_flags: BuiltinCommandFlags | None = None,
+        command_flags: Optional[BuiltinCommandFlags] = None,
         service_tier_commands: Iterable[ServiceTierCommand] = (),
     ) -> "SlashInput":
         return cls(
@@ -125,7 +144,7 @@ class SlashInput:
             return SubmissionValidation.VALID
         return SubmissionValidation.unknown_command(name)
 
-    def bare_command(self, text: str) -> SlashCommandItem | None:
+    def bare_command(self, text: str) -> Optional[SlashCommandItem]:
         if not self.enabled or self.is_bash_mode:
             return None
         first_line = text.splitlines()[0] if text.splitlines() else ""
@@ -138,12 +157,9 @@ class SlashInput:
         command = self.command(name)
         if command is None:
             return None
-        parsed_full = parse_slash_name(text)
-        if command.supports_inline_args() and parsed_full is not None and parsed_full[1]:
-            return None
         return command
 
-    def inline_command(self, text: str) -> InlineCommand | None:
+    def inline_command(self, text: str) -> Optional[InlineCommand]:
         if not self.enabled or self.is_bash_mode or text.startswith(" "):
             return None
         parsed = parse_slash_name(text)
@@ -160,7 +176,7 @@ class SlashInput:
     def should_parse_on_dequeue(self, text: str) -> bool:
         return self.enabled and not text.startswith(" ") and text.strip().startswith("/")
 
-    def command_element_range(self, first_line: str, cursor: int) -> tuple[int, int] | None:
+    def command_element_range(self, first_line: str, cursor: int) -> Optional[Tuple[int, int]]:
         if self.is_bash_mode:
             return None
         parsed = parse_slash_name(first_line)
@@ -210,7 +226,7 @@ class SlashInput:
             filter_text=filter_text,
         )
 
-    def command(self, name: str) -> SlashCommandItem | None:
+    def command(self, name: str) -> Optional[SlashCommandItem]:
         return find_slash_command(name, self.command_flags, self.service_tier_commands)
 
 
@@ -226,14 +242,14 @@ def selected_command_dispatches_immediately_on_tab(command: Any) -> bool:
     return _command_payload(command) is SlashCommand.SKILLS
 
 
-def selected_command_completion(first_line: str, command: Any) -> str | None:
+def selected_command_completion(first_line: str, command: Any) -> Optional[str]:
     selected_command_text = f"/{_command_name(command)}"
     if first_line.lstrip().startswith(selected_command_text):
         return None
     return f"{selected_command_text} "
 
 
-def prepared_args(prepared_text: str) -> tuple[str, int] | None:
+def prepared_args(prepared_text: str) -> Optional[Tuple[str, int]]:
     parsed = parse_slash_name(prepared_text)
     if parsed is None:
         return None
@@ -245,11 +261,11 @@ def args_elements(
     rest: str,
     rest_offset: int,
     text_elements: Sequence[TextElement],
-) -> list[TextElement]:
+) -> List[TextElement]:
     if not rest or not text_elements:
         return []
     rest_len = _utf8_len(rest)
-    shifted: list[TextElement] = []
+    shifted = []  # type: List[TextElement]
     for elem in text_elements:
         byte_range = elem.byte_range
         if byte_range.end <= rest_offset:
@@ -264,7 +280,7 @@ def args_elements(
     return shifted
 
 
-def command_popup_filter_text(first_line: str, cursor: int) -> str | None:
+def command_popup_filter_text(first_line: str, cursor: int) -> Optional[str]:
     under_cursor = command_under_cursor(first_line, cursor)
     if under_cursor is None:
         return None
@@ -272,7 +288,7 @@ def command_popup_filter_text(first_line: str, cursor: int) -> str | None:
     return f"/{name}"
 
 
-def command_under_cursor(first_line: str, cursor: int) -> tuple[str, str] | None:
+def command_under_cursor(first_line: str, cursor: int) -> Optional[Tuple[str, str]]:
     if not first_line.startswith("/"):
         return None
     first_line_len = _utf8_len(first_line)
@@ -297,12 +313,104 @@ def command_under_cursor(first_line: str, cursor: int) -> tuple[str, str] | None
     return name, rest
 
 
+def complete_selected_slash_command_preserving_existing_draft_tail_as_inline_args(
+    text: str,
+    cursor: int,
+    selected_cmd: Any,
+    text_elements: Sequence[TextElement] = (),
+) -> Optional[SlashCompletionResult]:
+    """Port Rust's inline-arg slash completion mutation as a pure result.
+
+    The Rust method mutates ``ChatComposer.draft.textarea``.  Python keeps the
+    same byte-offset replacement, command-token, tail-preservation, cursor, and
+    element-unmarking semantics in a serializable result.
+    """
+
+    cmd = _builtin_slash_command(selected_cmd)
+    if cmd is None or not _supports_inline_args(selected_cmd, cmd):
+        return None
+
+    text_len = _utf8_len(text)
+    first_line_end = _byte_find(text, "\n")
+    if first_line_end < 0:
+        first_line_end = text_len
+    if cursor > first_line_end or not text.startswith("/") or not _is_char_boundary(text, cursor):
+        return None
+
+    first_line = _byte_slice(text, 0, first_line_end)
+    command_token_end = _command_token_end(first_line)
+    typed_command_name = _byte_slice(text, 1, command_token_end)
+    rest_after_token = _byte_slice(text, command_token_end, text_len)
+    rest_after_token_is_empty = rest_after_token.strip() == ""
+    if rest_after_token_is_empty and (cursor <= 1 or cursor >= command_token_end):
+        return None
+
+    if cursor <= 1 or (typed_command_name == cmd.command() and rest_after_token_is_empty):
+        replace_end = command_token_end
+    else:
+        replace_end = cursor
+
+    tail = _byte_slice(text, replace_end, text_len)
+    selected_command_text = "/{}".format(cmd.command())
+    replacement = selected_command_text if tail[:1].isspace() else "{} ".format(selected_command_text)
+    next_text = replacement + tail
+    ranges_to_unmark = []  # type: List[Tuple[int, int]]
+    for element in text_elements:
+        byte_range = element.byte_range
+        if byte_range.start < replace_end < byte_range.end:
+            ranges_to_unmark.append((byte_range.start, byte_range.end))
+    return SlashCompletionResult(
+        text=next_text,
+        cursor=_utf8_len(next_text),
+        ranges_to_unmark=tuple(ranges_to_unmark),
+    )
+
+
+def sync_slash_command_elements(
+    slash_input: SlashInput,
+    text: str,
+    cursor: int,
+    text_elements: Sequence[TextElement],
+) -> SlashElementSyncResult:
+    """Port Rust ``sync_slash_command_elements`` as semantic add/remove ranges."""
+
+    first_line_end = _byte_find(text, "\n")
+    if first_line_end < 0:
+        first_line_end = _utf8_len(text)
+    first_line = _byte_slice(text, 0, first_line_end)
+    desired_range = slash_input.command_element_range(first_line, cursor)
+    has_desired = False
+    stale_ranges = []  # type: List[Tuple[int, int]]
+
+    for element in text_elements:
+        placeholder = _element_placeholder(element, text)
+        if placeholder is None or not placeholder.startswith("/"):
+            continue
+        byte_range = element.byte_range
+        element_range = (byte_range.start, byte_range.end)
+        if desired_range == element_range:
+            has_desired = True
+        else:
+            stale_ranges.append(element_range)
+
+    add_range = desired_range if desired_range is not None and not has_desired else None
+    return SlashElementSyncResult(
+        desired_range=desired_range,
+        add_range=add_range,
+        stale_ranges=tuple(stale_ranges),
+    )
+
+
 def _utf8_len(value: str) -> int:
     return len(value.encode("utf-8"))
 
 
 def _byte_slice(value: str, start: int, end: int) -> str:
     return value.encode("utf-8")[start:end].decode("utf-8")
+
+
+def _byte_find(value: str, needle: str) -> int:
+    return value.encode("utf-8").find(needle.encode("utf-8"))
 
 
 def _is_char_boundary(value: str, byte_index: int) -> bool:
@@ -331,34 +439,41 @@ def _command_payload(command: Any) -> Any:
     return getattr(command, "value", command)
 
 
-# Rust test/helper scaffold functions retained for full ChatComposer popup key
-# handling, which belongs to the wider composer module contract.
-def test_composer(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "test_composer")
+def _command_token_end(first_line: str) -> int:
+    byte_pos = 1
+    for char in first_line[1:]:
+        if char.isspace():
+            return byte_pos
+        byte_pos += _utf8_len(char)
+    return _utf8_len(first_line)
 
 
-def press(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "press")
+def _builtin_slash_command(command: Any) -> Optional[SlashCommand]:
+    if isinstance(command, SlashCommandItem) and command.kind == "Builtin":
+        return command.value
+    if isinstance(command, SlashCommand):
+        return command
+    return None
 
 
-def composer_with_text_at_cursor(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "composer_with_text_at_cursor")
+def _supports_inline_args(original: Any, command: SlashCommand) -> bool:
+    supports_inline_args = getattr(original, "supports_inline_args", None)
+    if callable(supports_inline_args):
+        return bool(supports_inline_args())
+    supports_inline_args = getattr(command, "supports_inline_args", None)
+    if callable(supports_inline_args):
+        return bool(supports_inline_args())
+    return command is SlashCommand.REVIEW
 
 
-def composer_with_draft_tail(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "composer_with_draft_tail")
-
-
-def slash_completion_preserves_existing_draft_tail_for_inline_arg_commands(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "slash_completion_preserves_existing_draft_tail_for_inline_arg_commands")
-
-
-def slash_completion_does_not_preserve_existing_draft_tail_for_other_commands(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "slash_completion_does_not_preserve_existing_draft_tail_for_other_commands")
-
-
-def slash_completion_does_not_turn_command_suffix_into_args(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "slash_completion_does_not_turn_command_suffix_into_args")
+def _element_placeholder(element: TextElement, text: str) -> Optional[str]:
+    placeholder = getattr(element, "placeholder", None)
+    if callable(placeholder):
+        return placeholder(text)
+    placeholder_for_conversion_only = getattr(element, "placeholder_for_conversion_only", None)
+    if callable(placeholder_for_conversion_only):
+        return placeholder_for_conversion_only()
+    return None
 
 
 __all__ = [
@@ -366,21 +481,18 @@ __all__ = [
     "InlineCommand",
     "QueuedInputAction",
     "RUST_MODULE",
+    "SlashCompletionResult",
+    "SlashElementSyncResult",
     "SlashInput",
     "SlashValidation",
     "SubmissionValidation",
     "args_elements",
     "command_popup_filter_text",
     "command_under_cursor",
-    "composer_with_draft_tail",
-    "composer_with_text_at_cursor",
+    "complete_selected_slash_command_preserving_existing_draft_tail_as_inline_args",
     "prepared_args",
-    "press",
     "queued_input_action",
     "selected_command_completion",
     "selected_command_dispatches_immediately_on_tab",
-    "slash_completion_does_not_preserve_existing_draft_tail_for_other_commands",
-    "slash_completion_does_not_turn_command_suffix_into_args",
-    "slash_completion_preserves_existing_draft_tail_for_inline_arg_commands",
-    "test_composer",
+    "sync_slash_command_elements",
 ]

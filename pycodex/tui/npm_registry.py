@@ -3,30 +3,38 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Dict, Mapping, Optional, Union
 
 from ._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="npm_registry", source="codex/codex-rs/tui/src/npm_registry.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="npm_registry",
+    source="codex/codex-rs/tui/src/npm_registry.rs",
+    status="complete",
+)
 
 PACKAGE_URL = "https://registry.npmjs.org/@openai%2fcodex"
 
 
 @dataclass(frozen=True)
 class NpmPackageDist:
-    tarball: str | None = None
-    integrity: str | None = None
+    tarball: Optional[str] = None
+    integrity: Optional[str] = None
 
     @classmethod
-    def from_mapping(cls, mapping: Mapping[str, Any] | None) -> "NpmPackageDist | None":
+    def from_mapping(cls, mapping: Optional[Mapping[str, Any]]) -> Optional["NpmPackageDist"]:
         if mapping is None:
             return None
-        return cls(tarball=_optional_str(mapping.get("tarball")), integrity=_optional_str(mapping.get("integrity")))
+        return cls(
+            tarball=_optional_str(mapping.get("tarball"), "dist.tarball"),
+            integrity=_optional_str(mapping.get("integrity"), "dist.integrity"),
+        )
 
 
 @dataclass(frozen=True)
 class NpmPackageVersionInfo:
-    dist: NpmPackageDist | None = None
+    dist: Optional[NpmPackageDist] = None
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, Any]) -> "NpmPackageVersionInfo":
@@ -35,22 +43,27 @@ class NpmPackageVersionInfo:
 
 @dataclass(frozen=True)
 class NpmPackageInfo:
-    dist_tags: dict[str, str]
-    versions: dict[str, NpmPackageVersionInfo]
+    dist_tags: Dict[str, str]
+    versions: Dict[str, NpmPackageVersionInfo]
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, Any]) -> "NpmPackageInfo":
         dist_tags_raw = _required_mapping(mapping.get("dist-tags"), "dist-tags")
         versions_raw = _required_mapping(mapping.get("versions"), "versions")
-        dist_tags = {str(key): str(value) for key, value in dist_tags_raw.items()}
+        dist_tags = {
+            _required_str(key, "dist-tags key"): _required_str(value, f"dist-tags.{key}")
+            for key, value in dist_tags_raw.items()
+        }
         versions = {
-            str(version): NpmPackageVersionInfo.from_mapping(_required_mapping(info, f"versions.{version}"))
+            _required_str(version, "versions key"): NpmPackageVersionInfo.from_mapping(
+                _required_mapping(info, f"versions.{version}")
+            )
             for version, info in versions_raw.items()
         }
         return cls(dist_tags=dist_tags, versions=versions)
 
 
-def ensure_version_ready(package_info: NpmPackageInfo | Mapping[str, Any], version: str) -> None:
+def ensure_version_ready(package_info: Union[NpmPackageInfo, Mapping[str, Any]], version: str) -> None:
     info = _coerce_package_info(package_info)
     version = str(version).strip()
 
@@ -63,7 +76,9 @@ def ensure_version_ready(package_info: NpmPackageInfo | Mapping[str, Any], versi
     version_info_with_dist(info, version)
 
 
-def version_info_with_dist(package_info: NpmPackageInfo | Mapping[str, Any], version: str) -> NpmPackageVersionInfo:
+def version_info_with_dist(
+    package_info: Union[NpmPackageInfo, Mapping[str, Any]], version: str
+) -> NpmPackageVersionInfo:
     info = _coerce_package_info(package_info)
     version = str(version)
     try:
@@ -81,7 +96,7 @@ def version_info_with_dist(package_info: NpmPackageInfo | Mapping[str, Any], ver
     return version_info
 
 
-def version_json(version: str) -> dict[str, Any]:
+def version_json(version: str) -> Dict[str, Any]:
     version = str(version)
     return {
         "dist": {
@@ -127,7 +142,7 @@ def ready_version_rejects_missing_root_dist() -> None:
     raise AssertionError("root package must have dist metadata")
 
 
-def _coerce_package_info(package_info: NpmPackageInfo | Mapping[str, Any]) -> NpmPackageInfo:
+def _coerce_package_info(package_info: Union[NpmPackageInfo, Mapping[str, Any]]) -> NpmPackageInfo:
     if isinstance(package_info, NpmPackageInfo):
         return package_info
     return NpmPackageInfo.from_mapping(package_info)
@@ -139,16 +154,22 @@ def _required_mapping(value: Any, field: str) -> Mapping[str, Any]:
     return value
 
 
-def _optional_mapping(value: Any) -> Mapping[str, Any] | None:
+def _optional_mapping(value: Any) -> Optional[Mapping[str, Any]]:
     if value is None:
         return None
     return _required_mapping(value, "dist")
 
 
-def _optional_str(value: Any) -> str | None:
+def _required_str(value: Any, field: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{field} must be a string")
+    return value
+
+
+def _optional_str(value: Any, field: str) -> Optional[str]:
     if value is None:
         return None
-    return str(value)
+    return _required_str(value, field)
 
 
 __all__ = [

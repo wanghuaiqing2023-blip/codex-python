@@ -1,4 +1,4 @@
-"""Behavior port for Rust ``codex-tui::update_action``.
+﻿"""Behavior port for Rust ``codex-tui::update_action``.
 
 Upstream source: ``codex/codex-rs/tui/src/update_action.rs``.
 """
@@ -12,7 +12,7 @@ from typing import Any, Callable, Optional, Tuple, Union
 
 from ._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="update_action", source="codex/codex-rs/tui/src/update_action.rs")
+RUST_MODULE = RustTuiModule(crate="codex-tui", module="update_action", source="codex/codex-rs/tui/src/update_action.rs", status="complete")
 
 
 class InstallMethod(str, Enum):
@@ -157,7 +157,7 @@ def _install_method(context: Any) -> InstallMethod:
         raw = raw["type"]
     if isinstance(raw, InstallMethod):
         return raw
-    normalized = str(raw).lower()
+    normalized = _token(raw)
     mapping = {
         "npm": InstallMethod.NPM,
         "bun": InstallMethod.BUN,
@@ -178,7 +178,7 @@ def _standalone_platform(raw: Any) -> Optional[StandalonePlatform]:
         return raw
     if raw is None:
         return None
-    normalized = str(raw).lower()
+    normalized = _token(raw)
     if normalized == "unix":
         return StandalonePlatform.UNIX
     if normalized == "windows":
@@ -192,6 +192,16 @@ def _get(obj: Any, key: str, default: Any = None) -> Any:
     return getattr(obj, key, default)
 
 
+def _token(raw: Any) -> str:
+    value = getattr(raw, "value", raw)
+    if isinstance(value, str):
+        return value.lower()
+    name = getattr(raw, "name", None)
+    if isinstance(name, str):
+        return name.lower()
+    return str(raw).lower()
+
+
 __all__ = [
     "InstallContext",
     "InstallMethod",
@@ -202,3 +212,4 @@ __all__ = [
     "maps_install_context_to_update_action",
     "standalone_update_commands_rerun_latest_installer",
 ]
+

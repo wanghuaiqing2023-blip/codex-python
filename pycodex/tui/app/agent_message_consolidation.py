@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from .._porting import RustTuiModule
 from ..app_event import ConsolidationScrollbackReflow
@@ -17,7 +17,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="app::agent_message_consolidation",
     source="codex/codex-rs/tui/src/app/agent_message_consolidation.rs",
-    status="complete_slice",
+    status="complete",
 )
 
 
@@ -74,7 +74,7 @@ class AgentMessageConsolidationApp:
     """Minimal App-shaped state for the module-local consolidation contract."""
 
     transcript_cells: list[Any] = field(default_factory=list)
-    overlay: TranscriptOverlay | None = None
+    overlay: Optional[TranscriptOverlay] = None
     maybe_finish_stream_reflow_calls: int = 0
     finish_required_stream_reflow_calls: int = 0
 
@@ -102,8 +102,8 @@ class AgentMessageConsolidationApp:
         source: str,
         cwd: Any,
         scrollback_reflow: ConsolidationScrollbackReflow,
-        deferred_history_cell: Any | None = None,
-    ) -> AgentMarkdownCell | None:
+        deferred_history_cell: Optional[Any] = None,
+    ) -> Optional[AgentMarkdownCell]:
         return handle_consolidate_agent_message(
             self,
             tui,
@@ -137,8 +137,8 @@ def handle_consolidate_agent_message(
     source: str,
     cwd: Any,
     scrollback_reflow: ConsolidationScrollbackReflow,
-    deferred_history_cell: Any | None = None,
-) -> AgentMarkdownCell | None:
+    deferred_history_cell: Optional[Any] = None,
+) -> Optional[AgentMarkdownCell]:
     """Replace the trailing streaming agent-message run with markdown source."""
 
     if deferred_history_cell is not None:

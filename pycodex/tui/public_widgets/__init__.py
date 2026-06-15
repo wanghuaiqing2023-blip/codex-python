@@ -14,6 +14,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="public_widgets",
     source="codex/codex-rs/tui/src/public_widgets/mod.rs",
+    status="complete",
 )
 
 PUBLIC_WIDGET_SUBMODULES = ("composer_input",)

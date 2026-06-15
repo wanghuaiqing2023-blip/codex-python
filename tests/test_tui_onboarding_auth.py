@@ -1,4 +1,6 @@
-﻿from __future__ import annotations
+from __future__ import annotations
+
+from typing import List
 
 from pycodex.tui.key_hint import KeyEvent, MOD_CONTROL, MOD_SHIFT
 from pycodex.tui.onboarding.auth import (

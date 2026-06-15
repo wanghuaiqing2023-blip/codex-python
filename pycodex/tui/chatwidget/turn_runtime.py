@@ -19,6 +19,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="chatwidget::turn_runtime",
     source="codex/codex-rs/tui/src/chatwidget/turn_runtime.rs",
+    status="complete",
 )
 
 PLAN_IMPLEMENTATION_TITLE = "Ready to implement?"
@@ -35,6 +36,20 @@ class TerminalTitleStatusKind(str, Enum):
 class TurnAbortReason(str, Enum):
     BUDGET_LIMITED = "budget_limited"
     OTHER = "other"
+
+
+class RateLimitErrorKind(str, Enum):
+    SERVER_OVERLOADED = "server_overloaded"
+    USAGE_LIMIT = "usage_limit"
+    GENERIC = "generic"
+
+
+class RateLimitReachedType(str, Enum):
+    WORKSPACE_OWNER_CREDITS_DEPLETED = "workspace_owner_credits_depleted"
+    WORKSPACE_OWNER_USAGE_LIMIT_REACHED = "workspace_owner_usage_limit_reached"
+    WORKSPACE_MEMBER_CREDITS_DEPLETED = "workspace_member_credits_depleted"
+    WORKSPACE_MEMBER_USAGE_LIMIT_REACHED = "workspace_member_usage_limit_reached"
+    RATE_LIMIT_REACHED = "rate_limit_reached"
 
 
 class StepStatus(str, Enum):
@@ -219,9 +234,16 @@ class SemanticTurnRuntime:
     status_line_git_summary_refreshes: int = 0
     pending_rate_limit_prompt_checks: int = 0
     queued_input_send_attempts: int = 0
+    answer_stream_flushes: int = 0
+    unified_exec_wait_flushes: int = 0
+    pending_input_preview_refreshes: int = 0
+    plan_prompt_checks: int = 0
+    workspace_owner_nudges: List[str] = field(default_factory=list)
     collaboration_modes: bool = True
     mode_kind: ModeKind = ModeKind.CHAT
     rate_limit_switch_prompt_pending: bool = False
+    codex_rate_limit_reached_type: Optional[RateLimitReachedType] = None
+    current_goal_active: bool = False
     token_info: Optional[TokenUsageInfo] = None
 
     def update_task_running_state(self) -> None:
@@ -275,6 +297,72 @@ class SemanticTurnRuntime:
         self.set_ambient_pet_notification("running", None)
         self.request_redraw()
 
+    def on_task_complete(
+        self,
+        last_agent_message: Optional[str],
+        duration_ms: Optional[int],
+        from_replay: bool,
+    ) -> None:
+        self.input_queue.submit_pending_steers_after_interrupt = False
+        sanitized = visible_assistant_markdown(last_agent_message)
+        if sanitized and not self.transcript.saw_copy_source_this_turn:
+            self.record_agent_markdown(sanitized)
+        if sanitized:
+            notification_response = sanitized
+        elif self.transcript.saw_copy_source_this_turn:
+            notification_response = getattr(self.transcript, "last_agent_markdown", "") or ""
+        else:
+            notification_response = ""
+        self.transcript.saw_copy_source_this_turn = False
+        self.flush_answer_stream_with_separator()
+        if self.plan_stream_controller is not None:
+            self.history.append({"kind": "plan_stream_finalized", "controller": self.plan_stream_controller})
+            self.plan_stream_controller = None
+        self.flush_unified_exec_wait_streak()
+        if not from_replay:
+            self.collect_runtime_metrics_delta()
+            runtime_metrics = None if self.turn_runtime_metrics.is_empty() else self.turn_runtime_metrics
+            show_work_separator = self.transcript.had_work_activity and (
+                self.transcript.needs_final_message_separator or runtime_metrics is not None
+            )
+            if show_work_separator or runtime_metrics is not None:
+                elapsed_seconds = None
+                if show_work_separator and duration_ms is not None and duration_ms >= 0:
+                    elapsed_seconds = int(duration_ms) // 1000
+                self.add_to_history(
+                    {
+                        "kind": "final_message_separator",
+                        "elapsed_seconds": elapsed_seconds,
+                        "runtime_metrics": runtime_metrics,
+                    }
+                )
+            self.turn_runtime_metrics = RuntimeMetricsSummary()
+            self.transcript.needs_final_message_separator = False
+            self.transcript.had_work_activity = False
+            self.request_status_line_branch_refresh()
+            self.request_status_line_git_summary_refresh()
+        self.status_state.pending_status_indicator_restore = False
+        self.input_queue.user_turn_pending_start = False
+        self.turn_lifecycle.finish()
+        self.update_task_running_state()
+        self.running_commands.clear()
+        self.suppressed_exec_calls.clear()
+        self.last_unified_wait = None
+        self.unified_exec_wait_streak = None
+        if not from_replay:
+            self.set_ambient_pet_notification("review", agent_turn_preview(notification_response))
+        self.request_redraw()
+        had_pending_steers = bool(self.input_queue.pending_steers)
+        self.refresh_pending_input_preview()
+        if not from_replay and not self.has_queued_follow_up_messages() and not had_pending_steers:
+            self.maybe_prompt_plan_implementation()
+        if not from_replay:
+            self.transcript.saw_plan_item_this_turn = False
+        follow_up_started = self.maybe_send_next_queued_input()
+        if not from_replay and not follow_up_started and not self.current_goal_active:
+            self.notify({"kind": "agent_turn_complete", "response": notification_response})
+        self.maybe_show_pending_rate_limit_prompt()
+
     def finalize_turn(self) -> None:
         self.clear_active_stream_tail()
         self.finalize_active_cell_as_failed()
@@ -296,6 +384,66 @@ class SemanticTurnRuntime:
         self.request_status_line_git_summary_refresh()
         self.maybe_show_pending_rate_limit_prompt()
 
+    def on_server_overloaded_error(self, message: str) -> None:
+        self.input_queue.submit_pending_steers_after_interrupt = False
+        self.finalize_turn()
+        text = "Codex is currently experiencing high load." if not message.strip() else message
+        self.add_to_history({"kind": "warning", "message": text})
+        self.request_redraw()
+        self.maybe_send_next_queued_input()
+
+    def on_error(self, message: str) -> None:
+        self.input_queue.submit_pending_steers_after_interrupt = False
+        self.flush_answer_stream_with_separator()
+        self.finalize_turn()
+        self.add_to_history({"kind": "error", "message": message})
+        self.set_ambient_pet_notification("failed", None)
+        self.request_redraw()
+        self.maybe_send_next_queued_input()
+
+    def on_cyber_policy_error(self) -> None:
+        self.input_queue.submit_pending_steers_after_interrupt = False
+        self.finalize_turn()
+        self.add_to_history({"kind": "cyber_policy_error"})
+        self.request_redraw()
+        self.maybe_send_next_queued_input()
+
+    def on_rate_limit_error(self, error_kind: RateLimitErrorKind, message: str) -> None:
+        reached = self.codex_rate_limit_reached_type
+        if error_kind is RateLimitErrorKind.USAGE_LIMIT:
+            if reached is RateLimitReachedType.WORKSPACE_OWNER_CREDITS_DEPLETED:
+                reached = RateLimitReachedType.WORKSPACE_OWNER_USAGE_LIMIT_REACHED
+            elif reached is RateLimitReachedType.WORKSPACE_MEMBER_CREDITS_DEPLETED:
+                reached = RateLimitReachedType.WORKSPACE_MEMBER_USAGE_LIMIT_REACHED
+        self.codex_rate_limit_reached_type = reached
+        if reached is RateLimitReachedType.WORKSPACE_OWNER_CREDITS_DEPLETED:
+            self.on_error(
+                "You're out of credits. Your workspace is out of credits. Add credits to continue using Codex."
+            )
+        elif reached is RateLimitReachedType.WORKSPACE_OWNER_USAGE_LIMIT_REACHED:
+            self.on_error(
+                "Usage limit reached. You've reached your usage limit. Increase your limits to continue using codex."
+            )
+        elif reached is RateLimitReachedType.WORKSPACE_MEMBER_CREDITS_DEPLETED:
+            self.on_error(message)
+            self.open_workspace_owner_nudge_prompt("credits")
+        elif reached is RateLimitReachedType.WORKSPACE_MEMBER_USAGE_LIMIT_REACHED:
+            self.on_error(message)
+            self.open_workspace_owner_nudge_prompt("usage_limit")
+        else:
+            self.on_error(message)
+
+    def handle_non_retry_error(self, message: str, codex_error_info: Optional[Any] = None) -> None:
+        kind = app_server_rate_limit_error_kind(codex_error_info)
+        if is_app_server_cyber_policy_error(codex_error_info):
+            self.on_cyber_policy_error()
+        elif kind is RateLimitErrorKind.SERVER_OVERLOADED:
+            self.on_server_overloaded_error(message)
+        elif kind in (RateLimitErrorKind.USAGE_LIMIT, RateLimitErrorKind.GENERIC):
+            self.on_rate_limit_error(kind, message)
+        else:
+            self.on_error(message)
+
     def on_warning(self, message: Any) -> None:
         text = str(message)
         if not self.warning_display_state.should_display(text):
@@ -312,6 +460,7 @@ class SemanticTurnRuntime:
         self.add_to_history({"kind": "plan_update", "update": update})
 
     def maybe_prompt_plan_implementation(self) -> None:
+        self.plan_prompt_checks += 1
         if not self.collaboration_modes_enabled():
             return
         if self.has_queued_follow_up_messages():
@@ -425,6 +574,24 @@ class SemanticTurnRuntime:
     def set_ambient_pet_notification(self, kind: str, body: Optional[str]) -> None:
         self.ambient_pet_notifications.append({"kind": kind, "body": body})
 
+    def flush_answer_stream_with_separator(self) -> None:
+        self.answer_stream_flushes += 1
+
+    def flush_unified_exec_wait_streak(self) -> None:
+        if self.unified_exec_wait_streak is not None:
+            self.unified_exec_wait_streak = None
+            self.unified_exec_wait_flushes += 1
+
+    def record_agent_markdown(self, message: str) -> None:
+        setattr(self.transcript, "last_agent_markdown", message)
+        self.transcript.saw_copy_source_this_turn = True
+
+    def refresh_pending_input_preview(self) -> None:
+        self.pending_input_preview_refreshes += 1
+
+    def open_workspace_owner_nudge_prompt(self, credit_type: str) -> None:
+        self.workspace_owner_nudges.append(credit_type)
+
 
 ChatWidgetTurnRuntime = SemanticTurnRuntime
 
@@ -453,6 +620,23 @@ def on_plan_update(runtime: SemanticTurnRuntime, update: UpdatePlanArgs) -> None
     runtime.on_plan_update(update)
 
 
+def on_task_complete(
+    runtime: SemanticTurnRuntime,
+    last_agent_message: Optional[str],
+    duration_ms: Optional[int],
+    from_replay: bool,
+) -> None:
+    runtime.on_task_complete(last_agent_message, duration_ms, from_replay)
+
+
+def on_error(runtime: SemanticTurnRuntime, message: str) -> None:
+    runtime.on_error(message)
+
+
+def on_rate_limit_error(runtime: SemanticTurnRuntime, error_kind: RateLimitErrorKind, message: str) -> None:
+    runtime.on_rate_limit_error(error_kind, message)
+
+
 def interrupted_turn_message(reason: TurnAbortReason) -> str:
     if reason is TurnAbortReason.BUDGET_LIMITED:
         return "Goal budget reached - the turn was stopped."
@@ -476,6 +660,36 @@ def format_tokens_compact(tokens: int) -> str:
     return ("%.1f" % value).rstrip("0").rstrip(".") + suffix
 
 
+def visible_assistant_markdown(message: Optional[str]) -> str:
+    return "" if message is None else str(message).strip()
+
+
+def agent_turn_preview(message: str) -> Optional[str]:
+    text = str(message).strip()
+    return text or None
+
+
+def is_app_server_cyber_policy_error(info: Optional[Any]) -> bool:
+    if info is None:
+        return False
+    if isinstance(info, dict):
+        return bool(info.get("cyber_policy"))
+    return bool(getattr(info, "cyber_policy", False))
+
+
+def app_server_rate_limit_error_kind(info: Optional[Any]) -> Optional[RateLimitErrorKind]:
+    if info is None:
+        return None
+    value = info.get("rate_limit_kind") if isinstance(info, dict) else getattr(info, "rate_limit_kind", None)
+    if value in (RateLimitErrorKind.SERVER_OVERLOADED, "server_overloaded"):
+        return RateLimitErrorKind.SERVER_OVERLOADED
+    if value in (RateLimitErrorKind.USAGE_LIMIT, "usage_limit"):
+        return RateLimitErrorKind.USAGE_LIMIT
+    if value in (RateLimitErrorKind.GENERIC, "generic"):
+        return RateLimitErrorKind.GENERIC
+    return None
+
+
 __all__ = [
     "BottomPane",
     "ChatWidgetTurnRuntime",
@@ -484,6 +698,8 @@ __all__ = [
     "PLAN_IMPLEMENTATION_TITLE",
     "PlanItem",
     "RUST_MODULE",
+    "RateLimitErrorKind",
+    "RateLimitReachedType",
     "RuntimeMetricsSummary",
     "SemanticTurnRuntime",
     "SessionTelemetry",
@@ -501,7 +717,10 @@ __all__ = [
     "format_tokens_compact",
     "has_websocket_timing_metrics",
     "interrupted_turn_message",
+    "on_error",
     "on_plan_update",
+    "on_rate_limit_error",
+    "on_task_complete",
     "on_task_started",
     "on_warning",
     "update_task_running_state",

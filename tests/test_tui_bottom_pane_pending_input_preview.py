@@ -1,4 +1,6 @@
-"""Parity tests for Rust ``codex-tui::bottom_pane::pending_input_preview``."""
+﻿"""Parity tests for Rust ``codex-tui::bottom_pane::pending_input_preview``."""
+
+from typing import List
 
 from pycodex.tui.bottom_pane.pending_input_preview import (
     CONTINUATION_PREFIX,
@@ -30,7 +32,7 @@ def test_desired_height_one_message() -> None:
     assert [line.text for line in queue.as_renderable(40)] == [
         f"{SECTION_PREFIX}Queued follow-up inputs",
         f"{ITEM_PREFIX}Hello, world!",
-        "    Alt+Up edit last queued message",
+        "    ⌥ + ↑ edit last queued message",
     ]
 
 
@@ -39,7 +41,7 @@ def test_render_one_message_with_remapped_edit_binding_and_height_clip() -> None
     queue = PendingInputPreview.new()
     queue.queued_messages.append("Hello, world!")
     queue.set_edit_binding("Shift+Left")
-    rendered: list[RenderedLine] = []
+    rendered: List[RenderedLine] = []
 
     queue.render(Rect(0, 0, 40, 2), rendered)
 
@@ -64,7 +66,7 @@ def test_render_more_than_three_wrapped_message_lines_adds_overflow_marker() -> 
         f"{CONTINUATION_PREFIX}a message",
         f"{CONTINUATION_PREFIX}with many",
         OVERFLOW_PREFIX,
-        "    Alt+Up edit last queued message",
+        "    ⌥ + ↑ edit last queued message",
     ]
 
 
@@ -90,7 +92,7 @@ def test_pending_steers_render_above_rejected_and_queued_messages() -> None:
     texts = [line.text for line in queue.as_renderable(80)]
 
     assert texts[:3] == [
-        f"{SECTION_PREFIX}Messages to be submitted after next tool call (press Esc to interrupt and send immediately)",
+        f"{SECTION_PREFIX}Messages to be submitted after next tool call (press esc to interrupt and send immediately)",
         f"{ITEM_PREFIX}Please continue.",
         f"{ITEM_PREFIX}Check output.",
     ]
@@ -140,9 +142,10 @@ def test_render_empty_area_is_noop() -> None:
     # empty.
     queue = PendingInputPreview.new()
     queue.queued_messages.append("Follow up")
-    rendered: list[RenderedLine] = []
+    rendered: List[RenderedLine] = []
 
     queue.render(Rect(0, 0, 0, 10), rendered)
     queue.render(Rect(0, 0, 80, 0), rendered)
 
     assert rendered == []
+

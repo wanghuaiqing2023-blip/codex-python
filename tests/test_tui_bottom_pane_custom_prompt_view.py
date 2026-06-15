@@ -92,4 +92,5 @@ def test_render_uses_title_context_gutter_placeholder_and_hint():
     assert lines[2].text == gutter()
     assert lines[3].text == "Placeholder"
     assert lines[3].style == "placeholder"
-    assert "Enter" in lines[-1].text
+    assert "enter" in lines[-1].text
+    assert "esc" in lines[-1].text

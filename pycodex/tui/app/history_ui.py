@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, List, Optional, Tuple
 
 from .._porting import RustTuiModule
 from ..ratatui_bridge import Rect
@@ -18,7 +18,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="app::history_ui",
     source="codex/codex-rs/tui/src/app/history_ui.rs",
-    status="complete_slice",
+    status="complete",
 )
 
 CODEX_CLI_VERSION = "unknown"
@@ -33,23 +33,23 @@ class SessionHeaderLine:
 @dataclass
 class ChatWidget:
     model: str = "gpt-5"
-    reasoning_effort: str | None = None
-    service_tier: str | None = None
+    reasoning_effort: Optional[str] = None
+    service_tier: Optional[str] = None
     fast_status: bool = False
-    errors: list[str] = field(default_factory=list)
-    infos: list[tuple[str, Any | None]] = field(default_factory=list)
-    wrap_width: int | None = None
+    errors: List[str] = field(default_factory=list)
+    infos: List[Tuple[str, Optional[Any]]] = field(default_factory=list)
+    wrap_width: Optional[int] = None
 
     def current_model(self) -> str:
         return self.model
 
-    def current_reasoning_effort(self) -> str | None:
+    def current_reasoning_effort(self) -> Optional[str]:
         return self.reasoning_effort
 
-    def current_service_tier(self) -> str | None:
+    def current_service_tier(self) -> Optional[str]:
         return self.service_tier
 
-    def should_show_fast_status(self, model: str, service_tier: str | None) -> bool:
+    def should_show_fast_status(self, model: str, service_tier: Optional[str]) -> bool:
         return self.fast_status
 
     def history_wrap_width(self, screen_width: int) -> int:
@@ -58,7 +58,7 @@ class ChatWidget:
     def add_error_message(self, message: str) -> None:
         self.errors.append(message)
 
-    def add_info_message(self, message: str, hint: Any | None = None) -> None:
+    def add_info_message(self, message: str, hint: Optional[Any] = None) -> None:
         self.infos.append((message, hint))
 
 
@@ -80,7 +80,7 @@ class Terminal:
     viewport_area: Rect = field(default_factory=Rect)
     visible_clears: int = 0
     scrollback_and_visible_ansi_clears: int = 0
-    viewport_history: list[Rect] = field(default_factory=list)
+    viewport_history: List[Rect] = field(default_factory=list)
 
     def clear_visible_screen(self) -> None:
         self.visible_clears += 1
@@ -98,7 +98,7 @@ class Tui:
     terminal: Terminal = field(default_factory=Terminal)
     alt_screen_active: bool = False
     pending_history_clears: int = 0
-    inserted_history_lines: list[list[SessionHeaderLine]] = field(default_factory=list)
+    inserted_history_lines: List[List[SessionHeaderLine]] = field(default_factory=list)
 
     def is_alt_screen_active(self) -> bool:
         return self.alt_screen_active
@@ -106,7 +106,7 @@ class Tui:
     def clear_pending_history_lines(self) -> None:
         self.pending_history_clears += 1
 
-    def insert_history_lines(self, lines: list[SessionHeaderLine]) -> None:
+    def insert_history_lines(self, lines: List[SessionHeaderLine]) -> None:
         self.inserted_history_lines.append(lines)
 
 
@@ -114,19 +114,19 @@ class Tui:
 class AppHistoryUiState:
     chat_widget: ChatWidget = field(default_factory=ChatWidget)
     config: Config = field(default_factory=Config)
-    overlay: Any | None = None
-    transcript_cells: list[Any] = field(default_factory=list)
-    deferred_history_lines: list[Any] = field(default_factory=list)
+    overlay: Optional[Any] = None
+    transcript_cells: List[Any] = field(default_factory=list)
+    deferred_history_lines: List[Any] = field(default_factory=list)
     has_emitted_history_lines: bool = False
     transcript_reflow: TranscriptReflowState = field(default_factory=TranscriptReflowState)
-    initial_history_replay_buffer: Any | None = None
+    initial_history_replay_buffer: Optional[Any] = None
     backtrack: Any = field(default_factory=dict)
     backtrack_render_pending: bool = False
 
     def open_url_in_browser(
         self,
         url: str,
-        opener: Callable[[str], Any] | None = None,
+        opener: Optional[Callable[[str], Any]] = None,
     ) -> bool:
         return open_url_in_browser(self, url, opener)
 
@@ -134,13 +134,13 @@ class AppHistoryUiState:
         self,
         width: int,
         version: str,
-    ) -> list[SessionHeaderLine]:
+    ) -> List[SessionHeaderLine]:
         return clear_ui_header_lines_with_version(self, width, version)
 
-    def clear_ui_header_lines(self, width: int) -> list[SessionHeaderLine]:
+    def clear_ui_header_lines(self, width: int) -> List[SessionHeaderLine]:
         return self.clear_ui_header_lines_with_version(width, CODEX_CLI_VERSION)
 
-    def queue_clear_ui_header(self, tui: Tui) -> list[SessionHeaderLine]:
+    def queue_clear_ui_header(self, tui: Tui) -> List[SessionHeaderLine]:
         return queue_clear_ui_header(self, tui)
 
     def clear_terminal_ui(self, tui: Tui, redraw_header: bool) -> None:
@@ -156,7 +156,7 @@ class AppHistoryUiState:
 def open_url_in_browser(
     app: AppHistoryUiState,
     url: str,
-    opener: Callable[[str], Any] | None = None,
+    opener: Optional[Callable[[str], Any]] = None,
 ) -> bool:
     opener = opener or (lambda _: True)
     try:
@@ -173,14 +173,14 @@ def clear_ui_header_lines_with_version(
     app: AppHistoryUiState,
     width: int,
     version: str,
-) -> list[SessionHeaderLine]:
+) -> List[SessionHeaderLine]:
     if int(width) <= 0:
         return []
 
     parts = [
         f"Codex {version}",
         f"model: {app.chat_widget.current_model()}",
-        f"cwd: {app.config.cwd}",
+        f"cwd: {_display_cwd(app.config.cwd)}",
     ]
     effort = app.chat_widget.current_reasoning_effort()
     if effort is not None:
@@ -197,7 +197,11 @@ def clear_ui_header_lines_with_version(
     return [SessionHeaderLine(line[: max(0, int(width))])]
 
 
-def queue_clear_ui_header(app: AppHistoryUiState, tui: Tui) -> list[SessionHeaderLine]:
+def _display_cwd(cwd: Path) -> str:
+    return str(cwd).replace("\\", "/")
+
+
+def queue_clear_ui_header(app: AppHistoryUiState, tui: Tui) -> List[SessionHeaderLine]:
     width = app.chat_widget.history_wrap_width(tui.terminal.last_known_screen_size.width)
     header_lines = app.clear_ui_header_lines(width)
     if header_lines:

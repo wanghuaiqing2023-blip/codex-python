@@ -1,4 +1,4 @@
-"""Semantic terminal hyperlinks carried separately from visible TUI text.
+﻿"""Semantic terminal hyperlinks carried separately from visible TUI text.
 
 Upstream source: ``codex/codex-rs/tui/src/terminal_hyperlinks.rs``.
 """
@@ -7,10 +7,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import re
-from typing import Any, Iterable
+from typing import Any, Iterable, List, Optional, Set, Tuple, Union
 from urllib.parse import urlparse
 
-from ._porting import RustTuiModule, not_ported
+from ._porting import RustTuiModule
 from .line_truncation import Line
 from .line_truncation import Span
 from .line_truncation import _display_width
@@ -19,7 +19,9 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="terminal_hyperlinks",
     source="codex/codex-rs/tui/src/terminal_hyperlinks.rs",
+    status="complete",
 )
+
 
 
 @dataclass(eq=True)
@@ -31,16 +33,16 @@ class TerminalHyperlink:
 @dataclass
 class HyperlinkLine:
     line: Line
-    hyperlinks: list[TerminalHyperlink] = field(default_factory=list)
+    hyperlinks: List[TerminalHyperlink] = field(default_factory=list)
 
     @classmethod
-    def new(cls, line: Line | str | Iterable[Span | str]) -> "HyperlinkLine":
+    def new(cls, line: Any) -> "HyperlinkLine":
         return cls(_coerce_line(line))
 
     def width(self) -> int:
         return _display_width(line_text(self.line))
 
-    def push_span(self, span: Span | str, destination: str | None = None) -> None:
+    def push_span(self, span: Any, destination: Optional[str] = None) -> None:
         span = span if isinstance(span, Span) else Span(str(span))
         start = self.width()
         end = start + _display_width(span.content)
@@ -59,7 +61,7 @@ class HyperlinkLine:
 class SemanticCell:
     symbol: str = " "
     fg: Any = None
-    modifiers: set[str] = field(default_factory=set)
+    modifiers: Set[str] = field(default_factory=set)
     skip: bool = False
 
     def set_symbol(self, symbol: str) -> None:
@@ -73,7 +75,7 @@ class SemanticRect:
     width: int
     height: int
 
-    def positions(self) -> Iterable[tuple[int, int]]:
+    def positions(self) -> Iterable[Tuple[int, int]]:
         for row in range(self.y, self.y + self.height):
             for column in range(self.x, self.x + self.width):
                 yield (column, row)
@@ -103,7 +105,7 @@ class SemanticBuffer:
         return self.cells[(column, row)]
 
 
-def _coerce_line(line: Line | str | Iterable[Span | str] | Any) -> Line:
+def _coerce_line(line: Any) -> Line:
     if isinstance(line, Line):
         return line
     if isinstance(line, str):
@@ -118,28 +120,28 @@ def _coerce_line(line: Line | str | Iterable[Span | str] | Any) -> Line:
     return Line.from_spans(line)
 
 
-def _coerce_hyperlink_line(line: HyperlinkLine | Line | str | Iterable[Span | str]) -> HyperlinkLine:
+def _coerce_hyperlink_line(line: Union[HyperlinkLine, Line, str, Iterable[Any]]) -> HyperlinkLine:
     if isinstance(line, HyperlinkLine):
         return line
     return HyperlinkLine.new(line)
 
 
-def visible_lines(lines: Iterable[HyperlinkLine]) -> list[Line]:
+def visible_lines(lines: Iterable[HyperlinkLine]) -> List[Line]:
     return [line.line for line in lines]
 
 
-def plain_hyperlink_lines(lines: Iterable[Line | str | Iterable[Span | str]]) -> list[HyperlinkLine]:
+def plain_hyperlink_lines(lines: Iterable[Any]) -> List[HyperlinkLine]:
     return [HyperlinkLine.new(line) for line in lines]
 
 
 def prefix_hyperlink_lines(
     lines: Iterable[HyperlinkLine],
-    initial_prefix: Span | str,
-    subsequent_prefix: Span | str,
-) -> list[HyperlinkLine]:
+    initial_prefix: Any,
+    subsequent_prefix: Any,
+) -> List[HyperlinkLine]:
     initial = initial_prefix if isinstance(initial_prefix, Span) else Span(str(initial_prefix))
     subsequent = subsequent_prefix if isinstance(subsequent_prefix, Span) else Span(str(subsequent_prefix))
-    out: list[HyperlinkLine] = []
+    out: List[HyperlinkLine] = []
     for index, source in enumerate(lines):
         line = _coerce_hyperlink_line(source)
         prefix = initial if index == 0 else subsequent
@@ -158,11 +160,11 @@ def prefix_hyperlink_lines(
     return out
 
 
-def annotate_web_urls(lines: Iterable[Line | str | Iterable[Span | str]]) -> list[HyperlinkLine]:
+def annotate_web_urls(lines: Iterable[Any]) -> List[HyperlinkLine]:
     return [annotate_web_urls_in_line(_coerce_line(line)) for line in lines]
 
 
-def annotate_web_urls_in_line(line: Line | str | Iterable[Span | str]) -> HyperlinkLine:
+def annotate_web_urls_in_line(line: Any) -> HyperlinkLine:
     coerced = _coerce_line(line)
     out = HyperlinkLine.new(coerced)
     out.hyperlinks = web_links_in_text(line_text(coerced))
@@ -171,8 +173,8 @@ def annotate_web_urls_in_line(line: Line | str | Iterable[Span | str]) -> Hyperl
 
 def remap_wrapped_line(
     source: HyperlinkLine,
-    wrapped: Iterable[Line | str | Iterable[Span | str]],
-) -> list[HyperlinkLine]:
+    wrapped: Iterable[Any],
+) -> List[HyperlinkLine]:
     out = plain_hyperlink_lines(wrapped)
     source_text = line_text(source.line)
     source_byte = 0
@@ -204,12 +206,12 @@ def remap_wrapped_line(
     return out
 
 
-def line_text(line: Line | HyperlinkLine) -> str:
+def line_text(line: Union[Line, HyperlinkLine]) -> str:
     line = line.line if isinstance(line, HyperlinkLine) else line
     return "".join(span.content for span in line.spans)
 
 
-def longest_suffix_matching_prefix(rendered: str, source: str) -> int | None:
+def longest_suffix_matching_prefix(rendered: str, source: str) -> Optional[int]:
     for index in range(len(rendered) + 1):
         if index < len(rendered) and source.startswith(rendered[index:]):
             return index
@@ -230,8 +232,8 @@ def push_link_range(line: HyperlinkLine, columns: range, destination: str) -> No
     line.hyperlinks.append(TerminalHyperlink(columns, destination))
 
 
-def web_links_in_text(text: str) -> list[TerminalHyperlink]:
-    links: list[TerminalHyperlink] = []
+def web_links_in_text(text: str) -> List[TerminalHyperlink]:
+    links: List[TerminalHyperlink] = []
     search_from = 0
     for raw_token in re.split(r"[ \t\r\n\f\v]+", text):
         if not raw_token:
@@ -284,7 +286,7 @@ def has_unmatched_closing_delimiter(candidate: str, closing: str) -> bool:
     return candidate.count(closing) > candidate.count(opening)
 
 
-def web_destination(destination: str) -> str | None:
+def web_destination(destination: str) -> Optional[str]:
     safe_destination = "".join(ch for ch in destination if not unicontrol(ch))
     parsed = urlparse(safe_destination)
     if parsed.scheme not in {"http", "https"}:
@@ -306,7 +308,7 @@ def osc8_hyperlink(destination: str, text: str) -> str:
 
 
 def strip_osc8(text: str) -> str:
-    stripped: list[str] = []
+    stripped: List[str] = []
     index = 0
     while index < len(text):
         if text.startswith("\x1b]8;;", index):
@@ -325,15 +327,15 @@ def strip_osc8(text: str) -> str:
     return "".join(stripped)
 
 
-def decorate_spans(line: HyperlinkLine) -> list[Span]:
+def decorate_spans(line: HyperlinkLine) -> List[Span]:
     if not line.hyperlinks:
         return list(line.line.spans)
 
-    out: list[Span] = []
+    out: List[Span] = []
     column = 0
     link_index = 0
-    active_link_index: int | None = None
-    active_destination: str | None = None
+    active_link_index: Optional[int] = None
+    active_destination: Optional[str] = None
     for span in line.line.spans:
         for ch in span.content:
             width = _display_width(ch)
@@ -358,22 +360,22 @@ def decorate_spans(line: HyperlinkLine) -> list[Span]:
     return out
 
 
-def push_styled_content(out: list[Span], content: str, style: Any) -> None:
+def push_styled_content(out: List[Span], content: str, style: Any) -> None:
     if out and out[-1].style == style:
         out[-1] = Span(out[-1].content + content, style)
         return
     out.append(Span(content, style))
 
 
-def append_to_last_span(out: list[Span], content: str) -> None:
+def append_to_last_span(out: List[Span], content: str) -> None:
     if out:
         out[-1] = Span(out[-1].content + content, out[-1].style)
 
 
-def adaptive_wrap_hyperlink_lines(lines: Iterable[HyperlinkLine], options: Any) -> list[HyperlinkLine]:
+def adaptive_wrap_hyperlink_lines(lines: Iterable[HyperlinkLine], options: Any) -> List[HyperlinkLine]:
     from .wrapping import adaptive_wrap_line
 
-    out: list[HyperlinkLine] = []
+    out: List[HyperlinkLine] = []
     for index, line in enumerate(lines):
         line = _coerce_hyperlink_line(line)
         opts = options.clone() if hasattr(options, "clone") else options
@@ -383,7 +385,7 @@ def adaptive_wrap_hyperlink_lines(lines: Iterable[HyperlinkLine], options: Any) 
     return out
 
 
-def _coerce_rect(area: SemanticRect | tuple[int, int, int, int] | Any) -> SemanticRect:
+def _coerce_rect(area: Any) -> SemanticRect:
     if isinstance(area, SemanticRect):
         return area
     if isinstance(area, tuple):
@@ -420,7 +422,7 @@ def _buffer_cell(buf: Any, column: int, row: int) -> Any:
 
 def mark_buffer_hyperlinks(
     buf: Any,
-    area: SemanticRect | tuple[int, int, int, int] | Any,
+    area: Any,
     lines: Iterable[HyperlinkLine],
     scroll_rows: int = 0,
 ) -> None:
@@ -452,10 +454,10 @@ def mark_buffer_hyperlinks(
         logical_row += rendered_height
 
 
-def _semantic_wrapped_lines(text: str, width: int) -> list[Line]:
+def _semantic_wrapped_lines(text: str, width: int) -> List[Line]:
     if width <= 0:
         return [Line.from_text("")]
-    lines: list[str] = []
+    lines: List[str] = []
     remaining = text
     while _display_width(remaining) > width:
         split = _find_semantic_wrap_split(remaining, width)
@@ -467,20 +469,26 @@ def _semantic_wrapped_lines(text: str, width: int) -> list[Line]:
 
 def _find_semantic_wrap_split(text: str, width: int) -> int:
     used = 0
-    last_space_end: int | None = None
+    last_space_end: Optional[int] = None
+    token_started_after_last_space = False
     for index, ch in enumerate(text):
         next_used = used + _display_width(ch)
         if next_used > width:
-            return last_space_end if last_space_end is not None else index
+            if last_space_end is not None and not token_started_after_last_space:
+                return last_space_end
+            return index
         used = next_used
         if ch.isspace() and used > 0:
             last_space_end = index + len(ch)
+            token_started_after_last_space = False
+        else:
+            token_started_after_last_space = True
     return len(text)
 
 
 def mark_url_hyperlink(
     buf: Any,
-    area: SemanticRect | tuple[int, int, int, int] | Any,
+    area: Any,
     destination: str,
 ) -> None:
     mark_matching_cells(
@@ -494,7 +502,7 @@ def mark_url_hyperlink(
 
 def mark_underlined_hyperlink(
     buf: Any,
-    area: SemanticRect | tuple[int, int, int, int] | Any,
+    area: Any,
     destination: str,
 ) -> None:
     mark_matching_cells(
@@ -507,7 +515,7 @@ def mark_underlined_hyperlink(
 
 def mark_matching_cells(
     buf: Any,
-    area: SemanticRect | tuple[int, int, int, int] | Any,
+    area: Any,
     destination: str,
     matches: Any,
 ) -> None:
@@ -554,3 +562,5 @@ __all__ = [
     "web_destination",
     "web_links_in_text",
 ]
+
+

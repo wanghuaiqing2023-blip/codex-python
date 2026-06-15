@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from .._porting import RustTuiModule
 from . import catalog
@@ -22,6 +22,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="pets::picker",
     source="codex/codex-rs/tui/src/pets/picker.rs",
+    status="complete",
 )
 
 DEFAULT_PET_ID = "codex"
@@ -35,53 +36,53 @@ DISABLED_SEARCH_VALUE = "disable disabled hide hidden off none"
 @dataclass(frozen=True)
 class PetPickerEntry:
     selector: str
-    legacy_selector: str | None
+    legacy_selector: Optional[str]
     display_name: str
-    description: str | None = None
+    description: Optional[str] = None
 
 
 @dataclass(frozen=True)
 class SelectionActionPlan:
     event: str
-    payload: dict[str, str] = field(default_factory=dict)
+    payload: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class SelectionItemPlan:
     name: str
-    description: str | None
+    description: Optional[str]
     is_current: bool
     dismiss_on_select: bool
-    search_value: str | None
-    actions: tuple[SelectionActionPlan, ...]
+    search_value: Optional[str]
+    actions: Tuple[SelectionActionPlan, ...]
 
 
 @dataclass(frozen=True)
 class SelectionViewParamsPlan:
-    view_id: str | None
-    title: str | None
-    subtitle: str | None
-    footer_hint: str | None
-    items: tuple[SelectionItemPlan, ...]
+    view_id: Optional[str]
+    title: Optional[str]
+    subtitle: Optional[str]
+    footer_hint: Optional[str]
+    items: Tuple[SelectionItemPlan, ...]
     is_searchable: bool
-    search_placeholder: str | None
-    initial_selected_idx: int | None
+    search_placeholder: Optional[str]
+    initial_selected_idx: Optional[int]
     side_content: Any
-    side_content_width: tuple[str, int]
+    side_content_width: Tuple[str, int]
     side_content_min_width: int
     stacked_side_content: bool
     preserve_side_content_bg: bool
-    preview_pet_ids: tuple[str, ...]
+    preview_pet_ids: Tuple[str, ...]
 
-    def selection_changed_event(self, idx: int) -> SelectionActionPlan | None:
+    def selection_changed_event(self, idx: int) -> Optional[SelectionActionPlan]:
         if idx < 0 or idx >= len(self.preview_pet_ids):
             return None
         return SelectionActionPlan("PetPreviewRequested", {"pet_id": self.preview_pet_ids[idx]})
 
 
 def build_pet_picker_params(
-    current_pet: str | None,
-    codex_home: str | Path,
+    current_pet: Optional[str],
+    codex_home: Union[str, Path],
     preview_state: PetPickerPreviewState,
 ) -> SelectionViewParamsPlan:
     preferred_pet = current_pet if current_pet is not None else DEFAULT_PET_ID
@@ -92,9 +93,9 @@ def build_pet_picker_params(
             entries.insert(0, disabled)
             break
 
-    initial_selected_idx: int | None = None
+    initial_selected_idx: Optional[int] = None
     preview_pet_ids = tuple(entry.selector for entry in entries)
-    items: list[SelectionItemPlan] = []
+    items: List[SelectionItemPlan] = []
     for idx, entry in enumerate(entries):
         is_current = current_pet is not None and (
             current_pet == entry.selector or entry.legacy_selector == current_pet
@@ -139,7 +140,7 @@ def build_pet_picker_params(
     )
 
 
-def available_pet_entries(codex_home: str | Path) -> list[PetPickerEntry]:
+def available_pet_entries(codex_home: Union[str, Path]) -> List[PetPickerEntry]:
     entries = [
         PetPickerEntry(
             selector=pet.id,
@@ -161,9 +162,9 @@ def available_pet_entries(codex_home: str | Path) -> list[PetPickerEntry]:
     return entries
 
 
-def custom_pet_entries(codex_home: str | Path) -> list[PetPickerEntry]:
+def custom_pet_entries(codex_home: Union[str, Path]) -> List[PetPickerEntry]:
     home = Path(codex_home)
-    entries_by_selector: dict[str, PetPickerEntry] = {}
+    entries_by_selector: Dict[str, PetPickerEntry] = {}
     for directory_name, manifest_file in (("avatars", "avatar.json"), ("pets", "pet.json")):
         root = home / directory_name
         try:

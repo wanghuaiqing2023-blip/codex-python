@@ -59,6 +59,18 @@ def test_start_configured_pet_load_if_needed_gates_and_sends_event() -> None:
     assert events == [("ConfiguredPetLoaded", "codex", "pet")]
 
 
+def test_start_configured_pet_load_failure_sends_error_string() -> None:
+    # Rust parity: start_configured_pet_load_if_needed maps load errors into
+    # AppEvent::ConfiguredPetLoaded { result: Err(err.to_string()) }.
+    events = []
+
+    def fail(*_args):
+        raise RuntimeError("pack missing")
+
+    assert start_configured_pet_load_if_needed(PetsConfig(tui_pet="codex"), True, "frame", events, loader=fail) is True
+    assert events == [("ConfiguredPetLoaded", "codex", "pack missing")]
+
+
 def test_widget_ambient_pet_methods_and_wrap_width() -> None:
     model = ChatWidgetPetsModel(ambient_pet=Pet(columns=7))
     model.set_ambient_pet_notification("happy", "hi")
@@ -67,6 +79,12 @@ def test_widget_ambient_pet_methods_and_wrap_width() -> None:
     assert model.ambient_pet_wrap_reserved_cols() == 7 + AMBIENT_PET_WRAP_GAP_COLUMNS
     assert model.history_wrap_width(3) == 1
     assert model.ambient_pet_draw({"y": 2, "height": 10}, composer_bottom_y=4) == ("draw", {"y": 2, "height": 10}, 4)
+
+    model.config.tui_pet_anchor = "screen-bottom"
+    assert model.ambient_pet_draw({"y": 2, "height": 10}, composer_bottom_y=4) == ("draw", {"y": 2, "height": 10}, 12)
+
+    model.bottom_pane.modal_or_popup_active = True
+    assert model.ambient_pet_draw({"y": 2, "height": 10}, composer_bottom_y=4) is None
 
     model.disable_ambient_pet_for_session()
     assert model.ambient_pet is None
@@ -82,6 +100,37 @@ def test_pets_picker_unsupported_blocks_open_and_select() -> None:
     assert model.warnings == ["no pets here", "no pets here"]
     assert model.events == []
     assert model.bottom_pane.shown_views == []
+
+
+def test_open_pets_picker_success_starts_preview_and_select_emits_event() -> None:
+    model = ChatWidgetPetsModel()
+
+    model.open_pets_picker()
+    model.select_pet_by_id("codex")
+
+    assert model.bottom_pane.shown_views[-1].view_id == "pet-picker"
+    assert model.events == [
+        ("PetPreviewLoadRequested", 1, "codex"),
+        ("PetSelected", "codex"),
+    ]
+
+
+def test_set_tui_pet_loads_pet_and_loaded_variant_applies_support() -> None:
+    pet = Pet()
+    model = ChatWidgetPetsModel(loader=lambda *args: pet, pet_image_support_override="support")
+
+    model.set_tui_pet("codex")
+
+    assert model.config.tui_pet == "codex"
+    assert model.ambient_pet is pet
+    assert pet.support == "support"
+    assert model.redraw_requests == 1
+
+    second = Pet()
+    model.set_tui_pet_loaded("other", second)
+    assert model.config.tui_pet == "other"
+    assert model.ambient_pet is second
+    assert second.support == "support"
 
 
 def test_preview_load_disabled_ready_error_and_stale_request() -> None:
@@ -107,6 +156,20 @@ def test_preview_load_disabled_ready_error_and_stale_request() -> None:
     model.finish_pet_picker_preview_load(model.pet_picker_preview_request_id, RuntimeError("bad pet"))
     assert model.pet_picker_preview_state.status() is PetPickerPreviewStatus.Error
     assert model.pet_picker_preview_pet is None
+
+
+def test_pet_preview_and_selection_request_ids_wrap_like_u64() -> None:
+    # Rust parity: both pet_picker_preview_request_id and pet_selection_load_request_id
+    # use wrapping_add(1) on u64 counters.
+    model = ChatWidgetPetsModel()
+    model.pet_picker_preview_request_id = 2**64 - 1
+    model.start_pet_picker_preview("codex")
+    assert model.pet_picker_preview_request_id == 0
+    assert model.events[-1] == ("PetPreviewLoadRequested", 0, "codex")
+
+    model.pet_selection_load_request_id = 2**64 - 1
+    assert model.show_pet_selection_loading_popup() == 0
+    assert model.pet_selection_load_request_id == 0
 
 
 def test_preview_draw_visibility_clear_and_render_failure() -> None:

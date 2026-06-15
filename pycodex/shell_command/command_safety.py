@@ -499,6 +499,8 @@ def is_dangerous_powershell(command: Sequence[str]) -> bool:
 
 def is_dangerous_powershell_words(words: Sequence[str]) -> bool:
     tokens_lc = [token.strip("'\"").lower() for token in words]
+    if _is_dangerous_to_call_with_exec(tokens_lc):
+        return True
     has_url = args_have_url(words)
     if has_url and any(token in {"start-process", "start", "saps", "invoke-item", "ii"} or "start-process" in token or "invoke-item" in token for token in tokens_lc):
         return True

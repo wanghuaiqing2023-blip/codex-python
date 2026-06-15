@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import json
 import os
 import unicodedata
-from typing import Iterable
+from typing import Iterable, List, Optional, Tuple
 
 from ._porting import RustTuiModule
 from .line_truncation import _display_width
@@ -18,7 +18,9 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="text_formatting",
     source="codex/codex-rs/tui/src/text_formatting.rs",
+    status="complete",
 )
+
 
 ELLIPSIS = "…"
 
@@ -31,10 +33,10 @@ def capitalize_first(input: str) -> str:
     return input[0].upper() + input[1:]
 
 
-def _graphemes(text: str) -> list[str]:
+def _graphemes(text: str) -> List[str]:
     """Small stdlib grapheme approximation for Rust unicode-segmentation usage."""
 
-    clusters: list[str] = []
+    clusters: List[str] = []
     for ch in text:
         if clusters and unicodedata.combining(ch):
             clusters[-1] += ch
@@ -61,7 +63,7 @@ def _json_to_compact(value: object) -> str:
 
 
 def _space_after_commas(text: str) -> str:
-    out: list[str] = []
+    out: List[str] = []
     in_string = False
     escape_next = False
     for ch in text:
@@ -78,7 +80,7 @@ def _space_after_commas(text: str) -> str:
     return "".join(out)
 
 
-def format_json_compact(text: str) -> str | None:
+def format_json_compact(text: str) -> Optional[str]:
     """Format JSON as one compact line with spaces after commas/colons."""
 
     try:
@@ -105,7 +107,7 @@ def _front_truncate(original: str, allowed_width: int) -> str:
         return original
     if allowed_width == 1:
         return ELLIPSIS
-    kept: list[str] = []
+    kept: List[str] = []
     used_width = 1
     for ch in reversed(original):
         ch_width = _display_width(ch)
@@ -146,7 +148,7 @@ def center_truncate_path(path: str, max_width: int) -> str:
     if not raw_segments:
         return sep if has_leading_sep and _display_width(sep) <= max_width else ELLIPSIS
 
-    def assemble(leading: bool, segments: list[Segment]) -> str:
+    def assemble(leading: bool, segments: List[Segment]) -> str:
         result = sep if leading else ""
         for segment in segments:
             if result and not result.endswith(sep):
@@ -155,7 +157,7 @@ def center_truncate_path(path: str, max_width: int) -> str:
         return result
 
     segment_count = len(raw_segments)
-    combos: list[tuple[int, int]] = []
+    combos: List[Tuple[int, int]] = []
     for left in range(1, segment_count + 1):
         min_right = 0 if left == segment_count else 1
         for right in range(min_right, segment_count - left + 1):
@@ -167,7 +169,7 @@ def center_truncate_path(path: str, max_width: int) -> str:
     prioritized.sort(key=lambda item: (-item[0], -item[1], -(item[0] + item[1])))
     fallback.sort(key=lambda item: (-item[0], -item[1], -(item[0] + item[1])))
 
-    def fit_segments(segments: list[Segment], allow_front_truncate: bool) -> str | None:
+    def fit_segments(segments: List[Segment], allow_front_truncate: bool) -> Optional[str]:
         while True:
             candidate = assemble(has_leading_sep, segments)
             width = _display_width(candidate)
@@ -243,3 +245,5 @@ __all__ = [
     "proper_join",
     "truncate_text",
 ]
+
+

@@ -10,7 +10,7 @@ AppEvent transport, and frame requester side effects remain runtime boundaries.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, List, Optional
 
 from .._porting import RustTuiModule
 
@@ -18,6 +18,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="chatwidget::hook_lifecycle",
     source="codex/codex-rs/tui/src/chatwidget/hook_lifecycle.rs",
+    status="complete",
 )
 
 ANIMATION_FRAME_DELAY_MS = 50
@@ -28,15 +29,15 @@ class HookRun:
     id: str
     persistent: bool = True
     visible_running: bool = True
-    timer_deadline_ms: int | None = None
+    timer_deadline_ms: Optional[int] = None
     should_flush: bool = False
 
 
 @dataclass
 class SemanticHookCell:
-    active_runs: list[HookRun] = field(default_factory=list)
-    completed_runs: list[HookRun] = field(default_factory=list)
-    completed_persistent_runs: list[HookRun] = field(default_factory=list)
+    active_runs: List[HookRun] = field(default_factory=list)
+    completed_runs: List[HookRun] = field(default_factory=list)
+    completed_persistent_runs: List[HookRun] = field(default_factory=list)
     flush_when_idle: bool = False
     animations_enabled: bool = False
 
@@ -72,15 +73,17 @@ class SemanticHookCell:
         if run.should_flush:
             self.flush_when_idle = True
 
-    def take_completed_persistent_runs(self) -> "SemanticHookCell | None":
+    def take_completed_persistent_runs(self) -> Optional["SemanticHookCell"]:
         if not self.completed_persistent_runs:
             return None
+        taken_ids = {run.id for run in self.completed_persistent_runs}
         cell = SemanticHookCell(
             completed_runs=list(self.completed_persistent_runs),
             flush_when_idle=True,
             animations_enabled=self.animations_enabled,
         )
         self.completed_persistent_runs.clear()
+        self.completed_runs = [run for run in self.completed_runs if run.id not in taken_ids]
         return cell
 
     def is_empty(self) -> bool:
@@ -94,7 +97,7 @@ class SemanticHookCell:
 
     def advance_time(self, now_ms: int) -> bool:
         changed = False
-        updated: list[HookRun] = []
+        updated: List[HookRun] = []
         for run in self.active_runs:
             if run.timer_deadline_ms is not None and run.timer_deadline_ms <= now_ms and not run.visible_running:
                 updated.append(_replace_run(run, visible_running=True, timer_deadline_ms=None))
@@ -104,7 +107,7 @@ class SemanticHookCell:
         self.active_runs = updated
         return changed
 
-    def next_timer_deadline(self) -> int | None:
+    def next_timer_deadline(self) -> Optional[int]:
         deadlines = [run.timer_deadline_ms for run in self.active_runs if run.timer_deadline_ms is not None]
         return min(deadlines) if deadlines else None
 
@@ -112,14 +115,16 @@ class SemanticHookCell:
 @dataclass
 class HookLifecycleState:
     animations_enabled: bool = False
-    active_hook_cell: SemanticHookCell | None = None
-    inserted_history_cells: list[SemanticHookCell] = field(default_factory=list)
+    active_hook_cell: Optional[SemanticHookCell] = None
+    inserted_history_cells: List[SemanticHookCell] = field(default_factory=list)
     active_cell_revision: int = 0
     redraw_requested: bool = False
     needs_final_message_separator: bool = False
-    scheduled_frame_delays_ms: list[int] = field(default_factory=list)
+    scheduled_frame_delays_ms: List[int] = field(default_factory=list)
+    answer_stream_flushes: int = 0
 
     def on_hook_started(self, run: Any) -> None:
+        self.flush_answer_stream_with_separator()
         self.flush_completed_hook_output()
         if self.active_hook_cell is not None:
             self.active_hook_cell.start_run(run)
@@ -146,7 +151,7 @@ class HookLifecycleState:
         self.finish_active_hook_cell_if_idle()
         self.request_redraw()
 
-    def flush_completed_hook_output(self) -> SemanticHookCell | None:
+    def flush_completed_hook_output(self) -> Optional[SemanticHookCell]:
         if self.active_hook_cell is None:
             return None
         completed_cell = self.active_hook_cell.take_completed_persistent_runs()
@@ -159,7 +164,7 @@ class HookLifecycleState:
         self.inserted_history_cells.append(completed_cell)
         return completed_cell
 
-    def finish_active_hook_cell_if_idle(self) -> SemanticHookCell | None:
+    def finish_active_hook_cell_if_idle(self) -> Optional[SemanticHookCell]:
         cell = self.active_hook_cell
         if cell is None:
             return None
@@ -182,7 +187,7 @@ class HookLifecycleState:
             self.bump_active_cell_revision()
         self.finish_active_hook_cell_if_idle()
 
-    def schedule_hook_timer_if_needed(self, now_ms: int = 0) -> list[int]:
+    def schedule_hook_timer_if_needed(self, now_ms: int = 0) -> List[int]:
         if self.animations_enabled and self.active_hook_cell is not None and self.active_hook_cell.has_visible_running_run():
             self.scheduled_frame_delays_ms.append(ANIMATION_FRAME_DELAY_MS)
         deadline = self.active_hook_cell.next_timer_deadline() if self.active_hook_cell is not None else None
@@ -195,6 +200,9 @@ class HookLifecycleState:
 
     def request_redraw(self) -> None:
         self.redraw_requested = True
+
+    def flush_answer_stream_with_separator(self) -> None:
+        self.answer_stream_flushes += 1
 
 
 def _coerce_run(value: Any) -> HookRun:

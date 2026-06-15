@@ -9,11 +9,16 @@ Python port represents those prompts as semantic prompt/action plans.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, List, Optional, Tuple
 
-from .._porting import RustTuiModule, not_ported
+from .._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="chatwidget::windows_sandbox_prompts", source="codex/codex-rs/tui/src/chatwidget/windows_sandbox_prompts.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="chatwidget::windows_sandbox_prompts",
+    source="codex/codex-rs/tui/src/chatwidget/windows_sandbox_prompts.rs",
+    status="complete",
+)
 
 
 WINDOWS_SANDBOX_LEARN_MORE_URL = "https://developers.openai.com/codex/windows"
@@ -22,17 +27,17 @@ WINDOWS_SANDBOX_LEARN_MORE_URL = "https://developers.openai.com/codex/windows"
 @dataclass(frozen=True)
 class PromptItemPlan:
     name: str
-    description: str | None
-    actions: tuple[str, ...]
+    description: Optional[str]
+    actions: Tuple[str, ...]
     dismiss_on_select: bool = True
 
 
 @dataclass(frozen=True)
 class PromptPlan:
-    header_lines: tuple[str, ...]
-    items: tuple[PromptItemPlan, ...]
-    footer_hint: str | None = "standard_popup_hint_line"
-    title: str | None = None
+    header_lines: Tuple[str, ...]
+    items: Tuple[PromptItemPlan, ...]
+    footer_hint: Optional[str] = "standard_popup_hint_line"
+    title: Optional[str] = None
 
 
 def describe_permission_profile(profile: Any, *, cwd_writable: bool | None = None) -> str:
@@ -49,9 +54,9 @@ def world_writable_warning_details(
     *,
     is_windows: bool = False,
     scan_failed: bool = False,
-    sample_paths: list[str] | None = None,
+    sample_paths: Optional[List[str]] = None,
     extra_count: int = 0,
-) -> tuple[list[str], int, bool] | None:
+) -> Optional[Tuple[List[str], int, bool]]:
     if not is_windows:
         return None
     notices = getattr(config, "notices", None)
@@ -65,7 +70,7 @@ def world_writable_warning_details(
 def world_writable_warning_confirmation_plan(
     *,
     mode_label: str,
-    sample_paths: list[str] | None = None,
+    sample_paths: Optional[List[str]] = None,
     extra_count: int = 0,
     failed_scan: bool = False,
     preset: Any | None = None,
@@ -201,6 +206,22 @@ def maybe_prompt_windows_sandbox_enable(
     return bool(show_now and windows_sandbox_level.lower() == "disabled" and has_auto_preset)
 
 
+def maybe_prompt_windows_sandbox_enable_plan(
+    *,
+    show_now: bool,
+    windows_sandbox_level: str,
+    has_auto_preset: bool,
+    elevated_nux_enabled: bool,
+) -> Optional[PromptPlan]:
+    if not maybe_prompt_windows_sandbox_enable(
+        show_now=show_now,
+        windows_sandbox_level=windows_sandbox_level,
+        has_auto_preset=has_auto_preset,
+    ):
+        return None
+    return windows_sandbox_enable_prompt_plan(elevated_nux_enabled=elevated_nux_enabled)
+
+
 def windows_sandbox_setup_status_plan() -> tuple[str, ...]:
     return (
         "disable_composer_input",
@@ -223,6 +244,7 @@ __all__ = [
     "clear_windows_sandbox_setup_status_plan",
     "describe_permission_profile",
     "maybe_prompt_windows_sandbox_enable",
+    "maybe_prompt_windows_sandbox_enable_plan",
     "windows_sandbox_enable_prompt_plan",
     "windows_sandbox_fallback_prompt_plan",
     "windows_sandbox_setup_status_plan",

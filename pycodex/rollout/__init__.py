@@ -1056,6 +1056,9 @@ def _finalize_active_segment(
     reference_context_item: TurnContextItem | None,
     pending_rollback_turns: int,
 ) -> tuple[tuple[ResponseItem, ...] | None, PreviousTurnSettings | None, str, TurnContextItem | None, int]:
+    if base_replacement_history is None and active_segment.base_replacement_history is not None:
+        base_replacement_history = active_segment.base_replacement_history
+
     if pending_rollback_turns > 0:
         if active_segment.counts_as_user_turn:
             pending_rollback_turns -= 1
@@ -1067,8 +1070,6 @@ def _finalize_active_segment(
             pending_rollback_turns,
         )
 
-    if base_replacement_history is None and active_segment.base_replacement_history is not None:
-        base_replacement_history = active_segment.base_replacement_history
     if previous_turn_settings is None and active_segment.counts_as_user_turn:
         previous_turn_settings = active_segment.previous_turn_settings
     if reference_context_kind == "never" and (

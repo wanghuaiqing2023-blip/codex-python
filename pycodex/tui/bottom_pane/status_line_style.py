@@ -1,4 +1,4 @@
-"""Theme-derived styling for the configurable footer status line.
+﻿"""Theme-derived styling for the configurable footer status line.
 
 Python port of Rust ``codex-tui::bottom_pane::status_line_style``.
 
@@ -21,9 +21,10 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="bottom_pane::status_line_style",
     source="codex/codex-rs/tui/src/bottom_pane/status_line_style.rs",
+    status="complete",
 )
 
-STATUS_LINE_SEPARATOR = " ? "
+STATUS_LINE_SEPARATOR = " · "
 STATUS_LINE_COLOR_SATURATION_PERCENT = 85
 STATUS_LINE_COLOR_BRIGHTNESS_PERCENT = 100
 
@@ -40,7 +41,7 @@ class StyledSpan:
 class StyledLine:
     """Semantic equivalent of a ratatui line for status-line tests."""
 
-    spans: tuple[StyledSpan, ...]
+    spans: Tuple[StyledSpan, ...]
 
     @property
     def text(self) -> str:
@@ -119,18 +120,18 @@ class StatusLineAccent(Enum):
 
 
 def status_line_from_segments(
-    segments: Iterable[tuple[Any, str]],
+    segments: Iterable[Tuple[Any, str]],
     use_theme_colors: bool,
 ) -> Optional[StyledLine]:
     return status_line_from_segments_with_resolver(segments, use_theme_colors, lambda _accent: None)
 
 
 def status_line_from_segments_with_resolver(
-    segments: Iterable[tuple[Any, str]],
+    segments: Iterable[Tuple[Any, str]],
     use_theme_colors: bool,
     theme_style_for_accent: Callable[[StatusLineAccent], Optional[Style]],
 ) -> Optional[StyledLine]:
-    spans: list[StyledSpan] = []
+    spans: List[StyledSpan] = []
     for item, text in segments:
         if spans:
             spans.append(StyledSpan(STATUS_LINE_SEPARATOR, Style().dim()))
@@ -290,3 +291,4 @@ __all__ = [
     "status_line_from_segments_with_resolver",
     "weighted_luma",
 ]
+

@@ -4,7 +4,7 @@ from __future__ import annotations
 # Behavior contract: unified-exec process tracking, footer sync data, recent
 # output chunk retention, process end removal, and terminal wait streak flushing.
 
-from pycodex.tui.chatwidget.command_lifecycle import CommandLifecycleState, UnifiedExecInteractionCell, command_display_from_raw
+from pycodex.tui.chatwidget.command_lifecycle import CommandExecutionItem, CommandLifecycleState, SemanticExecCell, UnifiedExecInteractionCell, command_display_from_raw
 
 
 def test_command_display_from_raw_strips_bash_lc_wrapper():
@@ -20,8 +20,7 @@ def test_track_unified_exec_process_begin_adds_and_updates_existing_process():
     ]
     assert state.footer_processes == ["sleep 5"]
 
-    state.track_unified_exec_output_chunk("call-1", "old
-")
+    state.track_unified_exec_output_chunk("call-1", "old\n")
     state.track_unified_exec_process_begin("call-2", "proc-1", "bash -lc 'echo next'")
     assert [(p.key, p.call_id, p.command_display, p.recent_chunks) for p in state.unified_exec_processes] == [
         ("proc-1", "call-2", "echo next", [])
@@ -54,14 +53,8 @@ def test_track_unified_exec_output_chunk_records_last_three_non_empty_trimmed_li
     state = CommandLifecycleState()
     state.track_unified_exec_process_begin("call-1", "proc-1", "echo hi")
 
-    assert state.track_unified_exec_output_chunk("missing", "ignored
-") is False
-    assert state.track_unified_exec_output_chunk("call-1", b"one  
-
- two
-three
-four
-") is True
+    assert state.track_unified_exec_output_chunk("missing", "ignored\n") is False
+    assert state.track_unified_exec_output_chunk("call-1", b"one  \n\n two\nthree\nfour\n") is True
 
     assert state.unified_exec_processes[0].recent_chunks == ["two", "three", "four"]
 
@@ -102,3 +95,109 @@ def test_flush_unified_exec_wait_streak_is_noop_without_wait():
     assert state.flush_unified_exec_wait_streak() is None
     state.unified_exec_wait_streak = state.on_terminal_interaction("missing", "")
     assert state.flush_unified_exec_wait_streak() is None
+
+
+def test_handle_command_execution_started_groups_active_exec_calls_and_suppresses_duplicate_waits():
+    state = CommandLifecycleState()
+
+    state.handle_command_execution_started_now(CommandExecutionItem("call-1", "echo one", "user_shell"))
+    state.handle_command_execution_started_now(CommandExecutionItem("call-2", "echo two", "user_shell"))
+
+    assert state.status_indicator_visible is True
+    assert state.active_exec_cell is not None
+    assert [call.call_id for call in state.active_exec_cell.calls] == ["call-1", "call-2"]
+    assert set(state.running_commands) == {"call-1", "call-2"}
+
+    state.handle_command_execution_started_now(CommandExecutionItem("wait-1", "bash -lc 'sleep 1'", "unified_exec_interaction"))
+    state.handle_command_execution_started_now(CommandExecutionItem("wait-2", "bash -lc 'sleep 1'", "unified_exec_interaction"))
+
+    assert "wait-2" in state.suppressed_exec_calls
+    assert "wait-1" in state.running_commands
+
+
+def test_output_delta_updates_recent_chunks_and_active_exec_cell_revision():
+    state = CommandLifecycleState()
+    state.track_unified_exec_process_begin("call-1", "proc-1", "echo one")
+    state.handle_command_execution_started_now(CommandExecutionItem("call-1", "echo one", "user_shell"))
+
+    assert state.on_exec_command_output_delta("call-1", "first\nsecond\n") is True
+
+    assert state.unified_exec_processes[0].recent_chunks == ["first", "second"]
+    assert state.active_exec_cell is not None
+    assert state.active_exec_cell.calls[0].output_deltas == ["first\nsecond\n"]
+    assert state.active_cell_revision == 2
+    assert state.redraw_requested is True
+
+
+def test_completion_flushes_tracked_active_cell_and_marks_user_shell_work():
+    state = CommandLifecycleState()
+    state.handle_command_execution_started_now(CommandExecutionItem("call-1", "echo one", "user_shell"))
+
+    state.handle_command_execution_completed_now(
+        CommandExecutionItem("call-1", "echo fallback", "user_shell", aggregated_output="done", exit_code=7, duration_ms=12)
+    )
+
+    assert state.active_exec_cell is None
+    assert len(state.history_cells) == 1
+    cell = state.history_cells[0]
+    assert isinstance(cell, SemanticExecCell)
+    assert cell.calls[0].command == ["echo", "one"]
+    assert cell.calls[0].output is not None
+    assert cell.calls[0].output.exit_code == 7
+    assert cell.calls[0].output.aggregated_output == "done"
+    assert cell.calls[0].duration_ms == 12
+    assert state.had_work_activity is True
+    assert state.queued_input_sent is True
+
+
+def test_completion_for_unknown_call_preserves_unrelated_active_exec_as_orphan_history():
+    state = CommandLifecycleState()
+    state.handle_command_execution_started_now(CommandExecutionItem("active", "sleep 10", "user_shell"))
+
+    state.handle_command_execution_completed_now(
+        CommandExecutionItem("orphan", "echo done", "unified_exec_startup", aggregated_output="done")
+    )
+
+    assert state.active_exec_cell is not None
+    assert [call.call_id for call in state.active_exec_cell.calls] == ["active"]
+    assert len(state.history_cells) == 1
+    orphan = state.history_cells[0]
+    assert isinstance(orphan, SemanticExecCell)
+    assert orphan.inserted_as_orphan is True
+    assert orphan.calls[0].call_id == "orphan"
+    assert orphan.calls[0].output is not None
+    assert orphan.calls[0].output.formatted_output == "done"
+
+
+def test_unified_exec_interaction_completion_hides_output_and_suppressed_call_is_dropped():
+    state = CommandLifecycleState()
+    state.handle_command_execution_started_now(CommandExecutionItem("wait-1", "bash -lc 'sleep 1'", "unified_exec_interaction"))
+    state.handle_command_execution_completed_now(
+        CommandExecutionItem("wait-1", "bash -lc 'sleep 1'", "unified_exec_interaction", aggregated_output="hidden")
+    )
+
+    cell = state.history_cells[0]
+    assert isinstance(cell, SemanticExecCell)
+    assert cell.calls[0].output is not None
+    assert cell.calls[0].output.formatted_output == ""
+    assert cell.calls[0].output.aggregated_output == ""
+
+    state.handle_command_execution_started_now(CommandExecutionItem("wait-2", "bash -lc 'sleep 1'", "unified_exec_interaction"))
+    state.handle_command_execution_completed_now(
+        CommandExecutionItem("wait-2", "bash -lc 'sleep 1'", "unified_exec_interaction", aggregated_output="ignored")
+    )
+
+    assert len(state.history_cells) == 1
+    assert "wait-2" not in state.suppressed_exec_calls
+
+
+def test_public_started_and_completed_wrappers_track_unified_processes_and_wait_flushes():
+    state = CommandLifecycleState()
+
+    state.on_command_execution_started(CommandExecutionItem("call-1", "bash -lc 'echo hi'", "unified_exec_startup", process_id="proc-1", command_actions=[{"type": "exec"}]))
+    state.on_terminal_interaction("proc-1", "")
+    state.on_command_execution_completed(CommandExecutionItem("call-1", "echo hi", "unified_exec_startup", process_id="proc-1"))
+
+    assert state.unified_exec_processes == []
+    assert state.footer_processes == []
+    assert state.flushed_wait_cells == [UnifiedExecInteractionCell("echo hi", "")]

@@ -74,6 +74,17 @@ def test_adjacent_thread_id_requires_current_and_two_entries() -> None:
     )
 
 
+def test_ordered_threads_filters_order_entries_missing_metadata() -> None:
+    # Rust: ordered_threads filters through the HashMap because teardown races can
+    # leave historical ids in order without cached metadata.
+    state, main_thread_id, first_agent_id, second_agent_id = populated_state()
+    state.threads.pop(first_agent_id)
+
+    assert state.ordered_thread_ids() == [main_thread_id, second_agent_id]
+    assert state.tracked_thread_ids() == [main_thread_id, second_agent_id]
+    assert state.adjacent_thread_id(main_thread_id, AgentNavigationDirection.Next) == second_agent_id
+
+
 def test_active_agent_label_fallbacks_and_single_thread_suppression() -> None:
     primary = "00000000-0000-0000-0000-000000000301"
     other = "00000000-0000-0000-0000-000000000302"

@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 from pycodex.tui.status.rate_limits import (
     CreditsSnapshotDisplay,
@@ -22,7 +23,7 @@ from pycodex.tui.status.rate_limits import (
 )
 
 
-def window(used_percent: float, minutes: int | None = 300, resets_at: str | None = "soon") -> RateLimitWindowDisplay:
+def window(used_percent: float, minutes: Optional[int] = 300, resets_at: Optional[str] = "soon") -> RateLimitWindowDisplay:
     return RateLimitWindowDisplay(used_percent=used_percent, resets_at=resets_at, window_minutes=minutes)
 
 
@@ -91,6 +92,7 @@ def test_credit_rows_and_balance_formatting_match_rust() -> None:
     assert format_credit_balance("0") is None
     assert format_credit_balance(" ") is None
     assert format_credit_balance("abc") is None
+    assert format_credit_balance("24.5") == "25"
 
 
 def test_window_label_helpers_and_progress_summary_match_rust_contract() -> None:
@@ -116,22 +118,22 @@ def test_window_label_helpers_and_progress_summary_match_rust_contract() -> None
 @dataclass
 class ProtocolWindow:
     used_percent: float
-    resets_at: int | None
-    window_duration_mins: int | None
+    resets_at: Optional[int]
+    window_duration_mins: Optional[int]
 
 
 @dataclass
 class ProtocolCredits:
     has_credits: bool
     unlimited: bool
-    balance: str | None
+    balance: Optional[str]
 
 
 @dataclass
 class ProtocolSnapshot:
-    primary: ProtocolWindow | None
-    secondary: ProtocolWindow | None
-    credits: ProtocolCredits | None
+    primary: Optional[ProtocolWindow]
+    secondary: Optional[ProtocolWindow]
+    credits: Optional[ProtocolCredits]
 
 
 def test_rate_limit_snapshot_display_for_limit_converts_duck_typed_protocol_snapshot() -> None:

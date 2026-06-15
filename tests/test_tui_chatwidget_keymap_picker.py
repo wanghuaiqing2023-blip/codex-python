@@ -100,3 +100,24 @@ def test_apply_keymap_update_updates_all_live_caches_and_redraws_as_one_unit():
     assert widget.bottom_pane_queued_message_edit_binding == "alt+e"
     assert widget.bottom_pane_keymap_bindings == keymap
     assert widget.redraws == 1
+
+
+def test_keymap_action_filter_reflects_live_fast_mode_flag() -> None:
+    widget = KeymapPickerWidgetState(fast_mode_enabled=False)
+    assert widget.keymap_action_filter() == KeymapActionFilter(fast_mode_enabled=False)
+
+    widget.fast_mode_enabled = True
+    assert widget.keymap_action_filter() == KeymapActionFilter(fast_mode_enabled=True)
+
+
+def test_return_to_keymap_picker_fallback_rebuilds_distinct_picker_params() -> None:
+    widget = KeymapPickerWidgetState(tui_keymap={"preset": "default"}, replace_active_result=False)
+    keymap = runtime()
+
+    widget.return_to_keymap_picker("chat", "submit", keymap)
+
+    replaced_params = widget.replace_calls[0][1]
+    fallback_params = widget.shown_selection_views[0]
+    assert fallback_params is not replaced_params
+    assert fallback_params.selected_action == replaced_params.selected_action == ("chat", "submit")
+    assert fallback_params.config == replaced_params.config == {"preset": "default"}

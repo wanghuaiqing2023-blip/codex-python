@@ -3,10 +3,16 @@ from __future__ import annotations
 import pytest
 
 from pycodex.tui.app.pets import (
+    PetActionPlan,
     PetImageRenderError,
     disable_ambient_pet_before_shutdown,
     handle_ambient_pet_image_render_error,
     handle_pet_picker_preview_image_render_error,
+    handle_configured_pet_loaded,
+    handle_pet_disabled,
+    handle_pet_preview_loaded,
+    handle_pet_selected,
+    handle_pet_selection_loaded,
 )
 
 
@@ -88,3 +94,62 @@ def test_terminal_render_errors_propagate_without_state_changes() -> None:
     assert app.chat_widget.preview_failures == []
     assert tui.clear_calls == 0
     assert tui.preview_requests == []
+
+
+def test_pet_selection_and_disabled_paths_are_semantic_plans() -> None:
+    selected = handle_pet_selected("chefito", request_id=7)
+    assert selected == PetActionPlan(
+        action="spawn_pet_selection_load",
+        pet_id="chefito",
+        request_id=7,
+        updates=(("show_pet_selection_loading_popup", 7), ("ensure_builtin_pack_for_pet", "chefito"), ("load_ambient_pet", "chefito")),
+        schedule_frame=True,
+    )
+
+    assert handle_pet_disabled() == PetActionPlan(
+        action="disable_pet",
+        updates=(("config.tui_pet", "disabled"), ("chat_widget.config.tui_pet", "disabled")),
+        schedule_frame=True,
+    )
+    assert handle_pet_disabled(RuntimeError("disk")) == PetActionPlan(
+        action="disable_pet_failed",
+        messages=("Failed to disable pets: disk",),
+    )
+
+
+def test_pet_loaded_callbacks_are_semantic_plans() -> None:
+    assert handle_pet_preview_loaded(3, "pet") == PetActionPlan(
+        action="pet_preview_loaded",
+        request_id=3,
+        result="pet",
+        updates=(("finish_pet_picker_preview_load", 3),),
+        schedule_frame=True,
+    )
+
+    stale = handle_pet_selection_loaded(9, "chefito", "pet", popup_finished=False)
+    assert stale.action == "pet_selection_popup_stale"
+
+    loaded = handle_pet_selection_loaded(9, "chefito", "pet")
+    assert loaded.action == "pet_selection_loaded"
+    assert loaded.schedule_frame
+
+    failed = handle_pet_selection_loaded(9, "chefito", ("err", "missing"))
+    assert failed.messages == ("Failed to load pet: missing",)
+
+    configured = handle_configured_pet_loaded("chefito", "chefito", "pet")
+    assert configured.action == "configured_pet_loaded"
+    assert configured.schedule_frame
+    assert handle_configured_pet_loaded("other", "chefito", "pet").action == "configured_pet_stale"
+
+
+def test_configured_pet_load_failure_reports_warning_without_frame() -> None:
+    """Rust codex-tui app::pets::handle_configured_pet_loaded Err branch."""
+
+    failed = handle_configured_pet_loaded("chefito", "chefito", ("err", "missing pack"))
+
+    assert failed == PetActionPlan(
+        action="configured_pet_load_failed",
+        pet_id="chefito",
+        messages=("Failed to load configured pet: missing pack",),
+    )
+    assert failed.schedule_frame is False

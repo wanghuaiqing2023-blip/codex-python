@@ -14,6 +14,7 @@ from pycodex.tui.terminal_hyperlinks import osc8_hyperlink
 from pycodex.tui.terminal_hyperlinks import prefix_hyperlink_lines
 from pycodex.tui.terminal_hyperlinks import remap_wrapped_line
 from pycodex.tui.terminal_hyperlinks import strip_osc8
+from pycodex.tui.terminal_hyperlinks import web_destination
 from pycodex.tui.terminal_hyperlinks import web_links_in_text
 from pycodex.tui.wrapping import RtOptions
 
@@ -29,6 +30,22 @@ def test_only_web_destinations_receive_osc8() -> None:
     assert strip_osc8(osc8_hyperlink("https://example.com/a", "visible")) == "visible"
 
 
+def test_web_destination_filters_scheme_host_and_control_characters() -> None:
+    # Rust: terminal_hyperlinks.rs::web_destination accepts only http(s)
+    # URLs with a host and strips control characters before parsing.
+    assert web_destination("https://example.com/\x07safe") == "https://example.com/safe"
+    assert web_destination("http://example.com") == "http://example.com"
+    assert web_destination("mailto:a@example.com") is None
+    assert web_destination("https:///missing-host") is None
+    assert web_destination("not a url") is None
+
+
+def test_strip_osc8_handles_bel_and_st_terminated_sequences() -> None:
+    # Rust test helper strips both BEL-terminated and ESC-backslash-terminated OSC8 sequences.
+    assert strip_osc8("\x1b]8;;https://example.com\x07x\x1b]8;;\x07") == "x"
+    assert strip_osc8("\x1b]8;;https://example.com\x1b\\x\x1b]8;;\x1b\\") == "x"
+
+
 def test_discovers_punctuated_web_url_columns() -> None:
     # Rust: terminal_hyperlinks.rs::tests::discovers_punctuated_web_url_columns
     assert web_links_in_text("See (https://example.com/a).") == [
@@ -41,6 +58,18 @@ def test_preserves_balanced_parentheses_in_bare_web_urls() -> None:
     destination = "https://en.wikipedia.org/wiki/Function_(mathematics)"
     assert web_links_in_text(f"See ({destination}).") == [
         TerminalHyperlink(range(5, 5 + len(destination)), destination)
+    ]
+
+
+def test_trims_unmatched_trailing_delimiters_but_preserves_balanced_pairs() -> None:
+    # Rust trims unmatched closing delimiters from bare tokens, but keeps
+    # balanced delimiters inside URL paths such as Wikipedia function pages.
+    assert web_links_in_text("See https://example.com/a).") == [
+        TerminalHyperlink(range(4, 25), "https://example.com/a")
+    ]
+    destination = "https://example.com/a(b)"
+    assert web_links_in_text(f"See {destination}.") == [
+        TerminalHyperlink(range(4, 4 + len(destination)), destination)
     ]
 
 
@@ -83,7 +112,7 @@ def test_push_span_records_web_destination_columns_and_skips_empty_or_unsafe_lin
     line.push_span(Span(""), "https://example.com/empty")
     line.push_span(Span(" mail"), "mailto:a@example.com")
 
-    assert line.line.plain_text() == "pre link mail"
+    assert line_text(line.line) == "pre link mail"
     assert line.hyperlinks == [
         TerminalHyperlink(range(4, 8), "https://example.com/path")
     ]

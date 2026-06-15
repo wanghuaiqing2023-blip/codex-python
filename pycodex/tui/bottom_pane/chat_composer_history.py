@@ -10,18 +10,19 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from pycodex.protocol.user_input import TextElement
 
 from . import MentionBinding
 from ..mention_codec import decode_history_mentions
-from .._porting import RustTuiModule, not_ported
+from .._porting import RustTuiModule
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="bottom_pane::chat_composer_history",
     source="codex/codex-rs/tui/src/bottom_pane/chat_composer_history.rs",
+    status="complete",
 )
 
 
@@ -30,11 +31,11 @@ class HistoryEntry:
     """A composer history entry that can rehydrate draft state."""
 
     text: str = ""
-    text_elements: list[TextElement] = field(default_factory=list)
-    local_image_paths: list[Path] = field(default_factory=list)
-    remote_image_urls: list[str] = field(default_factory=list)
-    mention_bindings: list[Any] = field(default_factory=list)
-    pending_pastes: list[tuple[str, str]] = field(default_factory=list)
+    text_elements: List[TextElement] = field(default_factory=list)
+    local_image_paths: List[Path] = field(default_factory=list)
+    remote_image_urls: List[str] = field(default_factory=list)
+    mention_bindings: List[Any] = field(default_factory=list)
+    pending_pastes: List[Tuple[str, str]] = field(default_factory=list)
 
     @classmethod
     def new(cls, text: str) -> "HistoryEntry":
@@ -52,8 +53,8 @@ class HistoryEntry:
         cls,
         text: str,
         text_elements: Iterable[TextElement],
-        local_image_paths: Iterable[str | Path],
-        pending_pastes: Iterable[tuple[str, str]],
+        local_image_paths: Iterable[Any],
+        pending_pastes: Iterable[Tuple[str, str]],
     ) -> "HistoryEntry":
         return cls(
             text=text,
@@ -67,8 +68,8 @@ class HistoryEntry:
         cls,
         text: str,
         text_elements: Iterable[TextElement],
-        local_image_paths: Iterable[str | Path],
-        pending_pastes: Iterable[tuple[str, str]],
+        local_image_paths: Iterable[Any],
+        pending_pastes: Iterable[Tuple[str, str]],
         remote_image_urls: Iterable[str],
     ) -> "HistoryEntry":
         return cls(
@@ -98,7 +99,7 @@ class HistorySearchDirection(Enum):
 @dataclass(frozen=True)
 class HistorySearchResult:
     kind: str
-    entry: HistoryEntry | None = None
+    entry: Optional[HistoryEntry] = None
 
     @classmethod
     def found(cls, entry: HistoryEntry) -> "HistorySearchResult":
@@ -125,8 +126,8 @@ HistorySearchResult.NOT_FOUND = HistorySearchResult.not_found()  # type: ignore[
 @dataclass(frozen=True)
 class HistoryEntryResponse:
     kind: str
-    entry: HistoryEntry | None = None
-    search_result: HistorySearchResult | None = None
+    entry: Optional[HistoryEntry] = None
+    search_result: Optional[HistorySearchResult] = None
 
     @classmethod
     def found(cls, entry: HistoryEntry) -> "HistoryEntryResponse":
@@ -161,11 +162,11 @@ class PendingHistorySearch:
 class HistorySearchState:
     query: str
     query_lower: str
-    selected_offset: int | None = None
-    unique_matches: list[UniqueHistoryMatch] = field(default_factory=list)
-    selected_match_index: int | None = None
-    seen_texts: set[str] = field(default_factory=set)
-    awaiting: PendingHistorySearch | None = None
+    selected_offset: Optional[int] = None
+    unique_matches: List[UniqueHistoryMatch] = field(default_factory=list)
+    selected_match_index: Optional[int] = None
+    seen_texts: Set[str] = field(default_factory=set)
+    awaiting: Optional[PendingHistorySearch] = None
     exhausted_older: bool = False
     exhausted_newer: bool = False
 
@@ -207,14 +208,14 @@ class HistorySearchState:
 
 @dataclass
 class ChatComposerHistory:
-    thread_id: Any | None = None
-    persistent_log_id: int | None = None
+    thread_id: Any = None
+    persistent_log_id: Optional[int] = None
     persistent_entry_count: int = 0
-    local_history: list[HistoryEntry] = field(default_factory=list)
-    fetched_history: dict[int, HistoryEntry] = field(default_factory=dict)
-    history_cursor: int | None = None
-    last_history_text: str | None = None
-    search_state: HistorySearchState | None = None
+    local_history: List[HistoryEntry] = field(default_factory=list)
+    fetched_history: Dict[int, HistoryEntry] = field(default_factory=dict)
+    history_cursor: Optional[int] = None
+    last_history_text: Optional[str] = None
+    search_state: Optional[HistorySearchState] = None
 
     @classmethod
     def new(cls) -> "ChatComposerHistory":
@@ -257,7 +258,7 @@ class ChatComposerHistory:
             return False
         return self.last_history_text == text
 
-    def navigate_up(self, app_event_tx: Any = None) -> HistoryEntry | None:
+    def navigate_up(self, app_event_tx: Any = None) -> Optional[HistoryEntry]:
         self.search_state = None
         total_entries = self.total_entries()
         if total_entries == 0:
@@ -271,7 +272,7 @@ class ChatComposerHistory:
         self.history_cursor = next_idx
         return self.populate_history_at_index(next_idx, app_event_tx)
 
-    def navigate_down(self, app_event_tx: Any = None) -> HistoryEntry | None:
+    def navigate_down(self, app_event_tx: Any = None) -> Optional[HistoryEntry]:
         self.search_state = None
         total_entries = self.total_entries()
         if total_entries == 0 or self.history_cursor is None:
@@ -287,7 +288,7 @@ class ChatComposerHistory:
         self,
         log_id: int,
         offset: int,
-        entry: str | None,
+        entry: Optional[str],
         app_event_tx: Any = None,
     ) -> HistoryEntryResponse:
         if self.persistent_log_id != log_id:
@@ -346,7 +347,7 @@ class ChatComposerHistory:
     def total_entries(self) -> int:
         return self.persistent_entry_count + len(self.local_history)
 
-    def search_start_offset(self, direction: HistorySearchDirection) -> int | None:
+    def search_start_offset(self, direction: HistorySearchDirection) -> Optional[int]:
         if self.search_state is None:
             return None
         if self.search_state.selected_offset is None:
@@ -400,7 +401,7 @@ class ChatComposerHistory:
             return HistorySearchResult.AT_BOUNDARY
         return HistorySearchResult.NOT_FOUND
 
-    def entry_at_cached_offset(self, offset: int) -> HistoryEntry | None:
+    def entry_at_cached_offset(self, offset: int) -> Optional[HistoryEntry]:
         if offset < 0 or offset >= self.total_entries():
             return None
         if offset >= self.persistent_entry_count:
@@ -423,7 +424,7 @@ class ChatComposerHistory:
         self.search_state.record_match(offset, entry)
         return HistorySearchResult.found(entry)
 
-    def select_cached_unique_match(self, direction: HistorySearchDirection) -> HistorySearchResult | None:
+    def select_cached_unique_match(self, direction: HistorySearchDirection) -> Optional[HistorySearchResult]:
         if self.search_state is None or self.search_state.selected_match_index is None:
             return None
         next_index = self.search_state.selected_match_index + (1 if direction is HistorySearchDirection.OLDER else -1)
@@ -439,7 +440,7 @@ class ChatComposerHistory:
                 return HistorySearchResult.AT_BOUNDARY
         return HistorySearchResult.NOT_FOUND
 
-    def populate_history_at_index(self, idx: int, app_event_tx: Any = None) -> HistoryEntry | None:
+    def populate_history_at_index(self, idx: int, app_event_tx: Any = None) -> Optional[HistoryEntry]:
         entry = self.entry_at_cached_offset(idx)
         if entry is not None:
             self.last_history_text = entry.text
@@ -468,51 +469,6 @@ class ChatComposerHistory:
             app_event_tx(event)
 
 
-# Rust test-name scaffolds retained for traceability.
-def test_thread_id(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "test_thread_id")
-
-
-def duplicate_submissions_are_not_recorded(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "duplicate_submissions_are_not_recorded")
-
-
-def navigation_with_async_fetch(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "navigation_with_async_fetch")
-
-
-def search_matches_local_history_and_stops_at_boundaries(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "search_matches_local_history_and_stops_at_boundaries")
-
-
-def search_skips_duplicate_local_matches(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "search_skips_duplicate_local_matches")
-
-
-def repeated_boundary_search_does_not_refetch_persistent_history(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "repeated_boundary_search_does_not_refetch_persistent_history")
-
-
-def search_fetches_persistent_history_until_match(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "search_fetches_persistent_history_until_match")
-
-
-def search_skips_duplicate_persistent_matches(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "search_skips_duplicate_persistent_matches")
-
-
-def search_is_case_insensitive_and_empty_query_finds_latest(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "search_is_case_insensitive_and_empty_query_finds_latest")
-
-
-def reset_navigation_resets_cursor(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "reset_navigation_resets_cursor")
-
-
-def should_handle_navigation_when_cursor_is_at_line_boundaries(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "should_handle_navigation_when_cursor_is_at_line_boundaries")
-
-
 __all__ = [
     "ChatComposerHistory",
     "HistoryEntry",
@@ -523,15 +479,5 @@ __all__ = [
     "PendingHistorySearch",
     "RUST_MODULE",
     "UniqueHistoryMatch",
-    "duplicate_submissions_are_not_recorded",
-    "navigation_with_async_fetch",
-    "repeated_boundary_search_does_not_refetch_persistent_history",
-    "reset_navigation_resets_cursor",
-    "search_fetches_persistent_history_until_match",
-    "search_is_case_insensitive_and_empty_query_finds_latest",
-    "search_matches_local_history_and_stops_at_boundaries",
-    "search_skips_duplicate_local_matches",
-    "search_skips_duplicate_persistent_matches",
-    "should_handle_navigation_when_cursor_is_at_line_boundaries",
-    "test_thread_id",
 ]
+

@@ -8,6 +8,7 @@ from typing import Any
 
 from pycodex.model_provider import ProviderAccountState, ProviderCapabilities
 from pycodex.model_provider_info import AMAZON_BEDROCK_GPT_5_4_MODEL_ID, ModelProviderAwsAuthInfo, ModelProviderInfo
+from pycodex.models_manager import StaticModelsManager
 from pycodex.protocol import ProviderAccount
 
 from .mantle import (
@@ -40,13 +41,6 @@ from .auth import (
     resolve_auth_method,
     resolve_provider_auth,
 )
-
-
-@dataclass(frozen=True)
-class StaticModelsManager:
-    auth_manager: Any
-    model_catalog: Any
-
 
 @dataclass
 class AmazonBedrockModelProvider:
@@ -84,7 +78,7 @@ class AmazonBedrockModelProvider:
 
     def account_state(self) -> ProviderAccountState:
         return ProviderAccountState(
-            account=ProviderAccount.AMAZON_BEDROCK,
+            account=ProviderAccount.amazon_bedrock(),
             requires_openai_auth=False,
         )
 

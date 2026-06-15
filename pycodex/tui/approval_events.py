@@ -15,7 +15,12 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 from ._porting import RustTuiModule
 from .diff_model import FileChange
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="approval_events", source="codex/codex-rs/tui/src/approval_events.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="approval_events",
+    source="codex/codex-rs/tui/src/approval_events.rs",
+    status="complete",
+)
 
 
 @dataclass(frozen=True)

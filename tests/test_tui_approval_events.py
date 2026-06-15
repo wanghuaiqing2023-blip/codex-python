@@ -69,6 +69,18 @@ def test_default_decisions_for_additional_permissions() -> None:
     ]
 
 
+def test_network_context_takes_precedence_over_additional_permissions() -> None:
+    # Rust source: default_available_decisions checks network_approval_context before additional_permissions.
+    assert ExecApprovalRequestEvent.default_available_decisions(
+        network_approval_context={"host": "example.com"},
+        additional_permissions={"network": {}},
+    ) == [
+        CommandExecutionApprovalDecision.accept(),
+        CommandExecutionApprovalDecision.accept_for_session(),
+        CommandExecutionApprovalDecision.cancel(),
+    ]
+
+
 def test_default_decisions_for_execpolicy_amendment() -> None:
     # Rust: normal exec branch includes AcceptWithExecpolicyAmendment when present.
     amendment = {"match": ["git"]}

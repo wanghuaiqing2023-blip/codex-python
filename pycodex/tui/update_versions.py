@@ -9,7 +9,12 @@ from typing import List, Optional, Tuple
 
 from ._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="update_versions", source="codex/codex-rs/tui/src/update_versions.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="update_versions",
+    source="codex/codex-rs/tui/src/update_versions.rs",
+    status="complete",
+)
 
 _U64_MAX = 2**64 - 1
 

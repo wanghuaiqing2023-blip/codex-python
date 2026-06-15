@@ -1,4 +1,4 @@
-"""Common selection-popup row layout helpers.
+﻿"""Common selection-popup row layout helpers.
 
 Port of Rust ``codex-tui::bottom_pane::selection_popup_common`` using semantic
 ``Line``/``Span``/``Rect`` values instead of ratatui buffers.
@@ -7,9 +7,10 @@ Port of Rust ``codex-tui::bottom_pane::selection_popup_common`` using semantic
 from __future__ import annotations
 
 import textwrap
+import unicodedata
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, MutableSequence
+from typing import Any, List, MutableSequence, Optional, Tuple
 
 from .._porting import RustTuiModule
 from ..ratatui_bridge import Rect
@@ -19,6 +20,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="bottom_pane::selection_popup_common",
     source="codex/codex-rs/tui/src/bottom_pane/selection_popup_common.rs",
+    status="complete",
 )
 
 
@@ -29,12 +31,12 @@ class Span:
 
     @property
     def width(self) -> int:
-        return len(self.text)
+        return _cell_width(self.text)
 
 
 @dataclass(frozen=True)
 class Line:
-    spans: tuple[Span, ...]
+    spans: Tuple[Span, ...]
 
     @classmethod
     def from_text(cls, text: str, style: str = "plain") -> "Line":
@@ -52,14 +54,14 @@ class Line:
 @dataclass
 class GenericDisplayRow:
     name: str = ""
-    name_prefix_spans: list[Span] = field(default_factory=list)
-    display_shortcut: Any | None = None
-    match_indices: list[int] | None = None
-    description: str | None = None
-    category_tag: str | None = None
-    disabled_reason: str | None = None
+    name_prefix_spans: List[Span] = field(default_factory=list)
+    display_shortcut: Optional[Any] = None
+    match_indices: Optional[List[int]] = None
+    description: Optional[str] = None
+    category_tag: Optional[str] = None
+    disabled_reason: Optional[str] = None
     is_disabled: bool = False
-    wrap_indent: int | None = None
+    wrap_indent: Optional[int] = None
 
 
 class ColumnWidthMode(Enum):
@@ -71,10 +73,10 @@ class ColumnWidthMode(Enum):
 @dataclass(frozen=True)
 class ColumnWidthConfig:
     mode: ColumnWidthMode = ColumnWidthMode.AUTO_VISIBLE
-    name_column_width: int | None = None
+    name_column_width: Optional[int] = None
 
     @classmethod
-    def new(cls, mode: ColumnWidthMode, name_column_width: int | None = None) -> "ColumnWidthConfig":
+    def new(cls, mode: ColumnWidthMode, name_column_width: Optional[int] = None) -> "ColumnWidthConfig":
         return cls(mode=mode, name_column_width=name_column_width)
 
 
@@ -104,7 +106,7 @@ def render_menu_surface(area: Rect, buf: MutableSequence[Any]) -> Rect:
     return menu_surface_inset(area)
 
 
-def wrap_styled_line(line: Line, width: int) -> list[Line]:
+def wrap_styled_line(line: Line, width: int) -> List[Line]:
     width = max(width, 1)
     text = line.text
     chunks = textwrap.wrap(text, width=width, replace_whitespace=False, drop_whitespace=False) or [""]
@@ -117,7 +119,7 @@ def line_to_owned(line: Line) -> Line:
 
 
 def compute_desc_col(
-    rows_all: list[GenericDisplayRow],
+    rows_all: List[GenericDisplayRow],
     start_idx: int,
     visible_items: int,
     content_width: int,
@@ -139,6 +141,8 @@ def compute_desc_col(
     max_name_width = max((_row_name_width(row) for row in rows), default=0)
     if column_width.name_column_width is not None:
         max_name_width = max(column_width.name_column_width, max_name_width)
+    if column_width.mode is ColumnWidthMode.AUTO_ALL_ROWS:
+        return min(max_name_width + 2, max_desc_col)
     return min(max_name_width + 2, max_auto_desc_col)
 
 
@@ -160,7 +164,7 @@ def should_wrap_name_in_column(row: GenericDisplayRow) -> bool:
     )
 
 
-def wrap_two_column_row(row: GenericDisplayRow, desc_col: int, width: int) -> list[Line]:
+def wrap_two_column_row(row: GenericDisplayRow, desc_col: int, width: int) -> List[Line]:
     if row.description is None:
         return []
 
@@ -176,9 +180,9 @@ def wrap_two_column_row(row: GenericDisplayRow, desc_col: int, width: int) -> li
     name_lines = textwrap.wrap(row.name, width=left_width, subsequent_indent=" " * name_indent) or [""]
     desc_lines = textwrap.wrap(row.description, width=right_width) or [""]
 
-    out: list[Line] = []
+    out: List[Line] = []
     for idx in range(max(len(name_lines), len(desc_lines), 1)):
-        spans: list[Span] = []
+        spans: List[Span] = []
         if idx < len(name_lines):
             spans.append(Span(name_lines[idx]))
         if idx < len(desc_lines):
@@ -190,7 +194,7 @@ def wrap_two_column_row(row: GenericDisplayRow, desc_col: int, width: int) -> li
     return out
 
 
-def wrap_standard_row(row: GenericDisplayRow, desc_col: int, width: int) -> list[Line]:
+def wrap_standard_row(row: GenericDisplayRow, desc_col: int, width: int) -> List[Line]:
     line = build_full_line(row, desc_col)
     width = max(width, 1)
     indent = " " * wrap_indent(row, desc_col, width)
@@ -198,7 +202,7 @@ def wrap_standard_row(row: GenericDisplayRow, desc_col: int, width: int) -> list
     return [Line.from_text(chunk) for chunk in chunks]
 
 
-def wrap_row_lines(row: GenericDisplayRow, desc_col: int, width: int) -> list[Line]:
+def wrap_row_lines(row: GenericDisplayRow, desc_col: int, width: int) -> List[Line]:
     if should_wrap_name_in_column(row):
         wrapped = wrap_two_column_row(row, desc_col, width)
         if wrapped:
@@ -206,7 +210,7 @@ def wrap_row_lines(row: GenericDisplayRow, desc_col: int, width: int) -> list[Li
     return wrap_standard_row(row, desc_col, width)
 
 
-def apply_row_state_style(lines: list[Line], selected: bool, is_disabled: bool) -> None:
+def apply_row_state_style(lines: List[Line], selected: bool, is_disabled: bool) -> None:
     style = "accent" if selected else None
     if is_disabled:
         style = "dim" if style is None else f"{style}+dim"
@@ -216,7 +220,7 @@ def apply_row_state_style(lines: list[Line], selected: bool, is_disabled: bool) 
         lines[idx] = Line(tuple(Span(span.text, style) for span in line.spans))
 
 
-def compute_item_window_start(rows_all: list[GenericDisplayRow], state: ScrollState, max_items: int) -> int:
+def compute_item_window_start(rows_all: List[GenericDisplayRow], state: ScrollState, max_items: int) -> int:
     if not rows_all or max_items == 0:
         return 0
     start_idx = min(state.scroll_top, len(rows_all) - 1)
@@ -231,7 +235,7 @@ def compute_item_window_start(rows_all: list[GenericDisplayRow], state: ScrollSt
 
 
 def is_selected_visible_in_wrapped_viewport(
-    rows_all: list[GenericDisplayRow],
+    rows_all: List[GenericDisplayRow],
     start_idx: int,
     max_items: int,
     selected_idx: int,
@@ -255,7 +259,7 @@ def is_selected_visible_in_wrapped_viewport(
 
 
 def adjust_start_for_wrapped_selection_visibility(
-    rows_all: list[GenericDisplayRow],
+    rows_all: List[GenericDisplayRow],
     state: ScrollState,
     max_items: int,
     desc_measure_items: int,
@@ -280,9 +284,7 @@ def build_full_line(row: GenericDisplayRow, desc_col: int) -> Line:
     name_limit = max(desc_col - 2 - prefix_width, 0) if description is not None else 10**9
     name = row.name
     truncated = False
-    if len(name) > name_limit:
-        truncated = True
-        name = name[:name_limit]
+    name, truncated = _truncate_cells(name, name_limit)
     spans = list(row.name_prefix_spans)
     match_set = set(row.match_indices or [])
     for idx, ch in enumerate(name):
@@ -307,7 +309,7 @@ def build_full_line(row: GenericDisplayRow, desc_col: int) -> Line:
 def render_rows(
     area: Rect,
     buf: MutableSequence[Line],
-    rows_all: list[GenericDisplayRow],
+    rows_all: List[GenericDisplayRow],
     state: ScrollState,
     max_results: int,
     empty_message: str,
@@ -318,7 +320,7 @@ def render_rows(
 def render_rows_with_col_width_mode(
     area: Rect,
     buf: MutableSequence[Line],
-    rows_all: list[GenericDisplayRow],
+    rows_all: List[GenericDisplayRow],
     state: ScrollState,
     max_results: int,
     empty_message: str,
@@ -330,7 +332,7 @@ def render_rows_with_col_width_mode(
 def render_rows_single_line(
     area: Rect,
     buf: MutableSequence[Line],
-    rows_all: list[GenericDisplayRow],
+    rows_all: List[GenericDisplayRow],
     state: ScrollState,
     max_results: int,
     empty_message: str,
@@ -341,7 +343,7 @@ def render_rows_single_line(
 def render_rows_single_line_with_col_width_mode(
     area: Rect,
     buf: MutableSequence[Line],
-    rows_all: list[GenericDisplayRow],
+    rows_all: List[GenericDisplayRow],
     state: ScrollState,
     max_results: int,
     empty_message: str,
@@ -350,12 +352,12 @@ def render_rows_single_line_with_col_width_mode(
     return _render_rows_inner(area, buf, rows_all, state, max_results, empty_message, column_width, wrap=False)
 
 
-def measure_rows_height(rows_all: list[GenericDisplayRow], state: ScrollState, max_results: int, width: int) -> int:
+def measure_rows_height(rows_all: List[GenericDisplayRow], state: ScrollState, max_results: int, width: int) -> int:
     return measure_rows_height_with_col_width_mode(rows_all, state, max_results, width, ColumnWidthConfig())
 
 
 def measure_rows_height_with_col_width_mode(
-    rows_all: list[GenericDisplayRow],
+    rows_all: List[GenericDisplayRow],
     state: ScrollState,
     max_results: int,
     width: int,
@@ -376,7 +378,7 @@ def measure_rows_height_with_col_width_mode(
 def _render_rows_inner(
     area: Rect,
     buf: MutableSequence[Line],
-    rows_all: list[GenericDisplayRow],
+    rows_all: List[GenericDisplayRow],
     state: ScrollState,
     max_results: int,
     empty_message: str,
@@ -414,13 +416,13 @@ def _truncate_line(line: Line, width: int) -> Line:
 
 
 def _row_name_width(row: GenericDisplayRow) -> int:
-    width = sum(span.width for span in row.name_prefix_spans) + len(row.name)
+    width = sum(span.width for span in row.name_prefix_spans) + _cell_width(row.name)
     if row.disabled_reason is not None:
         width += len(" (disabled)")
     return width
 
 
-def _combined_description(row: GenericDisplayRow) -> str | None:
+def _combined_description(row: GenericDisplayRow) -> Optional[str]:
     if row.description is not None and row.disabled_reason is not None:
         return f"{row.description} (disabled: {row.disabled_reason})"
     if row.description is not None:
@@ -428,6 +430,38 @@ def _combined_description(row: GenericDisplayRow) -> str | None:
     if row.disabled_reason is not None:
         return f"disabled: {row.disabled_reason}"
     return None
+
+
+def _cell_width(text: str) -> int:
+    width = 0
+    for ch in text:
+        if unicodedata.combining(ch):
+            continue
+        if unicodedata.category(ch) in {"Cc", "Cf"}:
+            continue
+        width += 2 if unicodedata.east_asian_width(ch) in {"F", "W"} else 1
+    return width
+
+
+def _truncate_cells(text: str, max_width: int) -> Tuple[str, bool]:
+    if max_width >= 10**8:
+        return text, False
+    if max_width <= 0:
+        return "", bool(text)
+    out: List[str] = []
+    used = 0
+    truncated = False
+    for ch in text:
+        ch_width = _cell_width(ch)
+        if used + ch_width > max_width:
+            truncated = True
+            break
+        out.append(ch)
+        used += ch_width
+    if not truncated:
+        remaining = text[len("".join(out)) :]
+        truncated = bool(remaining)
+    return "".join(out), truncated
 
 
 __all__ = [
@@ -465,3 +499,4 @@ __all__ = [
     "wrap_styled_line",
     "wrap_two_column_row",
 ]
+

@@ -1,6 +1,8 @@
-"""Parity tests for Rust ``codex-tui::bottom_pane::paste_burst``."""
+﻿"""Parity tests for Rust ``codex-tui::bottom_pane::paste_burst``."""
 
 from pycodex.tui.bottom_pane.paste_burst import (
+    PASTE_BURST_ACTIVE_IDLE_TIMEOUT,
+    PASTE_BURST_CHAR_INTERVAL,
     PASTE_ENTER_SUPPRESS_WINDOW,
     CharDecision,
     FlushResult,
@@ -81,8 +83,22 @@ def test_newline_suppression_window_outlives_buffer_flush() -> None:
 def test_retro_start_index_uses_utf8_byte_indices() -> None:
     assert retro_start_index("abc", 0) == 3
     assert retro_start_index("abc", 2) == 1
-    assert retro_start_index("你ab", 2) == len("你".encode("utf-8"))
+    assert retro_start_index("\u6d63\u71fcb", 2) == len("\u6d63".encode("utf-8"))
 
+
+def test_flush_if_due_uses_strictly_greater_than_timeout() -> None:
+    # Rust source: flush_if_due intentionally uses `>` rather than `>=`.
+    burst = PasteBurst()
+    assert burst.on_plain_char("a", 0.0) == CharDecision.RETAIN_FIRST_CHAR
+    assert burst.flush_if_due(PASTE_BURST_CHAR_INTERVAL) == FlushResult.none()
+    assert burst.flush_if_due(PASTE_BURST_CHAR_INTERVAL + 0.001) == FlushResult.typed("a")
+
+    burst = PasteBurst()
+    assert burst.on_plain_char("a", 0.0) == CharDecision.RETAIN_FIRST_CHAR
+    assert burst.on_plain_char("b", 0.001) == CharDecision.BEGIN_BUFFER_FROM_PENDING
+    burst.append_char_to_buffer("b", 0.001)
+    assert burst.flush_if_due(0.001 + PASTE_BURST_ACTIVE_IDLE_TIMEOUT) == FlushResult.none()
+    assert burst.flush_if_due(0.001 + PASTE_BURST_ACTIVE_IDLE_TIMEOUT + 0.001) == FlushResult.paste("ab")
 
 def test_active_append_newline_try_append_and_clear_boundaries() -> None:
     burst = PasteBurst()

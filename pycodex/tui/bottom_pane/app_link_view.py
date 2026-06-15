@@ -13,7 +13,7 @@ from __future__ import annotations
 import textwrap
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from .._porting import RustTuiModule
@@ -22,6 +22,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="bottom_pane::app_link_view",
     source="codex/codex-rs/tui/src/bottom_pane/app_link_view.rs",
+    status="complete",
 )
 
 MCP_CODEX_APPS_SERVER_NAME = "codex_apps"
@@ -55,14 +56,14 @@ class AppLinkElicitationTarget:
 class AppLinkViewParams:
     app_id: str
     title: str
-    description: str | None
+    description: Optional[str]
     instructions: str
     url: str
     is_installed: bool
     is_enabled: bool
-    suggest_reason: str | None = None
-    suggestion_type: AppLinkSuggestionType | None = None
-    elicitation_target: AppLinkElicitationTarget | None = None
+    suggest_reason: Optional[str] = None
+    suggestion_type: Optional[AppLinkSuggestionType] = None
+    elicitation_target: Optional[AppLinkElicitationTarget] = None
 
     @classmethod
     def from_url_app_server_request(
@@ -71,7 +72,7 @@ class AppLinkViewParams:
         server_name: str,
         request_id: Any,
         request: Any,
-    ) -> "AppLinkViewParams | None":
+    ) -> Optional["AppLinkViewParams"]:
         parts = _url_request_parts(request)
         if parts is None:
             return None
@@ -111,7 +112,7 @@ class AppLinkViewParams:
         message: str,
         url: str,
         elicitation_id: str,
-    ) -> "AppLinkViewParams | None":
+    ) -> Optional["AppLinkViewParams"]:
         auth_failure = _nested_dict(
             meta,
             MCP_TOOL_CODEX_APPS_META_KEY,
@@ -161,7 +162,7 @@ class AppLinkViewParams:
         )
 
 
-def validate_external_url(url: str, require_chatgpt_host: bool = False) -> str | None:
+def validate_external_url(url: str, require_chatgpt_host: bool = False) -> Optional[str]:
     parsed = urlparse(url)
     if parsed.scheme != "https" or not parsed.hostname:
         return None
@@ -192,14 +193,14 @@ class DisplayLine:
 class AppLinkView:
     app_id: str
     title: str
-    description: str | None
+    description: Optional[str]
     instructions: str
     url: str
     is_installed: bool
     is_enabled: bool
-    suggest_reason: str | None
-    suggestion_type: AppLinkSuggestionType | None
-    elicitation_target: AppLinkElicitationTarget | None
+    suggest_reason: Optional[str]
+    suggestion_type: Optional[AppLinkSuggestionType]
+    elicitation_target: Optional[AppLinkElicitationTarget]
     app_event_tx: Any = None
     screen: AppLinkScreen = AppLinkScreen.LINK
     selected_action: int = 0
@@ -232,7 +233,7 @@ class AppLinkView:
             list_keymap=list_keymap,
         )
 
-    def action_labels(self) -> list[str]:
+    def action_labels(self) -> List[str]:
         if self.is_auth_suggestion():
             if self.screen is AppLinkScreen.LINK:
                 return ["Open sign-in URL", "Back"]
@@ -359,12 +360,12 @@ class AppLinkView:
         else:
             self.back_to_link_screen()
 
-    def content_lines(self, width: int) -> list[DisplayLine]:
+    def content_lines(self, width: int) -> List[DisplayLine]:
         if self.screen is AppLinkScreen.LINK:
             return self.link_content_lines(width)
         return self.install_confirmation_lines(width)
 
-    def link_content_lines(self, width: int) -> list[DisplayLine]:
+    def link_content_lines(self, width: int) -> List[DisplayLine]:
         usable_width = max(1, int(width))
         lines = [DisplayLine(self.title, "bold")]
         if _trimmed(self.description):
@@ -401,7 +402,7 @@ class AppLinkView:
             lines.append(DisplayLine(""))
         return lines
 
-    def install_confirmation_lines(self, width: int) -> list[DisplayLine]:
+    def install_confirmation_lines(self, width: int) -> List[DisplayLine]:
         usable_width = max(1, int(width))
         if self.is_auth_suggestion():
             title = "Sign-in complete?"
@@ -423,13 +424,13 @@ class AppLinkView:
         lines.append(DisplayLine(""))
         return lines
 
-    def action_rows(self) -> list[dict[str, Any]]:
+    def action_rows(self) -> List[Dict[str, Any]]:
         return [
             {"label": label, "selected": idx == self.selected_action}
             for idx, label in enumerate(self.action_labels())
         ]
 
-    def action_state(self) -> dict[str, Any]:
+    def action_state(self) -> Dict[str, Any]:
         return {"selected": self.selected_action, "labels": self.action_labels()}
 
     def action_rows_height(self, width: int | None = None) -> int:
@@ -484,7 +485,7 @@ class AppLinkView:
     def desired_height(self, width: int) -> int:
         return len(self.content_lines(width)) + self.action_rows_height(width) + 1
 
-    def render(self, area: Any = None, buf: Any = None) -> list[DisplayLine]:
+    def render(self, area: Any = None, buf: Any = None) -> List[DisplayLine]:
         width = _area_width(area)
         height = _area_height(area)
         if width <= 0 or height <= 0:
@@ -519,11 +520,11 @@ def desired_height(view: AppLinkView, width: int) -> int:
     return view.desired_height(width)
 
 
-def render(view: AppLinkView, area: Any = None, buf: Any = None) -> list[DisplayLine]:
+def render(view: AppLinkView, area: Any = None, buf: Any = None) -> List[DisplayLine]:
     return view.render(area, buf)
 
 
-def _url_request_parts(request: Any) -> tuple[Any, str, str, str] | None:
+def _url_request_parts(request: Any) -> Optional[Tuple[Any, str, str, str]]:
     if isinstance(request, dict):
         if request.get("type") not in {None, "Url", "url"}:
             return None
@@ -553,14 +554,14 @@ def _nested_dict(value: Any, *keys: str) -> Any:
     return current
 
 
-def _non_empty_str(value: Any) -> str | None:
+def _non_empty_str(value: Any) -> Optional[str]:
     if not isinstance(value, str):
         return None
     value = value.strip()
     return value or None
 
 
-def _send(target: Any, event: dict[str, Any]) -> None:
+def _send(target: Any, event: Dict[str, Any]) -> None:
     if target is None:
         return
     if hasattr(target, "send"):
@@ -573,11 +574,11 @@ def _send(target: Any, event: dict[str, Any]) -> None:
         target.events.append(event)
 
 
-def _trimmed(value: str | None) -> str:
+def _trimmed(value: Optional[str]) -> str:
     return value.strip() if value else ""
 
 
-def _wrap(value: str, width: int) -> list[str]:
+def _wrap(value: str, width: int) -> List[str]:
     if value == "":
         return [""]
     return textwrap.wrap(

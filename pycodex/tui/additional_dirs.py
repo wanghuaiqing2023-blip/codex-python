@@ -15,6 +15,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="additional_dirs",
     source="codex/codex-rs/tui/src/additional_dirs.rs",
+    status="complete",
 )
 
 

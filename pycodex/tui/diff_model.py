@@ -9,11 +9,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Dict, Mapping, Optional, Union
 
 from ._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="diff_model", source="codex/codex-rs/tui/src/diff_model.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="diff_model",
+    source="codex/codex-rs/tui/src/diff_model.rs",
+    status="complete",
+)
 
 
 @dataclass(frozen=True)
@@ -21,9 +26,9 @@ class FileChange:
     """Semantic equivalent of Rust ``diff_model::FileChange``."""
 
     type: str
-    content: str | None = None
-    unified_diff: str | None = None
-    move_path: Path | None = None
+    content: Optional[str] = None
+    unified_diff: Optional[str] = None
+    move_path: Optional[Path] = None
 
     @classmethod
     def add(cls, content: str) -> "FileChange":
@@ -34,7 +39,7 @@ class FileChange:
         return cls(type="delete", content=content)
 
     @classmethod
-    def update(cls, unified_diff: str, move_path: str | Path | None = None) -> "FileChange":
+    def update(cls, unified_diff: str, move_path: Optional[Union[str, Path]] = None) -> "FileChange":
         path = None if move_path is None else Path(move_path)
         return cls(type="update", unified_diff=unified_diff, move_path=path)
 
@@ -47,7 +52,7 @@ class FileChange:
     def is_update(self) -> bool:
         return self.type == "update"
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> Dict[str, Any]:
         if self.type == "add":
             if self.content is None:
                 raise ValueError("add FileChange requires content")
@@ -62,7 +67,7 @@ class FileChange:
             return {
                 "type": "update",
                 "unified_diff": self.unified_diff,
-                "move_path": None if self.move_path is None else str(self.move_path),
+                "move_path": None if self.move_path is None else self.move_path.as_posix(),
             }
         raise ValueError(f"unknown FileChange type: {self.type!r}")
 

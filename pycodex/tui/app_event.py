@@ -12,11 +12,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Dict, List, Optional
 
 from ._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="app_event", source="codex/codex-rs/tui/src/app_event.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="app_event",
+    source="codex/codex-rs/tui/src/app_event.rs",
+    status="complete",
+)
 
 
 class RealtimeAudioDeviceKind(Enum):
@@ -45,7 +50,7 @@ class ThreadGoalSetMode:
 
     kind: str
     status: Any = None
-    token_budget: int | None = None
+    token_budget: Optional[int] = None
 
     CONFIRM_IF_EXISTS: ClassVar[str] = "ConfirmIfExists"
     REPLACE_EXISTING: ClassVar[str] = "ReplaceExisting"
@@ -60,7 +65,7 @@ class ThreadGoalSetMode:
         return cls(cls.REPLACE_EXISTING)
 
     @classmethod
-    def update_existing(cls, status: Any, token_budget: int | None = None) -> "ThreadGoalSetMode":
+    def update_existing(cls, status: Any, token_budget: Optional[int] = None) -> "ThreadGoalSetMode":
         return cls(cls.UPDATE_EXISTING, status=status, token_budget=token_budget)
 
 
@@ -68,7 +73,7 @@ class ThreadGoalSetMode:
 class HistoryLookupResponse:
     offset: int
     log_id: int
-    entry: str | None
+    entry: Optional[str]
 
 
 class ConsolidationScrollbackReflow(Enum):
@@ -83,7 +88,7 @@ class WindowsSandboxEnableMode(Enum):
 
 @dataclass(frozen=True)
 class ConnectorsSnapshot:
-    connectors: list[Any] = field(default_factory=list)
+    connectors: List[Any] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -91,7 +96,7 @@ class RateLimitRefreshOrigin:
     """Rust ``RateLimitRefreshOrigin`` semantic variant."""
 
     kind: str
-    request_id: int | None = None
+    request_id: Optional[int] = None
 
     STARTUP_PREFETCH: ClassVar[str] = "StartupPrefetch"
     STATUS_COMMAND: ClassVar[str] = "StatusCommand"
@@ -110,7 +115,7 @@ class KeymapEditIntent:
     """Rust ``KeymapEditIntent`` semantic variant."""
 
     kind: str
-    old_key: str | None = None
+    old_key: Optional[str] = None
 
     REPLACE_ALL: ClassVar[str] = "ReplaceAll"
     ADD_ALTERNATE: ClassVar[str] = "AddAlternate"
@@ -139,7 +144,7 @@ class AppEvent:
     """
 
     kind: str
-    payload: dict[str, Any] = field(default_factory=dict)
+    payload: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def of(cls, kind: str, **payload: Any) -> "AppEvent":
@@ -154,7 +159,7 @@ class AppEvent:
         return cls.of("SelectAgentThread", thread_id=thread_id)
 
     @classmethod
-    def start_side(cls, parent_thread_id: Any, user_message: Any | None = None) -> "AppEvent":
+    def start_side(cls, parent_thread_id: Any, user_message: Any = None) -> "AppEvent":
         return cls.of("StartSide", parent_thread_id=parent_thread_id, user_message=user_message)
 
     @classmethod
@@ -259,7 +264,7 @@ class AppEvent:
         source: str,
         cwd: Any,
         scrollback_reflow: ConsolidationScrollbackReflow,
-        deferred_history_cell: Any | None = None,
+        deferred_history_cell: Any = None,
     ) -> "AppEvent":
         return cls.of(
             "ConsolidateAgentMessage",
@@ -290,7 +295,7 @@ class AppEvent:
         return cls.of("CommitTick")
 
     @classmethod
-    def update_reasoning_effort(cls, effort: Any | None) -> "AppEvent":
+    def update_reasoning_effort(cls, effort: Any = None) -> "AppEvent":
         return cls.of("UpdateReasoningEffort", effort=effort)
 
     @classmethod
@@ -298,7 +303,7 @@ class AppEvent:
         return cls.of("UpdateModel", model=model)
 
     @classmethod
-    def persist_model_selection(cls, model: str, effort: Any | None) -> "AppEvent":
+    def persist_model_selection(cls, model: str, effort: Any = None) -> "AppEvent":
         return cls.of("PersistModelSelection", model=model, effort=effort)
 
     @classmethod
@@ -306,7 +311,7 @@ class AppEvent:
         return cls.of("OpenRealtimeAudioDeviceSelection", kind=kind)
 
     @classmethod
-    def persist_realtime_audio_device_selection(cls, kind: RealtimeAudioDeviceKind, name: str | None) -> "AppEvent":
+    def persist_realtime_audio_device_selection(cls, kind: RealtimeAudioDeviceKind, name: Optional[str]) -> "AppEvent":
         return cls.of("PersistRealtimeAudioDeviceSelection", kind=kind, name=name)
 
     @classmethod
@@ -330,7 +335,7 @@ class AppEvent:
         cls,
         preset: Any,
         return_to_permissions: bool,
-        profile_selection: "PermissionProfileSelection | None" = None,
+        profile_selection: Optional["PermissionProfileSelection"] = None,
     ) -> "AppEvent":
         return cls.of(
             "OpenFullAccessConfirmation",
@@ -371,8 +376,8 @@ class AppEvent:
     def submit_feedback(
         cls,
         category: "FeedbackCategory",
-        reason: str | None,
-        turn_id: str | None,
+        reason: Optional[str],
+        turn_id: Optional[str],
         include_logs: bool,
     ) -> "AppEvent":
         return cls.of("SubmitFeedback", category=category, reason=reason, turn_id=turn_id, include_logs=include_logs)
@@ -382,7 +387,7 @@ class AppEvent:
         return cls.of("LaunchExternalEditor")
 
     @classmethod
-    def status_line_branch_updated(cls, cwd: Any, branch: str | None) -> "AppEvent":
+    def status_line_branch_updated(cls, cwd: Any, branch: Optional[str]) -> "AppEvent":
         return cls.of("StatusLineBranchUpdated", cwd=cwd, branch=branch)
 
     @classmethod
@@ -404,8 +409,8 @@ class AppEvent:
 @dataclass(frozen=True)
 class PermissionProfileSelection:
     profile_id: str
-    approval_policy: Any | None
-    approvals_reviewer: Any | None
+    approval_policy: Optional[Any]
+    approvals_reviewer: Optional[Any]
     display_label: str
 
 

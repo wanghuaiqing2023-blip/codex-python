@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable
+from typing import Any, Callable, List, Optional, Tuple
 
 from .._porting import RustTuiModule
 from .popup_consts import standard_popup_hint_line
@@ -16,10 +16,11 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="bottom_pane::custom_prompt_view",
     source="codex/codex-rs/tui/src/bottom_pane/custom_prompt_view.rs",
+    status="complete",
 )
 
 PromptSubmitted = Callable[[str], None]
-GUTTER = "▌"
+GUTTER = "▎"
 
 
 class ViewCompletion(Enum):
@@ -81,7 +82,7 @@ class SimpleTextArea:
             total += max(1, (len(line) + width - 1) // width)
         return total
 
-    def cursor_pos_with_rect(self, x: int, y: int, width: int, height: int) -> tuple[int, int] | None:
+    def cursor_pos_with_rect(self, x: int, y: int, width: int, height: int) -> Optional[Tuple[int, int]]:
         if width <= 0 or height <= 0:
             return None
         before = self.text_value[: self.cursor]
@@ -105,10 +106,10 @@ class SimpleTextArea:
 class CustomPromptView:
     title: str
     placeholder: str
-    context_label: str | None
+    context_label: Optional[str]
     on_submit: PromptSubmitted
     textarea: SimpleTextArea = field(default_factory=SimpleTextArea.new)
-    completion_value: ViewCompletion | None = None
+    completion_value: Optional[ViewCompletion] = None
 
     @classmethod
     def new(
@@ -116,7 +117,7 @@ class CustomPromptView:
         title: str,
         placeholder: str,
         initial_text: str,
-        context_label: str | None,
+        context_label: Optional[str],
         on_submit: PromptSubmitted,
     ) -> "CustomPromptView":
         textarea = SimpleTextArea.new()
@@ -150,7 +151,7 @@ class CustomPromptView:
     def is_complete(self) -> bool:
         return self.completion_value is not None
 
-    def completion(self) -> ViewCompletion | None:
+    def completion(self) -> Optional[ViewCompletion]:
         return self.completion_value
 
     def handle_paste(self, pasted: str) -> bool:
@@ -168,12 +169,12 @@ class CustomPromptView:
         text_height = min(8, max(1, self.textarea.desired_height(usable_width)))
         return min(9, text_height + 1)
 
-    def render(self, area: Any = None, buf: Any = None) -> list[DisplayLine]:
+    def render(self, area: Any = None, buf: Any = None) -> List[DisplayLine]:
         width = _area_width(area)
         height = _area_height(area)
         if width == 0 or height == 0:
             return []
-        lines: list[DisplayLine] = [DisplayLine(f"{gutter()}{self.title}", "title")]
+        lines: List[DisplayLine] = [DisplayLine(f"{gutter()}{self.title}", "title")]
         if self.context_label is not None:
             lines.append(DisplayLine(f"{gutter()}{self.context_label}", "context"))
         lines.append(DisplayLine(gutter(), "gutter"))
@@ -187,7 +188,7 @@ class CustomPromptView:
         lines.append(DisplayLine(standard_popup_hint_line(), "hint"))
         return lines[:height]
 
-    def cursor_pos(self, area: Any) -> tuple[int, int] | None:
+    def cursor_pos(self, area: Any) -> Optional[Tuple[int, int]]:
         width = _area_width(area)
         height = _area_height(area)
         x = _area_x(area)
@@ -219,7 +220,7 @@ def is_complete(view: CustomPromptView) -> bool:
     return view.is_complete()
 
 
-def completion(view: CustomPromptView) -> ViewCompletion | None:
+def completion(view: CustomPromptView) -> Optional[ViewCompletion]:
     return view.completion()
 
 
@@ -231,11 +232,11 @@ def desired_height(view: CustomPromptView, width: int) -> int:
     return view.desired_height(width)
 
 
-def render(view: CustomPromptView, area: Any = None, buf: Any = None) -> list[DisplayLine]:
+def render(view: CustomPromptView, area: Any = None, buf: Any = None) -> List[DisplayLine]:
     return view.render(area, buf)
 
 
-def cursor_pos(view: CustomPromptView, area: Any) -> tuple[int, int] | None:
+def cursor_pos(view: CustomPromptView, area: Any) -> Optional[Tuple[int, int]]:
     return view.cursor_pos(area)
 
 

@@ -1,10 +1,19 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import base64
 import math
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Deque, Iterable, MutableSequence, Sequence
+from typing import Any, Callable, Deque, Iterable, MutableSequence, Optional, Sequence, Tuple
+
+from ._porting import RustTuiModule
+
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="voice",
+    source="codex/codex-rs/tui/src/voice.rs",
+    status="complete",
+)
 
 MODEL_AUDIO_SAMPLE_RATE = 24_000
 MODEL_AUDIO_CHANNELS = 1
@@ -17,8 +26,8 @@ class ThreadRealtimeAudioChunk:
     data: str
     sample_rate: int
     num_channels: int
-    samples_per_channel: int | None = None
-    item_id: Any | None = None
+    samples_per_channel: Optional[int] = None
+    item_id: Optional[Any] = None
 
 
 @dataclass
@@ -41,15 +50,26 @@ class AppEventSender:
 
 @dataclass
 class VoiceCapture:
-    stream: Any | None = None
+    stream: Optional[Any] = None
     stopped: bool = False
     last_peak: int = 0
 
     @classmethod
     def start_realtime(cls, config: Any, tx: Any) -> "VoiceCapture":
-        raise NotImplementedError(
-            "realtime input device capture is a cpal/platform boundary and is not implemented in Python"
+        device, stream_config = select_realtime_input_device_and_config(config)
+        sample_rate = int(_call_or_get(stream_config, "sample_rate", MODEL_AUDIO_SAMPLE_RATE))
+        channels = int(_call_or_get(stream_config, "channels", MODEL_AUDIO_CHANNELS))
+        capture = cls(stream=None, stopped=False, last_peak=0)
+        capture.stream = build_realtime_input_stream(
+            device,
+            stream_config,
+            sample_rate,
+            channels,
+            tx,
+            capture,
         )
+        _play_stream(capture.stream, "input")
+        return capture
 
     def stop(self) -> None:
         self.stopped = True
@@ -140,7 +160,7 @@ def peak_i16(samples: Iterable[int]) -> int:
     return peak
 
 
-def convert_u16_to_i16_and_peak(samples: Iterable[int], out: MutableSequence[int] | None = None) -> int:
+def convert_u16_to_i16_and_peak(samples: Iterable[int], out: Optional[MutableSequence[int]] = None) -> int:
     target = out if out is not None else []
     peak = 0
     for sample in samples:
@@ -188,13 +208,17 @@ class RealtimeAudioPlayer:
     output_sample_rate: int = MODEL_AUDIO_SAMPLE_RATE
     output_channels: int = MODEL_AUDIO_CHANNELS
     queue: Deque[int] = field(default_factory=deque)
-    stream: Any | None = None
+    stream: Optional[Any] = None
 
     @classmethod
     def start(cls, config: Any) -> "RealtimeAudioPlayer":
-        raise NotImplementedError(
-            "realtime output device playback is a cpal/platform boundary and is not implemented in Python"
-        )
+        device, stream_config = select_realtime_output_device_and_config(config)
+        output_sample_rate = int(_call_or_get(stream_config, "sample_rate", MODEL_AUDIO_SAMPLE_RATE))
+        output_channels = int(_call_or_get(stream_config, "channels", MODEL_AUDIO_CHANNELS))
+        player = cls(output_sample_rate=output_sample_rate, output_channels=output_channels)
+        player.stream = build_output_stream(device, stream_config, player.queue)
+        _play_stream(player.stream, "output")
+        return player
 
     def enqueue_frame(self, frame: Any) -> None:
         num_channels = int(_get_field(frame, "num_channels", 0) or 0)
@@ -225,7 +249,121 @@ class RealtimeAudioPlayer:
         self.queue.clear()
 
 
-def _queue_pop(queue: Any) -> int | None:
+def select_realtime_input_device_and_config(config: Any) -> Tuple[Any, Any]:
+    selector = getattr(config, "select_realtime_input_device_and_config", None)
+    if selector is None:
+        selector = getattr(config, "select_configured_input_device_and_config", None)
+    if selector is None:
+        raise ValueError("failed to select input stream: no input device selector configured")
+    return selector()
+
+
+def select_realtime_output_device_and_config(config: Any) -> Tuple[Any, Any]:
+    selector = getattr(config, "select_realtime_output_device_and_config", None)
+    if selector is None:
+        selector = getattr(config, "select_configured_output_device_and_config", None)
+    if selector is None:
+        raise ValueError("failed to select output stream: no output device selector configured")
+    return selector()
+
+
+def build_realtime_input_stream(
+    device: Any,
+    config: Any,
+    sample_rate: int,
+    channels: int,
+    tx: Any,
+    capture: VoiceCapture,
+) -> Any:
+    sample_format = str(_call_or_get(config, "sample_format", "i16")).lower()
+
+    def on_input(input_samples: Sequence[Any]) -> None:
+        if sample_format == "f32":
+            capture.last_peak = peak_f32(input_samples)
+            samples = [f32_to_i16(sample) for sample in input_samples]
+        elif sample_format == "u16":
+            samples = []
+            capture.last_peak = convert_u16_to_i16_and_peak(input_samples, samples)
+        elif sample_format == "i16":
+            samples = [int(sample) for sample in input_samples]
+            capture.last_peak = peak_i16(samples)
+        else:
+            raise ValueError("unsupported input sample format")
+        send_realtime_audio_chunk(tx, samples, sample_rate, channels)
+
+    builder = getattr(device, "build_input_stream", None)
+    if builder is not None:
+        return builder(config, on_input, _audio_error_handler)
+    return SemanticInputStream(on_input)
+
+
+def build_output_stream(device: Any, config: Any, queue: Deque[int]) -> Any:
+    sample_format = str(_call_or_get(config, "sample_format", "i16")).lower()
+    builder = getattr(device, "build_output_stream", None)
+    callback = _output_callback(sample_format, queue)
+    if builder is not None:
+        return builder(config, callback, _audio_error_handler)
+    return SemanticOutputStream(callback)
+
+
+def _output_callback(sample_format: str, queue: Deque[int]) -> Callable[[MutableSequence[Any]], None]:
+    def callback(output: MutableSequence[Any]) -> None:
+        if sample_format == "f32":
+            fill_output_f32(output, queue)
+        elif sample_format == "u16":
+            fill_output_u16(output, queue)
+        elif sample_format == "i16":
+            fill_output_i16(output, queue)
+        else:
+            raise ValueError(f"unsupported output sample format: {sample_format}")
+
+    return callback
+
+
+@dataclass
+class SemanticInputStream:
+    callback: Callable[[Sequence[Any]], None]
+    played: bool = False
+
+    def play(self) -> None:
+        self.played = True
+
+    def push(self, samples: Sequence[Any]) -> None:
+        self.callback(samples)
+
+
+@dataclass
+class SemanticOutputStream:
+    callback: Callable[[MutableSequence[Any]], None]
+    played: bool = False
+
+    def play(self) -> None:
+        self.played = True
+
+    def fill(self, output: MutableSequence[Any]) -> None:
+        self.callback(output)
+
+
+def _play_stream(stream: Any, kind: str) -> None:
+    play = getattr(stream, "play", None)
+    if play is None:
+        return
+    try:
+        play()
+    except Exception as exc:
+        raise ValueError(f"failed to start {kind} stream: {exc}") from exc
+
+
+def _audio_error_handler(error: Any) -> None:
+    return None
+
+
+def _call_or_get(value: Any, name: str, default: Any) -> Any:
+    attr = getattr(value, name, default)
+    return attr() if callable(attr) else attr
+
+
+def _queue_pop(queue: Any) -> Optional[int]:
     if hasattr(queue, "popleft"):
         try:
             return queue.popleft()
@@ -264,7 +402,7 @@ def convert_pcm16(
     input_channels: int,
     output_sample_rate: int,
     output_channels: int,
-) -> list[int]:
+) -> list:
     if not input_samples or input_channels == 0:
         return []
 
@@ -279,7 +417,7 @@ def convert_pcm16(
     else:
         out_frames = max((in_frames * int(output_sample_rate)) // int(input_sample_rate), 1)
 
-    out: list[int] = []
+    out: list = []
     for out_frame_idx in range(out_frames):
         if out_frames <= 1 or in_frames <= 1:
             src_frame_idx = 0
@@ -310,11 +448,16 @@ __all__ = [
     "MODEL_AUDIO_CHANNELS",
     "MODEL_AUDIO_SAMPLE_RATE",
     "AppEventSender",
+    "RUST_MODULE",
+    "SemanticInputStream",
+    "SemanticOutputStream",
     "RealtimeAudioFrame",
     "RealtimeAudioPlayer",
     "RecordingMeterState",
     "ThreadRealtimeAudioChunk",
     "VoiceCapture",
+    "build_output_stream",
+    "build_realtime_input_stream",
     "convert_pcm16",
     "convert_u16_to_i16_and_peak",
     "f32_abs_to_u16",
@@ -324,5 +467,7 @@ __all__ = [
     "fill_output_u16",
     "peak_f32",
     "peak_i16",
+    "select_realtime_input_device_and_config",
+    "select_realtime_output_device_and_config",
     "send_realtime_audio_chunk",
 ]

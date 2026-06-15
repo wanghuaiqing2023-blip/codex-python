@@ -9,7 +9,7 @@ runtime work to callers.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import Any, Iterable
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 from .._porting import RustTuiModule
 
@@ -17,6 +17,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="chatwidget::connectors",
     source="codex/codex-rs/tui/src/chatwidget/connectors.rs",
+    status="complete",
 )
 
 CONNECTORS_SELECTION_VIEW_ID = "connectors"
@@ -25,16 +26,16 @@ CONNECTORS_SELECTION_VIEW_ID = "connectors"
 @dataclass(frozen=True)
 class AppInfo:
     id: str
-    name: str | None = None
-    description: str | None = None
+    name: Optional[str] = None
+    description: Optional[str] = None
     is_accessible: bool = False
     is_enabled: bool = False
-    install_url: str | None = None
+    install_url: Optional[str] = None
 
 
 @dataclass(frozen=True)
 class ConnectorsSnapshot:
-    connectors: tuple[AppInfo, ...] = ()
+    connectors: Tuple[AppInfo, ...] = ()
 
     @classmethod
     def from_iterable(cls, connectors: Iterable[AppInfo | Any]) -> "ConnectorsSnapshot":
@@ -44,8 +45,8 @@ class ConnectorsSnapshot:
 @dataclass(frozen=True)
 class ConnectorsCacheState:
     kind: str = "Uninitialized"
-    snapshot: ConnectorsSnapshot | None = None
-    error: str | None = None
+    snapshot: Optional[ConnectorsSnapshot] = None
+    error: Optional[str] = None
 
     @classmethod
     def Uninitialized(cls) -> "ConnectorsCacheState":
@@ -70,7 +71,7 @@ class ConnectorsCacheState:
 @dataclass
 class ConnectorsState:
     cache: ConnectorsCacheState = field(default_factory=ConnectorsCacheState.Uninitialized)
-    partial_snapshot: ConnectorsSnapshot | None = None
+    partial_snapshot: Optional[ConnectorsSnapshot] = None
     prefetch_in_flight: bool = False
     force_refetch_pending: bool = False
 
@@ -87,7 +88,7 @@ class ConnectorsState:
             self.cache = ConnectorsCacheState.Loading()
         return True
 
-    def connectors_for_mentions(self, *, connectors_enabled: bool) -> tuple[AppInfo, ...] | None:
+    def connectors_for_mentions(self, *, connectors_enabled: bool) -> Optional[Tuple[AppInfo, ...]]:
         if not connectors_enabled:
             return None
         if self.partial_snapshot is not None:
@@ -96,7 +97,7 @@ class ConnectorsState:
             return self.cache.snapshot.connectors
         return None
 
-    def on_loaded(self, result: ConnectorsSnapshot | Iterable[AppInfo | Any] | str | Exception, *, is_final: bool) -> bool:
+    def on_loaded(self, result: Union[ConnectorsSnapshot, Iterable[Any], str, Exception], *, is_final: bool) -> bool:
         """Apply a connectors-list response.
 
         Returns ``True`` when Rust would immediately queue a pending forced
@@ -128,7 +129,7 @@ class ConnectorsState:
             return False
 
         changed = False
-        updated: list[AppInfo] = []
+        updated: List[AppInfo] = []
         for connector in self.cache.snapshot.connectors:
             if connector.id == connector_id:
                 if connector.is_enabled != enabled:
@@ -180,7 +181,7 @@ def connector_status_label(connector: AppInfo | Any) -> str:
     return "Can be installed"
 
 
-def connector_description(connector: AppInfo | Any) -> str | None:
+def connector_description(connector: AppInfo | Any) -> Optional[str]:
     description = _coerce_app_info(connector).description
     if description is None:
         return None
@@ -193,7 +194,7 @@ def connector_brief_description(connector: AppInfo | Any) -> str:
     description = connector_description(connector)
     if description is None:
         return status_label
-    return f"{status_label} · {description}"
+    return f"{status_label} ? {description}"
 
 
 def connectors_loading_popup_params() -> dict[str, Any]:
@@ -210,7 +211,7 @@ def connectors_loading_popup_params() -> dict[str, Any]:
     }
 
 
-def connectors_popup_params(connectors: Iterable[AppInfo | Any], selected_connector_id: str | None = None) -> dict[str, Any]:
+def connectors_popup_params(connectors: Iterable[AppInfo | Any], selected_connector_id: Optional[str] = None) -> Dict[str, Any]:
     apps = tuple(_coerce_app_info(connector) for connector in connectors)
     total = len(apps)
     installed = sum(1 for connector in apps if connector.is_accessible)
@@ -221,7 +222,7 @@ def connectors_popup_params(connectors: Iterable[AppInfo | Any], selected_connec
                 initial_selected_idx = index
                 break
 
-    items: list[dict[str, Any]] = []
+    items: List[Dict[str, Any]] = []
     for connector in apps:
         label = connector_display_label(connector)
         status_label = connector_status_label(connector)
@@ -267,7 +268,126 @@ def connectors_popup_params(connectors: Iterable[AppInfo | Any], selected_connec
     }
 
 
-def _coerce_snapshot(value: ConnectorsSnapshot | Iterable[AppInfo | Any]) -> ConnectorsSnapshot:
+@dataclass
+class ConnectorsWidgetState:
+    features_apps_enabled: bool = True
+    has_chatgpt_account: bool = True
+    connectors: ConnectorsState = field(default_factory=ConnectorsState)
+    sent_fetches: List[bool] = field(default_factory=list)
+    info_messages: List[Tuple[str, Optional[str]]] = field(default_factory=list)
+    history: List[Any] = field(default_factory=list)
+    shown_selection_views: List[Dict[str, Any]] = field(default_factory=list)
+    replaced_selection_views: List[Tuple[str, Dict[str, Any]]] = field(default_factory=list)
+    replace_selection_view_result: bool = False
+    selected_index: Optional[int] = None
+    bottom_pane_snapshot: Optional[ConnectorsSnapshot] = None
+    redraws: int = 0
+
+    def connectors_enabled(self) -> bool:
+        return connectors_enabled(self.features_apps_enabled, self.has_chatgpt_account)
+
+    def refresh_connectors(self, force_refetch: bool) -> None:
+        self.queue_connectors_refresh(force_refetch)
+
+    def prefetch_connectors(self) -> None:
+        self.queue_connectors_refresh(False)
+
+    def queue_connectors_refresh(self, force_refetch: bool) -> None:
+        if self.connectors.begin_refresh(connectors_enabled=self.connectors_enabled(), force_refetch=force_refetch):
+            self.sent_fetches.append(force_refetch)
+
+    def add_connectors_output(self) -> None:
+        if not self.connectors_enabled():
+            self.info_messages.append(("Apps are disabled.", "Enable the apps feature to use $ or /apps."))
+            return
+        connectors_cache = self.connectors.cache
+        should_force_refetch = (not self.connectors.prefetch_in_flight) or connectors_cache.is_ready()
+        self.queue_connectors_refresh(should_force_refetch)
+        if connectors_cache.is_ready() and connectors_cache.snapshot is not None:
+            if not connectors_cache.snapshot.connectors:
+                self.info_messages.append(("No apps available.", None))
+            else:
+                self.open_connectors_popup(connectors_cache.snapshot.connectors)
+        elif connectors_cache.kind == "Failed":
+            self.history.append({"kind": "error", "message": connectors_cache.error})
+        else:
+            self.open_connectors_loading_popup()
+        self.request_redraw()
+
+    def open_connectors_loading_popup(self) -> None:
+        params = connectors_loading_popup_params()
+        if not self.replace_selection_view_if_active(CONNECTORS_SELECTION_VIEW_ID, params):
+            self.show_selection_view(params)
+
+    def open_connectors_popup(self, connectors: Iterable[AppInfo]) -> None:
+        self.show_selection_view(connectors_popup_params(connectors, None))
+
+    def refresh_connectors_popup_if_open(self, connectors: Iterable[AppInfo]) -> None:
+        selected_connector_id = None
+        if self.selected_index is not None and self.connectors.cache.is_ready() and self.connectors.cache.snapshot is not None:
+            existing = self.connectors.cache.snapshot.connectors
+            if 0 <= self.selected_index < len(existing):
+                selected_connector_id = existing[self.selected_index].id
+        self.replace_selection_view_if_active(
+            CONNECTORS_SELECTION_VIEW_ID,
+            connectors_popup_params(connectors, selected_connector_id),
+        )
+
+    def on_connectors_loaded(self, result: Union[ConnectorsSnapshot, Iterable[Any], str, Exception], is_final: bool) -> None:
+        old_ready = self.connectors.cache.snapshot if self.connectors.cache.is_ready() else None
+        trigger = False
+        if is_final:
+            self.connectors.prefetch_in_flight = False
+            if self.connectors.force_refetch_pending:
+                self.connectors.force_refetch_pending = False
+                trigger = True
+        if isinstance(result, (str, Exception)):
+            partial_snapshot = self.connectors.partial_snapshot
+            self.connectors.partial_snapshot = None
+            if old_ready is not None:
+                self.set_connectors_snapshot(old_ready)
+            elif partial_snapshot is not None:
+                self.refresh_connectors_popup_if_open(partial_snapshot.connectors)
+                self.connectors.cache = ConnectorsCacheState.Ready(partial_snapshot)
+                self.set_connectors_snapshot(partial_snapshot)
+            else:
+                self.connectors.cache = ConnectorsCacheState.Failed(str(result))
+                self.set_connectors_snapshot(None)
+        else:
+            snapshot = self.connectors._preserve_existing_enabled_flags(_coerce_snapshot(result))
+            if is_final:
+                self.connectors.partial_snapshot = None
+                self.refresh_connectors_popup_if_open(snapshot.connectors)
+                self.connectors.cache = ConnectorsCacheState.Ready(snapshot)
+            else:
+                self.connectors.partial_snapshot = snapshot
+            self.set_connectors_snapshot(snapshot)
+        if trigger:
+            self.queue_connectors_refresh(True)
+
+    def update_connector_enabled(self, connector_id: str, enabled: bool) -> None:
+        if not self.connectors.update_connector_enabled(connector_id, enabled):
+            return
+        snapshot = self.connectors.cache.snapshot
+        if snapshot is not None:
+            self.refresh_connectors_popup_if_open(snapshot.connectors)
+            self.set_connectors_snapshot(snapshot)
+
+    def replace_selection_view_if_active(self, view_id: str, params: Dict[str, Any]) -> bool:
+        self.replaced_selection_views.append((view_id, params))
+        return self.replace_selection_view_result
+
+    def show_selection_view(self, params: Dict[str, Any]) -> None:
+        self.shown_selection_views.append(params)
+
+    def set_connectors_snapshot(self, snapshot: Optional[ConnectorsSnapshot]) -> None:
+        self.bottom_pane_snapshot = snapshot
+
+    def request_redraw(self) -> None:
+        self.redraws += 1
+
+
+def _coerce_snapshot(value: Union[ConnectorsSnapshot, Iterable[Any]]) -> ConnectorsSnapshot:
     if isinstance(value, ConnectorsSnapshot):
         return value
     return ConnectorsSnapshot.from_iterable(value)
@@ -296,6 +416,7 @@ __all__ = [
     "ConnectorsCacheState",
     "ConnectorsSnapshot",
     "ConnectorsState",
+    "ConnectorsWidgetState",
     "RUST_MODULE",
     "connector_brief_description",
     "connector_description",

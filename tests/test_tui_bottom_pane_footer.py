@@ -12,10 +12,13 @@ from pycodex.tui.bottom_pane.footer import (
     esc_hint_mode,
     footer_from_props_lines,
     footer_height,
+    footer_snapshots,
+    footer_status_line_truncates_to_keep_mode_indicator,
     left_fits,
     mode_indicator_line,
     quit_shortcut_reminder_line,
     reset_mode_after_activity,
+    paste_image_shortcut_prefers_ctrl_alt_v_under_wsl,
     shortcut_overlay_lines,
     shows_passive_footer_line,
     single_line_footer_layout,
@@ -119,13 +122,19 @@ def test_passive_status_line_combines_agent_and_yields_to_queue_hint():
 
     assert (
         status_line_right_indicator_line("Status line content", "Robie [explorer]")
-        == "Status line content - Robie [explorer]"
+        == "Status line content ? Robie [explorer]"
     )
     assert shows_passive_footer_line(props, show_queue_hint=False) is True
     assert uses_passive_footer_status_layout(props, show_queue_hint=False) is True
     assert footer_from_props_lines(props, show_shortcuts_hint=True) == [
-        "Status line content - Robie [explorer]"
+        "Status line content ? Robie [explorer]"
     ]
 
     assert shows_passive_footer_line(props, show_queue_hint=True) is False
     assert uses_passive_footer_status_layout(props, show_queue_hint=True) is False
+
+
+def test_footer_rust_snapshot_helpers_have_semantic_coverage():
+    assert footer_snapshots() is True
+    assert footer_status_line_truncates_to_keep_mode_indicator() is True
+    assert paste_image_shortcut_prefers_ctrl_alt_v_under_wsl() is True

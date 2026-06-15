@@ -30,9 +30,10 @@ def test_build_rows_uses_selection_enabled_marker_and_truncation():
 
     rows = view.build_rows()
 
-    assert rows[0].name == f"› [x] {truncate_skill_name(item.name)}"
+    assert rows[0].name == f"> [x] {truncate_skill_name(item.name)}"
     assert rows[0].description == "Long desc"
     assert rows[0].selected is True
+    assert rows[0].name.endswith(".")
 
 
 def test_filter_matches_display_name_then_skill_name_and_preserves_selection():
@@ -109,3 +110,21 @@ def test_rows_width_height_hint_and_render_empty_state():
     assert lines[3].text == SEARCH_PLACEHOLDER
     assert lines[4].text == SEARCH_PROMPT_PREFIX
     assert any(line.text == "no matches" for line in lines)
+
+
+def test_handle_key_event_accept_cancel_and_modified_navigation_semantics():
+    events = []
+    view = SkillsToggleView.new(_items(), events)
+
+    view.handle_key_event({"key": "down"})
+    assert view.selected_idx == 1
+    view.handle_key_event({"key": "enter"})
+    assert view.items[1].enabled is True
+    assert events[-1] == {"type": "SetSkillEnabled", "path": "/tmp/change.toml", "enabled": True}
+
+    view.handle_key_event({"key": "esc"})
+    assert view.is_complete()
+    assert events[-2:] == [
+        {"type": "ManageSkillsClosed"},
+        {"type": "ListSkills", "args": [], "force_reload": True},
+    ]

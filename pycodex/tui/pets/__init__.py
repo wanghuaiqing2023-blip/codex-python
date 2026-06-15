@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, BinaryIO
+from typing import Any, Callable, Optional, Union
 
 from .._porting import RustTuiModule
 from . import asset_pack, catalog, image_protocol
@@ -27,6 +27,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="pets",
     source="codex/codex-rs/tui/src/pets/mod.rs",
+    status="complete",
 )
 
 DEFAULT_PET_ID = "codex"
@@ -62,8 +63,8 @@ class PetImageRenderError(Exception):
 
 @dataclass
 class PetImageRenderState:
-    last_sixel_clear_area: "SixelClearArea | None" = None
-    last_protocol: ImageProtocol | None = None
+    last_sixel_clear_area: Optional["SixelClearArea"] = None
+    last_protocol: Optional[ImageProtocol] = None
 
 
 class AmbientPetPayload(Enum):
@@ -90,9 +91,9 @@ class SixelClearArea:
 
 def ensure_builtin_pack_for_pet(
     pet_id: str,
-    codex_home: str | Path,
+    codex_home: Union[str, Path],
     *,
-    ensure_fn: Callable[[str | Path, Any], None] | None = None,
+    ensure_fn: Optional[Callable[[Union[str, Path], Any], None]] = None,
 ) -> None:
     pet = catalog.builtin_pet(pet_id)
     if pet is not None:
@@ -100,11 +101,19 @@ def ensure_builtin_pack_for_pet(
         ensure(codex_home, pet)
 
 
-def render_ambient_pet_image(writer: Any, state: PetImageRenderState, request: AmbientPetDraw | None) -> None:
+def render_ambient_pet_image(
+    writer: Any,
+    state: PetImageRenderState,
+    request: Optional[AmbientPetDraw],
+) -> None:
     render_pet_image(writer, state, AMBIENT_PET_IMAGE_ID, request)
 
 
-def render_pet_picker_preview_image(writer: Any, state: PetImageRenderState, request: AmbientPetDraw | None) -> None:
+def render_pet_picker_preview_image(
+    writer: Any,
+    state: PetImageRenderState,
+    request: Optional[AmbientPetDraw],
+) -> None:
     render_pet_image(writer, state, PET_PICKER_PREVIEW_IMAGE_ID, request)
 
 
@@ -112,9 +121,9 @@ def render_pet_image(
     writer: Any,
     state: PetImageRenderState,
     image_id: int,
-    request: AmbientPetDraw | None,
+    request: Optional[AmbientPetDraw],
     *,
-    sixel_frame_fn: Callable[[Path, Path, int], Path] | None = None,
+    sixel_frame_fn: Optional[Callable[[Path, Path, int], Path]] = None,
 ) -> None:
     try:
         if request is None:
@@ -160,7 +169,7 @@ def render_pet_image(
         raise PetImageRenderError.terminal(exc) from exc
 
 
-def is_kitty_protocol(protocol: ImageProtocol | str) -> bool:
+def is_kitty_protocol(protocol: Union[ImageProtocol, str]) -> bool:
     protocol = _coerce_protocol(protocol)
     return protocol in {ImageProtocol.KITTY, ImageProtocol.KITTY_LOCAL_FILE}
 
@@ -177,8 +186,8 @@ def _payload_for_request(
     protocol: ImageProtocol,
     image_id: int,
     *,
-    sixel_frame_fn: Callable[[Path, Path, int], Path] | None,
-) -> tuple[AmbientPetPayload, str | bytes]:
+    sixel_frame_fn: Optional[Callable[[Path, Path, int], Path]],
+) -> tuple:
     try:
         if protocol is ImageProtocol.KITTY:
             return (
@@ -197,7 +206,7 @@ def _payload_for_request(
         raise PetImageRenderError.asset(exc) from exc
 
 
-def _coerce_protocol(protocol: ImageProtocol | str) -> ImageProtocol:
+def _coerce_protocol(protocol: Union[ImageProtocol, str]) -> ImageProtocol:
     if isinstance(protocol, ImageProtocol):
         return protocol
     normalized = str(protocol)
@@ -211,7 +220,7 @@ def _move_to(x: int, y: int) -> str:
     return f"\x1b[{int(y) + 1};{int(x) + 1}H"
 
 
-def _write(writer: Any, data: str | bytes) -> None:
+def _write(writer: Any, data: Union[str, bytes]) -> None:
     if isinstance(data, str):
         try:
             writer.write(data)

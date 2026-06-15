@@ -89,6 +89,12 @@ def test_builtin_disabled_reason_prefers_profile_id_then_preset_id() -> None:
     assert read_only.name == "Read Only"
     assert read_only.disabled_reason == "blocked"
 
+    fallback = open_permission_profiles_popup(
+        PermissionMenuConfig(disabled_reasons={"read-only": "preset blocked"})
+    )
+    assert fallback.view is not None
+    assert fallback.view.items[-1].disabled_reason == "preset blocked"
+
 
 def test_permission_profile_selection_item_uses_id_as_display_label() -> None:
     # Rust parity: permission_profile_selection_item action payload uses id for display_label.

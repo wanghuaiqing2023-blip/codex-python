@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
+from typing import FrozenSet, Iterable, Mapping, Optional, Sequence, Tuple, Union
 
 from .._porting import RustTuiModule
 from ..text_formatting import truncate_text
@@ -16,6 +16,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="chatwidget::notifications",
     source="codex/codex-rs/tui/src/chatwidget/notifications.rs",
+    status="complete",
 )
 
 AGENT_NOTIFICATION_PREVIEW_GRAPHEMES = 200
@@ -26,8 +27,8 @@ APPROVAL_NOTIFICATION_PREVIEW_GRAPHEMES = 30
 class Notifications:
     """Semantic model for Rust ``Notifications`` settings used by this module."""
 
-    enabled: bool | None = True
-    custom_allowed: frozenset[str] | None = None
+    enabled: Optional[bool] = True
+    custom_allowed: Optional[FrozenSet[str]] = None
 
     @classmethod
     def enabled_setting(cls, enabled: bool) -> "Notifications":
@@ -38,7 +39,10 @@ class Notifications:
         return cls(enabled=None, custom_allowed=frozenset(str(item) for item in allowed))
 
     @classmethod
-    def coerce(cls, settings: "Notifications | bool | Iterable[str] | Mapping[str, object]") -> "Notifications":
+    def coerce(
+        cls,
+        settings: Union["Notifications", bool, Iterable[str], Mapping[str, object]],
+    ) -> "Notifications":
         if isinstance(settings, Notifications):
             return settings
         if isinstance(settings, bool):
@@ -69,8 +73,8 @@ class Notification:
     kind: str
     response: str = ""
     command: str = ""
-    cwd: Path | None = None
-    changes: tuple[Path, ...] = ()
+    cwd: Optional[Path] = None
+    changes: Tuple[Path, ...] = ()
     server_name: str = ""
     title: str = ""
 
@@ -83,7 +87,11 @@ class Notification:
         return cls(kind="exec_approval_requested", command=command)
 
     @classmethod
-    def edit_approval_requested(cls, cwd: str | Path, changes: Sequence[str | Path]) -> "Notification":
+    def edit_approval_requested(
+        cls,
+        cwd: Union[str, Path],
+        changes: Sequence[Union[str, Path]],
+    ) -> "Notification":
         return cls(
             kind="edit_approval_requested",
             cwd=Path(cwd),
@@ -135,14 +143,17 @@ class Notification:
     def priority(self) -> int:
         return 0 if self.kind == "agent_turn_complete" else 1
 
-    def allowed_for(self, settings: Notifications | bool | Iterable[str] | Mapping[str, object]) -> bool:
+    def allowed_for(
+        self,
+        settings: Union[Notifications, bool, Iterable[str], Mapping[str, object]],
+    ) -> bool:
         coerced = Notifications.coerce(settings)
         if coerced.custom_allowed is None:
             return bool(coerced.enabled)
         return self.type_name() in coerced.custom_allowed
 
     @staticmethod
-    def agent_turn_preview(response: str) -> str | None:
+    def agent_turn_preview(response: str) -> Optional[str]:
         normalized = " ".join(response.split()).strip()
         if not normalized:
             return None
@@ -150,8 +161,8 @@ class Notification:
 
     @staticmethod
     def user_input_request_summary(
-        questions: Sequence[ToolRequestUserInputQuestion | Mapping[str, object]],
-    ) -> str | None:
+        questions: Sequence[Union[ToolRequestUserInputQuestion, Mapping[str, object]]],
+    ) -> Optional[str]:
         if not questions:
             return None
         first = questions[0]
@@ -172,7 +183,7 @@ class NotificationCoalescer:
     """Small semantic stand-in for the ``ChatWidget`` pending-notification fields."""
 
     settings: Notifications = field(default_factory=lambda: Notifications.enabled_setting(True))
-    pending_notification: Notification | None = None
+    pending_notification: Optional[Notification] = None
     redraw_requests: int = 0
 
     def notify(self, notification: Notification) -> bool:
@@ -187,7 +198,7 @@ class NotificationCoalescer:
         self.redraw_requests += 1
         return True
 
-    def maybe_post_pending_notification(self) -> str | None:
+    def maybe_post_pending_notification(self) -> Optional[str]:
         if self.pending_notification is None:
             return None
         notification = self.pending_notification

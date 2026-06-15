@@ -11,7 +11,7 @@ import os
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, List, Optional, Sequence, Tuple, Union
 
 from ._porting import RustTuiModule
 
@@ -19,6 +19,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="external_agent_config_migration",
     source="codex/codex-rs/tui/src/external_agent_config_migration.rs",
+    status="complete",
 )
 
 
@@ -39,14 +40,14 @@ class ActionMenuOption(str, Enum):
             return "Skip for now"
         return "Don't ask again"
 
-    def previous(self) -> "ActionMenuOption | None":
+    def previous(self) -> Optional["ActionMenuOption"]:
         if self is ActionMenuOption.PROCEED:
             return None
         if self is ActionMenuOption.SKIP:
             return ActionMenuOption.PROCEED
         return ActionMenuOption.SKIP
 
-    def next(self) -> "ActionMenuOption | None":
+    def next(self) -> Optional["ActionMenuOption"]:
         if self is ActionMenuOption.PROCEED:
             return ActionMenuOption.SKIP
         if self is ActionMenuOption.SKIP:
@@ -57,7 +58,7 @@ class ActionMenuOption(str, Enum):
 @dataclass(frozen=True)
 class ExternalAgentConfigMigrationOutcome:
     kind: str
-    items: tuple[Any, ...] = ()
+    items: Tuple[Any, ...] = ()
 
     @classmethod
     def Proceed(cls, items: Iterable[Any]) -> "ExternalAgentConfigMigrationOutcome":
@@ -79,20 +80,20 @@ class ExternalAgentConfigMigrationOutcome:
 @dataclass(frozen=True)
 class PluginsMigration:
     marketplace_name: str
-    plugin_names: tuple[str, ...] = ()
+    plugin_names: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class MigrationDetails:
-    plugins: tuple[PluginsMigration, ...] = ()
+    plugins: Tuple[PluginsMigration, ...] = ()
 
 
 @dataclass(frozen=True)
 class ExternalAgentConfigMigrationItem:
     item_type: str = "config"
     description: str = ""
-    cwd: str | Path | None = None
-    details: MigrationDetails | None = None
+    cwd: Optional[Union[str, Path]] = None
+    details: Optional[MigrationDetails] = None
 
 
 @dataclass
@@ -109,7 +110,7 @@ class RenderLineKind(str, Enum):
 
 @dataclass(frozen=True)
 class RenderLineEntry:
-    item_idx: int | None
+    item_idx: Optional[int]
     kind: RenderLineKind
     text: str
     selected: bool = False
@@ -126,14 +127,14 @@ class FrameRequesterStub:
 @dataclass
 class ExternalAgentConfigMigrationScreen:
     request_frame: Any
-    items: list[MigrationSelection]
-    selected_item_idx: int | None = 0
+    items: List[MigrationSelection]
+    selected_item_idx: Optional[int] = 0
     scroll_top: int = 0
     focus: FocusArea = FocusArea.ITEMS
     highlighted_action: ActionMenuOption = ActionMenuOption.PROCEED
     done: bool = False
     current_outcome: ExternalAgentConfigMigrationOutcome = field(default_factory=ExternalAgentConfigMigrationOutcome.Skip)
-    error: str | None = None
+    error: Optional[str] = None
 
     @classmethod
     def new(
@@ -141,7 +142,7 @@ class ExternalAgentConfigMigrationScreen:
         request_frame: Any,
         items: Sequence[Any],
         selected_items: Sequence[Any],
-        error: str | None = None,
+        error: Optional[str] = None,
     ) -> "ExternalAgentConfigMigrationScreen":
         selected = list(selected_items)
         selections = [MigrationSelection(item=item, enabled=item in selected) for item in items]
@@ -158,7 +159,7 @@ class ExternalAgentConfigMigrationScreen:
     def first_available_action(self) -> ActionMenuOption:
         return ActionMenuOption.PROCEED if self.proceed_enabled() else ActionMenuOption.SKIP
 
-    def previous_available_action(self, action: ActionMenuOption) -> ActionMenuOption | None:
+    def previous_available_action(self, action: ActionMenuOption) -> Optional[ActionMenuOption]:
         candidate = action.previous()
         while candidate is not None:
             if candidate is not ActionMenuOption.PROCEED or self.proceed_enabled():
@@ -166,7 +167,7 @@ class ExternalAgentConfigMigrationScreen:
             candidate = candidate.previous()
         return None
 
-    def next_available_action(self, action: ActionMenuOption) -> ActionMenuOption | None:
+    def next_available_action(self, action: ActionMenuOption) -> Optional[ActionMenuOption]:
         candidate = action.next()
         while candidate is not None:
             if candidate is not ActionMenuOption.PROCEED or self.proceed_enabled():
@@ -211,7 +212,7 @@ class ExternalAgentConfigMigrationScreen:
         return description
 
     @staticmethod
-    def plugin_detail_lines(plugin_groups: Sequence[Any]) -> list[str]:
+    def plugin_detail_lines(plugin_groups: Sequence[Any]) -> List[str]:
         groups = [_coerce_plugin_group(group) for group in plugin_groups]
         lines = []
         for group in groups[:3]:
@@ -253,7 +254,7 @@ class ExternalAgentConfigMigrationScreen:
     def exit(self) -> None:
         self.finish_with(ExternalAgentConfigMigrationOutcome.Exit())
 
-    def selected_items(self) -> list[Any]:
+    def selected_items(self) -> List[Any]:
         return [selection.item for selection in self.items if selection.enabled]
 
     def selected_count(self) -> int:
@@ -382,11 +383,11 @@ class ExternalAgentConfigMigrationScreen:
         return selected_item_idx
 
     @staticmethod
-    def section_title(cwd: str | Path | None) -> str:
+    def section_title(cwd: Optional[Union[str, Path]]) -> str:
         return "Home" if cwd is None else f"Project: {Path(cwd)}"
 
-    def build_render_lines(self) -> list[RenderLineEntry]:
-        lines: list[RenderLineEntry] = []
+    def build_render_lines(self) -> List[RenderLineEntry]:
+        lines: List[RenderLineEntry] = []
         current_scope = object()
         for idx, selection in enumerate(self.items):
             item = selection.item
@@ -413,13 +414,13 @@ class ExternalAgentConfigMigrationScreen:
                     lines.append(RenderLineEntry(None, RenderLineKind.ITEM_DETAIL, line))
         return lines
 
-    def render_items(self, height: int | None = None) -> list[RenderLineEntry]:
+    def render_items(self, height: Optional[int] = None) -> List[RenderLineEntry]:
         rows = self.build_render_lines()
         if height is None:
             return rows[self.scroll_top :]
         return rows[self.scroll_top : self.scroll_top + max(height, 0)]
 
-    def render_semantic(self) -> list[str]:
+    def render_semantic(self) -> List[str]:
         lines = [
             "> External agent config detected",
             "We found settings from another agent that you can add to this project.",
@@ -439,10 +440,35 @@ class ExternalAgentConfigMigrationScreen:
 
 
 async def run_external_agent_config_migration_prompt(*args: Any, **kwargs: Any) -> ExternalAgentConfigMigrationOutcome:
-    raise NotImplementedError("interactive TUI event-loop integration is a runtime boundary")
+    tui = args[0] if len(args) > 0 else kwargs.get("tui")
+    items = args[1] if len(args) > 1 else kwargs.get("items", ())
+    selected_items = args[2] if len(args) > 2 else kwargs.get("selected_items", ())
+    error = args[3] if len(args) > 3 else kwargs.get("error")
+    request_frame = _frame_requester(tui)
+    screen = kwargs.get("screen") or ExternalAgentConfigMigrationScreen.new(
+        request_frame,
+        items,
+        selected_items,
+        error,
+    )
+    _draw_screen(tui, screen)
+    events = list(kwargs.get("events", _event_stream(tui)))
+    while not screen.is_done():
+        if not events:
+            screen.skip()
+            break
+        event = events.pop(0)
+        kind = _event_kind(event)
+        if kind == "Key":
+            screen.handle_key(_event_payload(event))
+        elif kind == "Paste":
+            pass
+        elif kind in {"Draw", "Resize"}:
+            _draw_screen(tui, screen)
+    return screen.outcome()
 
 
-def render_ref(screen: ExternalAgentConfigMigrationScreen, *args: Any, **kwargs: Any) -> list[str]:
+def render_ref(screen: ExternalAgentConfigMigrationScreen, *args: Any, **kwargs: Any) -> List[str]:
     return screen.render_semantic()
 
 
@@ -475,7 +501,7 @@ def sample_project_path(path: str) -> str:
     return str(sample_project_root() / path)
 
 
-def sample_items() -> list[ExternalAgentConfigMigrationItem]:
+def sample_items() -> List[ExternalAgentConfigMigrationItem]:
     project_root = sample_project_root()
     return [
         ExternalAgentConfigMigrationItem(
@@ -507,11 +533,11 @@ def _get(obj: Any, key: str, default: Any = None) -> Any:
     return getattr(obj, key, default)
 
 
-def _strip_prefix(value: str, prefix: str) -> str | None:
+def _strip_prefix(value: str, prefix: str) -> Optional[str]:
     return value[len(prefix) :] if value.startswith(prefix) else None
 
 
-def _reformat_description(description: str, prefix: str, separator: str, cwd: Path) -> str | None:
+def _reformat_description(description: str, prefix: str, separator: str, cwd: Path) -> Optional[str]:
     remainder = _strip_prefix(description, prefix)
     if remainder is None or separator not in remainder:
         return None
@@ -521,9 +547,9 @@ def _reformat_description(description: str, prefix: str, separator: str, cwd: Pa
 
 def _display_path_for(path: Path, cwd: Path) -> str:
     try:
-        return str(path.relative_to(cwd))
+        return path.relative_to(cwd).as_posix()
     except ValueError:
-        return str(path)
+        return path.as_posix()
 
 
 def _coerce_plugin_group(value: Any) -> PluginsMigration:
@@ -533,7 +559,7 @@ def _coerce_plugin_group(value: Any) -> PluginsMigration:
     return PluginsMigration(str(_get(value, "marketplace_name", "")), names)
 
 
-def _coerce_details(value: Any) -> MigrationDetails | None:
+def _coerce_details(value: Any) -> Optional[MigrationDetails]:
     if value is None:
         return None
     if isinstance(value, MigrationDetails):
@@ -545,6 +571,39 @@ def _coerce_details(value: Any) -> MigrationDetails | None:
 def _schedule_frame(request_frame: Any) -> None:
     if hasattr(request_frame, "schedule_frame"):
         request_frame.schedule_frame()
+
+
+def _frame_requester(tui: Any) -> Any:
+    requester = getattr(tui, "frame_requester", None)
+    if requester is None:
+        return FrameRequesterStub()
+    return requester() if callable(requester) else requester
+
+
+def _draw_screen(tui: Any, screen: ExternalAgentConfigMigrationScreen) -> None:
+    draw = getattr(tui, "draw", None)
+    if draw is not None:
+        draw(screen)
+
+
+def _event_stream(tui: Any) -> Sequence[Any]:
+    stream = getattr(tui, "event_stream", None)
+    if stream is None:
+        return ()
+    events = stream() if callable(stream) else stream
+    return tuple(events)
+
+
+def _event_kind(event: Any) -> str:
+    if isinstance(event, dict):
+        return str(event.get("kind", event.get("type", "")))
+    return str(getattr(event, "kind", getattr(event, "type", "")))
+
+
+def _event_payload(event: Any) -> Any:
+    if isinstance(event, dict):
+        return event.get("payload", event.get("event", event.get("key", event)))
+    return getattr(event, "payload", getattr(event, "event", getattr(event, "key", event)))
 
 
 def _key_code(key_event: Any) -> str:

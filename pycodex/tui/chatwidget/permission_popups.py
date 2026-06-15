@@ -10,11 +10,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Iterable, Protocol
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 from .._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="chatwidget::permission_popups", source="codex/codex-rs/tui/src/chatwidget/permission_popups.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="chatwidget::permission_popups",
+    source="codex/codex-rs/tui/src/chatwidget/permission_popups.rs",
+    status="complete",
+)
 
 __all__ = [
     "AUTO_REVIEW_DESCRIPTION",
@@ -31,6 +36,7 @@ __all__ = [
     "approve_recent_auto_review_denial",
     "approval_preset_actions",
     "builtin_approval_presets",
+    "open_approvals_popup",
     "open_auto_review_denials_popup",
     "open_full_access_confirmation",
     "open_permissions_popup",
@@ -63,7 +69,7 @@ class PermissionProfileKind(str, Enum):
 @dataclass(frozen=True)
 class PermissionProfile:
     kind: PermissionProfileKind
-    writable_roots: tuple[str, ...] = ()
+    writable_roots: Tuple[str, ...] = ()
     full_disk_write_access: bool = False
     network_access: bool = False
 
@@ -87,7 +93,7 @@ class PermissionProfile:
             return True
         return path == cwd and cwd in self.writable_roots
 
-    def get_writable_roots_with_cwd(self, cwd: str) -> tuple[str, ...]:
+    def get_writable_roots_with_cwd(self, cwd: str) -> Tuple[str, ...]:
         return tuple(root for root in self.writable_roots if root != "")
 
     def network_sandbox_policy(self) -> bool:
@@ -97,7 +103,7 @@ class PermissionProfile:
 @dataclass(frozen=True)
 class ActivePermissionProfile:
     id: str
-    name: str | None = None
+    name: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -119,41 +125,41 @@ class ApprovalPreset:
 @dataclass(frozen=True)
 class AppEvent:
     kind: str
-    payload: dict[str, Any] = field(default_factory=dict)
+    payload: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class SelectionItem:
     name: str
-    description: str | None = None
-    selected_description: str | None = None
+    description: Optional[str] = None
+    selected_description: Optional[str] = None
     is_current: bool = False
     is_disabled: bool = False
-    disabled_reason: str | None = None
-    search_value: str | None = None
-    actions: list[AppEvent] = field(default_factory=list)
+    disabled_reason: Optional[str] = None
+    search_value: Optional[str] = None
+    actions: List[AppEvent] = field(default_factory=list)
     dismiss_on_select: bool = False
 
 
 @dataclass
 class SelectionViewParams:
-    title: str | None = None
-    subtitle: str | None = None
-    footer_note: str | None = None
-    footer_hint: str | None = "Enter to select, Esc to cancel"
-    items: list[SelectionItem] = field(default_factory=list)
+    title: Optional[str] = None
+    subtitle: Optional[str] = None
+    footer_note: Optional[str] = None
+    footer_hint: Optional[str] = "Enter to select, Esc to cancel"
+    items: List[SelectionItem] = field(default_factory=list)
     is_searchable: bool = False
-    col_width_mode: str | None = None
-    header: Any | None = None
+    col_width_mode: Optional[str] = None
+    header: Optional[Any] = None
 
 
-class PermissionPopupWidget(Protocol):
+class PermissionPopupWidget:
     config: Any
     bottom_pane: Any
     review: Any
 
 
-def builtin_approval_presets(cwd: str = ".") -> list[ApprovalPreset]:
+def builtin_approval_presets(cwd: str = ".") -> List[ApprovalPreset]:
     """Return the built-in permission presets used by the popup."""
 
     return [
@@ -184,6 +190,10 @@ def builtin_approval_presets(cwd: str = ".") -> list[ApprovalPreset]:
     ]
 
 
+def open_approvals_popup(widget: Any, include_read_only: bool = False) -> SelectionViewParams:
+    return open_permissions_popup(widget, include_read_only=include_read_only)
+
+
 def open_permissions_popup(widget: Any, include_read_only: bool = False) -> SelectionViewParams:
     """Build and show the generic permissions popup."""
 
@@ -195,7 +205,7 @@ def open_permissions_popup(widget: Any, include_read_only: bool = False) -> Sele
     guardian_enabled = bool(widget.config.features.enabled("GuardianApproval"))
     current_reviewer = _reviewer(getattr(widget.config, "approvals_reviewer", ApprovalsReviewer.USER))
     cwd = getattr(widget.config, "cwd", ".")
-    items: list[SelectionItem] = []
+    items = []  # type: List[SelectionItem]
 
     for preset in builtin_approval_presets(cwd):
         if not include_read_only and preset.id == "read-only":
@@ -258,7 +268,7 @@ def open_permissions_popup(widget: Any, include_read_only: bool = False) -> Sele
     return params
 
 
-def open_auto_review_denials_popup(widget: Any) -> SelectionViewParams | None:
+def open_auto_review_denials_popup(widget: Any) -> Optional[SelectionViewParams]:
     denials = getattr(widget.review, "recent_auto_review_denials", None)
     entries = list(_denial_entries(denials))
     if not entries:
@@ -314,7 +324,7 @@ def open_auto_review_denials_popup(widget: Any) -> SelectionViewParams | None:
     return params
 
 
-def approve_recent_auto_review_denial(widget: Any, thread_id: str, id: str) -> list[AppEvent] | None:
+def approve_recent_auto_review_denial(widget: Any, thread_id: str, id: str) -> Optional[List[AppEvent]]:
     event = widget.review.recent_auto_review_denials.take(id)
     if event is None:
         _call(widget, "add_error_message", "That auto-review denial is no longer available.")
@@ -333,12 +343,12 @@ def approve_recent_auto_review_denial(widget: Any, thread_id: str, id: str) -> l
 
 
 def approval_preset_actions(
-    approval: AskForApproval | str,
+    approval: Union[AskForApproval, str],
     permission_profile: PermissionProfile,
     active_permission_profile: ActivePermissionProfile,
     label: str,
-    approvals_reviewer: ApprovalsReviewer | str,
-) -> list[AppEvent]:
+    approvals_reviewer: Union[ApprovalsReviewer, str],
+) -> List[AppEvent]:
     approval = _approval(approval)
     approvals_reviewer = _reviewer(approvals_reviewer)
     return [
@@ -359,7 +369,7 @@ def approval_preset_actions(
     ]
 
 
-def permission_profile_selection_actions(selection: PermissionProfileSelection) -> list[AppEvent]:
+def permission_profile_selection_actions(selection: PermissionProfileSelection) -> List[AppEvent]:
     return [AppEvent("SelectPermissionProfile", {"selection": selection})]
 
 
@@ -367,10 +377,10 @@ def permission_mode_actions(
     widget: Any,
     preset: ApprovalPreset,
     label: str,
-    approvals_reviewer: ApprovalsReviewer | str,
-    profile_selection: PermissionProfileSelection | None,
+    approvals_reviewer: Union[ApprovalsReviewer, str],
+    profile_selection: Optional[PermissionProfileSelection],
     return_to_permissions: bool,
-) -> list[AppEvent]:
+) -> List[AppEvent]:
     approvals_reviewer = _reviewer(approvals_reviewer)
     hide_warning = bool(getattr(widget.config.notices, "hide_full_access_warning", False))
     if approvals_reviewer is ApprovalsReviewer.USER and preset.id == "full-access" and not hide_warning:
@@ -384,6 +394,43 @@ def permission_mode_actions(
                 },
             )
         ]
+    if approvals_reviewer is ApprovalsReviewer.USER and preset.id == "auto":
+        if _windows_sandbox_disabled(widget):
+            if _elevated_sandbox_nux_enabled(widget) and _sandbox_setup_is_complete(widget):
+                return [
+                    AppEvent(
+                        "EnableWindowsSandboxForAgentMode",
+                        {
+                            "preset": preset,
+                            "mode": "Elevated",
+                            "profile_selection": profile_selection,
+                        },
+                    )
+                ]
+            return [
+                AppEvent(
+                    "OpenWindowsSandboxEnablePrompt",
+                    {
+                        "preset": preset,
+                        "profile_selection": profile_selection,
+                    },
+                )
+            ]
+        details = _world_writable_warning_details(widget)
+        if details is not None:
+            sample_paths, extra_count, failed_scan = details
+            return [
+                AppEvent(
+                    "OpenWorldWritableWarningConfirmation",
+                    {
+                        "preset": preset,
+                        "profile_selection": profile_selection,
+                        "sample_paths": sample_paths,
+                        "extra_count": extra_count,
+                        "failed_scan": failed_scan,
+                    },
+                )
+            ]
     if profile_selection is not None:
         return permission_profile_selection_actions(profile_selection)
     return approval_preset_actions(
@@ -396,7 +443,7 @@ def permission_mode_actions(
 
 
 def preset_matches_current(
-    current_approval: AskForApproval | str,
+    current_approval: Union[AskForApproval, str],
     current_permission_profile: PermissionProfile,
     cwd: str,
     preset: ApprovalPreset,
@@ -428,7 +475,7 @@ def open_full_access_confirmation(
     widget: Any,
     preset: ApprovalPreset,
     return_to_permissions: bool,
-    profile_selection: PermissionProfileSelection | None = None,
+    profile_selection: Optional[PermissionProfileSelection] = None,
 ) -> SelectionViewParams:
     selected_name = preset.label
     approval = _approval(preset.approval)
@@ -498,11 +545,11 @@ def action_summary(action: Any) -> str:
     return getattr(action, "summary", None) or getattr(action, "command", None) or str(action)
 
 
-def _approval(value: AskForApproval | str) -> AskForApproval:
+def _approval(value: Union[AskForApproval, str]) -> AskForApproval:
     return value if isinstance(value, AskForApproval) else AskForApproval(str(value))
 
 
-def _reviewer(value: ApprovalsReviewer | str) -> ApprovalsReviewer:
+def _reviewer(value: Union[ApprovalsReviewer, str]) -> ApprovalsReviewer:
     return value if isinstance(value, ApprovalsReviewer) else ApprovalsReviewer(str(value))
 
 
@@ -528,3 +575,30 @@ def _denial_entries(denials: Any) -> Iterable[Any]:
     if entries is not None:
         return entries()
     return tuple(denials)
+
+
+def _windows_sandbox_disabled(widget: Any) -> bool:
+    level = getattr(widget.config, "windows_sandbox_level", None)
+    if level is None:
+        return False
+    return str(level).split(".")[-1] == "Disabled"
+
+
+def _elevated_sandbox_nux_enabled(widget: Any) -> bool:
+    return bool(getattr(widget.config, "elevated_sandbox_nux_enabled", False))
+
+
+def _sandbox_setup_is_complete(widget: Any) -> bool:
+    checker = getattr(widget, "sandbox_setup_is_complete", None)
+    return bool(checker()) if callable(checker) else False
+
+
+def _world_writable_warning_details(widget: Any) -> Optional[Tuple[Any, Any, Any]]:
+    details = getattr(widget, "world_writable_warning_details", None)
+    if not callable(details):
+        return None
+    value = details()
+    if value is None:
+        return None
+    sample_paths, extra_count, failed_scan = value
+    return sample_paths, extra_count, failed_scan

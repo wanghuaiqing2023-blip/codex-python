@@ -7,10 +7,12 @@ from pycodex.tui.history_cell import (
     is_stream_continuation,
     plain_lines,
     raw_lines_from_source,
+    render,
     transcript_animation_tick,
 )
 from pycodex.tui.line_truncation import Line, Span
-from pycodex.tui.terminal_hyperlinks import HyperlinkLine, TerminalHyperlink
+from pycodex.tui.terminal_hyperlinks import HyperlinkLine, SemanticBuffer, SemanticRect, TerminalHyperlink
+from pycodex.tui.terminal_hyperlinks import strip_osc8
 
 
 class DemoCell:
@@ -68,3 +70,27 @@ def test_default_height_and_transcript_whitespace_clamp() -> None:
 def test_default_stream_and_animation_methods() -> None:
     assert is_stream_continuation(PlainCell()) is False
     assert transcript_animation_tick(PlainCell()) is None
+
+
+def test_render_clears_bottom_scrolls_and_marks_hyperlinks() -> None:
+    # Rust: history_cell/mod.rs::Renderable for Box<dyn HistoryCell>.
+    class TallLinkedCell:
+        def display_lines(self, width: int):
+            return [Line.from_text("old"), Line.from_text("display link")]
+
+        def raw_lines(self):
+            return []
+
+        def display_hyperlink_lines(self, width: int):
+            first = HyperlinkLine.new("old")
+            second = HyperlinkLine.new("display link")
+            second.hyperlinks.append(TerminalHyperlink(range(8, 12), "https://example.com"))
+            return [first, second]
+
+    buf = SemanticBuffer.from_lines(["xxxxx", "xxxxx"])
+
+    render(TallLinkedCell(), SemanticRect(0, 0, 12, 1), buf)
+
+    rendered = "".join(strip_osc8(buf.cell(column, 0).symbol) for column in range(12))
+    assert rendered.startswith("display link")
+    assert all("https://example.com" in buf.cell(column, 0).symbol for column in range(8, 12))

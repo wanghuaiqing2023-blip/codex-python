@@ -5,6 +5,7 @@ import pytest
 from pycodex.tui.app.tests import (
     APP_SNAPSHOT_DIR,
     AppSnapshotAssertion,
+    AppTestFixturePlan,
     NotifiedDrop,
     assert_app_snapshot,
     declared_test_modules,
@@ -12,7 +13,9 @@ from pycodex.tui.app.tests import (
     helper_names,
     lines_to_single_string,
     make_test_app,
-    test_absolute_path,
+    make_test_app_with_channels,
+    start_config_write_test_app_server,
+    test_absolute_path as build_test_absolute_path,
 )
 
 
@@ -30,9 +33,9 @@ def test_snapshot_assertion_models_rust_macro_binding() -> None:
 
 
 def test_absolute_path_accepts_only_absolute_paths(tmp_path: Path) -> None:
-    assert test_absolute_path(tmp_path) == tmp_path
+    assert build_test_absolute_path(tmp_path) == tmp_path
     with pytest.raises(ValueError):
-        test_absolute_path("relative/path")
+        build_test_absolute_path("relative/path")
 
 
 def test_lines_to_single_string_flattens_simple_line_shapes() -> None:
@@ -54,8 +57,18 @@ def test_helper_and_heavyweight_fixture_boundaries_are_declared() -> None:
         "make_test_app_with_channels",
         "start_config_write_test_app_server",
     )
-    with pytest.raises(NotImplementedError):
-        make_test_app()
+    assert make_test_app() == AppTestFixturePlan(name="make_test_app")
+
+
+def test_heavyweight_fixture_helpers_return_semantic_plans() -> None:
+    assert make_test_app_with_channels() == AppTestFixturePlan(
+        name="make_test_app_with_channels",
+        channels=True,
+    )
+    assert start_config_write_test_app_server() == AppTestFixturePlan(
+        name="start_config_write_test_app_server",
+        app_server=True,
+    )
 
 
 def test_notify_on_drop_semantic_helper_marks_drop() -> None:

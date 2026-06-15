@@ -6,6 +6,8 @@ Concrete behavior should be filled in from the Rust source and tests.
 
 from __future__ import annotations
 
+import plistlib
+import re
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -14,7 +16,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .._porting import RustTuiModule, not_ported
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="render::highlight", source="codex/codex-rs/tui/src/render/highlight.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="render::highlight",
+    source="codex/codex-rs/tui/src/render/highlight.rs",
+    status="complete_slice",
+)
 
 SYNTAX_SET: Any = None
 
@@ -337,10 +344,54 @@ def load_custom_theme(name: str, codex_home: Any) -> Optional[SemanticTheme]:
     path = custom_theme_path(name, codex_home)
     if not path.is_file():
         return None
-    # Keep the custom-theme interface available without parsing TextMate theme
-    # settings.  The file presence is enough for picker discovery, but no syntax
-    # colors are inferred in this intentionally empty highlighter.
-    return SemanticTheme(name=name, is_custom=True, path=path)
+    try:
+        with path.open("rb") as handle:
+            data = plistlib.load(handle)
+    except Exception:
+        return None
+
+    foreground: Optional[Tuple[int, int, int]] = None
+    backgrounds: Dict[str, Tuple[int, int, int]] = {}
+    foregrounds: Dict[str, Tuple[int, int, int]] = {}
+    token_styles: Dict[str, SemanticStyle] = {}
+
+    for item in data.get("settings", []):
+        if not isinstance(item, dict):
+            continue
+        settings = item.get("settings") or {}
+        if not isinstance(settings, dict):
+            continue
+        scope_value = item.get("scope")
+        if scope_value is None:
+            fg = _parse_hex_color(settings.get("foreground"))
+            if fg is not None:
+                foreground = fg
+            continue
+        scopes = [scope.strip() for scope in str(scope_value).split(",") if scope.strip()]
+        fg = _parse_hex_color(settings.get("foreground"))
+        bg = _parse_hex_color(settings.get("background"))
+        font_style = str(settings.get("fontStyle", "")).lower()
+        for scope in scopes:
+            if fg is not None:
+                foregrounds[scope] = fg
+            if bg is not None:
+                backgrounds[scope] = bg
+            if fg is not None or font_style:
+                token_styles[scope] = SemanticStyle(
+                    fg=SemanticColor("rgb", fg) if fg is not None else None,
+                    bold="bold" in font_style,
+                    italic="italic" in font_style,
+                )
+
+    return SemanticTheme(
+        name=name,
+        is_custom=True,
+        path=path,
+        foreground=foreground,
+        backgrounds=backgrounds or None,
+        foregrounds=foregrounds or None,
+        token_styles=token_styles or None,
+    )
 
 
 def validate_theme_name(name: Optional[str], codex_home: Optional[Any] = None) -> Optional[str]:
@@ -354,7 +405,12 @@ def validate_theme_name(name: Optional[str], codex_home: Optional[Any] = None) -
     if parse_theme_name(name) is not None:
         return None
     if codex_home is not None and custom_theme_path(name, codex_home).is_file():
-        return None
+        if load_custom_theme(name, codex_home) is not None:
+            return None
+        return (
+            f'Custom theme "{name}" at {custom_path} could not be loaded '
+            "(invalid .tmTheme format). Falling back to the default theme."
+        )
     return (
         f'Theme "{name}" not found. Using the default theme. To use a custom theme, '
         f"place a .tmTheme file at {custom_path}."
@@ -432,7 +488,7 @@ def list_available_themes(codex_home: Optional[Any] = None) -> List[ThemeEntry]:
         themes_dir = Path(codex_home) / "themes"
         if themes_dir.is_dir():
             for path in themes_dir.iterdir():
-                if path.suffix == ".tmTheme" and path.is_file():
+                if path.suffix == ".tmTheme" and path.is_file() and load_custom_theme(path.stem, codex_home) is not None:
                     entries.setdefault(path.stem, ThemeEntry(name=path.stem, is_custom=True))
     return sorted(entries.values(), key=lambda entry: (entry.name.lower(), entry.name))
 
@@ -476,6 +532,15 @@ def convert_style(style: Any) -> SemanticStyle:
     )
 
 
+def _parse_hex_color(value: Any) -> Optional[Tuple[int, int, int]]:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not re.match(r"^#[0-9a-fA-F]{6}$", text):
+        return None
+    return (int(text[1:3], 16), int(text[3:5], 16), int(text[5:7], 16))
+
+
 def find_syntax(language: str) -> Optional[str]:
     normalized = language.strip().lower()
     aliases = {
@@ -511,18 +576,117 @@ def _plain_line_spans(code: str) -> List[List[SemanticSpan]]:
     return [[SemanticSpan(part)] for part in parts] or [[SemanticSpan("")]]
 
 
+_KEYWORD_STYLE = SemanticStyle(fg=SemanticColor("rgb", (203, 166, 247)), bold=True)
+_STRING_STYLE = SemanticStyle(fg=SemanticColor("rgb", (166, 227, 161)))
+_COMMENT_STYLE = SemanticStyle(fg=SemanticColor("rgb", (127, 132, 156)), italic=True)
+
+_KEYWORDS = {
+    "rust": {
+        "as",
+        "async",
+        "await",
+        "crate",
+        "else",
+        "enum",
+        "fn",
+        "for",
+        "if",
+        "impl",
+        "let",
+        "match",
+        "mod",
+        "mut",
+        "pub",
+        "return",
+        "self",
+        "Self",
+        "struct",
+        "trait",
+        "use",
+        "where",
+    },
+    "python": {
+        "and",
+        "as",
+        "class",
+        "def",
+        "elif",
+        "else",
+        "False",
+        "for",
+        "from",
+        "if",
+        "import",
+        "in",
+        "is",
+        "None",
+        "not",
+        "or",
+        "pass",
+        "return",
+        "True",
+        "while",
+        "with",
+    },
+    "bash": {"case", "do", "done", "elif", "else", "esac", "fi", "for", "function", "if", "in", "then", "while"},
+}
+
+
+def _styled_line_spans(code: str, language: str, theme: SemanticTheme) -> List[List[SemanticSpan]]:
+    normalized = find_syntax(language) or language
+    keyword_scope = foreground_style_for_scopes_with_theme(theme, ["keyword", "keyword.control"])
+    keyword_style = keyword_scope or _KEYWORD_STYLE
+    lines = _plain_line_spans(code)
+    keywords = _KEYWORDS.get(normalized, set())
+    if normalized == "rs":
+        keywords = _KEYWORDS["rust"]
+    if normalized == "py":
+        keywords = _KEYWORDS["python"]
+    if normalized == "sh":
+        keywords = _KEYWORDS["bash"]
+    result: List[List[SemanticSpan]] = []
+    for line in lines:
+        text = "".join(span.text for span in line)
+        result.append(_styled_line(text, keywords, keyword_style))
+    return result
+
+
+def _styled_line(text: str, keywords: Any, keyword_style: SemanticStyle) -> List[SemanticSpan]:
+    spans: List[SemanticSpan] = []
+    token_re = re.compile(r"(#.*$|//.*$|\"[^\"\\]*(?:\\.[^\"\\]*)*\"|'[^'\\]*(?:\\.[^'\\]*)*'|\b[A-Za-z_][A-Za-z0-9_]*\b)")
+    pos = 0
+    for match in token_re.finditer(text):
+        if match.start() > pos:
+            spans.append(SemanticSpan(text[pos:match.start()]))
+        token = match.group(0)
+        if token.startswith("#") or token.startswith("//"):
+            spans.append(SemanticSpan(token, _COMMENT_STYLE))
+        elif token.startswith("\"") or token.startswith("'"):
+            spans.append(SemanticSpan(token, _STRING_STYLE))
+        elif token in keywords:
+            spans.append(SemanticSpan(token, keyword_style))
+        else:
+            spans.append(SemanticSpan(token))
+        pos = match.end()
+    if pos < len(text):
+        spans.append(SemanticSpan(text[pos:]))
+    return spans or [SemanticSpan("")]
+
+
 def highlight_to_line_spans_with_theme(
     code: str, language: str, theme: Optional[SemanticTheme] = None
 ) -> Optional[List[List[SemanticSpan]]]:
-    return None
+    if exceeds_highlight_limits(code) or find_syntax(language) is None:
+        return None
+    return _styled_line_spans(code, find_syntax(language) or language, theme or current_syntax_theme())
 
 
 def highlight_to_line_spans(code: str, language: str) -> Optional[List[List[SemanticSpan]]]:
-    return None
+    return highlight_to_line_spans_with_theme(code, language, current_syntax_theme())
 
 
 def highlight_code_to_lines(code: str, language: str) -> List[List[SemanticSpan]]:
-    return _plain_line_spans(code)
+    return highlight_code_to_styled_spans(code, language) or _plain_line_spans(code)
 
 
 def highlight_bash_to_lines(code: str) -> List[List[SemanticSpan]]:
@@ -530,7 +694,7 @@ def highlight_bash_to_lines(code: str) -> List[List[SemanticSpan]]:
 
 
 def highlight_code_to_styled_spans(code: str, language: str) -> Optional[List[List[SemanticSpan]]]:
-    return None
+    return highlight_to_line_spans(code, language)
 
 
 def reconstructed(lines: List[List[SemanticSpan]]) -> str:
@@ -538,7 +702,11 @@ def reconstructed(lines: List[List[SemanticSpan]]) -> str:
 
 
 def diff_scope_background_rgbs_for_theme(theme: Any) -> DiffScopeBackgroundRgbs:
-    return DiffScopeBackgroundRgbs()
+    backgrounds = getattr(theme, "backgrounds", None) or {}
+    return DiffScopeBackgroundRgbs(
+        inserted=backgrounds.get("markup.inserted") or backgrounds.get("diff.inserted"),
+        deleted=backgrounds.get("markup.deleted") or backgrounds.get("diff.deleted"),
+    )
 
 
 def diff_scope_background_rgbs() -> DiffScopeBackgroundRgbs:
@@ -546,10 +714,22 @@ def diff_scope_background_rgbs() -> DiffScopeBackgroundRgbs:
 
 
 def scope_background_rgb(*args: Any, **kwargs: Any) -> None:
-    return None
+    if len(args) >= 2:
+        theme, scope_name = args[0], args[1]
+    elif len(args) == 1:
+        theme, scope_name = current_syntax_theme(), args[0]
+    else:
+        theme, scope_name = current_syntax_theme(), kwargs.get("scope_name")
+    backgrounds = getattr(theme, "backgrounds", None) or {}
+    return backgrounds.get(scope_name)
 
 
 def foreground_style_for_scopes_with_theme(theme: Any, scope_names: List[str]) -> Optional[SemanticStyle]:
+    styles = getattr(theme, "token_styles", None) or {}
+    for scope_name in scope_names:
+        style = styles.get(scope_name)
+        if style is not None and style.fg is not None:
+            return style
     return None
 
 
@@ -558,11 +738,29 @@ def foreground_style_for_scopes(scope_names: List[str]) -> Optional[SemanticStyl
 
 
 def write_minimal_tmtheme(*args: Any, **kwargs: Any) -> None:
-    return None
+    path = Path(args[0] if args else kwargs["path"])
+    path.write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>settings</key><array>
+<dict><key>settings</key><dict><key>foreground</key><string>#EEEEEE</string></dict></dict>
+</array></dict></plist>""",
+        encoding="utf-8",
+    )
 
 
 def write_tmtheme_with_diff_backgrounds(*args: Any, **kwargs: Any) -> None:
-    return None
+    path = Path(args[0] if args else kwargs["path"])
+    path.write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>settings</key><array>
+<dict><key>settings</key><dict><key>foreground</key><string>#EEEEEE</string></dict></dict>
+<dict><key>scope</key><string>markup.inserted</string><key>settings</key><dict><key>background</key><string>#102030</string></dict></dict>
+<dict><key>scope</key><string>markup.deleted</string><key>settings</key><dict><key>background</key><string>#405060</string></dict></dict>
+</array></dict></plist>""",
+        encoding="utf-8",
+    )
 
 
 def unique_foreground_colors_for_theme(*args: Any, **kwargs: Any) -> List[Any]:

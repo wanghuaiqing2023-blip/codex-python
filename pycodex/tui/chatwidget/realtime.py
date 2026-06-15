@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Iterable, MutableSequence
+from typing import Any, Callable, MutableSequence, Optional, Tuple, Union
 
 from .._porting import RustTuiModule
 
@@ -21,9 +21,10 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="chatwidget::realtime",
     source="codex/codex-rs/tui/src/chatwidget/realtime.rs",
+    status="complete",
 )
 
-REALTIME_FOOTER_HINT_ITEMS: tuple[tuple[str, str], ...] = (("/realtime", "stop live voice"),)
+REALTIME_FOOTER_HINT_ITEMS: Tuple[Tuple[str, str], ...] = (("/realtime", "stop live voice"),)
 SPEECH_STARTED_ITEM_TYPE = "input_audio_buffer.speech_started"
 RESPONSE_CANCELLED_ITEM_TYPE = "response.cancelled"
 TRANSPORT_CLOSED_REASON = "transport_closed"
@@ -51,20 +52,20 @@ class RealtimeConversationUiTransport:
     """Semantic equivalent of Rust ``RealtimeConversationUiTransport``."""
 
     kind: RealtimeConversationUiTransportKind = RealtimeConversationUiTransportKind.WEBSOCKET
-    handle: Any | None = None
+    handle: Optional[Any] = None
 
     @classmethod
     def websocket(cls) -> "RealtimeConversationUiTransport":
         return cls(RealtimeConversationUiTransportKind.WEBSOCKET)
 
     @classmethod
-    def webrtc(cls, handle: Any | None = None) -> "RealtimeConversationUiTransport":
+    def webrtc(cls, handle: Optional[Any] = None) -> "RealtimeConversationUiTransport":
         return cls(RealtimeConversationUiTransportKind.WEBRTC, handle)
 
     def uses_webrtc(self) -> bool:
         return self.kind is RealtimeConversationUiTransportKind.WEBRTC
 
-    def close_handle(self) -> Any | None:
+    def close_handle(self) -> Optional[Any]:
         handle = self.handle
         self.handle = None
         if handle is not None and hasattr(handle, "close"):
@@ -78,9 +79,9 @@ class RealtimeConversationUiState:
 
     phase: RealtimeConversationPhase = RealtimeConversationPhase.INACTIVE
     requested_close: bool = False
-    realtime_session_id: str | None = None
+    realtime_session_id: Optional[str] = None
     transport: RealtimeConversationUiTransport = field(default_factory=RealtimeConversationUiTransport.websocket)
-    meter_placeholder_id: Any | None = None
+    meter_placeholder_id: Optional[Any] = None
 
     def is_live(self) -> bool:
         return self.phase in {
@@ -95,7 +96,7 @@ class RealtimeConversationUiState:
 
 @dataclass(frozen=True)
 class ThreadRealtimeStartedNotification:
-    realtime_session_id: str | None = None
+    realtime_session_id: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -115,18 +116,18 @@ class ThreadRealtimeErrorNotification:
 
 @dataclass(frozen=True)
 class ThreadRealtimeClosedNotification:
-    reason: str | None = None
+    reason: Optional[str] = None
 
 
 @dataclass(frozen=True)
 class RealtimeConversationStart:
-    transport: Any | None = None
-    voice_config: Any | None = None
+    transport: Optional[Any] = None
+    voice_config: Optional[Any] = None
 
 
 @dataclass(frozen=True)
 class RealtimeConversationClose:
-    session_id: str | None = None
+    session_id: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -150,8 +151,8 @@ class RealtimeWebrtcEventKind(Enum):
 @dataclass(frozen=True)
 class RealtimeWebrtcEvent:
     kind: RealtimeWebrtcEventKind
-    message: str | None = None
-    peak: float | None = None
+    message: Optional[str] = None
+    peak: Optional[float] = None
 
     @classmethod
     def connected(cls) -> "RealtimeWebrtcEvent":
@@ -188,7 +189,7 @@ def realtime_footer_hint_items() -> tuple[tuple[str, str], ...]:
 
 def start_realtime_webrtc_offer_task(
     app_event_tx: Any,
-    starter: Callable[[], RealtimeWebrtcOffer] | None = None,
+    starter: Optional[Callable[[], RealtimeWebrtcOffer]] = None,
 ) -> RealtimeWebrtcOfferTaskPlan:
     """Semantic hook for Rust's WebRTC-offer background task.
 
@@ -202,7 +203,7 @@ def start_realtime_webrtc_offer_task(
         _send_event(app_event_tx, plan)
         return plan
     try:
-        result: RealtimeWebrtcOffer | Exception = starter()
+        result: Union[RealtimeWebrtcOffer, Exception] = starter()
     except Exception as exc:  # pragma: no cover - parity tests inspect value shape.
         result = exc
     _send_event(app_event_tx, ("RealtimeWebrtcOfferCreated", result))
@@ -212,7 +213,7 @@ def start_realtime_webrtc_offer_task(
 def start_realtime_meter_task(
     app_event_tx: Any,
     notification_id: Any,
-    meter_text_fn: Callable[[], str] | None = None,
+    meter_text_fn: Optional[Callable[[], str]] = None,
 ) -> RealtimeMeterTaskPlan:
     """Semantic hook for Rust's recording-meter background task."""
 
@@ -229,19 +230,19 @@ class RealtimeWidgetModel:
     realtime_conversation: RealtimeConversationUiState = field(default_factory=RealtimeConversationUiState)
     transport_config: RealtimeConversationUiTransportKind = RealtimeConversationUiTransportKind.WEBSOCKET
     realtime_enabled: bool = True
-    voice_config: Any | None = None
-    footer_hint_override: tuple[tuple[str, str], ...] | None = None
-    submitted_ops: list[Any] = field(default_factory=list)
-    info_messages: list[str] = field(default_factory=list)
-    error_messages: list[str] = field(default_factory=list)
-    audio_out: list[Any] = field(default_factory=list)
-    events: list[Any] = field(default_factory=list)
+    voice_config: Optional[Any] = None
+    footer_hint_override: Optional[Tuple[Tuple[str, str], ...]] = None
+    submitted_ops: list = field(default_factory=list)
+    info_messages: list = field(default_factory=list)
+    error_messages: list = field(default_factory=list)
+    audio_out: list = field(default_factory=list)
+    events: list = field(default_factory=list)
     redraw_requests: int = 0
     local_audio_starts: int = 0
     local_audio_stops: int = 0
     playback_interrupts: int = 0
 
-    def realtime_footer_hint_items(self) -> tuple[tuple[str, str], ...]:
+    def realtime_footer_hint_items(self) -> Tuple[Tuple[str, str], ...]:
         return realtime_footer_hint_items()
 
     def start_realtime_conversation(self) -> None:
@@ -259,10 +260,10 @@ class RealtimeWidgetModel:
             self.submit_realtime_conversation_start(None)
         self.request_redraw()
 
-    def submit_realtime_conversation_start(self, transport: Any | None) -> None:
+    def submit_realtime_conversation_start(self, transport: Optional[Any]) -> None:
         self.submitted_ops.append(RealtimeConversationStart(transport=transport, voice_config=self.voice_config))
 
-    def request_realtime_conversation_close(self, info_message: str | None = None) -> None:
+    def request_realtime_conversation_close(self, info_message: Optional[str] = None) -> None:
         state = self.realtime_conversation
         if not state.is_live():
             if info_message is not None:
@@ -360,7 +361,7 @@ class RealtimeWidgetModel:
         except Exception as exc:
             self.fail_realtime_conversation(f"Failed to connect realtime WebRTC: {exc}")
 
-    def on_realtime_webrtc_offer_created(self, result: RealtimeWebrtcOffer | Exception) -> None:
+    def on_realtime_webrtc_offer_created(self, result: Union[RealtimeWebrtcOffer, Exception]) -> None:
         state = self.realtime_conversation
         if state.phase is not RealtimeConversationPhase.STARTING:
             return
@@ -423,7 +424,7 @@ class RealtimeWidgetModel:
         self.playback_interrupts += 1
 
 
-def _item_type(item: Any) -> str | None:
+def _item_type(item: Any) -> Optional[str]:
     if isinstance(item, dict):
         value = item.get("type")
         return str(value) if value is not None else None
@@ -476,4 +477,4 @@ __all__ = [
 ]
 
 # Backwards-friendly alias for callers that mirror Rust naming around footer hints.
-RealtimeFooterHintItems = tuple[tuple[str, str], ...]
+RealtimeFooterHintItems = tuple

@@ -105,6 +105,8 @@ class Widget:
         self.supports_images = True
         self.mode = Mode()
         self.active_collaboration_mask = None
+        self.plugins = None
+        self.apps = None
 
     def take_remote_image_urls(self):
         urls, self.remote_urls = self.remote_urls, []
@@ -163,10 +165,10 @@ class Widget:
         self.displays.append(display)
 
     def plugins_for_mentions(self):
-        return None
+        return self.plugins
 
     def connectors_for_mentions(self):
-        return None
+        return self.apps
 
 
 def test_user_message_from_submission_drains_images_urls_and_bindings() -> None:
@@ -277,3 +279,52 @@ def test_unavailable_model_restores_message_and_does_not_submit() -> None:
     assert widget.ops == []
     assert widget.errors[0].startswith("Thread model is unavailable")
     assert widget.restored.text == "override"
+
+
+def test_plugin_and_app_mentions_are_added_from_bound_paths_and_plain_text_mentions() -> None:
+    widget = Widget()
+    widget.plugins = [
+        SimpleNamespace(config_name="lint", display_name="Lint Plugin"),
+    ]
+    widget.apps = [
+        AppInfo(id="github", name="GitHub", is_accessible=True, is_enabled=True),
+        AppInfo(id="slack", name="Slack", is_accessible=False, is_enabled=True),
+    ]
+    message = UserMessage(
+        "$github $slack",
+        mention_bindings=(
+            MentionBinding("lint", "plugin://lint"),
+            MentionBinding("github", "app://github"),
+        ),
+    )
+
+    accepted = submit_user_message_with_history_record(
+        widget,
+        message,
+        UserMessageHistoryRecord.user_message_text(),
+    )
+
+    assert accepted
+    op = widget.ops[-1]
+    mentions = [item.payload for item in op.payload["items"] if item.kind == "Mention"]
+    assert {"name": "Lint Plugin", "path": "plugin://lint"} in mentions
+    assert {"name": "GitHub", "path": "app://github"} in mentions
+    assert {"name": "Slack", "path": "app://slack"} not in mentions
+
+
+def test_collaboration_mode_and_personality_payloads_follow_rust_feature_gates() -> None:
+    widget = Widget()
+    widget.active_collaboration_mask = object()
+    widget.config.features = Features({"Personality"})
+    widget.config.personality = "pirate"
+
+    accepted = submit_user_message_with_history_record(
+        widget,
+        UserMessage("hello"),
+        UserMessageHistoryRecord.user_message_text(),
+    )
+
+    assert accepted
+    payload = widget.ops[-1].payload
+    assert payload["collaboration_mode"] is widget.mode
+    assert payload["personality"] == "pirate"

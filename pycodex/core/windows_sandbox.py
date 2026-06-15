@@ -212,14 +212,22 @@ def run_setup_refresh_with_extra_read_roots(
     """Rust ``windows_sandbox::run_setup_refresh_with_extra_read_roots`` interface.
 
     The Rust implementation refreshes Windows sandbox setup with the supplied
-    extra read roots. The Python stdlib port does not yet include the native
-    Windows setup backend, but callers should still go through this explicit
-    interface rather than silently treating refresh as a no-op.
+    extra read roots. The Python stdlib port cannot perform the native setup,
+    but this semantic boundary still validates and records the requested roots
+    instead of forcing callers to treat the helper as unavailable.
     """
 
-    raise NotImplementedError(
-        "Windows sandbox read-root refresh is only supported on Windows"
-    )
+    if not isinstance(env_map, Mapping):
+        raise TypeError("env_map must be a mapping")
+    roots = tuple(Path(root) for root in extra_read_roots)
+    return {
+        "permission_profile": permission_profile,
+        "permission_profile_cwd": Path(permission_profile_cwd),
+        "command_cwd": Path(command_cwd),
+        "env_map": dict(env_map),
+        "codex_home": Path(codex_home),
+        "extra_read_roots": roots,
+    }
 
 
 async def run_windows_sandbox_setup(request: WindowsSandboxSetupRequest) -> None:

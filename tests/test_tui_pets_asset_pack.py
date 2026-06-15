@@ -10,6 +10,7 @@ from pycodex.tui.pets.asset_pack import (
     builtin_spritesheet_path,
     ensure_builtin_pet,
     pack_dir,
+    validate_cached_spritesheet,
     validate_download_url,
     write_test_pack,
 )
@@ -84,3 +85,19 @@ def test_write_test_pack_installs_all_supplied_builtins(tmp_path) -> None:
 
     assert builtin_spritesheet_path(tmp_path, "a.webp").read_bytes() == b"x"
     assert builtin_spritesheet_path(tmp_path, "b.webp").read_bytes() == b"x"
+
+
+def test_write_test_pack_defaults_to_catalog_and_validates_cached_spritesheets(tmp_path) -> None:
+    write_test_pack(tmp_path)
+
+    path = builtin_spritesheet_path(tmp_path, "dewey-spritesheet-v4.webp")
+    assert path.is_file()
+    validate_cached_spritesheet(path)
+
+
+def test_validate_cached_spritesheet_rejects_wrong_dimensions(tmp_path) -> None:
+    path = tmp_path / "bad.webp"
+    path.write_text("test spritesheet 1x1\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="invalid pet spritesheet dimensions"):
+        validate_cached_spritesheet(path)

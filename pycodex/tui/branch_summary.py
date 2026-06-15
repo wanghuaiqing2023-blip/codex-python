@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import asyncio
 import json
-from typing import Any, Iterable
+from typing import Any, Dict, Iterable, List, Optional, Union
 
 from ._porting import RustTuiModule
 
@@ -19,6 +19,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="branch_summary",
     source="codex/codex-rs/tui/src/branch_summary.rs",
+    status="complete",
 )
 
 
@@ -30,8 +31,8 @@ class GitBranchDiffStats:
 
 @dataclass(eq=True)
 class StatusLineGitSummary:
-    pull_request: "StatusLinePullRequest | None" = None
-    branch_change_stats: GitBranchDiffStats | None = None
+    pull_request: Optional["StatusLinePullRequest"] = None
+    branch_change_stats: Optional[GitBranchDiffStats] = None
 
 
 @dataclass(eq=True)
@@ -57,15 +58,15 @@ class WorkspaceCommandOutput:
 
 @dataclass(eq=True)
 class WorkspaceCommand:
-    argv: list[str]
-    cwd_path: Path | None = None
-    env_vars: dict[str, str] = field(default_factory=dict)
+    argv: List[str]
+    cwd_path: Optional[Path] = None
+    env_vars: Dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def new(cls, argv: Iterable[str]) -> "WorkspaceCommand":
         return cls(list(argv))
 
-    def cwd(self, cwd: str | Path) -> "WorkspaceCommand":
+    def cwd(self, cwd: Union[str, Path]) -> "WorkspaceCommand":
         self.cwd_path = Path(cwd)
         return self
 
@@ -95,11 +96,11 @@ class GhRepoParent:
 
 @dataclass(eq=True)
 class GhRepoView:
-    name_with_owner: str | None
-    parent: GhRepoParent | None
+    name_with_owner: Optional[str]
+    parent: Optional[GhRepoParent]
 
 
-async def current_branch_name(runner: Any, cwd: str | Path) -> str | None:
+async def current_branch_name(runner: Any, cwd: Union[str, Path]) -> Optional[str]:
     output = await _try_run_git_command(runner, cwd, ["branch", "--show-current"])
     if output is None or not output.success():
         return None
@@ -107,7 +108,7 @@ async def current_branch_name(runner: Any, cwd: str | Path) -> str | None:
     return name or None
 
 
-async def status_line_git_summary(runner: Any, cwd: str | Path) -> StatusLineGitSummary:
+async def status_line_git_summary(runner: Any, cwd: Union[str, Path]) -> StatusLineGitSummary:
     pull_request, branch_change_stats = await asyncio.gather(
         open_pull_request(runner, cwd),
         branch_diff_stats_to_default_branch(runner, cwd),
@@ -115,7 +116,9 @@ async def status_line_git_summary(runner: Any, cwd: str | Path) -> StatusLineGit
     return StatusLineGitSummary(pull_request=pull_request, branch_change_stats=branch_change_stats)
 
 
-async def branch_diff_stats_to_default_branch(runner: Any, cwd: str | Path) -> GitBranchDiffStats | None:
+async def branch_diff_stats_to_default_branch(
+    runner: Any, cwd: Union[str, Path]
+) -> Optional[GitBranchDiffStats]:
     git_dir = await _try_run_git_command(runner, cwd, ["rev-parse", "--git-dir"])
     if git_dir is None or not git_dir.success():
         return None
@@ -148,7 +151,7 @@ async def branch_diff_stats_to_default_branch(runner: Any, cwd: str | Path) -> G
     return GitBranchDiffStats(additions=additions, deletions=deletions)
 
 
-async def get_git_remotes(runner: Any, cwd: str | Path) -> list[str] | None:
+async def get_git_remotes(runner: Any, cwd: Union[str, Path]) -> Optional[List[str]]:
     output = await _try_run_git_command(runner, cwd, ["remote"])
     if output is None or not output.success():
         return None
@@ -159,7 +162,7 @@ async def get_git_remotes(runner: Any, cwd: str | Path) -> list[str] | None:
     return remotes
 
 
-async def get_default_branch(runner: Any, cwd: str | Path) -> DefaultBranch | None:
+async def get_default_branch(runner: Any, cwd: Union[str, Path]) -> Optional[DefaultBranch]:
     remotes = await get_git_remotes(runner, cwd) or []
     for remote in remotes:
         branch = await get_remote_default_branch_from_symbolic_ref(runner, cwd, remote)
@@ -172,8 +175,8 @@ async def get_default_branch(runner: Any, cwd: str | Path) -> DefaultBranch | No
 
 
 async def get_remote_default_branch_from_symbolic_ref(
-    runner: Any, cwd: str | Path, remote: str
-) -> DefaultBranch | None:
+    runner: Any, cwd: Union[str, Path], remote: str
+) -> Optional[DefaultBranch]:
     remote_head = f"refs/remotes/{remote}/HEAD"
     output = await _try_run_git_command(runner, cwd, ["symbolic-ref", "--quiet", remote_head])
     if output is None or not output.success():
@@ -188,8 +191,8 @@ async def get_remote_default_branch_from_symbolic_ref(
 
 
 async def get_remote_default_branch_from_remote_show(
-    runner: Any, cwd: str | Path, remote: str
-) -> DefaultBranch | None:
+    runner: Any, cwd: Union[str, Path], remote: str
+) -> Optional[DefaultBranch]:
     output = await _try_run_git_command(runner, cwd, ["remote", "show", remote])
     if output is None or not output.success():
         return None
@@ -204,7 +207,7 @@ async def get_remote_default_branch_from_remote_show(
     return None
 
 
-async def get_default_branch_local(runner: Any, cwd: str | Path) -> DefaultBranch | None:
+async def get_default_branch_local(runner: Any, cwd: Union[str, Path]) -> Optional[DefaultBranch]:
     for candidate in ("main", "master"):
         local_ref = f"refs/heads/{candidate}"
         if await git_ref_exists(runner, cwd, local_ref):
@@ -212,28 +215,32 @@ async def get_default_branch_local(runner: Any, cwd: str | Path) -> DefaultBranc
     return None
 
 
-async def git_ref_exists(runner: Any, cwd: str | Path, reference: str) -> bool:
+async def git_ref_exists(runner: Any, cwd: Union[str, Path], reference: str) -> bool:
     output = await _try_run_git_command(
         runner, cwd, ["rev-parse", "--verify", "--quiet", reference]
     )
     return output is not None and output.success()
 
 
-async def open_pull_request(runner: Any, cwd: str | Path) -> StatusLinePullRequest | None:
+async def open_pull_request(runner: Any, cwd: Union[str, Path]) -> Optional[StatusLinePullRequest]:
     pull_request = await open_pull_request_for_current_branch(runner, cwd)
     if pull_request is not None:
         return pull_request
     return await open_pull_request_for_head_commit(runner, cwd)
 
 
-async def open_pull_request_for_current_branch(runner: Any, cwd: str | Path) -> StatusLinePullRequest | None:
+async def open_pull_request_for_current_branch(
+    runner: Any, cwd: Union[str, Path]
+) -> Optional[StatusLinePullRequest]:
     output = await _try_run_gh_command(runner, cwd, ["pr", "view", "--json", "number,url,state"])
     if output is None or not output.success():
         return None
     return pull_request_from_view_output(output.stdout)
 
 
-async def open_pull_request_for_head_commit(runner: Any, cwd: str | Path) -> StatusLinePullRequest | None:
+async def open_pull_request_for_head_commit(
+    runner: Any, cwd: Union[str, Path]
+) -> Optional[StatusLinePullRequest]:
     head_sha = await current_head_sha(runner, cwd)
     if head_sha is None:
         return None
@@ -254,7 +261,7 @@ async def open_pull_request_for_head_commit(runner: Any, cwd: str | Path) -> Sta
     return None
 
 
-async def current_head_sha(runner: Any, cwd: str | Path) -> str | None:
+async def current_head_sha(runner: Any, cwd: Union[str, Path]) -> Optional[str]:
     output = await _try_run_git_command(runner, cwd, ["rev-parse", "HEAD"])
     if output is None or not output.success():
         return None
@@ -262,14 +269,14 @@ async def current_head_sha(runner: Any, cwd: str | Path) -> str | None:
     return sha or None
 
 
-async def gh_repo_search_order(runner: Any, cwd: str | Path) -> list[str] | None:
+async def gh_repo_search_order(runner: Any, cwd: Union[str, Path]) -> Optional[List[str]]:
     output = await _try_run_gh_command(runner, cwd, ["repo", "view", "--json", "nameWithOwner,parent"])
     if output is None or not output.success():
         return None
     return repo_search_order_from_output(output.stdout)
 
 
-def pull_request_from_view_output(stdout: str) -> StatusLinePullRequest | None:
+def pull_request_from_view_output(stdout: str) -> Optional[StatusLinePullRequest]:
     try:
         data = json.loads(stdout)
     except json.JSONDecodeError:
@@ -282,7 +289,7 @@ def pull_request_from_view_output(stdout: str) -> StatusLinePullRequest | None:
         return None
 
 
-def pull_request_from_api_output(stdout: str) -> StatusLinePullRequest | None:
+def pull_request_from_api_output(stdout: str) -> Optional[StatusLinePullRequest]:
     try:
         data = json.loads(stdout)
     except json.JSONDecodeError:
@@ -298,12 +305,12 @@ def pull_request_from_api_output(stdout: str) -> StatusLinePullRequest | None:
     return None
 
 
-def repo_search_order_from_output(stdout: str) -> list[str] | None:
+def repo_search_order_from_output(stdout: str) -> Optional[List[str]]:
     try:
         data = json.loads(stdout)
     except json.JSONDecodeError:
         return None
-    repos: list[str] = []
+    repos: List[str] = []
     parent = data.get("parent") if isinstance(data, dict) else None
     if isinstance(parent, dict) and parent.get("nameWithOwner"):
         repos.append(str(parent["nameWithOwner"]))
@@ -313,14 +320,18 @@ def repo_search_order_from_output(stdout: str) -> list[str] | None:
     return repos or None
 
 
-async def run_git_command(runner: Any, cwd: str | Path, args: Iterable[str]) -> WorkspaceCommandOutput:
-    command = WorkspaceCommand.new(["git", *list(args)]).cwd(cwd).env("GIT_OPTIONAL_LOCKS", "0")
+async def run_git_command(
+    runner: Any, cwd: Union[str, Path], args: Iterable[str]
+) -> WorkspaceCommandOutput:
+    command = WorkspaceCommand.new(["git"] + list(args)).cwd(cwd).env("GIT_OPTIONAL_LOCKS", "0")
     return await runner.run(command)
 
 
-async def run_gh_command(runner: Any, cwd: str | Path, args: Iterable[str]) -> WorkspaceCommandOutput:
+async def run_gh_command(
+    runner: Any, cwd: Union[str, Path], args: Iterable[str]
+) -> WorkspaceCommandOutput:
     command = (
-        WorkspaceCommand.new(["gh", *list(args)])
+        WorkspaceCommand.new(["gh"] + list(args))
         .cwd(cwd)
         .env("GH_PROMPT_DISABLED", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -328,14 +339,18 @@ async def run_gh_command(runner: Any, cwd: str | Path, args: Iterable[str]) -> W
     return await runner.run(command)
 
 
-async def _try_run_git_command(runner: Any, cwd: str | Path, args: Iterable[str]) -> WorkspaceCommandOutput | None:
+async def _try_run_git_command(
+    runner: Any, cwd: Union[str, Path], args: Iterable[str]
+) -> Optional[WorkspaceCommandOutput]:
     try:
         return await run_git_command(runner, cwd, args)
     except Exception:
         return None
 
 
-async def _try_run_gh_command(runner: Any, cwd: str | Path, args: Iterable[str]) -> WorkspaceCommandOutput | None:
+async def _try_run_gh_command(
+    runner: Any, cwd: Union[str, Path], args: Iterable[str]
+) -> Optional[WorkspaceCommandOutput]:
     try:
         return await run_gh_command(runner, cwd, args)
     except Exception:
@@ -351,14 +366,14 @@ def _parse_int_or_zero(value: str) -> int:
 
 @dataclass
 class FakeResponse:
-    argv: list[str]
+    argv: List[str]
     output: WorkspaceCommandOutput
 
 
 class FakeRunner:
     def __init__(self, responses: Iterable[FakeResponse]) -> None:
         self.responses = list(responses)
-        self.seen: list[list[str]] = []
+        self.seen: List[List[str]] = []
 
     @classmethod
     def new(cls, responses: Iterable[FakeResponse]) -> "FakeRunner":

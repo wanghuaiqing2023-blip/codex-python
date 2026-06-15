@@ -23,7 +23,6 @@ def test_display_width_ignores_osc_sequences() -> None:
     assert display_width(f"{ESC}]8;;https://example.com{BEL}link{ESC}]8;;{BEL}") == 4
     assert display_width(f"中{ESC}]9;payload{BEL}文") == 4
 
-
 def test_diff_buffers_does_not_emit_clear_to_end_for_full_width_row() -> None:
     diff_buffers_does_not_emit_clear_to_end_for_full_width_row()
 

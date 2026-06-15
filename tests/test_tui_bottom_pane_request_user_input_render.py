@@ -135,7 +135,7 @@ def test_unanswered_confirmation_height_respects_minimum():
 def test_line_width_and_word_boundary_truncation():
     line = StyledLine.from_text("hello world again")
     assert line_width(line) == 17
-    assert truncate_line_word_boundary_with_ellipsis(line, 9).text == "hello."
+    assert truncate_line_word_boundary_with_ellipsis(line, 9).text == "hello…"
     assert truncate_line_word_boundary_with_ellipsis(line, 0).text == ""
 
 
@@ -168,3 +168,10 @@ def test_render_ui_unanswered_confirmation_branch():
     events = render_ui(overlay, Rect(0, 0, 30, 8))
     assert any(event.get("kind") == "unanswered_header" for event in events)
     assert any(event.get("text") == "Submit with unanswered questions?" for event in events)
+
+def test_truncation_uses_display_width() -> None:
+    line = StyledLine.from_text("你好 world")
+    truncated = truncate_line_word_boundary_with_ellipsis(line, 5)
+    assert truncated.text == "你好…"
+    assert line_width(truncated) == 5
+

@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 import sys
-from typing import TextIO
+from typing import List, Optional, TextIO
 
 from ._porting import RustTuiModule
 
@@ -16,6 +16,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="terminal_title",
     source="codex/codex-rs/tui/src/terminal_title.rs",
+    status="complete",
 )
 
 MAX_TERMINAL_TITLE_CHARS = 240
@@ -40,7 +41,7 @@ class SetWindowTitle:
         return True
 
 
-def set_terminal_title(title: str, stdout: TextIO | None = None) -> SetTerminalTitleResult:
+def set_terminal_title(title: str, stdout: Optional[TextIO] = None) -> SetTerminalTitleResult:
     """Write a sanitized OSC title when stdout is a terminal."""
     stream = sys.stdout if stdout is None else stdout
     if not _is_terminal(stream):
@@ -56,7 +57,7 @@ def set_terminal_title(title: str, stdout: TextIO | None = None) -> SetTerminalT
     return SetTerminalTitleResult.Applied
 
 
-def clear_terminal_title(stdout: TextIO | None = None) -> None:
+def clear_terminal_title(stdout: Optional[TextIO] = None) -> None:
     """Clear the title Codex manages by writing an empty OSC title payload."""
     stream = sys.stdout if stdout is None else stdout
     if not _is_terminal(stream):
@@ -80,7 +81,7 @@ def is_ansi_code_supported(command: SetWindowTitle) -> bool:
 
 def sanitize_terminal_title(title: str) -> str:
     """Normalize untrusted title text into one bounded display line."""
-    sanitized: list[str] = []
+    sanitized: List[str] = []
     chars_written = 0
     pending_space = False
 

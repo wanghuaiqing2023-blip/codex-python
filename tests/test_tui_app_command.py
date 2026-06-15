@@ -142,3 +142,88 @@ def test_user_turn_copies_items_list_like_owned_vec() -> None:
     items.append({"type": "text", "text": "later"})
 
     assert command.payload["items"] == [{"type": "text", "text": "hi"}]
+
+
+def test_constructors_deep_copy_owned_mutable_payloads() -> None:
+    # Rust constructors consume owned values; later caller-side mutation cannot
+    # alter the already-built enum payload.
+    item = {"type": "text", "text": ["hi"]}
+    schema = {"properties": {"answer": {"type": "string"}}}
+    command = AppCommand.user_turn(
+        items=[item],
+        cwd="/repo",
+        approval_policy="on-request",
+        active_permission_profile={"profile": ["active"]},
+        model="gpt",
+        effort={"level": ["high"]},
+        summary={"mode": ["auto"]},
+        service_tier={"tier": ["flex"]},
+        final_output_json_schema=schema,
+        collaboration_mode={"mode": ["pair"]},
+        personality={"tone": ["friendly"]},
+    )
+
+    item["text"].append("later")
+    schema["properties"]["answer"]["type"] = "integer"
+
+    assert command.payload["items"] == [{"type": "text", "text": ["hi"]}]
+    assert command.payload["final_output_json_schema"] == {
+        "properties": {"answer": {"type": "string"}}
+    }
+
+    voice = {"voice": ["alloy"]}
+    start = AppCommand.realtime_conversation_start({"transport": ["ws"]}, voice)
+    voice["voice"].append("verse")
+    assert start.payload["voice"] == {"voice": ["alloy"]}
+
+    content = {"value": ["accepted"]}
+    meta = {"meta": ["m"]}
+    elicitation = AppCommand.resolve_elicitation("srv", "req-1", "accept", content, meta)
+    content["value"].append("mutated")
+    meta["meta"].append("mutated")
+    assert elicitation.payload["content"] == {"value": ["accepted"]}
+    assert elicitation.payload["meta"] == {"meta": ["m"]}
+
+
+def test_override_turn_context_deep_copies_owned_mutable_options() -> None:
+    effort = {"effort": ["high"]}
+    service_tier = {"service_tier": ["auto"]}
+
+    command = AppCommand.override_turn_context(
+        effort=effort,
+        service_tier=service_tier,
+        active_permission_profile={"profile": ["active"]},
+    )
+    effort["effort"].append("low")
+    service_tier["service_tier"].append("flex")
+
+    assert command.payload["effort"] == {"effort": ["high"]}
+    assert command.payload["service_tier"] == {"service_tier": ["auto"]}
+    assert command.payload["active_permission_profile"] == {"profile": ["active"]}
+
+
+def test_remaining_owned_payload_constructors_deep_copy_mutable_values() -> None:
+    # Rust constructors consume owned payloads for these enum variants too.
+    decision = {"decision": ["accept"]}
+    response = {"response": ["ok"]}
+    event = {"event": ["denied"]}
+    target = {"target": ["review"]}
+
+    exec_approval = AppCommand.exec_approval("exec", "turn", decision)
+    patch_approval = AppCommand.patch_approval("patch", decision)
+    user_answer = AppCommand.user_input_answer("input", response)
+    permission_response = AppCommand.request_permissions_response("perm", response)
+    guardian = AppCommand.approve_guardian_denied_action(event)
+    review = AppCommand.review(target)
+
+    decision["decision"].append("mutated")
+    response["response"].append("mutated")
+    event["event"].append("mutated")
+    target["target"].append("mutated")
+
+    assert exec_approval.payload["decision"] == {"decision": ["accept"]}
+    assert patch_approval.payload["decision"] == {"decision": ["accept"]}
+    assert user_answer.payload["response"] == {"response": ["ok"]}
+    assert permission_response.payload["response"] == {"response": ["ok"]}
+    assert guardian.payload["event"] == {"event": ["denied"]}
+    assert review.payload["target"] == {"target": ["review"]}

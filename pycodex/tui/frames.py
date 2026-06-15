@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 from pathlib import Path
+from typing import List, Tuple
 
 from ._porting import RustTuiModule
 
@@ -18,6 +19,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="frames",
     source="codex/codex-rs/tui/src/frames.rs",
+    status="complete",
 )
 
 _FRAME_COUNT = 36
@@ -43,9 +45,9 @@ def _frames_root() -> Path:
     return _repo_root() / "codex" / "codex-rs" / "tui" / "frames"
 
 
-def _load_frames(variant: str) -> tuple[str, ...]:
+def _load_frames(variant: str) -> Tuple[str, ...]:
     variant_dir = _frames_root() / variant
-    frames: list[str] = []
+    frames: List[str] = []
     for index in range(1, _FRAME_COUNT + 1):
         frame_path = variant_dir / f"frame_{index}.txt"
         frames.append(frame_path.read_text(encoding="utf-8"))

@@ -10,12 +10,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from enum import Enum
-from typing import Any, Iterable
+from typing import Any, Iterable, List, Optional, Set, Union
 
 from .._porting import RustTuiModule
 from ..slash_command import SlashCommand
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="chatwidget::slash_dispatch", source="codex/codex-rs/tui/src/chatwidget/slash_dispatch.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="chatwidget::slash_dispatch",
+    source="codex/codex-rs/tui/src/chatwidget/slash_dispatch.rs",
+    status="complete",
+)
 
 SIDE_STARTING_CONTEXT_LABEL = "Side starting..."
 SIDE_SLASH_COMMAND_UNAVAILABLE_HINT = "Press Ctrl+C to return to the main thread first."
@@ -62,7 +67,7 @@ class PreparedSlashCommandArgs:
 @dataclass(frozen=True)
 class GuardResult:
     allowed: bool
-    error_message: str | None = None
+    error_message: Optional[str] = None
     drain_pending_submission: bool = False
 
 
@@ -75,7 +80,7 @@ class PreparedUserMessage:
     mention_bindings: tuple[Any, ...]
 
 
-_QUEUED_CONTINUE_COMMANDS = {
+_QUEUED_CONTINUE_COMMANDS: Set[SlashCommand] = {
     SlashCommand.IDE,
     SlashCommand.STATUS,
     SlashCommand.DEBUG_CONFIG,
@@ -96,17 +101,17 @@ _QUEUED_CONTINUE_COMMANDS = {
 }
 
 
-def side_unavailable_message(cmd: SlashCommand | str) -> str:
+def side_unavailable_message(cmd: Union[SlashCommand, str]) -> str:
     command = cmd.command() if isinstance(cmd, SlashCommand) else str(cmd).lstrip("/")
     return f"'/{command}' is unavailable in side conversations. {SIDE_SLASH_COMMAND_UNAVAILABLE_HINT}"
 
 
-def before_session_unavailable_message(cmd: SlashCommand | str) -> str:
+def before_session_unavailable_message(cmd: Union[SlashCommand, str]) -> str:
     command = cmd.command() if isinstance(cmd, SlashCommand) else str(cmd).lstrip("/")
     return f"'/{command}' is unavailable before the session starts."
 
 
-def review_side_unavailable_message(cmd: SlashCommand | str) -> str:
+def review_side_unavailable_message(cmd: Union[SlashCommand, str]) -> str:
     command = cmd.command() if isinstance(cmd, SlashCommand) else str(cmd).lstrip("/")
     return f"'/{command}' is unavailable while code review is running."
 
@@ -134,10 +139,14 @@ def queued_command_drain_result(
     return QueueDrain.CONTINUE if cmd in _QUEUED_CONTINUE_COMMANDS else QueueDrain.STOP
 
 
-def slash_command_args_elements(rest: str, rest_offset: int, text_elements: Iterable[Any]) -> list[Any]:
+def slash_command_args_elements(
+    rest: str,
+    rest_offset: int,
+    text_elements: Iterable[Any],
+) -> List[Any]:
     if not rest:
         return []
-    out: list[Any] = []
+    out: List[Any] = []
     for elem in text_elements:
         byte_range = _byte_range(elem)
         if byte_range is None or byte_range.end <= rest_offset:
@@ -162,7 +171,7 @@ def prepared_inline_user_message(prepared: PreparedSlashCommandArgs) -> Prepared
     )
 
 
-def raw_output_mode_arg(trimmed: str) -> bool | None:
+def raw_output_mode_arg(trimmed: str) -> Optional[bool]:
     value = trimmed.strip().lower()
     if value == "on":
         return True
@@ -171,11 +180,11 @@ def raw_output_mode_arg(trimmed: str) -> bool | None:
     return None
 
 
-def mcp_detail_arg(trimmed: str) -> str | None:
+def mcp_detail_arg(trimmed: str) -> Optional[str]:
     return "full" if trimmed.strip().lower() == "verbose" else None
 
 
-def keymap_arg_action(trimmed: str) -> str | None:
+def keymap_arg_action(trimmed: str) -> Optional[str]:
     value = trimmed.strip().lower()
     if value == "":
         return "picker"
@@ -188,7 +197,7 @@ def pets_disable_arg(trimmed: str) -> bool:
     return trimmed.strip().lower() in {"disable", "disabled", "hide", "hidden", "off", "none"}
 
 
-def _byte_range(elem: Any) -> ByteRange | None:
+def _byte_range(elem: Any) -> Optional[ByteRange]:
     raw = getattr(elem, "byte_range", None)
     if raw is None and isinstance(elem, dict):
         raw = elem.get("byte_range")

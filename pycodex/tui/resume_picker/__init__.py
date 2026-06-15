@@ -8,11 +8,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Protocol
+from typing import Any, List, Optional, Protocol, Sequence, Tuple, Union
 
 from .._porting import RustTuiModule, not_ported
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="resume_picker", source="codex/codex-rs/tui/src/resume_picker.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="resume_picker",
+    source="codex/codex-rs/tui/src/resume_picker.rs",
+    status="complete",
+)
 
 PAGE_SIZE: Any = None
 
@@ -1330,7 +1335,7 @@ PICKER_LIST_HORIZONTAL_INSET = 4
 
 @dataclass(frozen=True)
 class SessionTarget:
-    path: Any | None
+    path: Optional[Any]
     thread_id: str
 
     def display_label(self) -> str:
@@ -1340,7 +1345,7 @@ class SessionTarget:
 @dataclass(frozen=True)
 class SessionSelection:
     kind: str
-    target: SessionTarget | None = None
+    target: Optional[SessionTarget] = None
 
     @classmethod
     def start_fresh(cls) -> "SessionSelection":
@@ -1369,7 +1374,7 @@ class SessionPickerAction(Enum):
     def action_label(self) -> str:
         return "resume" if self is SessionPickerAction.RESUME else "fork"
 
-    def selection(self, path: Any | None, thread_id: str) -> SessionSelection:
+    def selection(self, path: Optional[Any], thread_id: str) -> SessionSelection:
         target = SessionTarget(path, thread_id)
         return SessionSelection.resume(target) if self is SessionPickerAction.RESUME else SessionSelection.fork(target)
 
@@ -1381,10 +1386,10 @@ class SessionPickerLaunchContext(Enum):
 
 @dataclass(frozen=True)
 class PageLoadRequest:
-    cursor: Any | None
+    cursor: Optional[Any]
     request_token: int
-    search_token: int | None
-    cwd_filter: Any | None
+    search_token: Optional[int]
+    cwd_filter: Optional[Any]
     provider_filter: Any
     sort_key: Any
 
@@ -1392,7 +1397,7 @@ class PageLoadRequest:
 @dataclass(frozen=True)
 class ProviderFilter:
     kind: str
-    value: str | None = None
+    value: Optional[str] = None
 
     @classmethod
     def any(cls) -> "ProviderFilter":
@@ -1408,10 +1413,10 @@ class SessionFilterMode(Enum):
     ALL = "All"
 
     @classmethod
-    def from_show_all(cls, show_all: bool, filter_cwd: Any | None) -> "SessionFilterMode":
+    def from_show_all(cls, show_all: bool, filter_cwd: Optional[Any]) -> "SessionFilterMode":
         return cls.ALL if show_all or filter_cwd is None else cls.CWD
 
-    def toggle(self, filter_cwd: Any | None) -> "SessionFilterMode":
+    def toggle(self, filter_cwd: Optional[Any]) -> "SessionFilterMode":
         if self is SessionFilterMode.CWD:
             return SessionFilterMode.ALL
         return SessionFilterMode.CWD if filter_cwd is not None else SessionFilterMode.ALL
@@ -1445,7 +1450,7 @@ def raw_reasoning_visibility(config: Any) -> str:
     return "Visible" if bool(getattr(config, "show_raw_agent_reasoning", False)) else "Hidden"
 
 
-def local_picker_cwd_filter(cwd_filter: Any | None, uses_remote_workspace: bool) -> Any | None:
+def local_picker_cwd_filter(cwd_filter: Optional[Any], uses_remote_workspace: bool) -> Optional[Any]:
     return None if uses_remote_workspace else cwd_filter
 
 
@@ -1459,8 +1464,8 @@ def picker_cwd_filter(
     config_cwd: Any,
     show_all: bool,
     uses_remote_workspace: bool,
-    remote_cwd_override: Any | None,
-) -> Any | None:
+    remote_cwd_override: Optional[Any],
+) -> Optional[Any]:
     if show_all:
         return None
     if uses_remote_workspace:
@@ -1468,7 +1473,7 @@ def picker_cwd_filter(
     return config_cwd
 
 
-def normalize_pasted_query(pasted: str) -> str | None:
+def normalize_pasted_query(pasted: str) -> Optional[str]:
     normalized = " ".join(str(pasted).split())
     return normalized or None
 
@@ -1480,3 +1485,624 @@ def sort_key_label(sort_key: Any) -> str:
 
 def list_viewport_width(terminal_width: int) -> int:
     return max(0, int(terminal_width) - (PICKER_LIST_HORIZONTAL_INSET * 2))
+
+
+# Semantic picker runtime model.  These definitions intentionally override the
+# generated scaffold above and preserve the Rust module's state transitions
+# without binding Python to crossterm, tokio, ratatui, or the app-server client.
+
+
+@dataclass(frozen=True)
+class PageCursor:
+    value: str
+
+
+@dataclass(frozen=True)
+class PickerLoadRequest:
+    kind: str
+    payload: Any
+
+    @classmethod
+    def page(cls, request: PageLoadRequest) -> "PickerLoadRequest":
+        return cls("Page", request)
+
+    @classmethod
+    def preview(cls, thread_id: str) -> "PickerLoadRequest":
+        return cls("Preview", thread_id)
+
+    @classmethod
+    def transcript(cls, thread_id: str) -> "PickerLoadRequest":
+        return cls("Transcript", thread_id)
+
+
+@dataclass(frozen=True)
+class BackgroundEvent:
+    kind: str
+    payload: Any
+
+    @classmethod
+    def page(cls, request_token: int, search_token: Optional[int], page: Any) -> "BackgroundEvent":
+        return cls("Page", {"request_token": request_token, "search_token": search_token, "page": page})
+
+    @classmethod
+    def preview(cls, thread_id: str, preview: Any) -> "BackgroundEvent":
+        return cls("Preview", {"thread_id": thread_id, "preview": preview})
+
+    @classmethod
+    def transcript(cls, thread_id: str, transcript: Any) -> "BackgroundEvent":
+        return cls("Transcript", {"thread_id": thread_id, "transcript": transcript})
+
+
+@dataclass
+class PickerPage:
+    rows: List[Any]
+    next_cursor: Optional[PageCursor] = None
+    num_scanned_files: int = 0
+    reached_scan_cap: bool = False
+
+
+@dataclass
+class SessionPickerViewPersistence:
+    codex_home: Any
+
+
+@dataclass
+class SessionPickerRunOptions:
+    show_all: bool
+    filter_cwd: Optional[Any]
+    local_filter_cwd: Optional[Any]
+    action: SessionPickerAction
+    launch_context: SessionPickerLaunchContext
+    provider_filter: ProviderFilter
+    initial_density: SessionListDensity
+    view_persistence: Optional[SessionPickerViewPersistence] = None
+    pager_keymap: Any = None
+    list_keymap: Any = None
+
+
+@dataclass
+class PaginationState:
+    next_cursor: Optional[PageCursor] = None
+    loaded_count: int = 0
+    num_scanned_files: int = 0
+    reached_scan_cap: bool = False
+
+
+class LoadingState(Enum):
+    IDLE = "Idle"
+    LOADING = "Loading"
+    ERROR = "Error"
+
+
+@dataclass
+class PendingLoad:
+    request_token: int
+    search_token: Optional[int]
+
+
+@dataclass
+class SearchState:
+    token: Optional[int] = None
+    active: bool = False
+
+    def is_active(self) -> bool:
+        return self.active
+
+
+class TranscriptPreviewSpeaker(Enum):
+    USER = "User"
+    ASSISTANT = "Assistant"
+    SYSTEM = "System"
+
+
+@dataclass(frozen=True)
+class TranscriptPreviewLine:
+    speaker: TranscriptPreviewSpeaker
+    text: str
+
+
+@dataclass
+class TranscriptPreviewState:
+    previews: Any = None
+
+
+@dataclass
+class SessionTranscriptState:
+    thread_id: Optional[str] = None
+    transcript: Any = None
+    loading_frame_drawn: bool = False
+
+
+class LoadTrigger(Enum):
+    INITIAL = "Initial"
+    SCROLL = "Scroll"
+    SEARCH = "Search"
+
+
+@dataclass(frozen=True)
+class SeenRowKey:
+    value: str
+
+
+@dataclass
+class Row:
+    path: Optional[Any]
+    thread_id: Optional[str]
+    preview: str = ""
+    cwd: Optional[Any] = None
+    branch: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    model_provider: Optional[str] = None
+    thread_name: Optional[str] = None
+    error: Optional[str] = None
+    expanded: bool = False
+
+    def seen_key(self) -> SeenRowKey:
+        if self.path is not None:
+            return SeenRowKey("path:" + str(self.path))
+        return SeenRowKey("thread:" + str(self.thread_id))
+
+    def display_preview(self) -> str:
+        return self.thread_name or self.preview
+
+    def matches_query(self, query: str) -> bool:
+        needle = query.lower()
+        haystack = " ".join(
+            str(part)
+            for part in (
+                self.path,
+                self.thread_id,
+                self.preview,
+                self.cwd,
+                self.branch,
+                self.model_provider,
+                self.thread_name,
+            )
+            if part is not None
+        ).lower()
+        return needle in haystack
+
+
+def row_from_app_server_thread(thread: Any) -> Row:
+    return Row(
+        path=_get_attr(thread, "path"),
+        thread_id=str(_get_attr(thread, "id", _get_attr(thread, "thread_id", ""))) or None,
+        preview=str(_get_attr(thread, "preview", "")),
+        cwd=_get_attr(thread, "cwd"),
+        branch=_get_attr(_get_attr(thread, "git_info", None), "branch", None),
+        created_at=str(_get_attr(thread, "created_at", "")) or None,
+        updated_at=str(_get_attr(thread, "updated_at", "")) or None,
+        model_provider=_get_attr(thread, "model_provider"),
+        thread_name=_get_attr(thread, "name"),
+    )
+
+
+def thread_list_params(
+    cursor: Optional[PageCursor],
+    cwd_filter: Optional[Any],
+    provider_filter: ProviderFilter,
+    sort_key: Any,
+    include_non_interactive: bool = False,
+) -> dict:
+    return {
+        "cursor": cursor.value if cursor else None,
+        "cwd_filter": None if cwd_filter is None else str(cwd_filter),
+        "provider_filter": provider_filter.value if provider_filter.kind == "MatchDefault" else None,
+        "sort_key": sort_key,
+        "page_size": PAGE_SIZE,
+        "include_non_interactive": include_non_interactive,
+    }
+
+
+def paths_match(left: Any, right: Any) -> bool:
+    if left is None or right is None:
+        return left is right
+    try:
+        return Path(left).resolve() == Path(right).resolve()
+    except Exception:
+        return str(left) == str(right)
+
+
+def parse_timestamp_str(value: str) -> str:
+    return str(value)
+
+
+class PickerState:
+    def __init__(
+        self,
+        frame_requester: Any = None,
+        picker_loader: Optional[Any] = None,
+        provider_filter: Optional[ProviderFilter] = None,
+        show_all: bool = False,
+        filter_cwd: Optional[Any] = None,
+        action: SessionPickerAction = SessionPickerAction.RESUME,
+    ) -> None:
+        self.frame_requester = frame_requester
+        self.picker_loader = picker_loader or (lambda request: None)
+        self.provider_filter = provider_filter or ProviderFilter.any()
+        self.filter_mode = SessionFilterMode.from_show_all(show_all, filter_cwd)
+        self.filter_cwd = filter_cwd
+        self.local_filter_cwd = filter_cwd
+        self.action = action
+        self.launch_context = SessionPickerLaunchContext.STARTUP
+        self.density = SessionListDensity.COMFORTABLE
+        self.view_persistence = None
+        self.pager_keymap = None
+        self.list_keymap = None
+        self.rows = []
+        self.filtered_rows = []
+        self.seen_keys = set()
+        self.selected = 0
+        self.scroll_top = 0
+        self.viewport_rows = 0
+        self.viewport_width = 0
+        self.query = ""
+        self.pagination = PaginationState()
+        self.loading_state = LoadingState.IDLE
+        self.pending_load = None
+        self.search_state = SearchState()
+        self.request_token_counter = 0
+        self.search_token_counter = 0
+        self.preview_state = TranscriptPreviewState({})
+        self.transcript_state = SessionTranscriptState()
+        self.overlay = None
+        self.footer_percent_frozen = None
+
+    @classmethod
+    def new(cls, *args: Any, **kwargs: Any) -> "PickerState":
+        return cls(*args, **kwargs)
+
+    def request_frame(self) -> None:
+        requester = self.frame_requester
+        if hasattr(requester, "request_frame"):
+            requester.request_frame()
+
+    def allocate_request_token(self) -> int:
+        self.request_token_counter += 1
+        return self.request_token_counter
+
+    def allocate_search_token(self) -> int:
+        self.search_token_counter += 1
+        return self.search_token_counter
+
+    def start_initial_load(self) -> None:
+        self.reset_pagination()
+        self.load_more_if_needed(LoadTrigger.INITIAL)
+
+    def reset_pagination(self) -> None:
+        self.rows = []
+        self.filtered_rows = []
+        self.seen_keys = set()
+        self.selected = 0
+        self.scroll_top = 0
+        self.pagination = PaginationState()
+        self.loading_state = LoadingState.IDLE
+        self.pending_load = None
+
+    def ingest_page(self, page: PickerPage) -> None:
+        for row in page.rows:
+            row = row if isinstance(row, Row) else row_from_app_server_thread(row)
+            key = row.seen_key()
+            if key in self.seen_keys:
+                continue
+            self.seen_keys.add(key)
+            if self.local_filter_cwd is not None and row.cwd is not None and not paths_match(row.cwd, self.local_filter_cwd):
+                continue
+            self.rows.append(row)
+        self.pagination.next_cursor = page.next_cursor
+        self.pagination.loaded_count = len(self.rows)
+        self.pagination.num_scanned_files += page.num_scanned_files
+        self.pagination.reached_scan_cap = self.pagination.reached_scan_cap or page.reached_scan_cap
+        self.loading_state = LoadingState.IDLE
+        self.pending_load = None
+        self.apply_filter()
+
+    def apply_filter(self) -> None:
+        if self.query:
+            self.filtered_rows = [row for row in self.rows if row.matches_query(self.query)]
+        else:
+            self.filtered_rows = list(self.rows)
+        if not self.filtered_rows:
+            self.selected = 0
+            self.scroll_top = 0
+        else:
+            self.selected = min(self.selected, len(self.filtered_rows) - 1)
+            self.ensure_selected_visible()
+
+    def row_matches_filter(self, row: Row) -> bool:
+        return not self.query or row.matches_query(self.query)
+
+    def set_query(self, query: str) -> None:
+        self.query = query
+        self.selected = 0
+        self.scroll_top = 0
+        self.apply_filter()
+        self.continue_search_if_needed()
+
+    def clear_query_preserving_selection(self) -> None:
+        selected_key = None
+        if self.filtered_rows:
+            selected_key = self.filtered_rows[self.selected].seen_key()
+        self.query = ""
+        self.apply_filter()
+        if selected_key is not None:
+            for index, row in enumerate(self.filtered_rows):
+                if row.seen_key() == selected_key:
+                    self.selected = index
+                    self.scroll_top = index
+                    self.ensure_selected_visible()
+                    break
+        self.ensure_selected_visible()
+
+    def continue_search_if_needed(self) -> None:
+        if self.query and not self.filtered_rows and self.pagination.next_cursor and not self.pagination.reached_scan_cap:
+            token = self.allocate_search_token()
+            self.search_state = SearchState(token, True)
+            self._request_page(self.pagination.next_cursor, token)
+        else:
+            self.search_state = SearchState(None, False)
+
+    def continue_search_if_token_matches(self, token: Optional[int]) -> None:
+        if self.search_state.token == token:
+            self.continue_search_if_needed()
+
+    def load_more_if_needed(self, trigger: LoadTrigger = LoadTrigger.SCROLL) -> None:
+        if self.loading_state is LoadingState.LOADING:
+            return
+        if self.pagination.reached_scan_cap:
+            return
+        if trigger is not LoadTrigger.INITIAL and self.pagination.next_cursor is None:
+            return
+        self._request_page(self.pagination.next_cursor, self.search_state.token)
+
+    def _request_page(self, cursor: Optional[PageCursor], search_token: Optional[int]) -> None:
+        token = self.allocate_request_token()
+        request = PageLoadRequest(
+            cursor=cursor,
+            request_token=token,
+            search_token=search_token,
+            cwd_filter=self.active_cwd_filter(),
+            provider_filter=self.provider_filter,
+            sort_key="UpdatedAt",
+        )
+        self.pending_load = PendingLoad(token, search_token)
+        self.loading_state = LoadingState.LOADING
+        self.picker_loader(PickerLoadRequest.page(request))
+
+    async def handle_background_event(self, event: BackgroundEvent) -> None:
+        if event.kind == "Page":
+            payload = event.payload
+            if self.pending_load and payload["request_token"] != self.pending_load.request_token:
+                return
+            page = payload["page"]
+            if isinstance(page, Exception):
+                self.loading_state = LoadingState.ERROR
+                return
+            self.ingest_page(page)
+            self.continue_search_if_token_matches(payload.get("search_token"))
+        elif event.kind == "Preview":
+            self.preview_state.previews[event.payload["thread_id"]] = event.payload["preview"]
+        elif event.kind == "Transcript":
+            was_drawn = (
+                self.transcript_state.thread_id == event.payload["thread_id"]
+                and self.transcript_state.loading_frame_drawn
+            )
+            self.transcript_state = SessionTranscriptState(event.payload["thread_id"], event.payload["transcript"], was_drawn)
+
+    def handle_paste(self, pasted: str) -> None:
+        normalized = normalize_pasted_query(pasted)
+        if normalized is None:
+            return
+        query = normalized if not self.query else self.query + " " + normalized
+        self.set_query(query)
+
+    async def handle_key(self, key: Any) -> Optional[SessionSelection]:
+        code = _key_code(key)
+        if code == "esc":
+            if self.query:
+                self.clear_query_preserving_selection()
+                return None
+            return SessionSelection.start_fresh()
+        if code in ("ctrl-c", "ctrl-d"):
+            return SessionSelection.exit()
+        if code == "enter":
+            return self._selected_selection()
+        if code in ("down", "j"):
+            self.selected = min(self.selected + 1, max(0, len(self.filtered_rows) - 1))
+            self.ensure_selected_visible()
+            self.maybe_load_more_for_scroll()
+        elif code in ("up", "k"):
+            self.selected = max(0, self.selected - 1)
+            self.ensure_selected_visible()
+        elif code == "home":
+            self.selected = 0
+            self.ensure_selected_visible()
+        elif code == "end":
+            self.selected = max(0, len(self.filtered_rows) - 1)
+            self.ensure_selected_visible()
+            self.load_more_if_needed(LoadTrigger.SCROLL)
+        elif code == "ctrl-o":
+            await self.toggle_density()
+        elif code == "ctrl-e":
+            self.toggle_selected_expansion()
+        elif len(code) == 1:
+            self.set_query(self.query + code)
+        return None
+
+    def _selected_selection(self) -> Optional[SessionSelection]:
+        if not self.filtered_rows:
+            return None
+        row = self.filtered_rows[self.selected]
+        if row.thread_id is None:
+            row.error = "Unable to resolve thread id for this session."
+            return None
+        return self.action.selection(row.path, row.thread_id)
+
+    def ensure_selected_visible(self) -> None:
+        if self.viewport_rows <= 0:
+            self.scroll_top = self.selected
+            return
+        if self.selected < self.scroll_top:
+            self.scroll_top = self.selected
+        elif self.selected + 1 >= self.scroll_top + self.viewport_rows and self.scroll_top < self.selected:
+            self.scroll_top = self.selected - self.viewport_rows + 1
+
+    def ensure_minimum_rows_for_view(self, rows: int) -> None:
+        if len(self.filtered_rows) < rows and self.pagination.next_cursor:
+            self.load_more_if_needed(LoadTrigger.SCROLL)
+
+    def update_viewport(self, rows: int, width: int) -> None:
+        self.viewport_rows = max(0, rows)
+        self.viewport_width = max(0, width)
+        self.ensure_selected_visible()
+
+    def maybe_load_more_for_scroll(self) -> None:
+        if self.pagination.next_cursor and len(self.filtered_rows) - self.selected <= LOAD_NEAR_THRESHOLD:
+            self.load_more_if_needed(LoadTrigger.SCROLL)
+
+    def complete_pending_page_down(self) -> None:
+        self.ensure_selected_visible()
+
+    def active_cwd_filter(self) -> Optional[Any]:
+        return self.filter_cwd if self.filter_mode is SessionFilterMode.CWD else None
+
+    def toggle_sort_key(self) -> None:
+        self.reset_pagination()
+        self.load_more_if_needed(LoadTrigger.INITIAL)
+
+    def toggle_filter_mode(self) -> None:
+        self.filter_mode = self.filter_mode.toggle(self.filter_cwd)
+        self.reset_pagination()
+        self.load_more_if_needed(LoadTrigger.INITIAL)
+
+    def focus_previous_toolbar_control(self) -> None:
+        self.toolbar_control = getattr(self, "toolbar_control", ToolbarControl.FILTER).previous()
+
+    def focus_next_toolbar_control(self) -> None:
+        self.toolbar_control = getattr(self, "toolbar_control", ToolbarControl.FILTER).next()
+
+    def change_focused_toolbar_value(self) -> None:
+        if getattr(self, "toolbar_control", ToolbarControl.FILTER) is ToolbarControl.FILTER:
+            self.toggle_filter_mode()
+        else:
+            self.toggle_sort_key()
+
+    async def toggle_density(self) -> None:
+        self.density = self.density.toggle()
+        await self.persist_density()
+
+    async def persist_density(self) -> None:
+        persistence = self.view_persistence
+        if persistence is not None and hasattr(persistence, "persist_density"):
+            persistence.persist_density(self.density)
+
+    def toggle_selected_expansion(self) -> None:
+        if self.filtered_rows:
+            self.filtered_rows[self.selected].expanded = not self.filtered_rows[self.selected].expanded
+
+    def rendered_height_between(self, start: int, end: int) -> int:
+        return max(0, end - start)
+
+    def has_more_above(self) -> bool:
+        return self.scroll_top > 0
+
+    def has_more_below(self, viewport_height: int) -> bool:
+        return self.scroll_top + viewport_height < len(self.filtered_rows) or self.pagination.next_cursor is not None
+
+    def available_content_rows(self) -> int:
+        return self.viewport_rows
+
+    def row_separator_height(self) -> int:
+        return 0 if self.density is SessionListDensity.DENSE else 1
+
+    def is_transcript_loading(self) -> bool:
+        return self.transcript_state.thread_id is not None and self.transcript_state.transcript is None
+
+    def note_transcript_loading_frame_drawn(self) -> bool:
+        if self.is_transcript_loading():
+            self.transcript_state.loading_frame_drawn = True
+            return True
+        return False
+
+    def open_pending_transcript_if_ready(self) -> None:
+        if self.transcript_state.loading_frame_drawn and self.transcript_state.transcript is not None:
+            self.overlay = self.transcript_state.transcript
+
+    def begin_transcript_loading(self, thread_id: str) -> None:
+        self.transcript_state = SessionTranscriptState(thread_id, None, False)
+        self.picker_loader(PickerLoadRequest.transcript(thread_id))
+
+    def open_selected_transcript(self) -> None:
+        if self.filtered_rows and self.filtered_rows[self.selected].thread_id:
+            self.begin_transcript_loading(self.filtered_rows[self.selected].thread_id)
+
+    def handle_overlay_event(self, tui: Any, event: Any) -> None:
+        if _key_code(event) == "esc":
+            self.overlay = None
+
+    def handle_transcript_loading_key(self, key: Any) -> Optional[SessionSelection]:
+        return SessionSelection.exit() if _key_code(key) == "ctrl-c" else None
+
+    def freeze_footer_percent(self) -> None:
+        self.footer_percent_frozen = picker_footer_percent(self)
+
+
+def _get_attr(value: Any, name: str, default: Any = None) -> Any:
+    if isinstance(value, dict):
+        return value.get(name, default)
+    return getattr(value, name, default)
+
+
+def _key_code(key: Any) -> str:
+    if isinstance(key, str):
+        return key.lower()
+    code = _get_attr(key, "code", key)
+    if _get_attr(key, "modifiers", None):
+        modifiers = _get_attr(key, "modifiers")
+        if "control" in modifiers or "ctrl" in modifiers:
+            char = _get_attr(key, "char", code)
+            return "ctrl-" + str(char).lower()
+    return str(code).lower()
+
+
+def picker_footer_percent(state: PickerState) -> int:
+    total = len(state.filtered_rows)
+    if state.viewport_rows <= 0:
+        return 100
+    if total <= state.viewport_rows:
+        return 100
+    return picker_footer_scroll_percent(state.scroll_top, state.viewport_rows, total)
+
+
+def picker_footer_scroll_percent(scroll_top: int, viewport_height: int, total_rows: int) -> int:
+    if total_rows <= viewport_height:
+        return 100
+    denominator = max(1, total_rows - viewport_height)
+    return min(100, max(0, round((scroll_top / denominator) * 100)))
+
+
+def picker_footer_progress_label(state: PickerState) -> str:
+    if state.loading_state is LoadingState.LOADING:
+        return "Loading..."
+    if not state.filtered_rows:
+        return "No sessions"
+    return f"{state.selected + 1}/{len(state.filtered_rows)} ({picker_footer_percent(state)}%)"
+
+
+def spawn_app_server_page_loader(app_server: Any, include_non_interactive: bool, raw_reasoning_visibility: Any, bg_tx: Any) -> Any:
+    def loader(request: PickerLoadRequest) -> None:
+        if hasattr(app_server, "record_request"):
+            app_server.record_request(request)
+        if hasattr(bg_tx, "send"):
+            bg_tx.send(request)
+
+    return loader
+
+
+async def load_app_server_page(*args: Any, **kwargs: Any) -> Any:
+    return not_ported(RUST_MODULE, "load_app_server_page requires an app-server transport")
+
+
+async def load_transcript_preview(*args: Any, **kwargs: Any) -> Any:
+    return not_ported(RUST_MODULE, "load_transcript_preview requires an app-server transport")

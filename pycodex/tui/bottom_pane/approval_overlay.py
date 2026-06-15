@@ -5,14 +5,15 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple, Union
 
-from .._porting import RustTuiModule, not_ported
+from .._porting import RustTuiModule
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="bottom_pane::approval_overlay",
     source="codex/codex-rs/tui/src/bottom_pane/approval_overlay.rs",
+    status="complete",
 )
 
 
@@ -20,20 +21,20 @@ RUST_MODULE = RustTuiModule(
 class ApprovalRequest:
     kind: str
     thread_id: Any
-    id: str | None = None
-    thread_label: str | None = None
-    command: list[str] = field(default_factory=list)
-    reason: str | None = None
-    available_decisions: list[str] = field(default_factory=list)
+    id: Optional[str] = None
+    thread_label: Optional[str] = None
+    command: List[str] = field(default_factory=list)
+    reason: Optional[str] = None
+    available_decisions: List[str] = field(default_factory=list)
     network_approval_context: Any = None
     additional_permissions: Any = None
-    call_id: str | None = None
+    call_id: Optional[str] = None
     permissions: Any = None
-    cwd: Path | None = None
-    changes: dict[Path, Any] = field(default_factory=dict)
-    server_name: str | None = None
+    cwd: Optional[Path] = None
+    changes: Dict[Path, Any] = field(default_factory=dict)
+    server_name: Optional[str] = None
     request_id: Any = None
-    message: str | None = None
+    message: Optional[str] = None
 
     @classmethod
     def Exec(cls, thread_id: Any, id: str, command: Iterable[str], **kwargs: Any) -> "ApprovalRequest":
@@ -44,7 +45,7 @@ class ApprovalRequest:
         return cls(kind="Permissions", thread_id=thread_id, call_id=call_id, permissions=permissions, **kwargs)
 
     @classmethod
-    def ApplyPatch(cls, thread_id: Any, id: str, cwd: str | Path, changes: Mapping[Any, Any], **kwargs: Any) -> "ApprovalRequest":
+    def ApplyPatch(cls, thread_id: Any, id: str, cwd: Union[str, Path], changes: Mapping[Any, Any], **kwargs: Any) -> "ApprovalRequest":
         return cls(
             kind="ApplyPatch",
             thread_id=thread_id,
@@ -97,32 +98,32 @@ class ApprovalOption:
     label: str
     decision_kind: ApprovalDecision
     decision: Any
-    shortcuts: tuple[str, ...] = ()
+    shortcuts: Tuple[str, ...] = ()
 
 
 @dataclass
 class ApprovalKeymap:
-    approve: tuple[str, ...] = ("y",)
-    approve_for_session: tuple[str, ...] = ("a",)
-    deny: tuple[str, ...] = ("n",)
-    strict_auto_review: tuple[str, ...] = ("r",)
-    cancel: tuple[str, ...] = ("Esc",)
-    open_fullscreen: tuple[str, ...] = ("ctrl+shift+a",)
-    open_thread: tuple[str, ...] = ("o",)
+    approve: Tuple[str, ...] = ("y",)
+    approve_for_session: Tuple[str, ...] = ("a",)
+    deny: Tuple[str, ...] = ("n",)
+    strict_auto_review: Tuple[str, ...] = ("r",)
+    cancel: Tuple[str, ...] = ("Esc",)
+    open_fullscreen: Tuple[str, ...] = ("ctrl+shift+a",)
+    open_thread: Tuple[str, ...] = ("o",)
 
 
 @dataclass
 class ApprovalOverlay:
-    current_request: ApprovalRequest | None
+    current_request: Optional[ApprovalRequest]
     app_event_tx: Any = None
     features: Any = None
     approval_keymap: ApprovalKeymap = field(default_factory=ApprovalKeymap)
     list_keymap: Any = None
-    queue: list[ApprovalRequest] = field(default_factory=list)
-    options: list[ApprovalOption] = field(default_factory=list)
+    queue: List[ApprovalRequest] = field(default_factory=list)
+    options: List[ApprovalOption] = field(default_factory=list)
     current_complete: bool = False
     done: bool = False
-    emitted_events: list[dict[str, Any]] = field(default_factory=list)
+    emitted_events: List[Dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def new(
@@ -130,7 +131,7 @@ class ApprovalOverlay:
         request: ApprovalRequest,
         app_event_tx: Any = None,
         features: Any = None,
-        approval_keymap: ApprovalKeymap | None = None,
+        approval_keymap: Optional[ApprovalKeymap] = None,
         list_keymap: Any = None,
     ) -> "ApprovalOverlay":
         view = cls(
@@ -165,10 +166,10 @@ class ApprovalOverlay:
         request: ApprovalRequest,
         header: Any = None,
         features: Any = None,
-        approval_keymap: ApprovalKeymap | None = None,
+        approval_keymap: Optional[ApprovalKeymap] = None,
         list_keymap: Any = None,
-    ) -> tuple[list[ApprovalOption], dict[str, Any]]:
-        del features, list_keymap
+    ) -> Tuple[List[ApprovalOption], Dict[str, Any]]:
+        del features
         keymap = approval_keymap or ApprovalKeymap()
         if request.kind == "Exec":
             options = exec_options(
@@ -211,7 +212,7 @@ class ApprovalOverlay:
         self.current_complete = True
         self.advance_queue()
 
-    def handle_exec_decision(self, id: str, command: list[str], decision: str) -> None:
+    def handle_exec_decision(self, id: str, command: List[str], decision: str) -> None:
         request = self.current_request
         self._emit(
             "ExecApproval",
@@ -306,7 +307,7 @@ class ApprovalOverlay:
     def is_complete(self) -> bool:
         return self.done
 
-    def try_consume_approval_request(self) -> ApprovalRequest | None:
+    def try_consume_approval_request(self) -> Optional[ApprovalRequest]:
         return self.current_request
 
     def dismiss_app_server_request(self, request: Any) -> bool:
@@ -319,7 +320,7 @@ class ApprovalOverlay:
         del width
         return len(render_overlay_lines(self))
 
-    def render(self, area: Any = None, buf: Any = None) -> list[str]:
+    def render(self, area: Any = None, buf: Any = None) -> List[str]:
         del area
         lines = render_overlay_lines(self)
         if isinstance(buf, list):
@@ -348,7 +349,7 @@ def is_complete(view: ApprovalOverlay) -> bool:
     return view.is_complete()
 
 
-def try_consume_approval_request(view: ApprovalOverlay) -> ApprovalRequest | None:
+def try_consume_approval_request(view: ApprovalOverlay) -> Optional[ApprovalRequest]:
     return view.try_consume_approval_request()
 
 
@@ -364,7 +365,7 @@ def desired_height(view: ApprovalOverlay, width: int = 80) -> int:
     return view.desired_height(width)
 
 
-def render(view: ApprovalOverlay, area: Any = None, buf: Any = None) -> list[str]:
+def render(view: ApprovalOverlay, area: Any = None, buf: Any = None) -> List[str]:
     return view.render(area, buf)
 
 
@@ -372,7 +373,7 @@ def cursor_pos(view: ApprovalOverlay) -> None:
     return view.cursor_pos()
 
 
-def approval_footer_hint(request: ApprovalRequest, approval_keymap: ApprovalKeymap | None = None, list_keymap: Any = None) -> str:
+def approval_footer_hint(request: ApprovalRequest, approval_keymap: Optional[ApprovalKeymap] = None, list_keymap: Any = None) -> str:
     del list_keymap
     keymap = approval_keymap or ApprovalKeymap()
     base = f"Press {keymap.approve[0]} to confirm or {keymap.cancel[0]} to cancel"
@@ -389,15 +390,15 @@ def network_approval_target(network_approval_context: Any, command: Iterable[str
     return network_approval_command_target(command) or ""
 
 
-def network_approval_command_target(command: Iterable[str]) -> str | None:
+def network_approval_command_target(command: Iterable[str]) -> Optional[str]:
     parts = list(command)
     if len(parts) >= 2 and parts[0] == "network-access":
         return parts[1]
     return None
 
 
-def build_header(request: ApprovalRequest) -> list[str]:
-    lines: list[str] = []
+def build_header(request: ApprovalRequest) -> List[str]:
+    lines: List[str] = []
     if request.thread_label:
         lines.append(f"Thread: {request.thread_label}")
     if request.reason:
@@ -432,8 +433,8 @@ def exec_options(
     available_decisions: Iterable[str],
     network_approval_context: Any = None,
     additional_permissions: Any = None,
-    approval_keymap: ApprovalKeymap | None = None,
-) -> list[ApprovalOption]:
+    approval_keymap: Optional[ApprovalKeymap] = None,
+) -> List[ApprovalOption]:
     del additional_permissions
     keymap = approval_keymap or ApprovalKeymap()
     decisions = list(available_decisions) or ["Accept", "Cancel"]
@@ -444,7 +445,7 @@ def exec_options(
         "Cancel": "No, cancel",
         "ApplyNetworkPolicyAmendment": "Yes, allow network access",
     }
-    options: list[ApprovalOption] = []
+    options: List[ApprovalOption] = []
     for decision in decisions:
         if network_approval_context is not None and decision == "AcceptForSession":
             continue
@@ -455,7 +456,7 @@ def exec_options(
     return options
 
 
-def patch_options(approval_keymap: ApprovalKeymap | None = None) -> list[ApprovalOption]:
+def patch_options(approval_keymap: Optional[ApprovalKeymap] = None) -> List[ApprovalOption]:
     keymap = approval_keymap or ApprovalKeymap()
     return [
         ApprovalOption("Yes, apply changes", ApprovalDecision.FILE_CHANGE, "Accept", keymap.approve),
@@ -463,7 +464,7 @@ def patch_options(approval_keymap: ApprovalKeymap | None = None) -> list[Approva
     ]
 
 
-def permissions_options(approval_keymap: ApprovalKeymap | None = None) -> list[ApprovalOption]:
+def permissions_options(approval_keymap: Optional[ApprovalKeymap] = None) -> List[ApprovalOption]:
     keymap = approval_keymap or ApprovalKeymap()
     return [
         ApprovalOption("Allow for this turn", ApprovalDecision.PERMISSIONS, PermissionsDecision.GRANT_FOR_TURN, keymap.approve),
@@ -478,7 +479,7 @@ def permissions_options(approval_keymap: ApprovalKeymap | None = None) -> list[A
     ]
 
 
-def elicitation_options(approval_keymap: ApprovalKeymap | None = None) -> list[ApprovalOption]:
+def elicitation_options(approval_keymap: Optional[ApprovalKeymap] = None) -> List[ApprovalOption]:
     keymap = approval_keymap or ApprovalKeymap()
     return [
         ApprovalOption("Continue", ApprovalDecision.MCP_ELICITATION, "Continue", keymap.approve),
@@ -487,8 +488,8 @@ def elicitation_options(approval_keymap: ApprovalKeymap | None = None) -> list[A
     ]
 
 
-def format_additional_permissions_rule(additional_permissions: Any) -> str | None:
-    parts: list[str] = []
+def format_additional_permissions_rule(additional_permissions: Any) -> Optional[str]:
+    parts: List[str] = []
     network = _get(additional_permissions, "network")
     if network and (_get(network, "enabled", network) is True or network == "enabled"):
         parts.append("network")
@@ -500,13 +501,13 @@ def format_additional_permissions_rule(additional_permissions: Any) -> str | Non
     return "; ".join(parts) if parts else None
 
 
-def format_requested_permissions_rule(permissions: Any) -> str | None:
+def format_requested_permissions_rule(permissions: Any) -> Optional[str]:
     if not permissions:
         return None
     read = _get(permissions, "read", _get(permissions, "read_roots", [])) or []
     write = _get(permissions, "write", _get(permissions, "write_roots", [])) or []
     entries = _get(permissions, "entries", []) or []
-    parts: list[str] = []
+    parts: List[str] = []
     if read:
         parts.append("read " + format_file_system_entry_paths(read))
     if write:
@@ -538,7 +539,7 @@ def path_label(path: Any) -> str:
     return f"`{path}`"
 
 
-def absolute_path(path: str | Path) -> Path:
+def absolute_path(path: Union[str, Path]) -> Path:
     return Path(path)
 
 
@@ -554,8 +555,30 @@ def render_overlay_lines(view: ApprovalOverlay, width: int = 120) -> str:
     return "\n".join(line for line in lines if line is not None)
 
 
-def render_history_cell_lines(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "render_history_cell_lines")
+def render_history_cell_lines(cell: Any, width: int = 80) -> List[str]:
+    del width
+    if cell is None:
+        return []
+    if hasattr(cell, "display_lines"):
+        raw_lines = cell.display_lines(width)
+        rendered = []
+        for line in raw_lines:
+            spans = getattr(line, "spans", None)
+            if spans is None:
+                rendered.append(str(line))
+            else:
+                rendered.append("".join(str(getattr(span, "content", span)) for span in spans))
+        return rendered
+    if isinstance(cell, str):
+        return cell.splitlines() or [cell]
+    if isinstance(cell, Mapping):
+        if "message" in cell:
+            return str(cell["message"]).splitlines() or [str(cell["message"])]
+        if "lines" in cell:
+            return [str(line) for line in cell["lines"]]
+    if isinstance(cell, Iterable) and not isinstance(cell, (bytes, bytearray, str, Mapping)):
+        return [str(line) for line in cell]
+    return [str(cell)]
 
 
 def normalize_snapshot_paths(text: str) -> str:
@@ -570,7 +593,7 @@ def make_overlay_with_keymap(
     request: ApprovalRequest,
     tx: Any = None,
     features: Any = None,
-    approval_keymap: ApprovalKeymap | None = None,
+    approval_keymap: Optional[ApprovalKeymap] = None,
     list_keymap: Any = None,
 ) -> ApprovalOverlay:
     return ApprovalOverlay.new(request, tx, features, approval_keymap, list_keymap)

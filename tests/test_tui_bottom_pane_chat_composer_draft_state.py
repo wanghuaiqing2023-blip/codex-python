@@ -62,3 +62,18 @@ def test_draft_state_mutable_flags_and_mention_key_shape_match_rust_fields() -> 
     assert state.pending_pastes == [("marker", "payload")]
     assert set(state.mention_bindings) == {42}
     assert state.mention_bindings[42] == ComposerMentionBinding("@src", "src")
+
+
+def test_pending_pastes_order_and_u64_mention_binding_keys_match_rust_shape() -> None:
+    state = DraftState.new()
+    max_u64 = (1 << 64) - 1
+
+    state.pending_pastes.append(("first-marker", "first-payload"))
+    state.pending_pastes.append(("second-marker", "second-payload"))
+    state.mention_bindings[max_u64] = ComposerMentionBinding("@big", "big")
+
+    assert state.pending_pastes == [
+        ("first-marker", "first-payload"),
+        ("second-marker", "second-payload"),
+    ]
+    assert state.mention_bindings[max_u64] == ComposerMentionBinding("@big", "big")

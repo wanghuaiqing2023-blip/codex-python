@@ -6,7 +6,7 @@ Rust source: ``codex/codex-rs/tui/src/ascii_animation.rs``.
 from datetime import timedelta
 
 from pycodex.tui.ascii_animation import AsciiAnimation
-from pycodex.tui.frames import FRAME_TICK_DEFAULT
+from pycodex.tui.frames import ALL_VARIANTS, FRAME_TICK_DEFAULT
 
 
 class FakeFrameRequester:
@@ -23,6 +23,14 @@ class FakeFrameRequester:
 
 def test_frame_tick_must_be_nonzero() -> None:
     assert FRAME_TICK_DEFAULT.total_seconds() * 1000 > 0
+
+
+def test_new_uses_all_variants_and_first_variant() -> None:
+    # Rust source: AsciiAnimation::new delegates to with_variants(ALL_VARIANTS, 0).
+    animation = AsciiAnimation.new(FakeFrameRequester())
+    assert animation.variants is ALL_VARIANTS
+    assert animation.variant_idx == 0
+    assert animation.frames() == ALL_VARIANTS[0]
 
 
 def test_with_variants_requires_non_empty_and_clamps_index() -> None:

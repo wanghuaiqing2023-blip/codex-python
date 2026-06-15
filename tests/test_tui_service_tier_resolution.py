@@ -37,6 +37,13 @@ def test_configured_service_tier_prefers_explicit_config_then_opt_out_default():
     assert configured_service_tier(fast_config()) is None
 
 
+def test_configured_service_tier_opt_out_requires_exact_true():
+    # Rust uses `fast_default_opt_out == Some(true)`, so falsey/truthy
+    # non-bool values do not trigger the default sentinel.
+    assert configured_service_tier(fast_config(opt_out=1)) is None
+    assert configured_service_tier(fast_config(opt_out="true")) is None
+
+
 def test_effective_service_tier_is_none_when_fast_mode_disabled():
     # Rust: codex-tui, service_tier_resolution.rs, early FastMode guard.
     config = Config(features=FeatureSet())
@@ -67,6 +74,16 @@ def test_effective_service_tier_drops_unsupported_configured_tier():
 def test_effective_service_tier_uses_supported_model_default_when_unconfigured():
     assert effective_service_tier(fast_config(), "gpt-5", [preset(default="flex")]) == "flex"
     assert service_tier_update_for_core(fast_config(), "gpt-5", [preset(default="flex")]) == "flex"
+
+
+def test_effective_service_tier_uses_first_matching_model_preset():
+    # Rust uses `models.iter().find`, so duplicate model ids resolve to the
+    # first preset and do not inspect later presets.
+    first = preset(model="gpt-5", tiers=("fast",), default="fast")
+    second = preset(model="gpt-5", tiers=("flex",), default="flex")
+
+    assert effective_service_tier(fast_config(), "gpt-5", [first, second]) == "fast"
+    assert effective_service_tier(fast_config(service_tier="flex"), "gpt-5", [first, second]) is None
 
 
 def test_effective_service_tier_ignores_unsupported_model_default():

@@ -10,14 +10,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Iterable
+from typing import Any, Iterable, List, Optional, Tuple, Union
 
-from .._porting import RustTuiModule, not_ported
+from .._porting import RustTuiModule
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="bottom_pane::footer",
     source="codex/codex-rs/tui/src/bottom_pane/footer.rs",
+    status="complete",
 )
 
 MODE_CYCLE_HINT = "shift+tab to cycle"
@@ -31,7 +32,7 @@ COLUMN_GAP = 2
 @dataclass(frozen=True)
 class KeyBinding:
     code: str
-    modifiers: tuple[str, ...] = ()
+    modifiers: Tuple[str, ...] = ()
 
     def __str__(self) -> str:
         if not self.modifiers:
@@ -76,18 +77,18 @@ class CollaborationModeIndicator(Enum):
 @dataclass(frozen=True)
 class GoalStatusIndicator:
     kind: str
-    usage: str | None = None
+    usage: Optional[str] = None
 
     @classmethod
-    def Active(cls, usage: str | None = None) -> "GoalStatusIndicator":
+    def Active(cls, usage: Optional[str] = None) -> "GoalStatusIndicator":
         return cls("Active", usage)
 
     @classmethod
-    def BudgetLimited(cls, usage: str | None = None) -> "GoalStatusIndicator":
+    def BudgetLimited(cls, usage: Optional[str] = None) -> "GoalStatusIndicator":
         return cls("BudgetLimited", usage)
 
     @classmethod
-    def Complete(cls, usage: str | None = None) -> "GoalStatusIndicator":
+    def Complete(cls, usage: Optional[str] = None) -> "GoalStatusIndicator":
         return cls("Complete", usage)
 
 
@@ -102,15 +103,15 @@ class FooterMode(Enum):
 
 @dataclass(frozen=True)
 class FooterKeyHints:
-    toggle_shortcuts: KeyBinding | None = None
-    queue: KeyBinding | None = None
-    insert_newline: KeyBinding | None = None
-    external_editor: KeyBinding | None = None
-    edit_previous: KeyBinding | None = None
-    show_transcript: KeyBinding | None = None
-    history_search: KeyBinding | None = None
-    reasoning_down: KeyBinding | None = None
-    reasoning_up: KeyBinding | None = None
+    toggle_shortcuts: Optional[KeyBinding] = None
+    queue: Optional[KeyBinding] = None
+    insert_newline: Optional[KeyBinding] = None
+    external_editor: Optional[KeyBinding] = None
+    edit_previous: Optional[KeyBinding] = None
+    show_transcript: Optional[KeyBinding] = None
+    history_search: Optional[KeyBinding] = None
+    reasoning_down: Optional[KeyBinding] = None
+    reasoning_up: Optional[KeyBinding] = None
 
     @classmethod
     def default_bindings(cls) -> "FooterKeyHints":
@@ -136,10 +137,10 @@ class FooterProps:
     collaboration_modes_enabled: bool = False
     is_wsl: bool = False
     quit_shortcut_key: KeyBinding = ctrl("c")
-    status_line_value: str | None = None
+    status_line_value: Optional[str] = None
     status_line_enabled: bool = False
     key_hints: FooterKeyHints = FooterKeyHints.default_bindings()
-    active_agent_label: str | None = None
+    active_agent_label: Optional[str] = None
 
 
 class SummaryHintKind(Enum):
@@ -158,7 +159,7 @@ class LeftSideState:
 @dataclass(frozen=True)
 class SummaryLeft:
     kind: str
-    line: str | None = None
+    line: Optional[str] = None
 
     @classmethod
     def Default(cls) -> "SummaryLeft":
@@ -195,7 +196,7 @@ class ShortcutId(Enum):
 class ShortcutBinding:
     key: KeyBinding
 
-    def matches(self, key: KeyBinding | str) -> bool:
+    def matches(self, key: Union[KeyBinding, str]) -> bool:
         return str(self.key) == str(key)
 
 
@@ -211,7 +212,7 @@ class ShortcutDescriptor:
     id: ShortcutId
     description: str
 
-    def binding_for(self, state: ShortcutsState) -> ShortcutBinding | None:
+    def binding_for(self, state: ShortcutsState) -> Optional[ShortcutBinding]:
         if self.id is ShortcutId.PASTE_IMAGE:
             return ShortcutBinding(ctrl_alt("v") if state.is_wsl else ctrl("v"))
         if self.id is ShortcutId.INSERT_NEWLINE:
@@ -226,7 +227,7 @@ class ShortcutDescriptor:
         key = mapping.get(self.id)
         return None if key is None else ShortcutBinding(key)
 
-    def overlay_entry(self, state: ShortcutsState) -> str | None:
+    def overlay_entry(self, state: ShortcutsState) -> Optional[str]:
         binding = self.binding_for(state)
         if binding is None:
             return None
@@ -295,11 +296,11 @@ def render_footer_from_props(
     area: Any,
     buf: Any,
     props: FooterProps,
-    collaboration_mode_indicator: CollaborationModeIndicator | None = None,
+    collaboration_mode_indicator: Optional[CollaborationModeIndicator] = None,
     show_cycle_hint: bool = False,
     show_shortcuts_hint: bool = False,
     show_queue_hint: bool = False,
-) -> list[str]:
+) -> List[str]:
     del area
     lines = footer_from_props_lines(
         props,
@@ -319,11 +320,11 @@ def left_fits(area: Any, left_width: int) -> bool:
 
 
 def left_side_line(
-    collaboration_mode_indicator: CollaborationModeIndicator | None,
+    collaboration_mode_indicator: Optional[CollaborationModeIndicator],
     state: LeftSideState,
     key_hints: FooterKeyHints,
 ) -> str:
-    parts: list[str] = []
+    parts: List[str] = []
     if state.hint is SummaryHintKind.SHORTCUTS and key_hints.toggle_shortcuts:
         parts.append(f"{key_hints.toggle_shortcuts} for shortcuts")
     elif state.hint is SummaryHintKind.QUEUE_MESSAGE and key_hints.queue:
@@ -340,12 +341,12 @@ def left_side_line(
 def single_line_footer_layout(
     area: Any,
     context_width: int,
-    collaboration_mode_indicator: CollaborationModeIndicator | None,
+    collaboration_mode_indicator: Optional[CollaborationModeIndicator],
     show_cycle_hint: bool,
     show_shortcuts_hint: bool,
     show_queue_hint: bool,
     key_hints: FooterKeyHints,
-) -> tuple[SummaryLeft, bool]:
+) -> Tuple[SummaryLeft, bool]:
     hint = SummaryHintKind.QUEUE_MESSAGE if show_queue_hint else (
         SummaryHintKind.SHORTCUTS if show_shortcuts_hint else SummaryHintKind.NONE
     )
@@ -378,13 +379,13 @@ def goal_status_indicator_line(indicator: GoalStatusIndicator) -> str:
     return labels.get(indicator.kind, indicator.kind) + usage
 
 
-def status_line_right_indicator_line(status_line: str | None, active_agent_label: str | None = None) -> str | None:
+def status_line_right_indicator_line(status_line: Optional[str], active_agent_label: Optional[str] = None) -> Optional[str]:
     if status_line and active_agent_label:
-        return f"{status_line} - {active_agent_label}"
+        return f"{status_line} ? {active_agent_label}"
     return status_line or active_agent_label
 
 
-def side_conversation_context_line(side_label: str | None = None) -> str | None:
+def side_conversation_context_line(side_label: Optional[str] = None) -> Optional[str]:
     return None if not side_label else f"Side: {side_label}"
 
 
@@ -409,7 +410,7 @@ def render_context_right(area: Any, buf: Any, context_line: str) -> tuple[int, s
     return x, context_line
 
 
-def inset_footer_hint_area(area: Any) -> dict[str, int]:
+def inset_footer_hint_area(area: Any) -> dict:
     return {"width": max(_area_width(area) - FOOTER_INDENT_COLS, 0), "height": _area_height(area)}
 
 
@@ -419,11 +420,11 @@ def render_footer_hint_items(items: Iterable[str]) -> str:
 
 def footer_from_props_lines(
     props: FooterProps,
-    collaboration_mode_indicator: CollaborationModeIndicator | None = None,
+    collaboration_mode_indicator: Optional[CollaborationModeIndicator] = None,
     show_cycle_hint: bool = False,
     show_shortcuts_hint: bool = False,
     show_queue_hint: bool = False,
-) -> list[str]:
+) -> List[str]:
     if props.mode is FooterMode.HISTORY_SEARCH:
         return ["Search history"]
     if props.mode is FooterMode.QUIT_SHORTCUT_REMINDER:
@@ -456,7 +457,7 @@ def footer_from_props_lines(
     return [line] if line else [""]
 
 
-def passive_footer_status_line(props: FooterProps) -> str | None:
+def passive_footer_status_line(props: FooterProps) -> Optional[str]:
     return status_line_right_indicator_line(
         props.status_line_value if props.status_line_enabled else None,
         props.active_agent_label,
@@ -498,18 +499,18 @@ def esc_hint_line(props: FooterProps) -> str:
     return "Press Esc again to clear"
 
 
-def shortcut_overlay_lines(state: ShortcutsState) -> list[str]:
+def shortcut_overlay_lines(state: ShortcutsState) -> List[str]:
     return [entry for descriptor in SHORTCUTS if (entry := descriptor.overlay_entry(state)) is not None]
 
 
 def build_columns(items: Iterable[str], columns: int = COLUMNS) -> list[list[str]]:
-    out = [[] for _ in range(max(columns, 1))]
+    out: List[List[str]] = [[] for _ in range(max(columns, 1))]
     for idx, item in enumerate(items):
         out[idx % len(out)].append(str(item))
     return out
 
 
-def context_window_line(percent: int | None = None, used_tokens: int | None = None) -> str:
+def context_window_line(percent: Optional[int] = None, used_tokens: Optional[int] = None) -> str:
     if percent is not None:
         return f"{percent}% context left"
     if used_tokens is not None:
@@ -540,44 +541,102 @@ def _area_height(area: Any) -> int:
     return max(int(getattr(area, "height", 1)), 0)
 
 
-def snapshot_footer(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "snapshot_footer")
+def _truncate_text(text: str, max_width: int) -> str:
+    if max_width <= 0:
+        return ""
+    if len(text) <= max_width:
+        return text
+    if max_width == 1:
+        return "?"
+    return text[: max_width - 1] + "?"
 
 
-def snapshot_footer_with_context(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "snapshot_footer_with_context")
+def _line_with_context(width: int, left: str, right: str) -> str:
+    width = max(int(width), 0)
+    if not right:
+        return _truncate_text(left, width)
+    if len(right) >= width:
+        return _truncate_text(right, width)
+    left_width = max(width - len(right) - FOOTER_CONTEXT_GAP_COLS, 0)
+    left = _truncate_text(left, left_width)
+    gap = " " * max(width - len(left) - len(right), FOOTER_CONTEXT_GAP_COLS)
+    return (left + gap + right)[:width]
 
 
-def draw_footer_frame(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "draw_footer_frame")
+def snapshot_footer(name: str, props: FooterProps, width: int = 120) -> str:
+    del name
+    return "\n".join(render_footer_from_props({"width": width}, [], props, None, False, props.mode is FooterMode.COMPOSER_EMPTY, props.mode is FooterMode.COMPOSER_HAS_DRAFT and props.is_task_running))
 
 
-def snapshot_footer_with_mode_indicator(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "snapshot_footer_with_mode_indicator")
+def snapshot_footer_with_context(name: str, props: FooterProps, percent: Optional[int] = None, used_tokens: Optional[int] = None, width: int = 120) -> str:
+    del name
+    left = snapshot_footer("", props, width).strip()
+    return _line_with_context(width, left, context_window_line(percent, used_tokens))
 
 
-def snapshot_footer_with_mode_indicator_and_context(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "snapshot_footer_with_mode_indicator_and_context")
+def draw_footer_frame(terminal: Any, height: int, props: FooterProps, collaboration_mode_indicator: Optional[CollaborationModeIndicator], ide_context_active: bool, context_line: str) -> List[str]:
+    del terminal, height
+    left = footer_from_props_lines(props, collaboration_mode_indicator, True, props.mode is FooterMode.COMPOSER_EMPTY, props.mode is FooterMode.COMPOSER_HAS_DRAFT and props.is_task_running)[0]
+    right = ("IDE" if ide_context_active else context_line)
+    return [_line_with_context(120, left, right)]
 
 
-def render_footer_with_mode_indicator_and_context(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "render_footer_with_mode_indicator_and_context")
+def snapshot_footer_with_mode_indicator(name: str, width: int, props: FooterProps, collaboration_mode_indicator: Optional[CollaborationModeIndicator]) -> str:
+    del name
+    left, show_context = single_line_footer_layout({"width": width}, 0, collaboration_mode_indicator, True, props.mode is FooterMode.COMPOSER_EMPTY, props.mode is FooterMode.COMPOSER_HAS_DRAFT and props.is_task_running, props.key_hints)
+    if left.kind == "Default":
+        text = footer_from_props_lines(props, collaboration_mode_indicator, True, props.mode is FooterMode.COMPOSER_EMPTY, props.mode is FooterMode.COMPOSER_HAS_DRAFT and props.is_task_running)[0]
+    else:
+        text = left.line or ""
+    return _line_with_context(width, text, "" if show_context else "")
 
 
-def snapshot_footer_with_indicators(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "snapshot_footer_with_indicators")
+def snapshot_footer_with_mode_indicator_and_context(name: str, width: int, props: FooterProps, collaboration_mode_indicator: Optional[CollaborationModeIndicator], context_line_value: str) -> str:
+    del name
+    return render_footer_with_mode_indicator_and_context(width, props, collaboration_mode_indicator, context_line_value)
 
 
-def footer_snapshots(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "footer_snapshots")
+def render_footer_with_mode_indicator_and_context(width: int, props: FooterProps, collaboration_mode_indicator: Optional[CollaborationModeIndicator], context_line_value: str) -> str:
+    left, show_context = single_line_footer_layout({"width": width}, len(context_line_value), collaboration_mode_indicator, True, props.mode is FooterMode.COMPOSER_EMPTY, props.mode is FooterMode.COMPOSER_HAS_DRAFT and props.is_task_running, props.key_hints)
+    context = context_line_value if show_context else ""
+    status = passive_footer_status_line(props)
+    if status and collaboration_mode_indicator is not None:
+        left_width = max_left_width_for_right({"width": width}, len(context))
+        text = _line_with_context(left_width, status, collaboration_mode_indicator.label(False))
+        return _line_with_context(width, text, context)
+    if left.kind == "Default":
+        text = footer_from_props_lines(props, collaboration_mode_indicator, True, props.mode is FooterMode.COMPOSER_EMPTY, props.mode is FooterMode.COMPOSER_HAS_DRAFT and props.is_task_running)[0]
+    else:
+        text = left.line or ""
+    return _line_with_context(width, text, context)
 
 
-def footer_status_line_truncates_to_keep_mode_indicator(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "footer_status_line_truncates_to_keep_mode_indicator")
+def snapshot_footer_with_indicators(name: str, width: int, props: FooterProps, collaboration_mode_indicator: Optional[CollaborationModeIndicator], ide_context_active: bool) -> str:
+    del name
+    return "\n".join(draw_footer_frame(None, 1, props, collaboration_mode_indicator, ide_context_active, context_window_line(None, None)))[:width]
 
 
-def paste_image_shortcut_prefers_ctrl_alt_v_under_wsl(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "paste_image_shortcut_prefers_ctrl_alt_v_under_wsl")
+def footer_snapshots(*args: Any, **kwargs: Any) -> bool:
+    del args, kwargs
+    return bool(snapshot_footer("footer_shortcuts_default", FooterProps()))
+
+
+def footer_status_line_truncates_to_keep_mode_indicator(*args: Any, **kwargs: Any) -> bool:
+    del args, kwargs
+    props = FooterProps(
+        mode=FooterMode.COMPOSER_EMPTY,
+        collaboration_modes_enabled=True,
+        status_line_value="Status line content that is definitely too long to fit alongside the mode label",
+        status_line_enabled=True,
+    )
+    rendered = render_footer_with_mode_indicator_and_context(80, props, CollaborationModeIndicator.PLAN, context_window_line(50, None))
+    return "Plan mode" in rendered and MODE_CYCLE_HINT not in rendered and "?" in rendered
+
+
+def paste_image_shortcut_prefers_ctrl_alt_v_under_wsl(*args: Any, **kwargs: Any) -> bool:
+    del args, kwargs
+    descriptor = next(item for item in SHORTCUTS if item.id is ShortcutId.PASTE_IMAGE)
+    return descriptor.binding_for(ShortcutsState(is_wsl=True)).key == ctrl_alt("v") and descriptor.binding_for(ShortcutsState(is_wsl=False)).key == ctrl("v")
 
 
 __all__ = [

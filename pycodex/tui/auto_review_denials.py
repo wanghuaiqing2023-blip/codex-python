@@ -14,7 +14,12 @@ from typing import Any, Iterable, Iterator
 
 from ._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="auto_review_denials", source="codex/codex-rs/tui/src/auto_review_denials.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="auto_review_denials",
+    source="codex/codex-rs/tui/src/auto_review_denials.rs",
+    status="complete",
+)
 
 MAX_RECENT_DENIALS = 10
 

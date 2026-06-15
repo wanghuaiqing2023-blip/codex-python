@@ -1,8 +1,15 @@
+from types import SimpleNamespace
+
+import pytest
+
 from pycodex.tui.startup_hooks_review import (
     ListSelectionView,
+    StartupHooksReviewOutcome,
     StartupHooksReviewSelection,
     entry,
+    maybe_run_startup_hooks_review,
     render_lines,
+    run_startup_hooks_review_app,
     review_is_needed,
     review_needed_count,
     selected_choice,
@@ -88,3 +95,133 @@ def test_render_lines_semantic_prompt_contains_snapshot_text() -> None:
 def test_render_lines_semantic_prompt_with_trust_error() -> None:
     view = selection_view(entry(), "Failed to trust hooks: disk full", False, None, None)
     assert "Failed to trust hooks: disk full" in render_lines(view, 80)
+
+
+class RecordingTui:
+    def __init__(self, events):
+        self.events = list(events)
+        self.drawn = []
+
+    def draw(self, view):
+        self.drawn.append(view)
+
+    async def event_stream(self):
+        for event in self.events:
+            yield event
+
+
+class RecordingAppServer:
+    def __init__(self):
+        self.handle = object()
+
+    def request_handle(self):
+        return self.handle
+
+
+def key_event(code, kind="Press"):
+    return SimpleNamespace(kind="Key", key=SimpleNamespace(code=code, kind=kind))
+
+
+@pytest.mark.asyncio
+async def test_maybe_run_startup_hooks_review_fetch_error_and_bypass_continue() -> None:
+    async def failing_fetch(_handle, _cwd):
+        raise RuntimeError("offline")
+
+    result = await maybe_run_startup_hooks_review(
+        RecordingAppServer(),
+        RecordingTui([]),
+        SimpleNamespace(cwd="/tmp"),
+        False,
+        fetch_hooks_list_fn=failing_fetch,
+        hooks_list_entry_for_cwd_fn=lambda response, cwd: response,
+    )
+    assert result.outcome is StartupHooksReviewOutcome.CONTINUE
+
+    async def fetch(_handle, _cwd):
+        return entry()
+
+    result = await maybe_run_startup_hooks_review(
+        RecordingAppServer(),
+        RecordingTui([]),
+        SimpleNamespace(cwd="/tmp"),
+        True,
+        fetch_hooks_list_fn=fetch,
+        hooks_list_entry_for_cwd_fn=lambda response, cwd: response,
+    )
+    assert result.outcome is StartupHooksReviewOutcome.CONTINUE
+
+
+@pytest.mark.asyncio
+async def test_run_startup_hooks_review_review_and_continue_choices() -> None:
+    app_server = RecordingAppServer()
+    review = await run_startup_hooks_review_app(
+        app_server,
+        RecordingTui([key_event("1")]),
+        SimpleNamespace(tui_keymap=None),
+        entry(),
+    )
+    assert review.outcome is StartupHooksReviewOutcome.OPEN_HOOKS_BROWSER
+    assert review.entry == entry()
+
+    cont = await run_startup_hooks_review_app(
+        app_server,
+        RecordingTui([key_event("3")]),
+        SimpleNamespace(tui_keymap=None),
+        entry(),
+    )
+    assert cont.outcome is StartupHooksReviewOutcome.CONTINUE
+
+
+@pytest.mark.asyncio
+async def test_run_startup_hooks_review_ignores_release_paste_draw_and_trusts_all() -> None:
+    writes = []
+
+    async def write_hook_trusts(_handle, updates):
+        writes.append(updates)
+
+    tui = RecordingTui([
+        SimpleNamespace(kind="Paste"),
+        SimpleNamespace(kind="Draw"),
+        key_event("1", kind="Release"),
+        key_event("2"),
+    ])
+
+    result = await run_startup_hooks_review_app(
+        RecordingAppServer(),
+        tui,
+        SimpleNamespace(tui_keymap=None),
+        entry(),
+        write_hook_trusts_fn=write_hook_trusts,
+    )
+
+    assert result.outcome is StartupHooksReviewOutcome.CONTINUE
+    assert writes == [[
+        {"key": "path:new", "current_hash": "sha256:path:new"},
+        {"key": "path:changed", "current_hash": "sha256:path:changed"},
+    ]]
+    assert len(tui.drawn) >= 2
+    assert "Trusting hooks..." in tui.drawn[-1].params.header
+
+
+@pytest.mark.asyncio
+async def test_run_startup_hooks_review_trust_error_redraws_and_allows_continue_without_trusting() -> None:
+    calls = 0
+
+    async def write_hook_trusts(_handle, _updates):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("disk full")
+
+    tui = RecordingTui([key_event("2"), key_event("3")])
+
+    result = await run_startup_hooks_review_app(
+        RecordingAppServer(),
+        tui,
+        SimpleNamespace(tui_keymap=None),
+        entry(),
+        write_hook_trusts_fn=write_hook_trusts,
+    )
+
+    assert result.outcome is StartupHooksReviewOutcome.CONTINUE
+    assert calls == 1
+    assert any("Failed to trust hooks: disk full" in view.params.header for view in tui.drawn)

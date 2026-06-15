@@ -42,6 +42,22 @@ def test_service_tier_commands_lowercase_catalog_names() -> None:
     ]
 
 
+def test_sync_service_tier_commands_records_enabled_flag_and_current_model_commands() -> None:
+    # Rust parity: chatwidget::service_tiers::sync_service_tier_commands
+    state = ChatWidgetServiceTierState(
+        config=fast_mode_config(True),
+        model="gpt-5.4",
+        models=(_catalog_model(),),
+    )
+
+    state.sync_service_tier_commands()
+
+    assert state.service_tier_commands_enabled is True
+    assert state.service_tier_commands == (
+        ServiceTierCommand(id="fast", name="fast", description="Quicker responses"),
+    )
+
+
 def test_fast_toggle_updates_and_persists_local_service_tier() -> None:
     # Rust parity: chatwidget::tests::slash_commands::fast_keybinding_toggle_uses_same_events_as_fast_slash_command
     state = ChatWidgetServiceTierState(
@@ -57,6 +73,28 @@ def test_fast_toggle_updates_and_persists_local_service_tier() -> None:
         ServiceTierSelectionEvent.override_turn_context("fast"),
         ServiceTierSelectionEvent.persist_selection("fast"),
     ]
+
+
+def test_fast_toggle_noops_when_current_model_has_no_fast_tier() -> None:
+    # Rust: toggle_fast_mode_from_ui returns early when
+    # current_model_fast_service_tier() is None.
+    state = ChatWidgetServiceTierState(
+        config=fast_mode_config(True),
+        model="gpt-5.4",
+        models=(
+            {
+                "model": "gpt-5.4",
+                "service_tiers": [
+                    {"id": "flex", "name": "Flex", "description": "Flexible responses"},
+                ],
+            },
+        ),
+    )
+
+    state.toggle_fast_mode_from_ui()
+
+    assert state.configured_service_tier() is None
+    assert state.events == []
 
 
 def test_service_tier_toggle_turns_selected_tier_back_to_default() -> None:
@@ -133,3 +171,39 @@ def test_set_service_tier_refreshes_effective_tier_and_surfaces() -> None:
     assert state.configured_service_tier() == SERVICE_TIER_DEFAULT_REQUEST_VALUE
     assert state.current_service_tier() == SERVICE_TIER_DEFAULT_REQUEST_VALUE
     assert state.model_dependent_surface_refreshes == 1
+
+
+def test_service_tier_update_for_core_delegates_resolution_for_current_model() -> None:
+    # Rust: service_tier_update_for_core delegates to
+    # service_tier_resolution::service_tier_update_for_core with current_model.
+    state = ChatWidgetServiceTierState(
+        config=fast_mode_config(True, service_tier="unsupported"),
+        model="gpt-5.4",
+        models=(_fast_model(default_service_tier="fast"),),
+    )
+
+    assert state.service_tier_update_for_core() == SERVICE_TIER_DEFAULT_REQUEST_VALUE
+
+
+def test_model_support_lookup_and_fast_tier_lookup_use_current_model_catalog() -> None:
+    state = ChatWidgetServiceTierState(
+        config=fast_mode_config(True),
+        model="gpt-5.4",
+        models=(
+            _catalog_model(),
+            {
+                "model": "other",
+                "service_tiers": [
+                    {"id": "fast", "name": "Fast", "description": "Other fast"},
+                ],
+            },
+        ),
+    )
+
+    assert state.model_supports_service_tier("gpt-5.4", "fast") is True
+    assert state.model_supports_service_tier("gpt-5.4", "flex") is False
+    assert state.current_model_fast_service_tier() == ServiceTierCommand(
+        id="fast",
+        name="fast",
+        description="Quicker responses",
+    )

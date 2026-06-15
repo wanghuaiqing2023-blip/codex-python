@@ -8,6 +8,11 @@ from pycodex.tui.bottom_pane.list_selection_view import (
     SelectionItem,
     SelectionToggle,
     SelectionViewParams,
+    handle_key_event,
+    render_lines_with_width,
+    stacked_side_content_is_used_when_side_by_side_does_not_fit,
+    side_layout_width_half_falls_back_when_list_would_be_too_narrow,
+    side_layout_width_half_uses_exact_split,
     SideContentWidth,
     popup_content_width,
     side_by_side_layout_widths,
@@ -173,3 +178,19 @@ def test_build_rows_marks_selection_current_default_and_disabled():
     assert rows[0].is_disabled is False
     assert rows[1].is_disabled is True
     assert rows[1].disabled_reason == "blocked"
+
+
+def test_key_dispatch_and_semantic_render_helpers_cover_runtime_boundaries():
+    view = _view([SelectionItem(name="zero"), SelectionItem(name="one")])
+    handle_key_event(view, "down")
+    assert view.selected_actual_idx() == 1
+    handle_key_event(view, "up")
+    assert view.selected_actual_idx() == 0
+
+    rendered = render_lines_with_width(view, 80)
+    assert "zero" in rendered
+    assert "one" in rendered
+
+    assert side_layout_width_half_uses_exact_split() is True
+    assert side_layout_width_half_falls_back_when_list_would_be_too_narrow() is True
+    assert stacked_side_content_is_used_when_side_by_side_does_not_fit() is True

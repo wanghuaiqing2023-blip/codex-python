@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Optional, Tuple
 
 from .._porting import RustTuiModule
 
@@ -21,6 +21,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="chatwidget::tool_lifecycle",
     source="codex/codex-rs/tui/src/chatwidget/tool_lifecycle.rs",
+    status="complete",
 )
 
 
@@ -62,15 +63,15 @@ class McpResult:
 @dataclass
 class ThreadItem:
     kind: ThreadItemKind
-    id: str | None = None
-    status: Any | None = None
-    server: str | None = None
-    tool: Any | None = None
-    arguments: Any | None = None
-    result: McpResult | None = None
-    error: McpError | None = None
-    duration_ms: int | None = None
-    payload: dict[str, Any] = field(default_factory=dict)
+    id: Optional[str] = None
+    status: Optional[Any] = None
+    server: Optional[str] = None
+    tool: Optional[Any] = None
+    arguments: Optional[Any] = None
+    result: Optional[McpResult] = None
+    error: Optional[McpError] = None
+    duration_ms: Optional[int] = None
+    payload: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def file_change(cls, status: PatchApplyStatus) -> "ThreadItem":
@@ -84,9 +85,9 @@ class ThreadItem:
         server: str,
         tool: str,
         arguments: Any = None,
-        result: McpResult | None = None,
-        error: McpError | None = None,
-        duration_ms: int | None = None,
+        result: Optional[McpResult] = None,
+        error: Optional[McpError] = None,
+        duration_ms: Optional[int] = None,
     ) -> "ThreadItem":
         return cls(
             ThreadItemKind.MCP_TOOL_CALL,
@@ -106,7 +107,7 @@ class ThreadItem:
         id: str,
         tool: CollabAgentTool,
         status: CollabAgentToolCallStatus,
-        payload: dict[str, Any] | None = None,
+        payload: Optional[Dict[str, Any]] = None,
     ) -> "ThreadItem":
         return cls(
             ThreadItemKind.COLLAB_AGENT_TOOL_CALL,
@@ -120,14 +121,14 @@ class ThreadItem:
 @dataclass
 class HistoryCell:
     kind: str
-    data: dict[str, Any] = field(default_factory=dict)
+    data: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class ActiveWebSearchCell:
     call_id: str
     query: str = ""
-    action: Any | None = None
+    action: Optional[Any] = None
     completed: bool = False
 
     def update(self, action: Any, query: str) -> None:
@@ -141,12 +142,12 @@ class ActiveWebSearchCell:
 @dataclass
 class ActiveMcpToolCallCell:
     call_id: str
-    invocation: dict[str, Any]
+    invocation: Dict[str, Any]
     completed: bool = False
     duration_ms: int = 0
-    result: tuple[str, Any] | None = None
+    result: Optional[Tuple[str, Any]] = None
 
-    def complete(self, duration_ms: int, result: tuple[str, Any]) -> HistoryCell | None:
+    def complete(self, duration_ms: int, result: Tuple[str, Any]) -> Optional[HistoryCell]:
         self.completed = True
         self.duration_ms = max(duration_ms, 0)
         self.result = result
@@ -157,8 +158,8 @@ class ActiveMcpToolCallCell:
 
 @dataclass
 class DeferredQueue:
-    started: list[ThreadItem] = field(default_factory=list)
-    completed: list[ThreadItem] = field(default_factory=list)
+    started: List[ThreadItem] = field(default_factory=list)
+    completed: List[ThreadItem] = field(default_factory=list)
 
     def push_item_started(self, item: ThreadItem) -> None:
         self.started.append(item)
@@ -172,20 +173,20 @@ class ToolLifecycleModel:
     cwd: Path = Path(".")
     animations: bool = True
     defer_items: bool = False
-    history: list[HistoryCell] = field(default_factory=list)
-    boxed_history: list[HistoryCell] = field(default_factory=list)
-    active_cell: Any | None = None
+    history: List[HistoryCell] = field(default_factory=list)
+    boxed_history: List[HistoryCell] = field(default_factory=list)
+    active_cell: Optional[Any] = None
     had_work_activity: bool = False
-    pending_collab_spawn_requests: dict[str, Any] = field(default_factory=dict)
+    pending_collab_spawn_requests: Dict[str, Any] = field(default_factory=dict)
     deferred_queue: DeferredQueue = field(default_factory=DeferredQueue)
     answer_stream_flushes: int = 0
     active_cell_flushes: int = 0
     active_cell_revision: int = 0
     redraw_requests: int = 0
-    command_started: list[ThreadItem] = field(default_factory=list)
-    command_completed: list[ThreadItem] = field(default_factory=list)
+    command_started: List[ThreadItem] = field(default_factory=list)
+    command_completed: List[ThreadItem] = field(default_factory=list)
 
-    def on_patch_apply_begin(self, changes: dict[Path, Any]) -> None:
+    def on_patch_apply_begin(self, changes: Dict[Path, Any]) -> None:
         self.add_to_history(HistoryCell("patch_event", {"changes": changes, "cwd": self.cwd}))
 
     def on_view_image_tool_call(self, path: Path) -> None:
@@ -199,8 +200,8 @@ class ToolLifecycleModel:
     def on_image_generation_end(
         self,
         call_id: str,
-        revised_prompt: str | None,
-        saved_path: Path | None,
+        revised_prompt: Optional[str],
+        saved_path: Optional[Path],
     ) -> None:
         self.flush_answer_stream_with_separator()
         self.add_to_history(
@@ -357,7 +358,7 @@ class ToolLifecycleModel:
         self.boxed_history.append(cell)
 
 
-def mcp_completion_result(item: ThreadItem) -> tuple[str, Any]:
+def mcp_completion_result(item: ThreadItem) -> Tuple[str, Any]:
     if item.error is not None:
         return ("error", item.error.message)
     if item.result is not None:
@@ -372,11 +373,11 @@ def mcp_completion_result(item: ThreadItem) -> tuple[str, Any]:
     return ("error", "MCP tool call completed without a result")
 
 
-def spawn_request_summary(item: ThreadItem) -> Any | None:
+def spawn_request_summary(item: ThreadItem) -> Optional[Any]:
     return item.payload.get("spawn_request")
 
 
-def tool_call_history_cell(item: ThreadItem, cached_spawn_request: Any | None = None) -> HistoryCell | None:
+def tool_call_history_cell(item: ThreadItem, cached_spawn_request: Optional[Any] = None) -> Optional[HistoryCell]:
     if item.kind is not ThreadItemKind.COLLAB_AGENT_TOOL_CALL:
         return None
     return HistoryCell(

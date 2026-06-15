@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 
 from ._porting import RustTuiModule
 from .external_agent_config_migration import ExternalAgentConfigMigrationOutcome
@@ -20,6 +20,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="external_agent_config_migration_startup",
     source="codex/codex-rs/tui/src/external_agent_config_migration_startup.rs",
+    status="complete",
 )
 
 EXTERNAL_CONFIG_MIGRATION_PROMPT_COOLDOWN_SECS = 5 * 24 * 60 * 60
@@ -28,10 +29,10 @@ EXTERNAL_CONFIG_MIGRATION_PROMPT_COOLDOWN_SECS = 5 * 24 * 60 * 60
 @dataclass(frozen=True)
 class ExternalAgentConfigMigrationStartupOutcome:
     kind: str
-    success_message: str | None = None
+    success_message: Optional[str] = None
 
     @classmethod
-    def Continue(cls, success_message: str | None = None) -> "ExternalAgentConfigMigrationStartupOutcome":
+    def Continue(cls, success_message: Optional[str] = None) -> "ExternalAgentConfigMigrationStartupOutcome":
         return cls("continue", success_message)
 
     @classmethod
@@ -41,10 +42,10 @@ class ExternalAgentConfigMigrationStartupOutcome:
 
 @dataclass
 class ExternalConfigMigrationPrompts:
-    home: bool | None = None
-    projects: dict[str, bool] = field(default_factory=dict)
-    home_last_prompted_at: int | None = None
-    project_last_prompted_at: dict[str, int] = field(default_factory=dict)
+    home: Optional[bool] = None
+    projects: Dict[str, bool] = field(default_factory=dict)
+    home_last_prompted_at: Optional[int] = None
+    project_last_prompted_at: Dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -54,7 +55,7 @@ class Notices:
 
 @dataclass
 class FeatureSet:
-    enabled_features: set[str] = field(default_factory=set)
+    enabled_features: Set[str] = field(default_factory=set)
 
     def enabled(self, feature: Any) -> bool:
         raw = _feature_name(feature)
@@ -67,18 +68,18 @@ class Config:
     codex_home: Path = Path.cwd()
     features: FeatureSet = field(default_factory=FeatureSet)
     notices: Notices = field(default_factory=Notices)
-    applied_edits: list[tuple[str, Any]] = field(default_factory=list)
+    applied_edits: List[Tuple[Any, ...]] = field(default_factory=list)
 
 
 def should_show_external_agent_config_migration_prompt(config: Any, entered_trust_nux: bool) -> bool:
     return bool(entered_trust_nux) and _feature_enabled(_get(config, "features"), "ExternalMigration")
 
 
-def external_config_migration_project_key(path: str | Path) -> str:
-    return str(Path(path))
+def external_config_migration_project_key(path: Union[str, Path]) -> str:
+    return Path(path).as_posix()
 
 
-def is_external_config_migration_scope_hidden(config: Any, cwd: str | Path | None) -> bool:
+def is_external_config_migration_scope_hidden(config: Any, cwd: Optional[Union[str, Path]]) -> bool:
     prompts = _prompts(config)
     if cwd is None:
         return bool(_get(prompts, "home", False))
@@ -86,7 +87,7 @@ def is_external_config_migration_scope_hidden(config: Any, cwd: str | Path | Non
     return bool(projects.get(external_config_migration_project_key(cwd), False))
 
 
-def external_config_migration_last_prompted_at(config: Any, cwd: str | Path | None) -> int | None:
+def external_config_migration_last_prompted_at(config: Any, cwd: Optional[Union[str, Path]]) -> Optional[int]:
     prompts = _prompts(config)
     if cwd is None:
         value = _get(prompts, "home_last_prompted_at")
@@ -98,7 +99,7 @@ def external_config_migration_last_prompted_at(config: Any, cwd: str | Path | No
 
 def is_external_config_migration_scope_cooling_down(
     config: Any,
-    cwd: str | Path | None,
+    cwd: Optional[Union[str, Path]],
     now_unix_seconds: int,
 ) -> bool:
     last_prompted_at = external_config_migration_last_prompted_at(config, cwd)
@@ -111,8 +112,8 @@ def visible_external_agent_config_migration_items(
     config: Any,
     items: Iterable[Any],
     now_unix_seconds: int,
-) -> list[Any]:
-    visible = []
+) -> List[Any]:
+    visible = []  # type: List[Any]
     for item in items:
         cwd = _get(item, "cwd")
         if is_external_config_migration_scope_hidden(config, cwd):
@@ -175,13 +176,13 @@ async def handle_external_agent_config_migration_prompt_if_needed(
     tui: Any,
     app_server: Any,
     config: Any,
-    cli_kv_overrides: Sequence[tuple[str, Any]] | None = None,
+    cli_kv_overrides: Optional[Sequence[Tuple[str, Any]]] = None,
     harness_overrides: Any = None,
     entered_trust_nux: bool = False,
     *,
-    prompt_runner: Any | None = None,
-    now_unix_seconds: int | None = None,
-    config_reloader: Any | None = None,
+    prompt_runner: Optional[Any] = None,
+    now_unix_seconds: Optional[int] = None,
+    config_reloader: Optional[Any] = None,
 ) -> ExternalAgentConfigMigrationStartupOutcome:
     if not should_show_external_agent_config_migration_prompt(config, entered_trust_nux):
         return ExternalAgentConfigMigrationStartupOutcome.Continue()
@@ -204,7 +205,7 @@ async def handle_external_agent_config_migration_prompt_if_needed(
         pass
 
     selected_items = list(detected_items)
-    error: str | None = None
+    error: Optional[str] = None
     if prompt_runner is None:
         raise NotImplementedError("interactive migration prompt runner is a TUI runtime boundary")
 
@@ -273,7 +274,7 @@ def _ensure_prompts(config: Any) -> Any:
     return prompts
 
 
-def _ensure_map(obj: Any, key: str) -> dict[str, Any]:
+def _ensure_map(obj: Any, key: str) -> Dict[str, Any]:
     value = _get(obj, key)
     if value is None:
         value = {}
@@ -281,7 +282,7 @@ def _ensure_map(obj: Any, key: str) -> dict[str, Any]:
     return value
 
 
-def _project_keys(items: Iterable[Any]) -> list[str]:
+def _project_keys(items: Iterable[Any]) -> List[str]:
     return [external_config_migration_project_key(cwd) for cwd in (_get(item, "cwd") for item in items) if cwd is not None]
 
 
@@ -304,7 +305,7 @@ def _set(obj: Any, key: str, value: Any) -> None:
         setattr(obj, key, value)
 
 
-def _record_edits(config: Any, edits: list[Any]) -> None:
+def _record_edits(config: Any, edits: List[Any]) -> None:
     if not edits:
         return
     existing = _get(config, "applied_edits")

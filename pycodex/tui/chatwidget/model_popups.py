@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Iterable
+from typing import Iterable, List, Optional, Tuple, Union
 
 from .._porting import RustTuiModule
 from ..bottom_pane.list_selection_view import SelectionItem, SelectionViewParams
@@ -16,6 +16,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="chatwidget::model_popups",
     source="codex/codex-rs/tui/src/chatwidget/model_popups.rs",
+    status="complete",
 )
 
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
@@ -44,7 +45,7 @@ class ModelPreset:
     model: str
     description: str = ""
     default_reasoning_effort: ReasoningEffortConfig = ReasoningEffortConfig.Medium
-    supported_reasoning_efforts: tuple[ReasoningEffortPreset, ...] = ()
+    supported_reasoning_efforts: Tuple[ReasoningEffortPreset, ...] = ()
     is_default: bool = False
     show_in_picker: bool = True
 
@@ -52,25 +53,27 @@ class ModelPreset:
 @dataclass(frozen=True)
 class ModelPopupEvent:
     kind: str
-    model: str | None = None
-    effort: ReasoningEffortConfig | None = None
-    models: tuple[ModelPreset, ...] = ()
+    model: Optional[str] = None
+    effort: Optional[ReasoningEffortConfig] = None
+    models: Tuple[ModelPreset, ...] = ()
 
 
 @dataclass
 class ModelPopupContext:
     current_model: str
-    model_display_name: str | None = None
+    model_display_name: Optional[str] = None
     collaboration_modes_enabled: bool = False
     active_mode_kind: str = "chat"
-    current_collaboration_model: str | None = None
-    current_collaboration_effort: ReasoningEffortConfig | None = None
-    effective_reasoning_effort: ReasoningEffortConfig | None = None
-    plan_mode_reasoning_effort: ReasoningEffortConfig | None = None
-    custom_base_url: str | None = None
+    current_collaboration_model: Optional[str] = None
+    current_collaboration_effort: Optional[ReasoningEffortConfig] = None
+    effective_reasoning_effort: Optional[ReasoningEffortConfig] = None
+    plan_mode_reasoning_effort: Optional[ReasoningEffortConfig] = None
+    custom_base_url: Optional[str] = None
     provider_is_openai: bool = True
-    info_messages: list[str] = field(default_factory=list)
-    notifications: list[str] = field(default_factory=list)
+    session_configured: bool = True
+    catalog_error: bool = False
+    info_messages: List[str] = field(default_factory=list)
+    notifications: List[str] = field(default_factory=list)
 
     def display_model(self) -> str:
         return self.model_display_name or self.current_model
@@ -78,9 +81,24 @@ class ModelPopupContext:
 
 @dataclass(frozen=True)
 class PopupResult:
-    view: SelectionViewParams | None = None
-    info_message: str | None = None
-    events: tuple[ModelPopupEvent, ...] = ()
+    view: Optional[SelectionViewParams] = None
+    info_message: Optional[str] = None
+    events: Tuple[ModelPopupEvent, ...] = ()
+
+
+def open_model_popup(
+    context: ModelPopupContext,
+    presets: Iterable[ModelPreset],
+) -> PopupResult:
+    if not context.session_configured:
+        message = "Model selection is disabled until startup completes."
+        context.info_messages.append(message)
+        return PopupResult(info_message=message)
+    if context.catalog_error:
+        message = "Models are being updated; please try /model again in a moment."
+        context.info_messages.append(message)
+        return PopupResult(info_message=message)
+    return open_model_popup_with_presets(context, presets)
 
 
 def open_model_popup_with_presets(
@@ -150,7 +168,7 @@ def open_all_models_popup(
     if not preset_list:
         return PopupResult(info_message="No additional models are available right now.")
 
-    items: list[SelectionItem] = []
+    items = []  # type: List[SelectionItem]
     for preset in preset_list:
         single_supported_effort = len(preset.supported_reasoning_efforts) == 1
         items.append(
@@ -208,7 +226,7 @@ def open_reasoning_popup(
         or preset.model.startswith("gpt-5.2")
     )
     descriptions = {option.effort: option.description for option in preset.supported_reasoning_efforts}
-    items: list[SelectionItem] = []
+    items = []  # type: List[SelectionItem]
     for effort in choices:
         label = reasoning_effort_label(effort)
         if effort == default_choice:
@@ -243,7 +261,7 @@ def open_reasoning_popup(
 def open_plan_reasoning_scope_prompt(
     context: ModelPopupContext,
     model: str,
-    effort: ReasoningEffortConfig | None,
+    effort: Optional[ReasoningEffortConfig],
 ) -> PopupResult:
     reasoning_phrase = _reasoning_phrase(effort)
     plan_reasoning_source = _plan_reasoning_source(context)
@@ -283,11 +301,15 @@ def open_plan_reasoning_scope_prompt(
     )
 
 
-def model_menu_header(context: ModelPopupContext, title: str, subtitle: str) -> tuple[str, str, str | None]:
+def model_menu_header(
+    context: ModelPopupContext,
+    title: str,
+    subtitle: str,
+) -> Tuple[str, str, Optional[str]]:
     return (title, subtitle, model_menu_warning_line(context))
 
 
-def model_menu_warning_line(context: ModelPopupContext) -> str | None:
+def model_menu_warning_line(context: ModelPopupContext) -> Optional[str]:
     base_url = custom_openai_base_url(context)
     if base_url is None:
         return None
@@ -297,7 +319,7 @@ def model_menu_warning_line(context: ModelPopupContext) -> str | None:
     )
 
 
-def custom_openai_base_url(context: ModelPopupContext) -> str | None:
+def custom_openai_base_url(context: ModelPopupContext) -> Optional[str]:
     if not context.provider_is_openai or context.custom_base_url is None:
         return None
     trimmed = context.custom_base_url.strip()
@@ -322,9 +344,9 @@ def auto_model_order(model: str) -> int:
 
 def model_selection_actions(
     model: str,
-    effort: ReasoningEffortConfig | None,
+    effort: Optional[ReasoningEffortConfig],
     should_prompt_plan_mode_scope: bool,
-) -> list[ModelPopupEvent]:
+) -> List[ModelPopupEvent]:
     if should_prompt_plan_mode_scope:
         return [ModelPopupEvent("open_plan_reasoning_scope_prompt", model, effort)]
     return apply_model_and_effort(model, effort)
@@ -333,7 +355,7 @@ def model_selection_actions(
 def should_prompt_plan_mode_reasoning_scope(
     context: ModelPopupContext,
     selected_model: str,
-    selected_effort: ReasoningEffortConfig | None,
+    selected_effort: Optional[ReasoningEffortConfig],
 ) -> bool:
     if (
         not context.collaboration_modes_enabled
@@ -361,8 +383,8 @@ def reasoning_effort_label(effort: ReasoningEffortConfig) -> str:
 
 def apply_model_and_effort_without_persist(
     model: str,
-    effort: ReasoningEffortConfig | None,
-) -> list[ModelPopupEvent]:
+    effort: Optional[ReasoningEffortConfig],
+) -> List[ModelPopupEvent]:
     return [
         ModelPopupEvent("update_model", model, None),
         ModelPopupEvent("update_reasoning_effort", None, effort),
@@ -371,21 +393,21 @@ def apply_model_and_effort_without_persist(
 
 def apply_model_and_effort(
     model: str,
-    effort: ReasoningEffortConfig | None,
-) -> list[ModelPopupEvent]:
+    effort: Optional[ReasoningEffortConfig],
+) -> List[ModelPopupEvent]:
     return [
         *apply_model_and_effort_without_persist(model, effort),
         ModelPopupEvent("persist_model_selection", model, effort),
     ]
 
 
-def _reasoning_choices(preset: ModelPreset) -> list[ReasoningEffortConfig]:
+def _reasoning_choices(preset: ModelPreset) -> List[ReasoningEffortConfig]:
     supported = {option.effort for option in preset.supported_reasoning_efforts}
     choices = [effort for effort in ReasoningEffortConfig if effort in supported]
     return choices or [preset.default_reasoning_effort]
 
 
-def _reasoning_phrase(effort: ReasoningEffortConfig | None) -> str:
+def _reasoning_phrase(effort: Optional[ReasoningEffortConfig]) -> str:
     if effort is ReasoningEffortConfig.None_:
         return "no reasoning"
     if effort is None:
@@ -423,6 +445,7 @@ __all__ = [
     "model_menu_header",
     "model_menu_warning_line",
     "model_selection_actions",
+    "open_model_popup",
     "open_all_models_popup",
     "open_model_popup_with_presets",
     "open_plan_reasoning_scope_prompt",

@@ -12,21 +12,23 @@ third-party packages.
 
 from __future__ import annotations
 
+import struct
 from dataclasses import dataclass, field
 import hashlib
 import json
 import math
 import os
 from pathlib import Path, PurePath, PureWindowsPath
-from typing import Any, Mapping
+from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 
-from .._porting import RustTuiModule, not_ported
+from .._porting import RustTuiModule
 from . import asset_pack, catalog
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="pets::model",
     source="codex/codex-rs/tui/src/pets/model.rs",
+    status="complete",
 )
 
 MAX_PET_FRAMES = 256
@@ -46,8 +48,8 @@ class AnimationFrame:
 
 @dataclass(frozen=True)
 class Animation:
-    frames: tuple[AnimationFrame, ...]
-    loop_start: int | None
+    frames: Tuple[AnimationFrame, ...]
+    loop_start: Optional[int]
     fallback: str
 
     def total_duration(self) -> float:
@@ -65,10 +67,14 @@ class Pet:
     columns: int
     rows: int
     frame_count_value: int
-    animations: dict[str, Animation] = field(default_factory=dict)
+    animations: Dict[str, Animation] = field(default_factory=dict)
 
     @classmethod
-    def load_with_codex_home(cls, value: str, codex_home: str | os.PathLike[str] | None = None) -> "Pet":
+    def load_with_codex_home(
+        cls,
+        value: str,
+        codex_home: Optional[Union[str, os.PathLike[str]]] = None,
+    ) -> "Pet":
         if path_like(value):
             return load_pet_path(value)
 
@@ -104,7 +110,7 @@ class FrameSpec:
     rows: int = catalog.DEFAULT_FRAME_ROWS
 
     @classmethod
-    def from_mapping(cls, value: Mapping[str, Any] | None) -> "FrameSpec":
+    def from_mapping(cls, value: Optional[Mapping[str, Any]]) -> "FrameSpec":
         if value is None:
             return cls()
         return cls(
@@ -117,9 +123,9 @@ class FrameSpec:
 
 @dataclass(frozen=True)
 class AnimationSpec:
-    frames: tuple[int, ...] = ()
-    fps: float | None = None
-    loop_animation: bool | None = None
+    frames: Tuple[int, ...] = ()
+    fps: Optional[float] = None
+    loop_animation: Optional[bool] = None
     fallback: str = ""
 
     @classmethod
@@ -134,12 +140,12 @@ class AnimationSpec:
 
 @dataclass(frozen=True)
 class PetFile:
-    id: str | None = None
-    display_name: str | None = None
-    description: str | None = None
-    spritesheet_path: str | None = None
-    frame: FrameSpec | None = None
-    animations: dict[str, AnimationSpec] = field(default_factory=dict)
+    id: Optional[str] = None
+    display_name: Optional[str] = None
+    description: Optional[str] = None
+    spritesheet_path: Optional[str] = None
+    frame: Optional[FrameSpec] = None
+    animations: Dict[str, AnimationSpec] = field(default_factory=dict)
 
     @classmethod
     def from_json(cls, raw: str) -> "PetFile":
@@ -162,7 +168,7 @@ def custom_pet_selector(id: str) -> str:
     return f"{CUSTOM_PET_PREFIX}{id}"
 
 
-def load_builtin_pet(pet: catalog.BuiltinPet, codex_home: str | os.PathLike[str] | None) -> Pet:
+def load_builtin_pet(pet: catalog.BuiltinPet, codex_home: Optional[Union[str, os.PathLike[str]]]) -> Pet:
     if codex_home is None:
         raise ValueError("CODEX_HOME is not available")
     spritesheet_path = asset_pack.builtin_spritesheet_path(codex_home, pet.spritesheet_file)
@@ -182,7 +188,7 @@ def load_builtin_pet(pet: catalog.BuiltinPet, codex_home: str | os.PathLike[str]
     )
 
 
-def load_custom_pet(value: str, codex_home: str | os.PathLike[str] | None) -> Pet:
+def load_custom_pet(value: str, codex_home: Optional[Union[str, os.PathLike[str]]]) -> Pet:
     if codex_home is None:
         raise ValueError("CODEX_HOME is not available")
     home = Path(codex_home)
@@ -215,7 +221,12 @@ def load_pet_path(value: str) -> Pet:
     return load_pet_manifest(pet_dir, manifest_file, fallback_id, fallback_id)
 
 
-def load_pet_manifest(pet_dir: str | os.PathLike[str], manifest_file: str, fallback_id: str, cache_id: str) -> Pet:
+def load_pet_manifest(
+    pet_dir: Union[str, os.PathLike[str]],
+    manifest_file: str,
+    fallback_id: str,
+    cache_id: str,
+) -> Pet:
     pet_dir_path = Path(pet_dir)
     config_path = pet_dir_path / manifest_file
     try:
@@ -227,7 +238,7 @@ def load_pet_manifest(pet_dir: str | os.PathLike[str], manifest_file: str, fallb
 
     manifest_id = _non_empty(file.id)
     display_name = _non_empty(file.display_name) or manifest_id or fallback_id
-    pet_id = (manifest_id or fallback_id) if cache_id == fallback_id else cache_id
+    pet_id = manifest_id or fallback_id if cache_id == fallback_id else cache_id
     description = (file.description or "").strip()
     spritesheet_value = _non_empty(file.spritesheet_path) or "spritesheet.webp"
     spritesheet_path = resolve_spritesheet_path(pet_dir_path, spritesheet_value)
@@ -251,16 +262,14 @@ def load_pet_manifest(pet_dir: str | os.PathLike[str], manifest_file: str, fallb
     )
 
 
-def resolve_spritesheet_path(pet_dir: str | os.PathLike[str], spritesheet_path: str) -> Path:
+def resolve_spritesheet_path(pet_dir: Union[str, os.PathLike[str]], spritesheet_path: str) -> Path:
     if _is_absolute_or_escaping(spritesheet_path):
         raise ValueError(f"spritesheet path must stay inside {Path(pet_dir)}")
     return Path(pet_dir) / spritesheet_path
 
 
-def validate_app_spritesheet_dimensions(path: str | os.PathLike[str]) -> tuple[int, int]:
-    dimensions = _read_test_spritesheet_dimensions(Path(path))
-    if dimensions is None:
-        return not_ported(RUST_MODULE, "validate_app_spritesheet_dimensions")
+def validate_app_spritesheet_dimensions(path: Union[str, os.PathLike[str]]) -> Tuple[int, int]:
+    dimensions = _image_dimensions(Path(path))
     width, height = dimensions
     if width != catalog.SPRITESHEET_WIDTH or height != catalog.SPRITESHEET_HEIGHT:
         raise ValueError(f"spritesheet must be {catalog.SPRITESHEET_WIDTH}x{catalog.SPRITESHEET_HEIGHT} pixels")
@@ -313,7 +322,10 @@ def expand_path(value: str) -> Path:
     return Path(value)
 
 
-def load_animations(specs: Mapping[str, AnimationSpec | Mapping[str, Any]], frame_count: int) -> dict[str, Animation]:
+def load_animations(
+    specs: Mapping[str, Union[AnimationSpec, Mapping[str, Any]]],
+    frame_count: int,
+) -> Dict[str, Animation]:
     animations = default_animations()
     if not specs:
         validate_animation_indices(animations, frame_count)
@@ -368,7 +380,7 @@ def default_frame_count() -> int:
     return catalog.DEFAULT_FRAME_COLUMNS * catalog.DEFAULT_FRAME_ROWS
 
 
-def default_animations() -> dict[str, Animation]:
+def default_animations() -> Dict[str, Animation]:
     return {
         "idle": idle_animation(),
         "running-right": app_state_animation(1, 8, 120, 220),
@@ -414,15 +426,15 @@ def app_state_animation(row_index: int, frame_count: int, frame_duration_ms: int
     )
 
 
-def sprite_indices(animation: Animation) -> list[int]:
+def sprite_indices(animation: Animation) -> List[int]:
     return [frame.sprite_index for frame in animation.frames]
 
 
-def durations_ms(animation: Animation) -> list[int]:
+def durations_ms(animation: Animation) -> List[int]:
     return [frame.duration_ms for frame in animation.frames]
 
 
-def _non_empty(value: str | None) -> str | None:
+def _non_empty(value: Optional[str]) -> Optional[str]:
     if value is None:
         return None
     stripped = value.strip()
@@ -444,13 +456,27 @@ def _is_absolute_or_escaping(value: str) -> bool:
     return any(part == ".." for part in path.parts) or any(part == ".." for part in windows_path.parts)
 
 
-def _read_test_spritesheet_dimensions(path: Path) -> tuple[int, int] | None:
+def _image_dimensions(path: Path) -> Tuple[int, int]:
+    data = path.read_bytes()
+    marker = _test_spritesheet_dimensions(data)
+    if marker is not None:
+        return marker
+    if data.startswith(b"\x89PNG\r\n\x1a\n") and len(data) >= 24:
+        return struct.unpack(">II", data[16:24])
+    if data.startswith((b"GIF87a", b"GIF89a")) and len(data) >= 10:
+        return struct.unpack("<HH", data[6:10])
+    if data.startswith(b"\xff\xd8"):
+        return _jpeg_dimensions(data)
+    if data.startswith(b"RIFF") and len(data) >= 30 and data[8:12] == b"WEBP":
+        return _webp_dimensions(data)
+    raise ValueError(f"read {path}: unsupported image format")
+
+
+def _test_spritesheet_dimensions(data: bytes) -> Optional[Tuple[int, int]]:
     try:
-        text = path.read_text(encoding="utf-8")
+        text = data.decode("utf-8")
     except UnicodeDecodeError:
         return None
-    except OSError:
-        raise
     prefix = "test spritesheet "
     if not text.startswith(prefix):
         return None
@@ -460,6 +486,64 @@ def _read_test_spritesheet_dimensions(path: Path) -> tuple[int, int] | None:
         return int(width), int(height)
     except (ValueError, IndexError):
         return None
+
+
+def _webp_dimensions(data: bytes) -> Tuple[int, int]:
+    chunk_type = data[12:16]
+    if chunk_type == b"VP8X" and len(data) >= 30:
+        width = 1 + int.from_bytes(data[24:27], "little")
+        height = 1 + int.from_bytes(data[27:30], "little")
+        return width, height
+    if chunk_type == b"VP8 " and len(data) >= 30:
+        start = 20
+        signature = data.find(b"\x9d\x01\x2a", start)
+        if signature >= 0 and signature + 7 <= len(data):
+            raw_width, raw_height = struct.unpack("<HH", data[signature + 3 : signature + 7])
+            return raw_width & 0x3FFF, raw_height & 0x3FFF
+    if chunk_type == b"VP8L" and len(data) >= 25 and data[20] == 0x2F:
+        bits = int.from_bytes(data[21:25], "little")
+        width = (bits & 0x3FFF) + 1
+        height = ((bits >> 14) & 0x3FFF) + 1
+        return width, height
+    raise ValueError("unsupported WebP dimensions")
+
+
+def _jpeg_dimensions(data: bytes) -> Tuple[int, int]:
+    index = 2
+    while index + 9 <= len(data):
+        while index < len(data) and data[index] == 0xFF:
+            index += 1
+        if index >= len(data):
+            break
+        marker = data[index]
+        index += 1
+        if marker in {0xD8, 0xD9}:
+            continue
+        if index + 2 > len(data):
+            break
+        length = struct.unpack(">H", data[index : index + 2])[0]
+        if length < 2 or index + length > len(data):
+            break
+        if marker in {
+            0xC0,
+            0xC1,
+            0xC2,
+            0xC3,
+            0xC5,
+            0xC6,
+            0xC7,
+            0xC9,
+            0xCA,
+            0xCB,
+            0xCD,
+            0xCE,
+            0xCF,
+        }:
+            height = struct.unpack(">H", data[index + 3 : index + 5])[0]
+            width = struct.unpack(">H", data[index + 5 : index + 7])[0]
+            return width, height
+        index += length
+    raise ValueError("unsupported JPEG dimensions")
 
 
 __all__ = [

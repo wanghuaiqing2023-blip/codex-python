@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, List, Optional
 
 from ._porting import RustTuiModule
 
@@ -13,6 +13,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="startup_hooks_review",
     source="codex/codex-rs/tui/src/startup_hooks_review.rs",
+    status="complete",
 )
 
 
@@ -42,34 +43,34 @@ class SelectionItem:
 
 @dataclass(frozen=True)
 class SelectionViewParams:
-    items: list[SelectionItem]
-    header: list[str]
-    footer_hint: str | None = None
+    items: List[SelectionItem]
+    header: List[str]
+    footer_hint: Optional[str] = None
 
 
 @dataclass
 class ListSelectionView:
     params: SelectionViewParams
-    selected_index: int | None = None
+    selected_index: Optional[int] = None
     complete: bool = False
 
     def is_complete(self) -> bool:
         return self.complete
 
-    def take_last_selected_index(self) -> int | None:
+    def take_last_selected_index(self) -> Optional[int]:
         index = self.selected_index
         self.selected_index = None
         self.complete = False
         return index
 
-    def select(self, index: int | None) -> None:
+    def select(self, index: Optional[int]) -> None:
         self.selected_index = index
         self.complete = True
 
     def desired_height(self, _width: int) -> int:
         return len(self.params.header) + len(self.params.items) + (1 if self.params.footer_hint else 0)
 
-    def render_lines(self) -> list[str]:
+    def render_lines(self) -> List[str]:
         rows = list(self.params.header)
         rows.extend(item.name for item in self.params.items)
         if self.params.footer_hint is not None:
@@ -134,6 +135,8 @@ async def run_startup_hooks_review_app(
             return StartupHooksReviewResult(StartupHooksReviewOutcome.CONTINUE)
         if write_hook_trusts_fn is None:
             return StartupHooksReviewResult(StartupHooksReviewOutcome.CONTINUE)
+        view = selection_view(entry_value, None, True, None, keymap)
+        draw_view(tui, view)
         updates = [
             {"key": _field(hook_value, "key"), "current_hash": _field(hook_value, "current_hash")}
             for hook_value in _hooks(entry_value)
@@ -148,7 +151,7 @@ async def run_startup_hooks_review_app(
     return StartupHooksReviewResult(StartupHooksReviewOutcome.CONTINUE)
 
 
-def selected_choice(view: ListSelectionView) -> StartupHooksReviewSelection | None:
+def selected_choice(view: ListSelectionView) -> Optional[StartupHooksReviewSelection]:
     if not view.is_complete():
         return None
     index = view.take_last_selected_index()
@@ -163,7 +166,7 @@ def selected_choice(view: ListSelectionView) -> StartupHooksReviewSelection | No
 
 def selection_view(
     entry_value: Any,
-    trust_all_error: str | None,
+    trust_all_error: Optional[str],
     trusting_all: bool,
     _app_event_tx: Any,
     keymap: Any,
@@ -173,7 +176,7 @@ def selection_view(
 
 def selection_view_params(
     entry_value: Any,
-    trust_all_error: str | None,
+    trust_all_error: Optional[str],
     trusting_all: bool,
     _keymap: Any,
 ) -> SelectionViewParams:
@@ -229,19 +232,19 @@ def draw_view(tui: Any, view: ListSelectionView) -> None:
 class StandaloneSelectionView:
     view: ListSelectionView
 
-    def render_ref(self, _area: Any = None, _buf: Any = None) -> list[str]:
+    def render_ref(self, _area: Any = None, _buf: Any = None) -> List[str]:
         return self.view.render_lines()
 
 
-def render_ref(view: StandaloneSelectionView, area: Any = None, buf: Any = None) -> list[str]:
+def render_ref(view: StandaloneSelectionView, area: Any = None, buf: Any = None) -> List[str]:
     return view.render_ref(area, buf)
 
 
-def hook(key: str, trust_status: Any) -> dict[str, Any]:
+def hook(key: str, trust_status: Any) -> dict:
     return {"key": key, "current_hash": f"sha256:{key}", "trust_status": trust_status}
 
 
-def entry() -> dict[str, Any]:
+def entry() -> dict:
     return {"cwd": Path("/tmp"), "hooks": [hook("path:new", "Untrusted"), hook("path:changed", "Modified")]}
 
 
@@ -249,7 +252,7 @@ def render_lines(view: ListSelectionView, _width: int = 80) -> str:
     return "\n".join(view.render_lines())
 
 
-def _hooks(entry_value: Any) -> list[Any]:
+def _hooks(entry_value: Any) -> List[Any]:
     return list(_field(entry_value, "hooks", []))
 
 
@@ -270,7 +273,7 @@ async def _maybe_await(value: Any) -> Any:
     return value
 
 
-def _key_to_index(code: Any) -> int | None:
+def _key_to_index(code: Any) -> Optional[int]:
     mapping = {"1": 0, "2": 1, "3": 2, 0: 0, 1: 1, 2: 2}
     return mapping.get(code)
 

@@ -9,23 +9,18 @@ semantic events instead of framework-specific buffer cells.
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from ..._porting import RustTuiModule
 from .layout import Rect, layout_sections
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
-    rust_path="codex-rs/tui/src/bottom_pane/request_user_input/render.rs",
-    python_path="pycodex/tui/bottom_pane/request_user_input/render.py",
-    status="complete_slice",
-    notes=(
-        "Ports request-user-input overlay height calculation, unanswered "
-        "confirmation planning, word-boundary truncation, bottom-aligned row "
-        "projection, cursor gating, and semantic render events. Ratatui buffer "
-        "painting is represented by semantic event dictionaries."
-    ),
+    module="bottom_pane::request_user_input::render",
+    source="codex/codex-rs/tui/src/bottom_pane/request_user_input/render.rs",
+    status="complete",
 )
 
 MIN_OVERLAY_HEIGHT = 8
@@ -39,13 +34,13 @@ UNANSWERED_CONFIRM_TITLE = "Submit with unanswered questions?"
 @dataclass(frozen=True)
 class StyledSpan:
     text: str
-    style: tuple[str, ...] = ()
+    style: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class StyledLine:
-    spans: tuple[StyledSpan, ...] = ()
-    style: tuple[str, ...] = ()
+    spans: Tuple[StyledSpan, ...] = ()
+    style: Tuple[str, ...] = ()
 
     @classmethod
     def from_text(cls, text: str, *style: str) -> "StyledLine":
@@ -61,15 +56,15 @@ class UnansweredConfirmationData:
     title_line: StyledLine
     subtitle_line: StyledLine
     hint_line: StyledLine
-    rows: list[Any]
+    rows: List[Any]
     state: Any
 
 
 @dataclass
 class UnansweredConfirmationLayout:
-    header_lines: list[StyledLine]
-    hint_lines: list[StyledLine]
-    rows: list[Any]
+    header_lines: List[StyledLine]
+    hint_lines: List[StyledLine]
+    rows: List[Any]
     state: Any
 
 
@@ -105,19 +100,17 @@ def desired_height(overlay: Any, width: int) -> int:
     notes_visible = (not has_options) or _call_bool(overlay, "notes_ui_visible")
     notes_height = int(_call(overlay, "notes_input_height", inner_width, default=0)) if notes_visible else 0
     spacer_rows = SPACER_ROWS_NO_OPTIONS
-    if has_options:
-        spacer_rows = SPACER_ROWS_WITH_NOTES if notes_visible else int(getattr(overlay, "DESIRED_SPACERS_BETWEEN_SECTIONS", 0))
     footer_height = int(_call(overlay, "footer_required_height", inner_width, default=0))
     total = question_height + options_height + spacer_rows + notes_height + footer_height + PROGRESS_ROW_HEIGHT
     total += menu_surface_padding_height()
     return max(MIN_OVERLAY_HEIGHT, total)
 
 
-def render(overlay: Any, area: Rect, buf: Any | None = None) -> list[dict[str, Any]]:
+def render(overlay: Any, area: Rect, buf: Optional[Any] = None) -> List[Dict[str, Any]]:
     return render_ui(overlay, area, buf)
 
 
-def cursor_pos(overlay: Any, area: Rect) -> tuple[int, int] | None:
+def cursor_pos(overlay: Any, area: Rect) -> Optional[Tuple[int, int]]:
     return cursor_pos_impl(overlay, area)
 
 
@@ -135,46 +128,44 @@ def unanswered_confirmation_data(overlay: Any) -> UnansweredConfirmationData:
 
 def unanswered_confirmation_layout(overlay: Any, width: int) -> UnansweredConfirmationLayout:
     data = unanswered_confirmation_data(overlay)
-    inner = menu_surface_inset(Rect(0, 0, max(0, int(width)), 65535))
-    inner_width = max(1, inner.width)
-    header = wrap_styled_line(data.title_line, inner_width) + wrap_styled_line(data.subtitle_line, inner_width)
-    hint = wrap_styled_line(data.hint_line, inner_width)
+    del width
+    header = [data.title_line, data.subtitle_line]
+    hint = [data.hint_line]
     return UnansweredConfirmationLayout(header, hint, data.rows, data.state)
 
 
 def unanswered_confirmation_height(overlay: Any, width: int) -> int:
     layout = unanswered_confirmation_layout(overlay, width)
-    rows_height = min(len(layout.rows), max(1, int(_call(overlay, "unanswered_question_count", default=len(layout.rows)))))
-    if rows_height == 0:
-        rows_height = 1
+    rows_height = 1
     total = len(layout.header_lines) + 1 + rows_height + 1 + len(layout.hint_lines)
     total += menu_surface_padding_height()
     return max(MIN_OVERLAY_HEIGHT, total)
 
 
-def render_unanswered_confirmation(overlay: Any, area: Rect, buf: Any | None = None) -> list[dict[str, Any]]:
+def render_unanswered_confirmation(overlay: Any, area: Rect, buf: Optional[Any] = None) -> List[Dict[str, Any]]:
     content = menu_surface_inset(area)
     layout = unanswered_confirmation_layout(overlay, content.width)
-    events: list[dict[str, Any]] = [{"kind": "surface", "area": _rect(area), "content_area": _rect(content)}]
+    events: List[Dict[str, Any]] = [{"kind": "surface", "area": _rect(area), "content_area": _rect(content)}]
     y = content.y
     for line in layout.header_lines:
         events.append({"kind": "unanswered_header", "x": content.x, "y": y, "text": line.text, "style": line.style})
         y += 1
     y += 1
-    rows_area = Rect(content.x, y, content.width, max(1, min(len(layout.rows), max(1, content.bottom - y - len(layout.hint_lines) - 1))))
+    content_bottom = content.bottom()
+    rows_area = Rect(content.x, y, content.width, max(1, min(len(layout.rows), max(1, content_bottom - y - len(layout.hint_lines) - 1))))
     events.extend(render_rows_bottom_aligned(rows_area, layout.rows, layout.state, rows_area.height, "No unanswered questions"))
-    y = rows_area.bottom
-    if y < content.bottom - len(layout.hint_lines):
+    y = rows_area.bottom()
+    if y < content_bottom - len(layout.hint_lines):
         y += 1
     for line in layout.hint_lines:
-        if y >= content.bottom:
+        if y >= content_bottom:
             break
         events.append({"kind": "hint", "x": content.x, "y": y, "text": line.text, "style": line.style})
         y += 1
     return _write_events(buf, events)
 
 
-def render_ui(overlay: Any, area: Rect, buf: Any | None = None) -> list[dict[str, Any]]:
+def render_ui(overlay: Any, area: Rect, buf: Optional[Any] = None) -> List[Dict[str, Any]]:
     if area.width == 0 or area.height == 0:
         return []
     if _call_bool(overlay, "confirm_unanswered_active"):
@@ -182,7 +173,7 @@ def render_ui(overlay: Any, area: Rect, buf: Any | None = None) -> list[dict[str
 
     content = menu_surface_inset(area)
     sections = layout_sections(overlay, content)
-    events: list[dict[str, Any]] = [{"kind": "surface", "area": _rect(area), "content_area": _rect(content)}]
+    events: List[Dict[str, Any]] = [{"kind": "surface", "area": _rect(area), "content_area": _rect(content)}]
 
     total = int(_call(overlay, "question_count", default=0))
     current_index = int(_call(overlay, "current_index", default=0))
@@ -214,13 +205,14 @@ def render_ui(overlay: Any, area: Rect, buf: Any | None = None) -> list[dict[str
         text = _call(getattr(overlay, "composer", None), "current_text", default=current_text)
         events.append({"kind": "notes", "area": _rect(sections.notes_area), "text": text, "mask": "*" if _current_question_secret(overlay) else None})
 
-    if sections.footer_area.height > 0:
-        events.extend(render_footer_lines(overlay, sections.footer_area, has_options, sections.options_area))
+    if sections.footer_lines > 0:
+        footer_area = Rect(content.x, content.bottom() - sections.footer_lines, content.width, sections.footer_lines)
+        events.extend(render_footer_lines(overlay, footer_area, has_options, sections.options_area))
 
     return _write_events(buf, events)
 
 
-def render_footer_lines(overlay: Any, footer_area: Rect, has_options: bool | None = None, options_area: Rect | None = None) -> list[dict[str, Any]]:
+def render_footer_lines(overlay: Any, footer_area: Rect, has_options: Optional[bool] = None, options_area: Rect | None = None) -> List[Dict[str, Any]]:
     has_options = _call_bool(overlay, "has_options") if has_options is None else has_options
     option_tip = None
     if has_options and options_area is not None and options_area.height > 0:
@@ -230,7 +222,7 @@ def render_footer_lines(overlay: Any, footer_area: Rect, has_options: bool | Non
             total = int(_call(overlay, "options_len", default=max(1, selected)))
             option_tip = f"option {selected}/{total}"
     tips = _call(overlay, "footer_tip_lines_with_prefix", footer_area.width, option_tip, default=[])
-    events: list[dict[str, Any]] = []
+    events: List[Dict[str, Any]] = []
     for row, tip in enumerate(tips):
         if row >= footer_area.height:
             break
@@ -241,7 +233,7 @@ def render_footer_lines(overlay: Any, footer_area: Rect, has_options: bool | Non
     return events
 
 
-def cursor_pos_impl(overlay: Any, area: Rect) -> tuple[int, int] | None:
+def cursor_pos_impl(overlay: Any, area: Rect) -> Optional[Tuple[int, int]]:
     if _call_bool(overlay, "confirm_unanswered_active"):
         return None
     if not _call_bool(overlay, "focus_is_notes"):
@@ -258,16 +250,16 @@ def cursor_pos_impl(overlay: Any, area: Rect) -> tuple[int, int] | None:
     return _call(composer, "cursor_pos", notes_area, default=None)
 
 
-def render_notes_input(overlay: Any, area: Rect, buf: Any | None = None) -> list[dict[str, Any]]:
+def render_notes_input(overlay: Any, area: Rect, buf: Optional[Any] = None) -> List[Dict[str, Any]]:
     event = {"kind": "notes", "area": _rect(area), "text": _composer_text(overlay), "mask": "*" if _current_question_secret(overlay) else None}
     return _write_events(buf, [event])
 
 
 def line_width(line: Any) -> int:
-    return len(line_to_owned(line).text)
+    return sum(_char_width(char) for char in line_to_owned(line).text)
 
 
-def render_rows_bottom_aligned(area: Rect, rows: Iterable[Any], state: Any, max_results: int, empty_message: str) -> list[dict[str, Any]]:
+def render_rows_bottom_aligned(area: Rect, rows: Iterable[Any], state: Any, max_results: int, empty_message: str) -> List[Dict[str, Any]]:
     materialized = list(rows)[: max(0, int(max_results))]
     if not materialized:
         materialized = [empty_message]
@@ -278,7 +270,7 @@ def render_rows_bottom_aligned(area: Rect, rows: Iterable[Any], state: Any, max_
         selected_idx = state.get("selected_idx")
     elif hasattr(state, "selected_idx"):
         selected_idx = getattr(state, "selected_idx")
-    events: list[dict[str, Any]] = []
+    events: List[Dict[str, Any]] = []
     base_index = max(0, len(materialized) - len(visible))
     for offset, row in enumerate(visible):
         events.append({
@@ -299,27 +291,49 @@ def truncate_line_word_boundary_with_ellipsis(line: Any, max_width: int) -> Styl
         return StyledLine.from_text("")
     if line_width(owned) <= max_width:
         return owned
-    ellipsis = "."
-    if max_width <= len(ellipsis):
+    ellipsis = "…"
+    ellipsis_width = line_width(StyledLine.from_text(ellipsis))
+    if max_width <= ellipsis_width:
         return StyledLine.from_text(ellipsis[:max_width], *(owned.style or ()))
-    limit = max_width - len(ellipsis)
+    limit = max_width - ellipsis_width
     text = owned.text
-    fallback = text[:limit]
+    fallback = _take_display_width(text, limit)
     boundary = -1
-    for idx, char in enumerate(text[:limit]):
+    visible = _take_display_width(text, limit)
+    for idx, char in enumerate(visible):
         if char.isspace():
             boundary = idx
-    prefix = text[:boundary].rstrip() if boundary > 0 else fallback.rstrip()
+    prefix = visible[:boundary].rstrip() if boundary > 0 else fallback.rstrip()
     if not prefix:
-        prefix = fallback[:limit]
+        prefix = fallback
     return StyledLine.from_text(prefix + ellipsis, *(owned.style or ()))
+
+
+def _char_width(char: str) -> int:
+    if unicodedata.combining(char):
+        return 0
+    if unicodedata.east_asian_width(char) in {"F", "W"}:
+        return 2
+    return 1
+
+
+def _take_display_width(text: str, max_width: int) -> str:
+    used = 0
+    out: List[str] = []
+    for char in text:
+        width = _char_width(char)
+        if used + width > max_width:
+            break
+        out.append(char)
+        used += width
+    return "".join(out)
 
 
 def standard_popup_hint_line() -> StyledLine:
     return StyledLine((StyledSpan("enter", ("cyan", "bold")), StyledSpan(" submit"), StyledSpan(TIP_SEPARATOR), StyledSpan("esc", ("cyan", "bold")), StyledSpan(" cancel")), ("dim",))
 
 
-def wrap_styled_line(line: Any, width: int) -> list[StyledLine]:
+def wrap_styled_line(line: Any, width: int) -> List[StyledLine]:
     owned = line_to_owned(line)
     width = max(1, int(width))
     text = owned.text
@@ -377,11 +391,11 @@ def _row_text(row: Any) -> str:
     return str(getattr(row, "text", row))
 
 
-def _rect(area: Rect) -> dict[str, int]:
+def _rect(area: Rect) -> Dict[str, int]:
     return {"x": area.x, "y": area.y, "width": area.width, "height": area.height}
 
 
-def _write_events(buf: Any | None, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _write_events(buf: Optional[Any], events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     if buf is not None and hasattr(buf, "extend"):
         buf.extend(events)
     return events
@@ -418,3 +432,5 @@ __all__ = [
     "unanswered_confirmation_layout",
     "wrap_styled_line",
 ]
+
+

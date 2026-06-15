@@ -10,12 +10,17 @@ leaving real image loading/rendering as injectable dependency boundaries.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, List, Optional, Set
 
 from .._porting import RustTuiModule
 from ..pets import DEFAULT_PET_ID, DISABLED_PET_ID, PET_PICKER_VIEW_ID, PetPickerPreviewState
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="chatwidget::pets", source="codex/codex-rs/tui/src/chatwidget/pets.rs")
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="chatwidget::pets",
+    source="codex/codex-rs/tui/src/chatwidget/pets.rs",
+    status="complete",
+)
 
 PET_SELECTION_LOADING_VIEW_ID = "pet-selection-loading"
 AMBIENT_PET_WRAP_GAP_COLUMNS = 2
@@ -23,7 +28,7 @@ AMBIENT_PET_WRAP_GAP_COLUMNS = 2
 
 @dataclass
 class PetsConfig:
-    tui_pet: str | None = None
+    tui_pet: Optional[str] = None
     codex_home: Any = None
     animations: bool = True
     tui_pet_anchor: str = "composer"
@@ -31,18 +36,18 @@ class PetsConfig:
 
 @dataclass
 class SelectionViewParamsPlan:
-    view_id: str | None = None
-    title: str | None = None
-    subtitle: str | None = None
-    items: list[dict[str, Any]] = field(default_factory=list)
+    view_id: Optional[str] = None
+    title: Optional[str] = None
+    subtitle: Optional[str] = None
+    items: List[dict] = field(default_factory=list)
 
 
 @dataclass
 class BottomPanePetsModel:
     modal_or_popup_active: bool = False
-    selected_view_ids: set[str] = field(default_factory=set)
-    shown_views: list[Any] = field(default_factory=list)
-    dismissed_view_ids: list[str] = field(default_factory=list)
+    selected_view_ids: Set[str] = field(default_factory=set)
+    shown_views: List[Any] = field(default_factory=list)
+    dismissed_view_ids: List[str] = field(default_factory=list)
     task_running: bool = False
 
     def no_modal_or_popup_active(self) -> bool:
@@ -70,22 +75,22 @@ class BottomPanePetsModel:
 @dataclass
 class ChatWidgetPetsModel:
     config: PetsConfig = field(default_factory=PetsConfig)
-    ambient_pet: Any | None = None
+    ambient_pet: Optional[Any] = None
     bottom_pane: BottomPanePetsModel = field(default_factory=BottomPanePetsModel)
     pet_picker_preview_state: PetPickerPreviewState = field(default_factory=PetPickerPreviewState)
-    pet_picker_preview_pet: Any | None = None
+    pet_picker_preview_pet: Optional[Any] = None
     pet_picker_preview_image_visible: bool = False
     pet_picker_preview_request_id: int = 0
     pet_selection_load_request_id: int = 0
-    pet_image_support_override: Any | None = None
+    pet_image_support_override: Optional[Any] = None
     frame_requester: Any = None
-    events: list[Any] = field(default_factory=list)
-    warnings: list[str] = field(default_factory=list)
+    events: List[Any] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
     redraw_requests: int = 0
-    loader: Callable[..., Any] | None = None
-    picker_builder: Callable[..., Any] | None = None
+    loader: Optional[Callable[..., Any]] = None
+    picker_builder: Optional[Callable[..., Any]] = None
 
-    def set_ambient_pet_notification(self, kind: Any, body: str | None) -> None:
+    def set_ambient_pet_notification(self, kind: Any, body: Optional[str]) -> None:
         if self.ambient_pet is not None and hasattr(self.ambient_pet, "set_notification"):
             self.ambient_pet.set_notification(kind, body)
 
@@ -96,7 +101,7 @@ class ChatWidgetPetsModel:
         self.ambient_pet = None
         self.request_redraw()
 
-    def ambient_pet_draw(self, area: Any, composer_bottom_y: int) -> Any | None:
+    def ambient_pet_draw(self, area: Any, composer_bottom_y: int) -> Optional[Any]:
         if not self.bottom_pane.no_modal_or_popup_active() or self.ambient_pet is None:
             return None
         anchor_bottom_y = composer_bottom_y if self.config.tui_pet_anchor == "composer" else _area_bottom(area)
@@ -113,7 +118,7 @@ class ChatWidgetPetsModel:
     def history_wrap_width(self, width: int) -> int:
         return max(1, max(0, int(width)) - self.ambient_pet_wrap_reserved_cols())
 
-    def pet_picker_preview_draw(self) -> Any | None:
+    def pet_picker_preview_draw(self) -> Optional[Any]:
         if self.bottom_pane.selected_index_for_active_view(PET_PICKER_VIEW_ID) is None:
             return None
         area = self.pet_picker_preview_state.area()
@@ -166,13 +171,13 @@ class ChatWidgetPetsModel:
     def pet_image_support(self) -> Any:
         return self.pet_image_support_override or _SupportedPetImages()
 
-    def set_tui_pet(self, pet: str | None) -> None:
+    def set_tui_pet(self, pet: Optional[str]) -> None:
         self.config.tui_pet = pet
         self.ambient_pet = load_ambient_pet(self.config, self.frame_requester, loader=self.loader)
         self.apply_ambient_pet_image_support_override_for_tests()
         self.request_redraw()
 
-    def set_tui_pet_loaded(self, pet: str | None, ambient_pet: Any | None) -> None:
+    def set_tui_pet_loaded(self, pet: Optional[str], ambient_pet: Optional[Any]) -> None:
         self.config.tui_pet = pet
         self.ambient_pet = ambient_pet
         self.apply_ambient_pet_image_support_override_for_tests()
@@ -246,7 +251,7 @@ class ChatWidgetPetsModel:
         self.redraw_requests += 1
 
 
-def load_ambient_pet(config: PetsConfig | Any, frame_requester: Any, *, loader: Callable[..., Any] | None = None) -> Any | None:
+def load_ambient_pet(config: Any, frame_requester: Any, *, loader: Optional[Callable[..., Any]] = None) -> Optional[Any]:
     selected_pet = getattr(config, "tui_pet", None)
     if selected_pet is None or selected_pet == DISABLED_PET_ID:
         return None
@@ -259,12 +264,12 @@ def load_ambient_pet(config: PetsConfig | Any, frame_requester: Any, *, loader: 
 
 
 def start_configured_pet_load_if_needed(
-    config: PetsConfig | Any,
+    config: Any,
     ambient_pet_missing: bool,
     frame_requester: Any,
     app_event_tx: Any,
     *,
-    loader: Callable[..., Any] | None = None,
+    loader: Optional[Callable[..., Any]] = None,
 ) -> bool:
     pet_id = getattr(config, "tui_pet", None)
     if pet_id is None or pet_id == DISABLED_PET_ID or not ambient_pet_missing:
@@ -313,7 +318,7 @@ __all__ = [
     "AMBIENT_PET_WRAP_GAP_COLUMNS",
     "ChatWidgetPetsModel",
     "BottomPanePetsModel",
-    "MCP_STARTUP_MULTI_HEADER_PREFIX" if False else "PET_SELECTION_LOADING_VIEW_ID",
+    "PET_SELECTION_LOADING_VIEW_ID",
     "PetsConfig",
     "RUST_MODULE",
     "SelectionViewParamsPlan",

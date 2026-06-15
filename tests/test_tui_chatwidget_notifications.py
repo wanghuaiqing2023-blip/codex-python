@@ -12,6 +12,7 @@ def test_agent_turn_preview_normalizes_whitespace_and_empty_falls_back() -> None
     # Rust parity: codex-tui chatwidget::notifications::Notification::agent_turn_preview
     assert Notification.agent_turn_preview("  hello\n\nthere\tfriend  ") == "hello there friend"
     assert Notification.agent_turn_complete(" \n\t ").display() == "Agent turn complete"
+    assert Notification.agent_turn_preview("a" * 250) == ("a" * 197) + "..."
 
 
 def test_notification_display_strings_match_rust_variants() -> None:
@@ -21,8 +22,8 @@ def test_notification_display_strings_match_rust_variants() -> None:
         == "Approval requested: " + ("x" * 27) + "..."
     )
     assert (
-        Notification.edit_approval_requested(Path("/work"), [Path("/work/src/main.rs")]).display()
-        == "Codex wants to edit src/main.rs"
+        Notification.edit_approval_requested(Path("C:/work"), [Path("C:/work/src/main.rs")]).display()
+        == f"Codex wants to edit {Path('src/main.rs')}"
     )
     assert (
         Notification.edit_approval_requested(Path("/work"), ["relative.txt"]).display()
@@ -62,6 +63,23 @@ def test_coalescer_preserves_higher_priority_pending_notification() -> None:
     assert coalescer.maybe_post_pending_notification() is None
 
 
+def test_coalescer_replaces_lower_priority_with_higher_priority() -> None:
+    # Rust: existing priority is only preserved when it is greater than the incoming priority.
+    coalescer = NotificationCoalescer()
+    assert coalescer.notify(Notification.agent_turn_complete("done"))
+    assert coalescer.notify(Notification.exec_approval_requested("cargo test"))
+    assert coalescer.redraw_requests == 2
+    assert coalescer.maybe_post_pending_notification() == "Approval requested: cargo test"
+
+
+def test_coalescer_filters_disallowed_notifications_without_redraw() -> None:
+    # Rust: ChatWidget::notify returns before mutating pending_notification or requesting redraw.
+    coalescer = NotificationCoalescer(settings=Notifications.custom(["approval-requested"]))
+    assert not coalescer.notify(Notification.agent_turn_complete("done"))
+    assert coalescer.pending_notification is None
+    assert coalescer.redraw_requests == 0
+
+
 def test_coalescer_replaces_equal_or_lower_priority_and_requests_redraw() -> None:
     # Rust parity: codex-tui chatwidget::notifications::ChatWidget::notify
     coalescer = NotificationCoalescer()
@@ -87,3 +105,9 @@ def test_user_input_request_summary_uses_header_then_question() -> None:
     )
     assert Notification.user_input_request_summary([{"header": " ", "question": " "}]) is None
     assert Notification.user_input_request_summary([]) is None
+    assert (
+        Notification.user_input_request_summary(
+            [{"header": "x" * 40, "question": "ignored"}]
+        )
+        == ("x" * 27) + "..."
+    )

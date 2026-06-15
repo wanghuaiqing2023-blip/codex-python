@@ -1,7 +1,5 @@
 ﻿import asyncio
 
-import pytest
-
 from pycodex.tui.oss_selection import (
     LMSTUDIO_OSS_PROVIDER_ID,
     OLLAMA_OSS_PROVIDER_ID,
@@ -13,6 +11,7 @@ from pycodex.tui.oss_selection import (
     check_ollama_status,
     ctrl_h_l_move_provider_selection,
     get_status_symbol_and_color,
+    run_oss_selection_widget,
     render_ref,
     select_oss_provider,
 )
@@ -91,18 +90,32 @@ def test_select_oss_provider_autoselects_when_only_one_provider_runs():
     )
 
 
-def test_select_oss_provider_requires_runner_for_manual_ui_and_marks_manual_selection():
-    with pytest.raises(NotImplementedError):
-        run(select_oss_provider(lmstudio_status="unknown", ollama_status="unknown"))
-
+def test_select_oss_provider_manual_ui_uses_semantic_event_loop_and_marks_manual_selection():
     async def runner(widget):
         widget.handle_key_event("o")
         return widget.selection
 
+    assert run(select_oss_provider(lmstudio_status="unknown", ollama_status="unknown")) == OssProviderSelection(
+        LMSTUDIO_OSS_PROVIDER_ID,
+        manually_selected=True,
+    )
+    assert run(
+        select_oss_provider(
+            lmstudio_status="unknown",
+            ollama_status="unknown",
+            selection_events=["right", "enter"],
+        )
+    ) == OssProviderSelection(
+        OLLAMA_OSS_PROVIDER_ID,
+        manually_selected=True,
+    )
     assert run(select_oss_provider(lmstudio_status="unknown", ollama_status="unknown", selection_runner=runner)) == OssProviderSelection(
         OLLAMA_OSS_PROVIDER_ID,
         manually_selected=True,
     )
+
+    widget = OssSelectionWidget.new("unknown", "unknown")
+    assert run_oss_selection_widget(widget, ["o"]) == OLLAMA_OSS_PROVIDER_ID
 
 
 def test_status_helpers_map_port_probe_results(monkeypatch):

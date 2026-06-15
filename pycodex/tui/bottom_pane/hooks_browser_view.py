@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from textwrap import wrap
-from typing import Any, Iterable
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .._porting import RustTuiModule
 from .popup_consts import MAX_POPUP_ROWS
@@ -21,6 +21,7 @@ RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="bottom_pane::hooks_browser_view",
     source="codex/codex-rs/tui/src/bottom_pane/hooks_browser_view.rs",
+    status="complete",
 )
 
 EVENT_COLUMN_WIDTH = 22
@@ -91,16 +92,16 @@ class HookMetadata:
     key: str
     event_name: str
     source: str = HookSource.USER.value
-    command: str | None = None
+    command: Optional[str] = None
     enabled: bool = True
     is_managed: bool = False
     display_order: int = 0
     trust_status: str = HookTrustStatus.TRUSTED.value
     current_hash: str = ""
-    matcher: str | None = None
+    matcher: Optional[str] = None
     timeout_sec: int = 0
-    source_path: str | Path | None = None
-    plugin_id: str | None = None
+    source_path: Optional[Any] = None
+    plugin_id: Optional[str] = None
 
 
 @dataclass
@@ -112,9 +113,9 @@ class HookErrorInfo:
 @dataclass
 class HooksListEntry:
     cwd: str | Path = ""
-    hooks: list[Any] = field(default_factory=list)
-    warnings: list[str] = field(default_factory=list)
-    errors: list[Any] = field(default_factory=list)
+    hooks: List[Any] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+    errors: List[Any] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -134,22 +135,22 @@ class HookTrustUpdate:
 @dataclass(frozen=True)
 class RenderedHooksBrowser:
     page: HooksBrowserPage
-    lines: tuple[str, ...]
+    lines: Tuple[str, ...]
     footer: str
     desired_height: int
 
 
 class HooksBrowserView:
-    def __init__(self, entry: HooksListEntry, app_event_tx: Any | None = None, keymap: Any | None = None) -> None:
+    def __init__(self, entry: HooksListEntry, app_event_tx: Optional[Any] = None, keymap: Optional[Any] = None) -> None:
         self.entry = normalize_entry(entry)
         self.entry.hooks.sort(key=lambda hook: int(get_value(hook, "display_order", 0)))
         self.page = HooksBrowserPage.EVENTS
-        self.page_event: str | None = None
+        self.page_event: Optional[str] = None
         self.state = ScrollState()
         self.complete = False
         self.app_event_tx = app_event_tx
         self.keymap = keymap
-        self.emitted_events: list[dict[str, Any]] = []
+        self.emitted_events: List[Dict[str, Any]] = []
         if self.page_len() > 0:
             review_index = next(
                 (idx for idx, row in enumerate(self.event_rows()) if row.needs_review > 0),
@@ -160,10 +161,10 @@ class HooksBrowserView:
     @classmethod
     def new(
         cls,
-        hooks: list[Any],
-        warnings: list[str] | None = None,
-        errors: list[Any] | None = None,
-        app_event_tx: Any | None = None,
+        hooks: List[Any],
+        warnings: List[str] | None = None,
+        errors: List[Any] | None = None,
+        app_event_tx: Optional[Any] = None,
     ) -> "HooksBrowserView":
         return cls(
             HooksListEntry(hooks=hooks, warnings=warnings or [], errors=errors or []),
@@ -174,12 +175,12 @@ class HooksBrowserView:
     def from_entry(
         cls,
         entry: Any,
-        app_event_tx: Any | None = None,
-        keymap: Any | None = None,
+        app_event_tx: Optional[Any] = None,
+        keymap: Optional[Any] = None,
     ) -> "HooksBrowserView":
         return cls(normalize_entry(entry), app_event_tx, keymap)
 
-    def event_rows(self) -> list[EventRow]:
+    def event_rows(self) -> List[EventRow]:
         rows = []
         for event_name in HOOK_EVENT_ORDER:
             hooks = list(self.handlers_for_event(event_name))
@@ -197,13 +198,13 @@ class HooksBrowserView:
         normalized = normalize_event_name(event_name)
         return (hook for hook in self.entry.hooks if normalize_event_name(get_value(hook, "event_name")) == normalized)
 
-    def selected_event(self) -> str | None:
+    def selected_event(self) -> Optional[str]:
         idx = self.state.selected_idx
         if idx is None or idx < 0 or idx >= len(HOOK_EVENT_ORDER):
             return None
         return HOOK_EVENT_ORDER[idx]
 
-    def selected_hook_index(self, event_name: str) -> int | None:
+    def selected_hook_index(self, event_name: str) -> Optional[int]:
         selected_visible_idx = self.state.selected_idx
         if selected_visible_idx is None:
             return None
@@ -217,7 +218,7 @@ class HooksBrowserView:
             return None
         return matches[selected_visible_idx]
 
-    def selected_hook(self, event_name: str) -> Any | None:
+    def selected_hook(self, event_name: str) -> Optional[Any]:
         idx = self.selected_hook_index(event_name)
         return None if idx is None else self.entry.hooks[idx]
 
@@ -326,13 +327,13 @@ class HooksBrowserView:
         elif self.page_len() > 0:
             self.state.selected_idx = 0
 
-    def event_header_lines(self) -> list[str]:
+    def event_header_lines(self) -> List[str]:
         return ["Hooks", "Lifecycle hooks from config and enabled plugins."]
 
     def review_needed_total_count(self) -> int:
         return sum(1 for hook in self.entry.hooks if hook_needs_review(hook))
 
-    def handler_header_lines(self, event_name: str, review_needed_count: int | None = None) -> list[str]:
+    def handler_header_lines(self, event_name: str, review_needed_count: int | None = None) -> List[str]:
         count = self.review_needed_count(event_name) if review_needed_count is None else review_needed_count
         message = review_needed_message(count)
         return [
@@ -343,7 +344,7 @@ class HooksBrowserView:
     def review_needed_count(self, event_name: str) -> int:
         return sum(1 for hook in self.handlers_for_event(event_name) if hook_needs_review(hook))
 
-    def event_table_lines(self) -> list[str]:
+    def event_table_lines(self) -> List[str]:
         rows = self.event_rows()
         show_review = any(row.needs_review > 0 for row in rows)
         header = ["Event", "Installed", "Active"]
@@ -364,7 +365,7 @@ class HooksBrowserView:
             lines.append(marker + " | ".join(cells))
         return lines
 
-    def event_issue_lines(self) -> list[str]:
+    def event_issue_lines(self) -> List[str]:
         if not self.entry.warnings and not self.entry.errors:
             return []
         lines = ["Issues"]
@@ -373,7 +374,7 @@ class HooksBrowserView:
             lines.append(f"x {get_value(error, 'path')}: {get_value(error, 'message')}")
         return lines
 
-    def event_page_lines(self) -> list[str]:
+    def event_page_lines(self) -> List[str]:
         lines = self.event_header_lines() + [""]
         message = review_needed_message(self.review_needed_total_count())
         if message:
@@ -384,7 +385,7 @@ class HooksBrowserView:
         lines.extend(self.event_table_lines())
         return lines
 
-    def handler_row_lines(self, event_name: str, width: int = 80) -> list[str]:
+    def handler_row_lines(self, event_name: str, width: int = 80) -> List[str]:
         lines = []
         for idx, hook in enumerate(self.handlers_for_event(event_name)):
             marker = "!" if hook_needs_review(hook) else "x" if hook_is_active(hook) else " "
@@ -399,7 +400,7 @@ class HooksBrowserView:
             lines.append(line if len(line) <= width else line[: max(0, width - 1)] + "...")
         return lines
 
-    def detail_lines(self, event_name: str, width: int = 80) -> list[str]:
+    def detail_lines(self, event_name: str, width: int = 80) -> List[str]:
         hook = self.selected_hook(event_name)
         if hook is None:
             return ["No hooks installed for this event."]
@@ -498,11 +499,11 @@ class HooksBrowserView:
             desired_height=min(MAX_POPUP_ROWS + 8, len(lines) + 1),
         )
 
-    def render_lines(self, width: int = 80) -> list[str]:
+    def render_lines(self, width: int = 80) -> List[str]:
         rendered = self.render(width)
         return [*rendered.lines, rendered.footer]
 
-    def _emit(self, event: dict[str, Any]) -> None:
+    def _emit(self, event: Dict[str, Any]) -> None:
         self.emitted_events.append(event)
         sender = self.app_event_tx
         if sender is None:
@@ -575,7 +576,7 @@ def hook_is_active(hook: Any) -> bool:
     return bool(get_value(hook, "is_managed", False)) or bool(get_value(hook, "enabled", False))
 
 
-def review_needed_message(count: int) -> str | None:
+def review_needed_message(count: int) -> Optional[str]:
     if count == 0:
         return None
     noun = "hook" if count == 1 else "hooks"
@@ -622,7 +623,7 @@ def detail_line(label: str, value: str) -> str:
     return f"{label}: {value}"
 
 
-def detail_wrapped_lines(label: str, value: str, width: int, max_lines: int | None = None) -> list[str]:
+def detail_wrapped_lines(label: str, value: str, width: int, max_lines: Optional[int] = None) -> List[str]:
     prefix = f"{label}: "
     available = max(1, width - len(prefix))
     wrapped = wrap(value, available) or [""]
@@ -646,7 +647,7 @@ def on_ctrl_c(view: HooksBrowserView) -> str:
     return view.on_ctrl_c()
 
 
-def prefer_esc_to_handle_key_event(view: HooksBrowserView | None = None) -> bool:
+def prefer_esc_to_handle_key_event(view: Optional[HooksBrowserView] = None) -> bool:
     return True if view is None else view.prefer_esc_to_handle_key_event()
 
 
@@ -658,7 +659,7 @@ def render(view: HooksBrowserView, width: int = 80) -> RenderedHooksBrowser:
     return view.render(width)
 
 
-def render_lines(view: HooksBrowserView, width: int = 80) -> list[str]:
+def render_lines(view: HooksBrowserView, width: int = 80) -> List[str]:
     return view.render_lines(width)
 
 
@@ -670,8 +671,8 @@ def hook(
     key: str,
     event_name: str,
     source: str = HookSource.USER.value,
-    plugin_id: str | None = None,
-    command: str | None = None,
+    plugin_id: Optional[str] = None,
+    command: Optional[str] = None,
     enabled: bool = True,
     is_managed: bool = False,
     display_order: int = 0,
