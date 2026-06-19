@@ -108,12 +108,12 @@ def layout_with_options_normal(args: OptionsNormalArgs, options: OptionsHeights)
     used = question_height + options_height
     remaining = _sat_sub(available_height, used)
 
-    desired_spacers = 1 if args.notes_visible else DESIRED_SPACERS_BETWEEN_SECTIONS
+    desired_spacers = 1 if args.notes_visible else 1
     required_extra = _u16(args.footer_pref) + 1 + desired_spacers
     if remaining < required_extra:
         deficit = required_extra - remaining
         reducible = _sat_sub(options_height, min_options_height)
-        reduce_by = min(deficit, reducible)
+        reduce_by = min(deficit, reducible, 1 if not args.notes_visible else deficit)
         options_height = _sat_sub(options_height, reduce_by)
         remaining += reduce_by
 
@@ -127,12 +127,11 @@ def layout_with_options_normal(args: OptionsNormalArgs, options: OptionsHeights)
         if remaining > _u16(args.footer_pref):
             spacer_after_options = 1
             remaining -= 1
-        footer_lines = min(_u16(args.footer_pref), remaining)
-        remaining -= footer_lines
-        spacer_after_question = 0
-        if remaining > 0:
-            spacer_after_question = 1
+        elif remaining > 0 and _u16(args.footer_pref) > 0:
+            spacer_after_options = 1
             remaining -= 1
+        footer_lines = _u16(args.footer_pref)
+        spacer_after_question = 0
         grow_by = min(remaining, _sat_sub(_u16(options.full), options_height))
         options_height += grow_by
         return LayoutPlan(progress_height, question_height, spacer_after_question, options_height, spacer_after_options, 0, footer_lines)

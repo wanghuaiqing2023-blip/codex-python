@@ -33,7 +33,9 @@ class SkillConfig:
         name = value.get("name")
         if name is not None and not isinstance(name, str):
             raise TypeError("name must be a string or None")
-        enabled = value.get("enabled", True)
+        if "enabled" not in value:
+            raise TypeError("enabled is required")
+        enabled = value["enabled"]
         if not isinstance(enabled, bool):
             raise TypeError("enabled must be a bool")
         return cls(path=Path(path) if path is not None else None, name=name, enabled=enabled)

@@ -89,6 +89,8 @@ class UpdatePlanArgs:
     def from_mapping(cls, value: JsonValue) -> "UpdatePlanArgs":
         data = _mapping(value, "update plan args")
         _deny_unknown_fields(data, {"explanation", "plan"}, "update plan args")
+        if "plan" not in data:
+            raise KeyError("plan")
         raw_plan = data.get("plan")
         if not isinstance(raw_plan, list):
             raise TypeError("plan must be a list")

@@ -27,6 +27,10 @@ class CredentialStoreError(Exception):
         return self.error
 
 
+class KeyringNoEntryError(Exception):
+    """Portable stand-in for Rust keyring::Error::NoEntry in tests."""
+
+
 class KeyringStore(Protocol):
     def load(self, service: str, account: str) -> str | None:
         ...
@@ -95,7 +99,11 @@ class MockKeyringStore:
     def load(self, service: str, account: str) -> str | None:
         del service
         with self._lock:
-            self._raise_if_error(account)
+            error = self._error_for_account(account)
+            if error is not None:
+                if _is_no_entry_error(error):
+                    return None
+                raise CredentialStoreError.new(error)
             return self._credentials.get(account)
 
     def save(self, service: str, account: str, value: str) -> None:
@@ -107,15 +115,20 @@ class MockKeyringStore:
     def delete(self, service: str, account: str) -> bool:
         del service
         with self._lock:
-            self._raise_if_error(account)
+            error = self._error_for_account(account)
+            if error is not None and not _is_no_entry_error(error):
+                raise CredentialStoreError.new(error)
             if account not in self._credentials:
                 return False
             del self._credentials[account]
-            return True
+            return error is None
 
     def _raise_if_error(self, account: str) -> None:
         if account in self._errors:
             raise CredentialStoreError.new(self._errors[account])
+
+    def _error_for_account(self, account: str) -> BaseException | str | None:
+        return self._errors.get(account)
 
 
 def _import_keyring():
@@ -126,7 +139,11 @@ def _import_keyring():
     return keyring
 
 
-def _is_no_entry_error(error: BaseException) -> bool:
+def _is_no_entry_error(error: BaseException | str) -> bool:
+    if isinstance(error, str):
+        return error.lower() in {"noentry", "no entry", "no_entry"}
+    if isinstance(error, KeyringNoEntryError):
+        return True
     name = error.__class__.__name__.lower()
     return "notfound" in name or "noentry" in name or "passworddeleteerror" in name
 
@@ -134,6 +151,7 @@ def _is_no_entry_error(error: BaseException) -> bool:
 __all__ = [
     "CredentialStoreError",
     "DefaultKeyringStore",
+    "KeyringNoEntryError",
     "KeyringStore",
     "MockKeyringStore",
 ]

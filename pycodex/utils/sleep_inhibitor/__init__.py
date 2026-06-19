@@ -6,12 +6,16 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from enum import Enum
-from typing import Protocol
+from typing import Callable, Protocol
 
 ASSERTION_REASON = "Codex is running an active turn"
 APP_ID = "codex"
 BLOCKER_SLEEP_SECONDS = str(2**31 - 1)
 ASSERTION_TYPE_PREVENT_USER_IDLE_SYSTEM_SLEEP = "PreventUserIdleSystemSleep"
+K_IO_RETURN_SUCCESS = 0
+K_IOPM_ASSERTION_LEVEL_OFF = 0
+K_IOPM_ASSERTION_LEVEL_ON = 255
+POWER_REQUEST_SYSTEM_REQUIRED = "PowerRequestSystemRequired"
 
 
 class SleepInhibitorBackend(Protocol):
@@ -41,6 +45,91 @@ class UnsupportedSleepInhibitor:
 
     def release(self) -> None:
         return None
+
+
+@dataclass(frozen=True)
+class MacSleepAssertion:
+    id: int
+
+    @classmethod
+    def create(cls, name: str) -> "MacSleepAssertion":
+        del name
+        raise OSError("macOS IOKit sleep assertions are not available in this Python backend")
+
+    def release(self) -> None:
+        return None
+
+
+class MacSleepInhibitor:
+    def __init__(
+        self,
+        assertion_factory: Callable[[str], MacSleepAssertion] | None = None,
+    ) -> None:
+        self.assertion: MacSleepAssertion | None = None
+        self.assertion_factory = assertion_factory or MacSleepAssertion.create
+        self.last_error: BaseException | None = None
+
+    def acquire(self) -> None:
+        if self.assertion is not None:
+            return
+        try:
+            self.assertion = self.assertion_factory(ASSERTION_REASON)
+            self.last_error = None
+        except BaseException as exc:
+            self.last_error = exc
+
+    def release(self) -> None:
+        assertion = self.assertion
+        self.assertion = None
+        if assertion is None:
+            return
+        try:
+            assertion.release()
+        except BaseException as exc:
+            self.last_error = exc
+
+
+@dataclass
+class PowerRequest:
+    handle: object
+    request_type: str = POWER_REQUEST_SYSTEM_REQUIRED
+
+    @classmethod
+    def new_system_required(cls, reason: str) -> "PowerRequest":
+        del reason
+        raise OSError("Windows power requests are not available in this Python backend")
+
+    def release(self) -> None:
+        return None
+
+
+class WindowsSleepInhibitor:
+    def __init__(
+        self,
+        request_factory: Callable[[str], PowerRequest] | None = None,
+    ) -> None:
+        self.request: PowerRequest | None = None
+        self.request_factory = request_factory or PowerRequest.new_system_required
+        self.last_error: BaseException | None = None
+
+    def acquire(self) -> None:
+        if self.request is not None:
+            return
+        try:
+            self.request = self.request_factory(ASSERTION_REASON)
+            self.last_error = None
+        except BaseException as exc:
+            self.last_error = exc
+
+    def release(self) -> None:
+        request = self.request
+        self.request = None
+        if request is None:
+            return
+        try:
+            request.release()
+        except BaseException as exc:
+            self.last_error = exc
 
 
 @dataclass
@@ -91,6 +180,12 @@ class LinuxSleepInhibitor:
         if self.preferred_backend is LinuxBackend.GNOME_SESSION_INHIBIT:
             return [LinuxBackend.GNOME_SESSION_INHIBIT, LinuxBackend.SYSTEMD_INHIBIT]
         return [LinuxBackend.SYSTEMD_INHIBIT, LinuxBackend.GNOME_SESSION_INHIBIT]
+
+    def __del__(self) -> None:
+        try:
+            self.release()
+        except Exception:
+            pass
 
 
 def _linux_backend_command(backend: LinuxBackend) -> list[str]:
@@ -148,9 +243,9 @@ def default_platform_backend() -> SleepInhibitorBackend:
     if sys.platform.startswith("linux"):
         return LinuxSleepInhibitor()
     if sys.platform == "darwin":
-        return UnsupportedSleepInhibitor("macos")
+        return MacSleepInhibitor()
     if sys.platform.startswith("win"):
-        return UnsupportedSleepInhibitor("windows")
+        return WindowsSleepInhibitor()
     return DummySleepInhibitor()
 
 
@@ -160,10 +255,18 @@ __all__ = [
     "ASSERTION_TYPE_PREVENT_USER_IDLE_SYSTEM_SLEEP",
     "BLOCKER_SLEEP_SECONDS",
     "DummySleepInhibitor",
+    "K_IOPM_ASSERTION_LEVEL_OFF",
+    "K_IOPM_ASSERTION_LEVEL_ON",
+    "K_IO_RETURN_SUCCESS",
     "LinuxBackend",
     "LinuxSleepInhibitor",
+    "MacSleepAssertion",
+    "MacSleepInhibitor",
+    "POWER_REQUEST_SYSTEM_REQUIRED",
+    "PowerRequest",
     "SleepInhibitor",
     "SleepInhibitorBackend",
     "UnsupportedSleepInhibitor",
+    "WindowsSleepInhibitor",
     "default_platform_backend",
 ]

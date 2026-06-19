@@ -191,7 +191,7 @@ class ModelPreset:
         )
 
     def supports_fast_mode(self) -> bool:
-        return any(tier.id == ServiceTier.FAST.request_value() for tier in self.service_tiers) or any(
+        return any(tier.id in {SPEED_TIER_FAST, ServiceTier.FAST.request_value()} for tier in self.service_tiers) or any(
             tier == SPEED_TIER_FAST for tier in self.additional_speed_tiers
         )
 

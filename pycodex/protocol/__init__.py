@@ -441,6 +441,7 @@ from .models import (
     local_image_open_tag_text,
     project_roots_glob_pattern,
     should_serialize_reasoning_content,
+    convert_mcp_content_to_items,
 )
 from .request_permissions import (
     PermissionGrantScope,
@@ -598,6 +599,7 @@ __all__ = [
     "FunctionCallOutputPayload",
     "FunctionCallOutputBody",
     "FunctionCallOutputContentItem",
+    "convert_mcp_content_to_items",
     "GitInfo",
     "GitSha",
     "GranularApprovalConfig",

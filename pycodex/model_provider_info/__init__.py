@@ -7,9 +7,13 @@ Rust source:
 from __future__ import annotations
 
 import os
+import tomllib
 from dataclasses import dataclass, field, replace
 from enum import Enum
+from pathlib import Path
 from typing import Any, Mapping
+
+from pycodex.protocol.config_types import ModelProviderAuthInfo
 
 
 DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000
@@ -97,9 +101,65 @@ class ModelProviderInfo:
         object.__setattr__(self, "wire_api", self.wire_api if isinstance(self.wire_api, WireApi) else WireApi.parse(str(self.wire_api)))
         if self.aws is not None and not isinstance(self.aws, ModelProviderAwsAuthInfo):
             object.__setattr__(self, "aws", ModelProviderAwsAuthInfo(**dict(self.aws)))
+        if self.auth is not None and isinstance(self.auth, Mapping):
+            object.__setattr__(self, "auth", _auth_info_from_mapping(self.auth))
         for field_name in ("requires_openai_auth", "supports_websockets"):
             if not isinstance(getattr(self, field_name), bool):
                 raise TypeError(f"{field_name} must be a bool")
+
+    @classmethod
+    def from_toml(cls, contents: str) -> "ModelProviderInfo":
+        return cls.from_mapping(tomllib.loads(contents))
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> "ModelProviderInfo":
+        data = dict(value)
+        unknown = set(data) - {
+            "name",
+            "base_url",
+            "env_key",
+            "env_key_instructions",
+            "experimental_bearer_token",
+            "auth",
+            "aws",
+            "wire_api",
+            "query_params",
+            "http_headers",
+            "env_http_headers",
+            "request_max_retries",
+            "stream_max_retries",
+            "stream_idle_timeout_ms",
+            "websocket_connect_timeout_ms",
+            "requires_openai_auth",
+            "supports_websockets",
+        }
+        if unknown:
+            raise ValueError(f"unknown ModelProviderInfo fields: {', '.join(sorted(unknown))}")
+        aws = data.get("aws")
+        if aws is not None and not isinstance(aws, Mapping):
+            raise TypeError("aws must be a mapping")
+        auth = data.get("auth")
+        if auth is not None and not isinstance(auth, Mapping) and not isinstance(auth, ModelProviderAuthInfo):
+            raise TypeError("auth must be a mapping")
+        return cls(
+            name=_optional_str(data.get("name")) or "",
+            base_url=_optional_str(data.get("base_url")),
+            env_key=_optional_str(data.get("env_key")),
+            env_key_instructions=_optional_str(data.get("env_key_instructions")),
+            experimental_bearer_token=_optional_str(data.get("experimental_bearer_token")),
+            auth=auth,
+            aws=ModelProviderAwsAuthInfo(**dict(aws)) if isinstance(aws, Mapping) else None,
+            wire_api=_optional_str(data.get("wire_api")) or WireApi.RESPONSES,
+            query_params=_optional_str_mapping(data.get("query_params"), "query_params"),
+            http_headers=_optional_str_mapping(data.get("http_headers"), "http_headers"),
+            env_http_headers=_optional_str_mapping(data.get("env_http_headers"), "env_http_headers"),
+            request_max_retries_value=_optional_non_negative_int(data.get("request_max_retries"), "request_max_retries"),
+            stream_max_retries_value=_optional_non_negative_int(data.get("stream_max_retries"), "stream_max_retries"),
+            stream_idle_timeout_ms=_optional_non_negative_int(data.get("stream_idle_timeout_ms"), "stream_idle_timeout_ms"),
+            websocket_connect_timeout_ms=_optional_non_negative_int(data.get("websocket_connect_timeout_ms"), "websocket_connect_timeout_ms"),
+            requires_openai_auth=_optional_bool(data.get("requires_openai_auth"), "requires_openai_auth", False),
+            supports_websockets=_optional_bool(data.get("supports_websockets"), "supports_websockets", False),
+        )
 
     def validate(self) -> None:
         if self.aws is not None:
@@ -293,6 +353,75 @@ def _env_port(name: str, default: int) -> int:
         return default
 
 
+def _auth_info_from_mapping(value: Mapping[str, Any]) -> ModelProviderAuthInfo:
+    data = dict(value)
+    unknown = set(data) - {"command", "args", "timeout_ms", "refresh_interval_ms", "cwd"}
+    if unknown:
+        raise ValueError(f"unknown ModelProviderAuthInfo fields: {', '.join(sorted(unknown))}")
+    command = data.get("command")
+    if not isinstance(command, str):
+        raise TypeError("auth.command must be a string")
+    args = data.get("args", ())
+    if not isinstance(args, (list, tuple)) or not all(isinstance(item, str) for item in args):
+        raise TypeError("auth.args must be a list of strings")
+    cwd_raw = data.get("cwd", ".")
+    if not isinstance(cwd_raw, str):
+        raise TypeError("auth.cwd must be a string")
+    refresh_interval_ms = _optional_non_negative_int(data.get("refresh_interval_ms"), "refresh_interval_ms")
+    return ModelProviderAuthInfo(
+        command=command,
+        args=tuple(args),
+        timeout_ms=_optional_positive_int(data.get("timeout_ms"), "timeout_ms") or 5_000,
+        refresh_interval_ms=300_000 if refresh_interval_ms is None else refresh_interval_ms,
+        cwd=Path(cwd_raw).resolve(strict=False),
+    )
+
+
+def _optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError("expected a string")
+    return value
+
+
+def _optional_str_mapping(value: Any, field_name: str) -> dict[str, str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{field_name} must be a mapping")
+    result: dict[str, str] = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not isinstance(item, str):
+            raise TypeError(f"{field_name} must map strings to strings")
+        result[key] = item
+    return result
+
+
+def _optional_non_negative_int(value: Any, field_name: str) -> int | None:
+    if value is None:
+        return None
+    if not isinstance(value, int) or value < 0:
+        raise ValueError(f"{field_name} must be a non-negative integer")
+    return value
+
+
+def _optional_positive_int(value: Any, field_name: str) -> int | None:
+    if value is None:
+        return None
+    if not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{field_name} must be a positive integer")
+    return value
+
+
+def _optional_bool(value: Any, field_name: str, default: bool) -> bool:
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise TypeError(f"{field_name} must be a bool")
+    return value
+
+
 __all__ = [
     "AMAZON_BEDROCK_DEFAULT_BASE_URL",
     "AMAZON_BEDROCK_GPT_5_4_MODEL_ID",
@@ -304,6 +433,7 @@ __all__ = [
     "LEGACY_OLLAMA_CHAT_PROVIDER_ID",
     "LMSTUDIO_OSS_PROVIDER_ID",
     "ModelProviderAwsAuthInfo",
+    "ModelProviderAuthInfo",
     "ModelProviderInfo",
     "OLLAMA_CHAT_PROVIDER_REMOVED_ERROR",
     "OLLAMA_OSS_PROVIDER_ID",

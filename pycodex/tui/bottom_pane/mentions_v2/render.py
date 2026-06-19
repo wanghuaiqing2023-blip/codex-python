@@ -135,7 +135,7 @@ def primary_spans(row: SearchResult, base_style: tuple[str, ...] = ()) -> list[R
     if row.match_indices is None:
         return [RenderSpan(row.display_name, name_style)]
     matched = set(row.match_indices)
-    return [RenderSpan(ch, (*name_style, "bold") if idx in matched else name_style) for idx, ch in enumerate(row.display_name)]
+    return [RenderSpan(ch, name_style if idx in matched else _without_duplicate_bold(name_style)) for idx, ch in enumerate(row.display_name)]
 
 
 def secondary_line(row: SearchResult, base_style: tuple[str, ...] = (), dim_style: tuple[str, ...] = ("dim",)) -> RenderLine | None:
@@ -191,7 +191,8 @@ def truncate_line_with_ellipsis_if_overflow(line: RenderLine, width: int) -> Ren
         return RenderLine(())
     if width == 1:
         return RenderLine((RenderSpan("."),))
-    return RenderLine((RenderSpan(line.text()[: width - 1] + "."),))
+    style = line.spans[0].style if line.spans else ()
+    return RenderLine((RenderSpan(line.text()[: width - 1] + ".", style),))
 
 
 def line_text(line: RenderLine | None) -> str | None:
@@ -200,10 +201,16 @@ def line_text(line: RenderLine | None) -> str | None:
 
 def _name_style(mention_type: MentionType, base_style: tuple[str, ...]) -> tuple[str, ...]:
     if mention_type is MentionType.PLUGIN:
-        return (*base_style, "magenta")
+        return (*base_style, "magenta", "bold")
     if mention_type is MentionType.SKILL:
         return (*base_style, "dim")
     return base_style
+
+
+def _without_duplicate_bold(style: tuple[str, ...]) -> tuple[str, ...]:
+    if style and style[-1] == "bold":
+        return style[:-1]
+    return style
 
 
 def _area_width(area: Any) -> int:

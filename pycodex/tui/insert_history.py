@@ -224,12 +224,16 @@ def _wrap_text_preserving_prefix(text: str, width: int, prefix: str) -> list[str
         return [text]
     if len(text) <= width:
         return [text]
-    words = text.split(" ")
+    body = text[len(prefix) :] if prefix and text.startswith(prefix) else text
+    words = body.split(" ")
     rows: list[str] = []
-    current = ""
+    current = prefix
     continuation_prefix = prefix
     for word in words:
-        candidate = word if current == "" else current + " " + word
+        if current == prefix:
+            candidate = current + word
+        else:
+            candidate = word if current == "" else current + " " + word
         limit = width if not rows else max(width - len(continuation_prefix), 1)
         if len(candidate) <= limit:
             current = candidate

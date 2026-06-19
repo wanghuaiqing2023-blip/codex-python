@@ -1,4 +1,4 @@
-"""Doctor update diagnostic helpers.
+﻿"""Doctor update diagnostic helpers.
 
 Ported from ``codex/codex-rs/cli/src/doctor/updates.rs``.
 """
@@ -13,6 +13,7 @@ import locale
 import os
 import platform
 import socket
+import stat
 from pathlib import Path
 import shutil
 import sqlite3
@@ -105,12 +106,75 @@ DOCTOR_CHECK_METADATA = {
 }
 
 
+def _should_show_doctor_progress(*, json_output: bool, term: str | None, stderr_is_tty: bool) -> bool:
+    return not json_output and stderr_is_tty and term != "dumb"
+
+
+def _doctor_output_ascii_status_marker(status: str) -> str:
+    normalized = status.replace("-", "_").lower()
+    if normalized == "ok":
+        return "[ok]"
+    if normalized == "update":
+        return "[up]"
+    if normalized in {"note", "warning", "warn"}:
+        return "[!!]"
+    if normalized == "fail":
+        return "[XX]"
+    if normalized == "idle":
+        return "[--]"
+    raise ValueError(f"Unknown doctor output status: {status}")
+
+
+def _doctor_output_ascii_separator() -> str:
+    return "-" * 61
+
+
+def _doctor_output_column_widths() -> dict[str, int]:
+    return {"name": 12, "detail_label": 24}
+
+
+def _doctor_detail_format_bytes(byte_count: int) -> str:
+    kib = 1024.0
+    mib = kib * 1024.0
+    gib = mib * 1024.0
+    value = float(byte_count)
+    if value >= gib:
+        return f"{value / gib:.2f} GB"
+    if value >= mib:
+        return f"{value / mib:.2f} MB"
+    if value >= kib:
+        return f"{value / kib:.2f} KB"
+    return f"{int(value)} B"
+
+
+def _doctor_detail_format_count(count: int) -> str:
+    return f"{count:,}"
+
+
+def _doctor_detail_rollout_summary(value: str) -> str | None:
+    try:
+        files_text, rest = value.split(" files, ", 1)
+        total_text, rest = rest.split(" total bytes, ", 1)
+        average_text, _suffix = rest.split(" average bytes", 1)
+        files = int(files_text.strip())
+        total_bytes = int(total_text.strip())
+        average_bytes = int(average_text.strip())
+    except (ValueError, AttributeError):
+        return None
+    return (
+        f"{_doctor_detail_format_count(files)} files "
+        f"\u00b7 {_doctor_detail_format_bytes(total_bytes)} "
+        f"(avg {_doctor_detail_format_bytes(average_bytes)})"
+    )
+
+
 @dataclass(frozen=True)
 class DoctorUpdateCheck:
     status: str
     summary: str
     details: tuple[str, ...]
     remediation: str | None = None
+    issues: tuple[dict[str, Any], ...] = ()
 
     def to_mapping(self) -> dict[str, Any]:
         mapping: dict[str, Any] = {
@@ -120,6 +184,8 @@ class DoctorUpdateCheck:
         }
         if self.remediation is not None:
             mapping["remediation"] = self.remediation
+        if self.issues:
+            mapping["issues"] = [dict(issue) for issue in self.issues]
         return mapping
 
 
@@ -155,6 +221,41 @@ def _doctor_json_status(status: Any) -> str:
     if normalized in {"ok", "warning", "fail"}:
         return normalized
     return "warning"
+
+
+def _doctor_overall_status(checks: Any) -> str:
+    statuses: list[str] = []
+    for check in checks if isinstance(checks, list | tuple) else []:
+        if isinstance(check, Mapping):
+            statuses.append(_doctor_json_status(check.get("status", "warning")))
+        else:
+            statuses.append(_doctor_json_status(getattr(check, "status", "warning")))
+    if any(status == "fail" for status in statuses):
+        return "fail"
+    if any(status == "warning" for status in statuses):
+        return "warning"
+    return "ok"
+
+
+def _doctor_progress_status_label(check: Any) -> str:
+    status = _doctor_json_status(
+        check.get("status", "warning") if isinstance(check, Mapping) else getattr(check, "status", "warning")
+    )
+    return {"ok": "Ok", "warning": "Warning", "fail": "Fail"}[status]
+
+
+def _doctor_run_sync_check(label: str, progress: Any, callback: Callable[[], Any]) -> Any:
+    progress.begin(label)
+    check = callback()
+    progress.finish(label, _doctor_progress_status_label(check))
+    return check
+
+
+async def _doctor_run_async_check(label: str, progress: Any, awaitable: Any) -> Any:
+    progress.begin(label)
+    check = await awaitable
+    progress.finish(label, _doctor_progress_status_label(check))
+    return check
 
 
 def _doctor_duration_ms(value: Any) -> int:
@@ -271,6 +372,61 @@ class NpmRootCheck:
     @classmethod
     def npm_unavailable(cls, error: str) -> "NpmRootCheck":
         return cls(kind="npm_unavailable", error=error)
+
+
+@dataclass(frozen=True)
+class DoctorInteractiveConfigOverrides:
+    model: str | None = None
+    model_provider: str | None = None
+    cwd: Path | None = None
+    approval_policy: Any = None
+    sandbox_mode: Any = None
+    show_raw_agent_reasoning: bool | None = None
+    additional_writable_roots: tuple[Path, ...] = ()
+    codex_self_exe: Path | None = None
+    codex_linux_sandbox_exe: Path | None = None
+    main_execve_wrapper_exe: Path | None = None
+
+
+def doctor_config_overrides_from_interactive(
+    interactive: Any,
+    arg0_paths: Mapping[str, Any] | Any | None = None,
+) -> DoctorInteractiveConfigOverrides:
+    options = getattr(interactive, "root_options", interactive)
+    if not isinstance(options, Mapping):
+        options = {}
+    arg0 = arg0_paths or {}
+
+    def arg0_path(name: str) -> Path | None:
+        value = arg0.get(name) if isinstance(arg0, Mapping) else getattr(arg0, name, None)
+        return Path(value) if value is not None else None
+
+    add_dirs = options.get("add_dir", ())
+    if isinstance(add_dirs, (str, Path)):
+        add_dirs = (add_dirs,)
+
+    return DoctorInteractiveConfigOverrides(
+        model=_optional_str(options.get("model")),
+        model_provider=_optional_str(options.get("local_provider")),
+        cwd=Path(options["cwd"]) if options.get("cwd") is not None else None,
+        approval_policy=options.get("approval_policy"),
+        sandbox_mode=options.get("sandbox"),
+        show_raw_agent_reasoning=True if options.get("oss") else None,
+        additional_writable_roots=tuple(Path(path) for path in add_dirs),
+        codex_self_exe=arg0_path("codex_self_exe"),
+        codex_linux_sandbox_exe=arg0_path("codex_linux_sandbox_exe"),
+        main_execve_wrapper_exe=arg0_path("main_execve_wrapper_exe"),
+    )
+
+
+def doctor_cli_overrides_for_load_config(root_config_overrides: Any, interactive: Any) -> tuple[str, ...]:
+    options = getattr(interactive, "root_options", interactive)
+    if not isinstance(options, Mapping):
+        options = {}
+    overrides = tuple(str(value) for value in (root_config_overrides or ()))
+    if options.get("search"):
+        overrides = (*overrides, "web_search=live")
+    return overrides
 
 
 @dataclass(frozen=True)
@@ -562,7 +718,7 @@ def doctor_auth_check(
         return DoctorUpdateCheck(
             status="fail",
             summary="stored credentials could not be read",
-            details=tuple(details + [str(exc)]),
+            details=(str(exc),),
             remediation="Fix auth storage access or run codex login again.",
         )
     if auth is None:
@@ -578,9 +734,9 @@ def doctor_auth_check(
     details.extend(
         [
             f"stored auth mode: {mode}",
-            f"stored API key: {_bool_text(_optional_str(auth.get('OPENAI_API_KEY')) is not None)}",
+            f"stored API key: {_bool_text(isinstance(auth.get('OPENAI_API_KEY'), str))}",
             f"stored ChatGPT tokens: {_bool_text(isinstance(auth.get('tokens'), dict))}",
-            f"stored agent identity: {_bool_text(_optional_str(auth.get('agent_identity')) is not None)}",
+            f"stored agent identity: {_bool_text(isinstance(auth.get('agent_identity'), str))}",
         ]
     )
     auth_issues = _stored_auth_issues(auth, environment)
@@ -802,6 +958,20 @@ def doctor_thread_inventory_check(
                 details=tuple(details),
             )
         summary = "state DB is missing while rollout files exist" if scan["files"] else "rollout scan was incomplete or found bad files"
+        issues: list[dict[str, Any]] = []
+        if scan["files"]:
+            issues.append(
+                {
+                    "severity": "warn",
+                    "cause": "rollout files exist but the state DB is missing",
+                    "measured": f"{len(scan['files'])} rollout files",
+                    "expected": "state DB contains matching thread rows",
+                    "remedy": "Start Codex with no state DB present so startup backfill can create it from rollout files.",
+                    "fields": [],
+                }
+            )
+        if scan["scan_errors"] or scan["malformed_names"] or scan["reached_scan_cap"]:
+            issues.append(_thread_inventory_scan_issue(scan))
         return DoctorUpdateCheck(
             status="warn",
             summary=summary,
@@ -811,6 +981,7 @@ def doctor_thread_inventory_check(
                 if scan["files"]
                 else None
             ),
+            issues=tuple(issues),
         )
 
     try:
@@ -821,6 +992,16 @@ def doctor_thread_inventory_check(
             status="warn",
             summary="state database thread inventory could not be read",
             details=tuple(details),
+            issues=(
+                {
+                    "severity": "warn",
+                    "cause": "state DB thread rows could not be queried",
+                    "measured": str(exc),
+                    "expected": "readable threads table",
+                    "remedy": None,
+                    "fields": [],
+                },
+            ),
         )
 
     return _thread_inventory_parity_check(home, scan, rows, details)
@@ -1246,6 +1427,7 @@ def doctor_provider_reachability_check(
     optional_failures: list[str] = []
     route_failures: list[str] = []
     route_warnings: list[str] = []
+    issues: list[dict[str, Any]] = []
     for endpoint in plan.endpoints:
         requirement = "required" if endpoint.required else "optional"
         try:
@@ -1262,10 +1444,21 @@ def doctor_provider_reachability_check(
             try:
                 route_status = probe(endpoint.route_probe_url, "GET")
             except Exception as exc:  # pragma: no cover - exact stdlib exceptions vary by platform.
+                error_text = _http_probe_error_text(exc)
                 details.append(
-                    f"{endpoint.label} route probe: {endpoint.route_probe_url} {_http_probe_error_text(exc)} (required)"
+                    f"{endpoint.label} route probe: {endpoint.route_probe_url} {error_text} (required)"
                 )
                 route_failures.append(endpoint.route_probe_url)
+                issues.append(
+                    {
+                        "severity": "fail",
+                        "cause": "provider route probe could not connect - verify network access to the provider API",
+                        "measured": f"{endpoint.route_probe_url} {error_text}",
+                        "expected": "GET /models completes",
+                        "remedy": "Check proxy, VPN, firewall, DNS, and custom CA configuration.",
+                        "fields": ["route probe"],
+                    }
+                )
                 continue
             route_label = f"HTTP {route_status}"
             if 200 <= route_status < 300 or route_status in (401, 403):
@@ -1273,6 +1466,16 @@ def doctor_provider_reachability_check(
             elif route_status == 404:
                 details.append(f"{endpoint.label} route probe: {endpoint.route_probe_url} returned {route_label} (required)")
                 route_failures.append(endpoint.route_probe_url)
+                issues.append(
+                    {
+                        "severity": "fail",
+                        "cause": "provider base URL route returned 404 - verify the configured API prefix",
+                        "measured": f"{endpoint.route_probe_url} returned {route_label}",
+                        "expected": "GET /models returns 2xx, 401, or 403",
+                        "remedy": "Set base_url to the provider API root, for example https://api.openai.com/v1",
+                        "fields": ["route probe"],
+                    }
+                )
             else:
                 details.append(f"{endpoint.label} route probe: {endpoint.route_probe_url} returned {route_label} (warning)")
                 route_warnings.append(endpoint.route_probe_url)
@@ -1288,6 +1491,7 @@ def doctor_provider_reachability_check(
         summary=summary,
         details=tuple(details),
         remediation=remediation,
+        issues=tuple(issues),
     )
 
 
@@ -1313,10 +1517,14 @@ def _http_probe_error_text(exc: BaseException) -> str:
         return "request timed out"
     if isinstance(exc, ValueError):
         return "request could not be built"
+    if isinstance(exc, ConnectionError):
+        return "connect failed"
     if isinstance(exc, URLError):
         reason = exc.reason
         if isinstance(reason, TimeoutError):
             return "request timed out"
+        if isinstance(reason, ConnectionError):
+            return "connect failed"
         text = str(reason)
         if text:
             return text
@@ -1336,6 +1544,7 @@ def doctor_terminal_check(
         term = environment.get("TERM")
         size = shutil.get_terminal_size(fallback=(80, 24))
         multiplexer = "tmux" if environment.get("TMUX") else None
+        env_snapshot, present_snapshot = _collect_env_snapshot(_terminal_env_names(), environment)
         inputs = TerminalCheckInputs(
             terminal="dumb" if term == "dumb" else "unknown",
             term_program=environment.get("TERM_PROGRAM"),
@@ -1347,8 +1556,8 @@ def doctor_terminal_check(
             stderr_is_terminal=sys.stderr.isatty(),
             stream_supports_color=bool(term and term != "dumb"),
             terminal_size=(size.columns, size.lines),
-            env={name: environment[name] for name in _TERMINAL_ENV_NAMES if name in environment},
-            present_env={name for name in _TERMINAL_ENV_NAMES if name in environment},
+            env=env_snapshot,
+            present_env=present_snapshot,
             no_color_flag=no_color_flag,
             tmux_details=_tmux_diagnostic_details() if multiplexer == "tmux" else (),
             windows_console_details=_windows_console_details(),
@@ -1372,43 +1581,84 @@ def doctor_terminal_check(
         details.append(f"terminal size: {columns}x{rows}")
     else:
         details.append(f"terminal size: unavailable ({inputs.terminal_size})")
-    for name in ("COLUMNS", "LINES"):
-        if name in env_values:
-            details.append(f"{name}: {env_values[name]}")
+    _push_terminal_env_values(details, env_values, present_env, ("COLUMNS", "LINES"))
     details.append(f"color output: {_color_output_summary(inputs, env_values, present_env)}")
-    for name in ("COLORTERM", "NO_COLOR", "CLICOLOR", "CLICOLOR_FORCE", "FORCE_COLOR", "COLORFGBG"):
-        if name in env_values:
-            details.append(f"{name}: {env_values[name]}")
-        elif name in present_env:
-            details.append(f"{name}: present")
+    _push_terminal_env_values(
+        details,
+        env_values,
+        present_env,
+        ("COLORTERM", "NO_COLOR", "CLICOLOR", "CLICOLOR_FORCE", "FORCE_COLOR", "COLORFGBG"),
+    )
     terminfo_warning = _push_terminfo_details(details, env_values, present_env)
     locale_value = _effective_locale(env_values)
     if locale_value is not None:
         details.append(f"effective locale: {locale_value}")
-    for name in ("SSH_TTY", "SSH_CONNECTION", "SSH_CLIENT", "MOSH_IP", "WSL_DISTRO_NAME", "WSL_INTEROP", "VSCODE_INJECTION", "VSCODE_IPC_HOOK_CLI", "WAYLAND_DISPLAY", "DISPLAY", "WT_SESSION"):
-        if name in present_env:
-            details.append(f"{name}: present")
+    _push_presence_env_values(
+        details,
+        present_env,
+        (
+            "SSH_TTY",
+            "SSH_CONNECTION",
+            "SSH_CLIENT",
+            "MOSH_IP",
+            "WSL_DISTRO_NAME",
+            "WSL_INTEROP",
+            "VSCODE_INJECTION",
+            "VSCODE_IPC_HOOK_CLI",
+            "WAYLAND_DISPLAY",
+            "DISPLAY",
+            "WT_SESSION",
+        ),
+    )
     details.extend(inputs.tmux_details)
     details.extend(inputs.windows_console_details)
 
-    issues: list[tuple[str, str]] = []
+    issues: list[dict[str, Any]] = []
     if inputs.terminal == "dumb" or inputs.term == "dumb":
-        issues.append(("fail", "TERM=dumb - colors and cursor control are disabled"))
+        issues.append(
+            {
+                "status": "fail",
+                "summary": "TERM=dumb - colors and cursor control are disabled",
+                "remedy": "set TERM to a real value, for example xterm-256color",
+            }
+        )
     if locale_value is not None and _is_non_utf8_locale(locale_value):
-        issues.append(("warn", "locale is not UTF-8 - unicode glyphs may render incorrectly"))
+        issues.append(
+            {
+                "status": "warn",
+                "summary": "locale is not UTF-8 - unicode glyphs may render incorrectly",
+                "expected": "UTF-8 locale, for example en_US.UTF-8",
+                "remedy": "export LANG=en_US.UTF-8 or another UTF-8 locale",
+                "fields": ["effective locale"],
+            }
+        )
     if terminfo_warning:
-        issues.append(("fail", "TERMINFO unreadable - terminal capabilities are unknown"))
+        issues.append(
+            {
+                "status": "fail",
+                "summary": "TERMINFO unreadable - terminal capabilities are unknown",
+                "expected": "readable terminfo file or directory",
+                "remedy": "check that $TERMINFO points to a readable directory",
+                "fields": ["TERMINFO"],
+            }
+        )
     issues.extend(_terminal_size_issues(inputs, env_values))
 
-    if any(status == "fail" for status, _summary in issues):
+    if any(issue["status"] == "fail" for issue in issues):
         status = "fail"
     elif issues:
         status = "warn"
     else:
         status = "ok"
-    summary = issues[0][1] if issues else "terminal metadata was detected"
+    summary = issues[0]["summary"] if issues else "terminal metadata was detected"
     remediation = _terminal_remediation(summary)
-    return DoctorUpdateCheck(status=status, summary=summary, details=tuple(details), remediation=remediation)
+    return DoctorUpdateCheck(
+        status=status,
+        summary=summary,
+        details=tuple(details),
+        remediation=remediation,
+        issues=tuple(issues),
+    )
 
 
 def doctor_state_check(
@@ -1479,6 +1729,50 @@ _TERMINAL_ENV_NAMES = (
     "WT_SESSION",
     "TMUX",
 )
+
+
+def _terminal_env_names() -> tuple[str, ...]:
+    return tuple(sorted(set(_TERMINAL_ENV_NAMES)))
+
+
+def _collect_env_snapshot(
+    names: tuple[str, ...],
+    environment: Mapping[str, str],
+) -> tuple[dict[str, str], set[str]]:
+    values: dict[str, str] = {}
+    present: set[str] = set()
+    for name in names:
+        if name not in environment:
+            continue
+        present.add(name)
+        value = str(environment[name]).strip()
+        if value:
+            values[name] = value
+    return values, present
+
+
+def _push_terminal_env_values(
+    details: list[str],
+    env_values: Mapping[str, str],
+    present_env: set[str],
+    names: tuple[str, ...],
+) -> None:
+    for name in names:
+        if name in env_values:
+            details.append(f"{name}: {env_values[name]}")
+        elif name in present_env:
+            details.append(f"{name}: present")
+
+
+def _push_presence_env_values(
+    details: list[str],
+    present_env: set[str],
+    names: tuple[str, ...],
+) -> None:
+    for name in names:
+        if name in present_env:
+            details.append(f"{name}: present")
+
 
 _TMUX_OPTION_NAMES = (
     "extended-keys",
@@ -1560,6 +1854,32 @@ def _color_output_summary(
     return f"disabled ({reason})"
 
 
+def _human_output_options_from_flags(
+    *,
+    summary: bool,
+    all: bool,
+    ascii: bool,
+    no_color: bool,
+    no_color_env: bool,
+    term: str | None,
+    stdout_is_terminal: bool,
+    stream_supports_color: bool,
+) -> dict[str, bool]:
+    color_enabled = (
+        not no_color
+        and not no_color_env
+        and term != "dumb"
+        and stdout_is_terminal
+        and stream_supports_color
+    )
+    return {
+        "show_details": not summary,
+        "show_all": all,
+        "ascii": ascii,
+        "color_enabled": color_enabled,
+    }
+
+
 def _effective_locale(env_values: dict[str, str]) -> str | None:
     for name in LOCALE_ENV_VARS:
         value = env_values.get(name)
@@ -1576,8 +1896,6 @@ def _push_terminfo_details(details: list[str], env_values: dict[str, str], prese
         status, warning = _terminal_path_readiness(path)
         details.append(f"TERMINFO: {path} ({status})")
         has_warning = has_warning or warning
-    elif "TERMINFO" in present_env:
-        details.append("TERMINFO: present")
     raw_terminfo_dirs = env_values.get("TERMINFO_DIRS")
     if raw_terminfo_dirs is not None:
         for raw_path in _split_env_paths(raw_terminfo_dirs):
@@ -1594,6 +1912,11 @@ def _split_env_paths(raw_paths: str) -> list[str]:
     return [path for path in raw_paths.split(os.pathsep) if path]
 
 
+def _read_probe_file(path: Path) -> None:
+    with path.open("rb") as handle:
+        handle.read(1)
+
+
 def _terminal_path_readiness(path: Path) -> tuple[str, bool]:
     try:
         if path.is_dir():
@@ -1604,8 +1927,7 @@ def _terminal_path_readiness(path: Path) -> tuple[str, bool]:
             return "dir", False
         if path.is_file():
             try:
-                with path.open("rb") as handle:
-                    handle.read(1)
+                _read_probe_file(path)
             except OSError as exc:
                 return f"file unreadable: {exc}", True
             return "file", False
@@ -1734,7 +2056,7 @@ def _push_mcp_stdio_issues(
     if command is None:
         issues.append(f"{name}: stdio command is empty")
     elif not _stdio_command_resolves(command, cwd, server.get("env")):
-        issues.append(f"{name}: stdio command {command!r} is not resolvable")
+        issues.append(f"{name}: stdio command {json.dumps(command)} is not resolvable")
     server_env = server.get("env")
     if isinstance(server_env, dict):
         for key in server_env:
@@ -1785,8 +2107,11 @@ def _mcp_env_var_entries(value: Any) -> list[dict[str, str | None]]:
 
 def _stdio_command_resolves(command: str, cwd: str | None, server_env: Any) -> bool:
     command_path = Path(command)
-    if command_path.is_absolute() or command_path.parent != Path("."):
-        return command_path.exists()
+    if command_path.is_absolute():
+        return _executable_path_exists(command_path) is None
+    if command_path.parent != Path("."):
+        base = Path(cwd) if cwd is not None else Path.cwd()
+        return _executable_path_exists(base / command_path) is None
     search_path = None
     if isinstance(server_env, dict):
         env_path = server_env.get("PATH")
@@ -1795,9 +2120,19 @@ def _stdio_command_resolves(command: str, cwd: str | None, server_env: Any) -> b
     resolved = shutil.which(command, path=search_path)
     if resolved is not None:
         return True
-    if cwd is not None:
-        return (Path(cwd) / command).exists()
     return False
+
+
+def _executable_path_exists(path: Path) -> str | None:
+    try:
+        metadata = path.stat()
+    except OSError as exc:
+        return str(exc)
+    if not stat.S_ISREG(metadata.st_mode):
+        return "path is not a file"
+    if os.name != "nt" and metadata.st_mode & 0o111 == 0:
+        return f"{path} is not executable"
+    return None
 
 
 def _mcp_http_probe(url: str, probe: HttpStatusProbe) -> int:
@@ -2172,6 +2507,57 @@ def _thread_inventory_parity_check(
         and not duplicate_rollout_thread_ids
         and not duplicate_db_paths
     )
+    issues: list[dict[str, Any]] = []
+    if missing_active or missing_archived:
+        issues.append(
+            {
+                "severity": "warn",
+                "cause": "rollout files are missing from the state DB",
+                "measured": f"{len(missing_active)} active, {len(missing_archived)} archived",
+                "expected": "every rollout file has a matching threads row",
+                "remedy": None,
+                "fields": [],
+            }
+        )
+    if stale_rows:
+        issues.append(
+            {
+                "severity": "warn",
+                "cause": "state DB rows point at missing or unusable rollout files",
+                "measured": f"{len(stale_rows)} stale rows",
+                "expected": "every state DB rollout path is a file on disk",
+                "remedy": None,
+                "fields": [],
+            }
+        )
+    if archive_mismatches:
+        issues.append(
+            {
+                "severity": "warn",
+                "cause": "state DB archive flags disagree with rollout file locations",
+                "measured": f"{len(archive_mismatches)} mismatched rows",
+                "expected": "rows under archived_sessions are archived and rows under sessions are active",
+                "remedy": None,
+                "fields": [],
+            }
+        )
+    if duplicate_rollout_thread_ids or duplicate_db_paths:
+        issues.append(
+            {
+                "severity": "warn",
+                "cause": "duplicate thread inventory entries found",
+                "measured": (
+                    f"{len(duplicate_rollout_thread_ids)} duplicate rollout thread ids, "
+                    f"{len(duplicate_db_paths)} duplicate DB paths"
+                ),
+                "expected": "one rollout path and thread id per thread",
+                "remedy": "Attach the doctor report to a bug report so support can inspect samples.",
+                "fields": [],
+            }
+        )
+    if scan["scan_errors"] or scan["malformed_names"] or scan["reached_scan_cap"]:
+        issues.append(_thread_inventory_scan_issue(scan))
+
     return DoctorUpdateCheck(
         status="ok" if clean else "warn",
         summary=(
@@ -2180,7 +2566,23 @@ def _thread_inventory_parity_check(
             else "rollout files and state DB thread inventory differ"
         ),
         details=tuple(details),
+        issues=tuple(issues),
     )
+
+
+def _thread_inventory_scan_issue(scan: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "severity": "warn",
+        "cause": "rollout scan was incomplete or found bad files",
+        "measured": (
+            f"{len(scan['scan_errors'])} scan errors, "
+            f"{len(scan['malformed_names'])} malformed names, "
+            f"scan cap reached: {_bool_text(scan['reached_scan_cap'])}"
+        ),
+        "expected": "rollout directories are fully scannable",
+        "remedy": "Check file permissions and unexpected files under CODEX_HOME sessions.",
+        "fields": [],
+    }
 
 
 def _missing_rollout_paths(files: list[dict[str, Any]], rows_by_key: dict[Path, list[dict[str, Any]]], *, archived: bool) -> list[Path]:
@@ -2322,6 +2724,13 @@ def _push_feature_flag_details(details: list[str], config: dict[str, Any]) -> No
     details.append(f"feature flags enabled: {len(enabled)}")
     details.append(f"enabled feature flags: {_display_list(enabled)}")
     details.append(f"feature flag overrides: {_display_list(overrides)}")
+    for usage in config.get("legacy_feature_usages", ()):
+        if not isinstance(usage, dict):
+            continue
+        alias = _optional_str(usage.get("alias"))
+        feature = _optional_str(usage.get("feature_key")) or _optional_str(usage.get("feature"))
+        if alias and feature:
+            details.append(f"legacy feature flag: {alias} -> {feature}")
 
 
 def _display_list(values: list[str]) -> str:
@@ -2509,7 +2918,7 @@ def _stored_auth_mode(auth: dict[str, Any]) -> str:
             return "chatgpt_auth_tokens"
         if normalized == "agentidentity":
             return "agent_identity"
-    if _optional_str(auth.get("OPENAI_API_KEY")) is not None:
+    if isinstance(auth.get("OPENAI_API_KEY"), str):
         return "api_key"
     return "chatgpt"
 
@@ -2539,7 +2948,9 @@ def _stored_auth_issues(auth: dict[str, Any], env: dict[str, str]) -> list[str]:
         else:
             if _optional_str(tokens.get("access_token")) is None:
                 issues.append("external ChatGPT auth is missing an access token")
-            if _optional_str(tokens.get("account_id")) is None:
+            id_token = tokens.get("id_token") if isinstance(tokens.get("id_token"), dict) else {}
+            id_token_account_id = _optional_str(id_token.get("chatgpt_account_id"))
+            if _optional_str(tokens.get("account_id")) is None and id_token_account_id is None:
                 issues.append("external ChatGPT auth is missing a ChatGPT account id")
         if _optional_str(auth.get("last_refresh")) is None:
             issues.append("external ChatGPT auth is missing refresh metadata")
@@ -2555,7 +2966,8 @@ def _optional_str(value: Any) -> str | None:
 
 
 def _env_var_present(env: dict[str, str], name: str) -> bool:
-    return name in env
+    value = env.get(name)
+    return value is not None and value != ""
 
 
 def _push_proxy_env_details(details: list[str], env: dict[str, str]) -> None:
@@ -2595,6 +3007,20 @@ def _push_optional_path_detail(details: list[str], label: str, path: Path | None
         details.append(f"{label}: none")
     else:
         details.append(f"{label}: {_doctor_path_text(path)}")
+
+
+def _push_env_path_detail(
+    details: list[str],
+    label: str,
+    name: str,
+    env: Mapping[str, str] | os._Environ[str] | None = None,
+) -> None:
+    environment = os.environ if env is None else env
+    value = environment.get(name)
+    if value is None:
+        details.append(f"{label}: not set")
+    else:
+        details.append(f"{label}: {_doctor_path_text(Path(value))}")
 
 
 def _push_optional_detail(details: list[str], label: str, value: str | None) -> None:
@@ -2784,7 +3210,9 @@ def _is_azure_responses_provider(provider_name: str, base_url: str) -> bool:
 
 
 def _provider_url_for_path(base_url: str, path: str, query_params: dict[str, str] | None) -> str:
-    url = f"{base_url.rstrip('/')}/{path.lstrip('/')}" if path else base_url.rstrip("/")
+    base = base_url.rstrip("/")
+    trimmed_path = path.lstrip("/")
+    url = f"{base}/{trimmed_path}" if trimmed_path else base
     if query_params:
         separator = "&" if "?" in url else "?"
         url += separator + "&".join(f"{key}={value}" for key, value in query_params.items())
@@ -2868,12 +3296,16 @@ def _collect_rollout_stats(root: Path) -> tuple[int, int, str | None]:
             try:
                 if entry.is_dir():
                     stack.append(entry)
-                elif entry.is_file() and entry.suffix == ".jsonl" and entry.name.startswith("rollout-"):
+                elif entry.is_file() and _is_rollout_file(entry):
                     files += 1
-                    total_bytes += entry.stat().st_size
+                    total_bytes = min(U64_MAX, total_bytes + entry.stat().st_size)
             except OSError as exc:
                 return files, total_bytes, str(exc)
     return files, total_bytes, None
+
+
+def _is_rollout_file(path: Path) -> bool:
+    return path.suffix == ".jsonl" and path.name.startswith("rollout-")
 
 
 def _push_standalone_release_cache_details(details: list[str], releases_dir: Path) -> None:
@@ -2892,14 +3324,32 @@ def _is_non_utf8_locale(locale_value: str) -> bool:
 def _terminal_size_issues(
     inputs: TerminalCheckInputs,
     env_values: dict[str, str],
-) -> list[tuple[str, str]]:
-    issues: list[tuple[str, str]] = []
+) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
     if isinstance(inputs.terminal_size, tuple):
         columns, rows = inputs.terminal_size
         if 0 < columns < 80:
-            issues.append(("warn", f"width {columns} cols - output may wrap (recommended >=80)"))
+            issues.append(
+                {
+                    "status": "warn",
+                    "summary": f"width {columns} cols - output may wrap (recommended >=80)",
+                    "measured": f"{columns} x {rows}",
+                    "expected": ">= 80 columns",
+                    "remedy": "resize the window to at least 80 columns",
+                    "fields": ["terminal size"],
+                }
+            )
         if 0 < rows < 24:
-            issues.append(("warn", f"height {rows} rows - content may scroll off (recommended >=24)"))
+            issues.append(
+                {
+                    "status": "warn",
+                    "summary": f"height {rows} rows - content may scroll off (recommended >=24)",
+                    "measured": f"{columns} x {rows}",
+                    "expected": ">= 24 rows",
+                    "remedy": "resize the window to at least 24 rows",
+                    "fields": ["terminal size"],
+                }
+            )
     columns_env = env_values.get("COLUMNS")
     if columns_env is not None:
         try:
@@ -2907,7 +3357,16 @@ def _terminal_size_issues(
         except ValueError:
             columns = 0
         if 0 < columns < 80:
-            issues.append(("warn", f"COLUMNS={columns} - output may wrap (recommended >=80)"))
+            issues.append(
+                {
+                    "status": "warn",
+                    "summary": f"COLUMNS={columns} - output may wrap (recommended >=80)",
+                    "measured": f"{columns} columns",
+                    "expected": ">= 80 columns",
+                    "remedy": "resize the window to at least 80 columns",
+                    "fields": ["COLUMNS"],
+                }
+            )
     lines_env = env_values.get("LINES")
     if lines_env is not None:
         try:
@@ -2915,7 +3374,16 @@ def _terminal_size_issues(
         except ValueError:
             rows = 0
         if 0 < rows < 24:
-            issues.append(("warn", f"LINES={rows} - content may scroll off (recommended >=24)"))
+            issues.append(
+                {
+                    "status": "warn",
+                    "summary": f"LINES={rows} - content may scroll off (recommended >=24)",
+                    "measured": f"{rows} rows",
+                    "expected": ">= 24 rows",
+                    "remedy": "resize the window to at least 24 rows",
+                    "fields": ["LINES"],
+                }
+            )
     return issues
 
 
@@ -3419,6 +3887,14 @@ def compare_npm_package_roots(running_package_root: str | Path, npm_root: str | 
     return NpmRootCheck.mismatch(running_package_root, npm_package_root)
 
 
+def _git_command_output_text(stdout: str | bytes, *, success: bool = True) -> str | None:
+    if not success:
+        return None
+    text = stdout.decode("utf-8", errors="replace") if isinstance(stdout, bytes) else str(stdout)
+    normalized = "; ".join(line.strip() for line in text.splitlines() if line.strip())
+    return normalized or None
+
+
 def run_command(program: str, args: tuple[str, ...]) -> str:
     try:
         completed = subprocess.run(
@@ -3587,3 +4063,1600 @@ def doctor_updates_check_from_config(
         latest_version=latest_version,
         latest_error=latest_error,
     )
+
+_DOCTOR_DETAIL_LIST_LIMIT = 7
+_DOCTOR_DETAIL_PATH_LIMIT = 48
+
+
+def _doctor_detail_list_limit() -> int:
+    return _DOCTOR_DETAIL_LIST_LIMIT
+
+
+def _doctor_detail_path_limit() -> int:
+    return _DOCTOR_DETAIL_PATH_LIMIT
+
+
+def _doctor_detail_humanize_timestamp(value: str) -> str | None:
+    if len(value) < 17 or not value.endswith("Z"):
+        return None
+    if "T" not in value:
+        return None
+    date, time_part = value.split("T", 1)
+    hour_minute = time_part[:5]
+    if len(hour_minute) < 5:
+        return None
+    return f"{date} {hour_minute} UTC"
+
+
+def _doctor_detail_looks_like_path(value: str) -> bool:
+    return (
+        value.startswith("/")
+        or value.startswith("~/")
+        or value.startswith("./")
+        or value.startswith("../")
+    )
+
+
+def _doctor_detail_middle_truncate(value: str, max_chars: int) -> str:
+    if len(value) <= max_chars:
+        return value
+    head_len = max_chars // 2
+    tail_len = max(max_chars - (head_len + 1), 0)
+    head = value[:head_len]
+    tail = value[len(value) - tail_len:] if tail_len else ""
+    return f"{head}\u2026{tail}"
+
+
+def _doctor_detail_home_shortened_path(path: str, home: str | None = None) -> str:
+    resolved_home = os.environ.get("HOME") if home is None else home
+    if not resolved_home:
+        return path
+    if path == resolved_home:
+        return "~"
+    prefix = f"{resolved_home}/"
+    if path.startswith(prefix):
+        return f"~/{path[len(prefix):]}"
+    return path
+
+
+def _doctor_detail_shorten_path_prefix(value: str, home: str | None = None) -> str:
+    if " (" in value:
+        path, suffix_tail = value.split(" (", 1)
+        suffix = f" ({suffix_tail}"
+    else:
+        path = value
+        suffix = ""
+    shortened_home = _doctor_detail_home_shortened_path(path, home)
+    shortened = _doctor_detail_middle_truncate(shortened_home, _DOCTOR_DETAIL_PATH_LIMIT)
+    return f"{shortened}{suffix}"
+
+
+def _doctor_detail_humanize_value(value: str, home: str | None = None) -> str:
+    if _doctor_detail_looks_like_path(value):
+        return _doctor_detail_shorten_path_prefix(value, home)
+    timestamp = _doctor_detail_humanize_timestamp(value)
+    if timestamp is not None:
+        return timestamp
+    return value
+
+
+def _doctor_detail_display_label(label: str) -> str:
+    if label == "codex-linux-sandbox helper":
+        return "linux helper"
+    if label == "optional reachability failed":
+        return "optional reachability"
+    if label == "check for update on startup":
+        return "startup update check"
+    return label
+
+
+def _doctor_detail_yes_no(value: str) -> str:
+    return "yes" if value == "true" else "no"
+
+
+def _doctor_detail_is_falsy(value: str) -> bool:
+    return value.strip().lower() in {
+        "",
+        "false",
+        "none",
+        "not set",
+        "unknown",
+        "missing",
+        "absent",
+        "no",
+        "-",
+    }
+
+
+def _doctor_detail_list_items(value: str) -> list[str]:
+    if _doctor_detail_is_falsy(value):
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _doctor_detail_override_names(items: list[str]) -> list[str]:
+    return [item.split("=", 1)[0] for item in items]
+
+
+def _doctor_detail_rollout_files_and_bytes(value: str) -> tuple[int, int] | None:
+    try:
+        files_text, rest = value.split(" files, ", 1)
+        total_text, _rest = rest.split(" total bytes, ", 1)
+        return (int(files_text.strip()), int(total_text.strip()))
+    except (ValueError, AttributeError):
+        return None
+
+
+def _doctor_detail_parse_detail(detail: str) -> tuple[str, str]:
+    if ": " in detail:
+        label, value = detail.split(": ", 1)
+        return (label, value)
+    return ("", detail)
+
+
+def _doctor_detail_numbered_values(parsed: list[tuple[str, str]], prefix: str) -> list[str]:
+    return [value for label, value in parsed if label.startswith(prefix)]
+
+
+def _doctor_detail_value(parsed: list[tuple[str, str]], label: str) -> str | None:
+    for detail_label, value in parsed:
+        if detail_label == label:
+            return value
+    return None
+
+
+def _doctor_detail_push_list_row_value(items: list[str], *, show_all: bool) -> str:
+    limit = len(items) if show_all else min(len(items), _DOCTOR_DETAIL_LIST_LIMIT)
+    value = ", ".join(items[:limit])
+    if limit < len(items):
+        value += ", \u2026 (full list with --all)"
+    return value
+
+
+def _doctor_detail_database_row_value(path: str, integrity: str | None = None) -> str:
+    if integrity is None:
+        return path
+    return f"{path} \u00b7 integrity {integrity}"
+
+
+def _doctor_detail_feature_flags_summary_value(
+    enabled_count_value: str | None,
+    override_value: str | None,
+    *,
+    show_all: bool,
+) -> str:
+    try:
+        enabled_count = int(enabled_count_value) if enabled_count_value is not None else 0
+    except ValueError:
+        enabled_count = 0
+    overrides = _doctor_detail_list_items("none" if override_value is None else override_value)
+    hint = " (full list with --all)" if not show_all and enabled_count > 0 else ""
+    return f"{enabled_count} enabled \u00b7 {len(overrides)} overridden{hint}"
+
+
+def _doctor_detail_managed_by_value(managed_by_npm: str, managed_by_bun: str, package_root: str) -> str:
+    root = "\u2014" if _doctor_detail_is_falsy(package_root) else package_root
+    return (
+        f"npm: {_doctor_detail_yes_no(managed_by_npm)} "
+        f"\u00b7 bun: {_doctor_detail_yes_no(managed_by_bun)} "
+        f"\u00b7 package root {root}"
+    )
+
+
+def _doctor_detail_model_row_value(model: str, provider: str | None = None) -> str:
+    if provider is None:
+        return model
+    return f"{model} \u00b7 {provider}"
+
+
+def _doctor_detail_issue_remedies(remedies: list[str | None]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for remedy in remedies:
+        if remedy is None or remedy in seen:
+            continue
+        seen.add(remedy)
+        out.append(remedy)
+    return out
+
+
+def _doctor_detail_issue_expected_for_label(
+    issues: list[dict[str, object]],
+    label: str,
+) -> str | None:
+    for issue in issues:
+        fields = issue.get("fields", [])
+        if not isinstance(fields, list):
+            continue
+        for field in fields:
+            field_text = str(field)
+            if _doctor_detail_display_label(field_text) == label or field_text == label:
+                expected = issue.get("expected")
+                return None if expected is None else str(expected)
+    return None
+
+
+def _doctor_detail_attach_issue_expected(
+    label: str,
+    expected: str | None,
+    issues: list[dict[str, object]],
+) -> str | None:
+    if expected is not None:
+        return expected
+    return _doctor_detail_issue_expected_for_label(issues, label)
+
+
+def _doctor_detail_generic_kind_and_label(label: str, value: str) -> tuple[str, str | None, str]:
+    if label == "":
+        return ("bullet", None, value)
+    return ("row", _doctor_detail_display_label(label), value)
+
+
+def _doctor_detail_remaining_details(
+    parsed: list[tuple[str, str]],
+    consumed_labels: list[str],
+    consumed_prefixes: list[str],
+) -> list[tuple[str, str | None, str]]:
+    out: list[tuple[str, str | None, str]] = []
+    for label, value in parsed:
+        if value == "ignored inherited package-manager launch env for cargo-built binary":
+            continue
+        if label in consumed_labels:
+            continue
+        if any(label.startswith(prefix) for prefix in consumed_prefixes):
+            continue
+        out.append(_doctor_detail_generic_kind_and_label(label, value))
+    return out
+
+
+def _doctor_detail_path_entry_values(entries: list[str], *, show_all: bool) -> list[tuple[str, str]]:
+    if not entries:
+        return []
+    total = len(entries)
+    shown = total if show_all else min(total, 3)
+    out: list[tuple[str, str]] = [(f"PATH entries ({total})", entries[0])]
+    out.extend(("continuation", entry) for entry in entries[1:shown])
+    if shown < total:
+        out.append(("continuation", "\u2026 (full list with --all)"))
+    return out
+
+
+def _doctor_detail_system_rows(parsed: list[tuple[str, str]]) -> list[tuple[str, str | None, str]]:
+    out: list[tuple[str, str | None, str]] = []
+    for source_label, display in (
+        ("os", "os"),
+        ("os language", "OS language"),
+        ("LC_ALL", "LC_ALL"),
+        ("LC_CTYPE", "LC_CTYPE"),
+        ("LANG", "LANG"),
+    ):
+        value = _doctor_detail_value(parsed, source_label)
+        if value is not None:
+            out.append(("row", display, value))
+    out.extend(
+        _doctor_detail_remaining_details(
+            parsed,
+            ["os", "os type", "os version", "os language", "LC_ALL", "LC_CTYPE", "LANG"],
+            [],
+        )
+    )
+    return out
+
+
+def _doctor_detail_runtime_rows(parsed: list[tuple[str, str]]) -> list[tuple[str, str | None, str]]:
+    out: list[tuple[str, str | None, str]] = []
+    for source_label, display in (
+        ("version", "version"),
+        ("install method", "install method"),
+        ("commit", "commit"),
+        ("current executable", "executable"),
+    ):
+        value = _doctor_detail_value(parsed, source_label)
+        if value is not None:
+            out.append(("row", display, value))
+    out.extend(
+        _doctor_detail_remaining_details(
+            parsed,
+            ["version", "platform", "install method", "commit", "current executable"],
+            [],
+        )
+    )
+    return out
+
+
+def _doctor_detail_title_rows(parsed: list[tuple[str, str]]) -> list[tuple[str, str | None, str]]:
+    out: list[tuple[str, str | None, str]] = []
+    for source_label, display in (
+        ("terminal title source", "title source"),
+        ("terminal title items", "title items"),
+        ("terminal title activity", "activity item"),
+        ("terminal title project source", "project source"),
+        ("terminal title project value", "project value"),
+    ):
+        value = _doctor_detail_value(parsed, source_label)
+        if value is not None:
+            out.append(("row", display, value))
+    out.extend(
+        _doctor_detail_remaining_details(
+            parsed,
+            [
+                "terminal title source",
+                "terminal title items",
+                "terminal title activity",
+                "terminal title project source",
+                "terminal title project value",
+            ],
+            [],
+        )
+    )
+    return out
+
+
+def _doctor_detail_state_rows(parsed: list[tuple[str, str]]) -> list[tuple[str, str | None, str]]:
+    out: list[tuple[str, str | None, str]] = []
+    for source_label, display in (
+        ("CODEX_HOME", "CODEX_HOME"),
+        ("log dir", "log dir"),
+        ("sqlite home", "sqlite home"),
+    ):
+        value = _doctor_detail_value(parsed, source_label)
+        if value is not None:
+            out.append(("row", display, value))
+    for label in ("state DB", "log DB", "goals DB", "memories DB"):
+        path = _doctor_detail_value(parsed, label)
+        if path is not None:
+            out.append(("row", label, _doctor_detail_database_row_value(path, _doctor_detail_value(parsed, f"{label} integrity"))))
+    for source_label, display in (
+        ("active rollout files", "active rollouts"),
+        ("archived rollout files", "archived rollouts"),
+    ):
+        value = _doctor_detail_value(parsed, source_label)
+        if value is not None:
+            out.append(("row", display, _doctor_detail_rollout_summary(value) or value))
+    out.extend(
+        _doctor_detail_remaining_details(
+            parsed,
+            [
+                "CODEX_HOME",
+                "log dir",
+                "sqlite home",
+                "state DB",
+                "log DB",
+                "goals DB",
+                "state DB integrity",
+                "log DB integrity",
+                "goals DB integrity",
+                "memories DB",
+                "memories DB integrity",
+                "active rollout files",
+                "archived rollout files",
+            ],
+            [],
+        )
+    )
+    return out
+
+
+def _doctor_detail_git_rows(parsed: list[tuple[str, str]], *, show_all: bool) -> list[tuple[str, str | None, str]]:
+    out: list[tuple[str, str | None, str]] = []
+    for source_label, display in (
+        ("selected git", "selected git"),
+        ("git version", "version"),
+        ("git exec path", "exec path"),
+        ("repo detected", "repo detected"),
+        ("repo root", "repo root"),
+        (".git entry", ".git entry"),
+        ("git branch", "branch"),
+        ("core.fsmonitor", "core.fsmonitor"),
+    ):
+        value = _doctor_detail_value(parsed, source_label)
+        if value is not None:
+            out.append(("row", display, value))
+    out.extend(("row", label, value) if label.startswith("PATH entries") else (label, None, value) for label, value in _doctor_detail_path_entry_values(_doctor_detail_numbered_values(parsed, "PATH git #"), show_all=show_all))
+    out.extend(
+        _doctor_detail_remaining_details(
+            parsed,
+            [
+                "selected git",
+                "PATH git entries",
+                "git version",
+                "git exec path",
+                "git build options",
+                "repo detected",
+                "repo root",
+                ".git entry",
+                "git branch",
+                "core.fsmonitor",
+            ],
+            ["PATH git #"],
+        )
+    )
+    return out
+
+
+def _doctor_detail_install_rows(parsed: list[tuple[str, str]], *, show_all: bool) -> list[tuple[str, str | None, str]]:
+    out: list[tuple[str, str | None, str]] = []
+    context = _doctor_detail_value(parsed, "install context")
+    if context is not None:
+        out.append(("row", "context", context))
+    if any(value == "ignored inherited package-manager launch env for cargo-built binary" for _label, value in parsed):
+        out.append(("bullet", None, "ignored inherited package-manager launch env for cargo-built binary"))
+    npm = _doctor_detail_value(parsed, "managed by npm") or "false"
+    bun = _doctor_detail_value(parsed, "managed by bun") or "false"
+    package_root = _doctor_detail_value(parsed, "managed package root") or "not set"
+    out.append(("row", "managed by", _doctor_detail_managed_by_value(npm, bun, package_root)))
+    out.extend(("row", label, value) if label.startswith("PATH entries") else (label, None, value) for label, value in _doctor_detail_path_entry_values(_doctor_detail_numbered_values(parsed, "PATH codex #"), show_all=show_all))
+    out.extend(
+        _doctor_detail_remaining_details(
+            parsed,
+            [
+                "current executable",
+                "install context",
+                "managed by npm",
+                "managed by bun",
+                "managed package root",
+                "PATH codex entries",
+            ],
+            ["PATH codex #"],
+        )
+    )
+    return out
+
+
+def _doctor_detail_config_rows(parsed: list[tuple[str, str]], *, show_all: bool) -> list[tuple[str, str | None, str]]:
+    out: list[tuple[str, str | None, str]] = []
+    model = _doctor_detail_value(parsed, "model")
+    if model is not None:
+        out.append(("row", "model", _doctor_detail_model_row_value(model, _doctor_detail_value(parsed, "model provider"))))
+    for source_label, display in (
+        ("cwd", "cwd"),
+        ("config.toml", "config.toml"),
+        ("config.toml parse", "config.toml parse"),
+        ("config.toml read", "config.toml read"),
+        ("mcp servers", "MCP servers"),
+    ):
+        value = _doctor_detail_value(parsed, source_label)
+        if value is not None:
+            out.append(("row", display, value))
+    out.append(("row", "feature flags", _doctor_detail_feature_flags_summary_value(
+        _doctor_detail_value(parsed, "feature flags enabled"),
+        _doctor_detail_value(parsed, "feature flag overrides"),
+        show_all=show_all,
+    )))
+    for label, value in parsed:
+        if label == "legacy feature flag":
+            out.append(("row", "legacy alias", value))
+    out.extend(
+        _doctor_detail_remaining_details(
+            parsed,
+            [
+                "CODEX_HOME",
+                "cwd",
+                "model",
+                "model provider",
+                "log dir",
+                "sqlite home",
+                "mcp servers",
+                "feature flags enabled",
+                "enabled feature flags",
+                "feature flag overrides",
+                "legacy feature flag",
+                "config.toml",
+                "config.toml parse",
+                "config.toml read",
+            ],
+            [],
+        )
+    )
+    return out
+
+
+def _doctor_detail_rows_for_category(
+    category: str,
+    parsed: list[tuple[str, str]],
+    *,
+    show_all: bool = False,
+) -> list[tuple[str, str | None, str]]:
+    if category == "system":
+        return _doctor_detail_system_rows(parsed)
+    if category == "runtime":
+        return _doctor_detail_runtime_rows(parsed)
+    if category == "install":
+        return _doctor_detail_install_rows(parsed, show_all=show_all)
+    if category == "git":
+        return _doctor_detail_git_rows(parsed, show_all=show_all)
+    if category == "title":
+        return _doctor_detail_title_rows(parsed)
+    if category == "config":
+        return _doctor_detail_config_rows(parsed, show_all=show_all)
+    if category == "state":
+        return _doctor_detail_state_rows(parsed)
+    return [_doctor_detail_generic_kind_and_label(label, value) for label, value in parsed]
+
+
+def _doctor_detail_value_from_details(details: list[str], label: str) -> str | None:
+    parsed = [_doctor_detail_parse_detail(redact_doctor_detail(detail)) for detail in details]
+    return _doctor_detail_value(parsed, label)
+
+
+def _doctor_detail_humanize_detail(kind: str, label: str | None, value: str, home: str | None = None) -> tuple[str, str | None, str]:
+    if kind == "remedy":
+        return (kind, label, value)
+    return (kind, label, _doctor_detail_humanize_value(value, home))
+
+
+def _doctor_detail_lines_for_check(
+    category: str,
+    details: list[str],
+    issues: list[dict[str, object]],
+    *,
+    show_all: bool = False,
+    home: str | None = None,
+) -> list[tuple[str, str | None, str | None, str]]:
+    parsed = [_doctor_detail_parse_detail(redact_doctor_detail(detail)) for detail in details]
+    rows = _doctor_detail_rows_for_category(category, parsed, show_all=show_all)
+    out: list[tuple[str, str | None, str | None, str]] = []
+    for kind, label, value in rows:
+        expected = _doctor_detail_attach_issue_expected(label or "", None, issues) if kind == "row" else None
+        humanized_kind, humanized_label, humanized_value = _doctor_detail_humanize_detail(kind, label, value, home)
+        out.append((humanized_kind, humanized_label, humanized_value, expected))
+    for remedy in _doctor_detail_issue_remedies([issue.get("remedy") if isinstance(issue.get("remedy"), str) else None for issue in issues]):
+        out.append(("remedy", None, remedy, None))
+    return out
+
+
+def _doctor_output_groups() -> list[tuple[str, tuple[str, ...]]]:
+    return [
+        ("Environment", ("system", "runtime", "install", "search", "git", "terminal", "title", "state", "threads")),
+        ("Configuration", ("config", "auth", "mcp", "sandbox")),
+        ("Updates", ("updates",)),
+        ("Connectivity", ("network", "websocket", "reachability")),
+        ("Background Server", ("app-server",)),
+    ]
+
+
+def _doctor_output_display_status(category: str, status: str, details: list[str]) -> str:
+    normalized = status.strip().lower()
+    if category == "app-server" and normalized == "ok" and "status: not running" in details:
+        return "idle"
+    if normalized in {"ok", "warning", "fail"}:
+        return normalized
+    if normalized == "warn":
+        return "warning"
+    return "warning"
+
+
+def _doctor_output_overall_status_label(status: str) -> str:
+    normalized = status.strip().lower()
+    if normalized == "ok":
+        return "ok"
+    if normalized in {"warning", "warn"}:
+        return "degraded"
+    if normalized == "fail":
+        return "failed"
+    return "degraded"
+
+
+def _doctor_output_issue_summary(check_summary: str, issue_causes: list[str]) -> str:
+    if not issue_causes:
+        return check_summary
+    if len(issue_causes) == 1:
+        return issue_causes[0]
+    return f"{len(issue_causes)} issues - {'; '.join(issue_causes[:2])}"
+
+
+def _doctor_output_row_description(
+    status: str,
+    summary: str,
+    issue_causes: list[str],
+    remediation: str | None = None,
+    *,
+    ascii_output: bool = False,
+) -> str:
+    normalized = status.strip().lower()
+    is_problem = normalized in {"warning", "warn", "fail"}
+    if is_problem and issue_causes:
+        return _doctor_output_issue_summary(summary, issue_causes)
+    if is_problem and remediation is not None:
+        dash = " - " if ascii_output else " \u2014 "
+        return f"{summary}{dash}{remediation}"
+    return summary
+
+
+def _doctor_output_update_note_summary(details: list[str], codex_version: str) -> str | None:
+    latest_status = _doctor_detail_value_from_details(details, "latest version status")
+    if latest_status is None or "newer version is available" not in latest_status:
+        return None
+    latest = (
+        _doctor_detail_value_from_details(details, "latest version")
+        or _doctor_detail_value_from_details(details, "cached latest version")
+        or "newer version"
+    )
+    parenthetical = f"current {codex_version}"
+    dismissed = _doctor_detail_value_from_details(details, "dismissed version")
+    if dismissed is not None and not _doctor_detail_is_falsy(dismissed):
+        parenthetical += f", dismissed {dismissed}"
+    return f"{latest} available ({parenthetical})"
+
+
+def _doctor_output_rollout_note_summary(details: list[str]) -> str | None:
+    active = _doctor_detail_value_from_details(details, "active rollout files")
+    if active is None:
+        return None
+    parsed = _doctor_detail_rollout_files_and_bytes(active)
+    if parsed is None:
+        return None
+    files, bytes_on_disk = parsed
+    if files < 1000 and bytes_on_disk < 1024 * 1024 * 1024:
+        return None
+    return f"{_doctor_detail_format_count(files)} active files \u00b7 {_doctor_detail_format_bytes(bytes_on_disk)} on disk"
+
+
+def _doctor_output_sandbox_note_summary(details: list[str]) -> str | None:
+    filesystem = _doctor_detail_value_from_details(details, "filesystem sandbox")
+    network = _doctor_detail_value_from_details(details, "network sandbox")
+    if filesystem is None or network is None:
+        return None
+    if filesystem == "restricted" and network == "restricted":
+        return None
+    return f"filesystem {filesystem} \u00b7 network {network}"
+
+
+def _doctor_output_auth_reachability_note_summary(websocket_details: list[str], reachability_details: list[str]) -> str | None:
+    auth_mode = _doctor_detail_value_from_details(websocket_details, "auth mode")
+    reachability_mode = _doctor_detail_value_from_details(reachability_details, "reachability mode")
+    if auth_mode is None or reachability_mode is None:
+        return None
+    if "chatgpt" in auth_mode.lower() and "api key" in reachability_mode.lower():
+        return "mixed auth signals: ChatGPT login plus API key env var; HTTP reachability uses API-key mode"
+    return None
+
+
+def _doctor_output_notes_order(categories: list[str]) -> list[str]:
+    ordered: list[str] = []
+    if "updates" in categories:
+        ordered.append("updates")
+    if "state" in categories:
+        ordered.append("rollouts")
+    if "sandbox" in categories:
+        ordered.append("sandbox")
+    ordered.extend(f"non-ok:{category}" for category in categories)
+    if "websocket" in categories and "reachability" in categories:
+        ordered.append("auth")
+    return ordered
+
+
+def _doctor_output_footer_lines(*, show_details: bool) -> list[str]:
+    if show_details:
+        return [
+            "--summary compact output --all expand truncated lists",
+            "--json redacted report",
+        ]
+    return [
+        "Run codex doctor without --summary for detailed diagnostics.",
+        "--all expand truncated lists --json redacted report",
+    ]
+
+
+def _doctor_output_header_suffix(codex_version: str, runtime_details: list[str] | None = None) -> str:
+    version = f"v{codex_version}"
+    if runtime_details is None:
+        return version
+    platform_value = _doctor_detail_value_from_details(runtime_details, "platform")
+    if platform_value is None:
+        return version
+    return f"{version} \u00b7 {platform_value}"
+
+
+def _doctor_output_summary_line_text(
+    *,
+    ok: int,
+    idle: int,
+    notes: int,
+    warning: int,
+    fail: int,
+    overall_status: str,
+    ascii_output: bool = False,
+) -> str:
+    parts = [f"{ok} ok"]
+    if idle > 0:
+        parts.append(f"{idle} idle")
+    if notes > 0:
+        parts.append(f"{notes} notes")
+    parts.append(f"{warning} warn")
+    parts.append(f"{fail} fail")
+    separator = " | " if ascii_output else " \u00b7 "
+    return f"{separator.join(parts)} {_doctor_output_overall_status_label(overall_status)}"
+
+
+def _doctor_output_checks_for_group(
+    checks: list[tuple[str, str]],
+    group_keys: tuple[str, ...],
+) -> list[tuple[str, str]]:
+    """Return checks matching group keys in Rust output.rs group-key order."""
+    return [check for key in group_keys for check in checks if check[0] == key]
+
+
+def _doctor_output_actionable_note_summary(
+    summary: str,
+    *,
+    issue_summary: str | None = None,
+    remediation: str | None = None,
+) -> str:
+    """Mirror Rust output.rs actionable_note_summary text precedence."""
+    if issue_summary is not None:
+        return issue_summary
+    if remediation is not None:
+        return f"{summary} - {remediation}"
+    return summary
+
+
+def _doctor_output_non_ok_notes(checks: list[dict[str, str | None]]) -> list[tuple[str, str]]:
+    """Mirror Rust output.rs non_ok_notes warning/fail filtering."""
+    notes: list[tuple[str, str]] = []
+    for check in checks:
+        status = check.get("status")
+        if status not in {"warning", "fail"}:
+            continue
+        summary = check.get("summary") or ""
+        notes.append(
+            (
+                _doctor_output_display_status("", str(status), {}),
+                _doctor_output_actionable_note_summary(
+                    summary,
+                    issue_summary=check.get("issue_summary"),
+                    remediation=check.get("remediation"),
+                ),
+            )
+        )
+    return notes
+
+
+
+def _doctor_output_ascii_status_marker_slot(status: str) -> str:
+    """Mirror Rust output.rs status_marker_slot for ascii status markers."""
+    return f"{_doctor_output_ascii_status_marker(status)} "
+
+
+def _doctor_output_ascii_detail_marker(is_issue: bool) -> str:
+    """Mirror Rust output.rs detail_marker for ascii output."""
+    return ">" if is_issue else " "
+
+
+def _doctor_output_style_update_note_summary_no_color(summary: str) -> str:
+    """Mirror Rust output.rs style_update_note_summary when color is disabled."""
+    return summary
+
+
+def _doctor_output_count_label_no_color(count: int, label: str, status: str) -> str:
+    """Mirror Rust output.rs count_label text when color styling is disabled."""
+    if status not in {"ok", "update", "note", "warning", "fail", "idle"}:
+        raise ValueError(f"unknown display status: {status}")
+    return f"{count} {label}"
+
+
+def _doctor_output_styled_overall_status_no_color(label: str, status: str) -> str:
+    """Mirror Rust output.rs styled_overall_status when color is disabled."""
+    if status not in {"ok", "warning", "fail"}:
+        raise ValueError(f"unknown check status: {status}")
+    return label
+
+
+def _doctor_output_style_update_note_summary_from_note_no_color(
+    status: str, summary: str
+) -> str:
+    """Mirror Rust output.rs style_note_summary update/no-color path."""
+    if status != "update":
+        raise ValueError("this helper only covers the update status no-color path")
+    return _doctor_output_style_update_note_summary_no_color(summary)
+
+
+def _doctor_output_highlight_actions_no_color(text: str) -> str:
+    """Mirror Rust output.rs highlight_actions when color is disabled."""
+    return text
+
+
+def _doctor_output_highlight_flags_no_color(text: str) -> str:
+    """Mirror Rust output.rs highlight_flags when styling has no visible effect."""
+    return text
+
+
+def _doctor_output_is_safe_presence_value(value: str) -> bool:
+    """Mirror Rust output.rs is_safe_presence_value."""
+    return value.strip().lower() in {
+        "true",
+        "false",
+        "yes",
+        "no",
+        "present",
+        "absent",
+        "missing",
+        "not set",
+    }
+
+
+def _doctor_output_redact_url_path(path: str) -> str:
+    """Mirror Rust output.rs redact_url_path."""
+    segments = [segment for segment in path.split("/") if segment]
+    if not segments:
+        return path
+    first_segment = segments[0]
+    if len(segments) > 1:
+        return f"/{first_segment}/<redacted>"
+    return path
+
+
+def _doctor_output_redact_url_token(token: str) -> str:
+    """Mirror Rust output.rs redact_url_token for a single token."""
+    scheme_end = token.find("://")
+    if scheme_end == -1:
+        return token
+    suffix_start = len(token)
+    trailing = set(" \t\n\r.,;:)]")
+    while suffix_start > scheme_end + 3 and token[suffix_start - 1] in trailing:
+        suffix_start -= 1
+    body = token[:suffix_start]
+    suffix = token[suffix_start:]
+    scheme_prefix_end = scheme_end + 3
+    rest = body[scheme_prefix_end:]
+    authority_end_offset = len(rest)
+    for separator in ("/", "?", "#"):
+        index = rest.find(separator)
+        if index != -1:
+            authority_end_offset = min(authority_end_offset, index)
+    authority_end = scheme_prefix_end + authority_end_offset
+    authority = body[scheme_prefix_end:authority_end]
+    if "@" in authority:
+        authority = authority.rsplit("@", 1)[1]
+    path = body[authority_end:]
+    query_index = len(path)
+    for separator in ("?", "#"):
+        index = path.find(separator)
+        if index != -1:
+            query_index = min(query_index, index)
+    path = _doctor_output_redact_url_path(path[:query_index])
+    return f"{body[:scheme_prefix_end]}{authority}{path}{suffix}"
+
+
+def _doctor_output_redact_urls(detail: str) -> str:
+    """Mirror Rust output.rs redact_urls over whitespace-inclusive tokens."""
+    out: list[str] = []
+    start = 0
+    for index, char in enumerate(detail):
+        if char.isspace():
+            out.append(_doctor_output_redact_url_token(detail[start : index + 1]))
+            start = index + 1
+    if start < len(detail):
+        out.append(_doctor_output_redact_url_token(detail[start:]))
+    return "".join(out)
+
+
+def _doctor_output_redact_detail_env_var_branch(detail: str) -> str:
+    """Mirror Rust output.rs redact_detail branch for labels containing env var."""
+    label = detail.lower().split(":", 1)[0]
+    if "env var" not in label:
+        raise ValueError("this helper only covers redact_detail env var labels")
+    return _doctor_output_redact_urls(detail)
+
+
+def _doctor_output_redact_detail_safe_presence_branch(detail: str) -> str:
+    """Mirror Rust output.rs redact_detail safe-presence value branch."""
+    if ": " not in detail:
+        raise ValueError("this helper only covers redact_detail details with ': '")
+    _, value = detail.split(": ", 1)
+    if not _doctor_output_is_safe_presence_value(value):
+        raise ValueError("this helper only covers safe presence values")
+    return _doctor_output_redact_urls(detail)
+
+
+def _doctor_output_redact_detail_secret_key_branch(detail: str) -> str:
+    """Mirror Rust output.rs redact_detail secret-key branch."""
+    secret_keys = {
+        "openai_api_key",
+        "codex_api_key",
+        "codex_access_token",
+        "authorization",
+        "bearer_token",
+        "token",
+        "secret",
+    }
+    lower = detail.lower()
+    if not any(key in lower for key in secret_keys):
+        raise ValueError("this helper only covers redact_detail secret-key details")
+    name = detail.split(":", 1)[0]
+    return f"{name}: <redacted>"
+
+
+def _doctor_output_redact_detail_fallback_branch(detail: str) -> str:
+    """Mirror Rust output.rs redact_detail fallback branch."""
+    lower = detail.lower()
+    label = lower.split(":", 1)[0]
+    secret_keys = {
+        "openai_api_key",
+        "codex_api_key",
+        "codex_access_token",
+        "authorization",
+        "bearer_token",
+        "token",
+        "secret",
+    }
+    if "env var" in label:
+        raise ValueError("env var branch is not the fallback branch")
+    if ": " in detail:
+        _, value = detail.split(": ", 1)
+        if _doctor_output_is_safe_presence_value(value):
+            raise ValueError("safe presence branch is not the fallback branch")
+    if any(key in lower for key in secret_keys):
+        raise ValueError("secret-key branch is not the fallback branch")
+    return _doctor_output_redact_urls(detail)
+
+
+def _doctor_output_status_counts_from_display_statuses(
+    statuses: list[str], *, notes: int
+) -> dict[str, int]:
+    """Mirror Rust output.rs StatusCounts::from_report counting rules."""
+    counts = {"ok": 0, "idle": 0, "notes": notes, "warning": 0, "fail": 0}
+    for status in statuses:
+        if status == "ok":
+            counts["ok"] += 1
+        elif status == "idle":
+            counts["idle"] += 1
+        elif status == "warning":
+            counts["warning"] += 1
+        elif status == "fail":
+            counts["fail"] += 1
+        elif status in {"update", "note"}:
+            continue
+        else:
+            raise ValueError(f"unknown display status: {status}")
+    return counts
+
+
+def _doctor_output_bold_no_color(text: str) -> str:
+    """Mirror Rust output.rs bold when color is disabled."""
+    return text
+
+
+def _doctor_output_dim_no_color(text: str) -> str:
+    """Mirror Rust output.rs dim when color is disabled."""
+    return text
+
+
+def _doctor_output_detail_value_no_color(text: str) -> str:
+    """Mirror Rust output.rs detail_value when color is disabled."""
+    return text
+
+
+def _doctor_output_color256_no_color(text: str, code: int) -> str:
+    """Mirror Rust output.rs color256 when color is disabled."""
+    if not 0 <= code <= 255:
+        raise ValueError(f"xterm color code out of range: {code}")
+    return text
+
+
+def _doctor_output_green_no_color(text: str) -> str:
+    """Mirror Rust output.rs green when color is disabled."""
+    return _doctor_output_color256_no_color(text, 10)
+
+
+def _doctor_output_amber_no_color(text: str) -> str:
+    """Mirror Rust output.rs amber when color is disabled."""
+    return _doctor_output_color256_no_color(text, 220)
+
+
+def _doctor_output_orange_no_color(text: str) -> str:
+    """Mirror Rust output.rs orange when color is disabled."""
+    return _doctor_output_color256_no_color(text, 214)
+
+
+def _doctor_output_red_no_color(text: str) -> str:
+    """Mirror Rust output.rs red when color is disabled."""
+    return _doctor_output_color256_no_color(text, 196)
+
+
+def _doctor_output_cyan_no_color(text: str) -> str:
+    """Mirror Rust output.rs cyan when color is disabled."""
+    return _doctor_output_color256_no_color(text, 117)
+
+
+def _doctor_output_very_dim_no_color(text: str) -> str:
+    """Mirror Rust output.rs very_dim when color is disabled."""
+    return _doctor_output_color256_no_color(text, 238)
+
+
+def _doctor_output_detail_label_no_color(text: str) -> str:
+    """Mirror Rust output.rs detail_label when color is disabled."""
+    return _doctor_output_color256_no_color(text, 240)
+
+
+def _doctor_output_looks_copyable(text: str) -> bool:
+    """Mirror Rust output.rs looks_copyable."""
+    return text.startswith(("http://", "https://", "wss://", "~/", "/", "./", "../"))
+
+
+def _doctor_output_style_detail_token_plain_no_color(token: str) -> str:
+    """Mirror Rust output.rs style_detail_token for plain bare tokens without styling branches."""
+    trimmed = token.rstrip()
+    suffix = token[len(trimmed) :]
+    bare = trimmed.rstrip(",.:;)")
+    punctuation = trimmed[len(bare) :]
+    if not bare:
+        return f"{punctuation}{suffix}"
+    if (
+        bare == "<redacted>"
+        or "(missing)" in bare
+        or bare.startswith("--")
+        or _doctor_output_looks_copyable(bare)
+        or bare in {"ok", "B", "KB", "MB", "GB", "TB", "files", "file"}
+    ):
+        raise ValueError("this helper only covers plain unstyled detail tokens")
+    return f"{bare}{punctuation}{suffix}"
+
+
+def _doctor_output_style_detail_plain_text_plain_no_color(text: str) -> str:
+    """Mirror Rust output.rs style_detail_plain_text for plain unstyled text."""
+    out: list[str] = []
+    start = 0
+    for index, char in enumerate(text):
+        if char.isspace():
+            out.append(_doctor_output_style_detail_token_plain_no_color(text[start : index + 1]))
+            start = index + 1
+    if start < len(text):
+        out.append(_doctor_output_style_detail_token_plain_no_color(text[start:]))
+    return "".join(out)
+
+
+def _doctor_output_style_detail_text_plain_no_color(text: str) -> str:
+    """Mirror Rust output.rs style_detail_text for plain/no-color text."""
+    parts = text.split("`")
+    if not parts:
+        return ""
+    out = [_doctor_output_style_detail_plain_text_plain_no_color(parts[0])]
+    in_code = True
+    for part in parts[1:]:
+        if in_code:
+            out.append(_doctor_output_cyan_no_color(part))
+        else:
+            out.append(_doctor_output_style_detail_plain_text_plain_no_color(part))
+        in_code = not in_code
+    return "".join(out)
+
+
+
+def _doctor_output_style_detail_bare_token_unit_no_color(bare: str) -> str:
+    """Mirror Rust output.rs style_detail_bare_token unit-token no-color branch."""
+    if bare not in {"B", "KB", "MB", "GB", "TB", "files", "file"}:
+        raise ValueError("this helper only covers unit detail tokens")
+    return _doctor_output_dim_no_color(bare)
+
+
+def _doctor_output_style_detail_bare_token_ok_no_color(bare: str) -> str:
+    """Mirror Rust output.rs style_detail_bare_token ok-token no-color branch."""
+    if bare != "ok":
+        raise ValueError("this helper only covers the ok detail token")
+    return _doctor_output_green_no_color(bare)
+
+
+def _doctor_output_style_detail_bare_token_copyable_no_color(bare: str) -> str:
+    """Mirror Rust output.rs style_detail_bare_token flag/copyable no-color branch."""
+    if not (bare.startswith("--") or _doctor_output_looks_copyable(bare)):
+        raise ValueError("this helper only covers flag or copyable detail tokens")
+    return _doctor_output_cyan_no_color(bare)
+
+
+def _doctor_output_style_detail_bare_token_empty(bare: str) -> str:
+    """Mirror Rust output.rs style_detail_bare_token empty-token branch."""
+    if bare != "":
+        raise ValueError("this helper only covers the empty detail token")
+    return ""
+
+
+def _doctor_output_style_detail_bare_token_redacted_no_color(bare: str) -> str:
+    """Mirror Rust output.rs style_detail_bare_token <redacted> no-color branch."""
+    if bare != "<redacted>":
+        raise ValueError("this helper only covers the <redacted> detail token")
+    return _doctor_output_color256_no_color(bare, 244)
+
+
+def _doctor_output_style_detail_bare_token_falsy_no_color(bare: str) -> str:
+    """Mirror Rust output.rs style_detail_bare_token falsy/missing no-color branch."""
+    if "(missing)" not in bare and not _doctor_detail_is_falsy(bare):
+        raise ValueError("this helper only covers falsy or missing detail tokens")
+    return _doctor_output_color256_no_color(bare, 240)
+
+
+def _doctor_output_style_detail_bare_token_label_falsy_no_color(bare: str) -> str:
+    """Mirror Rust output.rs style_detail_bare_token label:falsy no-color branch."""
+    if ":" not in bare:
+        raise ValueError("this helper only covers label:value detail tokens")
+    label, value = bare.split(":", 1)
+    if not _doctor_detail_is_falsy(value):
+        raise ValueError("this helper only covers falsy detail token values")
+    return f"{label}:{_doctor_output_color256_no_color(value, 240)}"
+
+
+def _doctor_output_style_detail_bare_token_fallback_no_color(bare: str) -> str:
+    """Mirror Rust output.rs style_detail_bare_token fallback branch."""
+    if (
+        bare == ""
+        or bare == "<redacted>"
+        or "(missing)" in bare
+        or _doctor_detail_is_falsy(bare)
+        or bare == "ok"
+        or bare.startswith("--")
+        or _doctor_output_looks_copyable(bare)
+        or bare in {"B", "KB", "MB", "GB", "TB", "files", "file"}
+    ):
+        raise ValueError("this helper only covers fallback detail tokens")
+    if ":" in bare:
+        _, value = bare.split(":", 1)
+        if _doctor_detail_is_falsy(value):
+            raise ValueError("label:falsy branch is not the fallback branch")
+    return bare
+
+
+def _doctor_output_style_description_ok_idle_no_color(description: str, status: str) -> str:
+    """Mirror Rust output.rs style_description Ok/Idle branch with color disabled."""
+    if status not in {"ok", "idle"}:
+        raise ValueError("this helper only covers ok/idle description styling")
+    return _doctor_output_dim_no_color(_doctor_output_highlight_actions_no_color(description))
+
+
+def _doctor_output_style_description_update_no_color(description: str, status: str) -> str:
+    """Mirror Rust output.rs style_description Update branch with color disabled."""
+    if status != "update":
+        raise ValueError("this helper only covers update description styling")
+    return _doctor_output_amber_no_color(_doctor_output_highlight_actions_no_color(description))
+
+
+def _doctor_output_style_description_note_warning_fail_no_color(description: str, status: str) -> str:
+    """Mirror Rust output.rs style_description Note/Warning/Fail branch with color disabled."""
+    if status not in {"note", "warning", "fail"}:
+        raise ValueError("this helper only covers note/warning/fail description styling")
+    return _doctor_output_highlight_actions_no_color(description)
+
+
+def _doctor_output_style_note_summary_non_update_no_color(status: str, summary: str) -> str:
+    """Mirror Rust output.rs style_note_summary non-update path with color disabled."""
+    if status == "update":
+        raise ValueError("update status uses style_update_note_summary")
+    if status in {"ok", "idle"}:
+        return _doctor_output_style_description_ok_idle_no_color(summary, status)
+    if status in {"note", "warning", "fail"}:
+        return _doctor_output_style_description_note_warning_fail_no_color(summary, status)
+    raise ValueError(f"unknown display status: {status}")
+
+
+def _doctor_output_style_detail_bare_token_no_color(bare: str) -> str:
+    """Mirror Rust output.rs style_detail_bare_token branch order with color disabled."""
+    if bare == "":
+        return _doctor_output_style_detail_bare_token_empty(bare)
+    if bare == "<redacted>":
+        return _doctor_output_style_detail_bare_token_redacted_no_color(bare)
+    if "(missing)" in bare or _doctor_detail_is_falsy(bare):
+        return _doctor_output_style_detail_bare_token_falsy_no_color(bare)
+    if ":" in bare:
+        _, value = bare.split(":", 1)
+        if _doctor_detail_is_falsy(value):
+            return _doctor_output_style_detail_bare_token_label_falsy_no_color(bare)
+    if bare == "ok":
+        return _doctor_output_style_detail_bare_token_ok_no_color(bare)
+    if bare.startswith("--") or _doctor_output_looks_copyable(bare):
+        return _doctor_output_style_detail_bare_token_copyable_no_color(bare)
+    if bare in {"B", "KB", "MB", "GB", "TB", "files", "file"}:
+        return _doctor_output_style_detail_bare_token_unit_no_color(bare)
+    return _doctor_output_style_detail_bare_token_fallback_no_color(bare)
+
+
+def _doctor_output_style_detail_token_no_color(token: str) -> str:
+    """Mirror Rust output.rs style_detail_token with full no-color bare-token dispatch."""
+    trimmed = token.rstrip()
+    suffix = token[len(trimmed) :]
+    bare = trimmed.rstrip(",.:;)")
+    punctuation = trimmed[len(bare) :]
+    styled = _doctor_output_style_detail_bare_token_no_color(bare)
+    return f"{styled}{punctuation}{suffix}"
+
+
+def _doctor_output_style_detail_plain_text_no_color(text: str) -> str:
+    """Mirror Rust output.rs style_detail_plain_text with full no-color token dispatch."""
+    out: list[str] = []
+    start = 0
+    for index, char in enumerate(text):
+        if char.isspace():
+            out.append(_doctor_output_style_detail_token_no_color(text[start : index + 1]))
+            start = index + 1
+    if start < len(text):
+        out.append(_doctor_output_style_detail_token_no_color(text[start:]))
+    return "".join(out)
+
+
+def _doctor_output_style_detail_text_no_color(text: str) -> str:
+    """Mirror Rust output.rs style_detail_text with full no-color plain/code dispatch."""
+    parts = text.split("`")
+    if not parts:
+        return ""
+    out = [_doctor_output_style_detail_plain_text_no_color(parts[0])]
+    in_code = True
+    for part in parts[1:]:
+        if in_code:
+            out.append(_doctor_output_cyan_no_color(part))
+        else:
+            out.append(_doctor_output_style_detail_plain_text_no_color(part))
+        in_code = not in_code
+    return "".join(out)
+
+
+def _doctor_output_redact_detail(detail: str) -> str:
+    """Mirror Rust output.rs redact_detail branch order."""
+    lower = detail.lower()
+    label = lower.split(":", 1)[0]
+    if "env var" in label:
+        return _doctor_output_redact_detail_env_var_branch(detail)
+    if ": " in detail:
+        _, value = detail.split(": ", 1)
+        if _doctor_output_is_safe_presence_value(value):
+            return _doctor_output_redact_detail_safe_presence_branch(detail)
+    secret_keys = {
+        "openai_api_key",
+        "codex_api_key",
+        "codex_access_token",
+        "authorization",
+        "bearer_token",
+        "token",
+        "secret",
+    }
+    if any(key in lower for key in secret_keys):
+        return _doctor_output_redact_detail_secret_key_branch(detail)
+    return _doctor_output_redact_detail_fallback_branch(detail)
+
+
+def _doctor_output_style_description_no_color(description: str, status: str) -> str:
+    """Mirror Rust output.rs style_description branch order with color disabled."""
+    if status in {"ok", "idle"}:
+        return _doctor_output_style_description_ok_idle_no_color(description, status)
+    if status == "update":
+        return _doctor_output_style_description_update_no_color(description, status)
+    if status in {"note", "warning", "fail"}:
+        return _doctor_output_style_description_note_warning_fail_no_color(description, status)
+    raise ValueError(f"unknown display status: {status}")
+
+
+def _doctor_output_detailed_no_color_unicode_options() -> dict[str, bool]:
+    """Mirror Rust output.rs detailed_no_color_unicode_options test fixture."""
+    return {
+        "show_details": True,
+        "show_all": False,
+        "ascii": False,
+        "color_enabled": False,
+    }
+
+
+def _doctor_output_summary_no_color_unicode_options() -> dict[str, bool]:
+    """Mirror Rust output.rs summary_no_color_unicode_options test fixture."""
+    return {
+        "show_details": False,
+        "show_all": False,
+        "ascii": False,
+        "color_enabled": False,
+    }
+
+
+def _doctor_output_detailed_all_no_color_unicode_options() -> dict[str, bool]:
+    """Mirror Rust output.rs detailed_all_no_color_unicode_options test fixture."""
+    return {
+        "show_details": True,
+        "show_all": True,
+        "ascii": False,
+        "color_enabled": False,
+    }
+
+
+def _doctor_output_detailed_color_unicode_options() -> dict[str, bool]:
+    """Mirror Rust output.rs detailed_color_unicode_options test fixture."""
+    return {
+        "show_details": True,
+        "show_all": False,
+        "ascii": False,
+        "color_enabled": True,
+    }
+
+
+def _doctor_output_sample_report_check_metadata() -> dict[str, object]:
+    """Mirror Rust output.rs sample_report lightweight check metadata."""
+    return {
+        "schema_version": 1,
+        "generated_at": "0s since unix epoch",
+        "overall_status": "fail",
+        "codex_version": "0.0.0",
+        "checks": [
+            ("system.environment", "system", "ok"),
+            ("runtime.provenance", "runtime", "ok"),
+            ("installation", "install", "ok"),
+            ("runtime.search", "search", "ok"),
+            ("git.environment", "git", "ok"),
+            ("terminal.env", "terminal", "warning"),
+            ("terminal.title", "title", "ok"),
+            ("state.paths", "state", "ok"),
+            ("auth.credentials", "auth", "fail"),
+            ("updates.status", "updates", "ok"),
+            ("network.env", "network", "ok"),
+            ("network.websocket_reachability", "websocket", "ok"),
+            ("app_server.status", "app-server", "ok"),
+            ("network.provider_reachability", "reachability", "ok"),
+        ],
+    }
+
+
+def _doctor_output_sample_report_detail_metadata() -> dict[str, dict[str, object]]:
+    """Mirror Rust output.rs sample_report detail/remediation metadata."""
+    return {
+        "system.environment": {
+            "details": ["os: macOS 15.0", "os language: en-US"],
+            "remediation": None,
+        },
+        "git.environment": {
+            "details": [
+                "selected git: /usr/bin/git",
+                "git version: git version 2.54.0",
+                "repo detected: true",
+            ],
+            "remediation": None,
+        },
+        "terminal.title": {
+            "details": [
+                "terminal title source: default",
+                "terminal title items: activity, project-name",
+                "terminal title project value: codex",
+            ],
+            "remediation": None,
+        },
+        "auth.credentials": {
+            "details": ["OPENAI_API_KEY: present"],
+            "remediation": "Run `codex login`.",
+        },
+    }
+
+
+def _doctor_output_sample_report_status_counts(notes: int = 0) -> dict[str, int]:
+    """Mirror Rust output.rs sample_report status counts via StatusCounts::from_report."""
+    report = _doctor_output_sample_report_check_metadata()
+    statuses = [status for _, _, status in report["checks"]]
+    return _doctor_output_status_counts_from_display_statuses(statuses, notes=notes)
+
+
+def _doctor_output_sample_report_non_ok_notes() -> list[tuple[str, str]]:
+    """Mirror Rust output.rs sample_report non-ok notes generation."""
+    checks = [
+        {"status": "ok", "summary": "OS language en-US"},
+        {"status": "ok", "summary": "running local build on darwin-arm64"},
+        {"status": "ok", "summary": "installation looks consistent"},
+        {"status": "ok", "summary": "search is OK (bundled)"},
+        {"status": "ok", "summary": "git version 2.54.0"},
+        {"status": "warning", "summary": "narrow terminal"},
+        {"status": "ok", "summary": "terminal title default"},
+        {"status": "ok", "summary": "state paths inspectable"},
+        {"status": "fail", "summary": "token expired", "remediation": "Run `codex login`."},
+        {"status": "ok", "summary": "update configuration is locally consistent"},
+        {"status": "ok", "summary": "network environment readable"},
+        {"status": "ok", "summary": "Responses WebSocket handshake succeeded"},
+        {"status": "ok", "summary": "background server is not running"},
+        {"status": "ok", "summary": "active provider endpoints are reachable over HTTP"},
+    ]
+    return _doctor_output_non_ok_notes(checks)
+
+
+def _doctor_output_sample_report_summary_line(*, ascii_output: bool = False, notes: int = 0) -> str:
+    """Mirror Rust output.rs summary_line for sample_report counts."""
+    counts = _doctor_output_sample_report_status_counts(notes=notes)
+    return _doctor_output_summary_line_text(
+        ok=counts["ok"],
+        idle=counts["idle"],
+        notes=counts["notes"],
+        warning=counts["warning"],
+        fail=counts["fail"],
+        overall_status="fail",
+        ascii_output=ascii_output,
+    )
+
+
+def _doctor_output_summary_mode_footer_lines() -> list[str]:
+    """Mirror Rust output.rs summary-mode footer advice lines."""
+    return [
+        "Run codex doctor without --summary for detailed diagnostics.",
+        "--all expand truncated lists       --json redacted report",
+    ]
+
+
+def _doctor_output_sample_report_summary_notes_lines() -> list[str]:
+    """Mirror Rust output.rs summary output notes block for sample_report."""
+    return [
+        "Notes",
+        "   ⚠ terminal     narrow terminal",
+        "   ✗ auth         token expired - Run `codex login`.",
+    ]
+
+
+def _doctor_output_sample_report_summary_section_headings() -> list[str]:
+    """Mirror Rust output.rs summary output section heading order for sample_report."""
+    return [
+        "Environment",
+        "Configuration",
+        "Updates",
+        "Connectivity",
+        "Background Server",
+    ]
+
+
+def _doctor_output_sample_report_summary_environment_lines() -> list[str]:
+    """Mirror Rust output.rs summary output Environment rows for sample_report."""
+    return [
+        "  ✓ system       en-US",
+        "  ✓ runtime      running local build on darwin-arm64",
+        "  ✓ install      consistent",
+        "  ✓ search       search is OK (bundled)",
+        "  ✓ git          git version 2.54.0",
+        "  ⚠ terminal     narrow terminal",
+        "  ✓ title        default · project codex",
+        "  ✓ state        state paths inspectable",
+    ]
+
+def _doctor_output_sample_report_summary_updates_lines() -> list[str]:
+    """Mirror Rust output.rs summary output Updates rows for sample_report."""
+    return [
+        "  ✓ updates      update configuration is locally consistent",
+    ]
+
+def _doctor_output_sample_report_summary_connectivity_lines() -> list[str]:
+    """Mirror Rust output.rs summary output Connectivity rows for sample_report."""
+    return [
+        "  ✓ network      network environment readable",
+        "  ✓ websocket    Responses WebSocket handshake succeeded",
+        "  ✓ reachability active provider endpoints are reachable over HTTP",
+    ]
+
+def _doctor_output_sample_report_summary_background_server_lines() -> list[str]:
+    """Mirror Rust output.rs summary output Background Server rows for sample_report."""
+    return [
+        "  ✓ app-server   background server is not running",
+    ]
+
+def _doctor_output_sample_report_summary_configuration_lines() -> list[str]:
+    """Mirror Rust output.rs summary output Configuration rows for sample_report."""
+    return [
+        "  ✗ auth         token expired — Run `codex login`.",
+    ]
+
+def _doctor_output_sample_report_summary_section_blocks() -> list[tuple[str, list[str]]]:
+    """Mirror Rust output.rs summary output section blocks for sample_report."""
+    return [
+        ("Environment", _doctor_output_sample_report_summary_environment_lines()),
+        ("Configuration", _doctor_output_sample_report_summary_configuration_lines()),
+        ("Updates", _doctor_output_sample_report_summary_updates_lines()),
+        ("Connectivity", _doctor_output_sample_report_summary_connectivity_lines()),
+        ("Background Server", _doctor_output_sample_report_summary_background_server_lines()),
+    ]
+
+def _doctor_output_sample_report_summary_title_line() -> str:
+    """Mirror Rust output.rs summary output title line for sample_report."""
+    return "Codex Doctor v0.0.0"
+
+def _doctor_output_sample_report_summary_footer_summary_line() -> str:
+    """Mirror Rust output.rs summary output footer summary line for sample_report."""
+    return _doctor_output_sample_report_summary_line(notes=2)
+
+
+def _doctor_output_sample_report_summary_no_color_rendered() -> str:
+    """Mirror Rust output.rs render_human_report summary/no-color sample_report snapshot."""
+    separator = "─" * 61
+    lines: list[str] = [
+        _doctor_output_sample_report_summary_title_line(),
+        "",
+        *_doctor_output_sample_report_summary_notes_lines(),
+        separator,
+        "",
+    ]
+    for index, (heading, section_lines) in enumerate(
+        _doctor_output_sample_report_summary_section_blocks()
+    ):
+        if index:
+            lines.append("")
+        lines.append(heading)
+        lines.extend(section_lines)
+    lines.extend(
+        [
+            "",
+            separator,
+            _doctor_output_sample_report_summary_footer_summary_line(),
+            "",
+            *_doctor_output_summary_mode_footer_lines(),
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+def _doctor_output_summary_environment_threads_row() -> str:
+    """Mirror Rust output.rs summary row for state.rollout_db_parity in Environment."""
+    return "  ⚠ threads      rollout files and state DB thread inventory differ"
+
+def _doctor_output_state_health_summary_with_memories_db_lines() -> list[str]:
+    """Mirror Rust output.rs detailed state health summary including memories DB."""
+    return [
+        "✓ state        databases healthy",
+        "memories DB              /tmp/memories.sqlite · integrity ok",
+    ]
+
+def _doctor_output_sample_report_summary_ascii_rendered() -> str:
+    """Mirror Rust output.rs render_human_report summary/ascii sample_report snapshot."""
+    separator = "-" * 61
+    return "\n".join(
+        [
+            "Codex Doctor v0.0.0",
+            "",
+            "Notes",
+            "   [!!] terminal     narrow terminal",
+            "   [XX] auth         token expired - Run `codex login`.",
+            separator,
+            "",
+            "Environment",
+            "  [ok] system       en-US",
+            "  [ok] runtime      running local build on darwin-arm64",
+            "  [ok] install      consistent",
+            "  [ok] search       search is OK (bundled)",
+            "  [ok] git          git version 2.54.0",
+            "  [!!] terminal     narrow terminal",
+            "  [ok] title        default | project codex",
+            "  [ok] state        state paths inspectable",
+            "",
+            "Configuration",
+            "  [XX] auth         token expired - Run `codex login`.",
+            "",
+            "Updates",
+            "  [ok] updates      update configuration is locally consistent",
+            "",
+            "Connectivity",
+            "  [ok] network      network environment readable",
+            "  [ok] websocket    Responses WebSocket handshake succeeded",
+            "  [ok] reachability active provider endpoints are reachable over HTTP",
+            "",
+            "Background Server",
+            "  [ok] app-server   background server is not running",
+            "",
+            separator,
+            "12 ok | 2 notes | 1 warn | 1 fail failed",
+            "",
+            "Run codex doctor without --summary for detailed diagnostics.",
+            "--all expand truncated lists       --json redacted report",
+        ]
+    ) + "\n"
+
+def _doctor_output_sample_report_redacted_detail_lines() -> list[str]:
+    """Mirror Rust output.rs detailed sample_report redacted credential details."""
+    return [
+        "      OPENAI_API_KEY           present",
+    ]
+
+def _doctor_output_terminal_warning_issue_lines() -> list[str]:
+    """Mirror Rust output.rs detailed terminal warning issue rendering."""
+    return [
+        "⚠ terminal     width 79 cols - output may wrap (recommended >=80)",
+        "▸ terminal size            79x26 (expected >= 80 columns)",
+        "→ resize the window to at least 80 columns",
+    ]
+
+
+def _doctor_output_terminal_warning_issue_forbidden_summary() -> str:
+    """Mirror Rust output.rs terminal warning summary that must not be rendered."""
+    return "⚠ terminal     Ghostty 1.3.1"
+
+def _doctor_output_promoted_notes_without_status_change_lines() -> list[str]:
+    """Mirror Rust output.rs promoted notes rendering without changing statuses."""
+    return [
+        "Notes\n   ↑ updates",
+        "0.130.0 available (current 0.0.0, dismissed 0.128.0)",
+        "⚠ rollouts",
+        "⚠ sandbox",
+        "⚠ mcp",
+        "⚠ auth         mixed auth signals: ChatGPT login plus API key env var; HTTP reachability uses API-key mode",
+        "○ app-server   not running (ephemeral mode)",
+        "5 ok · 1 idle · 5 notes · 1 warn · 0 fail degraded",
+    ]

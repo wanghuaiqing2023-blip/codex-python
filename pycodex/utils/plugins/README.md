@@ -29,19 +29,17 @@ utils.plugins.plugin_skill_root_shape
 
 ## Current Status
 
-Status: module_completed_with_focused_validation.
+Status: complete.
 
-The Python package covers the Rust public exports from `src/lib.rs`:
-plaintext mention sigils, MCP connector name/ID helpers, plugin manifest
-discovery, plugin namespace resolution from skill paths, and `PluginSkillRoot`.
-Rust's namespace helper is async over `ExecutorFileSystem`; Python provides the
-standard-library local filesystem counterpart because the active port target
-does not implement the full plugin/MCP filesystem runtime.
+Certified modules:
 
-`pycodex.connectors.metadata.sanitize_name` remains an existing connector-crate
-compatibility export with the same slugging semantics. Callers do not need to
-move, but new `codex-utils-plugins`-coordinate work should import from this
-package.
+- `src/mention_syntax.rs`
+- `src/mcp_connector.rs`
+- `src/plugin_namespace.rs`
+- `src/lib.rs`
+
+The Python package already contains local counterparts for the Rust utility
+surface, including the crate-root re-export surface and `PluginSkillRoot`.
 
 ## Test Sources
 
@@ -58,11 +56,12 @@ Python parity tests:
 
 ```text
 tests/test_core_mention_syntax.py
+tests/test_utils_plugins_mcp_connector.py
+tests/test_utils_plugins_plugin_namespace.py
+tests/test_utils_plugins_lib.py
 ```
 
 ## Stop Rule
 
-This module contract is complete once `tests/test_core_mention_syntax.py` and
-the connector metadata focused tests pass. Do not rescan this slice unless a
-related test fails, Rust source changes, or a future task explicitly targets
-plugin utility behavior.
+This crate is complete after `src/lib.rs` crate-root certification and focused
+validation for the plugin utility package.

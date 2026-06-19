@@ -36,7 +36,7 @@ def summarize_sandbox_policy(sandbox_policy: Any) -> str:
 
 def summarize_permission_profile(permission_profile: Any, cwd: Path | str, workspace_roots: Iterable[Path | str]) -> str:
     try:
-        policy = _call_method(permission_profile, "to_legacy_sandbox_policy", Path(cwd))
+        policy = _call_method(permission_profile, "to_legacy_sandbox_policy", None, Path(cwd))
     except Exception:
         network = _call_method(permission_profile, "network_sandbox_policy", None)
         return "custom permissions (network access enabled)" if _network_enabled(network) else "custom permissions"

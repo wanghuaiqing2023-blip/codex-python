@@ -9,6 +9,7 @@ script is not a plain word-only command sequence.
 from __future__ import annotations
 
 import shlex
+import re
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -22,7 +23,14 @@ POWERSHELL_FLAGS = {"-nologo", "-noprofile", "-command", "-c"}
 def shlex_join(tokens: Sequence[str]) -> str:
     if any("\0" in token for token in tokens):
         return "<command included NUL byte>"
-    return shlex.join(list(tokens))
+    return " ".join(_display_quote_token(token) for token in tokens)
+
+
+def _display_quote_token(token: str) -> str:
+    quoted = shlex.quote(token)
+    if quoted == token and ((token.startswith("--") and "=" in token) or "," in token):
+        return "'" + token.replace("'", "'\"'\"'") + "'"
+    return quoted
 
 
 def _shlex_split(value: str) -> list[str] | None:
@@ -83,7 +91,7 @@ def parse_command(command: Sequence[str]) -> list[ParsedCommand]:
         if deduped and deduped[-1] == item:
             continue
         deduped.append(item)
-    if any(item.type == "unknown" for item in deduped):
+    if len(deduped) > 1 and any(item.type == "unknown" for item in deduped):
         return [_single_unknown_for_command(command)]
     return deduped
 
@@ -133,7 +141,10 @@ def parse_shell_lc_plain_commands(command: Sequence[str]) -> list[list[str]] | N
     extracted = extract_bash_command(command)
     if extracted is None:
         return None
-    tokens = _shlex_split(extracted[1])
+    script = extracted[1]
+    if _contains_unsupported_bash_plain_construct(script):
+        return None
+    tokens = _bash_plain_split(script)
     if tokens is None or _contains_unsupported_shell_token(tokens):
         return None
     if _has_empty_connector_segment(tokens):
@@ -142,6 +153,110 @@ def parse_shell_lc_plain_commands(command: Sequence[str]) -> list[list[str]] | N
     if not commands or any(not item for item in commands):
         return None
     return commands
+
+
+def _bash_plain_split(script: str) -> list[str] | None:
+    lexer = shlex.shlex(script, posix=True, punctuation_chars=";&|")
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    try:
+        return list(lexer)
+    except ValueError:
+        return None
+
+
+def _contains_unsupported_bash_plain_construct(script: str) -> bool:
+    if "`" in script or ";;" in script:
+        return True
+    if _has_unquoted_single_ampersand(script):
+        return True
+    if _has_unquoted_dollar_expansion(script):
+        return True
+    if _has_unquoted_shell_grouping_or_redirection(script):
+        return True
+    tokens = _bash_plain_split(script)
+    if tokens is None or not tokens:
+        return True
+    if tokens[0] in CONNECTORS or tokens[-1] in CONNECTORS:
+        return True
+    if tokens[0] == "env":
+        tokens = tokens[1:]
+        while tokens and _is_assignment_word(tokens[0]):
+            tokens = tokens[1:]
+        return not tokens
+    return _is_assignment_word(tokens[0])
+
+
+def _has_unquoted_shell_grouping_or_redirection(script: str) -> bool:
+    in_single = False
+    in_double = False
+    escaped = False
+    for char in script:
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char == "'" and not in_double:
+            in_single = not in_single
+            continue
+        if char == '"' and not in_single:
+            in_double = not in_double
+            continue
+        if not in_single and not in_double and char in "(){}<>":
+            return True
+    return False
+
+
+def _has_unquoted_single_ampersand(script: str) -> bool:
+    in_single = False
+    in_double = False
+    escaped = False
+    for index, char in enumerate(script):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char == "'" and not in_double:
+            in_single = not in_single
+            continue
+        if char == '"' and not in_single:
+            in_double = not in_double
+            continue
+        if char == "&" and not in_single and not in_double:
+            previous_is_amp = index > 0 and script[index - 1] == "&"
+            next_is_amp = index + 1 < len(script) and script[index + 1] == "&"
+            if not previous_is_amp and not next_is_amp:
+                return True
+    return False
+
+
+def _has_unquoted_dollar_expansion(script: str) -> bool:
+    in_single = False
+    escaped = False
+    for index, char in enumerate(script):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char == "'":
+            in_single = not in_single
+            continue
+        if char == "$" and not in_single:
+            next_char = script[index + 1] if index + 1 < len(script) else ""
+            if next_char == "" or next_char.isspace():
+                continue
+            return True
+    return False
+
+
+def _is_assignment_word(token: str) -> bool:
+    return re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token) is not None
 
 
 def parse_shell_lc_single_command_prefix(command: Sequence[str]) -> list[str] | None:
@@ -541,8 +656,8 @@ def parse_shell_lc_commands(original: Sequence[str]) -> list[ParsedCommand] | No
     if extracted is None:
         return None
     script = extracted[1]
-    script_tokens = _shlex_split(script)
-    if script_tokens is None or _contains_unsupported_shell_token(script_tokens):
+    script_tokens = _bash_plain_split(script)
+    if script_tokens is None or _contains_unsupported_bash_plain_construct(script):
         return [ParsedCommand.unknown(script)]
 
     all_commands = split_on_connectors(script_tokens) if contains_connectors(script_tokens) else [script_tokens]
@@ -608,6 +723,8 @@ def _with_shell_script_command(
             query=command.query,
             path=_path_as_str(command.path),
         )
+    if command.type == "unknown":
+        return ParsedCommand.unknown(script if had_connectors else shlex_join(script_tokens))
     return command
 
 

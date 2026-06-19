@@ -51,6 +51,8 @@ class Line:
         style: Any = None,
         alignment: Any = None,
     ) -> "Line":
+        if isinstance(spans, Span):
+            return cls((spans,), style=style, alignment=alignment)
         return cls(tuple(_coerce_span(span) for span in spans), style=style, alignment=alignment)
 
     def __iter__(self):

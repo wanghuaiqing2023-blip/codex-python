@@ -10,7 +10,6 @@ import errno
 import os
 import socket
 from datetime import datetime, timezone
-from hashlib import sha256
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import threading
 from pathlib import Path
@@ -21,6 +20,7 @@ import webbrowser
 import time
 from typing import Any, Mapping
 
+from pycodex.login.pkce import generate_pkce
 from pycodex.utils.home_dir import find_codex_home
 
 AUTH_FILE = "auth.json"
@@ -39,6 +39,25 @@ _CHATGPT_LOGIN_CALLBACK_PATH = "/auth/callback"
 _CHATGPT_LOGIN_WAIT_SECONDS = 5
 _CHATGPT_LOGIN_DEFAULT_PORT = 1455
 _CHATGPT_LOGIN_FALLBACK_PORT = 1457
+CHATGPT_LOGIN_DISABLED_MESSAGE = "ChatGPT login is disabled. Use API key login instead."
+API_KEY_LOGIN_DISABLED_MESSAGE = "API key login is disabled. Use ChatGPT login instead."
+ACCESS_TOKEN_LOGIN_DISABLED_MESSAGE = "Access token login is disabled. Use API key login instead."
+API_KEY_STDIN_EMPTY_MESSAGE = "No API key provided via stdin."
+ACCESS_TOKEN_STDIN_EMPTY_MESSAGE = "No access token provided via stdin."
+API_KEY_STDIN_TERMINAL_MESSAGE = (
+    "--with-api-key expects the API key on stdin. Try piping it, e.g. "
+    "`printenv OPENAI_API_KEY | codex login --with-api-key`."
+)
+ACCESS_TOKEN_STDIN_TERMINAL_MESSAGE = (
+    "--with-access-token expects the access token on stdin. Try piping it, e.g. "
+    "`printenv CODEX_ACCESS_TOKEN | codex login --with-access-token`."
+)
+API_KEY_STDIN_READING_MESSAGE = "Reading API key from stdin..."
+ACCESS_TOKEN_STDIN_READING_MESSAGE = "Reading access token from stdin..."
+LOGIN_SUCCESS_MESSAGE = "Successfully logged in"
+DEVICE_CODE_FALLBACK_MESSAGE = "Device code login is not enabled; falling back to browser login."
+LOGIN_LOG_FILENAME = "codex-login.log"
+LOGIN_LOG_DEFAULT_FILTER = "codex_cli=info,codex_core=info,codex_login=info"
 
 
 def _base64url_bytes(data: bytes) -> str:
@@ -46,9 +65,8 @@ def _base64url_bytes(data: bytes) -> str:
 
 
 def _build_pkce() -> tuple[str, str]:
-    verifier = _base64url_bytes(secrets.token_bytes(64))[:128]
-    challenge = _base64url_bytes(sha256(verifier.encode("ascii")).digest())
-    return verifier, challenge
+    pkce = generate_pkce()
+    return pkce.code_verifier, pkce.code_challenge
 
 
 def _build_login_authorize_url(
@@ -357,6 +375,193 @@ def safe_format_key(key: str) -> str:
     return f"{key[:8]}***{key[-5:]}"
 
 
+def print_login_server_start(stderr: Any, actual_port: int, auth_url: str) -> None:
+    print(
+        (
+            f"Starting local login server on http://localhost:{actual_port}.\n"
+            "If your browser did not open, navigate to this URL to authenticate:\n"
+            f"\n{auth_url}\n\n"
+            "On a remote or headless machine? Use `codex login --device-auth` instead."
+        ),
+        file=stderr,
+    )
+
+
+def login_disabled_message(login_method: str, forced_login_method: str | None) -> str | None:
+    """Return the forced-login-method disabled message for a login flow."""
+
+    normalized_login = login_method.replace("-", "_").lower()
+    normalized_forced = None if forced_login_method is None else forced_login_method.replace("-", "_").lower()
+    if normalized_login in {"chatgpt", "device_code", "device_code_fallback"} and normalized_forced == "api":
+        return CHATGPT_LOGIN_DISABLED_MESSAGE
+    if normalized_login == "api_key" and normalized_forced == "chatgpt":
+        return API_KEY_LOGIN_DISABLED_MESSAGE
+    if normalized_login == "access_token" and normalized_forced == "api":
+        return ACCESS_TOKEN_LOGIN_DISABLED_MESSAGE
+    return None
+
+
+def stdin_secret_from_text(buffer: str, empty_message: str) -> str:
+    """Return a trimmed stdin secret or raise the Rust empty-stdin message."""
+
+    if not isinstance(buffer, str):
+        raise TypeError("buffer must be a string")
+    secret = buffer.strip()
+    if not secret:
+        raise ValueError(empty_message)
+    return secret
+
+
+def stdin_secret_read_error_message(error: object) -> str:
+    """Return the Rust stderr line used when stdin reading fails."""
+
+    return f"Failed to read stdin: {error}"
+
+
+def api_key_from_stdin_text(buffer: str) -> str:
+    return stdin_secret_from_text(buffer, API_KEY_STDIN_EMPTY_MESSAGE)
+
+
+def access_token_from_stdin_text(buffer: str) -> str:
+    return stdin_secret_from_text(buffer, ACCESS_TOKEN_STDIN_EMPTY_MESSAGE)
+
+
+def stdin_secret_messages(secret_kind: str) -> tuple[str, str, str]:
+    """Return terminal, reading, and empty messages for a stdin login secret."""
+
+    normalized_kind = secret_kind.replace("-", "_").lower()
+    if normalized_kind == "api_key":
+        return (
+            API_KEY_STDIN_TERMINAL_MESSAGE,
+            API_KEY_STDIN_READING_MESSAGE,
+            API_KEY_STDIN_EMPTY_MESSAGE,
+        )
+    if normalized_kind == "access_token":
+        return (
+            ACCESS_TOKEN_STDIN_TERMINAL_MESSAGE,
+            ACCESS_TOKEN_STDIN_READING_MESSAGE,
+            ACCESS_TOKEN_STDIN_EMPTY_MESSAGE,
+        )
+    raise ValueError(f"Unknown stdin secret kind: {secret_kind}")
+
+
+def login_status_message(auth_mode: str | None, api_key: str | None = None) -> str:
+    """Return the Rust ``codex login status`` message for an auth mode."""
+
+    if auth_mode == AUTH_MODE_API_KEY:
+        if api_key is None:
+            raise ValueError("API key auth requires an API key")
+        return f"Logged in using an API key - {safe_format_key(api_key)}"
+    if auth_mode in {AUTH_MODE_CHATGPT, AUTH_MODE_CHATGPT_AUTH_TOKENS}:
+        return "Logged in using ChatGPT"
+    if auth_mode == AUTH_MODE_AGENT_IDENTITY:
+        return "Logged in using access token"
+    if auth_mode is None:
+        return "Not logged in"
+    raise ValueError(f"Unknown auth_mode value: {auth_mode}")
+
+
+def login_status_error_message(stage: str, error: Exception) -> str:
+    """Return the Rust ``codex login status`` stderr message for an error stage."""
+
+    normalized_stage = stage.replace("-", "_").lower()
+    if normalized_stage == "api_key_retrieval":
+        return f"Unexpected error retrieving API key: {error}"
+    if normalized_stage == "auth_status":
+        return f"Error checking login status: {error}"
+    raise ValueError(f"Unknown login status error stage: {stage}")
+
+
+def logout_status_message(logged_out: bool, error: Exception | None = None) -> str:
+    """Return the Rust ``codex logout`` status message."""
+
+    if error is not None:
+        return f"Error logging out: {error}"
+    return "Successfully logged out" if logged_out else "Not logged in"
+
+
+def login_result_message(login_method: str, error: Exception | None = None) -> str:
+    """Return the Rust login flow success/error message for a login method."""
+
+    if error is None:
+        return LOGIN_SUCCESS_MESSAGE
+    normalized_login = login_method.replace("-", "_").lower()
+    if normalized_login == "access_token":
+        return f"Error logging in with access token: {error}"
+    if normalized_login == "device_code":
+        return f"Error logging in with device code: {error}"
+    return f"Error logging in: {error}"
+
+
+def login_config_error_message(stage: str, error: Exception) -> str:
+    """Return the Rust login config-loading error message for ``stage``."""
+
+    normalized_stage = stage.replace("-", "_").lower()
+    if normalized_stage == "parse_overrides":
+        return f"Error parsing -c overrides: {error}"
+    if normalized_stage == "load_config":
+        return f"Error loading configuration: {error}"
+    raise ValueError(f"Unknown login config error stage: {stage}")
+
+
+def login_log_file_path(log_dir: str | Path) -> Path:
+    """Return the direct login flow log file path."""
+
+    return Path(log_dir) / LOGIN_LOG_FILENAME
+
+
+def login_log_default_filter(env_filter: str | None = None) -> str:
+    """Return the direct login tracing filter, falling back to Rust's default."""
+
+    if env_filter is not None and env_filter.strip():
+        return env_filter
+    return LOGIN_LOG_DEFAULT_FILTER
+
+
+def login_log_unix_file_mode(is_unix: bool | None = None) -> int | None:
+    """Return the Unix file mode Rust applies to the direct login log file."""
+
+    unix = (os.name != "nt") if is_unix is None else is_unix
+    return 0o600 if unix else None
+
+
+def login_log_open_options(is_unix: bool | None = None) -> dict[str, object]:
+    """Return the Rust direct login log OpenOptions contract."""
+
+    options: dict[str, object] = {"create": True, "append": True}
+    mode = login_log_unix_file_mode(is_unix=is_unix)
+    if mode is not None:
+        options["mode"] = mode
+    return options
+
+
+def login_log_warning_message(stage: str, error: Exception, path: str | Path | None = None) -> str:
+    """Return Rust direct-login file logging warning text."""
+
+    normalized_stage = stage.replace("-", "_").lower()
+    if normalized_stage == "resolve_log_dir":
+        return f"Warning: failed to resolve login log directory: {error}"
+    if normalized_stage == "create_log_dir":
+        if path is None:
+            raise ValueError("path is required for create_log_dir warning")
+        return f"Warning: failed to create login log directory {Path(path)}: {error}"
+    if normalized_stage == "open_log_file":
+        if path is None:
+            raise ValueError("path is required for open_log_file warning")
+        return f"Warning: failed to open login log file {Path(path)}: {error}"
+    if normalized_stage == "init_log_file":
+        if path is None:
+            raise ValueError("path is required for init_log_file warning")
+        return f"Warning: failed to initialize login log file {Path(path)}: {error}"
+    raise ValueError(f"Unknown login log warning stage: {stage}")
+
+
+def device_code_fallback_message(error_kind: str) -> str | None:
+    """Return the Rust device-code fallback message for unsupported device auth."""
+
+    return DEVICE_CODE_FALLBACK_MESSAGE if error_kind == "not_found" else None
+
+
 def resolve_auth_mode(auth: AuthDotJson) -> str:
     if auth.auth_mode is not None:
         mode = auth.auth_mode.replace("-", "").replace("_", "").lower()
@@ -435,17 +640,7 @@ def run_chatgpt_login(
             state=callback_state.expected_state,
         )
 
-        print(
-            f"Starting local login server on http://localhost:{port}.",
-            file=stderr,
-        )
-        print("If your browser did not open, navigate to this URL to authenticate:", file=stderr)
-        print()
-        print(auth_url, file=stderr)
-        print(
-            "\nOn a remote or headless machine? Use `codex login --device-auth` instead.",
-            file=stderr,
-        )
+        print_login_server_start(stderr, port, auth_url)
 
         server_thread = threading.Thread(daemon=True)
         serve_forever = getattr(server, "serve_forever", None)

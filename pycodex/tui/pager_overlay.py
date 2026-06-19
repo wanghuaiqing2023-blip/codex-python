@@ -257,8 +257,7 @@ class TranscriptOverlay:
         self.rebuild_renderables()
 
     def render(self, area: Rect) -> list[str]:
-        top = Rect(area.x, area.y, area.width, max(area.height - 3, 0))
-        return self.view.render(top)
+        return self.view.render(area)
 
 
 @dataclass
@@ -275,8 +274,7 @@ class StaticOverlay:
         return cls(PagerView.new(list(renderables), title, 0, keymap))
 
     def render(self, area: Rect) -> list[str]:
-        top = Rect(area.x, area.y, area.width, max(area.height - 3, 0))
-        return self.view.render(top)
+        return self.view.render(area)
 
     def is_done(self) -> bool:
         return self.is_done_flag

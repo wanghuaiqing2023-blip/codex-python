@@ -9,14 +9,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Iterable
 
+from pycodex.arg0 import Arg0DispatchPaths, CODEX_LINUX_SANDBOX_ARG0
 from pycodex.config import CliConfigOverrides
 from pycodex.protocol import AskForApproval, ProfileV2Name, ProfileV2NameParseError, SandboxMode
 from pycodex.protocol.config_types import ConfigTypeParseError
 
 
 UPSTREAM_EXEC_CLI = "codex/codex-rs/exec/src/cli.rs"
+UPSTREAM_EXEC_MAIN = "codex/codex-rs/exec/src/main.rs"
 FULL_AUTO_WARNING = "warning: `--full-auto` is deprecated; use `--sandbox workspace-write` instead."
 
 
@@ -105,6 +108,31 @@ class ExecCli:
 
     def cli_config_overrides(self) -> CliConfigOverrides:
         return CliConfigOverrides(list(self.config_overrides))
+
+
+@dataclass(frozen=True)
+class ExecMainDispatchPlan:
+    """Pure startup decision for Rust ``codex-exec`` ``src/main.rs``.
+
+    The Rust binary lets ``codex_arg0`` perform the process-level dispatch
+    before parsing the normal ``TopCli`` wrapper.  Python keeps this as a pure
+    plan so tests and callers can verify the selected branch without launching
+    the linux sandbox helper.
+    """
+
+    kind: str
+    argv: tuple[str, ...]
+    cli: ExecCli | None = None
+    arg0_paths: Arg0DispatchPaths = Arg0DispatchPaths()
+    upstream_source: str = UPSTREAM_EXEC_MAIN
+
+    @property
+    def is_exec(self) -> bool:
+        return self.kind == "exec"
+
+    @property
+    def is_linux_sandbox(self) -> bool:
+        return self.kind == "linux_sandbox"
 
 
 @dataclass
@@ -250,6 +278,34 @@ def parse_exec_args(argv: Iterable[str] | None = None, root_config_overrides: It
         index += 1
 
     return _finish_exec(state, prompt=prompt)
+
+
+def exec_main_dispatch_plan(
+    argv: Iterable[str] | None = None,
+    *,
+    arg0_paths: Arg0DispatchPaths | None = None,
+    root_config_overrides: Iterable[str] = (),
+) -> ExecMainDispatchPlan:
+    """Plan the Rust ``src/main.rs`` entrypoint branch for a full argv vector."""
+
+    tokens = tuple(argv or ())
+    argv0 = _argv0_name(tokens[0] if tokens else "")
+    paths = arg0_paths if arg0_paths is not None else Arg0DispatchPaths()
+
+    if argv0 == CODEX_LINUX_SANDBOX_ARG0:
+        return ExecMainDispatchPlan(kind="linux_sandbox", argv=tokens[1:], arg0_paths=paths)
+
+    return ExecMainDispatchPlan(
+        kind="exec",
+        argv=tokens[1:],
+        cli=parse_exec_args(tokens[1:], root_config_overrides=root_config_overrides),
+        arg0_paths=paths,
+    )
+
+
+def _argv0_name(argv0: str) -> str:
+    name = Path(argv0).name
+    return name[:-4] if name.lower().endswith(".exe") else name
 
 
 def _parse_resume_args(tokens: list[str], state: _ExecState) -> ResumeArgs:

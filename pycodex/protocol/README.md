@@ -64,5 +64,12 @@ Python tests should record Rust source comments when touched:
 
 ## Current Movement Status
 
-No code movement is required for the first structural pass. This README is the
-local map for future protocol alignment.
+`codex-protocol` is `complete` as of 2026-06-17. All current Rust protocol
+modules are recorded in `TEST_ALIGNMENT.md`, including `src/lib.rs` in
+`LIB_RS_STATUS.md`: the Python package root exports Rust's crate-root
+identifier/path types and maps every public Rust module to a Python sibling
+module, with `permissions.rs` intentionally merged into `models.py`.
+
+Focused protocol validation passed after functional module completion:
+`$files = Get-ChildItem tests -Filter 'test_protocol_*.py' | ForEach-Object { $_.FullName }; python -m pytest $files -q`
+-> `369 passed, 118 subtests passed`.

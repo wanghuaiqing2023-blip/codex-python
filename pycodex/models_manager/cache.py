@@ -109,7 +109,10 @@ class ModelsCacheManager:
             client_version=client_version,
             models=tuple(models),
         )
-        self.save_internal(cache)
+        try:
+            self.save_internal(cache)
+        except OSError:
+            return None
 
     def renew_cache_ttl(self) -> None:
         cache = self.load()
@@ -131,7 +134,10 @@ class ModelsCacheManager:
             return None
         except json.JSONDecodeError as exc:
             raise OSError(str(exc)) from exc
-        return ModelsCache.from_mapping(data)
+        try:
+            return ModelsCache.from_mapping(data)
+        except (TypeError, ValueError) as exc:
+            raise OSError(str(exc)) from exc
 
     def save_internal(self, cache: ModelsCache) -> None:
         if self.cache_path.parent:
@@ -143,6 +149,22 @@ class ModelsCacheManager:
         if cache is None:
             raise FileNotFoundError("cache not found")
         self.save_internal(mutate(cache))
+
+    def manipulate_cache_for_test(self, mutate: Callable[[datetime], datetime]) -> None:
+        cache = self.load()
+        if cache is None:
+            raise FileNotFoundError("cache not found")
+        self.save_internal(
+            ModelsCache(
+                fetched_at=mutate(cache.fetched_at),
+                etag=cache.etag,
+                client_version=cache.client_version,
+                models=cache.models,
+            )
+        )
+
+    def set_ttl(self, ttl: timedelta) -> None:
+        self.cache_ttl = ttl
 
     def _now(self) -> datetime:
         now = self.clock()

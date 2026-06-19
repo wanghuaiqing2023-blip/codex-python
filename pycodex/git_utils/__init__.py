@@ -1432,6 +1432,11 @@ def _ensure_str(value: object, name: str) -> None:
         raise TypeError(f"{name} must be a string")
 
 
+def _ensure_str_list(value: object, name: str) -> None:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise TypeError(f"{name} must be a list of strings")
+
+
 def _ensure_i64(value: object, name: str) -> None:
     if isinstance(value, bool) or not isinstance(value, int):
         raise TypeError(f"{name} must be an integer")

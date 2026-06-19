@@ -13,8 +13,12 @@ from __future__ import annotations
 import ctypes
 import os
 import platform
-import resource
 from typing import Iterable
+
+try:
+    import resource
+except ImportError:  # pragma: no cover - depends on host Python build.
+    resource = None  # type: ignore[assignment]
 
 
 PRCTL_FAILED_EXIT_CODE = 5
@@ -22,6 +26,7 @@ PTRACE_DENY_ATTACH_FAILED_EXIT_CODE = 6
 SET_RLIMIT_CORE_FAILED_EXIT_CODE = 7
 
 PR_SET_DUMPABLE = 4
+PT_DENY_ATTACH = 31
 
 
 def pre_main_hardening() -> None:
@@ -59,6 +64,10 @@ def pre_main_hardening_bsd() -> None:
 
 
 def pre_main_hardening_macos() -> None:
+    try:
+        deny_debugger_attach_macos()
+    except OSError as exc:
+        raise SystemExit(PTRACE_DENY_ATTACH_FAILED_EXIT_CODE) from exc
     set_core_file_size_limit_to_zero()
     remove_env_vars_with_prefix(b"DYLD_")
 
@@ -67,7 +76,17 @@ def pre_main_hardening_windows() -> None:
     return None
 
 
+def deny_debugger_attach_macos() -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    ret_code = libc.ptrace(PT_DENY_ATTACH, 0, None, 0)
+    if ret_code == -1:
+        errno = ctypes.get_errno()
+        raise OSError(errno, os.strerror(errno))
+
+
 def set_core_file_size_limit_to_zero() -> None:
+    if resource is None:
+        raise SystemExit(SET_RLIMIT_CORE_FAILED_EXIT_CODE)
     try:
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     except (OSError, ValueError) as exc:
@@ -97,7 +116,9 @@ def env_keys_with_prefix(vars: Iterable[tuple[bytes | str, bytes | str]], prefix
 __all__ = [
     "PRCTL_FAILED_EXIT_CODE",
     "PTRACE_DENY_ATTACH_FAILED_EXIT_CODE",
+    "PT_DENY_ATTACH",
     "SET_RLIMIT_CORE_FAILED_EXIT_CODE",
+    "deny_debugger_attach_macos",
     "disable_process_dumping",
     "env_keys_with_prefix",
     "pre_main_hardening",

@@ -124,7 +124,15 @@ class UpdateAvailableHistoryCell:
         ]
 
     def display_hyperlink_lines(self, width: int) -> list[HyperlinkLine]:
-        return annotate_web_urls(self.display_lines(width))
+        lines = annotate_web_urls(self.display_lines(width))
+        destinations = {
+            link.destination
+            for line in lines
+            for link in getattr(line, "hyperlinks", ())
+        }
+        if RELEASE_NOTES_URL not in destinations:
+            lines.append(annotate_web_urls([Line.from_text(RELEASE_NOTES_URL)])[0])
+        return lines
 
     def transcript_hyperlink_lines(self, width: int) -> list[HyperlinkLine]:
         return self.display_hyperlink_lines(width)

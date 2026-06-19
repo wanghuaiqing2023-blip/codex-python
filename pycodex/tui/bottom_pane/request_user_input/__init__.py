@@ -913,8 +913,12 @@ class RequestUserInputOverlay:
 
     def footer_tips(self) -> list[FooterTip]:
         tips: list[FooterTip] = []
-        if self.has_options() and self.selected_option_index() is not None and not self.notes_ui_visible():
-            tips.append(FooterTip.highlighted("tab to add notes"))
+        notes_visible = self.notes_ui_visible()
+        if self.has_options():
+            if self.selected_option_index() is not None and not notes_visible:
+                tips.append(FooterTip.highlighted("tab to add notes"))
+            if self.selected_option_index() is not None and notes_visible:
+                tips.append(FooterTip.new("tab or esc to clear notes"))
         submit = self.composer_submit_keys[0] if self.focus_is_notes() or not self.has_options() else "enter"
         if self.question_count() == 1:
             tips.append(FooterTip.highlighted(f"{submit} to submit answer"))
@@ -922,7 +926,10 @@ class RequestUserInputOverlay:
             last = self.current_idx + 1 >= self.question_count()
             tips.append(FooterTip.highlighted(f"{submit} to submit all") if last else FooterTip.new(f"{submit} to submit answer"))
         if self.question_count() > 1:
-            tips.append(FooterTip.new("ctrl + p / ctrl + n change question") if not self.has_options() else FooterTip.new("left/right to navigate questions"))
+            if self.has_options() and not self.focus_is_notes():
+                tips.append(FooterTip.new("←/→ to navigate questions"))
+            elif not self.has_options():
+                tips.append(FooterTip.new("ctrl + p / ctrl + n change question"))
         if self.interrupt_turn_keys:
             tips.append(FooterTip.new(f"{self.interrupt_turn_keys[0]} to interrupt"))
         return tips

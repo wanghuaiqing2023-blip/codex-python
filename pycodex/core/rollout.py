@@ -8,29 +8,56 @@ preserves the core module coordinate without duplicating that implementation.
 
 from __future__ import annotations
 
-from enum import Enum
-
-from pycodex.protocol import SessionSource
 from pycodex.rollout import (
     ARCHIVED_SESSIONS_SUBDIR,
+    Anchor,
+    INTERACTIVE_SESSION_SOURCES,
     SESSIONS_SUBDIR,
+    Config,
     Cursor,
+    EventPersistenceMode,
     RolloutRecorder,
     RolloutRecorderParams,
+    RolloutWriterState,
+    RolloutConfig,
+    SqliteMetricsRecorder,
     SessionMeta,
+    SortDirection,
     ThreadItem,
     ThreadsPage,
     ThreadSortKey,
     append_thread_name,
+    apply_rollout_items,
+    bounded_originator_tag_value,
+    cursor_to_anchor,
+    fill_missing_thread_item_metadata,
+    find_rollout_path_by_id,
+    first_rollout_content_match_snippet,
     find_archived_thread_path_by_id_str,
     find_thread_meta_by_name_str,
     find_thread_name_by_id,
     find_thread_names_by_ids,
     find_thread_path_by_id_str,
+    init_state_runtime_with_backfill,
+    is_persisted_rollout_item,
+    list_thread_ids_db,
+    list_threads_db,
+    list_threads_from_state_metadata,
     parse_cursor,
+    persisted_rollout_items,
     read_head_for_summary,
+    read_repair_rollout_path,
     read_session_meta_line,
     rollout_date_parts,
+    search_rollout_paths,
+    should_persist_event_msg,
+    should_persist_response_item,
+    should_persist_response_item_for_memories,
+    sqlite_metrics_recorder,
+    thread_item_from_state_metadata,
+    mark_thread_memory_mode_polluted,
+    touch_thread_updated_at,
+    with_originator,
 )
 from pycodex.core.session_rollout_init_error import map_session_init_error
 from pycodex.core.thread_rollout_truncation import (
@@ -38,53 +65,61 @@ from pycodex.core.thread_rollout_truncation import (
     truncate_rollout_to_last_n_fork_turns,
 )
 
-INTERACTIVE_SESSION_SOURCES = (
-    SessionSource.cli(),
-    SessionSource.vscode(),
-    SessionSource.custom_source("atlas"),
-    SessionSource.custom_source("chatgpt"),
-)
-
-
-class SortDirection(str, Enum):
-    ASC = "asc"
-    DESC = "desc"
-
-
-class EventPersistenceMode(str, Enum):
-    LIMITED = "limited"
-    EXTENDED = "extended"
-    NONE = "none"
-
-
 find_conversation_path_by_id_str = find_thread_path_by_id_str
 
 
 __all__ = [
     "ARCHIVED_SESSIONS_SUBDIR",
+    "Anchor",
+    "Config",
     "Cursor",
     "EventPersistenceMode",
     "INTERACTIVE_SESSION_SOURCES",
     "SESSIONS_SUBDIR",
     "RolloutRecorder",
     "RolloutRecorderParams",
+    "RolloutWriterState",
+    "RolloutConfig",
+    "SqliteMetricsRecorder",
     "SessionMeta",
     "SortDirection",
     "ThreadItem",
     "ThreadSortKey",
     "ThreadsPage",
     "append_thread_name",
+    "apply_rollout_items",
+    "bounded_originator_tag_value",
+    "cursor_to_anchor",
+    "fill_missing_thread_item_metadata",
+    "find_rollout_path_by_id",
+    "first_rollout_content_match_snippet",
     "find_archived_thread_path_by_id_str",
     "find_conversation_path_by_id_str",
     "find_thread_meta_by_name_str",
     "find_thread_name_by_id",
     "find_thread_names_by_ids",
     "find_thread_path_by_id_str",
+    "init_state_runtime_with_backfill",
+    "is_persisted_rollout_item",
+    "list_thread_ids_db",
+    "list_threads_db",
+    "persisted_rollout_items",
+    "list_threads_from_state_metadata",
     "map_session_init_error",
     "parse_cursor",
     "read_head_for_summary",
+    "read_repair_rollout_path",
     "read_session_meta_line",
     "rollout_date_parts",
+    "search_rollout_paths",
+    "should_persist_event_msg",
+    "should_persist_response_item",
+    "should_persist_response_item_for_memories",
+    "sqlite_metrics_recorder",
+    "thread_item_from_state_metadata",
+    "mark_thread_memory_mode_polluted",
+    "touch_thread_updated_at",
+    "with_originator",
     "truncate_rollout_before_nth_user_message_from_start",
     "truncate_rollout_to_last_n_fork_turns",
 ]

@@ -39,7 +39,7 @@ class HistoryEntry:
 
     @classmethod
     def new(cls, text: str) -> "HistoryEntry":
-        decoded = decode_history_mentions(text)
+        decoded = decode_history_mentions(text, preserve_plugin_sigil=True)
         return cls(
             text=decoded.text,
             mention_bindings=[

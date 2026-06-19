@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -130,18 +131,26 @@ def _variant_name(value: Any) -> str:
     for attr in ("kind", "type", "variant"):
         raw = getattr(value, attr, None)
         if raw is not None:
-            return str(getattr(raw, "value", raw)).lower()
+            return _normalize_variant_name(str(getattr(raw, "value", raw)))
     if isinstance(value, Mapping):
         for key in ("kind", "type", "variant"):
             if key in value:
-                return str(value[key]).lower()
-    return value.__class__.__name__.lower()
+                return _normalize_variant_name(str(value[key]))
+    return _normalize_variant_name(value.__class__.__name__)
 
 
 def _status_code(value: Any) -> str:
     code = getattr(value, "value", value)
     code = getattr(code, "status_code", code)
     return str(code)
+
+
+def _normalize_variant_name(value: str) -> str:
+    if not value:
+        return ""
+    with_separators = value.replace("-", "_").replace(" ", "_")
+    with_separators = re.sub(r"(?<!^)(?=[A-Z])", "_", with_separators)
+    return with_separators.lower()
 
 
 __all__ = [

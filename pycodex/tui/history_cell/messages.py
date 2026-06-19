@@ -248,7 +248,7 @@ class ReasoningSummaryCell:
     def raw_lines(self) -> list[Line]:
         if self.transcript_only:
             return []
-        return raw_lines_from_source(self.content.strip())
+        return raw_lines_from_source(self.content)
 
 
 @dataclass
