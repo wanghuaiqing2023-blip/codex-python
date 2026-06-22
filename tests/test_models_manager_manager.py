@@ -99,6 +99,7 @@ def test_build_available_models_filters_api_only_when_not_codex_backend() -> Non
     assert [preset.model for preset in build_available_models((chatgpt_only, api_model), uses_codex_backend=False)] == [
         "api-model",
     ]
+    assert [preset.model for preset in build_available_models((chatgpt_only, api_model))] == ["api-model"]
 
 
 def test_static_models_manager_lists_and_gets_defaults() -> None:
@@ -108,6 +109,20 @@ def test_static_models_manager_lists_and_gets_defaults() -> None:
     assert asyncio.run(manager.get_default_model()) == "visible"
     assert asyncio.run(manager.get_default_model("explicit")) == "explicit"
     assert [model.slug for model in manager.try_get_remote_models()] == ["visible"]
+
+
+def test_static_models_manager_without_auth_filters_to_api_supported_models() -> None:
+    # Rust source: auth_manager().is_some_and(...) is false when no auth manager exists.
+    manager = StaticModelsManager(
+        model_catalog=ModelsResponse(
+            (
+                visible_model("chatgpt-only", priority=0, supported_in_api=False),
+                visible_model("api-model", priority=1),
+            )
+        )
+    )
+
+    assert [preset.model for preset in asyncio.run(manager.list_models(RefreshStrategy.ONLINE))] == ["api-model"]
 
 
 def test_managers_list_builtin_collaboration_modes(tmp_path) -> None:
@@ -202,6 +217,38 @@ def test_cached_models_manager_uses_cached_remote_only_catalog_for_chatgpt_auth(
     asyncio.run(cached_manager.list_models(RefreshStrategy.ONLINE_IF_UNCACHED))
 
     assert cached_manager.get_remote_models() == remote
+    assert calls["count"] == 1
+
+
+def test_cached_models_manager_merges_cached_models_for_api_auth(tmp_path) -> None:
+    # Rust source: try_load_cache applies cache models through apply_remote_models,
+    # so API auth keeps bundled models and merges cached remote entries.
+    remote = (visible_model("cached-api-visible", priority=0),)
+    calls = {"count": 0}
+
+    def fetch():
+        calls["count"] += 1
+        return ModelsResponse(remote), None
+
+    manager = CachedModelsManager(
+        tmp_path,
+        fetch,
+        auth_manager=FakeAuthManager("api_key"),
+        has_command_auth=True,
+        uses_codex_backend=False,
+    )
+    asyncio.run(manager.list_models(RefreshStrategy.ONLINE_IF_UNCACHED))
+
+    cached_manager = CachedModelsManager(
+        tmp_path,
+        fetch,
+        auth_manager=FakeAuthManager("api_key"),
+        has_command_auth=True,
+        uses_codex_backend=False,
+    )
+    asyncio.run(cached_manager.list_models(RefreshStrategy.ONLINE_IF_UNCACHED))
+
+    assert cached_manager.get_remote_models() == (*load_remote_models_from_file(), *remote)
     assert calls["count"] == 1
 
 
@@ -380,3 +427,15 @@ def test_cached_models_manager_refreshes_etag_only_on_change(tmp_path) -> None:
 
     asyncio.run(manager.refresh_models_etag("new-etag"))
     assert calls["count"] == 2
+
+
+def test_cached_models_manager_same_etag_missing_cache_does_not_raise(tmp_path) -> None:
+    # Rust source: refresh_if_new_etag logs renew_cache_ttl errors and returns.
+    manager = CachedModelsManager(
+        tmp_path,
+        lambda: ModelsResponse((visible_model("remote"),)),
+        client_version="1.2.3",
+    )
+    manager.etag = "etag"
+
+    asyncio.run(manager.refresh_models_etag("etag"))

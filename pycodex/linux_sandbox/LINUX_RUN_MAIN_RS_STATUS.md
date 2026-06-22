@@ -4,7 +4,7 @@ Rust module: `codex/codex-rs/linux-sandbox/src/linux_run_main.rs`
 
 Python module: `pycodex/linux_sandbox/linux_run_main.py`
 
-Status: `complete_candidate`
+Status: `complete`
 
 Implemented behavior:
 
@@ -21,6 +21,12 @@ Implemented behavior:
   `codex-linux-sandbox` argv0 insertion/fallback behavior.
 - Proc-mount failure classification and `run_main()` dispatch to injectable
   bwrap, proxy-route, Landlock, and exec runtime boundaries.
+- Managed proxy mode fail-closed preflight errors propagate through the
+  `plan_linux_run_main()` entry path when proxy environment variables are
+  missing or not parseable as loopback endpoints.
+- Managed proxy bwrap outer-stage planning accepts an injected prepared route
+  spec, passes it to the inner seccomp helper, and keeps bwrap network
+  isolation enabled.
 
 Validation:
 
@@ -28,7 +34,11 @@ Validation:
   passed.
 - `python -m pytest tests/test_linux_sandbox_linux_run_main_rs.py -q`
   passed (`14 passed`).
-- Crate-focused `python -m pytest @files -q` over `tests/test_linux_sandbox_*.py`
-  was attempted after all functional modules were present: `77 passed, 12
-  failed`. Failures are currently in sibling modules `bundled_bwrap`, `bwrap`,
-  and `proxy_routing`, so crate completion remains validation-pending.
+- `C:\Program Files\Maxon Cinema 4D 2025\resource\modules\python\libs\win64\python.exe -m unittest tests.test_linux_sandbox_linux_run_main_rs -v`
+  passed on 2026-06-20 (`17 tests`).
+- 2026-06-20 direct runner over all `tests/test_linux_sandbox_*.py` functions
+  and unittest methods passed with `95 passed, 0 failed, 0 unsupported` under
+  the available Python 3.11.4 runtime.
+- `python -m pytest tests/test_linux_sandbox_linux_run_main_rs.py -q --tb=short`
+  passed on 2026-06-20 with `17 passed`.
+- Crate-level validation is recorded in `TEST_ALIGNMENT.md`.

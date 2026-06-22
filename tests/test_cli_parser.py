@@ -31,12 +31,16 @@ from pycodex.cli.features import (
 from pycodex.cli.parser import (
     CliParseError,
     _collect_cloud_attempt_diffs,
+    _parse_mcp_env_pair,
     _print_local_app_server_connect_hint,
     _read_responses_api_auth_header,
     _resolve_exec_remote_endpoint,
+    _remote_control_human_lines,
+    _remote_control_start_human_message,
     _run_cloud_command,
     _run_stdio_to_uds,
     _select_cloud_attempt_diff,
+    _validate_mcp_server_name,
     default_reachability_plan,
     main,
     parse_args,
@@ -171,6 +175,24 @@ class TopLevelCliParserTests(unittest.TestCase):
         with self.assertRaisesRegex(CliParseError, "mcp add requires --url or command."):
             parse_args(["mcp", "add", "acme"])
 
+    def test_mcp_env_pair_matches_rust(self):
+        # Rust parity: codex-cli/src/mcp_cmd.rs parse_env_pair.
+        self.assertEqual(_parse_mcp_env_pair(" TOKEN =abc"), ("TOKEN", "abc"))
+        self.assertEqual(_parse_mcp_env_pair("TOKEN="), ("TOKEN", ""))
+        with self.assertRaisesRegex(RuntimeError, "environment entries must be in KEY=VALUE form"):
+            _parse_mcp_env_pair("TOKEN")
+        with self.assertRaisesRegex(RuntimeError, "environment entries must be in KEY=VALUE form"):
+            _parse_mcp_env_pair(" =abc")
+
+    def test_mcp_server_name_validation_matches_rust(self):
+        # Rust parity: codex-cli/src/mcp_cmd.rs validate_server_name.
+        for name in ("acme", "acme_1", "acme-1", "A1"):
+            _validate_mcp_server_name(name)
+        for name in ("", "bad.name", "bad/name", "bad name", "é"):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(RuntimeError, "invalid server name"):
+                    _validate_mcp_server_name(name)
+
     def test_parse_plugin_marketplace_add_supports_sparse_and_ref(self):
         parsed = parse_args(
             ["plugin", "marketplace", "add", "acme", "--sparse", "pkg1", "pkg2", "--ref", "main"]
@@ -196,6 +218,13 @@ class TopLevelCliParserTests(unittest.TestCase):
         ):
             parse_args(["plugin", "marketplace", "upgrade", "primary", "secondary"])
 
+    def test_parse_plugin_marketplace_remove_matches_rust(self):
+        # Rust parity: codex-cli/src/marketplace_cmd.rs remove_subcommand_parses_marketplace_name.
+        self.assertEqual(
+            parse_args(["plugin", "marketplace", "remove", "debug"]).command_args,
+            ("marketplace", "remove", "debug"),
+        )
+
     def test_parse_plugin_add_accepts_marketplace_short_flag_and_explicit_marketplace_match(self):
         self.assertEqual(
             parse_args(["plugin", "add", "acme@debug", "-m", "debug"]).command_args,
@@ -208,6 +237,43 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertEqual(
             parse_args(["plugin", "list", "-m", "debug"]).command_args,
             ("list", "-m", "debug"),
+        )
+
+    def test_plugin_selector_requires_marketplace_like_rust(self):
+        # Rust parity: codex-cli/src/plugin_cmd.rs parse_plugin_selection.
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous = os.environ.get("CODEX_HOME")
+            os.environ["CODEX_HOME"] = tmpdir
+            try:
+                code = main(["plugin", "remove", "sample"], stderr=stderr)
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        self.assertEqual(code, 2)
+        self.assertIn("plugin requires --marketplace unless passed as <plugin>@<marketplace>", stderr.getvalue())
+
+    def test_plugin_selector_rejects_marketplace_mismatch_like_rust(self):
+        # Rust parity: codex-cli/src/plugin_cmd.rs parse_plugin_selection.
+        stderr = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            previous = os.environ.get("CODEX_HOME")
+            os.environ["CODEX_HOME"] = tmpdir
+            try:
+                code = main(["plugin", "remove", "sample@debug", "--marketplace", "primary"], stderr=stderr)
+            finally:
+                if previous is None:
+                    os.environ.pop("CODEX_HOME", None)
+                else:
+                    os.environ["CODEX_HOME"] = previous
+
+        self.assertEqual(code, 2)
+        self.assertIn(
+            "plugin id `sample@debug` belongs to marketplace `debug`, but --marketplace specified `primary`",
+            stderr.getvalue(),
         )
 
     def test_parse_remote_control_allows_json_with_start(self):
@@ -252,6 +318,41 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertEqual(
             parse_args(["remote-control", "stop", "--json"]).command_args,
             ("stop", "--json"),
+        )
+
+    def test_remote_control_human_start_messages_match_rust(self):
+        # Rust parity: codex-cli/src/remote_control_cmd.rs remote_control_human_start_messages_use_server_name.
+        self.assertEqual(
+            _remote_control_start_human_message("connected", "owen-mbp"),
+            "This machine is available for remote control as owen-mbp.",
+        )
+        self.assertEqual(
+            _remote_control_start_human_message("connecting", "owen-mbp"),
+            "Remote control is enabled on owen-mbp and still connecting.",
+        )
+        self.assertEqual(
+            _remote_control_start_human_message("errored", "owen-mbp"),
+            "Remote control is enabled on owen-mbp but the connection is errored.",
+        )
+        self.assertEqual(
+            _remote_control_start_human_message("disabled", "owen-mbp"),
+            "Remote control is disabled on owen-mbp.",
+        )
+
+    def test_remote_control_human_lines_match_rust_foreground_hint(self):
+        # Rust parity: codex-cli/src/remote_control_cmd.rs remote_control_human_lines_include_foreground_stop_hint_only.
+        summary = {"status": "connected", "server_name": "owen-mbp"}
+
+        self.assertEqual(
+            _remote_control_human_lines(summary, "foreground"),
+            [
+                "This machine is available for remote control as owen-mbp.",
+                "Press Ctrl-C to stop.",
+            ],
+        )
+        self.assertEqual(
+            _remote_control_human_lines(summary, "daemon"),
+            ["This machine is available for remote control as owen-mbp."],
         )
 
     def test_parse_debug_models_allows_bundled_flag(self):
@@ -683,7 +784,13 @@ class TopLevelCliParserTests(unittest.TestCase):
                 self.assertEqual(parsed_request["url"], "/v1/responses")
                 self.assertEqual(parsed_request["body"], {"model": "gpt-5"})
                 self.assertEqual(parsed_response["status"], 200)
-                self.assertEqual(parsed_response["headers"][0]["name"].lower(), "content-type")
+                # Rust codex-responses-api-proxy/src/lib.rs only skips headers
+                # managed by tiny_http, so upstream Server/Date headers may
+                # remain before Content-Type in the dump.
+                self.assertIn(
+                    {"name": "Content-Type", "value": "application/json"},
+                    parsed_response["headers"],
+                )
                 self.assertEqual(parsed_response["body"], {"status": "ok", "model": "tests"})
             finally:
                 upstream_server.shutdown()

@@ -725,6 +725,7 @@ def _remove_git_metadata(root: Path) -> None:
 
 
 def _commit_current_tree(root: Path, message: str) -> None:
+    run_git_for_status(root, ("config", "core.autocrlf", "false"))
     run_git_for_status(root, ("add", "-A"))
     run_git_for_status(
         root,

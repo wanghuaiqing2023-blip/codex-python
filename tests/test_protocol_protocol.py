@@ -214,6 +214,34 @@ class ProtocolProtocolTests(unittest.TestCase):
         self.assertEqual(response.to_mapping(), {"answers": {"choice": {"answers": ["A"]}}})
         self.assertEqual(event.to_mapping()["turn_id"], "")
 
+        secret_other = RequestUserInputQuestion.from_mapping(
+            {
+                "id": "secret",
+                "header": "Token",
+                "question": "Paste it",
+                "isOther": True,
+                "isSecret": True,
+            }
+        )
+        self.assertTrue(secret_other.is_other)
+        self.assertTrue(secret_other.is_secret)
+        self.assertIsNone(secret_other.options)
+        self.assertEqual(
+            RequestUserInputArgs.from_mapping({"questions": [secret_other.to_mapping()]}),
+            RequestUserInputArgs((secret_other,)),
+        )
+        self.assertEqual(
+            RequestUserInputAnswer.from_mapping({"answers": ["A", "note"]}),
+            RequestUserInputAnswer(("A", "note")),
+        )
+        self.assertEqual(RequestUserInputResponse.from_mapping(response.to_mapping()), response)
+        self.assertEqual(
+            RequestUserInputEvent.from_mapping(
+                {"call_id": "call-1", "questions": [secret_other.to_mapping()]}
+            ),
+            RequestUserInputEvent("call-1", (secret_other,)),
+        )
+
     def test_request_user_input_rejects_non_rust_shapes(self):
         with self.assertRaisesRegex(TypeError, "label must be a string"):
             RequestUserInputQuestionOption(123, "description")

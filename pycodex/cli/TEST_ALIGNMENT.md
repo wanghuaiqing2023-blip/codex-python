@@ -3632,3 +3632,31 @@ This ledger records Rust module-scoped behavior contracts for `codex-cli` that a
 - Python tests added: none in this turn; this is a module status reconciliation over existing helper coverage and the newly separated nested-module ledgers.
 - Remaining gaps: no known parent `src/debug_sandbox.rs` module-owned behavior gap remains outside deferred crate-level validation; native kqueue/log-stream fidelity is tracked by nested module status files.
 - Validation: not run; current crate automation defers actual pytest execution until `codex-cli` functional code is complete.
+
+### src/doctor.rs Responses WebSocket probe dispatch
+
+- Rust crate/module: `codex-cli` / `src/doctor.rs`.
+- Rust anchors advanced: `websocket_reachability_check` constructs a
+  `ResponsesWebsocketClient`, inserts
+  `OpenAI-Beta: responses_websockets=2026-02-06`, and calls
+  `ResponsesWebsocketClient::probe_handshake(...)` from
+  `codex-api/src/endpoint/responses_websocket.rs`.
+- Python parity: `pycodex/cli/doctor_updates.py::doctor_websocket_check`
+  now dispatches real probes through
+  `pycodex.codex_api.endpoint.responses_websocket.ResponsesWebsocketClient`
+  instead of bypassing the `codex-api` client boundary with the generic
+  websocket helper. The existing doctor output shape is preserved.
+- Python tests: `tests/test_cli_doctor_updates.py` websocket doctor tests now
+  intercept `doctor_updates.responses_connect_websocket` at the codex-api
+  connector boundary and verify beta headers, API-key auth, timeout forwarding,
+  DNS detail preservation, endpoint query preservation through
+  `Provider::websocket_url_for_path("responses")`, `websocket_error_detail`
+  `ApiError` formatting, immediate close reporting, and timeout warnings.
+- Validation: `python -m pytest tests/test_cli_doctor_updates.py -k "doctor_websocket_check or websocket_probe_warning or dns_address_family_details" -q --tb=short`
+  passed on 2026-06-21 with `9 passed, 433 deselected`.
+- Validation: `python -m pytest tests/test_cli_doctor_updates.py -k "websocket_error_detail or doctor_websocket_check or websocket_probe_warning or dns_address_family_details" -q --tb=short`
+  passed on 2026-06-21 with `12 passed, 433 deselected`.
+- Validation: `python -m pytest tests/test_cli_doctor_updates.py -q --tb=short`
+  passed on 2026-06-21 with `445 passed, 32 subtests passed`.
+- Validation: `python -m py_compile pycodex/cli/doctor_updates.py tests/test_cli_doctor_updates.py`
+  passed on 2026-06-21.

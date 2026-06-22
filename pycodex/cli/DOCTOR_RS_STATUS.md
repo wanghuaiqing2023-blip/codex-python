@@ -42,8 +42,10 @@ covered slices for these `src/doctor.rs` anchors:
 - state diagnostics: runtime DB path readiness, SQLite integrity details,
   rollout stats traversal, rollout byte saturation, and fallback state check.
 - WebSocket/provider reachability helpers: DNS family details, websocket probe
-  warning formatting, provider URL path/query construction, route probe filters,
-  and route status classification.
+  warning formatting, Rust-shaped `ResponsesWebsocketClient::probe_handshake`
+  dispatch through `pycodex.codex_api.endpoint.responses_websocket`, provider
+  URL path/query construction, route probe filters, and route status
+  classification.
 - filesystem helpers: `read_probe_file`, `executable_path_exists`,
   `path_readiness`, `push_path_detail`, `push_env_path_detail`, and
   `env_var_present`.

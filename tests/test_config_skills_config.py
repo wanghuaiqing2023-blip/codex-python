@@ -23,9 +23,9 @@ class ConfigSkillsConfigTests(unittest.TestCase):
         self.assertEqual(config.config, ())
         self.assertEqual(config.to_mapping(), {})
 
-    def test_skill_config_accepts_path_or_name_and_defaults_enabled_true(self) -> None:
+    def test_skill_config_accepts_path_or_name_with_required_enabled(self) -> None:
         # Rust module: src/skills_config.rs
-        path_entry = SkillConfig.from_mapping({"path": "/skills/demo"})
+        path_entry = SkillConfig.from_mapping({"path": "/skills/demo", "enabled": True})
         name_entry = SkillConfig.from_mapping({"name": "github:yeet", "enabled": False})
 
         self.assertEqual(path_entry.path, Path("/skills/demo"))
@@ -82,6 +82,8 @@ class ConfigSkillsConfigTests(unittest.TestCase):
         # Rust serde behavior: field types must match the TOML shape.
         with self.assertRaisesRegex(TypeError, "enabled must be a bool"):
             SkillConfig.from_mapping({"name": "demo", "enabled": "yes"})
+        with self.assertRaisesRegex(TypeError, "enabled is required"):
+            SkillConfig.from_mapping({"name": "demo"})
         with self.assertRaisesRegex(TypeError, "bundled must be a table or None"):
             SkillsConfig.from_mapping({"bundled": True})
         with self.assertRaisesRegex(TypeError, "include_instructions must be a bool or None"):

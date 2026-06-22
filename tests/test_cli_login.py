@@ -7,6 +7,7 @@ import errno
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -15,13 +16,37 @@ from unittest.mock import patch
 
 from pycodex.cli.login import (
     AUTH_MODE_CHATGPT,
+    ACCESS_TOKEN_STDIN_EMPTY_MESSAGE,
+    ACCESS_TOKEN_STDIN_READING_MESSAGE,
+    ACCESS_TOKEN_STDIN_TERMINAL_MESSAGE,
+    API_KEY_STDIN_EMPTY_MESSAGE,
+    API_KEY_STDIN_READING_MESSAGE,
+    API_KEY_STDIN_TERMINAL_MESSAGE,
     _CHATGPT_LOGIN_DEFAULT_PORT,
     _CHATGPT_LOGIN_FALLBACK_PORT,
+    access_token_from_stdin_text,
+    api_key_from_stdin_text,
+    device_code_fallback_message,
     _exchange_authorization_code,
     _extract_auth_claims_from_jwt,
     _make_callback_handler,
+    login_log_file_path,
+    login_config_error_message,
     _ChatgptCallbackState,
+    login_status_error_message,
+    login_status_message,
+    login_disabled_message,
+    login_log_default_filter,
+    login_log_open_options,
+    login_log_unix_file_mode,
+    login_log_warning_message,
+    login_result_message,
+    logout_status_message,
+    print_login_server_start,
     run_chatgpt_login,
+    safe_format_key,
+    stdin_secret_messages,
+    stdin_secret_read_error_message,
 )
 
 
@@ -41,6 +66,229 @@ def _request(port: int, path: str) -> _FakeCallbackResult:
 
 
 class LoginCallbackHandlerTests(unittest.TestCase):
+    def test_print_login_server_start_matches_rust_message_shape(self) -> None:
+        # Rust parity: codex-cli/src/login.rs print_login_server_start.
+        stderr = FakeStdErr()
+
+        print_login_server_start(stderr, 1455, "https://auth.example.com/oauth")
+
+        self.assertEqual(
+            stderr.value,
+            (
+                "Starting local login server on http://localhost:1455.\n"
+                "If your browser did not open, navigate to this URL to authenticate:\n"
+                "\n"
+                "https://auth.example.com/oauth\n"
+                "\n"
+                "On a remote or headless machine? Use `codex login --device-auth` instead.\n"
+            ),
+        )
+
+    def test_login_disabled_messages_match_rust_forced_method_guards(self) -> None:
+        # Rust parity: codex-cli/src/login.rs forced_login_method guards.
+        self.assertEqual(
+            login_disabled_message("chatgpt", "api"),
+            "ChatGPT login is disabled. Use API key login instead.",
+        )
+        self.assertEqual(
+            login_disabled_message("device-code", "api"),
+            "ChatGPT login is disabled. Use API key login instead.",
+        )
+        self.assertEqual(
+            login_disabled_message("api-key", "chatgpt"),
+            "API key login is disabled. Use ChatGPT login instead.",
+        )
+        self.assertEqual(
+            login_disabled_message("access-token", "api"),
+            "Access token login is disabled. Use API key login instead.",
+        )
+        self.assertIsNone(login_disabled_message("chatgpt", "chatgpt"))
+        self.assertIsNone(login_disabled_message("api-key", "api"))
+        self.assertIsNone(login_disabled_message("access-token", "chatgpt"))
+
+    def test_stdin_secret_text_matches_rust_trim_and_empty_messages(self) -> None:
+        # Rust parity: codex-cli/src/login.rs read_api_key_from_stdin/read_access_token_from_stdin.
+        self.assertEqual(api_key_from_stdin_text("  sk-test\n"), "sk-test")
+        self.assertEqual(access_token_from_stdin_text("\taccess-token\r\n"), "access-token")
+        with self.assertRaisesRegex(ValueError, API_KEY_STDIN_EMPTY_MESSAGE):
+            api_key_from_stdin_text(" \n\t")
+        with self.assertRaisesRegex(ValueError, ACCESS_TOKEN_STDIN_EMPTY_MESSAGE):
+            access_token_from_stdin_text("")
+
+    def test_stdin_secret_messages_match_rust_login_prompts(self) -> None:
+        # Rust parity: codex-cli/src/login.rs read_api_key_from_stdin/read_access_token_from_stdin.
+        self.assertEqual(
+            stdin_secret_messages("api-key"),
+            (
+                API_KEY_STDIN_TERMINAL_MESSAGE,
+                API_KEY_STDIN_READING_MESSAGE,
+                API_KEY_STDIN_EMPTY_MESSAGE,
+            ),
+        )
+        self.assertEqual(
+            stdin_secret_messages("access-token"),
+            (
+                ACCESS_TOKEN_STDIN_TERMINAL_MESSAGE,
+                ACCESS_TOKEN_STDIN_READING_MESSAGE,
+                ACCESS_TOKEN_STDIN_EMPTY_MESSAGE,
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "Unknown stdin secret kind"):
+            stdin_secret_messages("password")
+
+    def test_stdin_secret_read_error_message_matches_rust(self) -> None:
+        # Rust parity: codex-cli/src/login.rs read_stdin_secret read_to_string error path.
+        self.assertEqual(
+            stdin_secret_read_error_message("stream closed"),
+            "Failed to read stdin: stream closed",
+        )
+
+    def test_login_status_messages_match_rust_auth_mode_output(self) -> None:
+        # Rust parity: codex-cli/src/login.rs run_login_status.
+        self.assertEqual(
+            login_status_message("apiKey", "sk-proj-1234567890ABCDE"),
+            "Logged in using an API key - sk-proj-***ABCDE",
+        )
+        self.assertEqual(login_status_message("chatgpt"), "Logged in using ChatGPT")
+        self.assertEqual(login_status_message("chatgptAuthTokens"), "Logged in using ChatGPT")
+        self.assertEqual(login_status_message("agentIdentity"), "Logged in using access token")
+        self.assertEqual(login_status_message(None), "Not logged in")
+        with self.assertRaisesRegex(ValueError, "API key auth requires an API key"):
+            login_status_message("apiKey")
+
+    def test_login_status_error_messages_match_rust(self) -> None:
+        # Rust parity: codex-cli/src/login.rs run_login_status error branches.
+        self.assertEqual(
+            login_status_error_message("api-key-retrieval", RuntimeError("keychain offline")),
+            "Unexpected error retrieving API key: keychain offline",
+        )
+        self.assertEqual(
+            login_status_error_message("auth-status", RuntimeError("auth file denied")),
+            "Error checking login status: auth file denied",
+        )
+        with self.assertRaisesRegex(ValueError, "Unknown login status error stage"):
+            login_status_error_message("logout", RuntimeError("bad"))
+
+    def test_logout_status_messages_match_rust_logout_output(self) -> None:
+        # Rust parity: codex-cli/src/login.rs run_logout.
+        self.assertEqual(logout_status_message(True), "Successfully logged out")
+        self.assertEqual(logout_status_message(False), "Not logged in")
+        self.assertEqual(
+            logout_status_message(False, RuntimeError("revoke failed")),
+            "Error logging out: revoke failed",
+        )
+
+    def test_login_result_messages_match_rust_flow_output(self) -> None:
+        # Rust parity: codex-cli/src/login.rs run_login_with_* result handling.
+        self.assertEqual(login_result_message("chatgpt"), "Successfully logged in")
+        self.assertEqual(login_result_message("api-key"), "Successfully logged in")
+        self.assertEqual(
+            login_result_message("chatgpt", RuntimeError("browser failed")),
+            "Error logging in: browser failed",
+        )
+        self.assertEqual(
+            login_result_message("api-key", RuntimeError("bad key")),
+            "Error logging in: bad key",
+        )
+        self.assertEqual(
+            login_result_message("access-token", RuntimeError("expired")),
+            "Error logging in with access token: expired",
+        )
+        self.assertEqual(
+            login_result_message("device-code", RuntimeError("denied")),
+            "Error logging in with device code: denied",
+        )
+
+    def test_device_code_fallback_message_matches_rust_not_found_branch(self) -> None:
+        # Rust parity: codex-cli/src/login.rs run_login_with_device_code_fallback_to_browser.
+        self.assertEqual(
+            device_code_fallback_message("not_found"),
+            "Device code login is not enabled; falling back to browser login.",
+        )
+        self.assertIsNone(device_code_fallback_message("permission_denied"))
+
+    def test_login_config_error_messages_match_rust_load_config_or_exit(self) -> None:
+        # Rust parity: codex-cli/src/login.rs load_config_or_exit.
+        self.assertEqual(
+            login_config_error_message("parse-overrides", RuntimeError("bad -c")),
+            "Error parsing -c overrides: bad -c",
+        )
+        self.assertEqual(
+            login_config_error_message("load-config", RuntimeError("missing config")),
+            "Error loading configuration: missing config",
+        )
+        with self.assertRaisesRegex(ValueError, "Unknown login config error stage"):
+            login_config_error_message("auth", RuntimeError("bad"))
+
+    def test_login_log_file_path_matches_rust_login_logging_filename(self) -> None:
+        # Rust parity: codex-cli/src/login.rs init_login_file_logging.
+        self.assertEqual(
+            login_log_file_path(Path("/tmp/codex/log")),
+            Path("/tmp/codex/log") / "codex-login.log",
+        )
+
+    def test_login_log_default_filter_matches_rust_login_logging_filter(self) -> None:
+        # Rust parity: codex-cli/src/login.rs init_login_file_logging.
+        self.assertEqual(
+            login_log_default_filter(None),
+            "codex_cli=info,codex_core=info,codex_login=info",
+        )
+        self.assertEqual(
+            login_log_default_filter("codex_login=debug"),
+            "codex_login=debug",
+        )
+        self.assertEqual(
+            login_log_default_filter("   "),
+            "codex_cli=info,codex_core=info,codex_login=info",
+        )
+
+    def test_login_log_unix_file_mode_matches_rust_open_options(self) -> None:
+        # Rust parity: codex-cli/src/login.rs init_login_file_logging.
+        self.assertEqual(login_log_unix_file_mode(is_unix=True), 0o600)
+        self.assertIsNone(login_log_unix_file_mode(is_unix=False))
+
+    def test_login_log_open_options_match_rust(self) -> None:
+        # Rust parity: codex-cli/src/login.rs init_login_file_logging.
+        self.assertEqual(
+            login_log_open_options(is_unix=True),
+            {"create": True, "append": True, "mode": 0o600},
+        )
+        self.assertEqual(
+            login_log_open_options(is_unix=False),
+            {"create": True, "append": True},
+        )
+
+    def test_login_log_warning_messages_match_rust_login_logging_warnings(self) -> None:
+        # Rust parity: codex-cli/src/login.rs init_login_file_logging.
+        log_dir = Path("/tmp/codex/log")
+        log_path = log_dir / "codex-login.log"
+
+        self.assertEqual(
+            login_log_warning_message("resolve-log-dir", RuntimeError("bad home")),
+            "Warning: failed to resolve login log directory: bad home",
+        )
+        self.assertEqual(
+            login_log_warning_message("create-log-dir", RuntimeError("denied"), log_dir),
+            f"Warning: failed to create login log directory {log_dir}: denied",
+        )
+        self.assertEqual(
+            login_log_warning_message("open-log-file", RuntimeError("locked"), log_path),
+            f"Warning: failed to open login log file {log_path}: locked",
+        )
+        self.assertEqual(
+            login_log_warning_message("init-log-file", RuntimeError("subscriber set"), log_path),
+            f"Warning: failed to initialize login log file {log_path}: subscriber set",
+        )
+        with self.assertRaisesRegex(ValueError, "path is required"):
+            login_log_warning_message("open-log-file", RuntimeError("locked"))
+
+    def test_safe_format_key_matches_rust_login_status_masking(self) -> None:
+        # Rust parity: codex-cli/src/login.rs safe_format_key.
+        self.assertEqual(safe_format_key("sk-proj-1234567890ABCDE"), "sk-proj-***ABCDE")
+        self.assertEqual(safe_format_key("sk-proj-12345"), "***")
+        self.assertEqual(safe_format_key("1234567890123"), "***")
+        self.assertEqual(safe_format_key("12345678901234"), "12345678***01234")
+
     def test_callback_handler_mark_cancel(self) -> None:
         callback_state = _ChatgptCallbackState(expected_state="expected")
         server = ThreadingHTTPServer(

@@ -131,6 +131,11 @@ class ProtocolIdsToolUserInputTests(unittest.TestCase):
         text_element = TextElement.new(ByteRange(0, 4), "test")
 
         self.assertEqual(MAX_USER_INPUT_TEXT_CHARS, 1 << 20)
+        self.assertEqual(ByteRange.from_range(1, 3).to_mapping(), {"start": 1, "end": 3})
+        self.assertEqual(
+            TextElement.new(ByteRange(1, 3), None).to_mapping(),
+            {"byte_range": {"start": 1, "end": 3}, "placeholder": None},
+        )
         self.assertEqual(
             UserInput.text_input("test", (text_element,)).to_mapping(),
             {
@@ -145,22 +150,41 @@ class ProtocolIdsToolUserInputTests(unittest.TestCase):
         )
         self.assertEqual(UserInput.from_mapping({"type": "text", "text": "hello"}), UserInput.text_input("hello"))
         self.assertEqual(
+            UserInput.from_mapping({"type": "text", "text": "hello", "text_elements": []}).to_mapping(),
+            {"type": "text", "text": "hello", "text_elements": []},
+        )
+        self.assertEqual(
             UserInput.image("data:image/png;base64,abc", detail=ImageDetail.HIGH).to_mapping(),
             {"type": "image", "image_url": "data:image/png;base64,abc", "detail": "high"},
+        )
+        self.assertEqual(
+            UserInput.from_mapping({"type": "image", "image_url": "data:image/png;base64,abc"}).to_mapping(),
+            {"type": "image", "image_url": "data:image/png;base64,abc"},
         )
         self.assertEqual(
             UserInput.local_image(Path("image.png"), detail=ImageDetail.ORIGINAL).to_mapping(),
             {"type": "local_image", "path": "image.png", "detail": "original"},
         )
         self.assertEqual(
+            UserInput.from_mapping({"type": "local_image", "path": "image.png"}).to_mapping(),
+            {"type": "local_image", "path": "image.png"},
+        )
+        self.assertEqual(
             UserInput.skill("python", Path("SKILL.md")).to_mapping(),
             {"type": "skill", "name": "python", "path": "SKILL.md"},
+        )
+        self.assertEqual(
+            UserInput.from_mapping({"type": "skill", "name": "python", "path": "SKILL.md"}),
+            UserInput.skill("python", Path("SKILL.md")),
         )
         self.assertEqual(
             UserInput.mention("GitHub", "app://github").to_mapping(),
             {"type": "mention", "name": "GitHub", "path": "app://github"},
         )
-
+        self.assertEqual(
+            UserInput.from_mapping({"type": "mention", "name": "GitHub", "path": "app://github"}),
+            UserInput.mention("GitHub", "app://github"),
+        )
 
     def test_byte_range_and_text_element_reject_non_rust_shapes(self):
         with self.assertRaisesRegex(TypeError, "start must be an integer"):

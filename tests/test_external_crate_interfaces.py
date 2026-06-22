@@ -373,7 +373,7 @@ def test_hooks_public_api_keys_payload_and_registry_defaults(tmp_path: Path) -> 
             )
         ),
     )
-    assert payload.to_mapping()["event_type"] == "after_agent"
+    assert payload.to_mapping()["hook_event"]["event_type"] == "after_agent"
     notify = json.loads(legacy_notify_json(payload))
     assert notify == {
         "type": "agent-turn-complete",

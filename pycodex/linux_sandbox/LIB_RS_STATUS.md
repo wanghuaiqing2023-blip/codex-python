@@ -1,6 +1,6 @@
 # codex-linux-sandbox src/lib.rs status
 
-Status: `complete_candidate`
+Status: `complete`
 
 Rust module: `codex/codex-rs/linux-sandbox/src/lib.rs`
 

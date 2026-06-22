@@ -26,11 +26,14 @@ from pycodex.config.loader import (
     load_config_toml_for_required_layer,
     load_requirements_from_legacy_scheme,
     load_requirements_toml,
+    load_managed_admin_requirements_toml,
     load_project_layers,
     load_user_config_layer,
     managed_config_default_path,
     managed_config_from_mdm_base64,
     managed_config_from_mdm_raw_toml,
+    managed_preferences_requirements_source,
+    managed_requirements_from_mdm_base64,
     merge_root_checkout_project_hooks,
     merge_requirements_with_remote_sandbox_config,
     normalized_project_trust_keys,
@@ -295,6 +298,28 @@ def test_managed_layer_io_parses_mdm_raw_and_base64_toml() -> None:
     assert managed_config_from_mdm_raw_toml("") is None
     with pytest.raises(ValueError):
         managed_config_from_mdm_base64("not base64")
+
+
+def test_macos_loader_managed_requirements_base64_merges_with_mdm_source() -> None:
+    # Rust: loader::macos load_managed_admin_requirements_toml decodes requirements_toml_base64.
+    raw = 'allowed_approval_policies = ["never"]\nallowed_sandbox_modes = ["workspace-write"]\n'
+    encoded = base64.b64encode(raw.encode("utf-8")).decode("ascii")
+
+    parsed = managed_requirements_from_mdm_base64(encoded)
+    assert parsed is not None
+    assert parsed.allowed_approval_policies == (AskForApproval.NEVER,)
+    assert parsed.allowed_sandbox_modes == (SandboxModeRequirement.WORKSPACE_WRITE,)
+
+    target = ConfigRequirementsWithSources()
+    load_managed_admin_requirements_toml(target, encoded)
+
+    assert target.allowed_approval_policies is not None
+    assert target.allowed_approval_policies.value == (AskForApproval.NEVER,)
+    assert target.allowed_approval_policies.source == managed_preferences_requirements_source()
+    assert str(target.allowed_approval_policies.source) == "MDM com.openai.codex:requirements_toml_base64"
+    assert managed_requirements_from_mdm_base64("") is None
+    with pytest.raises(ValueError):
+        managed_requirements_from_mdm_base64("not base64")
 
 
 def test_load_config_layers_internal_uses_override_path_and_mdm_base64(tmp_path: Path) -> None:

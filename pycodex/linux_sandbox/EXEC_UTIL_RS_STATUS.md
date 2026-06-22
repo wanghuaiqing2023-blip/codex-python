@@ -4,7 +4,7 @@ Rust module: `codex/codex-rs/linux-sandbox/src/exec_util.rs`
 
 Python module: `pycodex/linux_sandbox/exec_util.py`
 
-Status: `complete_candidate`
+Status: `complete`
 
 Implemented behavior:
 
@@ -26,5 +26,4 @@ Validation:
 - `python -m py_compile pycodex/linux_sandbox/exec_util.py tests/test_linux_sandbox_exec_util_rs.py`
   (passed)
 
-Focused pytest remains deferred until the remaining linux-sandbox functional
-modules are complete.
+Focused crate validation is recorded in `TEST_ALIGNMENT.md`.

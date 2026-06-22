@@ -14,7 +14,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Sequence
 
-from pycodex.protocol import FileSystemSandboxPolicy, is_protected_metadata_name
+from pycodex.protocol import FileSystemSandboxPolicy, WritableRoot, is_protected_metadata_name
 
 
 class BwrapNetworkMode(str, Enum):
@@ -278,12 +278,13 @@ def _create_filesystem_args(
     synthetic_targets: list[SyntheticMountTarget] = []
     protected_targets: list[ProtectedCreateTarget] = []
     preserved_files: list[object] = []
-    if file_system_sandbox_policy.has_full_disk_read_access():
+    has_linux_root_read = _has_linux_root_access(file_system_sandbox_policy, "read")
+    if file_system_sandbox_policy.has_full_disk_read_access() or has_linux_root_read:
         args = ["--ro-bind", "/", "/", "--dev", "/dev"]
     else:
         args = ["--tmpfs", "/", "--dev", "/dev"]
         readable_roots = list(file_system_sandbox_policy.get_readable_roots_with_cwd(cwd))
-        if any(root == Path("/") for root in readable_roots):
+        if any(_is_linux_root_path(root) for root in readable_roots):
             args = ["--ro-bind", "/", "/", "--dev", "/dev"]
         else:
             if file_system_sandbox_policy.include_platform_defaults():
@@ -302,10 +303,17 @@ def _create_filesystem_args(
     ]
     if (
         not writable_roots
-        and file_system_sandbox_policy.has_full_disk_write_access()
+        and (
+            file_system_sandbox_policy.has_full_disk_write_access()
+            or _has_linux_root_access(file_system_sandbox_policy, "write")
+        )
         and file_system_sandbox_policy.get_unreadable_globs_with_cwd(cwd)
     ):
-        writable_roots = []
+        writable_roots = [
+            _PlannedWritableRoot.from_writable_root(
+                WritableRoot(Path("/"), read_only_subpaths=(), protected_metadata_names=())
+            )
+        ]
 
     allowed_write_paths = tuple(writable_root.mount_root for writable_root in writable_roots)
     unreadable_roots = tuple(
@@ -326,16 +334,22 @@ def _create_filesystem_args(
         root_string = path_to_string(root)
         args.extend(["--bind", root_string, root_string])
 
-        read_only_subpaths = sorted(
-            set(_remap_paths_for_planned_roots(writable_root.read_only_subpaths, (writable_root,))),
-            key=_path_depth,
-        )
+        read_only_subpaths = list(_dedup_ordered_paths(_remap_paths_for_planned_roots(writable_root.read_only_subpaths, (writable_root,))))
+        metadata_paths: set[Path] = set()
         for metadata_name in writable_root.protected_metadata_names:
             metadata_path = root / metadata_name
-            if metadata_path not in read_only_subpaths:
-                read_only_subpaths.append(metadata_path)
+            metadata_paths.add(metadata_path)
+            if metadata_path.exists():
+                if metadata_path not in read_only_subpaths:
+                    read_only_subpaths.append(metadata_path)
+            elif metadata_name == ".git" and _has_parent_git_metadata(metadata_path):
+                protected_targets.append(ProtectedCreateTarget.missing(metadata_path))
+            else:
+                _append_empty_directory(args, synthetic_targets, metadata_path)
 
-        for subpath in sorted(read_only_subpaths, key=_path_depth):
+        for subpath in read_only_subpaths:
+            if subpath in metadata_paths and not subpath.exists():
+                continue
             _append_read_only_path_args(
                 args,
                 preserved_files,
@@ -352,6 +366,9 @@ def _create_filesystem_args(
     for pattern in file_system_sandbox_policy.get_unreadable_globs_with_cwd(cwd):
         for match in _expand_unreadable_glob(pattern, cwd, glob_scan_max_depth):
             _append_unreadable_path_args(args, preserved_files, synthetic_targets, match, allowed_write_paths)
+
+    if _has_linux_path_access(file_system_sandbox_policy, "/dev", "write"):
+        args.extend(["--bind", "/dev", "/dev"])
 
     return BwrapArgs(
         tuple(args),
@@ -507,7 +524,10 @@ def _is_transient_empty_metadata_path(path: Path) -> bool:
 
 
 def _has_parent_git_metadata(path: Path) -> bool:
+    home = Path.home()
     for parent in path.parents:
+        if parent == home:
+            break
         git = parent / ".git"
         if git.exists():
             return True
@@ -521,7 +541,11 @@ def _expand_unreadable_glob(pattern: str, cwd: Path, max_depth: int | None) -> t
     if split is None:
         return ()
     search_root, _ = split
-    matches = sorted(Path(match) for match in glob.glob(str(_resolve_against_base(Path(pattern), cwd)), recursive=True))
+    try:
+        raw_matches = glob.glob(str(_resolve_against_base(Path(pattern), cwd)), recursive=True, include_hidden=True)
+    except TypeError:
+        raw_matches = glob.glob(str(_resolve_against_base(Path(pattern), cwd)), recursive=True)
+    matches = sorted(Path(match) for match in raw_matches)
     expanded: set[Path] = set()
     for match in matches:
         if not match.exists() or search_root not in (match, *match.parents):
@@ -617,6 +641,42 @@ def _path_starts_with(path: Path, root: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _dedup_ordered_paths(paths: Sequence[Path]) -> tuple[Path, ...]:
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = path.as_posix()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(path)
+    return tuple(deduped)
+
+
+def _is_linux_root_path(path: Path) -> bool:
+    return path.as_posix() == "/"
+
+
+def _has_linux_root_access(file_system_sandbox_policy: FileSystemSandboxPolicy, access: str) -> bool:
+    return _has_linux_path_access(file_system_sandbox_policy, "/", access)
+
+
+def _has_linux_path_access(file_system_sandbox_policy: FileSystemSandboxPolicy, linux_path: str, access: str) -> bool:
+    for entry in getattr(file_system_sandbox_policy, "entries", ()):
+        entry_path = getattr(entry, "path", None)
+        if getattr(entry_path, "type", None) != "path":
+            continue
+        path = getattr(entry_path, "path", None)
+        if not isinstance(path, Path) or path.as_posix() != linux_path:
+            continue
+        entry_access = getattr(entry, "access", None)
+        if access == "write" and getattr(entry_access, "can_write", lambda: False)():
+            return True
+        if access == "read" and getattr(entry_access, "can_read", lambda: False)():
+            return True
+    return False
 
 
 def _resolve_against_base(path: Path, cwd: Path) -> Path:

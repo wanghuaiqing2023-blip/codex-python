@@ -1,6 +1,6 @@
 # linux-sandbox/src/bwrap.rs
 
-Status: `complete_candidate`
+Status: `complete`
 
 Python module:
 
@@ -13,6 +13,8 @@ Implemented Rust anchors:
 - `BwrapArgs`, `SyntheticMountTargetKind`, `SyntheticMountTarget`, and
   `ProtectedCreateTarget` data-model behavior.
 - `create_bwrap_command_args()` fast path for full disk write/full network.
+- Full-disk write with unreadable glob patterns still enters bwrap, synthesizes
+  the `/` writable root, and masks concrete unreadable matches.
 - Full-filesystem bwrap wrapping when network isolation/proxy-only mode is
   requested.
 - `split_pattern_for_ripgrep()` root-prefix rejection and unclosed `[` escape.
@@ -40,3 +42,14 @@ Implemented Rust anchors:
 Validation:
 
 - `python -m py_compile pycodex/linux_sandbox/bwrap.py tests/test_linux_sandbox_bwrap_rs.py`
+- 2026-06-20 direct behavior probe with the available Python 3.11.4 runtime:
+  root-write plus `**/*.env` deny glob produced `--bind / /` and a concrete
+  `.env` `--ro-bind-data` mask.
+- 2026-06-20 direct test-function runner with a minimal local `pytest.raises`
+  / `monkeypatch` shim executed all 32
+  `tests/test_linux_sandbox_bwrap_rs.py` test functions successfully under the
+  same Python 3.11.4 runtime.
+- `python -m pytest tests/test_linux_sandbox_bwrap_rs.py -q --tb=short`
+  passed on 2026-06-20 with `32 passed`.
+
+Crate-level validation is recorded in `TEST_ALIGNMENT.md`.

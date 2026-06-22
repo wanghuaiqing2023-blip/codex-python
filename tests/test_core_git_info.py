@@ -20,6 +20,13 @@ from pycodex.core import (
     resolve_root_git_project_for_trust,
 )
 from pycodex.protocol import GitSha
+from pycodex.git_utils import (
+    ApplyGitRequest,
+    apply_git_patch,
+    extract_paths_from_patch,
+    merge_base_with_head,
+    parse_git_apply_output,
+)
 
 
 def workspace_tempdir() -> Path:
@@ -66,6 +73,11 @@ class CoreGitInfoTests(unittest.TestCase):
         run_git(repo, "update-ref", f"refs/remotes/origin/{branch}", "HEAD")
         return repo, remote, branch
 
+    # Source: rust_test_migrated
+    # Rust crate: codex-git-utils
+    # Rust module: src/info.rs
+    # Rust tests: tests::canonicalize_git_remote_url_normalizes_github_variants; tests::canonicalize_git_remote_url_handles_ghe_without_lowercasing_path; tests::canonicalize_git_remote_url_rejects_non_repository_values
+    # Contract: git_utils.info.canonicalize_git_remote_url
     def test_canonicalize_git_remote_url_matches_upstream_cases(self):
         for remote in [
             "git@github.com:OpenAI/Codex.git",
@@ -86,7 +98,9 @@ class CoreGitInfoTests(unittest.TestCase):
             canonicalize_git_remote_url("ssh://git@ghe.company.com:2222/Org/Repo.git"),
             "ghe.company.com:2222/Org/Repo",
         )
-        self.assertIsNone(canonicalize_git_remote_url("file:///tmp/repo"))
+        for remote in ["", "file:///tmp/repo", "github.com/openai", "/tmp/repo"]:
+            with self.subTest(remote=remote):
+                self.assertIsNone(canonicalize_git_remote_url(remote))
         with self.assertRaisesRegex(TypeError, "url must be a string"):
             canonicalize_git_remote_url(123)  # type: ignore[arg-type]
 
@@ -144,6 +158,247 @@ class CoreGitInfoTests(unittest.TestCase):
             recent_commits(repo, -1)
         with self.assertRaisesRegex(TypeError, "limit must be an integer"):
             recent_commits(repo, True)  # type: ignore[arg-type]
+
+    # Source: rust_test_migrated
+    # Rust crate: codex-git-utils
+    # Rust module: src/branch.rs
+    # Rust test: tests::merge_base_returns_shared_commit
+    # Contract: git_utils.branch.merge_base_with_head
+    def test_merge_base_returns_shared_commit(self):
+        repo = self.make_repo()
+        base_branch = current_branch_name(repo)
+        self.assertIsNotNone(base_branch)
+
+        run_git(repo, "checkout", "-b", "feature")
+        (repo / "feature.txt").write_text("feature change\n", encoding="utf-8")
+        run_git(repo, "add", "feature.txt")
+        run_git(repo, "commit", "-m", "feature commit")
+
+        run_git(repo, "checkout", base_branch)
+        (repo / "main.txt").write_text("main change\n", encoding="utf-8")
+        run_git(repo, "add", "main.txt")
+        run_git(repo, "commit", "-m", "main commit")
+
+        run_git(repo, "checkout", "feature")
+        expected = run_git(repo, "merge-base", "HEAD", base_branch).stdout.strip()
+        self.assertEqual(merge_base_with_head(repo, base_branch), expected)
+
+    # Source: rust_test_migrated
+    # Rust crate: codex-git-utils
+    # Rust module: src/branch.rs
+    # Rust test: tests::merge_base_prefers_upstream_when_remote_ahead
+    # Contract: git_utils.branch.merge_base_with_head
+    def test_merge_base_prefers_upstream_when_remote_ahead(self):
+        repo = self.make_repo()
+        remote = repo.parent / "remote.git"
+        run_git(repo.parent, "init", "--bare", str(remote))
+        base_branch = current_branch_name(repo)
+        self.assertIsNotNone(base_branch)
+        run_git(repo, "remote", "add", "origin", str(remote))
+        run_git(repo, "push", "-u", "origin", base_branch)
+
+        run_git(repo, "checkout", "-b", "feature")
+        (repo / "feature.txt").write_text("feature change\n", encoding="utf-8")
+        run_git(repo, "add", "feature.txt")
+        run_git(repo, "commit", "-m", "feature commit")
+
+        run_git(repo, "checkout", base_branch)
+        (repo / "remote-ahead.txt").write_text("remote ahead\n", encoding="utf-8")
+        run_git(repo, "add", "remote-ahead.txt")
+        run_git(repo, "commit", "-m", "remote ahead commit")
+        run_git(repo, "push", "origin", base_branch)
+
+        run_git(repo, "reset", "--hard", f"origin/{base_branch}~1")
+        run_git(repo, "branch", "--set-upstream-to", f"origin/{base_branch}", base_branch)
+        run_git(repo, "checkout", "feature")
+        run_git(repo, "fetch", "origin")
+
+        expected = run_git(repo, "merge-base", "HEAD", f"origin/{base_branch}").stdout.strip()
+        self.assertEqual(merge_base_with_head(repo, base_branch), expected)
+
+    # Source: rust_test_migrated
+    # Rust crate: codex-git-utils
+    # Rust module: src/branch.rs
+    # Rust test: tests::merge_base_returns_none_when_branch_missing
+    # Contract: git_utils.branch.merge_base_with_head
+    def test_merge_base_returns_none_when_branch_missing(self):
+        repo = self.make_repo()
+        self.assertIsNone(merge_base_with_head(repo, "missing-branch"))
+
+    # Source: rust_test_migrated
+    # Rust crate: codex-git-utils
+    # Rust module: src/apply.rs
+    # Rust tests: tests::extract_paths_handles_quoted_headers; tests::extract_paths_ignores_dev_null_header; tests::extract_paths_unescapes_c_style_in_quoted_headers
+    # Contract: git_utils.apply.extract_paths_from_patch
+    def test_extract_paths_from_patch_matches_rust_header_cases(self):
+        cases = [
+            (
+                'diff --git "a/hello world.txt" "b/hello world.txt"\n'
+                "new file mode 100644\n"
+                "--- /dev/null\n"
+                "+++ b/hello world.txt\n"
+                "@@ -0,0 +1 @@\n"
+                "+hi\n",
+                ["hello world.txt"],
+            ),
+            (
+                "diff --git a/dev/null b/ok.txt\n"
+                "new file mode 100644\n"
+                "--- /dev/null\n"
+                "+++ b/ok.txt\n"
+                "@@ -0,0 +1 @@\n"
+                "+hi\n",
+                ["ok.txt"],
+            ),
+            (
+                'diff --git "a/hello\\tworld.txt" "b/hello\\tworld.txt"\n'
+                "new file mode 100644\n"
+                "--- /dev/null\n"
+                "+++ b/hello\tworld.txt\n"
+                "@@ -0,0 +1 @@\n"
+                "+hi\n",
+                ["hello\tworld.txt"],
+            ),
+        ]
+        for diff, expected in cases:
+            with self.subTest(expected=expected):
+                self.assertEqual(extract_paths_from_patch(diff), expected)
+
+    # Source: rust_test_migrated
+    # Rust crate: codex-git-utils
+    # Rust module: src/apply.rs
+    # Rust test: tests::parse_output_unescapes_quoted_paths
+    # Contract: git_utils.apply.parse_git_apply_output
+    def test_parse_git_apply_output_unescapes_quoted_paths(self):
+        applied, skipped, conflicted = parse_git_apply_output(
+            "",
+            'error: patch failed: "hello\\tworld.txt":1\n',
+        )
+        self.assertEqual(applied, [])
+        self.assertEqual(conflicted, [])
+        self.assertEqual(skipped, ["hello\tworld.txt"])
+
+    # Source: rust_test_migrated
+    # Rust crate: codex-git-utils
+    # Rust module: src/apply.rs
+    # Rust test: tests::apply_add_success
+    # Contract: git_utils.apply.apply_git_patch
+    def test_apply_git_patch_add_success(self):
+        repo = self.make_repo()
+        diff = (
+            "diff --git a/hello.txt b/hello.txt\n"
+            "new file mode 100644\n"
+            "--- /dev/null\n"
+            "+++ b/hello.txt\n"
+            "@@ -0,0 +1,2 @@\n"
+            "+hello\n"
+            "+world\n"
+        )
+        result = apply_git_patch(ApplyGitRequest(repo, diff, revert=False, preflight=False))
+        self.assertEqual(result.exit_code, 0)
+        self.assertTrue((repo / "hello.txt").exists())
+
+    # Source: rust_test_migrated
+    # Rust crate: codex-git-utils
+    # Rust module: src/apply.rs
+    # Rust tests: tests::apply_modify_conflict; tests::apply_modify_skipped_missing_index
+    # Contract: git_utils.apply.apply_git_patch
+    def test_apply_git_patch_reports_conflict_and_missing_index_failures(self):
+        repo = self.make_repo()
+        (repo / "file.txt").write_text("line1\nline2\nline3\n", encoding="utf-8")
+        run_git(repo, "add", "file.txt")
+        run_git(repo, "commit", "-m", "seed")
+        (repo / "file.txt").write_text("line1\nlocal2\nline3\n", encoding="utf-8")
+        conflict_diff = (
+            "diff --git a/file.txt b/file.txt\n"
+            "--- a/file.txt\n"
+            "+++ b/file.txt\n"
+            "@@ -1,3 +1,3 @@\n"
+            " line1\n"
+            "-line2\n"
+            "+remote2\n"
+            " line3\n"
+        )
+        conflict = apply_git_patch(ApplyGitRequest(repo, conflict_diff, revert=False, preflight=False))
+        self.assertNotEqual(conflict.exit_code, 0)
+
+        missing_diff = (
+            "diff --git a/ghost.txt b/ghost.txt\n"
+            "--- a/ghost.txt\n"
+            "+++ b/ghost.txt\n"
+            "@@ -1,1 +1,1 @@\n"
+            "-old\n"
+            "+new\n"
+        )
+        missing = apply_git_patch(ApplyGitRequest(repo, missing_diff, revert=False, preflight=False))
+        self.assertNotEqual(missing.exit_code, 0)
+
+    # Source: rust_test_migrated
+    # Rust crate: codex-git-utils
+    # Rust module: src/apply.rs
+    # Rust tests: tests::apply_then_revert_success; tests::revert_preflight_does_not_stage_index
+    # Contract: git_utils.apply.apply_git_patch
+    def test_apply_git_patch_revert_and_revert_preflight(self):
+        repo = self.make_repo()
+        (repo / "file.txt").write_text("orig\n", encoding="utf-8")
+        run_git(repo, "add", "file.txt")
+        run_git(repo, "commit", "-m", "seed")
+        diff = (
+            "diff --git a/file.txt b/file.txt\n"
+            "--- a/file.txt\n"
+            "+++ b/file.txt\n"
+            "@@ -1,1 +1,1 @@\n"
+            "-orig\n"
+            "+ORIG\n"
+        )
+        applied = apply_git_patch(ApplyGitRequest(repo, diff, revert=False, preflight=False))
+        self.assertEqual(applied.exit_code, 0)
+        self.assertEqual((repo / "file.txt").read_text(encoding="utf-8").replace("\r\n", "\n"), "ORIG\n")
+
+        run_git(repo, "add", "file.txt")
+        run_git(repo, "commit", "-m", "apply change")
+        staged_before = run_git(repo, "diff", "--cached", "--name-only").stdout.strip()
+        preflight = apply_git_patch(ApplyGitRequest(repo, diff, revert=True, preflight=True))
+        self.assertEqual(preflight.exit_code, 0)
+        staged_after = run_git(repo, "diff", "--cached", "--name-only").stdout.strip()
+        self.assertEqual(staged_after, staged_before)
+        self.assertEqual((repo / "file.txt").read_text(encoding="utf-8").replace("\r\n", "\n"), "ORIG\n")
+
+        reverted = apply_git_patch(ApplyGitRequest(repo, diff, revert=True, preflight=False))
+        self.assertEqual(reverted.exit_code, 0)
+        self.assertEqual((repo / "file.txt").read_text(encoding="utf-8").replace("\r\n", "\n"), "orig\n")
+
+    # Source: rust_test_migrated
+    # Rust crate: codex-git-utils
+    # Rust module: src/apply.rs
+    # Rust test: tests::preflight_blocks_partial_changes
+    # Contract: git_utils.apply.apply_git_patch
+    def test_apply_git_patch_preflight_blocks_partial_changes(self):
+        repo = self.make_repo()
+        diff = (
+            "diff --git a/ok.txt b/ok.txt\n"
+            "new file mode 100644\n"
+            "--- /dev/null\n"
+            "+++ b/ok.txt\n"
+            "@@ -0,0 +1,2 @@\n"
+            "+alpha\n"
+            "+beta\n"
+            "\n"
+            "diff --git a/ghost.txt b/ghost.txt\n"
+            "--- a/ghost.txt\n"
+            "+++ b/ghost.txt\n"
+            "@@ -1,1 +1,1 @@\n"
+            "-old\n"
+            "+new\n"
+        )
+        preflight = apply_git_patch(ApplyGitRequest(repo, diff, revert=False, preflight=True))
+        self.assertNotEqual(preflight.exit_code, 0)
+        self.assertFalse((repo / "ok.txt").exists())
+        self.assertIn("--check", preflight.cmd_for_log)
+
+        direct = apply_git_patch(ApplyGitRequest(repo, diff, revert=False, preflight=False))
+        self.assertNotEqual(direct.exit_code, 0)
+        self.assertNotIn("--check", direct.cmd_for_log)
 
     def test_get_has_changes(self):
         repo = self.make_repo()

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from pycodex.tui.tui.event_stream import TuiEvent
 from pycodex.tui.tui.textual_event_source import (
+    TextualEventBridge,
     make_textual_event_runtime,
     textual_event_to_crossterm_like,
 )

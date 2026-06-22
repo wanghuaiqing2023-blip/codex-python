@@ -24,15 +24,24 @@ import tomllib
 from typing import Any, Callable, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from urllib.parse import parse_qsl
 from urllib.parse import urlparse
 from contextlib import suppress
 
 from pycodex.exec.session import UDS_WEBSOCKET_HANDSHAKE_URL
+from pycodex.codex_api.error import ApiError
+from pycodex.codex_api.endpoint.responses_websocket import (
+    ResponsesWebsocketClient,
+    connect_websocket as responses_connect_websocket,
+)
+from pycodex.codex_api.provider import Provider, RetryConfig
 from pycodex.core import OPENAI_BETA_HEADER, RESPONSES_WEBSOCKETS_V2_BETA_HEADER_VALUE
 from pycodex.exec.websocket import (
     StdlibWebSocket,
     websocket_frame_event,
 )
+from pycodex.model_provider.auth import unauthenticated_auth_provider
+from pycodex.model_provider.bearer_auth_provider import BearerAuthProvider
 
 from .update_action import UpdateAction, update_action_label
 from .update_versions import is_newer
@@ -1251,12 +1260,26 @@ def doctor_websocket_check(
         if auth_mode == "api_key"
         else None
     )
-    try:
-        websocket = StdlibWebSocket.connect(
-            endpoint,
-            auth_token=auth_token,
+    provider = _responses_websocket_provider_from_endpoint(
+        provider_name=inputs.provider_name,
+        endpoint=endpoint,
+    )
+    auth = BearerAuthProvider.new(auth_token) if auth_token else unauthenticated_auth_provider()
+
+    def connector(url: str, headers: dict[str, str], turn_state: object):
+        return responses_connect_websocket(
+            url,
+            headers,
+            turn_state,
             timeout=timeout_seconds,
+        )
+
+    client = ResponsesWebsocketClient.new(provider, auth, connector)
+    try:
+        probe = client.probe_handshake(
             extra_headers={OPENAI_BETA_HEADER: RESPONSES_WEBSOCKETS_V2_BETA_HEADER_VALUE},
+            default_headers={},
+            immediate_close_timeout=_WEBSOCKET_IMMEDIATE_CLOSE_GRACE_SECONDS,
         )
     except (socket.timeout, TimeoutError):
         return _websocket_probe_warning(
@@ -1268,47 +1291,77 @@ def doctor_websocket_check(
         return _websocket_probe_warning(
             "Responses WebSocket failed; HTTPS fallback may still work",
             details,
-            str(exc),
+            _websocket_error_detail(exc),
         )
-    try:
-        response = websocket.handshake_response
-        if response is None:
-            return _websocket_probe_warning(
-                "Responses WebSocket failed; HTTPS fallback may still work",
-                details,
-                "missing websocket handshake response",
-            )
+
+    details.extend(
+        [
+            f"handshake result: HTTP {probe.status}",
+            f"reasoning header: {_bool_text(probe.reasoning_included)}",
+            f"models etag present: {_bool_text(probe.models_etag_present)}",
+            f"server model present: {_bool_text(probe.server_model_present)}",
+        ]
+    )
+    if probe.immediate_close is not None:
         details.extend(
             [
-                f"handshake result: HTTP {response.status_code}",
-                f"reasoning header: {_bool_text(response.header(_WS_REASONING_HEADER) is not None)}",
-                f"models etag present: {_bool_text(response.header(_WS_MODELS_ETAG_HEADER) is not None)}",
-                f"server model present: {_bool_text(response.header(_WS_OPENAI_MODEL_HEADER) is not None)}",
+                f"immediate close code: {probe.immediate_close.code}",
+                f"immediate close reason: {probe.immediate_close.reason}",
             ]
         )
-        immediate_close = _probe_websocket_immediate_close(websocket)
-        if immediate_close is not None:
-            code, reason = immediate_close
-            details.extend(
-                [
-                    f"immediate close code: {code}",
-                    f"immediate close reason: {reason}",
-                ]
-            )
-            return DoctorUpdateCheck(
-                status="warn",
-                summary="Responses WebSocket closed immediately after handshake",
-                details=tuple(details),
-                remediation="Check proxy, VPN, firewall, DNS, custom CA, and WebSocket policy support.",
-            )
         return DoctorUpdateCheck(
-            status="ok",
-            summary="Responses WebSocket handshake succeeded",
+            status="warn",
+            summary="Responses WebSocket closed immediately after handshake",
             details=tuple(details),
+            remediation="Check proxy, VPN, firewall, DNS, custom CA, and WebSocket policy support.",
         )
-    finally:
-        with suppress(Exception):
-            websocket.close()
+    return DoctorUpdateCheck(
+        status="ok",
+        summary="Responses WebSocket handshake succeeded",
+        details=tuple(details),
+    )
+
+
+def _responses_websocket_provider_from_endpoint(
+    *,
+    provider_name: str,
+    endpoint: str,
+) -> Provider:
+    parsed = urlparse(endpoint)
+    scheme = "https" if parsed.scheme == "wss" else "http"
+    path = parsed.path or "/"
+    if path.rstrip("/").endswith("/responses"):
+        base_path = path.rstrip("/")[: -len("/responses")] or "/"
+    else:
+        base_path = path.rstrip("/") or "/"
+    base_url = parsed._replace(scheme=scheme, path=base_path, query="", fragment="").geturl()
+    query_params = dict(parse_qsl(parsed.query, keep_blank_values=True)) or None
+    return Provider(
+        name=provider_name,
+        base_url=base_url,
+        query_params=query_params,
+        headers={},
+        retry=RetryConfig(
+            max_attempts=1,
+            base_delay=0.0,
+            retry_429=False,
+            retry_5xx=False,
+            retry_transport=False,
+        ),
+        stream_idle_timeout=0.0,
+    )
+
+
+def _websocket_error_detail(error: Exception) -> str:
+    if isinstance(error, ApiError):
+        if error.kind == "transport":
+            return f"handshake transport error: {error.transport}"
+        if error.kind == "api":
+            return f"handshake API error: {error.status} {error.message}"
+        if error.kind == "stream":
+            return f"handshake stream error: {error.message}"
+        return f"handshake error: {error}"
+    return str(error)
 
 
 def provider_auth_reachability_mode_from_auth(

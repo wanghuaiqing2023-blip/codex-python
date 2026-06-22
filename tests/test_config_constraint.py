@@ -50,6 +50,14 @@ class ConfigConstraintTests(unittest.TestCase):
         constrained.set(10)
         self.assertEqual(constrained.value(), 10)
 
+    def test_constrained_can_set_does_not_apply_normalizer(self) -> None:
+        # Rust source: Constrained::can_set validates the candidate directly.
+        constrained = Constrained.normalized(-1, lambda value: max(value, 0))
+
+        constrained.can_set(-5)
+
+        self.assertEqual(constrained.value(), 0)
+
     def test_constrained_add_validator_composes_with_existing_validator(self) -> None:
         # Rust test: constrained_add_validator_composes_with_existing_validator
         constrained = Constrained.new(5, _positive_validator)

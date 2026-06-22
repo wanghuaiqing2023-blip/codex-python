@@ -211,6 +211,13 @@ def is_pid_alive(pid: int) -> bool:
 
 
 def prepare_host_proxy_route_spec() -> str:
+    plan = plan_proxy_routes(dict(os.environ))
+    if not plan.routes:
+        if plan.has_proxy_config:
+            message = "managed proxy mode requires parseable loopback proxy endpoints"
+        else:
+            message = "managed proxy mode requires proxy environment variables"
+        raise ValueError(message)
     raise NotImplementedError("proxy bridge process creation is a runtime boundary in the Python port")
 
 

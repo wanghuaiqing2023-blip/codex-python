@@ -12,6 +12,7 @@ from pycodex.exec import (
     NO_DEFAULT_OSS_PROVIDER_MESSAGE,
     build_exec_config_bootstrap_plan,
     build_exec_otel_provider,
+    build_exec_run_main_plan,
     build_exec_runtime_request_sequence,
     build_exec_runtime_startup_plan,
     exec_session_config_from_bootstrap_plan,
@@ -32,6 +33,7 @@ from pycodex.exec import (
     thread_bootstrap_result_from_response,
     thread_bootstrap_request_from_startup_plan,
 )
+from pycodex.arg0 import Arg0DispatchPaths
 from pycodex.protocol import AskForApproval, GranularApprovalConfig, SandboxMode
 
 
@@ -374,6 +376,44 @@ class ExecConfigPlanTests(unittest.TestCase):
         self.assertEqual(startup.to_mapping()["runPlan"]["initialOperation"], "user_turn")
         self.assertTrue(startup.trusted_directory_check.allowed)
         self.assertEqual(startup.trusted_directory_check.git_repo_root, project.resolve())
+
+    def test_build_exec_run_main_plan_matches_in_process_startup_defaults(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cli = parse_exec_args(
+                [
+                    "--json",
+                    "--ignore-user-config",
+                    "--strict-config",
+                    "-c",
+                    "model='gpt-5.2-codex'",
+                    "hello",
+                ]
+            )
+            plan = build_exec_run_main_plan(
+                cli,
+                arg0_paths=Arg0DispatchPaths(codex_self_exe=root / "bin" / "codex"),
+                config_toml={"user_instructions": "watch stdout"},
+                current_dir=root,
+                client_version="1.2.3",
+            )
+
+        self.assertEqual(plan.processor_kind, "json")
+        self.assertEqual(plan.environment_manager_source, "env")
+        self.assertEqual(plan.telemetry_service_name, "codex_exec")
+        self.assertTrue(plan.analytics_enabled)
+        self.assertEqual(plan.log_filter, EXEC_DEFAULT_LOG_FILTER)
+        self.assertEqual(plan.in_process_start_args.client_name, "codex_exec")
+        self.assertEqual(plan.in_process_start_args.client_version, "1.2.3")
+        self.assertTrue(plan.in_process_start_args.strict_config)
+        self.assertTrue(plan.in_process_start_args.enable_codex_api_key_env)
+        self.assertTrue(plan.in_process_start_args.experimental_api)
+        self.assertEqual(plan.in_process_start_args.channel_capacity, 1024)
+        self.assertEqual(plan.in_process_start_args.session_source, "exec")
+        self.assertEqual(plan.in_process_start_args.cli_overrides, [("model", "gpt-5.2-codex")])
+        self.assertEqual(plan.startup.session_config.user_instructions, "watch stdout")
+        self.assertEqual(plan.local_runtime_paths.codex_self_exe.as_path(), root / "bin" / "codex")
+        self.assertEqual(plan.local_runtime_paths.codex_linux_sandbox_exe, None)
 
     def test_exec_trusted_directory_check_matches_upstream_gate(self):
         with tempfile.TemporaryDirectory() as tmpdir:

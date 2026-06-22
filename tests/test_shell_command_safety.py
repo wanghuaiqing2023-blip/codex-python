@@ -10,6 +10,13 @@ from pycodex.shell_command.command_safety import (
     is_safe_powershell_words,
     is_safe_to_call_with_exec,
 )
+from pycodex.shell_command.powershell_parser import (
+    PowershellParseKind,
+    PowershellParserResponse,
+    encode_powershell_base64,
+    parse_with_powershell_ast,
+    try_parse_powershell_ast_commands,
+)
 
 
 class ShellCommandSafetyTests(unittest.TestCase):
@@ -109,6 +116,11 @@ class ShellCommandSafetyTests(unittest.TestCase):
         self.assertTrue(command_might_be_dangerous(["cmd", "/c", "start", "https://example.com"]))
         self.assertTrue(command_might_be_dangerous(["cmd", "/c", "echo hi&del /f file.txt"]))
         self.assertTrue(command_might_be_dangerous(["msedge.exe", "https://example.com"]))
+        self.assertTrue(command_might_be_dangerous(["chrome.exe", "https://example.com"]))
+        self.assertTrue(command_might_be_dangerous(["firefox.exe", "https://example.com"]))
+        self.assertTrue(command_might_be_dangerous(["explorer.exe", "https://example.com"]))
+        self.assertTrue(command_might_be_dangerous(["mshta.exe", "https://example.com"]))
+        self.assertTrue(command_might_be_dangerous(["rundll32.exe", "url.dll,FileProtocolHandler", "https://example.com"]))
         self.assertFalse(command_might_be_dangerous(["explorer.exe", "."]))
         self.assertFalse(command_might_be_dangerous(["powershell", "-Command", "Start-Process notepad.exe"]))
         self.assertFalse(command_might_be_dangerous(["cmd", "/c", "echo", "del", "/f"]))
@@ -144,6 +156,7 @@ class ShellCommandSafetyTests(unittest.TestCase):
         self.assertTrue(command_might_be_dangerous(["powershell", "-Command", "if ($true) { Remove-Item test -Force}"]))
         self.assertTrue(command_might_be_dangerous(["powershell", "-Command", "[void]( Remove-Item test -Force)]"]))
         self.assertFalse(command_might_be_dangerous(["cmd", "/c", "del", "C:/foo/bar.txt"]))
+        self.assertFalse(command_might_be_dangerous(["cmd", "/c", "rd", "C:/source"]))
 
     # Source: rust_test_migrated
     # Rust crate: codex-shell-command
@@ -164,6 +177,8 @@ class ShellCommandSafetyTests(unittest.TestCase):
         self.assertTrue(command_might_be_dangerous(["cmd", "/c", "echo hi&del /f file.txt"]))
         self.assertTrue(command_might_be_dangerous(["cmd", "/c", "echo hi&&del /f file.txt"]))
         self.assertTrue(command_might_be_dangerous(["cmd", "/c", "echo hi||del /f file.txt"]))
+        self.assertTrue(command_might_be_dangerous(["cmd", "/c", "del /f file.txt"]))
+        self.assertTrue(command_might_be_dangerous(["cmd", "/c", "echo hello & del /f file.txt"]))
         self.assertTrue(command_might_be_dangerous(["cmd", "/c", "rmdir /s /q test"]))
         self.assertTrue(command_might_be_dangerous(["cmd", "/c", "echo hi&rmdir /s /q test"]))
         self.assertTrue(command_might_be_dangerous(["cmd.exe", "/r", "del", "/F", "test.txt"]))
@@ -185,6 +200,69 @@ class ShellCommandSafetyTests(unittest.TestCase):
             expected,
         )
         self.assertFalse(is_known_safe_command(["powershell.exe", "-Command", "Remove-Item foo.txt"]))
+
+    # Source: rust_test_migrated
+    # Rust crate: codex-shell-command
+    # Rust module: src/command_safety/windows_safe_commands.rs
+    # Rust tests: tests::recognizes_safe_powershell_wrappers; tests::accepts_full_path_powershell_invocations
+    # Contract: shell.powershell_safety
+    def test_windows_powershell_wrapper_forms_follow_platform_cfg(self):
+        expected = os.name == "nt"
+        self.assertEqual(
+            is_known_safe_command(
+                [
+                    r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+                    "-Command",
+                    "Get-Content Cargo.toml",
+                ]
+            ),
+            expected,
+        )
+        self.assertEqual(
+            is_known_safe_command(
+                [
+                    "/usr/local/bin/pwsh.exe",
+                    "-NoProfile",
+                    "-Command",
+                    "Get-ChildItem -Path .",
+                ]
+            ),
+            expected,
+        )
+        self.assertEqual(
+            is_known_safe_command(["powershell.exe", "Get-Content", "foo bar"]),
+            expected,
+        )
+        self.assertEqual(
+            is_known_safe_command(["powershell.exe", "-Command:Get-Content Cargo.toml"]),
+            expected,
+        )
+        self.assertEqual(
+            is_known_safe_command(["powershell.exe", "/Command:Get-ChildItem"]),
+            expected,
+        )
+
+    # Source: rust_test_migrated
+    # Rust crate: codex-shell-command
+    # Rust module: src/command_safety/windows_safe_commands.rs
+    # Rust tests: tests::recognizes_safe_powershell_wrappers; tests::rejects_powershell_commands_with_side_effects
+    # Contract: shell.powershell_safety
+    def test_windows_powershell_wrapper_rejections(self):
+        unsafe_commands = (
+            ["powershell.exe"],
+            ["powershell.exe", "-NoLogo"],
+            ["powershell.exe", "-NoProfile", "-Command", "Get-Content", "Cargo.toml"],
+            ["powershell.exe", "-Command:Get-Content", "Cargo.toml"],
+            ["powershell.exe", "-UnknownFlag"],
+            ["powershell.exe", "-EncodedCommand", "AAAA"],
+            ["powershell.exe", "-File", "script.ps1"],
+            ["powershell.exe", "-WindowStyle", "Hidden", "-Command", "Get-Content Cargo.toml"],
+            ["powershell.exe", "-ExecutionPolicy", "Bypass", "-Command", "Get-Content Cargo.toml"],
+            ["powershell.exe", "-WorkingDirectory", ".", "-Command", "Get-Content Cargo.toml"],
+        )
+        for command in unsafe_commands:
+            with self.subTest(command=command):
+                self.assertFalse(is_known_safe_command(command))
 
     # Source: rust_test_migrated
     # Rust crate: codex-shell-command
@@ -285,6 +363,57 @@ class ShellCommandSafetyTests(unittest.TestCase):
             self.assertEqual(executable_name_lookup_key(r"C:\Program Files\Git\cmd\git.exe"), "git")
         else:
             self.assertEqual(executable_name_lookup_key("/usr/bin/git"), "git")
+
+    # Source: rust_test_migrated
+    # Rust crate: codex-shell-command
+    # Rust module: src/command_safety/powershell_parser.rs
+    # Rust test: tests::parser_process_handles_multiple_requests
+    # Contract: shell.powershell_parser
+    def test_powershell_parser_handles_simple_command_requests(self):
+        self.assertEqual(
+            try_parse_powershell_ast_commands("powershell.exe", "Get-Content 'foo bar'"),
+            [["Get-Content", "foo bar"]],
+        )
+        self.assertEqual(
+            try_parse_powershell_ast_commands("powershell.exe", "Write-Output foo | Measure-Object"),
+            [["Write-Output", "foo"], ["Measure-Object"]],
+        )
+
+    # Source: rust_test_migrated
+    # Rust crate: codex-shell-command
+    # Rust module: src/command_safety/powershell_parser.rs
+    # Rust test: tests::parser_process_rejects_stop_parsing_forms
+    # Contract: shell.powershell_parser
+    def test_powershell_parser_rejects_stop_parsing_forms(self):
+        outcome = parse_with_powershell_ast("powershell.exe", "git log --% HEAD --output=codex_poc.txt")
+        self.assertEqual(outcome.kind, PowershellParseKind.UNSUPPORTED)
+        self.assertIsNone(
+            try_parse_powershell_ast_commands("powershell.exe", "git log --% HEAD --output=codex_poc.txt")
+        )
+
+    # Source: rust_source_inferred
+    # Rust crate: codex-shell-command
+    # Rust module: src/command_safety/powershell_parser.rs
+    # Rust items: encode_powershell_base64; PowershellParserResponse::into_outcome
+    # Contract: shell.powershell_parser
+    def test_powershell_parser_encoding_and_response_validation(self):
+        self.assertEqual(encode_powershell_base64("ok"), "bwBrAA==")
+        self.assertEqual(
+            PowershellParserResponse(1, "ok", (("echo", "hi"),)).into_outcome().kind,
+            PowershellParseKind.COMMANDS,
+        )
+        self.assertEqual(
+            PowershellParserResponse(1, "ok", ()).into_outcome().kind,
+            PowershellParseKind.UNSUPPORTED,
+        )
+        self.assertEqual(
+            PowershellParserResponse(1, "unsupported").into_outcome().kind,
+            PowershellParseKind.UNSUPPORTED,
+        )
+        self.assertEqual(
+            PowershellParserResponse(1, "bad-status").into_outcome().kind,
+            PowershellParseKind.FAILED,
+        )
 
 
 if __name__ == "__main__":

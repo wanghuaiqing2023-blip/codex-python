@@ -350,13 +350,12 @@ def _exec_server_runtime_paths(codex_self_exe: Any, codex_linux_sandbox_exe: Any
     from_optional_paths = getattr(core_api.ExecServerRuntimePaths, "from_optional_paths", None)
     if callable(from_optional_paths):
         return from_optional_paths(codex_self_exe, codex_linux_sandbox_exe)
-    try:
-        return core_api.ExecServerRuntimePaths(fs_helper=None)
-    except TypeError:
-        return SimpleNamespace(
-            codex_self_exe=codex_self_exe,
-            codex_linux_sandbox_exe=codex_linux_sandbox_exe,
-        )
+    if codex_self_exe is None:
+        raise ValueError("Codex executable path is not configured")
+    return SimpleNamespace(
+        codex_self_exe=codex_self_exe,
+        codex_linux_sandbox_exe=codex_linux_sandbox_exe,
+    )
 
 
 def _session_source_exec() -> Any:

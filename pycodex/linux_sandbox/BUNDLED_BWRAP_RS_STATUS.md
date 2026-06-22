@@ -4,7 +4,7 @@ Rust module: `codex/codex-rs/linux-sandbox/src/bundled_bwrap.rs`
 
 Python module: `pycodex/linux_sandbox/bundled_bwrap.py`
 
-Status: `complete_candidate`
+Status: `complete`
 
 Implemented behavior:
 
@@ -32,4 +32,4 @@ Validation:
 - `python -m pytest tests/test_linux_sandbox_bundled_bwrap_rs.py -q --tb=short`
   (passed: `9 passed`)
 
-Crate-level validation remains pending on sibling module failures.
+Crate-level validation is recorded in `TEST_ALIGNMENT.md`.

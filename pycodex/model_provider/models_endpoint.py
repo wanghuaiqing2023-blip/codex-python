@@ -18,7 +18,7 @@ from .auth import resolve_provider_auth
 
 
 MODELS_REFRESH_TIMEOUT = 5
-MODELS_ENDPOINT = "models"
+MODELS_ENDPOINT = "/models"
 
 
 @dataclass
@@ -88,8 +88,9 @@ def _fetch_models(url: str, headers: dict[str, str]) -> tuple[ModelsResponse, st
 def _endpoint_url(base_url: str) -> str:
     parts = urlsplit(base_url)
     path = parts.path.rstrip("/")
-    if not path.endswith(f"/{MODELS_ENDPOINT}"):
-        path = f"{path}/{MODELS_ENDPOINT}" if path else f"/{MODELS_ENDPOINT}"
+    if not path.endswith(MODELS_ENDPOINT):
+        endpoint_segment = MODELS_ENDPOINT.lstrip("/")
+        path = f"{path}/{endpoint_segment}" if path else MODELS_ENDPOINT
     return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
 
 

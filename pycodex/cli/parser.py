@@ -34,7 +34,6 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, MutableMapping, TextIO
 import shlex
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
@@ -106,6 +105,11 @@ from pycodex.exec.core_runtime import (
 )
 from pycodex.protocol import AskForApproval, ProfileV2Name, ProfileV2NameParseError, SandboxMode
 from pycodex.protocol.config_types import ConfigTypeParseError
+from pycodex.responses_api_proxy import (
+    ResponsesApiProxyError,
+    read_auth_header_for_main,
+    run_main as run_responses_api_proxy_main,
+)
 from pycodex.cli.login import (
     AuthDotJson,
     AUTH_MODE_AGENT_IDENTITY,
@@ -4640,141 +4644,14 @@ def _read_responses_api_auth_header(
     *,
     stderr: TextIO,
 ) -> str:
-    raw = _read_stdin_text(
-        stdin,
-        required=True,
-        command="responses-api-proxy",
-        stderr=stderr,
-        stdin_is_terminal=False,
-    )
-    if raw is None:
-        raise RuntimeError("No API key provided via stdin.")
-
-    key = raw.strip("\r\n")
-    if not key:
-        raise RuntimeError("No API key provided via stdin.")
-
-    if len(key.encode("utf-8")) > 1017:
-        raise RuntimeError("API key is too large to fit in the 1024-byte buffer")
-
-    if not all(char.isascii() and (char.isalnum() or char in "-_") for char in key):
-        raise RuntimeError("API key may only contain ASCII letters, numbers, '-' or '_'")
-
-    return f"Bearer {key}"
-
-
-def _sanitize_dump_body(body: bytes) -> object:
-    if not body:
-        return ""
+    del stderr
     try:
-        return json.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return body.decode("utf-8", errors="replace")
-
-
-def _should_redact_header(name: str) -> bool:
-    lower = name.lower()
-    return lower == "authorization" or "cookie" in lower
-
-
-def _normalize_headers_for_dump(headers: Iterable[tuple[str, str]]) -> list[dict[str, str]]:
-    dumped_headers: list[dict[str, str]] = []
-    for key, value in headers:
-        dumped_headers.append(
-            {
-                "name": key,
-                "value": "[REDACTED]" if _should_redact_header(key) else value,
-            }
-        )
-    return dumped_headers
-
-
-@dataclass
-class _ExchangeDumper:
-    dump_dir: Path
-    _sequence: int = 1
-    _lock: threading.Lock = field(default_factory=threading.Lock)
-
-    def __post_init__(self) -> None:
-        self.dump_dir.mkdir(parents=True, exist_ok=True)
-
-    def _next_prefix(self) -> str:
-        with self._lock:
-            value = self._sequence
-            self._sequence += 1
-
-        timestamp_ms = int(time.time() * 1000)
-        return f"{value:06d}-{timestamp_ms}"
-
-    def dump_request(
-        self,
-        method: str,
-        url: str,
-        headers: Iterable[tuple[str, str]],
-        body: bytes,
-    ) -> tuple[Path, Path]:
-        prefix = self._next_prefix()
-        request_path = self.dump_dir / f"{prefix}-request.json"
-        response_path = self.dump_dir / f"{prefix}-response.json"
-        request_dump = {
-            "method": method,
-            "url": url,
-            "headers": _normalize_headers_for_dump(list(headers)),
-            "body": _sanitize_dump_body(body),
-        }
-        with request_path.open("w", encoding="utf-8") as handle:
-            json.dump(request_dump, handle, indent=2, ensure_ascii=False)
-            handle.write("\n")
-        return request_path, response_path
-
-
-class _ResponseBodyDumper:
-    def __init__(
-        self,
-        status: int,
-        headers: list[tuple[str, str]],
-        response_file: object,
-        response_path: Path,
-        stderr: TextIO,
-    ) -> None:
-        self.status = status
-        self.headers = headers
-        self._response_file = response_file
-        self._response_path = response_path
-        self._chunks: list[bytes] = []
-        self._dumped = False
-        self._stderr = stderr
-
-    def read(self, size: int = -1) -> bytes:
-        chunk = self._response_file.read(size)
-        if not chunk:
-            self._write_dump()
-            return b""
-        self._chunks.append(chunk)
-        return chunk
-
-    def _write_dump(self) -> None:
-        if self._dumped:
-            return
-        self._dumped = True
-        body = b"".join(self._chunks)
-        response_dump = {
-            "status": self.status,
-            "headers": _normalize_headers_for_dump(self.headers),
-            "body": _sanitize_dump_body(body),
-        }
-        try:
-            with self._response_path.open("w", encoding="utf-8") as handle:
-                json.dump(response_dump, handle, indent=2, ensure_ascii=False)
-                handle.write("\n")
-        except OSError as exc:
-            print(
-                f"responses-api-proxy failed to write {self._response_path}: {exc}",
-                file=self._stderr,
-            )
-
-    def __del__(self) -> None:
-        self._write_dump()
+        return read_auth_header_for_main(stdin)
+    except ResponsesApiProxyError as exc:
+        message = str(exc)
+        if "must be provided" in message:
+            raise RuntimeError("No API key provided via stdin.") from exc
+        raise RuntimeError(message) from exc
 
 
 def _run_responses_api_proxy(
@@ -4784,238 +4661,12 @@ def _run_responses_api_proxy(
     stderr: TextIO,
     stdin: object | None = None,
 ) -> int:
-    if any(arg in {"-h", "--help"} for arg in command_args):
-        print(_unimplemented_command_help_text("responses-api-proxy"), file=stdout)
-        return 0
-
-    try:
-        auth_header = _read_responses_api_auth_header(stdin, stderr=stderr)
-    except RuntimeError as exc:
-        print(f"pycodex: {exc}", file=stderr)
-        return 2
-
-    port = None
-    server_info = None
-    http_shutdown = False
-    upstream_url = "https://api.openai.com/v1/responses"
-    dump_dir = None
-
-    index = 0
-    while index < len(command_args):
-        arg = command_args[index]
-        if arg == "--port":
-            port = int(command_args[index + 1])
-            index += 2
-            continue
-        if arg == "--server-info":
-            server_info = command_args[index + 1]
-            index += 2
-            continue
-        if arg == "--http-shutdown":
-            http_shutdown = True
-            index += 1
-            continue
-        if arg == "--upstream-url":
-            upstream_url = command_args[index + 1]
-            index += 2
-            continue
-        if arg == "--dump-dir":
-            dump_dir = command_args[index + 1]
-            index += 2
-            continue
-        break
-
-    exchange_dumper: _ExchangeDumper | None = None
-    if dump_dir is not None:
-        try:
-            exchange_dumper = _ExchangeDumper(Path(dump_dir))
-        except OSError as exc:
-            print(f"pycodex: creating --dump-dir: {exc}", file=stderr)
-            return 2
-
-    parsed_upstream = urlparse(upstream_url)
-    if not parsed_upstream.scheme or not parsed_upstream.netloc:
-        print(f"pycodex: parsing --upstream-url: invalid url {upstream_url}", file=stderr)
-        return 2
-
-    host_header = parsed_upstream.hostname
-    if host_header is None:
-        print(f"pycodex: parsing --upstream-url: invalid host in {upstream_url}", file=stderr)
-        return 2
-    if parsed_upstream.port is not None:
-        host_header = f"{host_header}:{parsed_upstream.port}"
-
-    host, selected_port = ("127.0.0.1", port or 0)
-    skip_request_dump_headers = {"authorization", "host"}
-    skip_response_headers = {
-        "content-length",
-        "transfer-encoding",
-        "connection",
-        "trailer",
-        "upgrade",
-        "server",
-        "date",
-    }
-
-    class _ResponsesApiProxyHandler(BaseHTTPRequestHandler):
-        server_version = "responses-api-proxy"
-
-        def _write_server_error(self, status: int, message: str) -> None:
-            self.send_response(status)
-            if status != 403:
-                self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.end_headers()
-            if status != 403:
-                self.wfile.write(message.encode("utf-8"))
-
-        def _forward(self) -> None:
-            parsed = urlparse(self.path)
-            if (
-                self.command != "POST"
-                or parsed.path != "/v1/responses"
-                or parsed.query
-            ):
-                self._write_server_error(403, "forbidden")
-                return
-
-            length = int(self.headers.get("Content-Length", "0") or 0)
-            body = self.rfile.read(length) if length else b""
-
-            request_headers = list(self.headers.items())
-            upstream_headers = {
-                key: value for key, value in request_headers if key.lower() not in skip_request_dump_headers
-            }
-            upstream_headers["Host"] = host_header
-            upstream_headers["Authorization"] = auth_header
-
-            request = Request(
-                upstream_url,
-                data=body,
-                headers=upstream_headers,
-                method="POST",
-            )
-
-            response_path: Path | None = None
-            if exchange_dumper is not None:
-                try:
-                    _request_path, response_path = exchange_dumper.dump_request(
-                        self.command,
-                        parsed.path,
-                        request_headers,
-                        body,
-                    )
-                    del _request_path
-                except OSError as exc:
-                    print(
-                        f"responses-api-proxy failed to dump request: {exc}",
-                        file=stderr,
-                    )
-                    response_path = None
-
-            response: object | None = None
-            try:
-                try:
-                    response = urlopen(request, timeout=30)
-                except HTTPError as exc:
-                    response = exc
-
-                status = getattr(response, "status", None)
-                if status is None:
-                    status = getattr(response, "code", 500)
-                if status is None:
-                    status = 500
-
-                self.send_response(status)
-                response_headers = list(response.headers.items()) if response is not None else []
-                forwarded_response_headers = [
-                    (name, value)
-                    for name, value in response_headers
-                    if name.lower() not in skip_response_headers
-                ]
-                for name, value in forwarded_response_headers:
-                    self.send_header(name, value)
-                self.end_headers()
-
-                if response_path is None:
-                    while True:
-                        chunk = response.read(8192)  # type: ignore[attr-defined]
-                        if not chunk:
-                            break
-                        self.wfile.write(chunk)
-                    return
-
-                response_dump = _ResponseBodyDumper(
-                    status,
-                    forwarded_response_headers,
-                    response,
-                    response_path,
-                    stderr,
-                )
-                while True:
-                    chunk = response_dump.read(8192)  # type: ignore[attr-defined]
-                    if not chunk:
-                        break
-                    self.wfile.write(chunk)
-            except Exception as exc:
-                print(f"responses-api-proxy forwarding error: {exc}", file=stderr)
-                self._write_server_error(500, "internal error")
-            finally:
-                if response is not None and hasattr(response, "close"):
-                    try:
-                        response.close()
-                    except Exception:
-                        pass
-
-        def do_POST(self) -> None:
-            self._forward()
-
-        def do_GET(self) -> None:
-            parsed = urlparse(self.path)
-            if (
-                not http_shutdown
-                or parsed.path != "/shutdown"
-                or parsed.query
-            ):
-                self._write_server_error(403, "forbidden")
-                return
-
-            self.send_response(200)
-            self.end_headers()
-            threading.Thread(
-                target=self.server.shutdown,
-                daemon=True,
-            ).start()
-
-        def log_message(self, fmt: str, *args: object) -> None:
-            del fmt
-            del args
-
-    server = ThreadingHTTPServer((host, selected_port), _ResponsesApiProxyHandler)
-    bound_addr = server.server_address
-
-    if server_info:
-        server_info_path = Path(server_info)
-        if server_info_path.parent:
-            server_info_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            payload = {"port": bound_addr[1], "pid": os.getpid()}
-            with open(server_info_path, "w", encoding="utf-8") as handle:
-                handle.write(json.dumps(payload))
-                handle.write("\n")
-        except OSError as exc:
-            print(f"failed to write server info file: {exc}", file=stderr)
-            return 2
-
-    print(f"responses-api-proxy listening on {bound_addr[0]}:{bound_addr[1]}", file=stderr)
-
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        return 0
-    finally:
-        server.server_close()
-
-    return 0
+    return run_responses_api_proxy_main(
+        command_args,
+        stdout=stdout,
+        stderr=stderr,
+        stdin=stdin,
+    )
 
 
 def _run_stdio_to_uds(

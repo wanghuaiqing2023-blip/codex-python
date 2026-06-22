@@ -24,9 +24,9 @@ class BearerAuthProvider:
         return cls(token=token, account_id=account_id, is_fedramp_account=False)
 
     def add_auth_headers(self, headers: dict[str, str]) -> None:
-        if self.token is not None:
+        if self.token is not None and _valid_header_value(f"Bearer {self.token}"):
             headers["Authorization"] = f"Bearer {self.token}"
-        if self.account_id is not None:
+        if self.account_id is not None and _valid_header_value(self.account_id):
             headers["ChatGPT-Account-ID"] = self.account_id
         if self.is_fedramp_account:
             headers["X-OpenAI-Fedramp"] = "true"
@@ -35,6 +35,10 @@ class BearerAuthProvider:
         headers: dict[str, str] = {}
         self.add_auth_headers(headers)
         return headers
+
+
+def _valid_header_value(value: str) -> bool:
+    return not any(char in value for char in "\r\n\0")
 
 
 __all__ = [

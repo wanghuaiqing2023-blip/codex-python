@@ -1575,21 +1575,17 @@ def build_exec_run_main_plan(
         stderr=stderr,
     )
     environment_source = "env" if startup.bootstrap_plan.ignore_user_config else "codex_home"
-    local_runtime_paths = ExecServerRuntimePaths(
-        {
-            "codex_self_exe": str(paths.codex_self_exe) if paths.codex_self_exe is not None else None,
-            "codex_linux_sandbox_exe": (
-                str(paths.codex_linux_sandbox_exe) if paths.codex_linux_sandbox_exe is not None else None
-            ),
-        }
+    local_runtime_paths = ExecServerRuntimePaths.from_optional_paths(
+        paths.codex_self_exe,
+        paths.codex_linux_sandbox_exe,
     )
     environment_manager = EnvironmentManager(
         {
             "source": environment_source,
-            "local_runtime_paths": local_runtime_paths.inner,
+            "local_runtime_paths": local_runtime_paths.to_mapping(),
         }
     )
-    state_db = StateDbHandle()
+    state_db = StateDbHandle({})
     start_args = InProcessClientStartArgs(
         arg0_paths=paths,
         config=startup.session_config,

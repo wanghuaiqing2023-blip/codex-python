@@ -4,7 +4,7 @@ Rust module: `codex/codex-rs/linux-sandbox/src/landlock.rs`
 
 Python module: `pycodex/linux_sandbox/landlock.py`
 
-Status: `complete_candidate`
+Status: `complete`
 
 Implemented behavior:
 
@@ -28,5 +28,4 @@ Validation:
 - `python -m py_compile pycodex/linux_sandbox/landlock.py tests/test_linux_sandbox_landlock_rs.py`
   (passed)
 
-Focused pytest remains deferred until the remaining linux-sandbox functional
-modules are complete.
+Focused crate validation is recorded in `TEST_ALIGNMENT.md`.

@@ -87,7 +87,8 @@ def aws_auth_error_to_codex_error(error: BaseException | str) -> CodexFatalError
 
 
 def aws_auth_error_to_auth_error(error: BaseException | str) -> OSError:
-    return OSError(str(error))
+    kind = "transient" if _is_retryable(error) else "build"
+    return OSError(f"{kind}: {error}")
 
 
 def remove_headers_not_preserved_by_bedrock_mantle(headers: dict[str, str]) -> None:
@@ -127,6 +128,16 @@ def _headers(request: Any) -> dict[str, str]:
         headers = {}
         setattr(request, "headers", headers)
     return headers
+
+
+def _is_retryable(error: BaseException | str) -> bool:
+    method = getattr(error, "is_retryable", None)
+    if callable(method):
+        return bool(method())
+    value = getattr(error, "retryable", None)
+    if value is not None:
+        return bool(value)
+    return False
 
 
 __all__ = [
