@@ -73,6 +73,7 @@ class VT100Backend:
         self._cursor = Position(0, 0)
         self.cursor_visible = True
         self._write_buffer = bytearray()
+        self._pending_wrap = False
 
     @classmethod
     def new(cls, width: int, height: int) -> "VT100Backend":
@@ -112,10 +113,12 @@ class VT100Backend:
         else:
             x, y = position[0], position[1]
         self._cursor = Position(max(0, min(int(x), max(self._width - 1, 0))), max(0, min(int(y), max(self._height - 1, 0))))
+        self._pending_wrap = False
 
     def clear(self) -> None:
         self._rows = [[" " for _ in range(self._width)] for _ in range(self._height)]
         self._cursor = Position(0, 0)
+        self._pending_wrap = False
 
     def clear_region(self, clear_type: ClearType | str) -> None:
         clear = ClearType(clear_type)
@@ -179,14 +182,24 @@ class VT100Backend:
             if char == "\n":
                 x = 0
                 y += 1
+                self._pending_wrap = False
             elif char == "\r":
                 x = 0
+                self._pending_wrap = False
             else:
-                self._put(x, y, char)
-                x += 1
-                if x >= self._width:
+                if self._pending_wrap:
                     x = 0
                     y += 1
+                    self._pending_wrap = False
+                    if y >= self._height and self._height > 0:
+                        self._rows.pop(0)
+                        self._rows.append([" " for _ in range(self._width)])
+                        y = self._height - 1
+                self._put(x, y, char)
+                if x + 1 >= self._width:
+                    self._pending_wrap = True
+                else:
+                    x += 1
             if y >= self._height and self._height > 0:
                 self._rows.pop(0)
                 self._rows.append([" " for _ in range(self._width)])

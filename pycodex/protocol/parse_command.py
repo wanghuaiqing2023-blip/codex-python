@@ -125,13 +125,10 @@ class ParsedCommand:
             data["name"] = self.name or ""
             data["path"] = str(self.path or "")
         elif self.type == "list_files":
-            if self.path is not None:
-                data["path"] = str(self.path)
+            data["path"] = self.path
         elif self.type == "search":
-            if self.query is not None:
-                data["query"] = self.query
-            if self.path is not None:
-                data["path"] = str(self.path)
+            data["query"] = self.query
+            data["path"] = self.path
         elif self.type != "unknown":
             raise ValueError(f"unknown parsed command type: {self.type}")
         return data

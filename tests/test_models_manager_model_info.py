@@ -45,6 +45,7 @@ def test_local_personality_messages_are_enabled_for_matching_slugs() -> None:
     assert "{{ personality }}" in (messages.instructions_template or "")
     assert messages.instructions_variables is not None
     assert messages.instructions_variables.personality_default == ""
+    assert local_personality_messages_for_slug("exp-codex-personality") is not None
     assert local_personality_messages_for_slug("unknown-model") is None
 
 
@@ -81,6 +82,15 @@ def test_model_context_window_uses_model_value_without_override() -> None:
     model = replace(model_info_from_slug("unknown-model"), context_window=273_000, max_context_window=400_000)
 
     assert with_config_overrides(model, ModelsManagerConfig()) == model
+
+
+def test_model_auto_compact_token_limit_override_sets_configured_limit() -> None:
+    # Rust source: with_config_overrides assigns model.auto_compact_token_limit
+    # from ModelsManagerConfig::model_auto_compact_token_limit.
+    model = model_info_from_slug("unknown-model")
+    updated = with_config_overrides(model, ModelsManagerConfig(model_auto_compact_token_limit=1234))
+
+    assert updated == replace(model, auto_compact_token_limit_value=1234)
 
 
 def test_tool_output_token_override_preserves_rust_truncation_mode_semantics() -> None:

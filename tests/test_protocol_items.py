@@ -169,6 +169,36 @@ class ProtocolItemsTests(unittest.TestCase):
         self.assertIsNone(serialize_hook_prompt_fragment("ignored", " "))
         self.assertIsNone(parse_hook_prompt_fragment("<hook_prompt hook_run_id=''>x</hook_prompt>"))
 
+    def test_hook_prompt_roundtrips_multiple_fragments(self):
+        # Rust parity: codex-protocol/src/items.rs
+        # hook_prompt_roundtrips_multiple_fragments.
+        original = (
+            HookPromptFragment.from_single_hook("Retry with care & joy.", "hook-run-1"),
+            HookPromptFragment.from_single_hook("Then summarize cleanly.", "hook-run-2"),
+        )
+        message = build_hook_prompt_message(original)
+
+        self.assertIsNotNone(message)
+        parsed = parse_hook_prompt_message(None, message.content)
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed.fragments, original)
+
+    def test_hook_prompt_parses_legacy_single_hook_run_id(self):
+        # Rust parity: codex-protocol/src/items.rs
+        # hook_prompt_parses_legacy_single_hook_run_id.
+        parsed = parse_hook_prompt_fragment(
+            '<hook_prompt hook_run_id="hook-run-1">Retry with tests.</hook_prompt>'
+        )
+
+        self.assertEqual(
+            parsed,
+            HookPromptFragment(
+                text="Retry with tests.",
+                hook_run_id="hook-run-1",
+            ),
+        )
+
     def test_hook_prompt_from_fragments_only_generates_id_for_none(self):
         fragment = HookPromptFragment.from_single_hook("Retry", "hook-run-1")
 

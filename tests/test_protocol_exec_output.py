@@ -20,6 +20,12 @@ class ProtocolExecOutputTests(unittest.TestCase):
     def test_windows_1252_smart_decoding(self):
         self.assertEqual(bytes_to_string_smart(b"\x93\x94 test \x96 dash"), "\u201c\u201d test \u2013 dash")
 
+    def test_smart_decoding_improves_over_lossy_utf8(self):
+        data = b"\x93\x94 test \x96 dash"
+
+        self.assertIn("\ufffd", data.decode("utf-8", errors="replace"))
+        self.assertEqual(bytes_to_string_smart(data), "\u201c\u201d test \u2013 dash")
+
     def test_mixed_ascii_and_legacy_encoding(self):
         self.assertEqual(bytes_to_string_smart(b"Output: caf\xE9"), "Output: caf\u00e9")
 

@@ -215,8 +215,11 @@ class TextAreaVim:
             if open_idx is None:
                 open_idx = idx
                 continue
-            if open_idx <= self.cursor_pos <= idx:
-                candidate = range(open_idx + len(quote.encode("utf-8")), idx) if scope is VimTextObjectScope.Inner else idx_range(open_idx, idx, quote)
+            if open_idx <= self.cursor_pos < idx:
+                if scope is VimTextObjectScope.Inner:
+                    candidate = range(open_idx + len(quote.encode("utf-8")) + 1, idx + 1)
+                else:
+                    candidate = range(open_idx + 1, idx + len(quote.encode("utf-8")) + 1)
                 if candidate.start <= candidate.stop and (best is None or range_len(candidate) < range_len(best)):
                     best = candidate
             open_idx = None

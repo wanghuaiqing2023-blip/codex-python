@@ -186,8 +186,7 @@ class Constrained(Generic[T]):
         return self._value
 
     def can_set(self, candidate: T) -> None:
-        value = self._normalizer(candidate) if self._normalizer is not None else candidate
-        self._validator(value)
+        self._validator(candidate)
 
     def add_validator(self, validator: ConstraintValidator[T]) -> None:
         existing_validator = self._validator

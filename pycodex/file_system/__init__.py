@@ -13,6 +13,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from pycodex.protocol import (
+    FileSystemSandboxPolicy,
+    PermissionProfile,
+    SandboxEnforcement,
+    SandboxPolicy,
+    WindowsSandboxLevel,
+)
+
 
 @dataclass(frozen=True)
 class CreateDirectoryOptions:
@@ -50,15 +58,25 @@ class ReadDirectoryEntry:
 class FileSystemSandboxContext:
     permissions: Any
     cwd: Path | None = None
-    windows_sandbox_level: Any = "disabled"
+    windows_sandbox_level: Any = WindowsSandboxLevel.DISABLED
     windows_sandbox_private_desktop: bool = False
     use_legacy_landlock: bool = False
 
     @classmethod
     def from_legacy_sandbox_policy(cls, sandbox_policy: Any, cwd: str | os.PathLike[str]) -> "FileSystemSandboxContext":
-        raise NotImplementedError(
-            "from_legacy_sandbox_policy requires the protocol permission-profile conversion layer"
+        if not isinstance(sandbox_policy, SandboxPolicy):
+            raise TypeError("sandbox_policy must be SandboxPolicy")
+        cwd_path = Path(cwd)
+        file_system_sandbox_policy = FileSystemSandboxPolicy.from_legacy_sandbox_policy_for_cwd(
+            sandbox_policy,
+            cwd_path,
         )
+        permissions = PermissionProfile.from_runtime_permissions_with_enforcement(
+            SandboxEnforcement.from_legacy_sandbox_policy(sandbox_policy),
+            file_system_sandbox_policy,
+            sandbox_policy.network_sandbox_policy(),
+        )
+        return cls.from_permission_profile_with_cwd(permissions, cwd_path)
 
     @classmethod
     def from_permission_profile(cls, permissions: Any) -> "FileSystemSandboxContext":
@@ -77,7 +95,7 @@ class FileSystemSandboxContext:
         return cls(
             permissions=permissions,
             cwd=cwd,
-            windows_sandbox_level="disabled",
+            windows_sandbox_level=WindowsSandboxLevel.DISABLED,
             windows_sandbox_private_desktop=False,
             use_legacy_landlock=False,
         )

@@ -6,6 +6,7 @@ Rust source:
 
 from __future__ import annotations
 
+from pycodex.models_manager.model_info import BASE_INSTRUCTIONS
 from pycodex.model_provider_info import AMAZON_BEDROCK_GPT_5_4_MODEL_ID
 from pycodex.protocol.config_types import ReasoningEffort, ReasoningSummary, ServiceTier, Verbosity
 from pycodex.protocol.openai_models import (
@@ -26,7 +27,6 @@ from pycodex.protocol.openai_models import (
 GPT_OSS_CONTEXT_WINDOW = 128_000
 GPT_5_4_CONTEXT_WINDOW = 272_000
 GPT_5_4_MAX_CONTEXT_WINDOW = 1_000_000
-BASE_INSTRUCTIONS = ""
 
 
 def static_model_catalog() -> ModelsResponse:

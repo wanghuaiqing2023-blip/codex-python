@@ -90,8 +90,9 @@ def file_match_to_row(file_match: Any) -> SearchResult:
     indices = _get(file_match, "indices", None)
     score = int(_get(file_match, "score", 0))
     path_obj = Path(path)
+    display_path = str(path_obj).replace("\\", "/")
     return SearchResult(
-        display_name=str(path_obj),
+        display_name=display_path,
         description=None,
         mention_type=mention_type,
         selection=Selection.File(path_obj),

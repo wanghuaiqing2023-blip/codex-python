@@ -1,5 +1,7 @@
 import pytest
 
+from pathlib import Path
+
 from pycodex.model_provider_info import (
     AMAZON_BEDROCK_DEFAULT_BASE_URL,
     AMAZON_BEDROCK_GPT_5_4_MODEL_ID,
@@ -16,6 +18,7 @@ from pycodex.model_provider_info import (
     MAX_REQUEST_MAX_RETRIES,
     MAX_STREAM_MAX_RETRIES,
     ModelProviderAwsAuthInfo,
+    ModelProviderAuthInfo,
     ModelProviderInfo,
     OLLAMA_OSS_PROVIDER_ID,
     OPENAI_PROVIDER_ID,
@@ -27,12 +30,65 @@ from pycodex.model_provider_info import (
 )
 
 
+def test_deserialize_ollama_model_provider_toml() -> None:
+    # Rust source: test_deserialize_ollama_model_provider_toml.
+    provider = ModelProviderInfo.from_toml(
+        """
+        name = "Ollama"
+        base_url = "http://localhost:11434/v1"
+        """
+    )
+    assert provider == ModelProviderInfo(name="Ollama", base_url="http://localhost:11434/v1")
+
+
+def test_deserialize_azure_model_provider_toml() -> None:
+    # Rust source: test_deserialize_azure_model_provider_toml.
+    provider = ModelProviderInfo.from_toml(
+        """
+        name = "Azure"
+        base_url = "https://xxxxx.openai.azure.com/openai"
+        env_key = "AZURE_OPENAI_API_KEY"
+        query_params = { api-version = "2025-04-01-preview" }
+        """
+    )
+    assert provider.name == "Azure"
+    assert provider.base_url == "https://xxxxx.openai.azure.com/openai"
+    assert provider.env_key == "AZURE_OPENAI_API_KEY"
+    assert provider.query_params == {"api-version": "2025-04-01-preview"}
+
+
+def test_deserialize_example_model_provider_headers_toml() -> None:
+    # Rust source: test_deserialize_example_model_provider_toml.
+    provider = ModelProviderInfo.from_toml(
+        """
+        name = "Example"
+        base_url = "https://example.com"
+        env_key = "API_KEY"
+        http_headers = { "X-Example-Header" = "example-value" }
+        env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
+        """
+    )
+    assert provider.http_headers == {"X-Example-Header": "example-value"}
+    assert provider.env_http_headers == {"X-Example-Env-Header": "EXAMPLE_ENV_VAR"}
+
+
 def test_wire_api_rejects_removed_chat_protocol() -> None:
     # Rust crate/module: codex-model-provider-info::WireApi deserialize.
     with pytest.raises(ValueError, match="wire_api"):
         WireApi.parse("chat")
 
     assert CHAT_WIRE_API_REMOVED_ERROR in str(pytest.raises(ValueError, WireApi.parse, "chat").value)
+
+    with pytest.raises(ValueError) as excinfo:
+        ModelProviderInfo.from_toml(
+            """
+            name = "OpenAI using Chat Completions"
+            base_url = "https://api.openai.com/v1"
+            env_key = "OPENAI_API_KEY"
+            wire_api = "chat"
+            """
+        )
+    assert CHAT_WIRE_API_REMOVED_ERROR in str(excinfo.value)
 
 
 def test_create_openai_provider_defaults_and_api_provider_projection(monkeypatch) -> None:
@@ -70,6 +126,20 @@ def test_retry_and_timeout_values_are_capped_or_defaulted() -> None:
     assert provider.stream_max_retries() == MAX_STREAM_MAX_RETRIES
     assert provider.stream_idle_timeout() == 123
     assert provider.websocket_connect_timeout() == 456
+
+
+def test_deserialize_websocket_connect_timeout() -> None:
+    # Rust source: test_deserialize_websocket_connect_timeout.
+    provider = ModelProviderInfo.from_toml(
+        """
+        name = "OpenAI"
+        base_url = "https://api.openai.com/v1"
+        websocket_connect_timeout_ms = 15000
+        supports_websockets = true
+        """
+    )
+    assert provider.websocket_connect_timeout_ms == 15_000
+    assert provider.supports_websockets is True
 
 
 def test_api_key_reads_non_empty_env_or_raises(monkeypatch) -> None:
@@ -111,6 +181,59 @@ def test_create_amazon_bedrock_provider_and_headers() -> None:
     assert provider.is_amazon_bedrock() is True
     assert provider.to_api_provider(None).headers["x-amzn-mantle-client-agent"] == "codex"
     assert AMAZON_BEDROCK_GPT_5_4_MODEL_ID == "openai.gpt-5.4"
+
+
+def test_deserialize_provider_aws_config() -> None:
+    # Rust source: test_deserialize_provider_aws_config.
+    provider = ModelProviderInfo.from_toml(
+        """
+        name = "Amazon Bedrock"
+        base_url = "https://bedrock.example.com/v1"
+
+        [aws]
+        profile = "codex-bedrock"
+        region = "us-west-2"
+        """
+    )
+    assert provider.aws == ModelProviderAwsAuthInfo(profile="codex-bedrock", region="us-west-2")
+
+
+def test_deserialize_provider_auth_config_defaults(tmp_path, monkeypatch) -> None:
+    # Rust source: test_deserialize_provider_auth_config_defaults.
+    monkeypatch.chdir(tmp_path)
+    provider = ModelProviderInfo.from_toml(
+        """
+        name = "Corp"
+
+        [auth]
+        command = "./scripts/print-token"
+        args = ["--format=text"]
+        """
+    )
+    assert provider.auth == ModelProviderAuthInfo(
+        command="./scripts/print-token",
+        args=("--format=text",),
+        timeout_ms=5_000,
+        refresh_interval_ms=300_000,
+        cwd=Path(".").resolve(strict=False),
+    )
+
+
+def test_deserialize_provider_auth_config_allows_zero_refresh_interval(tmp_path, monkeypatch) -> None:
+    # Rust source: test_deserialize_provider_auth_config_allows_zero_refresh_interval.
+    monkeypatch.chdir(tmp_path)
+    provider = ModelProviderInfo.from_toml(
+        """
+        name = "Corp"
+
+        [auth]
+        command = "./scripts/print-token"
+        refresh_interval_ms = 0
+        """
+    )
+    assert provider.auth is not None
+    assert provider.auth.refresh_interval_ms == 0
+    assert provider.auth.refresh_interval() is None
 
 
 def test_built_in_model_providers_include_openai_bedrock_and_oss(monkeypatch) -> None:

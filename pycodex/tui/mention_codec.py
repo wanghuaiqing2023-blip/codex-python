@@ -62,7 +62,7 @@ def encode_history_mentions(text: str, mentions: list[LinkedMention]) -> str:
     return "".join(out)
 
 
-def decode_history_mentions(text: str) -> DecodedHistoryText:
+def decode_history_mentions(text: str, *, preserve_plugin_sigil: bool = False) -> DecodedHistoryText:
     out: list[str] = []
     mentions: list[LinkedMention] = []
     index = 0
@@ -71,7 +71,8 @@ def decode_history_mentions(text: str) -> DecodedHistoryText:
             parsed = parse_history_linked_mention(text, index)
             if parsed is not None:
                 name, path, end_index = parsed
-                out.append(TOOL_MENTION_SIGIL + name)
+                sigil = PLUGIN_TEXT_MENTION_SIGIL if preserve_plugin_sigil and path.startswith("plugin://") else TOOL_MENTION_SIGIL
+                out.append(sigil + name)
                 mentions.append(LinkedMention(name, path))
                 index = end_index
                 continue

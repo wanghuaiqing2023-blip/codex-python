@@ -21,6 +21,7 @@ from pycodex.protocol import (
     ToolName,
     TruncationMode,
     TruncationPolicyConfig,
+    convert_mcp_content_to_items,
     function_call_output_content_items_to_text,
 )
 from pycodex.utils.output_truncation import (
@@ -637,44 +638,7 @@ def call_tool_result_to_function_payload(result: CallToolResult | JsonValue) -> 
 
 
 def _convert_mcp_content_to_items(contents: tuple[JsonValue, ...]) -> tuple[FunctionCallOutputContentItem, ...] | None:
-    saw_image = False
-    items: list[FunctionCallOutputContentItem] = []
-    for content in contents:
-        if not isinstance(content, dict):
-            items.append(FunctionCallOutputContentItem.input_text(_json_dumps(content)))
-            continue
-
-        content_type = content.get("type")
-        if content_type == "text" and isinstance(content.get("text"), str):
-            items.append(FunctionCallOutputContentItem.input_text(content["text"]))
-        elif content_type == "image" and isinstance(content.get("data"), str):
-            saw_image = True
-            data = content["data"]
-            image_url = (
-                data
-                if data.startswith("data:")
-                else f"data:{content.get('mimeType') or content.get('mime_type') or 'application/octet-stream'};base64,{data}"
-            )
-            detail = _image_detail_from_mcp_meta(content.get("_meta"))
-            items.append(FunctionCallOutputContentItem.input_image(image_url, detail or DEFAULT_IMAGE_DETAIL))
-        else:
-            items.append(FunctionCallOutputContentItem.input_text(_json_dumps(content)))
-    return tuple(items) if saw_image else None
-
-
-def _image_detail_from_mcp_meta(meta: JsonValue) -> ImageDetail | None:
-    if not isinstance(meta, dict):
-        return None
-    detail = meta.get("codex/imageDetail")
-    if detail == ImageDetail.AUTO.value:
-        return ImageDetail.AUTO
-    if detail == ImageDetail.LOW.value:
-        return ImageDetail.LOW
-    if detail == ImageDetail.HIGH.value:
-        return ImageDetail.HIGH
-    if detail == ImageDetail.ORIGINAL.value:
-        return ImageDetail.ORIGINAL
-    return None
+    return convert_mcp_content_to_items(contents)
 
 
 def _sanitize_image_detail(item: FunctionCallOutputContentItem) -> FunctionCallOutputContentItem:

@@ -76,6 +76,18 @@ def _fuzzy_match(candidate: str, needle: str) -> tuple[list[int], int] | None:
 
     candidate_lower = candidate.lower()
     needle_lower = needle.lower()
+    word_starts = [idx for idx, char in enumerate(candidate) if char.strip() and (idx == 0 or not candidate[idx - 1].isalnum())]
+    acronym: list[int] = []
+    start_pos = 0
+    for char in needle_lower:
+        found = next((idx for idx in word_starts if idx >= start_pos and candidate_lower[idx] == char), None)
+        if found is None:
+            acronym = []
+            break
+        acronym.append(found)
+        start_pos = found + 1
+    if acronym:
+        return (acronym, len(acronym) * 120)
     indices: list[int] = []
     start = 0
     for char in needle_lower:

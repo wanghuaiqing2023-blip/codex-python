@@ -18,6 +18,17 @@ def test_env_var_present_matches_rust_presence_rules() -> None:
     assert env_var_present("SET", {"SET": "value"}) is True
 
 
+def test_env_var_present_treats_non_unicode_lookup_as_present() -> None:
+    # Rust crate/module: codex-login::auth_env_telemetry::env_var_present NotUnicode branch.
+    class NonUnicodeEnv(dict[str, str]):
+        def __getitem__(self, key: str) -> str:
+            if key == "BAD":
+                raise UnicodeError("not unicode")
+            return super().__getitem__(key)
+
+    assert env_var_present("BAD", NonUnicodeEnv()) is True
+
+
 def test_collect_auth_env_telemetry_buckets_provider_env_key_name() -> None:
     # Rust test: collect_auth_env_telemetry_buckets_provider_env_key_name.
     provider = ModelProviderInfo(name="Custom", env_key="sk-should-not-leak")

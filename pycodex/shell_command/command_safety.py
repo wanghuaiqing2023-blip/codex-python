@@ -17,6 +17,7 @@ from typing import Iterable, Sequence
 from urllib.parse import urlparse
 
 from .parse_command import parse_shell_lc_plain_commands
+from .powershell_parser import try_parse_powershell_ast_commands
 
 
 SAFE_EXEC_COMMANDS = {
@@ -376,14 +377,7 @@ def parse_powershell_invocation(executable: str, args: Sequence[str]) -> list[li
 
 
 def parse_powershell_script(executable: str, script: str) -> list[list[str]] | None:
-    del executable
-    if _powershell_script_has_unsupported_construct(script):
-        return None
-    tokens = _powershell_split(script)
-    if tokens is None:
-        return None
-    commands = _split_powershell_commands(tokens)
-    return commands or None
+    return try_parse_powershell_ast_commands(executable, script)
 
 
 def _powershell_script_has_unsupported_construct(script: str) -> bool:

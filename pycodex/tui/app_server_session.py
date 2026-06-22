@@ -43,7 +43,7 @@ def _set_if_not_none(target: dict[str, Any], key: str, value: Any) -> None:
 def _as_path_string(value: Any) -> str | None:
     if value is None:
         return None
-    return str(value)
+    return str(value).replace("\\", "/")
 
 
 async def _maybe_await(value: Any) -> Any:

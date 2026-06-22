@@ -45,6 +45,10 @@ class CoreFeaturesTests(unittest.TestCase):
         self.assertTrue(Feature.GUARDIAN_APPROVAL.default_enabled())
         self.assertEqual(Feature.NETWORK_PROXY.stage().kind, StageKind.EXPERIMENTAL)
         self.assertFalse(Feature.NETWORK_PROXY.default_enabled())
+        self.assertEqual(Feature.STANDALONE_WEB_SEARCH.stage().kind, StageKind.UNDER_DEVELOPMENT)
+        self.assertFalse(Feature.STANDALONE_WEB_SEARCH.default_enabled())
+        self.assertEqual(Feature.NON_PREFIXED_MCP_TOOL_NAMES.stage().kind, StageKind.UNDER_DEVELOPMENT)
+        self.assertFalse(Feature.NON_PREFIXED_MCP_TOOL_NAMES.default_enabled())
         self.assertEqual(Feature.UNIFIED_EXEC.default_enabled(), sys.platform != "win32")
         self.assertEqual(Feature.REQUEST_PERMISSIONS_TOOL.stage().kind, StageKind.UNDER_DEVELOPMENT)
         self.assertFalse(Feature.REQUEST_PERMISSIONS_TOOL.default_enabled())
@@ -65,6 +69,8 @@ class CoreFeaturesTests(unittest.TestCase):
         self.assertEqual(feature_for_key("image_detail_original"), Feature.IMAGE_DETAIL_ORIGINAL)
         self.assertEqual(feature_for_key("auth_elicitation"), Feature.AUTH_ELICITATION)
         self.assertEqual(feature_for_key("workspace_dependencies"), Feature.WORKSPACE_DEPENDENCIES)
+        self.assertEqual(feature_for_key("standalone_web_search"), Feature.STANDALONE_WEB_SEARCH)
+        self.assertEqual(feature_for_key("non_prefixed_mcp_tool_names"), Feature.NON_PREFIXED_MCP_TOOL_NAMES)
         self.assertEqual(feature_for_key("telepathy"), Feature.CHRONICLE)
         self.assertEqual(feature_for_key("collab"), Feature.COLLAB)
         self.assertEqual(feature_for_key("codex_hooks"), Feature.CODEX_HOOKS)
@@ -72,6 +78,11 @@ class CoreFeaturesTests(unittest.TestCase):
         self.assertEqual(canonical_feature_for_key("collab"), None)
         self.assertTrue(is_known_feature_key("connectors"))
         self.assertIn("experimental_use_unified_exec_tool", legacy_feature_keys())
+
+    def test_feature_registry_has_spec_for_every_feature_variant(self) -> None:
+        # Rust source: codex-rs/features/src/lib.rs requires every Feature enum
+        # variant to have a FeatureSpec because Feature::info unwraps the registry.
+        self.assertEqual({spec.id for spec in FEATURES}, set(Feature))
 
     def test_dependency_normalization_is_one_way(self) -> None:
         code_mode_features = Features.with_defaults()

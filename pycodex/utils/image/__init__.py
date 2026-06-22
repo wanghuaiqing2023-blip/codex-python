@@ -5,11 +5,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 import base64
+from collections import OrderedDict
+import hashlib
+import io
+import mimetypes
 from pathlib import Path
 import struct
 
 
 MAX_DIMENSION = 2048
+_IMAGE_CACHE_SIZE = 32
+_IMAGE_CACHE: "OrderedDict[tuple[bytes, PromptImageMode], EncodedImage]" = OrderedDict()
 
 
 class ImageProcessingError(Exception):
@@ -19,7 +25,9 @@ class ImageProcessingError(Exception):
     def decode_error(path: str | Path, source: BaseException) -> "ImageProcessingError":
         if isinstance(source, DecodeImageError):
             return source
-        return DecodeImageError(path, source)
+        if getattr(source, "is_decoding", False):
+            return DecodeImageError(path, source)
+        return UnsupportedImageFormatError(_guess_mime(path))
 
     def is_invalid_image(self) -> bool:
         return isinstance(self, DecodeImageError)
@@ -77,15 +85,132 @@ class PromptImageMode(str, Enum):
     ORIGINAL = "original"
 
 
-def load_for_prompt_bytes(path: str | Path, file_bytes: bytes, mode: PromptImageMode = PromptImageMode.RESIZE_TO_FIT) -> EncodedImage:
+def load_for_prompt_bytes(
+    path: str | Path,
+    file_bytes: bytes,
+    mode: PromptImageMode = PromptImageMode.RESIZE_TO_FIT,
+) -> EncodedImage:
+    key = (hashlib.sha1(file_bytes).digest(), mode)
+    cached = _IMAGE_CACHE.get(key)
+    if cached is not None:
+        _IMAGE_CACHE.move_to_end(key)
+        return cached
+
     parsed = _parse_image_header(file_bytes)
     if parsed is None:
         suffix = Path(path).suffix.lstrip(".") or "unknown"
         raise UnsupportedImageFormatError(suffix)
     mime, width, height = parsed
-    if mode is PromptImageMode.ORIGINAL or (width <= MAX_DIMENSION and height <= MAX_DIMENSION):
-        return EncodedImage(bytes=file_bytes, mime=mime, width=width, height=height)
-    raise EncodeImageError("resize", RuntimeError("codex-utils-image resize/encode path requires an approved image codec dependency"))
+    needs_resize = mode is not PromptImageMode.ORIGINAL and (
+        width > MAX_DIMENSION or height > MAX_DIMENSION
+    )
+    can_preserve_source_bytes = mime in {"image/png", "image/jpeg", "image/webp"}
+    if not needs_resize and can_preserve_source_bytes:
+        return _cache_image(
+            key,
+            EncodedImage(bytes=file_bytes, mime=mime, width=width, height=height),
+        )
+
+    reencoded = _reencode_with_pillow(path, file_bytes, mime, needs_resize)
+    if reencoded is not None:
+        return _cache_image(key, reencoded)
+
+    operation = "resize" if needs_resize else _target_format_label(mime)
+    raise EncodeImageError(
+        operation,
+        RuntimeError(
+            "codex-utils-image resize/encode path requires an approved image codec dependency"
+        ),
+    )
+
+
+def _cache_image(
+    key: tuple[bytes, PromptImageMode],
+    image: EncodedImage,
+) -> EncodedImage:
+    _IMAGE_CACHE[key] = image
+    _IMAGE_CACHE.move_to_end(key)
+    while len(_IMAGE_CACHE) > _IMAGE_CACHE_SIZE:
+        _IMAGE_CACHE.popitem(last=False)
+    return image
+
+
+def _reencode_with_pillow(
+    path: str | Path,
+    file_bytes: bytes,
+    source_mime: str,
+    needs_resize: bool,
+) -> EncodedImage | None:
+    try:
+        from PIL import Image as PillowImage
+        from PIL import UnidentifiedImageError
+    except ImportError:
+        return None
+
+    try:
+        with PillowImage.open(io.BytesIO(file_bytes)) as source:
+            image = source.copy()
+    except UnidentifiedImageError as exc:
+        raise DecodeImageError(path, exc) from exc
+    except OSError as exc:
+        raise DecodeImageError(path, exc) from exc
+
+    if needs_resize:
+        width, height = image.size
+        scale = min(MAX_DIMENSION / width, MAX_DIMENSION / height)
+        image = image.resize(
+            (max(1, round(width * scale)), max(1, round(height * scale))),
+            _pillow_resampling_filter(PillowImage),
+        )
+
+    target_format = _target_format(source_mime)
+    output = io.BytesIO()
+    try:
+        if target_format == "JPEG":
+            image = image.convert("RGB")
+        elif image.mode not in {"RGB", "RGBA"}:
+            image = image.convert("RGBA")
+        save_kwargs = {"format": target_format}
+        if target_format == "JPEG":
+            save_kwargs["quality"] = 85
+        image.save(output, **save_kwargs)
+    except OSError as exc:
+        raise EncodeImageError(_target_format_label(source_mime), exc) from exc
+
+    width, height = image.size
+    return EncodedImage(
+        bytes=output.getvalue(),
+        mime=_mime_for_format(target_format),
+        width=width,
+        height=height,
+    )
+
+
+def _target_format(source_mime: str) -> str:
+    if source_mime == "image/jpeg":
+        return "JPEG"
+    if source_mime == "image/webp":
+        return "WEBP"
+    return "PNG"
+
+
+def _target_format_label(source_mime: str) -> str:
+    return {"JPEG": "Jpeg", "WEBP": "WebP", "PNG": "Png"}[_target_format(source_mime)]
+
+
+def _mime_for_format(image_format: str) -> str:
+    return {
+        "JPEG": "image/jpeg",
+        "PNG": "image/png",
+        "WEBP": "image/webp",
+    }[image_format]
+
+
+def _pillow_resampling_filter(pillow_image: object) -> object:
+    resampling = getattr(pillow_image, "Resampling", None)
+    if resampling is not None:
+        return resampling.BILINEAR
+    return pillow_image.BILINEAR
 
 
 def _parse_image_header(data: bytes) -> tuple[str, int, int] | None:
@@ -104,6 +229,11 @@ def _parse_image_header(data: bytes) -> tuple[str, int, int] | None:
         width, height = struct.unpack("<HH", data[6:10])
         return "image/gif", width, height
     return None
+
+
+def _guess_mime(path: str | Path) -> str:
+    mime, _encoding = mimetypes.guess_type(Path(path).name)
+    return mime or "unknown"
 
 
 def _jpeg_size(data: bytes) -> tuple[int, int] | None:

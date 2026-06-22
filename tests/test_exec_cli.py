@@ -1,6 +1,7 @@
 import unittest
 
-from pycodex.exec import Color, ExecCliParseError, parse_exec_args
+from pycodex.arg0 import CODEX_LINUX_SANDBOX_ARG0
+from pycodex.exec import Color, ExecCliParseError, exec_main_dispatch_plan, parse_exec_args
 from pycodex.protocol import ProfileV2Name, SandboxMode
 
 
@@ -15,6 +16,39 @@ class ExecCliTests(unittest.TestCase):
         cli = parse_exec_args(["-c", "model='inner'", "summarize"], root_config_overrides=("sandbox='read-only'",))
 
         self.assertEqual(cli.config_overrides, ("sandbox='read-only'", "model='inner'"))
+
+    def test_main_dispatch_plan_parses_normal_exec(self):
+        plan = exec_main_dispatch_plan(
+            [
+                "codex-exec",
+                "-c",
+                "model='inner'",
+                "resume",
+                "--strict-config",
+                "--last",
+                "summarize",
+            ],
+            root_config_overrides=("sandbox='read-only'",),
+        )
+
+        self.assertTrue(plan.is_exec)
+        self.assertFalse(plan.is_linux_sandbox)
+        self.assertEqual(plan.argv, ("-c", "model='inner'", "resume", "--strict-config", "--last", "summarize"))
+        self.assertIsNotNone(plan.cli)
+        self.assertEqual(plan.cli.config_overrides, ("sandbox='read-only'", "model='inner'"))
+        self.assertTrue(plan.cli.strict_config)
+        self.assertIsNotNone(plan.cli.resume)
+        self.assertEqual(plan.cli.resume.prompt, "summarize")
+
+    def test_main_dispatch_plan_routes_linux_sandbox_arg0(self):
+        plan = exec_main_dispatch_plan(
+            [f"/tmp/{CODEX_LINUX_SANDBOX_ARG0}", "-s", "read-only", "--", "echo", "hello"]
+        )
+
+        self.assertFalse(plan.is_exec)
+        self.assertTrue(plan.is_linux_sandbox)
+        self.assertIsNone(plan.cli)
+        self.assertEqual(plan.argv, ("-s", "read-only", "--", "echo", "hello"))
 
     def test_resume_parses_prompt_after_global_flags(self):
         prompt = "echo resume-with-global-flags-after-subcommand"

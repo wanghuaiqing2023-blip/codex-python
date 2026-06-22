@@ -8,11 +8,13 @@ and network proxy environment mutation remain runtime boundaries.
 
 from __future__ import annotations
 
+import importlib
 import inspect
 import json
+import sys
 from pathlib import Path
 from collections.abc import Awaitable, Callable
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, NoReturn, Sequence
 
 from pycodex.core.spawn import SpawnChildRequest, StdioPolicy, build_spawn_child_request
 from pycodex.protocol import NetworkSandboxPolicy, PermissionProfile
@@ -20,6 +22,19 @@ from pycodex.protocol import NetworkSandboxPolicy, PermissionProfile
 
 CODEX_LINUX_SANDBOX_ARG0 = "codex-linux-sandbox"
 LinuxSandboxSpawner = Callable[[SpawnChildRequest], Any | Awaitable[Any]]
+
+
+def run_main() -> NoReturn:
+    """Crate-root Linux sandbox helper entry point.
+
+    Rust ``codex-linux-sandbox::run_main`` panics on non-Linux targets and
+    delegates to ``linux_run_main::run_main`` on Linux.
+    """
+
+    if not sys.platform.startswith("linux"):
+        raise RuntimeError("codex-linux-sandbox is only supported on Linux")
+    module = importlib.import_module(f"{__name__}.linux_run_main")
+    return module.run_main()
 
 
 def _as_posix_path(value: str | Path) -> str:
@@ -182,5 +197,6 @@ __all__ = [
     "build_linux_sandbox_spawn_child_request",
     "create_linux_sandbox_command_args_for_permission_profile",
     "linux_sandbox_arg0",
+    "run_main",
     "spawn_command_under_linux_sandbox",
 ]

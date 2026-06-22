@@ -2,17 +2,15 @@
 
 Rust source:
 - ``codex/codex-rs/models-manager/src/lib.rs``
-- ``codex/codex-rs/models-manager/src/config.rs``
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from enum import Enum
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from pycodex.protocol import ModelPreset, ModelsResponse
+from pycodex.app_server_protocol import AuthMode
+from pycodex.protocol import ModelsResponse
 
 from .cache import (
     CACHE_FILE,
@@ -33,85 +31,6 @@ from .model_presets import (
     model_presets_from_models,
 )
 
-class RefreshStrategy(str, Enum):
-    OFFLINE = "offline"
-    ONLINE_IF_UNCACHED = "online_if_uncached"
-
-
-class CachedModelsManager:
-    """Small persistent models-cache manager aligned with Rust TTL/version rules."""
-
-    def __init__(
-        self,
-        codex_home: str | Path,
-        fetch_models: Callable[[], ModelsResponse | tuple[ModelsResponse, str | None]],
-        *,
-        client_version: str | None = None,
-        ttl: timedelta = timedelta(hours=24),
-        clock: Callable[[], datetime] | None = None,
-    ) -> None:
-        self.codex_home = Path(codex_home)
-        self.fetch_models = fetch_models
-        self.client_version = client_version_to_whole(client_version)
-        self.ttl = ttl
-        self.clock = clock or (lambda: datetime.now(timezone.utc))
-        self.cache_manager = ModelsCacheManager(self.cache_path, self.ttl, clock=self.clock)
-
-    @property
-    def cache_path(self) -> Path:
-        return self.codex_home / CACHE_FILE
-
-    def read_cache(self) -> ModelsCache | None:
-        self._sync_cache_manager()
-        return self.cache_manager.load()
-
-    def write_cache(self, cache: ModelsCache) -> None:
-        self._sync_cache_manager()
-        self.cache_manager.save_internal(cache)
-
-    async def list_models(self, refresh_strategy: Any = RefreshStrategy.ONLINE_IF_UNCACHED) -> list[ModelPreset]:
-        strategy = _refresh_strategy_value(refresh_strategy)
-        cache = self.read_cache()
-        if strategy == RefreshStrategy.OFFLINE.value:
-            return [] if cache is None else cache.to_presets()
-        self._sync_cache_manager()
-        fresh = self.cache_manager.load_fresh(self.client_version)
-        if fresh is not None:
-            return fresh.to_presets()
-        cache = self._fetch_and_store()
-        return cache.to_presets()
-
-    async def refresh_models_etag(self, etag: str) -> None:
-        if not isinstance(etag, str):
-            raise TypeError("etag must be a string")
-        cache = self.read_cache()
-        if cache is not None and cache.etag == etag:
-            self._sync_cache_manager()
-            self.cache_manager.renew_cache_ttl()
-            return
-        self._fetch_and_store()
-
-    def _cache_is_usable(self, cache: ModelsCache) -> bool:
-        return cache.client_version == self.client_version and cache.is_fresh(self.ttl, now=self._now())
-
-    def _fetch_and_store(self) -> ModelsCache:
-        response, etag = models_response_from_fetch_result(self.fetch_models())
-        self._sync_cache_manager()
-        self.cache_manager.persist_cache(response.models, etag, self.client_version)
-        cache = self.cache_manager.load()
-        if cache is None:
-            raise FileNotFoundError("cache not found after persist")
-        return cache
-
-    def _now(self) -> datetime:
-        now = self.clock()
-        return now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
-
-    def _sync_cache_manager(self) -> None:
-        self.cache_manager.cache_ttl = self.ttl
-        self.cache_manager.clock = self.clock
-
-
 def bundled_models_response() -> dict[str, Any]:
     import json
 
@@ -127,11 +46,6 @@ def client_version_to_whole(version: str | None = None) -> str:
     while len(parts) < 3:
         parts.append("0")
     return ".".join(parts[:3])
-
-
-def _refresh_strategy_value(value: Any) -> str:
-    raw = getattr(value, "value", value)
-    return str(raw).lower()
 
 
 from .model_info import (  # noqa: E402
@@ -168,6 +82,7 @@ from .test_support import (  # noqa: E402
 
 
 __all__ = [
+    "AuthMode",
     "BASE_INSTRUCTIONS",
     "CACHE_FILE",
     "CachedModelsManager",

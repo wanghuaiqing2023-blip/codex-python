@@ -7,8 +7,8 @@ Rust source:
 
 from __future__ import annotations
 
-import argparse
 import asyncio
+import errno
 import os
 import sys
 from pathlib import Path
@@ -35,10 +35,9 @@ async def run(socket_path: str | os.PathLike[str]) -> None:
     async def copy_stdin_to_socket() -> None:
         await _copy_file_to_writer(sys.stdin.buffer, writer)
         try:
-            writer.write_eof()
-            await writer.drain()
-        except (BrokenPipeError, ConnectionResetError, OSError):
-            pass
+            await _shutdown_socket_writer(writer)
+        except StdioToUdsError:
+            raise
         writer.close()
         try:
             await writer.wait_closed()
@@ -62,32 +61,36 @@ async def _connect_unix_socket(socket_path: str | os.PathLike[str]) -> tuple[asy
 
 
 async def _copy_file_to_writer(source: BinaryIO, writer: asyncio.StreamWriter) -> None:
-    while True:
-        chunk = await asyncio.to_thread(source.read, 64 * 1024)
-        if not chunk:
-            break
-        writer.write(chunk)
+    try:
+        while True:
+            chunk = await asyncio.to_thread(source.read, 64 * 1024)
+            if not chunk:
+                break
+            writer.write(chunk)
+            await writer.drain()
+    except Exception as exc:
+        raise StdioToUdsError("failed to copy data from stdin to socket") from exc
+
+
+async def _shutdown_socket_writer(writer: asyncio.StreamWriter) -> None:
+    try:
+        writer.write_eof()
         await writer.drain()
+    except OSError as exc:
+        if exc.errno != errno.ENOTCONN:
+            raise StdioToUdsError("failed to shutdown socket writer") from exc
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="codex-stdio-to-uds",
-        usage="codex-stdio-to-uds <socket-path>",
-        add_help=False,
-    )
-    parser.add_argument("socket_path", nargs="?")
-    parser.add_argument("extra", nargs="*")
-    args = parser.parse_args(argv)
-
-    if args.socket_path is None:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if not args:
         print("Usage: codex-stdio-to-uds <socket-path>", file=sys.stderr)
         return 1
-    if args.extra:
+    if len(args) > 1:
         print("Expected exactly one argument: <socket-path>", file=sys.stderr)
         return 1
 
-    asyncio.run(run(args.socket_path))
+    asyncio.run(run(args[0]))
     return 0
 
 

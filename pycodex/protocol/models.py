@@ -205,6 +205,55 @@ def function_call_output_content_items_to_text(
     return "\n".join(segments)
 
 
+def convert_mcp_content_to_items(contents: tuple[JsonValue, ...] | list[JsonValue]) -> tuple[FunctionCallOutputContentItem, ...] | None:
+    """Convert MCP content blocks to function-call output content items.
+
+    Mirrors ``codex-protocol/src/models.rs`` for MCP content blocks that
+    include images: data URLs are preserved as-is, raw base64 image data is
+    wrapped in a data URL using the block MIME type, and image items receive
+    the default image detail unless MCP metadata requests a valid override.
+    """
+
+    saw_image = False
+    items: list[FunctionCallOutputContentItem] = []
+    for content in contents:
+        if not isinstance(content, dict):
+            items.append(FunctionCallOutputContentItem.input_text(json.dumps(content, ensure_ascii=False, separators=(",", ":"))))
+            continue
+
+        content_type = content.get("type")
+        if content_type == "text" and isinstance(content.get("text"), str):
+            items.append(FunctionCallOutputContentItem.input_text(content["text"]))
+        elif content_type == "image" and isinstance(content.get("data"), str):
+            saw_image = True
+            data = content["data"]
+            image_url = (
+                data
+                if data.startswith("data:")
+                else f"data:{content.get('mimeType') or content.get('mime_type') or 'application/octet-stream'};base64,{data}"
+            )
+            detail = _image_detail_from_mcp_meta(content.get("_meta"))
+            items.append(FunctionCallOutputContentItem.input_image(image_url, detail or DEFAULT_IMAGE_DETAIL))
+        else:
+            items.append(FunctionCallOutputContentItem.input_text(json.dumps(content, ensure_ascii=False, separators=(",", ":"))))
+    return tuple(items) if saw_image else None
+
+
+def _image_detail_from_mcp_meta(meta: JsonValue) -> ImageDetail | None:
+    if not isinstance(meta, dict):
+        return None
+    detail = meta.get("codex/imageDetail")
+    if detail == ImageDetail.AUTO.value:
+        return ImageDetail.AUTO
+    if detail == ImageDetail.LOW.value:
+        return ImageDetail.LOW
+    if detail == ImageDetail.HIGH.value:
+        return ImageDetail.HIGH
+    if detail == ImageDetail.ORIGINAL.value:
+        return ImageDetail.ORIGINAL
+    return None
+
+
 @dataclass(frozen=True)
 class FunctionCallOutputBody:
     type: str = "text"
@@ -1078,6 +1127,8 @@ class ResponseItem:
             return cls.compaction_trigger()
         if item_type == "context_compaction":
             return cls.context_compaction(_optional_str_value(data, "encrypted_content"))
+        if item_type == "ghost_snapshot":
+            return cls.other()
         return cls(type=item_type)
 
     @classmethod
@@ -1151,6 +1202,11 @@ class ResponseItem:
             ("revised_prompt", self.revised_prompt),
             ("result", self.result),
         ):
+            if self.type == "web_search_call" and key == "id" and self.action is None:
+                continue
+            if key == "call_id" and self.type in {"tool_search_call", "tool_search_output"}:
+                data[key] = value
+                continue
             if value is not None:
                 data[key] = value
         if self.content:
@@ -1168,7 +1224,7 @@ class ResponseItem:
                     data["success"] = self.output.success
             else:
                 data["output"] = self.output
-        if self.tools:
+        if self.type == "tool_search_output" or self.tools:
             data["tools"] = list(self.tools)
         if self.action is not None:
             data["action"] = self.action.to_mapping()
@@ -1216,6 +1272,16 @@ IMAGE_CLOSE_TAG = "</image>"
 LOCAL_IMAGE_OPEN_TAG_PREFIX = "<image name="
 LOCAL_IMAGE_OPEN_TAG_SUFFIX = ">"
 LOCAL_IMAGE_CLOSE_TAG = IMAGE_CLOSE_TAG
+SUPPORTED_LOCAL_IMAGE_MIME_TYPES = {
+    "image/png",
+    "image/jpeg",
+    "image/jpg",
+    "image/gif",
+    "image/webp",
+    "image/bmp",
+    "image/tiff",
+    "image/x-tiff",
+}
 
 
 def image_open_tag_text() -> str:
@@ -1260,7 +1326,7 @@ def _local_image_content_items_with_label_number(path: Path, label_number: int, 
     except OSError as exc:
         return (ContentItem.input_text(f"Codex could not read the local image at `{path}`: {exc}"),)
     mime_type, _encoding = mimetypes.guess_type(str(path))
-    if mime_type is None or not mime_type.startswith("image/"):
+    if mime_type is None or mime_type not in SUPPORTED_LOCAL_IMAGE_MIME_TYPES:
         return (
             ContentItem.input_text(
                 f"Codex cannot attach image at `{path}`: unsupported image `{mime_type or 'application/octet-stream'}`."

@@ -3123,7 +3123,11 @@ class CompactedItem:
         if replacement_history is not None:
             if isinstance(replacement_history, str) or not isinstance(replacement_history, Iterable) or isinstance(replacement_history, Mapping):
                 raise TypeError("replacement_history must be a list")
-            replacement_history = tuple(replacement_history)
+            replacement_history = tuple(
+                item
+                for item in replacement_history
+                if not (isinstance(item, Mapping) and item.get("type") == "ghost_snapshot")
+            )
         return cls(message=_required_str(data, "message"), replacement_history=replacement_history)
 
     def to_mapping(self) -> dict[str, JsonValue]:

@@ -79,7 +79,7 @@ class Pet:
             return load_pet_path(value)
 
         if value.startswith(CUSTOM_PET_PREFIX):
-            return load_custom_pet(value[len(CUSTOM_PET_PREFIX) :], codex_home)
+            return load_custom_pet(value[len(CUSTOM_PET_PREFIX) :], codex_home, use_cache_id=True)
 
         builtin = catalog.builtin_pet(value)
         if builtin is not None:
@@ -188,17 +188,29 @@ def load_builtin_pet(pet: catalog.BuiltinPet, codex_home: Optional[Union[str, os
     )
 
 
-def load_custom_pet(value: str, codex_home: Optional[Union[str, os.PathLike[str]]]) -> Pet:
+def load_custom_pet(value: str, codex_home: Optional[Union[str, os.PathLike[str]]], *, use_cache_id: bool = False) -> Pet:
     if codex_home is None:
         raise ValueError("CODEX_HOME is not available")
     home = Path(codex_home)
     pet_dir = home / "pets" / value
     if (pet_dir / "pet.json").is_file():
-        return load_pet_manifest(pet_dir, "pet.json", value, custom_pet_cache_id(value))
+        return load_pet_manifest(
+            pet_dir,
+            "pet.json",
+            value,
+            custom_pet_cache_id(value) if use_cache_id else value,
+            prefer_cache_id=use_cache_id,
+        )
 
     avatar_dir = home / "avatars" / value
     if (avatar_dir / "avatar.json").is_file():
-        return load_pet_manifest(avatar_dir, "avatar.json", value, custom_pet_cache_id(value))
+        return load_pet_manifest(
+            avatar_dir,
+            "avatar.json",
+            value,
+            custom_pet_cache_id(value) if use_cache_id else value,
+            prefer_cache_id=use_cache_id,
+        )
 
     raise ValueError(f"unknown pet {value}")
 
@@ -226,6 +238,8 @@ def load_pet_manifest(
     manifest_file: str,
     fallback_id: str,
     cache_id: str,
+    *,
+    prefer_cache_id: bool = False,
 ) -> Pet:
     pet_dir_path = Path(pet_dir)
     config_path = pet_dir_path / manifest_file
@@ -238,7 +252,7 @@ def load_pet_manifest(
 
     manifest_id = _non_empty(file.id)
     display_name = _non_empty(file.display_name) or manifest_id or fallback_id
-    pet_id = manifest_id or fallback_id if cache_id == fallback_id else cache_id
+    pet_id = cache_id if prefer_cache_id else (manifest_id or (fallback_id if cache_id == fallback_id else cache_id))
     description = (file.description or "").strip()
     spritesheet_value = _non_empty(file.spritesheet_path) or "spritesheet.webp"
     spritesheet_path = resolve_spritesheet_path(pet_dir_path, spritesheet_value)

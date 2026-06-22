@@ -211,7 +211,10 @@ class TuiEventStream:
         if kind == "paste":
             return TuiEvent.paste(str(payload))
         if kind == "focus_gained":
-            self.terminal_focused.set(True)
+            if getattr(self.terminal_focused, "_suppress_next_focus_gained", False):
+                setattr(self.terminal_focused, "_suppress_next_focus_gained", False)
+            else:
+                self.terminal_focused.set(True)
             return TuiEvent.draw()
         if kind == "focus_lost":
             self.terminal_focused.set(False)

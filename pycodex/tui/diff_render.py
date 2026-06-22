@@ -594,8 +594,6 @@ __all__ = [
 # span wrapping.  The full `FileChange`/ratatui render pipeline remains a
 # separate boundary because it depends on upstream UI buffer types.
 
-from __future__ import annotations
-
 from dataclasses import dataclass, field
 from enum import Enum
 import re
@@ -989,17 +987,19 @@ def wrap_styled_spans(spans: Iterable[Span], max_cols: int) -> list[Line]:
 
     def push_span(text: str, style: Style) -> None:
         nonlocal col
-        remaining = text
-        while remaining:
-            prefix, suffix = _take_display_prefix(remaining, max_cols - col)
-            if not prefix:
+        for char in text:
+            char_width = char_display_width(char)
+            if col and col + char_width > max_cols:
+                lines.append([])
+                col = 0
+            if not col and char_width > max_cols:
+                lines[-1].append(Span(char, style))
                 lines.append([])
                 col = 0
                 continue
-            lines[-1].append(Span(prefix, style))
-            col += display_width(prefix)
-            remaining = suffix
-            if remaining:
+            lines[-1].append(Span(char, style))
+            col += char_width
+            if char == "\t":
                 lines.append([])
                 col = 0
 

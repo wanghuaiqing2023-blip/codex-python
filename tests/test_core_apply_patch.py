@@ -9,7 +9,9 @@ from pycodex.apply_patch import (
     APPLY_PATCH_FREEFORM_DESCRIPTION,
     APPLY_PATCH_ARGUMENT_DIFF_BUFFER_INTERVAL,
     APPLY_PATCH_LARK_GRAMMAR,
+    APPLY_PATCH_TOOL_INSTRUCTIONS,
     APPLY_PATCH_TOOL_NAME,
+    CODEX_CORE_APPLY_PATCH_ARG1,
     ApplyPatchAction,
     ApplyPatchArgs,
     ApplyPatchArgumentDiffConsumer,
@@ -33,10 +35,12 @@ from pycodex.apply_patch import (
     parse_patch,
     require_apply_patch_environment_id,
     resolve_apply_patch_invocation,
+    run_apply_patch_standalone,
     unified_diff_from_chunks,
     verify_apply_patch_args,
     write_permissions_for_paths,
 )
+from pycodex.arg0 import CODEX_CORE_APPLY_PATCH_ARG1 as ARG0_CODEX_CORE_APPLY_PATCH_ARG1
 from pycodex.core import (
     ApplyPatchToolOutput,
     FunctionCallError,
@@ -78,6 +82,46 @@ class CoreApplyPatchTests(unittest.TestCase):
         hunk = parsed.hunks[0]
         self.assertEqual(hunk.type, "update")
         return hunk.chunks
+
+    def test_apply_patch_crate_public_constants_match_rust(self) -> None:
+        # Rust source: codex/codex-rs/apply-patch/src/lib.rs
+        # Rust contract: APPLY_PATCH_TOOL_INSTRUCTIONS include_str! and CODEX_CORE_APPLY_PATCH_ARG1.
+        self.assertEqual(CODEX_CORE_APPLY_PATCH_ARG1, "--codex-run-as-apply-patch")
+        self.assertEqual(ARG0_CODEX_CORE_APPLY_PATCH_ARG1, CODEX_CORE_APPLY_PATCH_ARG1)
+        self.assertTrue(APPLY_PATCH_TOOL_INSTRUCTIONS.startswith("## `apply_patch`\n\n"))
+        self.assertIn("Use the `apply_patch` shell command to edit files.", APPLY_PATCH_TOOL_INSTRUCTIONS)
+        self.assertIn('shell {"command":["apply_patch"', APPLY_PATCH_TOOL_INSTRUCTIONS)
+
+    def test_apply_patch_standalone_run_main_argument_and_stdin_contract(self) -> None:
+        # Rust source: codex/codex-rs/apply-patch/src/standalone_executable.rs
+        # Rust contract: run_main accepts one patch argument or reads stdin, rejects empty stdin/extra/non-UTF8 args.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            patch = "*** Begin Patch\n*** Add File: arg.txt\n+from arg\n*** End Patch\n"
+            result = run_apply_patch_standalone([patch], cwd=root)
+            self.assertEqual(result.exit_code, 0)
+            self.assertEqual(result.stderr, "")
+            self.assertIn("Success. Updated the following files:", result.stdout)
+            self.assertEqual((root / "arg.txt").read_text(encoding="utf-8"), "from arg\n")
+
+            stdin_patch = "*** Begin Patch\n*** Add File: stdin.txt\n+from stdin\n*** End Patch\n"
+            stdin_result = run_apply_patch_standalone([], stdin_patch, cwd=root)
+            self.assertEqual(stdin_result.exit_code, 0)
+            self.assertEqual(stdin_result.stderr, "")
+            self.assertEqual((root / "stdin.txt").read_text(encoding="utf-8"), "from stdin\n")
+
+            usage = run_apply_patch_standalone([], "", cwd=root)
+            self.assertEqual(usage.exit_code, 2)
+            self.assertEqual(usage.stdout, "")
+            self.assertIn("Usage: apply_patch 'PATCH'", usage.stderr)
+
+            extra = run_apply_patch_standalone([patch, "extra"], cwd=root)
+            self.assertEqual(extra.exit_code, 2)
+            self.assertEqual(extra.stderr, "Error: apply_patch accepts exactly one argument.\n")
+
+            non_utf8 = run_apply_patch_standalone([b"patch"], cwd=root)
+            self.assertEqual(non_utf8.exit_code, 1)
+            self.assertEqual(non_utf8.stderr, "Error: apply_patch requires a UTF-8 PATCH argument.\n")
 
     def make_workspace_dir(self) -> Path:
         path = Path.cwd() / f".pycodex-test-{uuid.uuid4().hex}"
@@ -880,6 +924,31 @@ class CoreApplyPatchTests(unittest.TestCase):
             'header\nfoo\nBAR\nplain - dash\nquote "x"\n',
         )
 
+    def test_derive_new_contents_from_chunks_matches_seek_sequence_defensive_edges(self) -> None:
+        # Rust source: codex/codex-rs/apply-patch/src/seek_sequence.rs
+        # Rust tests: test_pattern_longer_than_input_returns_none plus eof-first behavior.
+        too_long = (UpdateFileChunk(None, old_lines=("too", "many", "lines"), new_lines=("new",)),)
+        with self.assertRaises(ApplyPatchError) as missing:
+            derive_new_contents_from_chunks("short.txt", too_long, "just one line\n")
+        self.assertIn("Failed to find expected lines", str(missing.exception))
+
+        eof_chunk = (
+            UpdateFileChunk(
+                None,
+                old_lines=("repeat",),
+                new_lines=("tail",),
+                is_end_of_file=True,
+            ),
+        )
+        self.assertEqual(
+            derive_new_contents_from_chunks(
+                "eof.txt",
+                eof_chunk,
+                "repeat\nmiddle\nrepeat\n",
+            ),
+            "repeat\nmiddle\ntail\n",
+        )
+
     def test_unified_diff_from_chunks_matches_upstream_multi_change(self) -> None:
         patch = (
             "*** Begin Patch\n"
@@ -1278,6 +1347,8 @@ class CoreApplyPatchTests(unittest.TestCase):
         for argv in (
             ("bash", "-lc", script),
             ("bash", "-c", script),
+            ("zsh", "-c", script),
+            ("sh", "-c", script),
             ("powershell.exe", "-Command", script),
             ("powershell.exe", "-NoProfile", "-Command", script),
             ("pwsh", "-NoProfile", "-Command", script),
@@ -1305,6 +1376,20 @@ class CoreApplyPatchTests(unittest.TestCase):
                 expected_workdir=expected_workdir,
             )
             self.assertEqual(body.hunks, (Hunk.add_file("foo", "hi\n"),))
+
+        cmd_script = (
+            "cd foo && apply_patch <<'PATCH'\n"
+            "*** Begin Patch\n"
+            "*** Add File: foo\n"
+            "+hi\n"
+            "*** End Patch\n"
+            "PATCH"
+        )
+        cmd_body = self.assert_apply_patch_body(
+            maybe_parse_apply_patch(("cmd.exe", "/c", cmd_script)),
+            expected_workdir="foo",
+        )
+        self.assertEqual(cmd_body.hunks, (Hunk.add_file("foo", "hi\n"),))
 
     def test_maybe_parse_apply_patch_rejects_non_top_level_or_ambiguous_forms(self) -> None:
         def heredoc_script(prefix: str, suffix: str = "") -> str:

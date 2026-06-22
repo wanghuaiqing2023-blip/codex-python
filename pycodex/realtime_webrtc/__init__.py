@@ -11,6 +11,10 @@ from typing import Any
 class RealtimeWebrtcError(RuntimeError):
     """Python boundary for Rust ``RealtimeWebrtcError``."""
 
+    @classmethod
+    def message(cls, value: str) -> "RealtimeWebrtcError":
+        return cls(value)
+
 
 class UnsupportedPlatform(RealtimeWebrtcError):
     """Realtime WebRTC is unsupported on this Python backend/platform."""
@@ -57,6 +61,15 @@ class RealtimeWebrtcSession:
         raise UnsupportedPlatform("realtime WebRTC is not supported on this platform")
 
 
+def message_error(prefix: str, err: object) -> RealtimeWebrtcError:
+    return RealtimeWebrtcError.message(f"{prefix}: {err}")
+
+
+def audio_level_to_peak(audio_level: float) -> int:
+    clamped = min(1.0, max(0.0, float(audio_level)))
+    return round(clamped * 32767)
+
+
 __all__ = [
     "RealtimeWebrtcError",
     "RealtimeWebrtcEvent",
@@ -65,4 +78,6 @@ __all__ = [
     "RealtimeWebrtcSessionHandle",
     "StartedRealtimeWebrtcSession",
     "UnsupportedPlatform",
+    "audio_level_to_peak",
+    "message_error",
 ]

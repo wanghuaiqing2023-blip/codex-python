@@ -61,6 +61,18 @@ EXIT_SENTINEL = "__codex_code_mode_exit__"
 EXEC_MAIN_MODULE_NAME = "exec_main.mjs"
 UNSUPPORTED_DYNAMIC_IMPORT_ERROR = "unsupported import in exec"
 RUNTIME_TOOL_CALL_ID_PREFIX = "tool-"
+RUNTIME_REMOVED_GLOBALS = ("console", "Atomics", "SharedArrayBuffer", "WebAssembly")
+RUNTIME_GLOBAL_HELPERS = (
+    "clearTimeout",
+    "setTimeout",
+    "text",
+    "image",
+    "store",
+    "load",
+    "notify",
+    "yield_control",
+    "exit",
+)
 _COMMAND_STREAM_DISCONNECTED = object()
 
 CODE_MODE_FREEFORM_GRAMMAR = """
@@ -1080,7 +1092,7 @@ def unsupported_dynamic_import_error() -> str:
 
 def runtime_tool_index_from_callback_data(value: JsonValue) -> int:
     text = str(value)
-    if text == "" or not text.isdecimal():
+    if text == "" or not all("0" <= char <= "9" for char in text):
         raise ValueError("invalid tool callback data")
     return int(text)
 
@@ -1559,6 +1571,20 @@ def build_all_tools_metadata(
         {"name": metadata.global_name, "description": metadata.description}
         for metadata in (_coerce_enabled_tool_metadata(tool) for tool in enabled_tools)
     )
+
+
+def build_runtime_globals_projection(
+    enabled_tools: Iterable[
+        CodeModeToolDefinition | EnabledToolMetadata | Mapping[str, JsonValue]
+    ],
+) -> dict[str, JsonValue]:
+    tools = tuple(_coerce_enabled_tool_metadata(tool) for tool in enabled_tools)
+    return {
+        "removed_globals": RUNTIME_REMOVED_GLOBALS,
+        "helpers": RUNTIME_GLOBAL_HELPERS,
+        "tools": {metadata.global_name: str(index) for index, metadata in enumerate(tools)},
+        "ALL_TOOLS": build_all_tools_metadata(tools),
+    }
 
 
 def code_mode_namespace_name(
@@ -2159,7 +2185,7 @@ def _parse_mcp_output_image(value: Mapping[str, JsonValue]) -> tuple[str, str | 
     detail = None
     if isinstance(meta, Mapping):
         raw_detail = meta.get(CODEX_IMAGE_DETAIL_META_KEY)
-        if isinstance(raw_detail, str) and raw_detail in {"high", "original"}:
+        if isinstance(raw_detail, str) and raw_detail in {"auto", "low", "high", "original"}:
             detail = raw_detail
     return image_url, detail
 
@@ -2180,11 +2206,12 @@ def _normalize_image_detail(value: str | ImageDetail | None) -> ImageDetail | No
     if isinstance(value, ImageDetail):
         return value
     normalized = value.lower()
-    if normalized == "high":
-        return ImageDetail.HIGH
-    if normalized == "original":
-        return ImageDetail.ORIGINAL
-    raise ValueError("image detail must be one of: high, original")
+    try:
+        return ImageDetail(normalized)
+    except ValueError as exc:
+        raise ValueError(
+            "image detail must be one of: auto, low, high, original"
+        ) from exc
 
 
 def _js_number_value(value: JsonValue | None) -> float | None:
@@ -2575,6 +2602,8 @@ __all__ = [
     "RuntimeCommand",
     "RuntimeControlCommand",
     "RuntimeEvent",
+    "RUNTIME_GLOBAL_HELPERS",
+    "RUNTIME_REMOVED_GLOBALS",
     "RuntimeResponse",
     "RUNTIME_TOOL_CALL_ID_PREFIX",
     "ToolNamespaceDescription",
@@ -2591,6 +2620,7 @@ __all__ = [
     "build_exec_tool_description",
     "build_nested_tool_payload",
     "build_runtime_image_event",
+    "build_runtime_globals_projection",
     "build_runtime_notify_event",
     "build_runtime_text_event",
     "build_runtime_tool_call_event",

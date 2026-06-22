@@ -99,6 +99,14 @@ class StreamParserTest(unittest.TestCase):
         self.assertEqual(visible, "az</oai-mem-citation>b")
         self.assertEqual(citations, ["x<oai-mem-citation>y"])
 
+    # Rust crate/module: codex-utils-stream-parser::citation.
+    # Rust test: strip_citations_auto_closes_unterminated_citation_at_eof.
+    def test_strip_citations_auto_closes_unterminated_citation_at_eof(self) -> None:
+        visible, citations = strip_citations("x<oai-mem-citation>y")
+
+        self.assertEqual(visible, "x")
+        self.assertEqual(citations, ["y"])
+
     # Rust crate/module: codex-utils-stream-parser::inline_hidden_tag.
     # Rust tests: multiple tag types and longest opener preference.
     def test_inline_hidden_tag_parser_multiple_tags_and_longest_opener(self) -> None:
@@ -125,6 +133,16 @@ class StreamParserTest(unittest.TestCase):
         out = collect_text_chunks(parser, ["x<ab>y</ab>z"])
         self.assertEqual(out.visible_text, "xz")
         self.assertEqual(out.extracted, [ExtractedInlineTag("B", "y")])
+
+    # Rust crate/module: codex-utils-stream-parser::inline_hidden_tag.
+    # Rust test: generic_inline_parser_supports_non_ascii_tag_delimiters.
+    def test_inline_hidden_tag_parser_supports_non_ascii_tag_delimiters(self) -> None:
+        parser = InlineHiddenTagParser([InlineTagSpec(tag="A", open="<\u00e9>", close="</\u00e9>")])
+
+        out = collect_text_chunks(parser, ["a<", "\u00e9>\u4e2d</", "\u00e9>b"])
+
+        self.assertEqual(out.visible_text, "ab")
+        self.assertEqual(out.extracted, [ExtractedInlineTag("A", "\u4e2d")])
 
     # Rust crate/module: codex-utils-stream-parser::inline_hidden_tag.
     # Rust tests: constructor panics for empty specs/delimiters.

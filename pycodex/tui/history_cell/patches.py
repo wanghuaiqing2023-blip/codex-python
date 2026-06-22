@@ -35,9 +35,9 @@ def _display_path_for(path: str | Path, cwd: str | Path) -> str:
     path_obj = Path(path)
     cwd_obj = Path(cwd)
     try:
-        return str(path_obj.relative_to(cwd_obj))
+        return str(path_obj.relative_to(cwd_obj)).replace("\\", "/")
     except Exception:
-        return str(path_obj)
+        return str(path_obj).replace("\\", "/")
 
 
 def _file_url(path: str | Path) -> str:

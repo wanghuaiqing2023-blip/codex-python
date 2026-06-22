@@ -1,6 +1,7 @@
 import unittest
 from pathlib import Path
 
+import pycodex.protocol as protocol
 from pycodex.protocol import (
     BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS,
     BUILT_IN_PERMISSION_PROFILE_READ_ONLY,
@@ -19,6 +20,9 @@ from pycodex.protocol import (
     NetworkPermissions,
     NetworkSandboxPolicy,
     PermissionProfile,
+    PROTECTED_METADATA_AGENTS_PATH_NAME,
+    PROTECTED_METADATA_CODEX_PATH_NAME,
+    PROTECTED_METADATA_GIT_PATH_NAME,
     PROTECTED_METADATA_PATH_NAMES,
     ReadDenyMatcher,
     SandboxEnforcement,
@@ -30,6 +34,7 @@ from pycodex.protocol import (
     is_protected_metadata_name,
     project_roots_glob_pattern,
 )
+from pycodex.protocol.models import _legacy_runtime_file_system_policy_for_cwd
 
 
 class ProtocolPermissionModelTests(unittest.TestCase):
@@ -46,6 +51,20 @@ class ProtocolPermissionModelTests(unittest.TestCase):
         return Path(__file__).resolve().parents[1] / "__virtual_tests__" / name
 
     def test_sandbox_permissions_helpers_match_upstream(self):
+        # Rust parity: codex-protocol/src/models.rs
+        # sandbox_permissions_helpers_match_documented_semantics.
+        cases = (
+            (SandboxPermissions.USE_DEFAULT, False, False, False),
+            (SandboxPermissions.REQUIRE_ESCALATED, True, True, False),
+            (SandboxPermissions.WITH_ADDITIONAL_PERMISSIONS, False, True, True),
+        )
+
+        for sandbox_permissions, requires_escalated, requests_override, uses_additional in cases:
+            with self.subTest(sandbox_permissions=sandbox_permissions):
+                self.assertEqual(sandbox_permissions.requires_escalated_permissions(), requires_escalated)
+                self.assertEqual(sandbox_permissions.requests_sandbox_override(), requests_override)
+                self.assertEqual(sandbox_permissions.uses_additional_permissions(), uses_additional)
+
         self.assertIs(SandboxPermissions.default(), SandboxPermissions.USE_DEFAULT)
         self.assertFalse(SandboxPermissions.USE_DEFAULT.requests_sandbox_override())
         self.assertTrue(SandboxPermissions.REQUIRE_ESCALATED.requires_escalated_permissions())
@@ -102,6 +121,10 @@ class ProtocolPermissionModelTests(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "enabled must be a bool"):
             NetworkPermissions(enabled="true")
         self.assertTrue(AdditionalPermissionProfile().is_empty())
+        # Rust parity: codex-protocol/src/models.rs
+        # additional_permission_profile_is_empty_when_all_fields_are_none and
+        # additional_permission_profile_is_not_empty_when_field_is_present_but_nested_empty.
+        self.assertFalse(AdditionalPermissionProfile(network=NetworkPermissions()).is_empty())
         self.assertFalse(AdditionalPermissionProfile(network=NetworkPermissions(enabled=True)).is_empty())
         with self.assertRaisesRegex(TypeError, "network must be NetworkPermissions"):
             AdditionalPermissionProfile(network={"enabled": True})
@@ -150,11 +173,21 @@ class ProtocolPermissionModelTests(unittest.TestCase):
             FileSystemSandboxPolicy.workspace_write(exclude_slash_tmp="false")
 
     def test_protected_metadata_helpers_match_upstream(self):
+        # Rust: codex-protocol/src/permissions.rs
         self.assertEqual(PROTECTED_METADATA_PATH_NAMES, (".git", ".agents", ".codex"))
+        self.assertEqual(PROTECTED_METADATA_GIT_PATH_NAME, ".git")
+        self.assertEqual(PROTECTED_METADATA_AGENTS_PATH_NAME, ".agents")
+        self.assertEqual(PROTECTED_METADATA_CODEX_PATH_NAME, ".codex")
+        self.assertEqual(protocol.PROTECTED_METADATA_PATH_NAMES, PROTECTED_METADATA_PATH_NAMES)
         self.assertTrue(is_protected_metadata_name(".git"))
+        self.assertTrue(is_protected_metadata_name(Path(".agents")))
+        self.assertTrue(is_protected_metadata_name(Path(".codex")))
+        self.assertFalse(is_protected_metadata_name(".Git"))
+        self.assertFalse(is_protected_metadata_name("git"))
         self.assertTrue(is_protected_metadata_directory_name(".agents"))
         self.assertTrue(is_protected_metadata_directory_name(".codex"))
         self.assertFalse(is_protected_metadata_directory_name(".git"))
+        self.assertFalse(is_protected_metadata_directory_name(Path(".Git")))
         self.assertEqual(project_roots_glob_pattern(Path("**/*.env")), "codex-project-roots://**/*.env")
 
     def test_filesystem_path_mapping_roundtrips_and_accepts_legacy_alias(self):
@@ -367,6 +400,37 @@ class ProtocolPermissionModelTests(unittest.TestCase):
         self.assertFalse(denied_root.has_full_disk_write_access())
         self.assertEqual(denied_root.resolve_access_with_cwd(root_path, cwd), FileSystemAccessMode.DENY)
 
+    def test_duplicate_root_deny_prevents_full_disk_write_access(self):
+        # Rust parity: codex-protocol/src/permissions.rs
+        # duplicate_root_deny_prevents_full_disk_write_access.
+        cwd = self._workspace_path("duplicate-root-deny")
+        root_path = Path(cwd.anchor) if cwd.anchor else Path("/")
+        policy = FileSystemSandboxPolicy.restricted(
+            (
+                FileSystemSandboxEntry(FileSystemPath.special(FileSystemSpecialPath.root()), FileSystemAccessMode.WRITE),
+                FileSystemSandboxEntry(FileSystemPath.special(FileSystemSpecialPath.root()), FileSystemAccessMode.DENY),
+            )
+        )
+
+        self.assertFalse(policy.has_full_disk_write_access())
+        self.assertEqual(policy.resolve_access_with_cwd(root_path, cwd), FileSystemAccessMode.DENY)
+
+    def test_same_specificity_write_override_keeps_full_disk_write_access(self):
+        # Rust parity: codex-protocol/src/permissions.rs
+        # same_specificity_write_override_keeps_full_disk_write_access.
+        cwd = self._workspace_path("same-specificity-write")
+        docs = cwd / "docs"
+        policy = FileSystemSandboxPolicy.restricted(
+            (
+                FileSystemSandboxEntry(FileSystemPath.special(FileSystemSpecialPath.root()), FileSystemAccessMode.WRITE),
+                self._entry(docs, FileSystemAccessMode.READ),
+                self._entry(docs, FileSystemAccessMode.WRITE),
+            )
+        )
+
+        self.assertTrue(policy.has_full_disk_write_access())
+        self.assertEqual(policy.resolve_access_with_cwd(docs, cwd), FileSystemAccessMode.WRITE)
+
     def test_workspace_metadata_writes_are_directly_blocked_by_default(self):
         cwd = self._workspace_path("workspace-metadata")
         policy = FileSystemSandboxPolicy.workspace_write(exclude_tmpdir_env_var=True, exclude_slash_tmp=True)
@@ -391,6 +455,26 @@ class ProtocolPermissionModelTests(unittest.TestCase):
         self.assertTrue(explicit_git.can_write_path_with_cwd(Path(".git/config"), cwd))
         self.assertIsNone(forbidden_agent_metadata_write(Path(".git/config"), cwd, explicit_git))
 
+    def test_writable_roots_skip_default_dot_codex_when_explicit_user_rule_exists(self):
+        # Rust parity: codex-protocol/src/permissions.rs
+        # writable_roots_skip_default_dot_codex_when_explicit_user_rule_exists.
+        cwd = self._workspace_path("explicit-dot-codex").resolve()
+        explicit_dot_codex = cwd / ".codex"
+        policy = FileSystemSandboxPolicy.restricted(
+            (
+                FileSystemSandboxEntry(
+                    FileSystemPath.special(FileSystemSpecialPath.project_roots()),
+                    FileSystemAccessMode.WRITE,
+                ),
+                self._entry(explicit_dot_codex, FileSystemAccessMode.WRITE),
+            )
+        )
+
+        workspace_root = next(root for root in policy.get_writable_roots_with_cwd(cwd) if root.root == cwd)
+        self.assertNotIn(".codex", workspace_root.protected_metadata_names)
+        self.assertNotIn(explicit_dot_codex, workspace_root.read_only_subpaths)
+        self.assertTrue(policy.can_write_path_with_cwd(explicit_dot_codex / "config.toml", cwd))
+
     def test_writable_roots_include_metadata_name_protections(self):
         cwd = self._workspace_path("writable-roots")
         policy = FileSystemSandboxPolicy.restricted((self._entry(cwd, FileSystemAccessMode.WRITE),))
@@ -404,6 +488,19 @@ class ProtocolPermissionModelTests(unittest.TestCase):
         self.assertFalse(writable_roots[0].is_path_writable(cwd / ".agents" / "skills" / "example" / "SKILL.md"))
         self.assertFalse(writable_roots[0].is_path_writable(cwd / ".codex" / "config.toml"))
         self.assertTrue(writable_roots[0].is_path_writable(cwd / "src" / "main.py"))
+
+    def test_writable_roots_proactively_protect_missing_dot_codex(self):
+        # Rust parity: codex-protocol/src/permissions.rs
+        # writable_roots_proactively_protect_missing_dot_codex.
+        cwd = self._workspace_path("missing-dot-codex").resolve()
+        policy = FileSystemSandboxPolicy.restricted((self._entry(cwd, FileSystemAccessMode.WRITE),))
+
+        writable_roots = policy.get_writable_roots_with_cwd(cwd)
+
+        self.assertEqual(len(writable_roots), 1)
+        self.assertFalse((cwd / ".codex").exists())
+        self.assertIn(cwd / ".codex", writable_roots[0].read_only_subpaths)
+        self.assertFalse(policy.can_write_path_with_cwd(cwd / ".codex" / "config.toml", cwd))
 
     def test_writable_root_method_matches_upstream_contract(self):
         # Rust source: codex-rs/protocol/src/protocol.rs
@@ -592,6 +689,22 @@ class ProtocolPermissionModelTests(unittest.TestCase):
         self.assertIn(explicit, actual.entries)
         self.assertEqual(sum(1 for entry in again.entries if entry == explicit), 1)
         self.assertEqual(FileSystemSandboxPolicy.unrestricted().with_additional_legacy_workspace_writable_roots([cwd]), FileSystemSandboxPolicy.unrestricted())
+
+    def test_with_additional_legacy_workspace_writable_roots_protects_metadata(self):
+        # Rust parity: codex-protocol/src/permissions.rs
+        # with_additional_legacy_workspace_writable_roots_protects_metadata.
+        extra = self._workspace_path("legacy-root-metadata")
+        (extra / ".git").mkdir(parents=True, exist_ok=True)
+        (extra / ".agents").mkdir(parents=True, exist_ok=True)
+        (extra / ".codex").mkdir(parents=True, exist_ok=True)
+        policy = FileSystemSandboxPolicy.workspace_write(exclude_tmpdir_env_var=True, exclude_slash_tmp=True)
+
+        actual = policy.with_additional_legacy_workspace_writable_roots([extra])
+
+        self.assertIn(self._entry(extra, FileSystemAccessMode.WRITE), actual.entries)
+        self.assertIn(self._entry(extra / ".git", FileSystemAccessMode.READ), actual.entries)
+        self.assertIn(self._entry(extra / ".agents", FileSystemAccessMode.READ), actual.entries)
+        self.assertIn(self._entry(extra / ".codex", FileSystemAccessMode.READ), actual.entries)
 
     def test_preserve_deny_read_restrictions_from_existing_policy(self):
         denied_glob = self._glob_entry(str(self._workspace_path("secrets") / "**" / "*.env"))
@@ -787,6 +900,16 @@ class ProtocolPermissionModelTests(unittest.TestCase):
 
         self.assertEqual(
             FileSystemSandboxPolicy.from_legacy_sandbox_policy(legacy),
+            FileSystemSandboxPolicy.workspace_write(exclude_tmpdir_env_var=True, exclude_slash_tmp=True),
+        )
+
+    def test_legacy_workspace_write_projection_accepts_relative_cwd(self):
+        # Rust parity: codex-protocol/src/permissions.rs
+        # legacy_workspace_write_projection_accepts_relative_cwd.
+        legacy = SandboxPolicy.workspace_write(exclude_tmpdir_env_var=True, exclude_slash_tmp=True)
+
+        self.assertEqual(
+            FileSystemSandboxPolicy.from_legacy_sandbox_policy_for_cwd(legacy, Path("relative-workspace")),
             FileSystemSandboxPolicy.workspace_write(exclude_tmpdir_env_var=True, exclude_slash_tmp=True),
         )
 
@@ -1071,6 +1194,51 @@ class ProtocolPermissionModelTests(unittest.TestCase):
         read_only = FileSystemSandboxPolicy.from_legacy_sandbox_policy(SandboxPolicy.read_only())
         self.assertFalse(read_only.needs_direct_runtime_enforcement(NetworkSandboxPolicy.RESTRICTED, cwd))
 
+    def test_split_only_nested_carveouts_need_direct_runtime_enforcement(self):
+        # Rust parity: codex-protocol/src/permissions.rs
+        # split_only_nested_carveouts_need_direct_runtime_enforcement.
+        cwd = self._workspace_path("split-only-nested-carveouts")
+        docs = cwd / "docs"
+        policy = FileSystemSandboxPolicy.restricted(
+            (
+                FileSystemSandboxEntry(
+                    FileSystemPath.special(FileSystemSpecialPath.project_roots()),
+                    FileSystemAccessMode.WRITE,
+                ),
+                self._entry(docs, FileSystemAccessMode.READ),
+            )
+        )
+
+        self.assertTrue(policy.needs_direct_runtime_enforcement(NetworkSandboxPolicy.RESTRICTED, cwd))
+
+    def test_legacy_projection_runtime_enforcement_ignores_entry_order(self):
+        # Rust parity: codex-protocol/src/permissions.rs
+        # legacy_projection_runtime_enforcement_ignores_entry_order.
+        cwd = self._workspace_path("legacy-projection-entry-order")
+        legacy_order = FileSystemSandboxPolicy.from_legacy_sandbox_policy_for_cwd(
+            SandboxPolicy.workspace_write(exclude_tmpdir_env_var=True, exclude_slash_tmp=True),
+            cwd,
+        )
+        reordered = FileSystemSandboxPolicy.restricted(tuple(reversed(legacy_order.entries)))
+
+        self.assertTrue(legacy_order.is_semantically_equivalent_to(reordered, cwd))
+        self.assertEqual(
+            legacy_order.needs_direct_runtime_enforcement(NetworkSandboxPolicy.RESTRICTED, cwd),
+            reordered.needs_direct_runtime_enforcement(NetworkSandboxPolicy.RESTRICTED, cwd),
+        )
+
+    def test_missing_symbolic_metadata_carveouts_need_direct_runtime_enforcement(self):
+        # Rust parity: codex-protocol/src/permissions.rs
+        # missing_symbolic_metadata_carveouts_need_direct_runtime_enforcement.
+        cwd = self._workspace_path("missing-symbolic-metadata")
+        legacy_policy = SandboxPolicy.workspace_write(exclude_tmpdir_env_var=True, exclude_slash_tmp=True)
+
+        profile_projection = FileSystemSandboxPolicy.from_legacy_sandbox_policy_for_cwd(legacy_policy, cwd)
+        self.assertTrue(profile_projection.needs_direct_runtime_enforcement(NetworkSandboxPolicy.RESTRICTED, cwd))
+
+        legacy_runtime_projection = _legacy_runtime_file_system_policy_for_cwd(legacy_policy, cwd)
+        self.assertTrue(legacy_runtime_projection.needs_direct_runtime_enforcement(NetworkSandboxPolicy.RESTRICTED, cwd))
+
     def test_managed_file_system_permissions_roundtrip_runtime_policy(self):
         policy = FileSystemSandboxPolicy.restricted(
             (FileSystemSandboxEntry(FileSystemPath.explicit_path("/tmp/project"), FileSystemAccessMode.WRITE),)
@@ -1112,10 +1280,16 @@ class ProtocolPermissionModelTests(unittest.TestCase):
         # Rust source: codex-rs/protocol/src/models.rs
         # Rust tests: disabled_permission_profile_ignores_runtime_network_policy,
         # permission_profile_from_runtime_permissions_preserves_external_sandbox,
-        # permission_profile_from_runtime_permissions_preserves_unrestricted_managed_network.
+        # permission_profile_from_runtime_permissions_preserves_unrestricted_managed_network,
+        # and permission_profile_round_trip_preserves_glob_scan_max_depth.
         unrestricted = FileSystemSandboxPolicy.unrestricted()
         external_fs = FileSystemSandboxPolicy.external_sandbox()
         restricted = FileSystemSandboxPolicy.restricted(())
+        restricted_with_glob_depth = FileSystemSandboxPolicy(
+            kind=FileSystemSandboxKind.RESTRICTED,
+            entries=(self._glob_entry("**/*.env"),),
+            glob_scan_max_depth=2,
+        )
 
         self.assertEqual(
             PermissionProfile.from_runtime_permissions_with_enforcement(
@@ -1132,6 +1306,13 @@ class ProtocolPermissionModelTests(unittest.TestCase):
         self.assertEqual(
             PermissionProfile.from_runtime_permissions(restricted, NetworkSandboxPolicy.RESTRICTED),
             PermissionProfile.managed(ManagedFileSystemPermissions.restricted(()), NetworkSandboxPolicy.RESTRICTED),
+        )
+        self.assertEqual(
+            PermissionProfile.from_runtime_permissions(
+                restricted_with_glob_depth,
+                NetworkSandboxPolicy.RESTRICTED,
+            ).file_system_sandbox_policy(),
+            restricted_with_glob_depth,
         )
         managed_unrestricted = PermissionProfile.from_runtime_permissions_with_enforcement(
             SandboxEnforcement.EXTERNAL,

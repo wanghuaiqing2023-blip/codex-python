@@ -75,6 +75,7 @@ class AbsolutePathBuf:
         return AbsolutePathBuf(parent) if parent != self._path else None
 
     def ancestors(self) -> Iterator["AbsolutePathBuf"]:
+        yield AbsolutePathBuf(self._path)
         for ancestor in self._path.parents:
             yield AbsolutePathBuf(ancestor)
 

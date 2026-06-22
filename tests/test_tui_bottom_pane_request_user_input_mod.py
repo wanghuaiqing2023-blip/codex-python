@@ -74,11 +74,13 @@ def test_footer_tip_constructors_and_wrapping_do_not_split_tips():
 
     overlay = RequestUserInputOverlay.new(request(question(options=[option("A")]), question(options=None)))
     overlay.answers[0].options_state.selected_idx = 0
-    lines = overlay.footer_tip_lines(24)
+    # Rust: codex-tui bottom_pane::request_user_input
+    # test footer_wraps_tips_without_splitting_individual_tips uses width = 36.
+    lines = overlay.footer_tip_lines(36)
     assert len(lines) > 1
     for line in lines:
         joined = TIP_SEPARATOR.join(tip.text for tip in line)
-        assert len(joined) <= 24
+        assert len(joined) <= 36
 
 
 def test_footer_required_height_counts_wrapped_tip_lines():

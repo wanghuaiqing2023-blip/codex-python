@@ -725,6 +725,7 @@ def _remove_git_metadata(root: Path) -> None:
 
 
 def _commit_current_tree(root: Path, message: str) -> None:
+    run_git_for_status(root, ("config", "core.autocrlf", "false"))
     run_git_for_status(root, ("add", "-A"))
     run_git_for_status(
         root,
@@ -1430,6 +1431,11 @@ def _ensure_pathlike(value: object, name: str) -> None:
 def _ensure_str(value: object, name: str) -> None:
     if not isinstance(value, str):
         raise TypeError(f"{name} must be a string")
+
+
+def _ensure_str_list(value: object, name: str) -> None:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise TypeError(f"{name} must be a list of strings")
 
 
 def _ensure_i64(value: object, name: str) -> None:

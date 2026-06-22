@@ -43,6 +43,9 @@ CODEX_MANAGED_CONFIG_SYSTEM_PATH = PurePosixPath("/etc/codex/managed_config.toml
 SYSTEM_CONFIG_TOML_FILE_UNIX = PurePosixPath("/etc/codex/config.toml")
 SYSTEM_REQUIREMENTS_TOML_FILE_UNIX = PurePosixPath("/etc/codex/requirements.toml")
 DEFAULT_PROGRAM_DATA_DIR_WINDOWS = PureWindowsPath("C:/ProgramData")
+MANAGED_PREFERENCES_APPLICATION_ID = "com.openai.codex"
+MANAGED_PREFERENCES_CONFIG_KEY = "config_toml_base64"
+MANAGED_PREFERENCES_REQUIREMENTS_KEY = "requirements_toml_base64"
 
 PROJECT_LOCAL_CONFIG_DENYLIST: tuple[str, ...] = (
     "openai_base_url",
@@ -811,6 +814,40 @@ def managed_config_from_mdm_base64(
     return managed_config_from_mdm_raw_toml(raw_toml, strict_config=strict_config)
 
 
+def managed_preferences_requirements_source() -> RequirementSource:
+    return RequirementSource.mdm_managed_preferences(
+        MANAGED_PREFERENCES_APPLICATION_ID,
+        MANAGED_PREFERENCES_REQUIREMENTS_KEY,
+    )
+
+
+def managed_requirements_from_mdm_base64(encoded: str | None) -> ConfigRequirementsToml | None:
+    if encoded is None or not encoded.strip():
+        return None
+    try:
+        raw_toml = base64.b64decode(encoded.strip().encode("ascii"), validate=True).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError) as exc:
+        raise ValueError("managed requirements must be base64-encoded UTF-8 TOML") from exc
+    return ConfigRequirementsToml.from_toml(raw_toml)
+
+
+def load_managed_admin_requirements_toml(
+    target: ConfigRequirementsWithSources,
+    override_base64: str | None = None,
+    *,
+    hostname: str | None = None,
+) -> None:
+    requirements = managed_requirements_from_mdm_base64(override_base64)
+    if requirements is None:
+        return
+    merge_requirements_with_remote_sandbox_config(
+        target,
+        managed_preferences_requirements_source(),
+        requirements,
+        hostname=hostname,
+    )
+
+
 def load_config_layers_internal(
     codex_home: Path | str,
     *,
@@ -907,6 +944,9 @@ __all__ = [
     "CODEX_MANAGED_CONFIG_SYSTEM_PATH",
     "CONFIG_TOML_FILE",
     "DEFAULT_PROGRAM_DATA_DIR_WINDOWS",
+    "MANAGED_PREFERENCES_APPLICATION_ID",
+    "MANAGED_PREFERENCES_CONFIG_KEY",
+    "MANAGED_PREFERENCES_REQUIREMENTS_KEY",
     "LoadedConfigLayers",
     "LoadedProjectLayers",
     "ManagedConfigFromFile",
@@ -928,6 +968,7 @@ __all__ = [
     "load_config_layers_internal",
     "load_config_toml_for_required_layer",
     "load_config_layers_state",
+    "load_managed_admin_requirements_toml",
     "load_requirements_from_legacy_scheme",
     "load_requirements_toml",
     "load_project_layers",
@@ -936,6 +977,8 @@ __all__ = [
     "managed_config_default_path",
     "managed_config_from_mdm_base64",
     "managed_config_from_mdm_raw_toml",
+    "managed_preferences_requirements_source",
+    "managed_requirements_from_mdm_base64",
     "merge_requirements_with_remote_sandbox_config",
     "normalized_project_trust_keys",
     "project_ignored_config_keys_warning",

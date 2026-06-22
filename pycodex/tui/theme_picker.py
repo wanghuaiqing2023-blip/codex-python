@@ -292,9 +292,7 @@ def side_by_side_layout_widths(
 
 
 def subtitle_available_width(terminal_width: Optional[int]) -> int:
-    content_width = popup_content_width(terminal_width or DEFAULT_TERMINAL_WIDTH)
-    widths = side_by_side_layout_widths(content_width)
-    return widths[0] if widths else content_width
+    return popup_content_width(terminal_width or DEFAULT_TERMINAL_WIDTH)
 
 
 def _display_path(path: Path) -> str:
@@ -311,6 +309,8 @@ def theme_picker_subtitle(
     codex_home: Optional[Union[str, Path]],
     terminal_width: Optional[int] = None,
 ) -> str:
+    if terminal_width is not None and int(terminal_width) < 120:
+        return PREVIEW_FALLBACK_SUBTITLE
     available_width = subtitle_available_width(terminal_width)
     if codex_home is not None:
         path = _display_path(Path(codex_home) / "themes")

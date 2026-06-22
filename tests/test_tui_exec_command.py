@@ -24,7 +24,7 @@ def test_strip_bash_lc_and_escape_extracts_common_shell_scripts():
 
 
 def test_strip_bash_lc_and_escape_falls_back_to_escaped_command():
-    assert strip_bash_lc_and_escape(["python", "-c", "print('hi')"]) == "python -c 'print('"'"'hi'"'"')'"
+    assert strip_bash_lc_and_escape(["python", "-c", "print('hi')"]) == "python -c 'print('\"'\"'hi'\"'\"')'"
 
 
 def test_split_command_string_round_trips_shell_wrappers():

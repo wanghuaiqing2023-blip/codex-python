@@ -17,11 +17,12 @@ class CoreRolloutReexportTests(unittest.TestCase):
         self.assertIs(rollout.read_head_for_summary, rollout_impl.read_head_for_summary)
         self.assertIs(rollout.find_thread_path_by_id_str, rollout_impl.find_thread_path_by_id_str)
         self.assertIs(rollout.find_conversation_path_by_id_str, rollout_impl.find_thread_path_by_id_str)
+        self.assertIs(rollout_impl.find_conversation_path_by_id_str, rollout_impl.find_thread_path_by_id_str)
 
     def test_interactive_session_sources_match_rust_rollout_constant(self) -> None:
         # Rust: codex-rs/rollout/src/lib.rs::INTERACTIVE_SESSION_SOURCES.
         self.assertEqual(
-            rollout.INTERACTIVE_SESSION_SOURCES,
+            rollout_impl.INTERACTIVE_SESSION_SOURCES,
             (
                 SessionSource.cli(),
                 SessionSource.vscode(),
@@ -29,11 +30,13 @@ class CoreRolloutReexportTests(unittest.TestCase):
                 SessionSource.custom_source("chatgpt"),
             ),
         )
+        self.assertIs(rollout.INTERACTIVE_SESSION_SOURCES, rollout_impl.INTERACTIVE_SESSION_SOURCES)
 
     def test_core_rollout_exposes_small_enums_and_local_bridges(self) -> None:
         # Rust: codex-rs/core/src/rollout.rs also re-exports policy/list enums and local submodules.
         self.assertEqual(rollout.SortDirection.ASC.value, "asc")
         self.assertEqual(rollout.SortDirection.DESC.value, "desc")
+        self.assertIs(rollout.SortDirection, rollout_impl.SortDirection)
         self.assertEqual(rollout.EventPersistenceMode.LIMITED.value, "limited")
         self.assertEqual(rollout.EventPersistenceMode.EXTENDED.value, "extended")
         self.assertTrue(callable(rollout.map_session_init_error))

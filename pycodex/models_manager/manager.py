@@ -90,7 +90,10 @@ class CachedModelsManager:
 
     async def list_models(self, refresh_strategy: Any = RefreshStrategy.ONLINE_IF_UNCACHED) -> list[ModelPreset]:
         catalog = await self.raw_model_catalog(refresh_strategy)
-        return build_available_models(catalog.models)
+        return build_available_models(
+            catalog.models,
+            uses_codex_backend=current_auth_uses_codex_backend(self.auth_manager),
+        )
 
     async def raw_model_catalog(self, refresh_strategy: Any = RefreshStrategy.ONLINE_IF_UNCACHED) -> ModelsResponse:
         await self.refresh_available_models(refresh_strategy)
@@ -103,7 +106,10 @@ class CachedModelsManager:
         return self.get_remote_models()
 
     def try_list_models(self) -> list[ModelPreset]:
-        return build_available_models(self.get_remote_models())
+        return build_available_models(
+            self.get_remote_models(),
+            uses_codex_backend=current_auth_uses_codex_backend(self.auth_manager),
+        )
 
     def list_collaboration_modes(self):
         return builtin_collaboration_mode_presets()
@@ -130,7 +136,10 @@ class CachedModelsManager:
             raise TypeError("etag must be a string")
         if self.etag is not None and self.etag == etag:
             self._sync_cache_manager()
-            self.cache_manager.renew_cache_ttl()
+            try:
+                self.cache_manager.renew_cache_ttl()
+            except OSError:
+                return
             return
         await self.refresh_available_models(RefreshStrategy.ONLINE)
 
@@ -188,7 +197,7 @@ class CachedModelsManager:
         cache = self.cache_manager.load_fresh(self.client_version)
         if cache is None:
             return False
-        self.remote_models = cache.models
+        self.apply_remote_models(cache.models)
         self.etag = cache.etag
         return True
 
@@ -280,7 +289,7 @@ class OpenAiModelsManager(CachedModelsManager):
 def build_available_models(
     remote_models: list[ModelInfo] | tuple[ModelInfo, ...],
     *,
-    uses_codex_backend: bool = True,
+    uses_codex_backend: bool = False,
 ) -> list[ModelPreset]:
     presets = model_presets_from_models(tuple(remote_models))
     return ModelPreset.filter_by_auth(presets, chatgpt_mode=uses_codex_backend)
@@ -361,7 +370,7 @@ def client_version_to_whole(version: str | None = None) -> str:
 
 def current_auth_uses_codex_backend(auth_manager: Any) -> bool:
     if auth_manager is None:
-        return True
+        return False
     method = getattr(auth_manager, "current_auth_uses_codex_backend", None)
     if callable(method):
         return bool(method())

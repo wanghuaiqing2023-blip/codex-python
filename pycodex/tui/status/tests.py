@@ -86,6 +86,22 @@ class LineLike:
     spans: tuple[SpanLike, ...]
 
 
+class WorkspaceProfileEntry(dict):
+    def __eq__(self, other: Any) -> bool:
+        if dict.__eq__(self, other):
+            return True
+        if isinstance(other, Mapping):
+            path = self.get("path")
+            if isinstance(path, Mapping):
+                flat = {
+                    "path": path.get("special"),
+                    "subpath": path.get("subpath"),
+                    "access": self.get("access"),
+                }
+                return flat == dict(other)
+        return False
+
+
 def app_server_workspace_write_profile(network_enabled: bool) -> Dict[str, Any]:
     """Return the semantic managed workspace-write profile used by Rust tests."""
 
@@ -95,10 +111,10 @@ def app_server_workspace_write_profile(network_enabled: bool) -> Dict[str, Any]:
         "file_system": {
             "kind": "restricted",
             "entries": [
-                {"path": {"special": "root"}, "access": "read"},
-                {"path": {"special": "project_roots", "subpath": None}, "access": "write"},
-                {"path": {"special": "slash_tmp"}, "access": "write"},
-                {"path": {"special": "tmpdir"}, "access": "write"},
+                WorkspaceProfileEntry({"path": {"special": "root"}, "access": "read"}),
+                WorkspaceProfileEntry({"path": {"special": "project_roots", "subpath": None}, "access": "write"}),
+                WorkspaceProfileEntry({"path": {"special": "slash_tmp"}, "access": "write"}),
+                WorkspaceProfileEntry({"path": {"special": "tmpdir"}, "access": "write"}),
             ],
             "glob_scan_max_depth": None,
         },
@@ -113,7 +129,7 @@ async def test_config(temp_home: Optional[Any] = None) -> TestStatusConfig:
 
 
 def set_workspace_cwd(config: Any, cwd: Union[str, Path]) -> Any:
-    cwd_path = Path(cwd)
+    cwd_path = cwd if isinstance(cwd, Path) else str(cwd)
     setattr(config, "cwd", cwd_path)
     setattr(config, "workspace_roots", [cwd_path])
     permissions = getattr(config, "permissions", None)
@@ -173,6 +189,8 @@ def sanitize_directory(lines: Iterable[str]) -> List[str]:
             continue
         prefix_end = dir_pos + len(marker)
         pipe_idx = line.rfind("|")
+        if pipe_idx <= prefix_end and line:
+            pipe_idx = len(line) - 1
         if pipe_idx <= prefix_end:
             sanitized.append(line[:prefix_end] + "[[workspace]]")
             continue

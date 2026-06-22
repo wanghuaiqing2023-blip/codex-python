@@ -18,6 +18,7 @@ class AgentPathTests(unittest.TestCase):
         self.assertEqual(morpheus.as_str(), AgentPath.MORPHEUS)
         self.assertEqual(morpheus.name(), "morpheus")
         self.assertFalse(morpheus.is_root())
+        self.assertEqual(AgentPath("/morpheus"), morpheus)
 
     def test_join_builds_child_paths(self):
         child = AgentPath.root().join("researcher")
@@ -39,8 +40,12 @@ class AgentPathTests(unittest.TestCase):
             (lambda: AgentPath("/"), "absolute agent path must not be empty"),
             (lambda: AgentPath.root().resolve("../sibling"), "agent_name `..` is reserved"),
             (lambda: AgentPath.root().join("root"), "agent_name `root` is reserved"),
+            (lambda: AgentPath.root().join(""), "agent_name must not be empty"),
+            (lambda: AgentPath.root().join("."), "agent_name `.` is reserved"),
+            (lambda: AgentPath.root().join("child/name"), "agent_name must not contain `/`"),
             (lambda: AgentPath("/root/"), "absolute agent path must not end with `/`"),
             (lambda: AgentPath.root().resolve("child/"), "relative agent path must not end with `/`"),
+            (lambda: AgentPath.root().resolve("child//leaf"), "agent_name must not be empty"),
         ]
         for call, message in cases:
             with self.subTest(message=message):

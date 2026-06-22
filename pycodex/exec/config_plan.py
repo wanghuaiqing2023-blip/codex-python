@@ -19,6 +19,14 @@ import sys
 from typing import Any
 from typing import BinaryIO, TextIO
 
+from pycodex.app_server_client import (
+    DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+    EnvironmentManager,
+    ExecServerRuntimePaths,
+    InProcessClientStartArgs,
+    StateDbHandle,
+)
+from pycodex.arg0 import Arg0DispatchPaths
 from pycodex.config import ConfigOverride, apply_single_override
 from pycodex.core.agents_md import (
     DEFAULT_PROJECT_DOC_MAX_BYTES,
@@ -185,6 +193,44 @@ class ExecRuntimeStartupPlan:
                 "promptSummary": self.run_plan.prompt_summary,
             },
             "trustedDirectoryCheck": self.trusted_directory_check.to_mapping(),
+        }
+
+
+@dataclass(frozen=True)
+class ExecRunMainPlan:
+    """Pure plan for the Rust ``run_main`` startup orchestration."""
+
+    startup: ExecRuntimeStartupPlan
+    processor_kind: str
+    stderr_with_ansi: bool
+    local_runtime_paths: ExecServerRuntimePaths
+    state_db: StateDbHandle | None
+    environment_manager_source: str
+    in_process_start_args: InProcessClientStartArgs
+    telemetry_service_name: str = "codex_exec"
+    analytics_enabled: bool = DEFAULT_ANALYTICS_ENABLED
+    log_filter: str = EXEC_DEFAULT_LOG_FILTER
+    upstream_source: str = UPSTREAM_EXEC_RUN_MAIN
+
+    def to_mapping(self) -> dict[str, JsonValue]:
+        return {
+            "startup": self.startup.to_mapping(),
+            "processorKind": self.processor_kind,
+            "stderrWithAnsi": self.stderr_with_ansi,
+            "environmentManagerSource": self.environment_manager_source,
+            "telemetryServiceName": self.telemetry_service_name,
+            "analyticsEnabled": self.analytics_enabled,
+            "logFilter": self.log_filter,
+            "inProcessStartArgs": {
+                "clientName": self.in_process_start_args.client_name,
+                "clientVersion": self.in_process_start_args.client_version,
+                "strictConfig": self.in_process_start_args.strict_config,
+                "enableCodexApiKeyEnv": self.in_process_start_args.enable_codex_api_key_env,
+                "experimentalApi": self.in_process_start_args.experimental_api,
+                "channelCapacity": self.in_process_start_args.channel_capacity,
+                "configWarnings": list(self.in_process_start_args.config_warnings),
+                "sessionSource": self.in_process_start_args.session_source,
+            },
         }
 
 
@@ -1506,6 +1552,77 @@ def build_exec_runtime_startup_plan(
     )
 
 
+def build_exec_run_main_plan(
+    cli: ExecCli,
+    *,
+    arg0_paths: Arg0DispatchPaths | None = None,
+    config_toml: Mapping[str, JsonValue] | None = None,
+    current_dir: str | Path | None = None,
+    stdin: bytes | str | BinaryIO | TextIO | None = None,
+    stdin_is_terminal: bool | None = None,
+    stderr: TextIO | None = None,
+    client_version: str = "0",
+) -> ExecRunMainPlan:
+    """Compose the testable startup choices owned by Rust ``run_main``."""
+
+    paths = arg0_paths if arg0_paths is not None else Arg0DispatchPaths()
+    startup = build_exec_runtime_startup_plan(
+        cli,
+        config_toml=config_toml,
+        current_dir=current_dir,
+        stdin=stdin,
+        stdin_is_terminal=stdin_is_terminal,
+        stderr=stderr,
+    )
+    environment_source = "env" if startup.bootstrap_plan.ignore_user_config else "codex_home"
+    local_runtime_paths = ExecServerRuntimePaths.from_optional_paths(
+        paths.codex_self_exe,
+        paths.codex_linux_sandbox_exe,
+    )
+    environment_manager = EnvironmentManager(
+        {
+            "source": environment_source,
+            "local_runtime_paths": local_runtime_paths.to_mapping(),
+        }
+    )
+    state_db = StateDbHandle({})
+    start_args = InProcessClientStartArgs(
+        arg0_paths=paths,
+        config=startup.session_config,
+        cli_overrides=[(override.path, override.value) for override in startup.bootstrap_plan.cli_overrides],
+        loader_overrides={
+            "ignore_user_config": startup.bootstrap_plan.ignore_user_config,
+            "ignore_rules": startup.bootstrap_plan.ignore_rules,
+        },
+        strict_config=startup.bootstrap_plan.strict_config,
+        cloud_requirements=None,
+        feedback=None,
+        log_db=None,
+        state_db=state_db,
+        environment_manager=environment_manager,
+        config_warnings=[
+            {"summary": warning, "details": None, "path": None, "range": None}
+            for warning in startup.session_config.startup_warnings
+        ],
+        session_source="exec",
+        enable_codex_api_key_env=True,
+        client_name="codex_exec",
+        client_version=client_version,
+        experimental_api=True,
+        opt_out_notification_methods=[],
+        channel_capacity=DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+    )
+    return ExecRunMainPlan(
+        startup=startup,
+        processor_kind="json" if cli.json else "human",
+        stderr_with_ansi=cli.color.value != "never",
+        local_runtime_paths=local_runtime_paths,
+        state_db=state_db,
+        environment_manager_source=environment_source,
+        in_process_start_args=start_args,
+    )
+
+
 def build_exec_otel_provider(
     config: JsonValue,
     service_version: str,
@@ -1746,6 +1863,7 @@ __all__ = [
     "ExecRuntimeRunnerTranscript",
     "ExecRuntimeStartupExchange",
     "ExecRuntimeStartupPlan",
+    "ExecRunMainPlan",
     "ExecTrustedDirectoryCheckPlan",
     "LMSTUDIO_DEFAULT_OSS_MODEL",
     "LMSTUDIO_OSS_PROVIDER_ID",
@@ -1755,6 +1873,7 @@ __all__ = [
     "UPSTREAM_EXEC_RUN_MAIN",
     "build_exec_config_bootstrap_plan",
     "build_exec_otel_provider",
+    "build_exec_run_main_plan",
     "build_exec_runtime_request_sequence",
     "build_exec_runtime_startup_plan",
     "exec_runtime_action_summary",

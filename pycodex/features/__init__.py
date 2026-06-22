@@ -80,6 +80,7 @@ class Feature(Enum):
     REQUEST_PERMISSIONS_TOOL = "RequestPermissionsTool"
     WEB_SEARCH_REQUEST = "WebSearchRequest"
     WEB_SEARCH_CACHED = "WebSearchCached"
+    STANDALONE_WEB_SEARCH = "StandaloneWebSearch"
     USE_LEGACY_LANDLOCK = "UseLegacyLandlock"
     SHELL_SNAPSHOT = "ShellSnapshot"
     RUNTIME_METRICS = "RuntimeMetrics"
@@ -96,6 +97,7 @@ class Feature(Enum):
     APPS_MCP_PATH_OVERRIDE = "AppsMcpPathOverride"
     TOOL_SEARCH = "ToolSearch"
     TOOL_SEARCH_ALWAYS_DEFER_MCP_TOOLS = "ToolSearchAlwaysDeferMcpTools"
+    NON_PREFIXED_MCP_TOOL_NAMES = "NonPrefixedMcpToolNames"
     TOOL_SUGGEST = "ToolSuggest"
     PLUGINS = "Plugins"
     PLUGIN_HOOKS = "PluginHooks"
@@ -685,6 +687,7 @@ FEATURES: tuple[FeatureSpec, ...] = (
     ),
     FeatureSpec(Feature.WEB_SEARCH_REQUEST, "web_search_request", Stage.deprecated(), False),
     FeatureSpec(Feature.WEB_SEARCH_CACHED, "web_search_cached", Stage.deprecated(), False),
+    FeatureSpec(Feature.STANDALONE_WEB_SEARCH, "standalone_web_search", Stage.under_development(), False),
     FeatureSpec(Feature.SEARCH_TOOL, "search_tool", Stage.removed(), False),
     FeatureSpec(Feature.CODEX_GIT_COMMIT, "codex_git_commit", Stage.removed(), False),
     FeatureSpec(Feature.RUNTIME_METRICS, "runtime_metrics", Stage.under_development(), False),
@@ -734,6 +737,7 @@ FEATURES: tuple[FeatureSpec, ...] = (
     FeatureSpec(Feature.APPS_MCP_PATH_OVERRIDE, "apps_mcp_path_override", Stage.under_development(), False),
     FeatureSpec(Feature.TOOL_SEARCH, "tool_search", Stage.removed(), False),
     FeatureSpec(Feature.TOOL_SEARCH_ALWAYS_DEFER_MCP_TOOLS, "tool_search_always_defer_mcp_tools", Stage.under_development(), False),
+    FeatureSpec(Feature.NON_PREFIXED_MCP_TOOL_NAMES, "non_prefixed_mcp_tool_names", Stage.under_development(), False),
     FeatureSpec(Feature.UNAVAILABLE_DUMMY_TOOLS, "unavailable_dummy_tools", Stage.removed(), False),
     FeatureSpec(Feature.TOOL_SUGGEST, "tool_suggest", Stage.stable(), True),
     FeatureSpec(Feature.PLUGINS, "plugins", Stage.stable(), True),

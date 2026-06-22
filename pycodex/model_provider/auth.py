@@ -8,9 +8,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from pycodex.login.auth.agent_identity import AgentIdentityAuth, AgentIdentityKey
+from pycodex.agent_identity import (
+    AgentIdentityKey,
+    AgentTaskAuthorizationTarget,
+    authorization_header_for_agent_task,
+)
+from pycodex.login.auth.agent_identity import AgentIdentityAuth
 from pycodex.login.auth.external_bearer import BearerTokenRefresher
-from pycodex.model_provider.bearer_auth_provider import BearerAuthProvider
+from pycodex.model_provider.bearer_auth_provider import BearerAuthProvider, _valid_header_value
 from dataclasses import dataclass
 
 
@@ -21,22 +26,24 @@ class AgentIdentityAuthProvider:
 
     def add_auth_headers(self, headers: dict[str, str]) -> None:
         record = self.auth.record()
-        if self.signer is not None:
-            identity_key = AgentIdentityKey(
-                agent_runtime_id=record.agent_runtime_id,
-                private_key_pkcs8_base64=record.agent_private_key,
-            )
-            target = {
-                "agent_runtime_id": record.agent_runtime_id,
-                "task_id": self.auth.process_task_id(),
-            }
-            try:
-                header_value = self.signer(identity_key, target)
-            except Exception:
-                header_value = None
-            if header_value is not None:
-                headers["Authorization"] = str(header_value)
-        headers["ChatGPT-Account-ID"] = self.auth.account_id()
+        identity_key = AgentIdentityKey(
+            agent_runtime_id=record.agent_runtime_id,
+            private_key_pkcs8_base64=record.agent_private_key,
+        )
+        target = AgentTaskAuthorizationTarget(
+            agent_runtime_id=record.agent_runtime_id,
+            task_id=self.auth.process_task_id(),
+        )
+        signer = self.signer or authorization_header_for_agent_task
+        try:
+            header_value = signer(identity_key, target)
+        except Exception:
+            header_value = None
+        if header_value is not None and _valid_header_value(str(header_value)):
+            headers["Authorization"] = str(header_value)
+        account_id = self.auth.account_id()
+        if _valid_header_value(account_id):
+            headers["ChatGPT-Account-ID"] = account_id
         if self.auth.is_fedramp_account():
             headers["X-OpenAI-Fedramp"] = "true"
 

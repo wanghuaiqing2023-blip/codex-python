@@ -283,13 +283,15 @@ def parse_announcement_tip_toml(
     version: str = CODEX_CLI_VERSION,
     current_os: TargetOs = CURRENT_OS,
 ) -> Optional[str]:
-    try:
-        decoded = _loads_announcement_toml(text)
-        raw_entries = decoded.get("announcements") if isinstance(decoded, dict) else None
-        if raw_entries is None:
-            raw_entries = _loads_announcement_toml(f"announcements = {text}").get("announcements")
-    except Exception:
-        return None
+    raw_entries = None
+    for candidate in (text, f"announcements = {text}"):
+        try:
+            decoded = _loads_announcement_toml(candidate)
+            raw_entries = decoded.get("announcements") if isinstance(decoded, dict) else None
+            if raw_entries is not None:
+                break
+        except Exception:
+            continue
     if not isinstance(raw_entries, list):
         return None
 
@@ -453,7 +455,10 @@ target_oses = ["amiga"]
 
 def _loads_announcement_toml(text: str) -> Dict[str, Any]:
     if tomllib is not None:
-        return tomllib.loads(text)
+        try:
+            return tomllib.loads(text)
+        except Exception:
+            pass
     return _loads_announcement_toml_fallback(text)
 
 
@@ -503,16 +508,18 @@ def _parse_toml_scalar_or_list(value: str) -> Any:
     raise ValueError("unsupported announcement TOML scalar")
 
 
-def _parse_date(value: Optional[str]) -> Optional[date]:
-    return date.fromisoformat(value) if value is not None else None
+def _parse_date(value: Optional[Any]) -> Optional[date]:
+    if value is None:
+        return None
+    if isinstance(value, date):
+        return value
+    return date.fromisoformat(str(value))
 
 
 def _optional_str(value: Any) -> Optional[str]:
     if value is None:
         return None
-    if not isinstance(value, str):
-        raise TypeError("expected string")
-    return value
+    return str(value)
 
 
 def _optional_str_list(value: Any) -> Optional[List[str]]:

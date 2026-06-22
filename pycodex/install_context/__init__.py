@@ -194,7 +194,8 @@ def _install_method_from_exe(
     standalone = _standalone_install_method(exe_path, codex_home, package_layout)
     if standalone is not None:
         return standalone
-    if is_macos and (str(exe_path).startswith("/opt/homebrew") or str(exe_path).startswith("/usr/local")):
+    exe_text = str(exe_path).replace("\\", "/")
+    if is_macos and (exe_text.startswith("/opt/homebrew") or exe_text.startswith("/usr/local")):
         return InstallMethod.Brew()
     return InstallMethod.Other()
 

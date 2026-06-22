@@ -69,6 +69,43 @@ class TextualEventRuntime:
         self.broker.resume_events()
 
 
+@dataclass
+class TextualEventBridge:
+    runtime: TextualEventRuntime
+
+    @classmethod
+    def new(cls) -> "TextualEventBridge":
+        return cls(make_textual_event_runtime())
+
+    @property
+    def stream(self) -> TuiEventStream:
+        return self.runtime.stream
+
+    def on_key(self, event: Any) -> None:
+        self.runtime.send_textual_event(event)
+
+    def on_resize(self, event: Any) -> None:
+        self.runtime.send_textual_event(event)
+
+    def on_paste(self, event: Any) -> None:
+        self.runtime.send_textual_event(event)
+
+    def on_focus(self) -> None:
+        self.runtime.terminal_focused.set(True)
+        self.runtime.send_textual_event({"kind": "focus"})
+
+    def on_blur(self) -> None:
+        self.runtime.terminal_focused.set(False)
+        setattr(self.runtime.terminal_focused, "_suppress_next_focus_gained", True)
+        self.runtime.send_textual_event({"kind": "blur"})
+
+    def pause_events(self) -> None:
+        self.runtime.pause_events()
+
+    def resume_events(self) -> None:
+        self.runtime.resume_events()
+
+
 def make_textual_event_runtime(
     source: Optional[TextualEventSource] = None,
     draw_channel: Optional[DrawChannel] = None,
@@ -141,6 +178,7 @@ def _resize_payload(event: Any) -> Any:
 
 
 __all__ = [
+    "TextualEventBridge",
     "TextualEventRuntime",
     "TextualEventSource",
     "make_textual_event_runtime",

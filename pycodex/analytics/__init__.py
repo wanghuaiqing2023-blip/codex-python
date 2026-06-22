@@ -38,6 +38,20 @@ class AcceptedLineFingerprintSummary:
     line_fingerprints: list[AcceptedLineFingerprint]
 
 
+@dataclass(frozen=True)
+class AcceptedLineFingerprintEventInput:
+    event_type: str
+    turn_id: str
+    thread_id: str
+    product_surface: str | None
+    model_slug: str | None
+    completed_at: int
+    repo_hash: str | None
+    accepted_added_lines: int
+    accepted_deleted_lines: int
+    line_fingerprints: list[AcceptedLineFingerprint]
+
+
 def fingerprint_hash(domain: str, value: str) -> str:
     hasher = hashlib.sha1()
     hasher.update(b"file-line-v1\0")
@@ -76,6 +90,28 @@ def accepted_line_fingerprints_from_unified_diff(unified_diff: str) -> AcceptedL
         if line.startswith("-"):
             accepted_deleted_lines += 1
     return AcceptedLineFingerprintSummary(accepted_added_lines, accepted_deleted_lines, fingerprints)
+
+
+def accepted_line_fingerprint_event_requests(
+    input: AcceptedLineFingerprintEventInput,
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "event_type": "codex_accepted_line_fingerprints",
+            "event_params": {
+                "event_type": input.event_type,
+                "turn_id": input.turn_id,
+                "thread_id": input.thread_id,
+                "product_surface": input.product_surface,
+                "model_slug": input.model_slug,
+                "completed_at": input.completed_at,
+                "repo_hash": input.repo_hash,
+                "accepted_added_lines": input.accepted_added_lines,
+                "accepted_deleted_lines": input.accepted_deleted_lines,
+                "line_fingerprints": [],
+            },
+        }
+    ]
 
 
 def _normalize_diff_path(path: str) -> str | None:

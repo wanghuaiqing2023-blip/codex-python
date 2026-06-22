@@ -2,25 +2,39 @@ import json
 import os
 import unittest
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from pycodex.core import (
     SESSIONS_SUBDIR,
+    Anchor,
+    Config,
     Cursor,
+    EventPersistenceMode,
     RolloutRecorder,
     RolloutRecorderParams,
+    RolloutWriterState,
+    RolloutConfig,
+    SqliteMetricsRecorder,
+    SortDirection,
     SessionIndexEntry,
     SessionMeta,
     append_event_msg_to_rollout,
     append_response_item_to_rollout,
     append_session_index_entry,
     append_thread_name,
+    apply_rollout_items,
+    bounded_originator_tag_value,
     append_turn_context_to_rollout,
     append_turn_to_latest_thread_rollout,
     append_turn_to_thread_rollout,
     append_turn_to_rollout,
     count_session_rollout_files,
+    cursor_to_anchor,
+    fill_missing_thread_item_metadata,
+    find_rollout_path_by_id,
     find_session_rollout_containing_response_marker,
+    first_rollout_content_match_snippet,
     find_archived_thread_path_by_id_str,
     find_thread_meta_by_name_str,
     find_thread_name_by_id,
@@ -28,22 +42,40 @@ from pycodex.core import (
     find_thread_path_by_id_str,
     get_threads,
     get_threads_in_root,
+    list_thread_ids_db,
+    list_threads_db,
+    list_threads_from_state_metadata,
     last_user_image_count_in_rollout,
     materialize_session_rollout,
     parse_cursor,
     parse_timestamp_uuid_from_filename,
+    persisted_rollout_items,
     read_event_msgs_from_rollout,
     read_head_for_summary,
+    read_repair_rollout_path,
     read_model_history_from_rollout,
     read_rollout_reconstruction_from_rollout,
     read_response_items_from_rollout,
     read_session_meta_line,
     read_thread_item_from_rollout,
     rollout_date_parts,
+    search_rollout_paths,
     session_index_path,
+    should_persist_event_msg,
+    should_persist_response_item,
+    should_persist_response_item_for_memories,
+    sqlite_metrics_recorder,
+    ThreadItem,
+    ThreadMetadata,
+    ThreadMetadataBuilder,
+    ThreadListLayout,
     ThreadSortKey,
+    thread_item_from_state_metadata,
+    mark_thread_memory_mode_polluted,
+    touch_thread_updated_at,
+    with_originator,
 )
-from pycodex.protocol import AgentPath, EventMsg, InterAgentCommunication, SessionSource, ThreadId, TurnAbortReason, TurnAbortedEvent
+from pycodex.protocol import AgentPath, EventMsg, InterAgentCommunication, SessionSource, ThreadId, TurnAbortReason, TurnAbortedEvent, USER_MESSAGE_BEGIN
 
 
 def workspace_tempdir():
@@ -142,6 +174,442 @@ def write_thread_rollout(
 
 
 class CoreRolloutTests(unittest.TestCase):
+    def test_rollout_config_from_view_copies_config_values(self):
+        # Rust parity: codex-rollout/src/config.rs::RolloutConfig::from_view.
+        root = workspace_tempdir()
+        view = {
+            "codex_home": root / "codex",
+            "sqlite_home": root / "sqlite",
+            "cwd": root / "cwd",
+            "model_provider_id": "test-provider",
+            "generate_memories": True,
+        }
+
+        config = RolloutConfig.from_view(view)
+
+        self.assertIs(Config, RolloutConfig)
+        self.assertEqual(config.codex_home, root / "codex")
+        self.assertEqual(config.sqlite_home, root / "sqlite")
+        self.assertEqual(config.cwd, root / "cwd")
+        self.assertEqual(config.model_provider_id, "test-provider")
+        self.assertTrue(config.generate_memories)
+
+    def test_policy_response_item_persistence_matches_rust(self):
+        # Rust parity: codex-rollout/src/policy.rs::should_persist_response_item.
+        self.assertTrue(should_persist_response_item({"type": "message", "role": "assistant"}))
+        self.assertTrue(should_persist_response_item({"type": "function_call"}))
+        self.assertFalse(should_persist_response_item({"type": "compaction_trigger"}))
+        self.assertFalse(should_persist_response_item({"type": "other"}))
+
+    def test_policy_memory_response_item_persistence_matches_rust(self):
+        # Rust parity: codex-rollout/src/policy.rs::should_persist_response_item_for_memories.
+        self.assertTrue(should_persist_response_item_for_memories({"type": "message", "role": "user"}))
+        self.assertFalse(should_persist_response_item_for_memories({"type": "message", "role": "developer"}))
+        self.assertTrue(should_persist_response_item_for_memories({"type": "function_call_output"}))
+        self.assertFalse(should_persist_response_item_for_memories({"type": "reasoning"}))
+
+    def test_policy_event_persistence_modes_match_rust(self):
+        # Rust parity: codex-rollout/src/policy.rs::should_persist_event_msg.
+        self.assertTrue(should_persist_event_msg({"type": "user_message"}, EventPersistenceMode.LIMITED))
+        self.assertFalse(should_persist_event_msg({"type": "exec_command_end"}, EventPersistenceMode.LIMITED))
+        self.assertTrue(should_persist_event_msg({"type": "exec_command_end"}, EventPersistenceMode.EXTENDED))
+        self.assertFalse(should_persist_event_msg({"type": "warning"}, EventPersistenceMode.EXTENDED))
+        self.assertTrue(should_persist_event_msg({"type": "item_completed", "item": {"type": "plan"}}, "limited"))
+        self.assertFalse(should_persist_event_msg({"type": "item_completed", "item": {"type": "message"}}, "extended"))
+
+    def test_policy_persisted_rollout_items_sanitizes_extended_exec_output(self):
+        # Rust parity: codex-rollout/src/policy.rs::persisted_rollout_items extended sanitization.
+        long_output = "x" * 10050
+        items = [
+            {"type": "event_msg", "payload": {"type": "warning", "message": "skip"}},
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "exec_command_end",
+                    "aggregated_output": long_output,
+                    "stdout": "stdout",
+                    "stderr": "stderr",
+                    "formatted_output": "formatted",
+                },
+            },
+            {"type": "response_item", "payload": {"type": "compaction_trigger"}},
+            {"type": "turn_context", "payload": {"cwd": "."}},
+        ]
+
+        persisted = persisted_rollout_items(items, EventPersistenceMode.EXTENDED)
+
+        self.assertEqual([item["type"] for item in persisted], ["event_msg", "turn_context"])
+        payload = persisted[0]["payload"]
+        self.assertEqual(payload["type"], "exec_command_end")
+        self.assertEqual(len(payload["aggregated_output"]), 10000)
+        self.assertEqual(payload["stdout"], "")
+        self.assertEqual(payload["stderr"], "")
+        self.assertEqual(payload["formatted_output"], "")
+
+    def test_search_rollout_paths_scans_sessions_and_archived_roots(self):
+        # Rust parity: codex-rollout/src/search.rs::search_rollout_paths fallback scan.
+        root = workspace_tempdir()
+        sessions_id = str(uuid.uuid4())
+        archived_id = str(uuid.uuid4())
+        sessions_path = root / SESSIONS_SUBDIR / "2025" / "01" / "01" / f"rollout-2025-01-01T00-00-00-{sessions_id}.jsonl"
+        archived_path = root / "archived_sessions" / "2025" / "01" / "02" / f"rollout-2025-01-02T00-00-00-{archived_id}.jsonl"
+        write_rollout(
+            sessions_path,
+            sessions_id,
+            [{"timestamp": "2025-01-01T00:00:00Z", "type": "event_msg", "payload": {"type": "user_message", "message": "Find Quoted Needle", "kind": "plain"}}],
+        )
+        write_rollout(
+            archived_path,
+            archived_id,
+            [{"timestamp": "2025-01-02T00:00:00Z", "type": "event_msg", "payload": {"type": "user_message", "message": "archived quoted needle", "kind": "plain"}}],
+        )
+
+        self.assertEqual(search_rollout_paths(None, root, False, "quoted needle"), {sessions_path})
+        self.assertEqual(search_rollout_paths(None, root, True, "QUOTED NEEDLE"), {archived_path})
+        self.assertEqual(search_rollout_paths(None, root / "missing", False, "needle"), set())
+
+    def test_first_rollout_content_match_snippet_extracts_conversation_text(self):
+        # Rust parity: codex-rollout/src/search.rs::first_rollout_content_match_snippet.
+        root = workspace_tempdir()
+        path = root / "rollout.jsonl"
+        lines = [
+            {"timestamp": "2025-01-01T00:00:00Z", "type": "session_meta", "payload": session_meta_payload(str(uuid.uuid4()))},
+            {
+                "timestamp": "2025-01-01T00:00:01Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "user_message",
+                    "message": f"ignored prefix {USER_MESSAGE_BEGIN}\nhello   Needle   with\nspacing",
+                    "kind": "plain",
+                },
+            },
+            {
+                "timestamp": "2025-01-01T00:00:02Z",
+                "type": "response_item",
+                "payload": {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "Needle ignored"}]},
+            },
+        ]
+        path.write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8")
+
+        self.assertEqual(first_rollout_content_match_snippet(path, "needle"), "hello Needle with spacing")
+
+    def test_sqlite_metrics_recorder_appends_bounded_originator_tag(self):
+        # Rust parity: codex-rollout/src/sqlite_metrics.rs::recorder and with_originator.
+        calls: list[tuple[str, str, object, list[tuple[str, str]]]] = []
+
+        class Metrics:
+            def counter(self, name: str, inc: int, tags: list[tuple[str, str]]) -> None:
+                calls.append(("counter", name, inc, tags))
+
+            def record_duration(self, name: str, duration: object, tags: list[tuple[str, str]]) -> None:
+                calls.append(("duration", name, duration, tags))
+
+        recorder = sqlite_metrics_recorder(Metrics(), "codex_exec")
+        unknown = SqliteMetricsRecorder(Metrics(), "not a known originator!")
+
+        recorder.counter("db.count", 2, [("operation", "open")])
+        unknown.record_duration("db.duration", 1.5, [])
+
+        self.assertEqual(bounded_originator_tag_value("codex_exec"), "codex_exec")
+        self.assertEqual(bounded_originator_tag_value("not a known originator!"), "other")
+        self.assertEqual(
+            with_originator([("operation", "open")], "codex_exec"),
+            [("operation", "open"), ("originator", "codex_exec")],
+        )
+        self.assertEqual(calls[0], ("counter", "db.count", 2, [("operation", "open"), ("originator", "codex_exec")]))
+        self.assertEqual(calls[1], ("duration", "db.duration", 1.5, [("originator", "other")]))
+
+    def test_state_db_list_thread_ids_maps_cursor_filters_and_errors(self):
+        # Rust parity: codex-rollout/src/state_db.rs::cursor_to_anchor and list_thread_ids_db.
+        root = workspace_tempdir()
+        cursor = Cursor(datetime(2025, 1, 1, 12, 0, 0, 123456, tzinfo=timezone.utc))
+        calls: list[tuple[object, ...]] = []
+
+        class Runtime:
+            def codex_home(self) -> Path:
+                return root
+
+            def list_thread_ids(
+                self,
+                page_size: int,
+                anchor: Anchor | None,
+                sort_key: str,
+                allowed_sources: list[str],
+                model_providers: list[str] | None,
+                archived_only: bool,
+            ) -> list[str]:
+                calls.append((page_size, anchor, sort_key, allowed_sources, model_providers, archived_only))
+                return ["thread-a"]
+
+        class FailingRuntime(Runtime):
+            def list_thread_ids(self, *args: object) -> list[str]:
+                raise OSError("db unavailable")
+
+        anchor = cursor_to_anchor(cursor)
+        result = list_thread_ids_db(
+            Runtime(),
+            root,
+            10,
+            cursor,
+            ThreadSortKey.UPDATED_AT,
+            (SessionSource.cli(), SessionSource.custom_source("atlas")),
+            ("provider-a",),
+            True,
+            "test-stage",
+        )
+
+        self.assertEqual(result, ["thread-a"])
+        self.assertIsNotNone(anchor)
+        self.assertEqual(anchor.ts.microsecond, 123000)
+        self.assertEqual(calls[0][0], 10)
+        self.assertEqual(calls[0][1], anchor)
+        self.assertEqual(calls[0][2], "updated_at")
+        self.assertEqual(calls[0][3], ["cli", '{"custom":"atlas"}'])
+        self.assertEqual(calls[0][4], ["provider-a"])
+        self.assertEqual(calls[0][5], True)
+        self.assertIsNone(list_thread_ids_db(None, root, 10, None, ThreadSortKey.CREATED_AT, (), None, False, "none"))
+        self.assertIsNone(list_thread_ids_db(FailingRuntime(), root, 10, None, ThreadSortKey.CREATED_AT, (), None, False, "fail"))
+
+    def test_state_db_list_threads_maps_filters_and_drops_stale_paths(self):
+        # Rust parity: codex-rollout/src/state_db.rs::list_threads_db.
+        root = workspace_tempdir()
+        cwd = root / "cwd"
+        cwd.mkdir()
+        valid_path = root / SESSIONS_SUBDIR / "2025" / "01" / "01" / f"rollout-2025-01-01T00-00-00-{uuid.uuid4()}.jsonl"
+        write_rollout(valid_path, str(uuid.uuid4()))
+        stale_path = root / SESSIONS_SUBDIR / "2099" / "01" / "01" / f"rollout-2099-01-01T00-00-00-{uuid.uuid4()}.jsonl"
+        calls: list[tuple[int, dict[str, object]]] = []
+        deleted: list[str] = []
+
+        class Page:
+            def __init__(self) -> None:
+                self.items = [
+                    {"id": "valid", "rollout_path": valid_path},
+                    {"id": "stale", "rollout_path": stale_path},
+                ]
+                self.next_cursor = None
+
+        class Runtime:
+            def codex_home(self) -> Path:
+                return root
+
+            def list_threads(self, page_size: int, options: dict[str, object]) -> Page:
+                calls.append((page_size, options))
+                return Page()
+
+            def delete_thread(self, thread_id: str) -> None:
+                deleted.append(thread_id)
+
+        page = list_threads_db(
+            Runtime(),
+            root,
+            25,
+            None,
+            ThreadSortKey.CREATED_AT,
+            SortDirection.DESC,
+            (SessionSource.cli(),),
+            None,
+            (cwd,),
+            False,
+            "needle",
+        )
+
+        self.assertIsNotNone(page)
+        self.assertEqual([item["id"] for item in page.items], ["valid"])
+        self.assertEqual(deleted, ["stale"])
+        self.assertEqual(calls[0][0], 25)
+        options = calls[0][1]
+        self.assertEqual(options["archived_only"], False)
+        self.assertEqual(options["allowed_sources"], ["cli"])
+        self.assertIsNone(options["model_providers"])
+        self.assertEqual(options["cwd_filters"], [cwd.resolve(strict=False)])
+        self.assertIsNone(options["anchor"])
+        self.assertEqual(options["sort_key"], "created_at")
+        self.assertEqual(options["sort_direction"], "desc")
+        self.assertEqual(options["search_term"], "needle")
+        self.assertIsNone(list_threads_db(None, root, 1, None, ThreadSortKey.CREATED_AT, SortDirection.ASC, (), None, None, False, None))
+
+    def test_state_db_small_adapters_forward_and_swallow_errors(self):
+        # Rust parity: codex-rollout/src/state_db.rs find_rollout_path_by_id,
+        # mark_thread_memory_mode_polluted, and touch_thread_updated_at.
+        root = workspace_tempdir()
+        rollout_path = root / "rollout.jsonl"
+        touched_at = datetime(2025, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+        calls: list[tuple[str, object, object]] = []
+
+        class Memories:
+            def mark_thread_memory_mode_polluted(self, thread_id: str) -> None:
+                calls.append(("memory", thread_id, None))
+
+        class Runtime:
+            def __init__(self, fail: bool = False) -> None:
+                self.fail = fail
+
+            def find_rollout_path_by_id(self, thread_id: str, archived_only: bool | None) -> Path | None:
+                calls.append(("find", thread_id, archived_only))
+                if self.fail:
+                    raise OSError("db unavailable")
+                return rollout_path
+
+            def memories(self) -> Memories:
+                if self.fail:
+                    raise OSError("db unavailable")
+                return Memories()
+
+            def touch_thread_updated_at(self, thread_id: str, updated_at: datetime) -> bool:
+                calls.append(("touch", thread_id, updated_at))
+                if self.fail:
+                    raise OSError("db unavailable")
+                return True
+
+        runtime = Runtime()
+        failing = Runtime(fail=True)
+
+        self.assertEqual(find_rollout_path_by_id(runtime, "thread-a", True, "find-stage"), rollout_path)
+        mark_thread_memory_mode_polluted(runtime, "thread-a", "memory-stage")
+        self.assertTrue(touch_thread_updated_at(runtime, "thread-a", touched_at, "touch-stage"))
+        self.assertEqual(
+            calls,
+            [
+                ("find", "thread-a", True),
+                ("memory", "thread-a", None),
+                ("touch", "thread-a", touched_at),
+            ],
+        )
+        self.assertIsNone(find_rollout_path_by_id(None, "thread-a", None, "missing"))
+        self.assertIsNone(find_rollout_path_by_id(failing, "thread-a", None, "failing"))
+        mark_thread_memory_mode_polluted(None, "thread-a", "missing")
+        mark_thread_memory_mode_polluted(failing, "thread-a", "failing")
+        self.assertFalse(touch_thread_updated_at(None, "thread-a", touched_at, "missing"))
+        self.assertFalse(touch_thread_updated_at(runtime, None, touched_at, "missing-thread"))
+        self.assertFalse(touch_thread_updated_at(failing, "thread-a", touched_at, "failing"))
+
+    def test_state_db_read_repair_rollout_path_fast_path_updates_existing_metadata(self):
+        # Rust parity: codex-rollout/src/state_db.rs::read_repair_rollout_path fast path.
+        root = workspace_tempdir()
+        thread_id = str(uuid.uuid4())
+        old_path = root / "old.jsonl"
+        new_path = root / SESSIONS_SUBDIR / "2025" / "01" / "01" / f"rollout-2025-01-01T00-00-00-{thread_id}.jsonl"
+        metadata = ThreadMetadata(
+            id=thread_id,
+            rollout_path=old_path,
+            created_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2025, 1, 2, tzinfo=timezone.utc),
+            source="cli",
+            model_provider="test-provider",
+            cwd=root / "cwd" / ".." / "cwd",
+            cli_version="test",
+            first_user_message="hello",
+            preview="hello",
+        )
+        upserts: list[ThreadMetadata] = []
+        test_case = self
+
+        class Runtime:
+            def get_thread(self, value: str) -> ThreadMetadata | None:
+                test_case.assertEqual(value, thread_id)
+                return metadata
+
+            def upsert_thread(self, value: ThreadMetadata) -> None:
+                upserts.append(value)
+
+        read_repair_rollout_path(Runtime(), thread_id, True, new_path)
+
+        self.assertEqual(len(upserts), 1)
+        self.assertEqual(upserts[0].rollout_path, new_path)
+        self.assertEqual(upserts[0].cwd, (root / "cwd").resolve(strict=False))
+        self.assertEqual(upserts[0].archived_at, metadata.updated_at)
+
+    def test_state_db_read_repair_rollout_path_slow_path_rebuilds_missing_row(self):
+        # Rust parity: codex-rollout/src/state_db.rs::read_repair_rollout_path slow path.
+        root = workspace_tempdir()
+        thread_id = str(uuid.uuid4())
+        rollout_path = write_thread_rollout(
+            root,
+            "2025-01-03T13-00-00",
+            thread_id,
+            message="Hello from repaired rollout",
+            source="cli",
+            model_provider="test-provider",
+            cwd=str(root / "cwd"),
+        )
+        upserts: list[ThreadMetadata] = []
+        test_case = self
+
+        class Runtime:
+            def get_thread(self, value: str) -> ThreadMetadata | None:
+                test_case.assertEqual(value, thread_id)
+                return None
+
+            def upsert_thread(self, value: ThreadMetadata) -> None:
+                upserts.append(value)
+
+        read_repair_rollout_path(Runtime(), thread_id, False, rollout_path, default_provider="fallback-provider")
+
+        self.assertEqual(len(upserts), 1)
+        self.assertEqual(upserts[0].id, thread_id)
+        self.assertEqual(upserts[0].rollout_path, rollout_path)
+        self.assertEqual(upserts[0].cwd, (root / "cwd").resolve(strict=False))
+        self.assertIsNone(upserts[0].archived_at)
+
+    def test_state_db_apply_rollout_items_normalizes_builder_and_falls_back_safely(self):
+        # Rust parity: codex-rollout/src/state_db.rs::apply_rollout_items.
+        root = workspace_tempdir()
+        thread_id = str(uuid.uuid4())
+        rollout_path = root / SESSIONS_SUBDIR / "2025" / "01" / "01" / f"rollout-2025-01-01T00-00-00-{thread_id}.jsonl"
+        builder = ThreadMetadataBuilder(
+            id=thread_id,
+            rollout_path=root / "old.jsonl",
+            created_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            cwd=root / "cwd" / ".." / "cwd",
+        )
+        items = [{"type": "event_msg", "payload": {"type": "agent_message", "message": "hello"}}]
+        calls: list[tuple[ThreadMetadataBuilder, list[dict], str | None, datetime | None]] = []
+        updated_at = datetime(2025, 1, 2, tzinfo=timezone.utc)
+
+        class Runtime:
+            def __init__(self, fail: bool = False) -> None:
+                self.fail = fail
+
+            def apply_rollout_items(
+                self,
+                value: ThreadMetadataBuilder,
+                applied_items: list[dict],
+                memory_mode: str | None,
+                override: datetime | None,
+            ) -> None:
+                if self.fail:
+                    raise OSError("db unavailable")
+                calls.append((value, applied_items, memory_mode, override))
+
+        apply_rollout_items(Runtime(), rollout_path, "fallback-provider", builder, items, "explicit", "disabled", updated_at)
+        explicit_builder = calls[0][0]
+
+        self.assertEqual(explicit_builder.rollout_path, rollout_path)
+        self.assertEqual(explicit_builder.cwd, (root / "cwd").resolve(strict=False))
+        self.assertEqual(explicit_builder.model_provider, "fallback-provider")
+        self.assertEqual(calls[0][1], items)
+        self.assertEqual(calls[0][2], "disabled")
+        self.assertEqual(calls[0][3], updated_at)
+        self.assertIsNone(builder.model_provider)
+        self.assertEqual(builder.rollout_path, root / "old.jsonl")
+
+        inferred_id = str(uuid.uuid4())
+        inferred_path = root / SESSIONS_SUBDIR / "2025" / "01" / "02" / f"rollout-2025-01-02T00-00-00-{inferred_id}.jsonl"
+        inferred_payload = session_meta_payload(inferred_id)
+        inferred_payload["timestamp"] = "2024-01-01T00-00-00"
+        inferred_item = {"type": "session_meta", "payload": inferred_payload}
+        apply_rollout_items(Runtime(), inferred_path, "fallback-provider", None, [inferred_item], "inferred")
+
+        inferred_builder = calls[1][0]
+        self.assertEqual(inferred_builder.id, inferred_id)
+        self.assertEqual(inferred_builder.rollout_path, inferred_path)
+        self.assertEqual(inferred_builder.model_provider, "test-provider")
+
+        apply_rollout_items(Runtime(), root / "invalid-name.jsonl", "fallback-provider", None, [], "missing-builder")
+        apply_rollout_items(Runtime(fail=True), rollout_path, "fallback-provider", builder, items, "failing")
+        self.assertEqual(len(calls), 2)
+
     def test_core_rollout_recorder_reexport_create_record_and_resume_history(self):
         # Rust source: codex-rs/core/src/rollout.rs re-exports
         # codex_rollout::{RolloutRecorder, RolloutRecorderParams}.
@@ -193,6 +661,288 @@ class CoreRolloutTests(unittest.TestCase):
         self.assertEqual(history.resumed.conversation_id, thread_id)
         self.assertEqual(history.resumed.rollout_path, recorder.rollout_path)
         self.assertEqual(resumed.rollout_path, recorder.rollout_path)
+
+    def test_load_rollout_items_skips_legacy_ghost_snapshot_lines(self):
+        # Rust source: codex-rs/rollout/src/recorder_tests.rs::load_rollout_items_skips_legacy_ghost_snapshot_lines.
+        root = workspace_tempdir()
+        path = root / "rollout.jsonl"
+        thread_id = str(uuid.uuid4())
+        ts = "2025-01-03T12:00:00Z"
+        lines = [
+            {
+                "timestamp": ts,
+                "type": "session_meta",
+                "payload": {
+                    "id": thread_id,
+                    "timestamp": ts,
+                    "cwd": ".",
+                    "originator": "test_originator",
+                    "cli_version": "test_version",
+                    "source": "cli",
+                    "model_provider": "test-provider",
+                },
+            },
+            {
+                "timestamp": ts,
+                "type": "response_item",
+                "payload": {
+                    "type": "ghost_snapshot",
+                    "ghost_commit": {
+                        "id": "deadbeef",
+                        "preexisting_untracked_dirs": [],
+                        "preexisting_untracked_files": [],
+                    },
+                },
+            },
+            {
+                "timestamp": ts,
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "hello"}],
+                },
+            },
+        ]
+        path.write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8")
+
+        items, loaded_thread_id, parse_errors = RolloutRecorder.load_rollout_items(path)
+
+        self.assertEqual(loaded_thread_id, ThreadId.from_string(thread_id))
+        self.assertEqual(parse_errors, 0)
+        self.assertEqual([item.type for item in items], ["session_meta", "response_item"])
+        self.assertEqual(items[1].payload["type"], "message")
+
+    def test_load_rollout_items_preserves_legacy_guardian_assessment_lines(self):
+        # Rust source: codex-rs/rollout/src/recorder_tests.rs::load_rollout_items_preserves_legacy_guardian_assessment_lines.
+        root = workspace_tempdir()
+        path = root / "rollout.jsonl"
+        thread_id = str(uuid.uuid4())
+        ts = "2025-01-03T12:00:00Z"
+        lines = [
+            {
+                "timestamp": ts,
+                "type": "session_meta",
+                "payload": {
+                    "id": thread_id,
+                    "timestamp": ts,
+                    "cwd": ".",
+                    "originator": "test_originator",
+                    "cli_version": "test_version",
+                    "source": "cli",
+                    "model_provider": "test-provider",
+                },
+            },
+            {
+                "timestamp": ts,
+                "type": "event_msg",
+                "payload": {
+                    "type": "guardian_assessment",
+                    "id": "guardian-1",
+                    "turn_id": "turn-1",
+                    "status": "in_progress",
+                    "action": {
+                        "type": "command",
+                        "source": "shell",
+                        "command": "rm -rf /tmp/guardian",
+                        "cwd": "C:\\tmp" if os.name == "nt" else "/tmp",
+                    },
+                },
+            },
+        ]
+        path.write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8")
+
+        items, loaded_thread_id, parse_errors = RolloutRecorder.load_rollout_items(path)
+
+        self.assertEqual(loaded_thread_id, ThreadId.from_string(thread_id))
+        self.assertEqual(parse_errors, 0)
+        self.assertEqual([item.type for item in items], ["session_meta", "event_msg"])
+        assessment = items[1].payload.payload
+        self.assertEqual(assessment.id, "guardian-1")
+        self.assertEqual(assessment.turn_id, "turn-1")
+        self.assertEqual(assessment.started_at_ms, 0)
+
+    def test_load_rollout_items_filters_legacy_ghost_snapshots_from_compaction_history(self):
+        # Rust source: codex-rs/rollout/src/recorder_tests.rs::load_rollout_items_filters_legacy_ghost_snapshots_from_compaction_history.
+        root = workspace_tempdir()
+        path = root / "rollout.jsonl"
+        thread_id = str(uuid.uuid4())
+        ts = "2025-01-03T12:00:00Z"
+        lines = [
+            {
+                "timestamp": ts,
+                "type": "session_meta",
+                "payload": {
+                    "id": thread_id,
+                    "timestamp": ts,
+                    "cwd": ".",
+                    "originator": "test_originator",
+                    "cli_version": "test_version",
+                    "source": "cli",
+                    "model_provider": "test-provider",
+                },
+            },
+            {
+                "timestamp": ts,
+                "type": "compacted",
+                "payload": {
+                    "message": "summary",
+                    "replacement_history": [
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "kept"}],
+                        },
+                        {
+                            "type": "ghost_snapshot",
+                            "ghost_commit": {
+                                "id": "deadbeef",
+                                "preexisting_untracked_dirs": [],
+                                "preexisting_untracked_files": [],
+                            },
+                        },
+                    ],
+                },
+            },
+        ]
+        path.write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8")
+
+        items, loaded_thread_id, parse_errors = RolloutRecorder.load_rollout_items(path)
+
+        self.assertEqual(loaded_thread_id, ThreadId.from_string(thread_id))
+        self.assertEqual(parse_errors, 0)
+        self.assertEqual([item.type for item in items], ["session_meta", "compacted"])
+        replacement_history = items[1].payload.replacement_history
+        self.assertIsNotNone(replacement_history)
+        self.assertEqual(len(replacement_history), 1)
+        self.assertEqual(replacement_history[0]["type"], "message")
+
+    def test_recorder_materializes_on_flush_with_pending_items(self):
+        # Rust source: codex-rs/rollout/src/recorder_tests.rs::recorder_materializes_on_flush_with_pending_items.
+        root = workspace_tempdir()
+        thread_id = ThreadId.new()
+        config = type(
+            "Config",
+            (),
+            {
+                "codex_home": root,
+                "sqlite_home": root,
+                "cwd": root,
+                "model_provider_id": "test-provider",
+                "generate_memories": True,
+            },
+        )()
+        recorder = RolloutRecorder.new(
+            config,
+            RolloutRecorderParams.new(
+                thread_id,
+                None,
+                SessionSource.exec(),
+                None,
+                base_instructions={},
+                dynamic_tools=(),
+            ),
+        )
+
+        self.assertFalse(recorder.rollout_path.exists())
+
+        recorder.record_canonical_items(
+            (
+                {
+                    "type": "event_msg",
+                    "payload": {"type": "agent_message", "message": "buffered-event"},
+                },
+            )
+        )
+        recorder.flush()
+        self.assertTrue(recorder.rollout_path.exists())
+
+        recorder.record_canonical_items(
+            (
+                {
+                    "type": "event_msg",
+                    "payload": {"type": "user_message", "message": "first-user-message", "kind": "plain"},
+                },
+            )
+        )
+        recorder.flush()
+        recorder.persist()
+        recorder.persist()
+
+        text = recorder.rollout_path.read_text(encoding="utf-8")
+        self.assertIn('"type":"session_meta"', text)
+        self.assertIn("buffered-event", text)
+        self.assertIn("first-user-message", text)
+
+    def test_persist_reports_filesystem_error_and_retries_buffered_items(self):
+        # Rust source: codex-rs/rollout/src/recorder_tests.rs
+        # persist_reports_filesystem_error_and_retries_buffered_items.
+        root = workspace_tempdir()
+        thread_id = ThreadId.new()
+        config = type(
+            "Config",
+            (),
+            {
+                "codex_home": root,
+                "sqlite_home": root,
+                "cwd": root,
+                "model_provider_id": "test-provider",
+                "generate_memories": True,
+            },
+        )()
+        recorder = RolloutRecorder.new(
+            config,
+            RolloutRecorderParams.new(
+                thread_id,
+                None,
+                SessionSource.exec(),
+                None,
+                base_instructions={},
+                dynamic_tools=(),
+            ),
+        )
+        rollout_path = recorder.rollout_path
+
+        recorder.record_canonical_items(
+            (
+                {
+                    "type": "event_msg",
+                    "payload": {"type": "agent_message", "message": "buffered-before-persist"},
+                },
+            )
+        )
+        sessions_blocker_path = root / SESSIONS_SUBDIR
+        sessions_blocker_path.write_text("", encoding="utf-8")
+
+        with self.assertRaises(OSError):
+            recorder.persist()
+        self.assertFalse(rollout_path.exists())
+
+        sessions_blocker_path.unlink()
+        recorder.flush()
+        text = rollout_path.read_text(encoding="utf-8")
+        self.assertIn("buffered-before-persist", text)
+
+    def test_writer_state_retries_write_error_before_reporting_flush_success(self):
+        # Rust source: codex-rs/rollout/src/recorder_tests.rs
+        # writer_state_retries_write_error_before_reporting_flush_success.
+        root = workspace_tempdir()
+        rollout_path = root / "rollout.jsonl"
+        rollout_path.write_text("", encoding="utf-8")
+        with rollout_path.open("r", encoding="utf-8") as read_only_file:
+            state = RolloutWriterState(read_only_file, rollout_path, cwd=root)
+            state.add_items(
+                (
+                    {
+                        "type": "event_msg",
+                        "payload": {"type": "agent_message", "message": "queued-after-writer-error"},
+                    },
+                )
+            )
+            state.flush()
+
+        text_after_retry = rollout_path.read_text(encoding="utf-8")
+        self.assertIn("queued-after-writer-error", text_after_retry)
 
     def test_count_session_rollout_files_matches_exec_ephemeral_suite_counting_rule(self):
         root = workspace_tempdir()
@@ -1855,6 +2605,136 @@ class CoreRolloutTests(unittest.TestCase):
         self.assertEqual(find_session_rollout_containing_response_marker(root, marker_c), path_b)
         self.assertEqual(count_session_rollout_files(root), 2)
 
+    def test_get_threads_cwd_filter_reads_latest_turn_context(self):
+        # Rust parity: codex-rollout/src/recorder_tests.rs
+        # resume_candidate_matches_cwd_reads_latest_turn_context.
+        root = workspace_tempdir()
+        thread_id = str(uuid.UUID(int=9012))
+        stale_cwd = root / "stale"
+        latest_cwd = root / "latest"
+        stale_cwd.mkdir()
+        latest_cwd.mkdir()
+
+        path = write_thread_rollout(
+            root,
+            "2025-01-03T13-00-00",
+            thread_id,
+            message="candidate with stale session cwd",
+            cwd=str(stale_cwd),
+        )
+        payload = turn_context_payload(turn_id="turn-1", model="test-model", realtime_active=None)
+        payload["cwd"] = str(latest_cwd)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "timestamp": "2025-01-03T13:00:01Z",
+                        "type": "turn_context",
+                        "payload": payload,
+                    }
+                )
+                + "\n"
+            )
+
+        latest_page = get_threads(root, page_size=10, cwd_filters=(latest_cwd,), default_provider="test-provider")
+        stale_page = get_threads(root, page_size=10, cwd_filters=(stale_cwd,), default_provider="test-provider")
+
+        self.assertEqual([item.path for item in latest_page.items], [path])
+        self.assertEqual(stale_page.items, [])
+
+    def test_fill_missing_thread_item_metadata_preserves_identity_and_prefers_state_git_fields(self):
+        # Rust parity: codex-rollout/src/recorder_tests.rs
+        # fill_missing_thread_item_metadata_preserves_identity_and_prefers_state_git_fields.
+        filesystem_thread_id = str(uuid.uuid4())
+        state_thread_id = str(uuid.uuid4())
+        filesystem_path = Path("/tmp/filesystem-rollout.jsonl")
+        state_path = Path("/tmp/state-rollout.jsonl")
+        item = ThreadItem(
+            path=filesystem_path,
+            thread_id=filesystem_thread_id,
+            first_user_message="filesystem message",
+            preview="filesystem preview",
+            git_branch="filesystem-branch",
+            git_sha="filesystem-sha",
+            git_origin_url="https://example.com/filesystem.git",
+        )
+        state_item = ThreadItem(
+            path=state_path,
+            thread_id=state_thread_id,
+            first_user_message="state message",
+            preview="state preview",
+            cwd=Path("/tmp/state-cwd"),
+            git_branch="state-branch",
+            git_sha="state-sha",
+            git_origin_url="https://example.com/state.git",
+            source="exec",
+            agent_nickname="state-agent",
+            agent_role="state-role",
+            model_provider="state-provider",
+            cli_version="state-version",
+            created_at="2025-01-03T16:00:00Z",
+            updated_at="2025-01-03T16:01:02.003Z",
+        )
+
+        merged = fill_missing_thread_item_metadata(item, state_item)
+
+        self.assertEqual(merged.path, filesystem_path)
+        self.assertEqual(merged.thread_id, filesystem_thread_id)
+        self.assertEqual(merged.first_user_message, "filesystem message")
+        self.assertEqual(merged.preview, "filesystem preview")
+        self.assertEqual(merged.cwd, Path("/tmp/state-cwd"))
+        self.assertEqual(merged.git_branch, "state-branch")
+        self.assertEqual(merged.git_sha, "state-sha")
+        self.assertEqual(merged.git_origin_url, "https://example.com/state.git")
+        self.assertEqual(merged.source, "exec")
+        self.assertEqual(merged.agent_nickname, "state-agent")
+        self.assertEqual(merged.agent_role, "state-role")
+        self.assertEqual(merged.model_provider, "state-provider")
+        self.assertEqual(merged.cli_version, "state-version")
+        self.assertEqual(merged.created_at, "2025-01-03T16:00:00Z")
+        self.assertEqual(merged.updated_at, "2025-01-03T16:01:02.003Z")
+
+    def test_list_threads_metadata_filter_overlays_state_db_list_metadata(self):
+        # Rust parity: codex-rollout/src/recorder_tests.rs
+        # list_threads_metadata_filter_overlays_state_db_list_metadata.
+        root = workspace_tempdir()
+        thread_id = str(uuid.UUID(int=9015))
+        rollout_path = write_thread_rollout(
+            root,
+            "2025-01-03T16-00-00",
+            thread_id,
+            message="Hello from user",
+            source="cli",
+            model_provider="test-provider",
+            cwd=str(root),
+        )
+        filesystem_item = get_threads(root, page_size=10, allowed_sources=("cli",), default_provider="test-provider").items[0]
+        state_metadata = ThreadMetadata(
+            id=thread_id,
+            rollout_path=rollout_path,
+            created_at=datetime(2025, 1, 3, 16, 0, 0, tzinfo=timezone.utc),
+            updated_at=datetime(2025, 1, 3, 16, 1, 2, 3000, tzinfo=timezone.utc),
+            source="cli",
+            model_provider="test-provider",
+            cwd=root,
+            cli_version="state-version",
+            git_branch="sqlite-branch",
+            git_sha="sqlite-sha",
+            git_origin_url="https://example.com/repo.git",
+            first_user_message="Hello from user",
+            preview="Hello from user",
+        )
+
+        overlaid = fill_missing_thread_item_metadata(filesystem_item, thread_item_from_state_metadata(state_metadata))
+
+        self.assertEqual(overlaid.path, rollout_path)
+        self.assertEqual(overlaid.thread_id, thread_id)
+        self.assertEqual(overlaid.git_branch, "sqlite-branch")
+        self.assertEqual(overlaid.git_sha, "sqlite-sha")
+        self.assertEqual(overlaid.git_origin_url, "https://example.com/repo.git")
+        self.assertEqual(overlaid.created_at, filesystem_item.created_at)
+        self.assertEqual(overlaid.updated_at, filesystem_item.updated_at)
+
     def test_rollout_date_parts_extracts_directory_components(self):
         file_name = "rollout-2025-03-01T09-00-00-123.jsonl"
 
@@ -2006,6 +2886,27 @@ class CoreRolloutTests(unittest.TestCase):
 
         self.assertEqual(find_thread_names_by_ids(root, {id1, id2}), {id1: "latest", id2: "other"})
 
+    def test_find_thread_names_by_ids_ignores_invalid_rows_and_empty_names(self):
+        # Rust source: codex-rs/rollout/src/session_index.rs find_thread_names_by_ids.
+        root = workspace_tempdir()
+        id1 = str(uuid.uuid4())
+        id2 = str(uuid.uuid4())
+        path = session_index_path(root)
+        path.write_text(
+            "\n".join(
+                (
+                    "",
+                    "not-json",
+                    json.dumps(SessionIndexEntry(id1, "   ", "2024-01-01T00:00:00Z").to_mapping()),
+                    json.dumps(SessionIndexEntry(id2, "usable", "2024-01-02T00:00:00Z").to_mapping()),
+                )
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        self.assertEqual(find_thread_names_by_ids(root, {id1, id2}), {id2: "usable"})
+
     def test_find_thread_path_by_id_str_requires_uuid_and_searches_sessions(self):
         root = workspace_tempdir()
         thread_id = str(uuid.uuid4())
@@ -2068,6 +2969,151 @@ class CoreRolloutTests(unittest.TestCase):
         self.assertEqual([item.thread_id for item in page2.items], [id1])
         self.assertIsNone(page2.next_cursor)
 
+    def test_get_threads_db_disabled_does_not_skip_paginated_items(self):
+        # Rust source: codex-rs/rollout/src/recorder_tests.rs::list_threads_db_disabled_does_not_skip_paginated_items.
+        root = workspace_tempdir()
+        newest_id = str(uuid.UUID(int=9001))
+        middle_id = str(uuid.UUID(int=9002))
+        oldest_id = str(uuid.UUID(int=9003))
+        newest = write_thread_rollout(root, "2025-01-03T12-00-00", newest_id, message="newest")
+        middle = write_thread_rollout(root, "2025-01-02T12-00-00", middle_id, message="middle")
+        write_thread_rollout(root, "2025-01-01T12-00-00", oldest_id, message="oldest")
+
+        page1 = get_threads(root, page_size=1, default_provider="test-provider")
+        page2 = get_threads(root, page_size=1, cursor=page1.next_cursor, default_provider="test-provider")
+
+        self.assertEqual(len(page1.items), 1)
+        self.assertEqual(page1.items[0].path, newest)
+        self.assertIsNotNone(page1.next_cursor)
+        self.assertEqual(len(page2.items), 1)
+        self.assertEqual(page2.items[0].path, middle)
+
+    def test_list_threads_state_db_only_skips_jsonl_repair_scan(self):
+        # Rust parity: codex-rollout/src/recorder_tests.rs
+        # list_threads_state_db_only_skips_jsonl_repair_scan.
+        root = workspace_tempdir()
+        thread_id = str(uuid.UUID(int=9012))
+        rollout_path = write_thread_rollout(
+            root,
+            "2025-01-03T14-00-00",
+            thread_id,
+            message="Hello from user",
+            source="cli",
+            model_provider="test-provider",
+            cwd=str(root),
+        )
+        cwd_filters = (root,)
+
+        state_only_page = list_threads_from_state_metadata(
+            (),
+            page_size=10,
+            cwd_filters=cwd_filters,
+            default_provider="test-provider",
+        )
+        repaired_page = get_threads(root, page_size=10, cwd_filters=cwd_filters, default_provider="test-provider")
+        state_metadata = ThreadMetadata(
+            id=thread_id,
+            rollout_path=rollout_path,
+            created_at=datetime(2025, 1, 3, 14, 0, 0, tzinfo=timezone.utc),
+            updated_at=datetime(2025, 1, 3, 14, 0, 0, tzinfo=timezone.utc),
+            source="cli",
+            model_provider="test-provider",
+            cwd=root,
+            cli_version="test-version",
+            first_user_message="Hello from user",
+            preview="Hello from user",
+        )
+        repaired_state_only_page = list_threads_from_state_metadata(
+            (state_metadata,),
+            page_size=10,
+            cwd_filters=cwd_filters,
+            default_provider="test-provider",
+        )
+
+        self.assertEqual(state_only_page.items, [])
+        self.assertEqual([item.path for item in repaired_page.items], [rollout_path])
+        self.assertEqual([item.path for item in repaired_state_only_page.items], [rollout_path])
+
+    def test_list_threads_db_enabled_drops_missing_rollout_paths(self):
+        # Rust parity: codex-rollout/src/recorder_tests.rs
+        # list_threads_db_enabled_drops_missing_rollout_paths.
+        root = workspace_tempdir()
+        thread_id = str(uuid.UUID(int=9010))
+        stale_path = root / SESSIONS_SUBDIR / "2099" / "01" / "01" / f"rollout-2099-01-01T00-00-00-{thread_id}.jsonl"
+        state_metadata = ThreadMetadata(
+            id=thread_id,
+            rollout_path=stale_path,
+            created_at=datetime(2025, 1, 3, 13, 0, 0, tzinfo=timezone.utc),
+            updated_at=datetime(2025, 1, 3, 13, 0, 0, tzinfo=timezone.utc),
+            source="cli",
+            model_provider="test-provider",
+            cwd=root,
+            cli_version="test-version",
+            first_user_message="Hello from user",
+            preview="Hello from user",
+        )
+        deleted: list[str] = []
+
+        class Runtime:
+            def delete_thread(self, value: str) -> None:
+                deleted.append(value)
+
+        page = list_threads_from_state_metadata(
+            (state_metadata,),
+            page_size=10,
+            default_provider="test-provider",
+            repair_runtime=Runtime(),
+            drop_missing_rollout_paths=True,
+        )
+
+        self.assertEqual(page.items, [])
+        self.assertEqual(deleted, [thread_id])
+
+    def test_list_threads_db_enabled_repairs_stale_rollout_paths(self):
+        # Rust parity: codex-rollout/src/recorder_tests.rs
+        # list_threads_db_enabled_repairs_stale_rollout_paths.
+        root = workspace_tempdir()
+        thread_id = str(uuid.UUID(int=9011))
+        real_path = write_thread_rollout(
+            root,
+            "2025-01-03T13-00-00",
+            thread_id,
+            message="Hello from user",
+            source="cli",
+            model_provider="test-provider",
+            cwd=str(root),
+        )
+        stale_path = root / SESSIONS_SUBDIR / "2099" / "01" / "01" / f"rollout-2099-01-01T00-00-00-{thread_id}.jsonl"
+        state_metadata = ThreadMetadata(
+            id=thread_id,
+            rollout_path=stale_path,
+            created_at=datetime(2025, 1, 3, 13, 0, 0, tzinfo=timezone.utc),
+            updated_at=datetime(2025, 1, 3, 13, 0, 0, tzinfo=timezone.utc),
+            source="cli",
+            model_provider="test-provider",
+            cwd=root,
+            cli_version="test-version",
+            first_user_message="Hello from user",
+            preview="Hello from user",
+        )
+        repaired: dict[str, Path] = {}
+
+        class Runtime:
+            def update_thread_rollout_path(self, value: str, path: Path) -> None:
+                repaired[value] = Path(path)
+
+        page = list_threads_from_state_metadata(
+            (state_metadata,),
+            page_size=1,
+            default_provider="test-provider",
+            repair_runtime=Runtime(),
+            codex_home=root,
+            repair_stale_rollout_paths=True,
+        )
+
+        self.assertEqual([item.path for item in page.items], [real_path])
+        self.assertEqual(repaired, {thread_id: real_path})
+
     def test_get_threads_filters_source_provider_and_cwd(self):
         root = workspace_tempdir()
         allowed_id = str(uuid.uuid4())
@@ -2087,6 +3133,62 @@ class CoreRolloutTests(unittest.TestCase):
         )
 
         self.assertEqual([item.thread_id for item in page.items], [allowed_id])
+
+    def test_get_threads_default_filter_returns_filesystem_scan_results(self):
+        # Rust parity: codex-rollout/src/recorder_tests.rs
+        # list_threads_default_filter_returns_filesystem_scan_results.
+        root = workspace_tempdir()
+        thread_id = str(uuid.UUID(int=9013))
+        real_cwd = root / "real-cwd"
+        stale_cwd = root / "stale-cwd"
+        real_cwd.mkdir()
+        stale_cwd.mkdir()
+        write_thread_rollout(
+            root,
+            "2025-01-03T13-00-00",
+            thread_id,
+            message="Hello from user",
+            source="cli",
+            model_provider="test-provider",
+            cwd=str(real_cwd),
+        )
+
+        page = get_threads(root, page_size=10, cwd_filters=(stale_cwd,), default_provider="test-provider")
+
+        self.assertEqual(page.items, [])
+
+    def test_get_threads_search_filters_by_session_index_title(self):
+        root = workspace_tempdir()
+        matching_id = str(uuid.uuid4())
+        other_id = str(uuid.uuid4())
+        matching = write_thread_rollout(root, "2025-01-02T12-00-00", matching_id, source="cli")
+        write_thread_rollout(root, "2025-01-01T12-00-00", other_id, source="cli")
+        append_thread_name(root, matching_id, "needle current title")
+        append_thread_name(root, other_id, "boring title")
+
+        page = get_threads(root, page_size=10, search_term="needle", default_provider="test-provider")
+
+        self.assertEqual([item.path for item in page.items], [matching])
+
+    def test_get_threads_search_repairs_stale_state_db_hits_before_returning(self):
+        # Rust parity: codex-rollout/src/recorder_tests.rs
+        # list_threads_search_repairs_stale_state_db_hits_before_returning.
+        root = workspace_tempdir()
+        thread_id = str(uuid.UUID(int=9014))
+        write_thread_rollout(
+            root,
+            "2025-01-03T15-00-00",
+            thread_id,
+            message="Hello from user",
+            source="cli",
+            model_provider="test-provider",
+            cwd=str(root),
+        )
+        append_thread_name(root, thread_id, "current title without search token")
+
+        page = get_threads(root, page_size=10, search_term="needle", default_provider="test-provider")
+
+        self.assertEqual(page.items, [])
 
     def test_get_threads_excludes_rollouts_without_preview(self):
         root = workspace_tempdir()
@@ -2109,6 +3211,41 @@ class CoreRolloutTests(unittest.TestCase):
         page = get_threads(root, page_size=10, sort_key=ThreadSortKey.UPDATED_AT)
 
         self.assertEqual([item.thread_id for item in page.items], [older_id, newer_id])
+
+    def test_get_threads_in_root_flat_layout_only_scans_root_files(self):
+        # Rust source: codex-rs/rollout/src/list.rs ThreadListLayout::Flat.
+        root = workspace_tempdir()
+        top_id = str(uuid.uuid4())
+        nested_id = str(uuid.uuid4())
+        top_path = root / f"rollout-2025-01-02T12-00-00-{top_id}.jsonl"
+        nested_path = root / "2025" / "01" / "03" / f"rollout-2025-01-03T12-00-00-{nested_id}.jsonl"
+        for path, thread_id, message in (
+            (top_path, top_id, "top-level"),
+            (nested_path, nested_id, "nested"),
+        ):
+            payload = session_meta_payload(thread_id)
+            payload.update({"timestamp": "2025-01-02T12-00-00", "source": "cli", "model_provider": "test-provider"})
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                "\n".join(
+                    json.dumps(line)
+                    for line in (
+                        {"timestamp": "2025-01-02T12-00-00", "type": "session_meta", "payload": payload},
+                        {
+                            "timestamp": "2025-01-02T12-00-00",
+                            "type": "event_msg",
+                            "payload": {"type": "user_message", "message": message, "kind": "plain"},
+                        },
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+        page = get_threads_in_root(root, page_size=10, layout=ThreadListLayout.FLAT)
+
+        self.assertEqual([item.thread_id for item in page.items], [top_id])
+        self.assertEqual(page.items[0].path, top_path)
 
 
 if __name__ == "__main__":

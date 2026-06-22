@@ -28,17 +28,32 @@ import tokenize
 import threading
 import time
 import platform
+import tempfile
 import webbrowser
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, MutableMapping, TextIO
 import shlex
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from pycodex import __version__
+from pycodex.cli.app_cmd import (
+    candidate_applications_dirs,
+    candidate_codex_app_paths,
+    default_mac_dmg_url,
+    display_windows_workspace_path,
+    find_codex_app_in_mount,
+    mac_app_install_plan,
+    mac_copy_app_bundle_command,
+    mac_detach_dmg_command,
+    mac_download_dmg_command,
+    mac_mount_dmg_command,
+    mac_open_app_command,
+    parse_hdiutil_attach_mount_point,
+    workspace_for_app_command,
+)
 from pycodex.config import CliConfigOverrides, ConfigOverride
 from pycodex.core import maybe_migrate_personality, PersonalityMigrationStatus
 from pycodex.exec import (
@@ -90,6 +105,11 @@ from pycodex.exec.core_runtime import (
 )
 from pycodex.protocol import AskForApproval, ProfileV2Name, ProfileV2NameParseError, SandboxMode
 from pycodex.protocol.config_types import ConfigTypeParseError
+from pycodex.responses_api_proxy import (
+    ResponsesApiProxyError,
+    read_auth_header_for_main,
+    run_main as run_responses_api_proxy_main,
+)
 from pycodex.cli.login import (
     AuthDotJson,
     AUTH_MODE_AGENT_IDENTITY,
@@ -104,9 +124,15 @@ from pycodex.cli.login import (
     safe_format_key,
     write_auth_json,
 )
+from pycodex.login.device_code_auth import (
+    DEVICE_CODE_NOT_ENABLED_MESSAGE,
+    poll_for_token,
+    request_user_code,
+)
 
 from pycodex.cli.features import FeatureCliError, FeatureToggles, FeaturesCli, parse_features_args, run_features_command
 from pycodex.cli.features import FeaturesSubcommand
+from pycodex.cli.debug_sandbox import build_debug_sandbox_execution_plan, debug_sandbox_subprocess_argv
 from .doctor_updates import (
     default_reachability_plan,
     doctor_background_server_check,
@@ -2490,8 +2516,7 @@ def _write_mcp_servers(codex_home: Path, servers: Mapping[str, Any], *, base_con
 
 def _parse_mcp_add_definition(command_args: tuple[str, ...]) -> dict[str, Any]:
     name = command_args[1]
-    if name.startswith("-"):
-        raise RuntimeError(f"invalid MCP server name: {name!r}")
+    _validate_mcp_server_name(name)
 
     index = 2
     definition: dict[str, Any] = {}
@@ -2513,11 +2538,7 @@ def _parse_mcp_add_definition(command_args: tuple[str, ...]) -> dict[str, Any]:
             continue
         if arg == "--env":
             env_pair = command_args[index + 1]
-            if "=" not in env_pair:
-                raise RuntimeError(f"invalid --env value: {env_pair!r}")
-            key, value = env_pair.split("=", 1)
-            if not key:
-                raise RuntimeError(f"invalid --env value: {env_pair!r}")
+            key, value = _parse_mcp_env_pair(env_pair)
             env[key] = value
             index += 2
             continue
@@ -2538,6 +2559,20 @@ def _parse_mcp_add_definition(command_args: tuple[str, ...]) -> dict[str, Any]:
     if env:
         definition["env"] = env
     return definition
+
+
+def _parse_mcp_env_pair(raw: str) -> tuple[str, str]:
+    key, separator, value = raw.partition("=")
+    key = key.strip()
+    if not separator or not key:
+        raise RuntimeError("environment entries must be in KEY=VALUE form")
+    return key, value
+
+
+def _validate_mcp_server_name(name: str) -> None:
+    if name and all(ch.isascii() and (ch.isalnum() or ch in {"-", "_"}) for ch in name):
+        return
+    raise RuntimeError(f"invalid server name '{name}' (use letters, numbers, '-', '_')")
 
 
 def _plugin_key(name: str, marketplace: str) -> str:
@@ -2589,16 +2624,24 @@ def _old_plugin_version_would_stay_active(old_version: str, new_version: str) ->
 
 def _parse_plugin_selector(value: str, explicit_marketplace: str | None) -> tuple[str, str]:
     plugin_name = value
-    marketplace = explicit_marketplace or "default"
+    marketplace = explicit_marketplace
+    tail = ""
     if "@" in value:
         head, tail = value.rsplit("@", 1)
         plugin_name = head
         if explicit_marketplace is None and head and tail:
             marketplace = tail
+        elif explicit_marketplace is not None and head and tail and tail != explicit_marketplace:
+            raise ValueError(
+                f"plugin id `{value}` belongs to marketplace `{tail}`, "
+                f"but --marketplace specified `{explicit_marketplace}`"
+            )
     if explicit_marketplace is None and "@" in value and not tail:
         raise ValueError(f"Invalid plugin selector: {value}")
     if not plugin_name:
         raise ValueError(f"Invalid plugin selector: {value}")
+    if marketplace is None:
+        raise ValueError("plugin requires --marketplace unless passed as <plugin>@<marketplace>")
     try:
         _validate_plugin_segment(plugin_name, "plugin name")
         _validate_plugin_segment(marketplace, "marketplace name")
@@ -3057,6 +3100,11 @@ def _run_mcp_command(command_args: tuple[str, ...], *, stdout: TextIO, stderr: T
             print("mcp remove requires MCP server name.", file=stderr)
             return 2
         name = rest[0]
+        try:
+            _validate_mcp_server_name(name)
+        except RuntimeError as exc:
+            print(f"pycodex: {exc}", file=stderr)
+            return 2
         if name not in mcp_servers:
             print(f"pycodex: MCP server '{name}' not found.", file=stderr)
             return 2
@@ -4347,23 +4395,25 @@ def _remote_control_human_lines(
     remote_control: Mapping[str, object],
     mode: str,
 ) -> list[str]:
-    status = remote_control.get("status")
-    if not isinstance(status, str):
-        status = "connected"
     server_name = remote_control.get("server_name")
     if not isinstance(server_name, str) or not server_name:
         server_name = _remote_control_server_name()
 
-    if status == "connected":
-        lines = [f"This machine is available for remote control as {server_name}."]
-    elif status == "connecting":
-        lines = [f"Remote control is enabled on {server_name} and still connecting."]
-    else:
-        lines = ["Remote control is disabled."]
+    lines = [_remote_control_start_human_message(remote_control.get("status"), server_name)]
 
     if mode == "foreground":
         lines.append("Press Ctrl-C to stop.")
     return lines
+
+
+def _remote_control_start_human_message(status: object, server_name: str) -> str:
+    if status == "connecting":
+        return f"Remote control is enabled on {server_name} and still connecting."
+    if status == "errored":
+        return f"Remote control is enabled on {server_name} but the connection is errored."
+    if status == "disabled":
+        return f"Remote control is disabled on {server_name}."
+    return f"This machine is available for remote control as {server_name}."
 
 
 def _unimplemented_command_help_text(command: str) -> str:
@@ -4594,141 +4644,14 @@ def _read_responses_api_auth_header(
     *,
     stderr: TextIO,
 ) -> str:
-    raw = _read_stdin_text(
-        stdin,
-        required=True,
-        command="responses-api-proxy",
-        stderr=stderr,
-        stdin_is_terminal=False,
-    )
-    if raw is None:
-        raise RuntimeError("No API key provided via stdin.")
-
-    key = raw.strip("\r\n")
-    if not key:
-        raise RuntimeError("No API key provided via stdin.")
-
-    if len(key.encode("utf-8")) > 1017:
-        raise RuntimeError("API key is too large to fit in the 1024-byte buffer")
-
-    if not all(char.isascii() and (char.isalnum() or char in "-_") for char in key):
-        raise RuntimeError("API key may only contain ASCII letters, numbers, '-' or '_'")
-
-    return f"Bearer {key}"
-
-
-def _sanitize_dump_body(body: bytes) -> object:
-    if not body:
-        return ""
+    del stderr
     try:
-        return json.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return body.decode("utf-8", errors="replace")
-
-
-def _should_redact_header(name: str) -> bool:
-    lower = name.lower()
-    return lower == "authorization" or "cookie" in lower
-
-
-def _normalize_headers_for_dump(headers: Iterable[tuple[str, str]]) -> list[dict[str, str]]:
-    dumped_headers: list[dict[str, str]] = []
-    for key, value in headers:
-        dumped_headers.append(
-            {
-                "name": key,
-                "value": "[REDACTED]" if _should_redact_header(key) else value,
-            }
-        )
-    return dumped_headers
-
-
-@dataclass
-class _ExchangeDumper:
-    dump_dir: Path
-    _sequence: int = 1
-    _lock: threading.Lock = field(default_factory=threading.Lock)
-
-    def __post_init__(self) -> None:
-        self.dump_dir.mkdir(parents=True, exist_ok=True)
-
-    def _next_prefix(self) -> str:
-        with self._lock:
-            value = self._sequence
-            self._sequence += 1
-
-        timestamp_ms = int(time.time() * 1000)
-        return f"{value:06d}-{timestamp_ms}"
-
-    def dump_request(
-        self,
-        method: str,
-        url: str,
-        headers: Iterable[tuple[str, str]],
-        body: bytes,
-    ) -> tuple[Path, Path]:
-        prefix = self._next_prefix()
-        request_path = self.dump_dir / f"{prefix}-request.json"
-        response_path = self.dump_dir / f"{prefix}-response.json"
-        request_dump = {
-            "method": method,
-            "url": url,
-            "headers": _normalize_headers_for_dump(list(headers)),
-            "body": _sanitize_dump_body(body),
-        }
-        with request_path.open("w", encoding="utf-8") as handle:
-            json.dump(request_dump, handle, indent=2, ensure_ascii=False)
-            handle.write("\n")
-        return request_path, response_path
-
-
-class _ResponseBodyDumper:
-    def __init__(
-        self,
-        status: int,
-        headers: list[tuple[str, str]],
-        response_file: object,
-        response_path: Path,
-        stderr: TextIO,
-    ) -> None:
-        self.status = status
-        self.headers = headers
-        self._response_file = response_file
-        self._response_path = response_path
-        self._chunks: list[bytes] = []
-        self._dumped = False
-        self._stderr = stderr
-
-    def read(self, size: int = -1) -> bytes:
-        chunk = self._response_file.read(size)
-        if not chunk:
-            self._write_dump()
-            return b""
-        self._chunks.append(chunk)
-        return chunk
-
-    def _write_dump(self) -> None:
-        if self._dumped:
-            return
-        self._dumped = True
-        body = b"".join(self._chunks)
-        response_dump = {
-            "status": self.status,
-            "headers": _normalize_headers_for_dump(self.headers),
-            "body": _sanitize_dump_body(body),
-        }
-        try:
-            with self._response_path.open("w", encoding="utf-8") as handle:
-                json.dump(response_dump, handle, indent=2, ensure_ascii=False)
-                handle.write("\n")
-        except OSError as exc:
-            print(
-                f"responses-api-proxy failed to write {self._response_path}: {exc}",
-                file=self._stderr,
-            )
-
-    def __del__(self) -> None:
-        self._write_dump()
+        return read_auth_header_for_main(stdin)
+    except ResponsesApiProxyError as exc:
+        message = str(exc)
+        if "must be provided" in message:
+            raise RuntimeError("No API key provided via stdin.") from exc
+        raise RuntimeError(message) from exc
 
 
 def _run_responses_api_proxy(
@@ -4738,238 +4661,12 @@ def _run_responses_api_proxy(
     stderr: TextIO,
     stdin: object | None = None,
 ) -> int:
-    if any(arg in {"-h", "--help"} for arg in command_args):
-        print(_unimplemented_command_help_text("responses-api-proxy"), file=stdout)
-        return 0
-
-    try:
-        auth_header = _read_responses_api_auth_header(stdin, stderr=stderr)
-    except RuntimeError as exc:
-        print(f"pycodex: {exc}", file=stderr)
-        return 2
-
-    port = None
-    server_info = None
-    http_shutdown = False
-    upstream_url = "https://api.openai.com/v1/responses"
-    dump_dir = None
-
-    index = 0
-    while index < len(command_args):
-        arg = command_args[index]
-        if arg == "--port":
-            port = int(command_args[index + 1])
-            index += 2
-            continue
-        if arg == "--server-info":
-            server_info = command_args[index + 1]
-            index += 2
-            continue
-        if arg == "--http-shutdown":
-            http_shutdown = True
-            index += 1
-            continue
-        if arg == "--upstream-url":
-            upstream_url = command_args[index + 1]
-            index += 2
-            continue
-        if arg == "--dump-dir":
-            dump_dir = command_args[index + 1]
-            index += 2
-            continue
-        break
-
-    exchange_dumper: _ExchangeDumper | None = None
-    if dump_dir is not None:
-        try:
-            exchange_dumper = _ExchangeDumper(Path(dump_dir))
-        except OSError as exc:
-            print(f"pycodex: creating --dump-dir: {exc}", file=stderr)
-            return 2
-
-    parsed_upstream = urlparse(upstream_url)
-    if not parsed_upstream.scheme or not parsed_upstream.netloc:
-        print(f"pycodex: parsing --upstream-url: invalid url {upstream_url}", file=stderr)
-        return 2
-
-    host_header = parsed_upstream.hostname
-    if host_header is None:
-        print(f"pycodex: parsing --upstream-url: invalid host in {upstream_url}", file=stderr)
-        return 2
-    if parsed_upstream.port is not None:
-        host_header = f"{host_header}:{parsed_upstream.port}"
-
-    host, selected_port = ("127.0.0.1", port or 0)
-    skip_request_dump_headers = {"authorization", "host"}
-    skip_response_headers = {
-        "content-length",
-        "transfer-encoding",
-        "connection",
-        "trailer",
-        "upgrade",
-        "server",
-        "date",
-    }
-
-    class _ResponsesApiProxyHandler(BaseHTTPRequestHandler):
-        server_version = "responses-api-proxy"
-
-        def _write_server_error(self, status: int, message: str) -> None:
-            self.send_response(status)
-            if status != 403:
-                self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.end_headers()
-            if status != 403:
-                self.wfile.write(message.encode("utf-8"))
-
-        def _forward(self) -> None:
-            parsed = urlparse(self.path)
-            if (
-                self.command != "POST"
-                or parsed.path != "/v1/responses"
-                or parsed.query
-            ):
-                self._write_server_error(403, "forbidden")
-                return
-
-            length = int(self.headers.get("Content-Length", "0") or 0)
-            body = self.rfile.read(length) if length else b""
-
-            request_headers = list(self.headers.items())
-            upstream_headers = {
-                key: value for key, value in request_headers if key.lower() not in skip_request_dump_headers
-            }
-            upstream_headers["Host"] = host_header
-            upstream_headers["Authorization"] = auth_header
-
-            request = Request(
-                upstream_url,
-                data=body,
-                headers=upstream_headers,
-                method="POST",
-            )
-
-            response_path: Path | None = None
-            if exchange_dumper is not None:
-                try:
-                    _request_path, response_path = exchange_dumper.dump_request(
-                        self.command,
-                        parsed.path,
-                        request_headers,
-                        body,
-                    )
-                    del _request_path
-                except OSError as exc:
-                    print(
-                        f"responses-api-proxy failed to dump request: {exc}",
-                        file=stderr,
-                    )
-                    response_path = None
-
-            response: object | None = None
-            try:
-                try:
-                    response = urlopen(request, timeout=30)
-                except HTTPError as exc:
-                    response = exc
-
-                status = getattr(response, "status", None)
-                if status is None:
-                    status = getattr(response, "code", 500)
-                if status is None:
-                    status = 500
-
-                self.send_response(status)
-                response_headers = list(response.headers.items()) if response is not None else []
-                forwarded_response_headers = [
-                    (name, value)
-                    for name, value in response_headers
-                    if name.lower() not in skip_response_headers
-                ]
-                for name, value in forwarded_response_headers:
-                    self.send_header(name, value)
-                self.end_headers()
-
-                if response_path is None:
-                    while True:
-                        chunk = response.read(8192)  # type: ignore[attr-defined]
-                        if not chunk:
-                            break
-                        self.wfile.write(chunk)
-                    return
-
-                response_dump = _ResponseBodyDumper(
-                    status,
-                    forwarded_response_headers,
-                    response,
-                    response_path,
-                    stderr,
-                )
-                while True:
-                    chunk = response_dump.read(8192)  # type: ignore[attr-defined]
-                    if not chunk:
-                        break
-                    self.wfile.write(chunk)
-            except Exception as exc:
-                print(f"responses-api-proxy forwarding error: {exc}", file=stderr)
-                self._write_server_error(500, "internal error")
-            finally:
-                if response is not None and hasattr(response, "close"):
-                    try:
-                        response.close()
-                    except Exception:
-                        pass
-
-        def do_POST(self) -> None:
-            self._forward()
-
-        def do_GET(self) -> None:
-            parsed = urlparse(self.path)
-            if (
-                not http_shutdown
-                or parsed.path != "/shutdown"
-                or parsed.query
-            ):
-                self._write_server_error(403, "forbidden")
-                return
-
-            self.send_response(200)
-            self.end_headers()
-            threading.Thread(
-                target=self.server.shutdown,
-                daemon=True,
-            ).start()
-
-        def log_message(self, fmt: str, *args: object) -> None:
-            del fmt
-            del args
-
-    server = ThreadingHTTPServer((host, selected_port), _ResponsesApiProxyHandler)
-    bound_addr = server.server_address
-
-    if server_info:
-        server_info_path = Path(server_info)
-        if server_info_path.parent:
-            server_info_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            payload = {"port": bound_addr[1], "pid": os.getpid()}
-            with open(server_info_path, "w", encoding="utf-8") as handle:
-                handle.write(json.dumps(payload))
-                handle.write("\n")
-        except OSError as exc:
-            print(f"failed to write server info file: {exc}", file=stderr)
-            return 2
-
-    print(f"responses-api-proxy listening on {bound_addr[0]}:{bound_addr[1]}", file=stderr)
-
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        return 0
-    finally:
-        server.server_close()
-
-    return 0
+    return run_responses_api_proxy_main(
+        command_args,
+        stdout=stdout,
+        stderr=stderr,
+        stdin=stdin,
+    )
 
 
 def _run_stdio_to_uds(
@@ -7057,63 +6754,17 @@ def _resolve_device_auth_client_id(client_id: object) -> str:
 
 
 def _request_device_auth_user_code(api_base_url: str, client_id: str) -> dict[str, str | int]:
-    body = json.dumps({"client_id": client_id}).encode("utf-8")
-    headers = {
-        "Content-Type": "application/json",
-        "User-Agent": "pycodex",
-    }
-    request = Request(
-        url=f"{api_base_url}/deviceauth/usercode",
-        data=body,
-        headers=headers,
-        method="POST",
-    )
     try:
-        with urlopen(request, timeout=30) as response:
-            raw = response.read().decode("utf-8", errors="replace")
-    except HTTPError as exc:
-        if exc.code == 404:
-            _drain_http_error(exc)
-            raise RuntimeError(
-                "device code login is not enabled for this Codex server. "
-                "Use the browser login or verify the server URL."
-            )
-        body = exc.read().decode("utf-8", errors="replace")
-        _drain_http_error(exc)
-        message = body.strip() or exc.reason
-        raise RuntimeError(f"device code request failed with status {exc.code}: {message}")
-    except URLError as exc:
-        raise RuntimeError(f"device code request failed: {exc}")
-
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"device code request returned invalid JSON: {exc}")
-
-    if not isinstance(payload, dict):
-        raise RuntimeError("device code request returned an unexpected response.")
-
-    device_auth_id = payload.get("device_auth_id")
-    if not isinstance(device_auth_id, str) or not device_auth_id.strip():
-        raise RuntimeError("device code response is missing 'device_auth_id'.")
-
-    user_code = payload.get("user_code", payload.get("usercode"))
-    if not isinstance(user_code, str) or not user_code.strip():
-        raise RuntimeError("device code response is missing 'user_code'.")
-
-    interval = payload.get("interval", 5)
-    if isinstance(interval, str):
-        try:
-            interval = int(interval.strip())
-        except ValueError:
-            interval = 5
-    if not isinstance(interval, int) or interval <= 0:
-        interval = 5
+        response = request_user_code(api_base_url, client_id, opener=urlopen)
+    except FileNotFoundError as exc:
+        raise RuntimeError(DEVICE_CODE_NOT_ENABLED_MESSAGE) from exc
+    except (OSError, TypeError, ValueError) as exc:
+        raise RuntimeError(str(exc)) from exc
 
     return {
-        "device_auth_id": device_auth_id.strip(),
-        "user_code": user_code.strip(),
-        "interval": interval,
+        "device_auth_id": response.device_auth_id,
+        "user_code": response.user_code,
+        "interval": response.interval if response.interval > 0 else 5,
     }
 
 
@@ -7127,61 +6778,27 @@ def _poll_device_auth_token(
     stderr: TextIO,
 ) -> dict[str, str]:
     del stdout
-    payload = json.dumps(
-        {
-            "device_auth_id": device_auth_id,
-            "user_code": user_code,
-        }
-    ).encode("utf-8")
-    headers = {
-        "Content-Type": "application/json",
-        "User-Agent": "pycodex",
+    try:
+        token_payload = poll_for_token(
+            api_base_url,
+            device_auth_id,
+            user_code,
+            interval,
+            opener=urlopen,
+            sleep=time.sleep,
+            clock=time.time,
+            max_wait_seconds=_DEVICE_AUTH_MAX_WAIT_SECONDS,
+        )
+    except TimeoutError as exc:
+        print("Device auth timed out after 15 minutes.", file=stderr)
+        raise RuntimeError(str(exc)) from exc
+    except OSError as exc:
+        raise RuntimeError(str(exc)) from exc
+
+    return {
+        "authorization_code": token_payload.authorization_code,
+        "code_verifier": token_payload.code_verifier,
     }
-    start = time.time()
-
-    while time.time() - start <= _DEVICE_AUTH_MAX_WAIT_SECONDS:
-        try:
-            response = Request(
-                url=f"{api_base_url}/deviceauth/token",
-                data=payload,
-                headers=headers,
-                method="POST",
-            )
-            with urlopen(response, timeout=30) as reply:
-                body = reply.read().decode("utf-8", errors="replace")
-            if not body.strip():
-                raise RuntimeError("empty token response")
-            token_payload = json.loads(body)
-        except HTTPError as exc:
-            if exc.code in {403, 404}:
-                _drain_http_error(exc)
-                remaining = _DEVICE_AUTH_MAX_WAIT_SECONDS - (time.time() - start)
-                if remaining <= 0:
-                    break
-                time.sleep(min(interval, remaining))
-                continue
-            body = exc.read().decode("utf-8", errors="replace")
-            _drain_http_error(exc)
-            message = body.strip() or exc.reason
-            raise RuntimeError(f"device auth token request failed with status {exc.code}: {message}")
-        except URLError as exc:
-            raise RuntimeError(f"device auth token request failed: {exc}")
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(f"device auth token response invalid JSON: {exc}")
-
-        if isinstance(token_payload, dict):
-            authorization_code = token_payload.get("authorization_code")
-            code_verifier = token_payload.get("code_verifier")
-            if isinstance(authorization_code, str) and isinstance(code_verifier, str):
-                return {
-                    "authorization_code": authorization_code,
-                    "code_verifier": code_verifier,
-                }
-
-        time.sleep(min(interval, _DEVICE_AUTH_MAX_WAIT_SECONDS - (time.time() - start)))
-
-    print("Device auth timed out after 15 minutes.", file=stderr)
-    raise RuntimeError("device auth timed out after 15 minutes")
 
 
 def _exchange_device_auth_code(
@@ -7298,11 +6915,7 @@ def _run_app_command(
             workspace_arg = arg
         index += 1
 
-    workspace = Path(workspace_arg).expanduser()
-    try:
-        workspace = workspace.resolve()
-    except OSError:
-        workspace = workspace.absolute()
+    workspace = workspace_for_app_command(workspace_arg)
 
     if sys.platform == "darwin":
         return _run_app_command_macos(
@@ -7327,45 +6940,181 @@ def _run_app_command_macos(
     download_url: str | None,
     stderr: TextIO,
 ) -> int:
-    candidates = [Path("/Applications/Codex.app")]
-    home = os.environ.get("HOME")
-    if home:
-        candidates.append(Path(home) / "Applications" / "Codex.app")
-
-    for app_path in candidates:
+    for app_path in candidate_codex_app_paths(os.environ.get("HOME")):
         if app_path.is_dir():
-            print(f"Opening Codex Desktop at {app_path}...", file=stderr)
-            print(f"Opening workspace {workspace}...", file=stderr)
-            try:
-                result = subprocess.run(
-                    ("open", "-a", str(app_path), str(workspace)),
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                )
-            except OSError as exc:
-                print(f"Failed to launch Codex Desktop: {exc}", file=stderr)
-                return 2
+            return _open_codex_app_macos(app_path, workspace, stderr=stderr, announce_app=True)
 
-            if result.returncode == 0:
-                return 0
-
-            print(
-                f"open command returned {result.returncode} while launching Codex Desktop.",
-                file=stderr,
-            )
-            if result.stderr:
-                print(result.stderr.strip(), file=stderr)
-            return 2
-
-    print("Codex Desktop not found; opening installer...", file=stderr)
-    default_url = _APP_DMG_URL_ARM64 if platform.machine() in {"arm64", "aarch64"} else _APP_DMG_URL_X64
-    installer_url = download_url if download_url is not None else default_url
-    print(f"Opening installer: {installer_url}", file=stderr)
-    if not _open_in_browser(installer_url, stderr=stderr):
-        print("Failed to open installer URL.", file=stderr)
+    print("Codex Desktop not found; downloading installer...", file=stderr)
+    installer_url = download_url if download_url is not None else _default_macos_dmg_url()
+    try:
+        installed_app = _download_and_install_codex_to_user_applications_macos(
+            installer_url,
+            stderr=stderr,
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(f"failed to download/install Codex Desktop: {exc}", file=stderr)
         return 2
-    return 0
+
+    print(f"Launching Codex Desktop from {installed_app}...", file=stderr)
+    return _open_codex_app_macos(installed_app, workspace, stderr=stderr, announce_app=False)
+
+
+def _default_macos_dmg_url() -> str:
+    return default_mac_dmg_url(
+        platform.machine(),
+        translated=_macos_sysctl_flag("sysctl.proc_translated") or False,
+        arm64_optional=_macos_sysctl_flag("hw.optional.arm64") or False,
+    )
+
+
+def _macos_sysctl_flag(name: str) -> bool | None:
+    try:
+        result = subprocess.run(
+            ("sysctl", "-in", name),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    value = result.stdout.strip()
+    if value == "0":
+        return False
+    if value:
+        return True
+    return None
+
+
+def _open_codex_app_macos(app_path: Path, workspace: Path, *, stderr: TextIO, announce_app: bool) -> int:
+    if announce_app:
+        print(f"Opening Codex Desktop at {app_path}...", file=stderr)
+    print(f"Opening workspace {workspace}...", file=stderr)
+    try:
+        result = subprocess.run(
+            mac_open_app_command(app_path, workspace),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        print(f"Failed to launch Codex Desktop: {exc}", file=stderr)
+        return 2
+
+    if result.returncode == 0:
+        return 0
+
+    print(
+        f"open command returned {result.returncode} while launching Codex Desktop.",
+        file=stderr,
+    )
+    if result.stderr:
+        print(result.stderr.strip(), file=stderr)
+    return 2
+
+
+def _download_and_install_codex_to_user_applications_macos(
+    dmg_url: str,
+    *,
+    stderr: TextIO,
+) -> Path:
+    plan = mac_app_install_plan(dmg_url)
+    with tempfile.TemporaryDirectory(prefix=plan.temp_dir_prefix) as tmp_root:
+        dmg_path = Path(tmp_root) / plan.dmg_filename
+
+        print("Downloading installer...", file=stderr)
+        _run_macos_status_command(
+            mac_download_dmg_command(plan.dmg_url, dmg_path),
+            invoke_error="failed to invoke `curl`",
+            status_error="curl download failed",
+        )
+
+        print(plan.mount_message, file=stderr)
+        mount_point = _mount_codex_dmg_macos(dmg_path)
+        print(f"Installer mounted at {mount_point}.", file=stderr)
+
+        try:
+            app_in_volume = find_codex_app_in_mount(mount_point)
+            return _install_codex_app_bundle_macos(app_in_volume, stderr=stderr)
+        finally:
+            try:
+                _run_macos_status_command(
+                    mac_detach_dmg_command(mount_point),
+                    invoke_error="failed to invoke `hdiutil detach`",
+                    status_error="hdiutil detach failed",
+                )
+            except (OSError, RuntimeError) as exc:
+                print(f"warning: failed to detach dmg at {mount_point}: {exc}", file=stderr)
+
+
+def _mount_codex_dmg_macos(dmg_path: Path) -> Path:
+    try:
+        result = subprocess.run(
+            mac_mount_dmg_command(dmg_path),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        raise OSError("failed to invoke `hdiutil attach`") from exc
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            "`hdiutil attach` failed with "
+            f"exit status {result.returncode}: {result.stderr}"
+        )
+
+    mount_point = parse_hdiutil_attach_mount_point(result.stdout)
+    if mount_point is None:
+        raise RuntimeError(f"failed to parse mount point from hdiutil output:\n{result.stdout}")
+    return Path(mount_point)
+
+
+def _install_codex_app_bundle_macos(app_in_volume: Path, *, stderr: TextIO) -> Path:
+    home = os.environ.get("HOME")
+    if not home:
+        raise RuntimeError("HOME is not set")
+
+    for applications_dir in candidate_applications_dirs(home):
+        print(f"Installing Codex Desktop into {applications_dir}...", file=stderr)
+        try:
+            applications_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise OSError(f"failed to create applications dir {applications_dir}") from exc
+
+        dest_app = applications_dir / "Codex.app"
+        if dest_app.is_dir():
+            return dest_app
+
+        try:
+            _run_macos_status_command(
+                mac_copy_app_bundle_command(app_in_volume, dest_app),
+                invoke_error="failed to invoke `ditto`",
+                status_error="ditto copy failed",
+            )
+        except (OSError, RuntimeError) as exc:
+            print(f"warning: failed to install Codex.app to {applications_dir}: {exc}", file=stderr)
+            continue
+        return dest_app
+
+    raise RuntimeError("failed to install Codex.app to any applications directory")
+
+
+def _run_macos_status_command(
+    command: tuple[str, ...],
+    *,
+    invoke_error: str,
+    status_error: str,
+) -> None:
+    try:
+        result = subprocess.run(command, check=False, capture_output=True, text=True)
+    except OSError as exc:
+        raise OSError(invoke_error) from exc
+
+    if result.returncode != 0:
+        stderr_text = f": {result.stderr.strip()}" if result.stderr.strip() else ""
+        raise RuntimeError(f"{status_error} with exit status {result.returncode}{stderr_text}")
 
 
 def _run_app_command_windows(
@@ -7374,7 +7123,7 @@ def _run_app_command_windows(
     download_url: str | None,
     stderr: TextIO,
 ) -> int:
-    del workspace
+    workspace_text = display_windows_workspace_path(workspace)
     print("Checking for installed Codex Desktop on Windows...", file=stderr)
     powershell_cmd = [
         "powershell.exe",
@@ -7400,7 +7149,7 @@ def _run_app_command_windows(
     if app_id:
         print("Opening Codex Desktop...", file=stderr)
         try:
-            open_result = subprocess.run(
+            subprocess.run(
                 ("explorer.exe", f"shell:AppsFolder\\{app_id}"),
                 check=False,
                 capture_output=True,
@@ -7409,21 +7158,16 @@ def _run_app_command_windows(
         except OSError as exc:
             print(f"Failed to open Codex Desktop: {exc}", file=stderr)
             return 2
-        if open_result.returncode == 0:
-            return 0
-        print(
-            f"explorer exited with {open_result.returncode} while launching Codex Desktop.",
-            file=stderr,
-        )
-        if open_result.stderr:
-            print(open_result.stderr.strip(), file=stderr)
+        print(f"In Codex Desktop, open workspace {workspace_text}.", file=stderr)
+        return 0
 
     print("Codex Desktop not found; opening Windows installer...", file=stderr)
     installer = download_url if download_url is not None else _APP_WINDOWS_INSTALLER_URL
     print(f"Opening installer: {installer}", file=stderr)
-    if not _open_in_browser(installer, stderr=stderr):
+    if not _open_in_browser(installer, stderr=stderr) and download_url is None:
         print("Opening Microsoft Store URL fallback...", file=stderr)
         _open_in_browser(_APP_MICROSOFT_STORE_URL, stderr=stderr)
+    print(f"After installing Codex Desktop, open workspace {workspace_text}.", file=stderr)
     return 0
 
 
@@ -7664,6 +7408,8 @@ def _run_sandbox(
         return 0
 
     cwd: str | None = None
+    permissions_profile: str | None = None
+    include_managed_config = False
     index = 0
     command_start = None
     while index < len(command_args):
@@ -7671,7 +7417,11 @@ def _run_sandbox(
         if arg == "--":
             command_start = index + 1
             break
-        if arg in {"--permissions-profile", "--profile", "-p"}:
+        if arg == "--permissions-profile":
+            permissions_profile = command_args[index + 1]
+            index += 2
+            continue
+        if arg in {"--profile", "-p"}:
             index += 2
             continue
         if arg in {"--cd", "-C"}:
@@ -7682,6 +7432,7 @@ def _run_sandbox(
             index += 2
             continue
         if arg == "--include-managed-config":
+            include_managed_config = True
             index += 1
             continue
         if arg == "--log-denials":
@@ -7700,15 +7451,34 @@ def _run_sandbox(
         )
         return 2
 
-    command_env = os.environ.copy()
-    command_env["PYCODEX_SANDBOX_MODE"] = "workspace-write"
-    cwd_value = Path(cwd) if cwd is not None else None
+    if sys.platform == "darwin":
+        sandbox_type = "seatbelt"
+    elif sys.platform.startswith("win"):
+        sandbox_type = "windows"
+    else:
+        sandbox_type = "landlock"
+
+    try:
+        plan = build_debug_sandbox_execution_plan(
+            command,
+            cwd=cwd,
+            permissions_profile=permissions_profile,
+            include_managed_config=include_managed_config,
+            sandbox_type=sandbox_type,
+            base_env=os.environ,
+        )
+    except RuntimeError as exc:
+        print(f"pycodex: sandbox unavailable: {exc}", file=stderr)
+        return 2
+    except ValueError as exc:
+        print(f"pycodex: sandbox execution failed: {exc}", file=stderr)
+        return 2
 
     try:
         process = subprocess.run(
-            list(command),
-            cwd=cwd_value,
-            env=command_env,
+            list(debug_sandbox_subprocess_argv(plan)),
+            cwd=plan.cwd,
+            env=plan.env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,

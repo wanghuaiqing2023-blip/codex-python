@@ -1,6 +1,7 @@
 import unittest
 from pathlib import Path
 
+import pycodex.protocol as protocol
 from pycodex.protocol import (
     EventMsg,
     ExecCommandBeginEvent,
@@ -23,7 +24,27 @@ class ProtocolParseCommandPlanToolTests(unittest.TestCase):
         self.assertEqual(ParsedCommand.from_mapping(search.to_mapping()), search)
         self.assertEqual(ParsedCommand.from_mapping(unknown.to_mapping()), unknown)
         self.assertEqual(read.to_mapping()["type"], "read")
-        self.assertNotIn("path", ParsedCommand.list_files("rg --files").to_mapping())
+
+    def test_parsed_command_matches_rust_option_field_serialization(self):
+        # Rust parity: codex-protocol/src/parse_command.rs
+        # ParsedCommand uses serde tagged enum variants with Option<String>
+        # fields and no skip_serializing_if, so None serializes as JSON null.
+        self.assertEqual(
+            ParsedCommand.list_files("rg --files").to_mapping(),
+            {"type": "list_files", "cmd": "rg --files", "path": None},
+        )
+        self.assertEqual(
+            ParsedCommand.search("rg TODO").to_mapping(),
+            {"type": "search", "cmd": "rg TODO", "query": None, "path": None},
+        )
+        self.assertEqual(
+            ParsedCommand.from_mapping({"type": "list_files", "cmd": "rg --files", "path": None}),
+            ParsedCommand.list_files("rg --files"),
+        )
+        self.assertEqual(
+            ParsedCommand.from_mapping({"type": "search", "cmd": "rg TODO", "query": None, "path": None}),
+            ParsedCommand.search("rg TODO"),
+        )
 
     def test_parsed_command_rejects_non_rust_variant_shapes(self):
         with self.assertRaisesRegex(TypeError, "cmd must be a string"):
@@ -68,8 +89,32 @@ class ProtocolParseCommandPlanToolTests(unittest.TestCase):
 
         self.assertEqual(UpdatePlanArgs.from_mapping(update.to_mapping()), update)
         self.assertEqual(update.to_mapping()["plan"][1]["status"], "in_progress")
+        self.assertEqual(UpdatePlanArgs.from_mapping({"plan": []}), UpdatePlanArgs(plan=()))
+        self.assertEqual(UpdatePlanArgs(plan=()).to_mapping(), {"plan": []})
         with self.assertRaisesRegex(ValueError, "unknown field"):
             UpdatePlanArgs.from_mapping({"plan": [], "unexpected": True})
+
+    def test_plan_tool_args_match_rust_serde_boundaries(self):
+        # Rust: codex-protocol/src/plan_tool.rs
+        self.assertEqual(
+            [status.value for status in StepStatus],
+            ["pending", "in_progress", "completed"],
+        )
+        self.assertIs(protocol.StepStatus, StepStatus)
+        self.assertIs(protocol.PlanItemArg, PlanItemArg)
+        self.assertIs(protocol.UpdatePlanArgs, UpdatePlanArgs)
+
+        with self.assertRaisesRegex(ValueError, "unknown field"):
+            PlanItemArg.from_mapping({"step": "inspect", "status": "pending", "extra": True})
+
+        with self.assertRaisesRegex(TypeError, "plan must be a list"):
+            UpdatePlanArgs.from_mapping({"plan": ()})
+
+        with self.assertRaisesRegex(KeyError, "plan"):
+            UpdatePlanArgs.from_mapping({"explanation": "missing plan"})
+
+        with self.assertRaisesRegex(TypeError, "explanation must be a string"):
+            UpdatePlanArgs.from_mapping({"explanation": 123, "plan": []})
 
     def test_plan_tool_args_reject_non_rust_shapes(self):
         with self.assertRaisesRegex(TypeError, "step must be a string"):

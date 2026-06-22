@@ -50,6 +50,20 @@ def test_load_fresh_rejects_zero_ttl(tmp_path) -> None:
     assert manager.load_fresh("1.2.3") is None
 
 
+def test_set_ttl_and_manipulate_cache_for_test_match_rust_test_helpers(tmp_path) -> None:
+    # Rust cfg(test) helpers: set_ttl and manipulate_cache_for_test.
+    now = datetime(2026, 6, 14, 18, tzinfo=timezone.utc)
+    manager = ModelsCacheManager(tmp_path / "models_cache.json", timedelta(hours=24), clock=lambda: now)
+    manager.persist_cache((model_info_from_slug("cached"),), None, "1.2.3")
+    manager.manipulate_cache_for_test(lambda fetched_at: fetched_at - timedelta(days=2))
+
+    assert manager.load_fresh("1.2.3") is None
+
+    manager.set_ttl(timedelta(days=3))
+
+    assert manager.load_fresh("1.2.3") is not None
+
+
 def test_persist_cache_creates_parent_dirs_and_renew_updates_timestamp(tmp_path) -> None:
     first_now = datetime(2026, 6, 14, 18, tzinfo=timezone.utc)
     second_now = datetime(2026, 6, 14, 19, tzinfo=timezone.utc)
@@ -81,6 +95,18 @@ def test_renew_cache_ttl_requires_existing_cache(tmp_path) -> None:
 def test_invalid_cache_json_surfaces_as_load_error(tmp_path) -> None:
     cache_path = tmp_path / "models_cache.json"
     cache_path.write_text("{not-json", encoding="utf-8")
+    manager = ModelsCacheManager(cache_path, timedelta(hours=24))
+
+    with pytest.raises(OSError):
+        manager.load()
+    assert manager.load_fresh("1.2.3") is None
+
+
+def test_invalid_cache_schema_is_invalid_data_and_load_fresh_returns_none(tmp_path) -> None:
+    # Rust source: serde invalid data is mapped to io::ErrorKind::InvalidData;
+    # load_fresh logs load errors and returns None.
+    cache_path = tmp_path / "models_cache.json"
+    cache_path.write_text('{"models": []}', encoding="utf-8")
     manager = ModelsCacheManager(cache_path, timedelta(hours=24))
 
     with pytest.raises(OSError):

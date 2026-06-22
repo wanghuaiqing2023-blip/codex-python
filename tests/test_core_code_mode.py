@@ -22,6 +22,8 @@ from pycodex.core.tools.code_mode import (
     PendingRuntimeMode,
     ParsedExecSource,
     RUNTIME_TOOL_CALL_ID_PREFIX,
+    RUNTIME_GLOBAL_HELPERS,
+    RUNTIME_REMOVED_GLOBALS,
     RuntimeCommand,
     RuntimeControlCommand,
     RuntimeEvent,
@@ -36,6 +38,7 @@ from pycodex.core.tools.code_mode import (
     build_all_tools_metadata,
     build_exec_tool_description,
     build_nested_tool_payload,
+    build_runtime_globals_projection,
     build_runtime_image_event,
     build_runtime_notify_event,
     build_runtime_text_event,
@@ -238,6 +241,11 @@ class CodeModeTests(unittest.TestCase):
         self.assertIsNone(code_mode_namespace_name(definitions[2], namespace_descriptions))
 
     def test_build_all_tools_metadata_matches_runtime_globals_shape(self) -> None:
+        # Rust crate/module: codex-code-mode/src/runtime/globals.rs.
+        # Contract: install_globals removes selected host globals, installs the
+        # fixed helper set, exposes enabled tools under their normalized global
+        # names with callback data equal to the Rust enumerate index, and builds
+        # ALL_TOOLS as {name, description} objects in enabled-tool order.
         definition = CodeModeToolDefinition(
             name="hidden-dynamic-tool",
             tool_name=ToolName.plain("hidden-dynamic-tool"),
@@ -253,6 +261,36 @@ class CodeModeTests(unittest.TestCase):
                 {"name": "hidden_dynamic_tool", "description": "Hidden dynamic tool."},
                 {"name": "hidden_dynamic_tool", "description": "Hidden dynamic tool."},
             ),
+        )
+        self.assertEqual(
+            RUNTIME_REMOVED_GLOBALS,
+            ("console", "Atomics", "SharedArrayBuffer", "WebAssembly"),
+        )
+        self.assertEqual(
+            RUNTIME_GLOBAL_HELPERS,
+            (
+                "clearTimeout",
+                "setTimeout",
+                "text",
+                "image",
+                "store",
+                "load",
+                "notify",
+                "yield_control",
+                "exit",
+            ),
+        )
+        self.assertEqual(
+            build_runtime_globals_projection([definition, metadata]),
+            {
+                "removed_globals": RUNTIME_REMOVED_GLOBALS,
+                "helpers": RUNTIME_GLOBAL_HELPERS,
+                "tools": {"hidden_dynamic_tool": "1"},
+                "ALL_TOOLS": (
+                    {"name": "hidden_dynamic_tool", "description": "Hidden dynamic tool."},
+                    {"name": "hidden_dynamic_tool", "description": "Hidden dynamic tool."},
+                ),
+            },
         )
 
     def test_tool_spec_to_code_mode_definition_returns_augmented_freeform_tool(self) -> None:
@@ -634,6 +672,12 @@ class CodeModeTests(unittest.TestCase):
         )
 
     def test_module_loader_completion_helpers_match_upstream_boundaries(self) -> None:
+        # Rust crate/module: codex-code-mode/src/runtime/module_loader.rs.
+        # Contract: evaluate_main_module uses `exec_main.mjs` as the script
+        # origin, static and dynamic unsupported imports use distinct Rust
+        # error strings, rejected exit sentinels complete without error text,
+        # other rejections use value_to_error_text, and CompletionState carries
+        # pending/completed plus stored-value writes.
         self.assertEqual(EXEC_MAIN_MODULE_NAME, "exec_main.mjs")
         self.assertEqual(UNSUPPORTED_DYNAMIC_IMPORT_ERROR, "unsupported import in exec")
         self.assertEqual(
@@ -731,6 +775,10 @@ class CodeModeTests(unittest.TestCase):
         )
 
     def test_runtime_tool_callback_helpers_build_nested_tool_events(self) -> None:
+        # Rust crate/module: codex-code-mode/src/runtime/callbacks.rs.
+        # Contract: tool_callback parses ASCII usize callback data, rejects
+        # invalid/out-of-range indexes, builds monotonically numbered `tool-*`
+        # runtime ids, and emits nested tool-call events with JSON input.
         definitions = [
             CodeModeToolDefinition(
                 name="lookup_order",
@@ -750,10 +798,15 @@ class CodeModeTests(unittest.TestCase):
         self.assertEqual(runtime_tool_index_from_callback_data("01"), 1)
         with self.assertRaisesRegex(ValueError, "invalid tool callback data"):
             runtime_tool_index_from_callback_data(" 1")
+        with self.assertRaisesRegex(ValueError, "invalid tool callback data"):
+            runtime_tool_index_from_callback_data("+1")
+        with self.assertRaisesRegex(ValueError, "invalid tool callback data"):
+            runtime_tool_index_from_callback_data("１")
         self.assertEqual(runtime_tool_call_id(7), "tool-7")
         self.assertEqual(next_runtime_tool_call_sequence(7), 8)
         self.assertEqual(next_runtime_tool_call_sequence(U64_MAX), U64_MAX)
         self.assertEqual(normalize_runtime_tool_input({"ok": True}), {"ok": True})
+        self.assertIsNone(normalize_runtime_tool_input())
         with self.assertRaisesRegex(ValueError, "failed to serialize JavaScript value"):
             normalize_runtime_tool_input({"bad": object()})
 
@@ -795,6 +848,9 @@ class CodeModeTests(unittest.TestCase):
         self.assertEqual(emitted.nested_tool_call.input, "raw patch")
 
     def test_text_and_image_callback_helpers_emit_content_events(self) -> None:
+        # Rust crate/module: codex-code-mode/src/runtime/callbacks.rs.
+        # Contract: text_callback and image_callback emit RuntimeEvent
+        # ContentItem values using the value.rs text/image normalization helpers.
         self.assertEqual(
             build_runtime_text_event({"ok": True}),
             RuntimeEvent.content_item(FunctionCallOutputContentItem.input_text('{"ok":true}')),
@@ -1261,6 +1317,9 @@ class CodeModeTests(unittest.TestCase):
         self.assertEqual(serialize_output_text({"b": [1, 2]}), '{"b":[1,2]}')
 
     def test_normalize_output_image_accepts_strings_and_non_mcp_objects(self) -> None:
+        # Rust crate/module: codex-code-mode/src/runtime/value.rs.
+        # Contract: normalize_output_image accepts string URLs and non-MCP
+        # objects with image_url plus optional auto/low/high/original detail.
         self.assertEqual(
             normalize_output_image("https://example.com/a.png"),
             FunctionCallOutputContentItem.input_image(
@@ -1276,6 +1335,20 @@ class CodeModeTests(unittest.TestCase):
             ),
         )
         self.assertEqual(
+            normalize_output_image({"image_url": "data:image/png;base64,AAA", "detail": "auto"}),
+            FunctionCallOutputContentItem.input_image(
+                "data:image/png;base64,AAA",
+                ImageDetail.AUTO,
+            ),
+        )
+        self.assertEqual(
+            normalize_output_image({"image_url": "data:image/png;base64,AAA", "detail": "low"}),
+            FunctionCallOutputContentItem.input_image(
+                "data:image/png;base64,AAA",
+                ImageDetail.LOW,
+            ),
+        )
+        self.assertEqual(
             normalize_output_image(
                 {"image_url": "data:image/png;base64,AAA", "detail": "original"},
                 detail_override="high",
@@ -1287,6 +1360,10 @@ class CodeModeTests(unittest.TestCase):
         )
 
     def test_normalize_output_image_accepts_mcp_image_blocks(self) -> None:
+        # Rust crate/module: codex-code-mode/src/runtime/value.rs.
+        # Contract: MCP image blocks become data URLs, preserve data: URLs,
+        # accept mimeType/mime_type, and use _meta["codex/imageDetail"] when
+        # it is one of auto/low/high/original.
         self.assertEqual(
             normalize_output_image(
                 {
@@ -1308,39 +1385,93 @@ class CodeModeTests(unittest.TestCase):
                 DEFAULT_IMAGE_DETAIL,
             ),
         )
+        self.assertEqual(
+            normalize_output_image(
+                {
+                    "type": "image",
+                    "data": "QUJD",
+                    "mime_type": "image/webp",
+                    "_meta": {"codex/imageDetail": "low"},
+                }
+            ),
+            FunctionCallOutputContentItem.input_image(
+                "data:image/webp;base64,QUJD",
+                ImageDetail.LOW,
+            ),
+        )
+        self.assertEqual(
+            normalize_output_image(
+                {
+                    "type": "image",
+                    "data": "QUJD",
+                    "_meta": {"codex/imageDetail": "auto"},
+                }
+            ),
+            FunctionCallOutputContentItem.input_image(
+                "data:application/octet-stream;base64,QUJD",
+                ImageDetail.AUTO,
+            ),
+        )
+        self.assertEqual(
+            normalize_output_image(
+                {
+                    "type": "image",
+                    "data": "QUJD",
+                    "_meta": {"codex/imageDetail": "medium"},
+                }
+            ),
+            FunctionCallOutputContentItem.input_image(
+                "data:application/octet-stream;base64,QUJD",
+                DEFAULT_IMAGE_DETAIL,
+            ),
+        )
 
     def test_normalize_output_image_rejects_invalid_shapes(self) -> None:
+        # Rust crate/module: codex-code-mode/src/runtime/value.rs.
+        # Contract: invalid image helper values surface Rust error text.
         with self.assertRaisesRegex(ValueError, "image expects"):
             normalize_output_image("")
         with self.assertRaisesRegex(ValueError, "http\\(s\\) or data URL"):
             normalize_output_image("file:///tmp/a.png")
         with self.assertRaisesRegex(ValueError, "image detail must be a string"):
             normalize_output_image({"image_url": "https://example.com/a.png", "detail": 1})
-        with self.assertRaisesRegex(ValueError, "one of: high, original"):
-            normalize_output_image({"image_url": "https://example.com/a.png", "detail": "low"})
+        with self.assertRaisesRegex(ValueError, "one of: auto, low, high, original"):
+            normalize_output_image({"image_url": "https://example.com/a.png", "detail": "medium"})
         with self.assertRaisesRegex(ValueError, "got \"text\""):
             normalize_output_image({"type": "text", "data": "abc"})
         with self.assertRaisesRegex(ValueError, "expected MCP image data"):
             normalize_output_image({"type": "image", "data": ""})
 
     def test_timeout_helpers_match_upstream_timer_normalization(self) -> None:
+        # Rust crate/module: codex-code-mode/src/runtime/timers.rs.
+        # Contract: schedule_timeout normalizes missing, non-finite, negative,
+        # fractional, string-coerced, and oversized delays through
+        # normalize_delay_ms before spawning the timer thread.
         self.assertEqual(normalize_timeout_delay_ms(), 0)
         self.assertEqual(normalize_timeout_delay_ms(None), 0)
         self.assertEqual(normalize_timeout_delay_ms(False), 0)
         self.assertEqual(normalize_timeout_delay_ms(True), 1)
         self.assertEqual(normalize_timeout_delay_ms(-1), 0)
         self.assertEqual(normalize_timeout_delay_ms(12.9), 12)
+        self.assertEqual(normalize_timeout_delay_ms(""), 0)
         self.assertEqual(normalize_timeout_delay_ms(" 25.5 "), 25)
         self.assertEqual(normalize_timeout_delay_ms("not numeric"), 0)
         self.assertEqual(normalize_timeout_delay_ms(float("inf")), 0)
         self.assertEqual(normalize_timeout_delay_ms(1 << 80), U64_MAX)
 
+        # Rust crate/module: codex-code-mode/src/runtime/timers.rs.
+        # Contract: clear_timeout treats missing/null/undefined and non-positive
+        # or non-finite numeric ids as no-ops, truncates positive ids, clamps to
+        # u64::MAX, and reports the Rust numeric-id error for uncoercible input.
         self.assertIsNone(clear_timeout_id_from_value())
         self.assertIsNone(clear_timeout_id_from_value(None))
+        self.assertIsNone(clear_timeout_id_from_value(False))
         self.assertIsNone(clear_timeout_id_from_value(0))
         self.assertIsNone(clear_timeout_id_from_value(-1))
         self.assertIsNone(clear_timeout_id_from_value(float("nan")))
+        self.assertIsNone(clear_timeout_id_from_value(""))
         self.assertIsNone(clear_timeout_id_from_value("not numeric"))
+        self.assertEqual(clear_timeout_id_from_value(True), 1)
         self.assertEqual(clear_timeout_id_from_value(7.8), 7)
         self.assertEqual(clear_timeout_id_from_value(" 8.2 "), 8)
         self.assertEqual(clear_timeout_id_from_value(1 << 80), U64_MAX)
@@ -1386,6 +1517,10 @@ class CodeModeTests(unittest.TestCase):
         )
 
     def test_notify_and_exit_helpers_match_runtime_callbacks(self) -> None:
+        # Rust crate/module: codex-code-mode/src/runtime/callbacks.rs.
+        # Contract: notify_callback serializes text, rejects trim-empty text,
+        # preserves the runtime tool call id, yield_control_callback emits a
+        # YieldRequested event, and exit_callback throws the exit sentinel.
         self.assertEqual(normalize_notify_text({"ok": True}), '{"ok":true}')
         self.assertEqual(normalize_notify_text(0), "0")
         self.assertEqual(

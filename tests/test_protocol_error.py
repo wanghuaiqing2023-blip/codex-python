@@ -82,6 +82,42 @@ class ProtocolErrorTests(unittest.TestCase):
             "You've hit your usage limit for codex_other. Switch to another model now, or try again later.",
         )
 
+        free = UsageLimitReachedError(
+            plan_type=AuthPlanType.known_plan(KnownPlan.FREE),
+            rate_limits=rate_limit_snapshot(),
+        )
+        self.assertEqual(
+            str(free),
+            "You've hit your usage limit. Upgrade to Plus to continue using Codex "
+            "(https://chatgpt.com/explore/plus), or try again later.",
+        )
+
+        business = UsageLimitReachedError(
+            plan_type=AuthPlanType.known_plan(KnownPlan.BUSINESS),
+            rate_limits=rate_limit_snapshot(),
+        )
+        self.assertEqual(
+            str(business),
+            "You've hit your usage limit. To get more access now, send a request to your admin "
+            "or try again later.",
+        )
+
+        enterprise = UsageLimitReachedError(
+            plan_type=AuthPlanType.known_plan(KnownPlan.ENTERPRISE),
+            rate_limits=rate_limit_snapshot(),
+        )
+        self.assertEqual(str(enterprise), "You've hit your usage limit. Try again later.")
+
+        promo = UsageLimitReachedError(
+            promo_message="To continue using Codex, start a free trial of <PLAN> today",
+            rate_limits=rate_limit_snapshot(),
+        )
+        self.assertEqual(
+            str(promo),
+            "You've hit your usage limit. To continue using Codex, start a free trial of <PLAN> today,"
+            " or try again later.",
+        )
+
     def test_usage_limit_reached_formats_retry_timestamp(self):
         base = datetime(2024, 1, 1, 0, 0, tzinfo=timezone.utc)
         resets_at = base + timedelta(hours=1)
@@ -133,6 +169,22 @@ class ProtocolErrorTests(unittest.TestCase):
             str(lower_blocked),
             "unexpected status 403 Forbidden: "
             "<html><body>cloudflare error: blocked by policy</body></html>, request id: req-lower",
+        )
+
+        auth_details = UnexpectedResponseError(
+            status=401,
+            body="plain text error",
+            url="https://chatgpt.com/backend-api/codex/models",
+            cf_ray="cf-ray-auth-401-test",
+            request_id="req-auth",
+            identity_authorization_error="missing_authorization_header",
+            identity_error_code="token_expired",
+        )
+        self.assertEqual(
+            str(auth_details),
+            "unexpected status 401 Unauthorized: plain text error, "
+            "url: https://chatgpt.com/backend-api/codex/models, cf-ray: cf-ray-auth-401-test, "
+            "request id: req-auth, auth error: missing_authorization_header, auth error code: token_expired",
         )
 
     def test_codex_error_maps_to_protocol_error_event(self):
