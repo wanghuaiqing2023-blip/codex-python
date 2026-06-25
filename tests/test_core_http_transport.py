@@ -1,11 +1,16 @@
 ﻿import json
 import unittest
+import asyncio
 import base64
 from email.message import Message
 from io import BytesIO
+from types import SimpleNamespace
 from urllib.error import HTTPError, URLError
 from unittest.mock import patch
 
+from pycodex.codex_api.endpoint.responses_websocket import ResponsesWebsocketMemoryStream, ResponsesWebsocketTextMessage
+from pycodex.codex_api.error import ApiError
+from pycodex.codex_client import TransportError
 from pycodex.core.http_transport import (
     CODEX_EXEC_ORIGINATOR,
     CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR,
@@ -14,6 +19,8 @@ from pycodex.core.http_transport import (
     http_sampling_stream_max_retries,
     http_transport_config_from_provider,
     model_client_http_sampler,
+    model_client_websocket_preferred_sampler,
+    prewarm_model_client_websocket_session,
     response_items_from_responses_payload,
     run_user_turn_http_sampling_from_session,
     send_prepared_http_sampling_request,
@@ -31,6 +38,7 @@ from pycodex.protocol import (
     ContentItem,
     ModelVerification,
     ReasoningEffort,
+    RateLimitSnapshot,
     ResponseItem,
     SessionSource,
     SubAgentSource,
@@ -98,6 +106,35 @@ class EchoHandler:
         return FunctionToolOutput.from_text("tool ok", True)
 
 
+class _WebsocketProvider:
+    def info(self):
+        return SimpleNamespace(supports_websockets=True)
+
+    async def api_provider(self):
+        return SimpleNamespace(
+            name="OpenAI",
+            base_url="https://api.example.test",
+            query_params=None,
+            headers={},
+            stream_idle_timeout_ms=300_000,
+        )
+
+    async def api_auth(self):
+        return {"Authorization": "Bearer test"}
+
+
+def _run_sampler(sampler, request):
+    return asyncio.run(
+        sampler(
+            UserTurnSamplingRequest(
+                session=None,
+                turn_context=None,
+                request_plan=SimpleNamespace(request=request),
+            )
+        )
+    )
+
+
 class Session:
     def __init__(self) -> None:
         self.turn_context = type("TurnContext", (), {"model_info": None, "user_instructions": None, "cwd": "C:/work"})()
@@ -126,6 +163,634 @@ class Session:
 
 
 class HttpTransportTests(unittest.TestCase):
+    def test_websocket_preferred_sampler_uses_websocket_when_provider_supports_it(self) -> None:
+        # Rust crate/module: codex-core/src/client.rs::ModelClientSession::stream
+        # Contract: Responses wire API prefers stream_responses_websocket when
+        # the provider supports websockets instead of preparing HTTP first.
+        provider = _WebsocketProvider()
+        client = ModelClient(
+            session_id="session",
+            thread_id="thread",
+            installation_id="install",
+            provider=provider,
+        )
+        session = client.new_session()
+        seen: dict[str, object] = {}
+
+        def connector(url, headers, turn_state):
+            seen["url"] = url
+            seen["headers"] = dict(headers)
+            seen["turn_state"] = turn_state
+            return (
+                ResponsesWebsocketMemoryStream(
+                    [
+                        ResponsesWebsocketTextMessage(
+                            json.dumps(
+                                {
+                                    "type": "response.output_item.done",
+                                    "item": {
+                                        "type": "message",
+                                        "role": "assistant",
+                                        "content": [{"type": "output_text", "text": "from websocket"}],
+                                    },
+                                }
+                            )
+                        ),
+                        ResponsesWebsocketTextMessage(
+                            json.dumps(
+                                {
+                                    "type": "response.completed",
+                                    "response": {"id": "resp-ws-1", "end_turn": True, "usage": {}},
+                                }
+                            )
+                        ),
+                    ]
+                ),
+                101,
+                False,
+                None,
+                "gpt-ws",
+            )
+
+        def opener(_request):
+            raise AssertionError("HTTP fallback should not be used")
+
+        sampler = model_client_websocket_preferred_sampler(
+            session,
+            HttpTransportConfig("https://api.example.test/responses", headers={"Authorization": "Bearer test"}),
+            opener=opener,
+            websocket_connector=connector,
+        )
+        result = _run_sampler(
+            sampler,
+            {
+                "model": "gpt-test",
+                "input": [],
+                "stream": True,
+                "store": False,
+            },
+        )
+
+        self.assertEqual(result.mode, "responses_websocket")
+        self.assertEqual(result.response_items[0].content[0].text, "from websocket")
+        self.assertEqual(seen["url"], "wss://api.example.test/responses")
+        self.assertEqual(seen["headers"]["Authorization"], "Bearer test")
+        self.assertEqual(session.websocket_session.last_response.response_id, "resp-ws-1")
+
+    def test_websocket_prewarm_sends_generate_false_but_records_logical_request(self) -> None:
+        # Rust crate/module: codex-core/src/client.rs::prewarm_websocket.
+        # Contract: warmup sets `generate=false` only on the websocket payload;
+        # websocket_session.last_request records the logical request so the
+        # first real turn can reuse the warmup response id.
+        provider = _WebsocketProvider()
+        client = ModelClient(
+            session_id="session",
+            thread_id="thread",
+            installation_id="install",
+            provider=provider,
+        )
+        session = client.new_session()
+        memory_stream = ResponsesWebsocketMemoryStream(
+            [
+                ResponsesWebsocketTextMessage(
+                    json.dumps(
+                        {
+                            "type": "response.completed",
+                            "response": {"id": "resp-warm", "end_turn": True, "usage": {}},
+                        }
+                    )
+                )
+            ]
+        )
+
+        def connector(_url, _headers, _turn_state):
+            return (memory_stream, 101, False, None, "gpt-ws")
+
+        request = {
+            "model": "gpt-test",
+            "instructions": "You are Codex.",
+            "input": [],
+            "tools": [],
+            "stream": True,
+            "store": False,
+        }
+        result = asyncio.run(
+            prewarm_model_client_websocket_session(
+                session,
+                HttpTransportConfig("https://api.example.test/responses", headers={"Authorization": "Bearer test"}),
+                request=request,
+                connector=connector,
+            )
+        )
+
+        sent = json.loads(memory_stream.sent_payloads[0])
+        self.assertIsNotNone(result)
+        self.assertIs(sent["generate"], False)
+        self.assertNotIn("generate", session.websocket_session.last_request)
+        self.assertEqual(session.websocket_session.last_request, request)
+        self.assertEqual(session.websocket_session.last_response.response_id, "resp-warm")
+        self.assertIs(session.websocket_session.last_response_from_untraced_warmup, True)
+
+    def test_websocket_preferred_sampler_falls_back_to_http_on_upgrade_required(self) -> None:
+        # Rust crate/module: codex-core/src/client.rs::stream_responses_websocket
+        # Contract: HTTP 426 Upgrade Required during websocket connection
+        # returns FallbackToHttp and retries the same sampling request over HTTP.
+        provider = _WebsocketProvider()
+        client = ModelClient(
+            session_id="session",
+            thread_id="thread",
+            installation_id="install",
+            provider=provider,
+        )
+        session = client.new_session()
+        calls = {"websocket": 0, "http": 0}
+
+        def connector(_url, _headers, _turn_state):
+            calls["websocket"] += 1
+            raise ApiError.transport_error(TransportError.http(426, body="upgrade required"))
+
+        def opener(_request):
+            calls["http"] += 1
+            return FakeResponse(
+                {
+                    "output": [
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "from http"}],
+                        }
+                    ]
+                }
+            )
+
+        sampler = model_client_websocket_preferred_sampler(
+            session,
+            HttpTransportConfig("https://api.example.test/responses", headers={"Authorization": "Bearer test"}),
+            opener=opener,
+            websocket_connector=connector,
+        )
+        result = _run_sampler(
+            sampler,
+            {
+                "model": "gpt-test",
+                "input": [],
+                "stream": True,
+                "store": False,
+            },
+        )
+
+        self.assertEqual(calls, {"websocket": 1, "http": 1})
+        self.assertEqual(result.mode, "http")
+        self.assertEqual(result.response_items[0].content[0].text, "from http")
+        self.assertFalse(client.responses_websocket_enabled())
+
+    def test_websocket_preferred_sampler_refreshes_auth_after_401(self) -> None:
+        # Rust crate/module: codex-core/src/client.rs::stream_responses_websocket
+        # Contract: websocket 401 runs handle_unauthorized, rebuilds auth, and
+        # retries the websocket path before surfacing a terminal turn failure.
+        provider = _WebsocketProvider()
+        client = ModelClient(
+            session_id="session",
+            thread_id="thread",
+            installation_id="install",
+            provider=provider,
+        )
+        session = client.new_session()
+        token = {"value": "first-token"}
+        seen_authorization: list[str] = []
+
+        class Recovery:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def has_next(self) -> bool:
+                return self.calls == 0
+
+            async def next(self):
+                self.calls += 1
+                token["value"] = "second-token"
+                return object()
+
+        class AuthManager:
+            def __init__(self) -> None:
+                self.recovery = Recovery()
+
+            def unauthorized_recovery(self) -> Recovery:
+                return self.recovery
+
+        def transport_config() -> HttpTransportConfig:
+            return HttpTransportConfig(
+                "https://api.example.test/responses",
+                headers={"Authorization": f"Bearer {token['value']}"},
+            )
+
+        def connector(_url, headers, _turn_state):
+            seen_authorization.append(headers["Authorization"])
+            if headers["Authorization"] == "Bearer first-token":
+                raise ApiError.transport_error(TransportError.http(401, body='{"detail":"Unauthorized"}'))
+            return (
+                ResponsesWebsocketMemoryStream(
+                    [
+                        ResponsesWebsocketTextMessage(
+                            json.dumps(
+                                {
+                                    "type": "response.output_item.done",
+                                    "item": {
+                                        "type": "message",
+                                        "role": "assistant",
+                                        "content": [{"type": "output_text", "text": "after refresh"}],
+                                    },
+                                }
+                            )
+                        ),
+                        ResponsesWebsocketTextMessage(
+                            json.dumps(
+                                {
+                                    "type": "response.completed",
+                                    "response": {"id": "resp-ws-refresh", "end_turn": True, "usage": {}},
+                                }
+                            )
+                        ),
+                    ]
+                ),
+                101,
+                False,
+                None,
+                "gpt-ws",
+            )
+
+        sampler = model_client_websocket_preferred_sampler(
+            session,
+            transport_config(),
+            websocket_connector=connector,
+            auth_manager=AuthManager(),
+            config_factory=transport_config,
+        )
+        result = _run_sampler(
+            sampler,
+            {
+                "model": "gpt-test",
+                "input": [],
+                "stream": True,
+                "store": False,
+            },
+        )
+
+        self.assertEqual(seen_authorization, ["Bearer first-token", "Bearer second-token"])
+        self.assertEqual(result.mode, "responses_websocket")
+        self.assertEqual(result.response_items[0].content[0].text, "after refresh")
+
+    def test_websocket_preferred_sampler_converts_rate_limit_events_to_protocol_snapshots(self) -> None:
+        # Rust crate/modules:
+        # - codex-api/src/endpoint/responses_websocket.rs streams
+        #   codex.rate_limits via parse_rate_limit_event.
+        # - codex-api/src/rate_limits.rs defines event window/credits shape.
+        # Contract: core websocket sampling exposes protocol RateLimitSnapshot
+        # values to the session runtime instead of codex-api-local dataclasses.
+        provider = _WebsocketProvider()
+        client = ModelClient(
+            session_id="session",
+            thread_id="thread",
+            installation_id="install",
+            provider=provider,
+        )
+        session = client.new_session()
+
+        def connector(_url, _headers, _turn_state):
+            return (
+                ResponsesWebsocketMemoryStream(
+                    [
+                        ResponsesWebsocketTextMessage(
+                            json.dumps(
+                                {
+                                    "type": "codex.rate_limits",
+                                    "rate_limits": {
+                                        "primary": {
+                                            "used_percent": 47,
+                                            "window_minutes": 300,
+                                            "reset_at": 123456,
+                                        }
+                                    },
+                                    "credits": {
+                                        "has_credits": True,
+                                        "unlimited": False,
+                                        "balance": "12",
+                                    },
+                                    "plan_type": "pro",
+                                    "metered_limit_name": "codex_primary",
+                                }
+                            )
+                        ),
+                        ResponsesWebsocketTextMessage(
+                            json.dumps(
+                                {
+                                    "type": "response.output_item.done",
+                                    "item": {
+                                        "type": "message",
+                                        "role": "assistant",
+                                        "content": [{"type": "output_text", "text": "with rate limit"}],
+                                    },
+                                }
+                            )
+                        ),
+                        ResponsesWebsocketTextMessage(
+                            json.dumps(
+                                {
+                                    "type": "response.completed",
+                                    "response": {"id": "resp-ws-rate", "end_turn": True, "usage": {}},
+                                }
+                            )
+                        ),
+                    ]
+                ),
+                101,
+                False,
+                None,
+                "gpt-ws",
+            )
+
+        sampler = model_client_websocket_preferred_sampler(
+            session,
+            HttpTransportConfig("https://api.example.test/responses", headers={"Authorization": "Bearer test"}),
+            websocket_connector=connector,
+        )
+        result = _run_sampler(
+            sampler,
+            {
+                "model": "gpt-test",
+                "input": [],
+                "stream": True,
+                "store": False,
+            },
+        )
+
+        self.assertIsInstance(result.rate_limits[0], RateLimitSnapshot)
+        self.assertEqual(result.rate_limits[0].limit_id, "codex_primary")
+        self.assertEqual(result.rate_limits[0].primary.used_percent, 47.0)
+        self.assertEqual(result.rate_limits[0].primary.window_minutes, 300)
+        self.assertEqual(result.rate_limits[0].primary.resets_at, 123456)
+        self.assertEqual(result.rate_limits[0].credits.balance, "12")
+        self.assertEqual(result.rate_limits[0].plan_type.value, "pro")
+        rate_limit_event = next(event for event in result.stream_events if event.get("type") == "rate_limits")
+        self.assertIsInstance(rate_limit_event["rate_limits"], RateLimitSnapshot)
+
+    def test_websocket_preferred_sampler_observes_live_item_and_text_events_before_completed_result(self) -> None:
+        # Rust crate/modules:
+        # - codex-api/src/endpoint/responses_websocket.rs yields response
+        #   events as websocket frames arrive.
+        # - codex-core/src/client.rs::stream_responses_websocket forwards the
+        #   stream rather than waiting for response.completed before the UI can
+        #   observe deltas.
+        provider = _WebsocketProvider()
+        client = ModelClient(
+            session_id="session",
+            thread_id="thread",
+            installation_id="install",
+            provider=provider,
+        )
+        session = client.new_session()
+        observed: list[dict[str, object]] = []
+
+        def connector(_url, _headers, _turn_state):
+            return (
+                ResponsesWebsocketMemoryStream(
+                    [
+                        ResponsesWebsocketTextMessage(
+                            json.dumps(
+                                {
+                                    "type": "response.output_item.done",
+                                    "item": {
+                                        "type": "function_call",
+                                        "name": "exec_command",
+                                        "arguments": "{\"cmd\":\"dir\"}",
+                                        "call_id": "call-1",
+                                    },
+                                }
+                            )
+                        ),
+                        ResponsesWebsocketTextMessage(json.dumps({"type": "response.output_text.delta", "delta": "live "})),
+                        ResponsesWebsocketTextMessage(
+                            json.dumps({"type": "response.output_text.delta", "delta": "delta"})
+                        ),
+                        ResponsesWebsocketTextMessage(
+                            json.dumps(
+                                {
+                                    "type": "response.output_item.done",
+                                    "item": {
+                                        "type": "message",
+                                        "role": "assistant",
+                                        "content": [{"type": "output_text", "text": "live delta"}],
+                                    },
+                                }
+                            )
+                        ),
+                        ResponsesWebsocketTextMessage(
+                            json.dumps(
+                                {
+                                    "type": "response.completed",
+                                    "response": {"id": "resp-ws-live", "end_turn": True, "usage": {}},
+                                }
+                            )
+                        ),
+                    ]
+                ),
+                101,
+                False,
+                None,
+                "gpt-ws",
+            )
+
+        sampler = model_client_websocket_preferred_sampler(
+            session,
+            HttpTransportConfig("https://api.example.test/responses", headers={"Authorization": "Bearer test"}),
+            websocket_connector=connector,
+            stream_event_observer=observed.append,
+        )
+        internal_observed = []
+
+        async def internal_stream_observer(event):
+            internal_observed.append((event.get("type"), event.get("delta")))
+
+        result = asyncio.run(
+            sampler(
+                UserTurnSamplingRequest(
+                    session=None,
+                    turn_context=None,
+                    request_plan=SimpleNamespace(
+                        request={
+                            "model": "gpt-test",
+                            "input": [],
+                            "stream": True,
+                            "store": False,
+                        }
+                    ),
+                    stream_event_observer=internal_stream_observer,
+                )
+            )
+        )
+
+        self.assertEqual(
+            [event for event in observed if event.get("type") == "output_text_delta"],
+            [{"type": "output_text_delta", "delta": "live "}, {"type": "output_text_delta", "delta": "delta"}],
+        )
+        self.assertIn(("output_text_delta", "live "), internal_observed)
+        self.assertIn(("output_text_delta", "delta"), internal_observed)
+        self.assertTrue(result.live_stream_events_emitted)
+        observed_item_events = [event for event in observed if event.get("type") == "output_item_done"]
+        self.assertEqual(observed_item_events[0]["item"].type, "function_call")
+        self.assertEqual(observed_item_events[0]["item"].name, "exec_command")
+        self.assertEqual(result.response_items[-1].content[0].text, "live delta")
+
+    def test_websocket_stream_marks_live_events_when_only_external_observer_is_present(self) -> None:
+        # Rust crate/module: codex-core/src/client.rs + session/turn.rs.
+        # Contract: the websocket stream is a single transport source. If a
+        # caller observes those raw stream events live, the prepared result must
+        # record that fact so the core turn runtime does not replay them as if
+        # no live events were emitted.
+        provider = _WebsocketProvider()
+        client = ModelClient(
+            session_id="session",
+            thread_id="thread",
+            installation_id="install",
+            provider=provider,
+        )
+        session = client.new_session()
+        observed = []
+        def connector(_url, _headers, _turn_state):
+            return (
+                ResponsesWebsocketMemoryStream(
+                    [
+                        ResponsesWebsocketTextMessage(json.dumps({"type": "response.output_text.delta", "delta": "live"})),
+                        ResponsesWebsocketTextMessage(
+                            json.dumps(
+                                {
+                                    "type": "response.output_item.done",
+                                    "item": {
+                                        "type": "message",
+                                        "role": "assistant",
+                                        "content": [{"type": "output_text", "text": "live"}],
+                                    },
+                                }
+                            )
+                        ),
+                        ResponsesWebsocketTextMessage(
+                            json.dumps(
+                                {
+                                    "type": "response.completed",
+                                    "response": {"id": "resp-ws-external", "end_turn": True, "usage": {}},
+                                }
+                            )
+                        ),
+                    ]
+                ),
+                101,
+                False,
+                None,
+                "gpt-ws",
+            )
+        sampler = model_client_websocket_preferred_sampler(
+            session,
+            HttpTransportConfig("https://api.example.test/responses", headers={"Authorization": "Bearer test"}),
+            websocket_connector=connector,
+            stream_event_observer=observed.append,
+        )
+
+        result = asyncio.run(
+            sampler(
+                UserTurnSamplingRequest(
+                    session=None,
+                    turn_context=None,
+                    request_plan=SimpleNamespace(
+                        request={"model": "gpt-test", "input": [], "stream": True, "store": False}
+                    ),
+                    stream_event_observer=None,
+                )
+            )
+        )
+
+        self.assertEqual(
+            [event for event in observed if event.get("type") == "output_text_delta"],
+            [{"type": "output_text_delta", "delta": "live"}],
+        )
+        self.assertTrue(result.live_stream_events_emitted)
+
+    def test_websocket_stream_disconnect_falls_back_to_http_like_rust(self) -> None:
+        # Rust crate/modules:
+        # - codex-core/src/session/turn.rs calls
+        #   handle_retryable_response_stream_error for retryable stream errors.
+        # - codex-core/src/responses_retry.rs falls back from WebSockets to
+        #   HTTPS transport once retries are exhausted and websocket fallback is
+        #   available.
+        # Contract: a websocket stream that closes before response.completed
+        # must not strand the TUI turn; it switches the ModelClientSession to
+        # HTTP and completes through the Responses SSE path.
+        provider = _WebsocketProvider()
+        client = ModelClient(
+            session_id="session",
+            thread_id="thread",
+            installation_id="install",
+            provider=provider,
+        )
+        session = client.new_session()
+        websocket_calls = 0
+        http_calls = 0
+        decisions = []
+
+        def connector(_url, _headers, _turn_state):
+            nonlocal websocket_calls
+            websocket_calls += 1
+            return ResponsesWebsocketMemoryStream([]), 101, False, None, "gpt-ws"
+
+        class SseResponse:
+            def read(self) -> bytes:
+                return (
+                    "event: response.output_item.done\n"
+                    "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"http fallback\"}]}}\n"
+                    "\n"
+                    "event: response.completed\n"
+                    "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-http-fallback\",\"end_turn\":true,\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"total_tokens\":3}}}\n"
+                    "\n"
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        def opener(_request):
+            nonlocal http_calls
+            http_calls += 1
+            return SseResponse()
+
+        sampler = model_client_websocket_preferred_sampler(
+            session,
+            HttpTransportConfig("https://api.example.test/responses", headers={"Authorization": "Bearer test"}),
+            opener=opener,
+            websocket_connector=connector,
+            max_retries=0,
+            sleep=lambda _seconds: None,
+            on_retry_decision=decisions.append,
+        )
+
+        result = _run_sampler(
+            sampler,
+            {
+                "model": "gpt-test",
+                "input": [],
+                "stream": True,
+                "store": False,
+            },
+        )
+
+        self.assertEqual(websocket_calls, 1)
+        self.assertEqual(http_calls, 1)
+        self.assertFalse(session.client.responses_websocket_enabled())
+        self.assertEqual(result.mode, "http")
+        self.assertEqual(result.response_items[0].content[0].text, "http fallback")
+        self.assertTrue(decisions)
+        self.assertIn("Falling back from WebSockets to HTTPS transport.", decisions[-1].warning_message)
+
     def test_http_sampling_stream_max_retries_uses_rust_defaults_and_cap(self) -> None:
         self.assertEqual(http_sampling_stream_max_retries({}), 5)
         self.assertEqual(http_sampling_stream_max_retries({"stream_max_retries": 7}), 7)
@@ -318,6 +983,69 @@ class HttpTransportTests(unittest.TestCase):
         )
         self.assertEqual(result.stream_events[1]["delta"], "hel")
         self.assertEqual(result.stream_events[-1]["response_id"], "resp-delta")
+
+    def test_model_client_http_sampler_observes_sse_delta_live_like_rust(self) -> None:
+        # Rust source: codex-core/src/client.rs::stream_responses_api maps SSE
+        # events as the stream is read. Contract: HTTP fallback must deliver
+        # response.output_text.delta to the core live observer before the full
+        # response is complete.
+        observed: list[dict[str, object]] = []
+
+        class LineSseResponse:
+            def __init__(self) -> None:
+                self.lines = iter(
+                    [
+                        b"event: response.output_item.added\n",
+                        b'data: {"item":{"id":"msg-live","type":"message","role":"assistant","content":[]}}\n',
+                        b"\n",
+                        b"event: response.output_text.delta\n",
+                        b'data: {"delta":"live "}\n',
+                        b"\n",
+                        b"event: response.output_text.delta\n",
+                        b'data: {"delta":"http"}\n',
+                        b"\n",
+                        b"event: response.completed\n",
+                        b'data: {"response":{"id":"resp-http-live","end_turn":true,"usage":{"input_tokens":1,"output_tokens":2,"total_tokens":3}}}\n',
+                        b"\n",
+                    ]
+                )
+
+            def readline(self) -> bytes:
+                return next(self.lines, b"")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        sampler = model_client_http_sampler(
+            client.new_session(),
+            HttpTransportConfig("https://api.example.test/responses", headers={"Authorization": "Bearer test"}),
+            opener=lambda _request: LineSseResponse(),
+        )
+
+        async def run():
+            return await sampler(
+                UserTurnSamplingRequest(
+                    session=None,
+                    turn_context=None,
+                    request_plan=SimpleNamespace(
+                        request={"model": "gpt-test", "input": [], "stream": True, "store": False}
+                    ),
+                    stream_event_observer=observed.append,
+                )
+            )
+
+        result = asyncio.run(run())
+
+        self.assertEqual(
+            [event for event in observed if event.get("type") == "output_text_delta"],
+            [{"type": "output_text_delta", "delta": "live "}, {"type": "output_text_delta", "delta": "http"}],
+        )
+        self.assertTrue(result.live_stream_events_emitted)
+        self.assertEqual(result.response_items[0].content[0].text, "live http")
 
     def test_send_prepared_http_sampling_request_records_rust_style_sse_stream_events(self) -> None:
         class SseResponse:
@@ -1620,6 +2348,100 @@ class HttpTransportTests(unittest.TestCase):
         self.assertEqual(stream_error.message, "Reconnecting... 1/1")
         self.assertEqual(stream_error.codex_error_info.type, "response_stream_disconnected")
         self.assertIn("temporary disconnect", stream_error.additional_details)
+
+    def test_model_client_http_sampler_refreshes_auth_after_401_like_rust_client(self) -> None:
+        # Rust source: codex-core src/client.rs::stream_responses_api catches
+        # 401 before generic stream retries and calls handle_unauthorized.
+        # Rust test: core/tests/suite/client.rs::provider_auth_command_refreshes_after_401.
+        token = {"value": "first-token"}
+        seen_authorization: list[str] = []
+
+        class Recovery:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def has_next(self) -> bool:
+                return self.calls == 0
+
+            async def next(self):
+                self.calls += 1
+                token["value"] = "second-token"
+                return object()
+
+        class AuthManager:
+            def __init__(self) -> None:
+                self.recovery = Recovery()
+
+            def unauthorized_recovery(self) -> Recovery:
+                return self.recovery
+
+        def transport_config() -> HttpTransportConfig:
+            return HttpTransportConfig(
+                "https://api.example.test/responses",
+                headers={"Authorization": f"Bearer {token['value']}"},
+            )
+
+        def opener(request):
+            seen_authorization.append(request.headers["Authorization"])
+            if request.headers["Authorization"] == "Bearer first-token":
+                raise HTTPError(
+                    request.full_url,
+                    401,
+                    "Unauthorized",
+                    {"X-Request-Id": "req-401"},
+                    BytesIO(b'{"detail":"Unauthorized"}'),
+                )
+            return FakeResponse(
+                {
+                    "output": [
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "done after auth refresh"}],
+                        }
+                    ]
+                }
+            )
+
+        async def run():
+            client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+            session = Session()
+            sampler = model_client_http_sampler(
+                client.new_session(),
+                transport_config(),
+                opener=opener,
+                max_retries=0,
+                sleep=lambda _seconds: None,
+                auth_manager=AuthManager(),
+                config_factory=transport_config,
+            )
+            provider = type("Provider", (), {"is_azure_responses_endpoint": lambda _self: False})()
+            model_info = type(
+                "ModelInfo",
+                (),
+                {
+                    "slug": "gpt-test",
+                    "supports_reasoning_summaries": False,
+                    "support_verbosity": False,
+                    "service_tier_for_request": lambda _self, tier: tier,
+                },
+            )()
+            return await run_user_turn_sampling_from_session(
+                session,
+                (UserInput.text_input("hello"),),
+                client,
+                provider,
+                model_info,
+                sampler,
+                built_tools=lambda _sess, _turn: Router(),
+            )
+
+        import asyncio
+
+        result = asyncio.run(run())
+
+        self.assertEqual(seen_authorization, ["Bearer first-token", "Bearer second-token"])
+        self.assertEqual(result.response_items[0].content[0].text, "done after auth refresh")
 
     def test_run_user_turn_http_sampling_from_session_wraps_full_http_path(self) -> None:
         seen = {}

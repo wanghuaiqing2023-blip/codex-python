@@ -74,15 +74,15 @@ class TopLevelPackageImportTests(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, "-m", "pycodex"],
             cwd=str(repo_root),
+            input="/quit\n",
             capture_output=True,
             text=True,
             check=False,
         )
-        self.assertEqual(result.returncode, 64)
-        self.assertIn(
-            "interactive TUI is recognized but not implemented yet.",
-            result.stderr,
-        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("\x1b[?1049h", result.stdout)
+        self.assertIn("Codex", result.stdout)
+        self.assertIn("\x1b[?1049l", result.stdout)
 
     def test_python_m_entrypoint_prints_help(self) -> None:
         import subprocess

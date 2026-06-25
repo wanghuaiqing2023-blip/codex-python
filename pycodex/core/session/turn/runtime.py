@@ -13,7 +13,7 @@ import asyncio
 import contextlib
 import inspect
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -107,6 +107,7 @@ class UserTurnSamplingRequest:
     session: Any
     turn_context: Any
     request_plan: TurnResponsesRequestPlan
+    stream_event_observer: Any = None
 
 
 @dataclass(frozen=True)
@@ -314,14 +315,25 @@ async def run_user_turn_sampling_from_session(
         )
     request_plans = [prepared.request_plan]
     user_input_to_emit = prepared.user_input
+    user_input_emitted = False
+    stream_runtime_state = SamplingRuntimeEventApplicationState()
+    live_stream_event_observer = _live_stream_event_observer(
+        sess,
+        prepared.turn_context,
+        prepared.router,
+        stream_runtime_state,
+        thread_id=str(getattr(model_client.state, "thread_id", "")),
+        turn_id=_turn_context_turn_id(prepared.turn_context),
+    )
     sampling_request = UserTurnSamplingRequest(
         session=sess,
         turn_context=prepared.turn_context,
         request_plan=prepared.request_plan,
+        stream_event_observer=live_stream_event_observer,
     )
-    user_input_emitted = False
     while True:
         try:
+            live_plan_cursor = live_stream_event_observer.plan_count()
             raw_result = await _sample_with_retry(sess, prepared.turn_context, provider, sampler, sampling_request)
             break
         except CodexErr as exc:
@@ -353,6 +365,7 @@ async def run_user_turn_sampling_from_session(
                         session=sess,
                         turn_context=prepared.turn_context,
                         request_plan=retry_plan,
+                        stream_event_observer=live_stream_event_observer,
                     )
                     continue
                 return await _completed_user_turn_sampling_result(
@@ -387,7 +400,6 @@ async def run_user_turn_sampling_from_session(
     if not user_input_emitted and user_input_to_emit and emit_user_prompt_turn_item:
         await _emit_user_prompt_turn_item(sess, prepared.turn_context, user_input_to_emit)
         user_input_emitted = True
-    stream_runtime_state = SamplingRuntimeEventApplicationState()
     response_items = _response_items_from_sampling_result(raw_result)
     if response_items:
         await _record_response_items(
@@ -403,30 +415,35 @@ async def run_user_turn_sampling_from_session(
     raw_results = [raw_result]
     all_stream_events = list(_stream_events_from_sampling_result(raw_result))
     await _record_stream_events_turn_ttft(sess, prepared.turn_context, all_stream_events)
-    all_stream_event_dispatch_plans = list(
-        _sampling_stream_event_dispatch_plans_from_result(
-            raw_result,
-            prepared.router,
-            turn_context=prepared.turn_context,
-            thread_id=str(getattr(model_client.state, "thread_id", "")),
-            turn_id=_turn_context_turn_id(prepared.turn_context),
+    if getattr(raw_result, "live_stream_events_emitted", False):
+        all_stream_event_dispatch_plans = list(live_stream_event_observer.dispatch_plans_since(live_plan_cursor))
+        stream_event_apply_plans = list(live_stream_event_observer.apply_plans_since(live_plan_cursor))
+        emitted_stream_event_cursor = len(getattr(stream_runtime_state, "emitted_stream_events", ()) or ())
+    else:
+        all_stream_event_dispatch_plans = list(
+            _sampling_stream_event_dispatch_plans_from_result(
+                raw_result,
+                prepared.router,
+                turn_context=prepared.turn_context,
+                thread_id=str(getattr(model_client.state, "thread_id", "")),
+                turn_id=_turn_context_turn_id(prepared.turn_context),
+            )
         )
-    )
-    stream_event_apply_plans = list(
-        _sampling_stream_event_apply_plans_from_result(
-            raw_result,
-        all_stream_event_dispatch_plans,
-        stream_runtime_state,
-        turn_context=prepared.turn_context,
-        has_pending_mailbox_items=await _has_pending_mailbox_items(sess) if all_stream_events else False,
-    )
-    )
-    emitted_stream_event_cursor = await _emit_stream_runtime_events(
-        sess,
-        prepared.turn_context,
-        stream_runtime_state,
-        0,
-    )
+        stream_event_apply_plans = list(
+            _sampling_stream_event_apply_plans_from_result(
+                raw_result,
+                all_stream_event_dispatch_plans,
+                stream_runtime_state,
+                turn_context=prepared.turn_context,
+                has_pending_mailbox_items=await _has_pending_mailbox_items(sess) if all_stream_events else False,
+            )
+        )
+        emitted_stream_event_cursor = await _emit_stream_runtime_events(
+            sess,
+            prepared.turn_context,
+            stream_runtime_state,
+            0,
+        )
     await _apply_stream_runtime_session_side_effects(
         sess,
         prepared.turn_context,
@@ -615,9 +632,11 @@ async def run_user_turn_sampling_from_session(
             session=sess,
             turn_context=prepared.turn_context,
             request_plan=followup_plan,
+            stream_event_observer=live_stream_event_observer,
         )
         while True:
             try:
+                live_plan_cursor = live_stream_event_observer.plan_count()
                 raw_result = await _sample_with_retry(sess, prepared.turn_context, provider, sampler, followup_request)
                 break
             except CodexErr as exc:
@@ -649,6 +668,7 @@ async def run_user_turn_sampling_from_session(
                             session=sess,
                             turn_context=prepared.turn_context,
                             request_plan=followup_plan,
+                            stream_event_observer=live_stream_event_observer,
                         )
                         continue
                     return await _completed_user_turn_sampling_result(
@@ -683,29 +703,36 @@ async def run_user_turn_sampling_from_session(
         raw_results.append(raw_result)
         followup_stream_events = _stream_events_from_sampling_result(raw_result)
         await _record_stream_events_turn_ttft(sess, prepared.turn_context, followup_stream_events)
-        followup_dispatch_plans = _sampling_stream_event_dispatch_plans_from_result(
-            raw_result,
-            prepared.router,
-            turn_context=prepared.turn_context,
-            thread_id=str(getattr(model_client.state, "thread_id", "")),
-            turn_id=_turn_context_turn_id(prepared.turn_context),
-        )
         all_stream_events.extend(followup_stream_events)
+        if getattr(raw_result, "live_stream_events_emitted", False):
+            followup_dispatch_plans = live_stream_event_observer.dispatch_plans_since(live_plan_cursor)
+            followup_apply_plans = live_stream_event_observer.apply_plans_since(live_plan_cursor)
+        else:
+            followup_dispatch_plans = _sampling_stream_event_dispatch_plans_from_result(
+                raw_result,
+                prepared.router,
+                turn_context=prepared.turn_context,
+                thread_id=str(getattr(model_client.state, "thread_id", "")),
+                turn_id=_turn_context_turn_id(prepared.turn_context),
+            )
+            followup_apply_plans = _sampling_stream_event_apply_plans_from_result(
+                raw_result,
+                followup_dispatch_plans,
+                stream_runtime_state,
+                turn_context=prepared.turn_context,
+                has_pending_mailbox_items=await _has_pending_mailbox_items(sess) if followup_stream_events else False,
+            )
         all_stream_event_dispatch_plans.extend(followup_dispatch_plans)
-        followup_apply_plans = _sampling_stream_event_apply_plans_from_result(
-            raw_result,
-            followup_dispatch_plans,
-            stream_runtime_state,
-            turn_context=prepared.turn_context,
-            has_pending_mailbox_items=await _has_pending_mailbox_items(sess) if followup_stream_events else False,
-        )
         stream_event_apply_plans.extend(followup_apply_plans)
-        emitted_stream_event_cursor = await _emit_stream_runtime_events(
-            sess,
-            prepared.turn_context,
-            stream_runtime_state,
-            emitted_stream_event_cursor,
-        )
+        if getattr(raw_result, "live_stream_events_emitted", False):
+            emitted_stream_event_cursor = len(getattr(stream_runtime_state, "emitted_stream_events", ()) or ())
+        else:
+            emitted_stream_event_cursor = await _emit_stream_runtime_events(
+                sess,
+                prepared.turn_context,
+                stream_runtime_state,
+                emitted_stream_event_cursor,
+            )
         await _apply_stream_runtime_session_side_effects(
             sess,
             prepared.turn_context,
@@ -2676,6 +2703,191 @@ async def _emit_stream_runtime_events(
         await _record_stream_runtime_event_turn_ttfm(sess, turn_context, event)
         await _maybe_await(sender(turn_context, event))
     return len(events)
+
+
+def _live_stream_event_observer(
+    sess: Any,
+    turn_context: Any,
+    router: Any,
+    runtime_state: SamplingRuntimeEventApplicationState,
+    *,
+    thread_id: str,
+    turn_id: str,
+) -> Callable[[Any], Awaitable[None]]:
+    observer = _LiveStreamEventObserver(
+        sess=sess,
+        turn_context=turn_context,
+        router=router,
+        runtime_state=runtime_state,
+        thread_id=thread_id,
+        turn_id=turn_id,
+    )
+    return observer
+
+
+@dataclass
+class _LiveStreamEventObserver:
+    sess: Any
+    turn_context: Any
+    router: Any
+    runtime_state: SamplingRuntimeEventApplicationState
+    thread_id: str
+    turn_id: str
+    cursor: int = 0
+    output_state: SamplingOutputState = field(default_factory=SamplingOutputState)
+    active_item: Any = None
+    active_item_is_streaming_to_client: bool = False
+    active_tool_argument_diff_consumer: Any = None
+    assistant_message_stream_parsers: Any = None
+    adapter: Any = None
+    dispatch_plans: list[Any] = field(default_factory=list)
+    apply_plans: list[Any] = field(default_factory=list)
+    events: list[Any] = field(default_factory=list)
+    response_created_emitted: bool = False
+
+    async def __call__(self, event: Any) -> None:
+        await self.observe(event)
+
+    def plan_count(self) -> int:
+        return len(self.apply_plans)
+
+    def dispatch_plans_since(self, cursor: int) -> tuple[Any, ...]:
+        return tuple(self.dispatch_plans[cursor:])
+
+    def apply_plans_since(self, cursor: int) -> tuple[Any, ...]:
+        return tuple(self.apply_plans[cursor:])
+
+    def __post_init__(self) -> None:
+        plan_mode = _turn_context_plan_mode(self.turn_context)
+        self.runtime_state.plan_item_id = f"{self.turn_id}-plan" if self.turn_id else "plan"
+        self.assistant_message_stream_parsers = AssistantMessageStreamParsers(plan_mode=plan_mode)
+        self.adapter = SamplingRequestRuntimeHookAdapter(event_application_state=self.runtime_state)
+
+    async def observe(self, event: Any) -> None:
+        if not isinstance(event, Mapping):
+            return
+        event_type = event.get("type")
+        if not isinstance(event_type, str):
+            return
+        if event_type == "created" and not self.response_created_emitted:
+            self.response_created_emitted = True
+            sender = getattr(self.sess, "send_event", None)
+            if callable(sender):
+                await _maybe_await(
+                    sender(
+                        self.turn_context,
+                        EventMsg.with_payload(
+                            "response_created",
+                            {"thread_id": self.thread_id, "turn_id": self.turn_id},
+                            ),
+                        )
+                    )
+        if event_type == "output_item_done":
+            item = event.get("item")
+            if isinstance(item, ResponseItem) and item.type in {"function_call", "local_shell_call"}:
+                sender = getattr(self.sess, "send_event", None)
+                if callable(sender):
+                    await _maybe_await(
+                        sender(
+                            self.turn_context,
+                            EventMsg.with_payload(
+                                "response_output_item_done",
+                                {
+                                    "thread_id": self.thread_id,
+                                    "turn_id": self.turn_id,
+                                    "item": item.to_mapping(),
+                                },
+                            ),
+                        )
+                    )
+        plan_mode = _turn_context_plan_mode(self.turn_context)
+        tool_runtime = ToolCallRuntime(self.router) if isinstance(self.router, ToolRouter) else self.router
+        dispatch_plan = sampling_stream_event_dispatch_plan(
+            event_type,
+            _sampling_stream_event_payload(event),
+            state=self.output_state,
+            active_item=self.active_item,
+            active_item_is_streaming_to_client=self.active_item_is_streaming_to_client,
+            active_tool_argument_diff_consumer=self.active_tool_argument_diff_consumer,
+            assistant_message_stream_parsers=self.assistant_message_stream_parsers,
+            plan_mode=plan_mode,
+            tool_runtime=tool_runtime,
+            call_id=event.get("call_id") if isinstance(event.get("call_id"), str) else None,
+            thread_id=self.thread_id,
+            turn_id=self.turn_id,
+            summary_index=_int_event_field(event, "summary_index"),
+            content_index=_int_event_field(event, "content_index"),
+            response_id=_sampling_stream_completed_response_id(event),
+            token_usage=_sampling_stream_completed_token_usage(event),
+            end_turn=_sampling_stream_completed_end_turn(event),
+            turn_context=self.turn_context,
+        )
+        self._update_dispatch_state(event, dispatch_plan)
+        apply_plan = self._apply_plan_for_event(event, dispatch_plan, plan_mode=plan_mode)
+        self.events.append(event)
+        self.dispatch_plans.append(dispatch_plan)
+        self.apply_plans.append(apply_plan)
+        self.adapter.apply_event_plan({"type": "apply_event_plan", "plan": apply_plan})
+        state_after = getattr(getattr(apply_plan, "output_item_done_apply_plan", None), "state_after_output_result", None)
+        if isinstance(state_after, SamplingOutputState):
+            self.output_state = state_after
+        self.cursor = await _emit_stream_runtime_events(
+            self.sess,
+            self.turn_context,
+            self.runtime_state,
+            self.cursor,
+        )
+
+    def _update_dispatch_state(self, event: Mapping[str, Any], dispatch_plan: Any) -> None:
+        added_plan = getattr(dispatch_plan, "output_item_added_plan", None)
+        if added_plan is not None:
+            if getattr(added_plan, "reset_tool_argument_diff_consumer", False):
+                self.active_tool_argument_diff_consumer = None
+            elif getattr(added_plan, "active_tool_argument_diff_consumer", None) is not None:
+                self.active_tool_argument_diff_consumer = added_plan.active_tool_argument_diff_consumer
+            self.active_item = getattr(added_plan, "active_item", None)
+            self.active_item_is_streaming_to_client = bool(
+                getattr(added_plan, "active_item_is_streaming_to_client", False)
+            )
+        if getattr(dispatch_plan, "output_item_done_transition_plan", None) is not None:
+            item = event.get("item")
+            if isinstance(item, ResponseItem):
+                self.output_state = SamplingOutputState(
+                    needs_follow_up=self.output_state.needs_follow_up or item.type in _TOOL_RESPONSE_ITEM_TYPES,
+                    last_agent_message=self.output_state.last_agent_message,
+                    in_flight=self.output_state.in_flight,
+                )
+            self.active_tool_argument_diff_consumer = None
+            self.active_item = None
+            self.active_item_is_streaming_to_client = False
+
+    def _apply_plan_for_event(self, event: Mapping[str, Any], dispatch_plan: Any, *, plan_mode: bool) -> Any:
+        item = event.get("item") if event.get("type") == "output_item_done" else None
+        output_item_done_item = item if isinstance(item, ResponseItem) else None
+        output_item_done_result = (
+            _stream_event_output_result_for_item(output_item_done_item, plan_mode=plan_mode)
+            if output_item_done_item is not None
+            else None
+        )
+        return sampling_stream_event_apply_plan(
+            dispatch_plan,
+            plan_mode=plan_mode,
+            state=self.output_state,
+            output_item_done_item=output_item_done_item,
+            output_item_done_result=output_item_done_result,
+            has_pending_mailbox_items=False,
+            assistant_message_stream_parsers=self.assistant_message_stream_parsers,
+            plan_item_id=self.runtime_state.plan_item_id,
+            plan_item_started=self.runtime_state.plan_item_started,
+            plan_item_completed=self.runtime_state.plan_item_completed,
+            pending_agent_message_items={
+                item.id(): item
+                for item in self.runtime_state.pending_agent_message_items
+                if isinstance(item, TurnItem)
+            },
+            started_agent_message_item_ids=self.runtime_state.started_agent_message_item_ids,
+            leading_whitespace_by_item=dict(self.runtime_state.leading_whitespace_by_item),
+        )
 
 
 async def _apply_stream_runtime_session_side_effects(

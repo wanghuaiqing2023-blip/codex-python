@@ -2145,7 +2145,7 @@ def test_prepare_and_execute_sampling_request_runtime_state_driven_session_plan_
 
     assert result.websocket_outcome == WebsocketStreamOutcome.FALLBACK_TO_HTTP
     assert result.websocket_request["type"] == "response.create"
-    assert result.http_request == request
+    assert result.http_request == serialize_responses_request(request)
     assert result.http_fallback_activated is True
     assert client.responses_websocket_enabled() is False
     assert result.runtime_result.final_result == {
@@ -2458,7 +2458,7 @@ def test_prewarm_websocket_runs_warmup_when_enabled_without_last_request():
     }
     assert result.completed_response_from_untraced_warmup is True
     assert session.websocket_session.connection is connection
-    assert session.websocket_session.last_request == {**request, "generate": False}
+    assert session.websocket_session.last_request == request
     assert "client_metadata" not in request
     assert session.websocket_session.last_response == LastResponse("warm-1")
     assert session.websocket_session.last_response_from_untraced_warmup is True
@@ -2738,7 +2738,7 @@ def test_prepare_and_execute_sampling_request_runtime_state_driven_session_plan_
         "items_added": (),
         "receiver_pending": True,
     }
-    assert result.websocket_request["input"] == request["input"]
+    assert result.websocket_request["input"] == serialize_responses_request(request)["input"]
     assert "previous_response_id" not in result.websocket_request
     assert session.websocket_session.connection is connection
     assert session.websocket_session.last_response == LastResponse("resp-2")
@@ -4071,6 +4071,52 @@ def test_serialize_responses_request_omits_nested_none_fields_like_rust_structs(
     serialized = serialize_responses_request(request)
 
     assert serialized["reasoning"] == {"effort": "high"}
+
+
+def test_serialize_responses_request_strips_response_item_ids_skipped_by_rust_serde():
+    # Rust: codex-protocol/src/models.rs ResponseItem id fields for
+    # reasoning/message/function_call/etc. are #[serde(skip_serializing)].
+    request = {
+        "model": "gpt-test",
+        "instructions": "base",
+        "input": [
+            ResponseItem.reasoning("rs_1"),
+            ResponseItem.message("assistant", [ContentItem.output_text("hi")], id="msg_1"),
+            ResponseItem.function_call("exec_command", "{}", "call_1", id="fc_1"),
+        ],
+        "tools": [],
+        "tool_choice": "auto",
+        "parallel_tool_calls": False,
+        "reasoning": None,
+        "store": False,
+        "stream": True,
+        "include": [],
+    }
+
+    serialized = serialize_responses_request(request)
+
+    assert [item["type"] for item in serialized["input"]] == ["reasoning", "message", "function_call"]
+    assert all("id" not in item for item in serialized["input"])
+    assert serialized["input"][0]["summary"] == []
+
+
+def test_serialize_responses_request_preserves_response_item_ids_not_skipped_by_rust_serde():
+    request = {
+        "model": "gpt-test",
+        "instructions": "base",
+        "input": [ResponseItem.image_generation_call("ig_1", "completed", "result")],
+        "tools": [],
+        "tool_choice": "auto",
+        "parallel_tool_calls": False,
+        "reasoning": None,
+        "store": False,
+        "stream": True,
+        "include": [],
+    }
+
+    serialized = serialize_responses_request(request)
+
+    assert serialized["input"][0]["id"] == "ig_1"
 
 
 def test_serialize_responses_request_omits_optional_websocket_none_fields():

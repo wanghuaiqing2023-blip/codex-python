@@ -192,7 +192,7 @@ Concrete behavior parity should be tracked in `TUI_RUST_TEST_PARITY.md` as modul
 | `codex/codex-rs/tui/src/history_cell/search.rs` | `codex-tui::history_cell::search` | `pycodex/tui/history_cell/search.py` |
 | `codex/codex-rs/tui/src/history_cell/separators.rs` | `codex-tui::history_cell::separators` | `pycodex/tui/history_cell/separators.py` |
 | `codex/codex-rs/tui/src/history_cell/session.rs` | `codex-tui::history_cell::session` | `pycodex/tui/history_cell/session.py` |
-| `codex/codex-rs/tui/src/history_cell/tests.rs` | `codex-tui::history_cell::tests` | `pycodex/tui/history_cell/tests.py` |
+| `codex/codex-rs/tui/src/history_cell/tests.rs` | `codex-tui::history_cell::tests` | `pycodex/tui/history_cell/tests/__init__.py` |
 | `codex/codex-rs/tui/src/hooks_rpc.rs` | `codex-tui::hooks_rpc` | `pycodex/tui/hooks_rpc.py` |
 | `codex/codex-rs/tui/src/ide_context/ipc.rs` | `codex-tui::ide_context::ipc` | `pycodex/tui/ide_context/ipc.py` |
 | `codex/codex-rs/tui/src/ide_context/prompt.rs` | `codex-tui::ide_context::prompt` | `pycodex/tui/ide_context/prompt.py` |
@@ -268,7 +268,7 @@ Concrete behavior parity should be tracked in `TUI_RUST_TEST_PARITY.md` as modul
 | `codex/codex-rs/tui/src/status/mod.rs` | `codex-tui::status` | `pycodex/tui/status/__init__.py` |
 | `codex/codex-rs/tui/src/status/rate_limits.rs` | `codex-tui::status::rate_limits` | `pycodex/tui/status/rate_limits.py` |
 | `codex/codex-rs/tui/src/status/remote_connection.rs` | `codex-tui::status::remote_connection` | `pycodex/tui/status/remote_connection.py` |
-| `codex/codex-rs/tui/src/status/tests.rs` | `codex-tui::status::tests` | `pycodex/tui/status/tests.py` |
+| `codex/codex-rs/tui/src/status/tests.rs` | `codex-tui::status::tests` | `pycodex/tui/status/tests/__init__.py` |
 | `codex/codex-rs/tui/src/status_indicator_widget.rs` | `codex-tui::status_indicator_widget` | `pycodex/tui/status_indicator_widget.py` |
 | `codex/codex-rs/tui/src/streaming/chunking.rs` | `codex-tui::streaming::chunking` | `pycodex/tui/streaming/chunking.py` |
 | `codex/codex-rs/tui/src/streaming/commit_tick.rs` | `codex-tui::streaming::commit_tick` | `pycodex/tui/streaming/commit_tick.py` |

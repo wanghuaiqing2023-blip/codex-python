@@ -488,6 +488,29 @@ class CodexApiEndpointResponsesWebsocketRsTests(unittest.TestCase):
                 self.assertEqual(caught.exception.kind, "stream")
                 self.assertEqual(caught.exception.message, expected)
 
+    def test_run_websocket_response_stream_uses_read_idle_timeout(self) -> None:
+        # Rust crate/module: codex-api/src/endpoint/responses_websocket.rs.
+        # Contract: websocket stream reads are bounded by the provider stream
+        # idle timeout and surface an idle-timeout stream error instead of
+        # blocking the caller indefinitely.
+        class TimeoutReadStream(ResponsesWebsocketMemoryStream):
+            def __init__(self) -> None:
+                super().__init__()
+                self.observed_timeouts: list[float | None] = []
+
+            def next_with_timeout(self, timeout: float | None):
+                self.observed_timeouts.append(timeout)
+                raise ResponsesWebsocketIdleTimeout("read")
+
+        stream = TimeoutReadStream()
+
+        with self.assertRaises(ApiError) as caught:
+            run_websocket_response_stream(stream, {"type": "response.create"}, idle_timeout=0.25)
+
+        self.assertEqual(stream.observed_timeouts, [0.25])
+        self.assertEqual(caught.exception.kind, "stream")
+        self.assertEqual(caught.exception.message, "idle timeout waiting for websocket")
+
     def test_connection_stream_request_prepends_server_metadata_and_closes_on_error(self) -> None:
         connection = ResponsesWebsocketConnection(
             ResponsesWebsocketMemoryStream([ResponsesWebsocketBinaryMessage(b"\x00")]),
@@ -508,6 +531,46 @@ class CodexApiEndpointResponsesWebsocketRsTests(unittest.TestCase):
         self.assertIsInstance(events[-1], ApiError)
         self.assertEqual(events[-1].message, "unexpected binary websocket event")
         self.assertTrue(connection.is_closed())
+
+    def test_connection_stream_request_is_lazy_for_live_deltas(self) -> None:
+        # Rust crate/module: codex-api/src/endpoint/responses_websocket.rs.
+        # Contract: websocket response events are yielded as frames arrive; the
+        # caller does not wait for response.completed before observing deltas.
+        class CountingStream:
+            def __init__(self):
+                self.sent_payloads = []
+                self.messages = iter([
+                    ResponsesWebsocketTextMessage(
+                        json.dumps({"type": "response.output_text.delta", "delta": "live"})
+                    ),
+                    ResponsesWebsocketTextMessage(
+                        json.dumps(
+                            {
+                                "type": "response.completed",
+                                "response": {"id": "resp-lazy", "end_turn": True, "usage": {}},
+                            }
+                        )
+                    ),
+                ])
+                self.next_calls = 0
+
+            def send(self, payload: str) -> None:
+                self.sent_payloads.append(payload)
+
+            def next(self):
+                self.next_calls += 1
+                return next(self.messages, None)
+
+        memory = CountingStream()
+        connection = ResponsesWebsocketConnection(memory)
+        request = ResponsesWsRequest.response_create(ResponseCreateWsRequest(model="gpt"))
+
+        stream = connection.stream_request(request, connection_reused=False)
+        first = next(iter(stream))
+
+        self.assertEqual(first.kind, "output_text_delta")
+        self.assertEqual(first.value, "live")
+        self.assertEqual(memory.next_calls, 1)
 
     def test_connection_send_response_processed_and_closed_error(self) -> None:
         memory = ResponsesWebsocketMemoryStream()

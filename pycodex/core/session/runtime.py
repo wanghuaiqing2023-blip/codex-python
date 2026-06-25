@@ -435,6 +435,7 @@ class InMemoryCodexSession:
     server_reasoning_included: bool = False
     models_etag: str | None = None
     emitted_events: list[EventMsg] = field(default_factory=list)
+    event_observer: Any = None
     input_queue: InMemoryInputQueue = field(default_factory=InMemoryInputQueue)
     active_turn: InMemoryActiveTurn | None = field(default_factory=InMemoryActiveTurn)
     response_processed_ids: list[str] = field(default_factory=list)
@@ -945,6 +946,10 @@ class InMemoryCodexSession:
             self.emitted_events.append(event)
         else:
             self.emitted_events.append(EventMsg.from_mapping(event))
+        if callable(self.event_observer):
+            result = self.event_observer(self.emitted_events[-1])
+            if inspect.isawaitable(result):
+                await result
         if self.emitted_events[-1].type == "turn_diff":
             self.loop_tail_calls.append(("turn_diff", self.emitted_events[-1].payload.unified_diff))
 

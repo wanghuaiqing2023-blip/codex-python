@@ -158,7 +158,8 @@ from .doctor_updates import (
     redacted_doctor_checks_mapping,
     redacted_doctor_report_mapping,
 )
-from pycodex.tui import run_tui
+from pycodex.tui import run_terminal_tui, run_tui
+from pycodex.tui.app.runtime import CoreExecActiveThreadRuntime
 from pycodex.execpolicy import ExecPolicyPrefixRule
 from pycodex.git_utils import current_branch_name, default_branch_name
 from pycodex.utils.home_dir import find_codex_home
@@ -2278,7 +2279,13 @@ def main(
                 stdin=stdin,
                 stdin_is_terminal=stdin_is_terminal,
             )
-        return _run_tui(stderr=err)
+        return _run_tui(
+            parsed,
+            stdout=out,
+            stderr=err,
+            stdin=stdin,
+            stdin_is_terminal=stdin_is_terminal,
+        )
     elif parsed.command in {"exec", "review"}:
         if any(arg in {"-h", "--help"} for arg in parsed.command_args):
             print(_exec_help_text_for_args(parsed.command_args) if parsed.command == "exec" else _review_help_text(), file=out)
@@ -2455,12 +2462,91 @@ def main(
     return 64
 
 
-def _run_tui(*, stderr: TextIO) -> int:
-    return run_tui(stderr=stderr)
+def _run_tui(
+    parsed: ParsedCli | None = None,
+    *,
+    stdout: TextIO | None = None,
+    stderr: TextIO,
+    stdin: object | None = None,
+    stdin_is_terminal: bool | None = None,
+) -> int:
+    if parsed is None:
+        return run_tui(stderr=stderr)
+
+    out = sys.stdout if stdout is None else stdout
+    try:
+        active_thread_runtime = _build_tui_core_active_thread_runtime(parsed, stderr=stderr)
+    except (CliParseError, ExecCliParseError, ExecConfigPlanError, ExecRunError, ValueError) as exc:
+        print(str(exc), file=stderr)
+        return 2
+    except (OSError, RuntimeError) as exc:
+        print(str(exc), file=stderr)
+        return 1
+
+    tui_stdin = sys.stdin if stdin_is_terminal and stdin is getattr(sys.stdin, "buffer", None) else stdin
+    return run_terminal_tui(
+        stdout=out,
+        stderr=stderr,
+        stdin=tui_stdin,
+        active_thread_runtime=active_thread_runtime,
+        use_alt_screen=not bool(parsed.root_options.get("no_alt_screen", False)),
+    )
 
 
 def _normalize_tui_prompt(prompt: str) -> str:
     return prompt.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _build_tui_core_active_thread_runtime(parsed: ParsedCli, *, stderr: TextIO) -> CoreExecActiveThreadRuntime:
+    reject_remote_mode_for_subcommand(
+        parsed.remote if "remote" in parsed.root_options else None,
+        parsed.remote_auth_token_env if "remote_auth_token_env" in parsed.root_options else None,
+        "tui",
+    )
+    exec_cli = parse_exec_args(
+        (),
+        root_config_overrides=parsed.config_overrides_with_feature_toggles(),
+    )
+    exec_cli = _inherit_exec_root_options(exec_cli, parsed)
+    if warning := exec_cli.removed_full_auto_warning():
+        print(warning, file=stderr)
+    codex_home = Path(find_codex_home())
+    config_toml = read_toml_mapping(codex_home / CONFIG_TOML_FILE)
+    migration_status = maybe_migrate_personality(
+        codex_home,
+        config_toml,
+        override_profile=str(exec_cli.profile) if exec_cli.profile is not None else None,
+    )
+    if migration_status == PersonalityMigrationStatus.APPLIED:
+        config_toml = read_toml_mapping(codex_home / CONFIG_TOML_FILE)
+    bootstrap_plan = build_exec_config_bootstrap_plan(exec_cli, config_toml=config_toml)
+    ensure_exec_trusted_directory(
+        exec_trusted_directory_check(exec_cli, bootstrap_plan.config_cwd)
+    )
+    exec_policy_rules = _execpolicy_rules_for_local_http_exec(
+        codex_home,
+        bootstrap_plan.config_cwd,
+        ignore_rules=exec_cli.ignore_rules,
+    )
+    session_config = _build_exec_session_config(
+        bootstrap_plan,
+        exec_policy_rules=exec_policy_rules,
+    )
+    model_client, provider, model_info, resolved_auth = build_default_core_exec_runtime(
+        session_config,
+        auth=read_auth_json(),
+        config_toml=config_toml,
+    )
+    return CoreExecActiveThreadRuntime(
+        session_config,
+        model_client,
+        provider,
+        model_info,
+        auth=resolved_auth,
+        codex_home=codex_home,
+        max_tool_followups=local_http_exec_max_tool_rounds(),
+        startup_prewarm_enabled=True,
+    )
 
 
 def _read_json_state(path: Path) -> dict[str, Any]:
@@ -5525,7 +5611,13 @@ def _run_resume_or_fork_command(
             file=stderr,
         )
 
-    return _run_tui(stderr=stderr)
+    return _run_tui(
+        parsed,
+        stdout=stdout,
+        stderr=stderr,
+        stdin=stdin,
+        stdin_is_terminal=stdin_is_terminal,
+    )
 
 
 def _run_apply_command(

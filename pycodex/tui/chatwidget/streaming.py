@@ -270,8 +270,7 @@ class StreamingWidgetState:
             if phase is MessagePhase.FinalAnswer or phase is None
             else True
         )
-        if phase is MessagePhase.FinalAnswer or phase is None:
-            self.maybe_restore_status_indicator_after_stream_idle()
+        self.maybe_restore_status_indicator_after_stream_idle()
         self.request_redraw()
 
     def on_commit_tick(self) -> None:

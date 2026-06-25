@@ -54,6 +54,7 @@ class PreparedSamplingResult:
     model_verifications: tuple[Any, ...] = ()
     end_turn: bool | None = None
     stream_events: tuple[Any, ...] = ()
+    live_stream_events_emitted: bool = False
 
 
 async def sample_with_model_client_session(
@@ -92,6 +93,7 @@ async def sample_with_model_client_session(
         model_verifications=tuple(getattr(raw_result, "model_verifications", ()) or ()),
         end_turn=getattr(raw_result, "end_turn", None),
         stream_events=tuple(getattr(raw_result, "stream_events", ()) or ()),
+        live_stream_events_emitted=bool(getattr(raw_result, "live_stream_events_emitted", False)),
     )
 
 

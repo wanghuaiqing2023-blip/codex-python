@@ -59,6 +59,7 @@ from pycodex.rollout import (
 from pycodex.exec import app_server_control_socket_path
 from pycodex.core.session.turn.runtime import UserTurnSamplingResult
 from pycodex.protocol import AskForApproval, ContentItem, ProfileV2Name, ResponseItem, SandboxMode
+from pycodex.tui.app.runtime import ExecFunctionActiveThreadRuntime
 
 
 class TopLevelCliParserTests(unittest.TestCase):
@@ -7374,6 +7375,62 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertEqual(stdout.getvalue(), "core bare prompt done\n")
         self.assertIn("completed core non-interactive exec execution", stderr.getvalue())
 
+    def test_main_exec_defaults_to_core_without_python_env_flag(self) -> None:
+        # Rust crates/modules:
+        # - codex-cli/src/main.rs dispatches Subcommand::Exec directly to
+        #   codex_exec::run_main.
+        # - codex-exec/src/lib.rs builds InProcessClientStartArgs and runs the
+        #   exec session in-process.
+        # Python must not require PYCODEX_EXEC_CORE=1 or fall through to the
+        # app-server socket path for ordinary exec.
+        seen = {}
+
+        class FakeResult:
+            response_items = (
+                ResponseItem.from_mapping(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "default core done"}],
+                    }
+                ),
+            )
+            raw_result = None
+
+        async def fake_run(command, *_args, **kwargs):
+            seen["command"] = command
+            seen["auth"] = kwargs.get("auth")
+            return FakeResult()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            auth = SimpleNamespace(
+                auth_mode="chatgpt",
+                tokens={"access_token": "access-token", "account_id": "workspace-123"},
+            )
+            with patch.dict(os.environ, {"CODEX_HOME": tmpdir}, clear=True):
+                with patch("pycodex.cli.parser.read_auth_json", return_value=auth):
+                    with patch("pycodex.cli.parser.run_core_exec_command", side_effect=fake_run) as run_core:
+                        with patch(
+                            "pycodex.cli.parser._resolve_exec_remote_endpoint",
+                            side_effect=AssertionError("default exec should not resolve app-server endpoint"),
+                        ):
+                            stdout = io.StringIO()
+                            stderr = io.StringIO()
+                            code = main(["exec", "hello"], stdout=stdout, stderr=stderr)
+
+        self.assertEqual(code, 0, stderr.getvalue())
+        self.assertEqual(run_core.call_count, 1)
+        self.assertIsNone(seen["command"])
+        self.assertEqual(
+            seen["auth"].to_auth_headers(),
+            {
+                "Authorization": "Bearer access-token",
+                "ChatGPT-Account-ID": "workspace-123",
+            },
+        )
+        self.assertEqual(stdout.getvalue(), "default core done\n")
+        self.assertIn("completed core non-interactive exec execution", stderr.getvalue())
+
     def test_main_prompt_without_subcommand_with_profile_triggers_noninteractive_migration_reload(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             codex_home = Path(tmpdir)
@@ -11743,14 +11800,177 @@ class TopLevelCliParserTests(unittest.TestCase):
             else:
                 os.environ["PYCODEX_TEST_REMOTE_AUTH_TOKEN"] = previous_token
 
-    def test_main_prompt_without_subcommand_is_interactive_path(self):
+    def test_main_without_subcommand_runs_terminal_tui_exec_loop(self):
+        # Rust crates/modules:
+        # - codex-cli/src/main.rs run_interactive_tui normalizes/dispatches
+        #   the no-subcommand entry point into codex_tui::run_main.
+        # - codex-tui/src/tui.rs owns terminal mode setup and alternate-screen
+        #   entry; --no-alt-screen is the explicit inline escape hatch.
+        # Contract: the default interactive entry point enters alternate-screen
+        # terminal mode and forwards user prompts through the ported exec runtime.
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        seen = []
+
+        def fake_exec(prompt):
+            seen.append(prompt)
+            return 0, "terminal answer\n"
+
+        with patch("pycodex.cli.parser._build_tui_core_active_thread_runtime", return_value=ExecFunctionActiveThreadRuntime(fake_exec)):
+            code = main([], stdout=stdout, stderr=stderr, stdin=io.StringIO("hello\r\n/quit\n"))
+
+        self.assertEqual(code, 0)
+        self.assertEqual(seen, ["hello"])
+        self.assertIn("\x1b[?1049h", stdout.getvalue())
+        self.assertIn("\x1b[?1007h", stdout.getvalue())
+        self.assertIn("Codex", stdout.getvalue())
+        self.assertIn("terminal answer\n", stdout.getvalue())
+        final_screen = stdout.getvalue().rsplit("\x1b[2J", 1)[-1]
+        self.assertIn("terminal answer", final_screen)
+        self.assertEqual(stdout.getvalue().count("\x1b[2J"), 1)
+        self.assertIn("\x1b[?1007l", stdout.getvalue())
+        self.assertIn("\x1b[?1049l", stdout.getvalue())
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_main_without_subcommand_hides_exec_stderr_when_reply_is_available(self):
+        # Rust crates/modules:
+        # - codex-cli/src/main.rs dispatches no-subcommand invocations into
+        #   codex_tui::run_main.
+        # - codex-tui/src/lib.rs::run_main owns the interactive TUI launch
+        #   boundary; non-interactive exec diagnostics must not be rendered as
+        #   transcript content for a successful user turn.
+        stdout = io.StringIO()
         stderr = io.StringIO()
 
-        with patch.dict(os.environ, {"PYCODEX_EXEC_LOCAL_HTTP": "0"}):
-            code = main(["prompt only"], stderr=stderr)
+        def fake_exec(_prompt):
+            return 0, "assistant reply\n"
 
-        self.assertEqual(code, 64)
-        self.assertIn("interactive TUI is recognized but not implemented yet.", stderr.getvalue())
+        with patch("pycodex.cli.parser._build_tui_core_active_thread_runtime", return_value=ExecFunctionActiveThreadRuntime(fake_exec)):
+            code = main([], stdout=stdout, stderr=stderr, stdin=io.StringIO("hello\n/quit\n"))
+
+        self.assertEqual(code, 0)
+        self.assertIn("assistant reply", stdout.getvalue())
+        self.assertNotIn("prepared non-interactive exec plan", stdout.getvalue())
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_main_without_subcommand_shows_exec_stderr_when_turn_fails_without_reply(self):
+        # Rust crates/modules:
+        # - codex-tui/src/lib.rs::run_main keeps terminal output visible until
+        #   exit.
+        # - codex-tui/src/startup_error.rs and app error surfaces show failures
+        #   inside the TUI instead of silently returning to an input prompt.
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        def fake_exec(_prompt):
+            return 7, "ERROR: live auth failed\nTry `codex login`.\n"
+
+        with patch("pycodex.cli.parser._build_tui_core_active_thread_runtime", return_value=ExecFunctionActiveThreadRuntime(fake_exec)):
+            code = main([], stdout=stdout, stderr=stderr, stdin=io.StringIO("hello\n"))
+
+        self.assertEqual(code, 7)
+        self.assertIn("ERROR: live auth failed", stdout.getvalue())
+        self.assertIn("Try `codex login`.", stdout.getvalue())
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_main_without_subcommand_appends_long_tui_reply_to_history(self):
+        # Rust crates/modules:
+        # - codex-tui/src/insert_history.rs inserts finalized history rows into
+        #   terminal scrollback instead of repainting and clipping the transcript.
+        # - codex-tui/tests/suite/vt100_history.rs verifies inserted rows remain
+        #   visible/preserved above the active viewport.
+        # Contract: long completed replies are appended as history and are not
+        # lost by a post-turn full-screen redraw.
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        long_answer = "\n".join(f"visible history line {index:02d}" for index in range(1, 61))
+
+        def fake_exec(_prompt):
+            return 0, long_answer + "\n"
+
+        with patch("pycodex.cli.parser._build_tui_core_active_thread_runtime", return_value=ExecFunctionActiveThreadRuntime(fake_exec)):
+            code = main([], stdout=stdout, stderr=stderr, stdin=io.StringIO("long answer\n/quit\n"))
+
+        self.assertEqual(code, 0)
+        output = stdout.getvalue()
+        self.assertEqual(output.count("\x1b[2J"), 1)
+        self.assertIn("visible history line 01", output)
+        self.assertIn("visible history line 30", output)
+        self.assertIn("visible history line 60", output)
+        self.assertIn(f"  {long_answer.splitlines()[-1]}\n", output)
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_main_without_subcommand_auto_pages_long_tui_reply_for_tty(self):
+        # Rust crates/modules:
+        # - codex-tui/src/pager_overlay.rs owns TranscriptOverlay and PagerView.
+        # - codex-tui/src/keymap.rs binds global.open_transcript and pager
+        #   PageUp/PageDown/scroll actions.
+        # Contract: in an interactive alternate-screen TUI, long transcript
+        # content is readable through an in-TUI pager instead of depending on
+        # terminal scrollback outside the alternate screen.
+        class TtyInput(io.StringIO):
+            def isatty(self):
+                return True
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        long_answer = "\n".join(f"pager visible line {index:02d}" for index in range(1, 25))
+
+        def fake_exec(_prompt):
+            return 0, long_answer + "\n"
+
+        with patch("pycodex.tui.shutil.get_terminal_size", return_value=os.terminal_size((40, 10))):
+            with patch("pycodex.cli.parser._build_tui_core_active_thread_runtime", return_value=ExecFunctionActiveThreadRuntime(fake_exec)):
+                code = main([], stdout=stdout, stderr=stderr, stdin=TtyInput("long\n\n\n\nq\nquit\n"))
+
+        self.assertEqual(code, 0)
+        output = stdout.getvalue()
+        self.assertIn("T R A N S C R I P T", output)
+        self.assertIn("Enter/space next", output)
+        self.assertIn("pager visible line 01", output)
+        self.assertIn("pager visible line 18", output)
+        self.assertIn("-- ", output)
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_main_without_subcommand_transcript_command_opens_history_pager(self):
+        # Rust source: codex-tui/src/app/input.rs dispatches the
+        # global.open_transcript keybinding into the transcript overlay.
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        def fake_exec(_prompt):
+            return 0, "short transcript answer\n"
+
+        with patch("pycodex.tui.shutil.get_terminal_size", return_value=os.terminal_size((60, 12))):
+            with patch("pycodex.cli.parser._build_tui_core_active_thread_runtime", return_value=ExecFunctionActiveThreadRuntime(fake_exec)):
+                code = main([], stdout=stdout, stderr=stderr, stdin=io.StringIO("hello\n/transcript\nq\nquit\n"))
+
+        self.assertEqual(code, 0)
+        output = stdout.getvalue()
+        self.assertIn("T R A N S C R I P T", output)
+        self.assertIn("you", output)
+        self.assertIn("hello", output)
+        self.assertIn("short transcript answer", output)
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_main_without_subcommand_no_alt_screen_stays_inline(self):
+        # Rust crate/module/test source:
+        # - codex-tui/src/cli.rs exposes --no-alt-screen.
+        # - codex-tui/src/lib.rs::determine_alt_screen_mode returns false when
+        #   no_alt_screen is true.
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with patch(
+            "pycodex.cli.parser._build_tui_core_active_thread_runtime",
+            return_value=ExecFunctionActiveThreadRuntime(lambda _prompt: (0, "")),
+        ):
+            code = main(["--no-alt-screen"], stdout=stdout, stderr=stderr, stdin=io.StringIO("/quit\n"))
+
+        self.assertEqual(code, 0)
+        self.assertNotIn("\x1b[?1049h", stdout.getvalue())
+        self.assertNotIn("\x1b[?1049l", stdout.getvalue())
+        self.assertIn("Codex", stdout.getvalue())
 
     def test_main_mcp_server_not_implemented(self):
         stderr = io.StringIO()
@@ -12404,13 +12624,31 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertEqual(reply_call["result"]["structuredContent"]["threadId"], thread_id)
 
     def test_main_resume_without_fallback_uses_tui_path(self):
+        stdout = io.StringIO()
         stderr = io.StringIO()
+        seen = []
 
-        code = main(["resume", "--last"], stderr=stderr)
+        def fake_exec(prompt):
+            seen.append(prompt)
+            return 0, "resume terminal answer\n"
 
-        self.assertEqual(code, 64)
+        with patch("pycodex.cli.parser._build_tui_core_active_thread_runtime", return_value=ExecFunctionActiveThreadRuntime(fake_exec)):
+            code = main(
+                ["resume", "--last"],
+                stdout=stdout,
+                stderr=stderr,
+                stdin=io.StringIO("continue\n/quit\n"),
+            )
+
+        self.assertEqual(code, 0)
         self.assertIn("resume request parsed with session_id=None, last=True, all=False, include_non_interactive=False.", stderr.getvalue())
-        self.assertIn("interactive TUI is recognized but not implemented yet.", stderr.getvalue())
+        self.assertIn("\x1b[?1049h", stdout.getvalue())
+        self.assertIn("\x1b[?1049l", stdout.getvalue())
+        self.assertEqual(seen, ["continue"])
+        self.assertIn("resume terminal answer\n", stdout.getvalue())
+        final_screen = stdout.getvalue().rsplit("\x1b[2J", 1)[-1]
+        self.assertIn("resume terminal answer", final_screen)
+        self.assertEqual(stdout.getvalue().count("\x1b[2J"), 1)
 
     def test_main_resume_with_exec_fallback_uses_noninteractive_resume_exec(self):
         stdout = io.StringIO()

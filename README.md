@@ -88,7 +88,29 @@ python -m unittest discover -s tests
 - The upstream knowledge graph at `codex/.understand-anything/knowledge-graph.json` is used as a navigation aid to reduce broad source scans.
 - This is an ongoing migration project; some areas are intentionally marked as partial/stubs until their dependencies are ready.
 - For full instructions, check [AGENTS.md](AGENTS.md).
-## Minimal smoke check for first `codex exec` (local HTTP path)
+## Minimal smoke check for first `codex exec`
+
+The default Python `codex exec` path is aligned with upstream Rust's
+in-process `codex-exec` runtime. With ChatGPT OAuth already configured:
+
+```bash
+python -m pycodex exec "say hello"
+```
+
+On Windows PowerShell:
+
+```powershell
+python -m pycodex exec "say hello"
+```
+
+Expectations:
+
+- Command exits successfully with non-empty output.
+- No app-server socket is required for the default exec path.
+- ChatGPT OAuth auth uses the ChatGPT Codex backend when no API-key env var is
+  selected for the process.
+
+## Minimal smoke check for the explicit local HTTP path
 
 If `PYCODEX_EXEC_LOCAL_HTTP=1` and no app-server is used, run:
 

@@ -96,6 +96,29 @@ class ModelProviderAuthRsTests(unittest.TestCase):
             },
         )
 
+    def test_auth_provider_from_auth_accepts_auth_dot_json_token_shape(self) -> None:
+        # Rust crate/module/contract: codex-model-provider/src/auth.rs
+        # Auth snapshots provide get_token/get_account_id; the Python CLI's
+        # AuthDotJson carries the same ChatGPT fields under tokens.
+        auth = auth_provider_from_auth(
+            {
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "access_token": "access-token",
+                    "account_id": "workspace-123",
+                },
+            }
+        )
+
+        self.assertIsInstance(auth, BearerAuthProvider)
+        self.assertEqual(
+            auth.to_auth_headers(),
+            {
+                "Authorization": "Bearer access-token",
+                "ChatGPT-Account-ID": "workspace-123",
+            },
+        )
+
     def test_agent_identity_auth_provider_adds_signed_authorization_header(self) -> None:
         # Rust crate/module/contract: codex-model-provider/src/auth.rs
         # AgentIdentityAuthProvider signs an AgentAssertion auth header and

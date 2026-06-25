@@ -6,6 +6,7 @@ import pytest
 from pycodex.cloud_tasks import (
     CloudTasksHttpResponse,
     CodeEnvironment,
+    EnvironmentRow,
     autodetect_environment_id,
     by_repo_environments_url,
     environment_list_url,
@@ -16,6 +17,7 @@ from pycodex.cloud_tasks import (
     pick_environment_row,
     uniq,
 )
+from pycodex.cloud_tasks.app import EnvironmentRow as AppEnvironmentRow
 
 
 BASE = "https://chatgpt.com/backend-api"
@@ -263,6 +265,24 @@ def test_list_environments_merges_sources_and_sorts_like_rust_rows():
         ("global", "aardvark", False, None),
         ("repo-only", "beta", False, "openai/codex"),
     ]
+
+
+def test_environment_row_is_app_module_type():
+    # Rust crate/module: codex-cloud-tasks/src/app.rs::EnvironmentRow.
+    # Source contract: EnvironmentRow is an app.rs model re-exported by the crate surface.
+    assert EnvironmentRow is AppEnvironmentRow
+
+    rows = list_environments(
+        BASE,
+        {},
+        origins=[],
+        transport=lambda _url, _headers: response(
+            [{"id": "global", "label": "Global", "is_pinned": True}]
+        ),
+    )
+
+    assert rows == [AppEnvironmentRow("global", "Global", True, None)]
+    assert all(type(row) is AppEnvironmentRow for row in rows)
 
 
 def test_list_environments_uses_by_repo_when_global_fails_but_errors_when_empty():

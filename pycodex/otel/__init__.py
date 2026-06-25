@@ -14,10 +14,13 @@ import os
 import re
 import threading
 import time
+import http.client
+import contextvars
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import urlsplit
 
 
 class OtelHttpProtocol(str, Enum):
@@ -34,6 +37,19 @@ class ToolDecisionSource(str, Enum):
     AUTOMATED_REVIEWER = "automated_reviewer"
     CONFIG = "config"
     USER = "user"
+
+
+class ResourceKind(str, Enum):
+    LOGS = "logs"
+    TRACES = "traces"
+
+
+ENV_ATTRIBUTE = "env"
+HOST_NAME_ATTRIBUTE = "host.name"
+SERVICE_VERSION_ATTRIBUTE = "service.version"
+OTEL_TARGET_PREFIX = "codex_otel"
+OTEL_LOG_ONLY_TARGET = "codex_otel.log_only"
+OTEL_TRACE_SAFE_TARGET = "codex_otel.trace_safe"
 
 
 @dataclass
@@ -66,6 +82,126 @@ class OtelExporter:
     @classmethod
     def OtlpHttp(cls, endpoint: str, headers: dict[str, str] | None = None, protocol: OtelHttpProtocol = OtelHttpProtocol.JSON, tls: OtelTlsConfig | None = None) -> "OtelExporter":
         return cls("otlp_http", endpoint, headers or {}, protocol, tls)
+
+
+STATSIG_OTLP_HTTP_ENDPOINT = "https://ab.chatgpt.com/otlp/v1/metrics"
+STATSIG_API_KEY_HEADER = "statsig-api-key"
+STATSIG_API_KEY = "client-MkRuleRQBd6qakfnDYqJVR9JuXcY57Ljly3vi5JVUIO"
+OTEL_EXPORTER_OTLP_TIMEOUT = "OTEL_EXPORTER_OTLP_TIMEOUT"
+OTEL_EXPORTER_OTLP_TIMEOUT_DEFAULT_MS = 10_000
+
+
+def resolve_exporter(exporter: OtelExporter) -> OtelExporter:
+    if exporter.kind == "statsig":
+        # Rust disables the built-in Statsig exporter in debug builds; the
+        # Python port mirrors that test/dev posture for dependency-light runs.
+        return OtelExporter.None_()
+    return replace(
+        exporter,
+        headers=dict(exporter.headers),
+        tls=replace(exporter.tls) if exporter.tls is not None else None,
+    )
+
+
+def normalize_host_name(host_name: str | None) -> str | None:
+    if host_name is None:
+        return None
+    stripped = host_name.strip()
+    return stripped or None
+
+
+def resource_attributes(
+    settings: OtelSettings,
+    host_name: str | None = None,
+    kind: ResourceKind | str = ResourceKind.LOGS,
+) -> list[tuple[str, str]]:
+    attributes = [
+        (SERVICE_VERSION_ATTRIBUTE, settings.service_version),
+        (ENV_ATTRIBUTE, settings.environment),
+    ]
+    kind_value = kind.value if isinstance(kind, ResourceKind) else str(kind)
+    if kind_value == ResourceKind.LOGS.value:
+        normalized_host_name = normalize_host_name(host_name)
+        if normalized_host_name is not None:
+            attributes.append((HOST_NAME_ATTRIBUTE, normalized_host_name))
+    return attributes
+
+
+def is_trace_safe_target(target: str) -> bool:
+    return target.startswith(OTEL_TRACE_SAFE_TARGET)
+
+
+def is_log_export_target(target: str) -> bool:
+    return target.startswith(OTEL_TARGET_PREFIX) and not is_trace_safe_target(target)
+
+
+def _metadata_target(meta: Any) -> str:
+    if isinstance(meta, str):
+        return meta
+    target = getattr(meta, "target", "")
+    return target() if callable(target) else str(target)
+
+
+def _metadata_is_span(meta: Any) -> bool:
+    is_span = getattr(meta, "is_span", False)
+    return bool(is_span() if callable(is_span) else is_span)
+
+
+def codex_export_filter(meta: Any) -> bool:
+    return log_export_filter(meta)
+
+
+def log_export_filter(meta: Any) -> bool:
+    return is_log_export_target(_metadata_target(meta))
+
+
+def trace_export_filter(meta: Any) -> bool:
+    return _metadata_is_span(meta) or is_trace_safe_target(_metadata_target(meta))
+
+
+_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+
+
+def build_header_map(headers: Mapping[str, str]) -> dict[str, str]:
+    header_map: dict[str, str] = {}
+    for key, value in headers.items():
+        key_text = str(key)
+        value_text = str(value)
+        if _valid_http_header_name(key_text) and _valid_http_header_value(value_text):
+            header_map[key_text.lower()] = value_text
+    return header_map
+
+
+def resolve_otlp_timeout(signal_var: str, environ: Mapping[str, str] | None = None) -> int:
+    env = os.environ if environ is None else environ
+    timeout = _read_timeout_env(signal_var, env)
+    if timeout is not None:
+        return timeout
+    timeout = _read_timeout_env(OTEL_EXPORTER_OTLP_TIMEOUT, env)
+    if timeout is not None:
+        return timeout
+    return OTEL_EXPORTER_OTLP_TIMEOUT_DEFAULT_MS
+
+
+def _read_timeout_env(var: str, environ: Mapping[str, str]) -> int | None:
+    value = environ.get(var)
+    if value is None:
+        return None
+    try:
+        parsed = int(str(value), 10)
+    except ValueError:
+        return None
+    if parsed < 0:
+        return None
+    return parsed
+
+
+def _valid_http_header_name(value: str) -> bool:
+    return bool(_HEADER_NAME_RE.fullmatch(value))
+
+
+def _valid_http_header_value(value: str) -> bool:
+    return all(ch == "\t" or (32 <= ord(ch) != 127) for ch in value)
 
 
 @dataclass
@@ -217,6 +353,10 @@ def set_tracestate_entries(entries: dict[str, dict[str, str]]) -> None:
     _TRACESTATE_ENTRIES = {key: dict(value) for key, value in entries.items()}
 
 
+def configured_tracestate_entries() -> dict[str, dict[str, str]]:
+    return {key: dict(value) for key, value in _TRACESTATE_ENTRIES.items()}
+
+
 def _is_tracestate_member_key(key: str) -> bool:
     if not key or len(key) > 256:
         return False
@@ -249,26 +389,73 @@ def _is_tracestate_member_value_char(ch: str) -> bool:
 
 
 _TRACESTATE_ENTRIES: dict[str, dict[str, str]] = {}
+_GLOBAL_METRICS: MetricsClient | None = None
+_GLOBAL_STATSIG_METRICS_SETTINGS: StatsigMetricsSettings | None = None
+_CURRENT_SPAN: contextvars.ContextVar["OtelTraceSpan | None"] = contextvars.ContextVar(
+    "codex_otel_current_span",
+    default=None,
+)
 
 
 def current_span_trace_id() -> str | None:
-    return None
+    trace = current_span_w3c_trace_context()
+    if trace is None or trace.traceparent is None:
+        return None
+    parts = trace.traceparent.split("-")
+    return parts[1] if len(parts) >= 4 and _valid_traceparent(trace.traceparent) else None
 
 
 def current_span_w3c_trace_context() -> W3cTraceContext | None:
+    span = _CURRENT_SPAN.get()
+    return span_w3c_trace_context(span)
+
+
+def span_w3c_trace_context(span: Any) -> W3cTraceContext | None:
+    if isinstance(span, OtelTraceSpan):
+        return span.w3c_trace_context()
     return None
 
 
-def span_w3c_trace_context(_span: Any) -> W3cTraceContext | None:
-    return None
+def set_parent_from_context(span: Any, context: Any) -> None:
+    if isinstance(span, OtelTraceSpan) and isinstance(context, W3cTraceContext):
+        span.parent = context
 
 
-def set_parent_from_context(_span: Any, _context: Any) -> None:
-    return None
+def set_parent_from_w3c_trace_context(span: Any, trace: W3cTraceContext) -> bool:
+    context = context_from_w3c_trace_context(trace)
+    if context is None:
+        return False
+    set_parent_from_context(span, context)
+    return True
 
 
-def set_parent_from_w3c_trace_context(_span: Any, trace: W3cTraceContext) -> bool:
-    return context_from_w3c_trace_context(trace) is not None
+@dataclass
+class OtelTraceSpan:
+    provider: "OtelProvider"
+    name: str
+    attributes: dict[str, str] = field(default_factory=dict)
+    parent: W3cTraceContext | None = None
+    _token: contextvars.Token[Any] | None = field(default=None, init=False, repr=False)
+
+    def __enter__(self) -> "OtelTraceSpan":
+        self._token = _CURRENT_SPAN.set(self)
+        if self not in self.provider.finished_spans:
+            self.provider.finished_spans.append(self)
+        return self
+
+    def __exit__(self, _exc_type: object, _exc: object, _tb: object) -> None:
+        if self._token is not None:
+            _CURRENT_SPAN.reset(self._token)
+            self._token = None
+
+    def w3c_trace_context(self) -> W3cTraceContext | None:
+        parent = context_from_w3c_trace_context(self.parent) if self.parent is not None else None
+        if parent is None:
+            return None
+        return W3cTraceContext(
+            traceparent=parent.traceparent,
+            tracestate=merge_tracestate_entries(parent.tracestate, configured_tracestate_entries()),
+        )
 
 
 class Timer:
@@ -443,6 +630,7 @@ class MetricsClient:
         self.histogram_records: list[MetricsHistogramRecord] = []
         self.duration_records: list[MetricsDurationRecord] = []
         self.shutdown_called = False
+        self.last_export_error: str | None = None
 
     def counter(self, name: str, inc: int, tags: list[tuple[str, str]] | tuple[tuple[str, str], ...] = ()) -> None:
         validate_metric_name(name)
@@ -483,6 +671,7 @@ class MetricsClient:
 
     def shutdown(self) -> None:
         self.shutdown_called = True
+        self._export_otlp_http_json_metrics()
         return None
 
     def snapshot(self) -> dict[str, Any]:
@@ -510,6 +699,307 @@ class MetricsClient:
             validate_tag_value(value)
             merged[str(key)] = str(value)
         return sorted(merged.items())
+
+    def _export_otlp_http_json_metrics(self) -> None:
+        if self.config is None or self.config.exporter.kind != "otlp":
+            return
+        exporter = self.config.exporter.exporter
+        if not isinstance(exporter, OtelExporter) or exporter.kind != "otlp_http":
+            return
+        if exporter.protocol != OtelHttpProtocol.JSON:
+            return
+        if not self.counter_records and not self.histogram_records and not self.duration_records:
+            return
+        try:
+            body = json.dumps(
+                {
+                    "resourceMetrics": [
+                        {
+                            "resource": {
+                                "attributes": [
+                                    {"key": "service.name", "value": self.config.service_name},
+                                    {"key": SERVICE_VERSION_ATTRIBUTE, "value": self.config.service_version},
+                                    {"key": ENV_ATTRIBUTE, "value": self.config.environment},
+                                ]
+                            },
+                            "scopeMetrics": [
+                                {
+                                    "metrics": [
+                                        *[
+                                            {
+                                                "name": record.name,
+                                                "kind": "counter",
+                                                "value": record.inc,
+                                                "attributes": _metric_record_attributes(record.tags),
+                                            }
+                                            for record in self.counter_records
+                                        ],
+                                        *[
+                                            {
+                                                "name": record.name,
+                                                "kind": "histogram",
+                                                "value": record.value,
+                                                "attributes": _metric_record_attributes(record.tags),
+                                            }
+                                            for record in self.histogram_records
+                                        ],
+                                        *[
+                                            {
+                                                "name": record.name,
+                                                "kind": "duration",
+                                                "duration_ms": record.duration_ms,
+                                                "attributes": _metric_record_attributes(record.tags),
+                                            }
+                                            for record in self.duration_records
+                                        ],
+                                    ]
+                                }
+                            ],
+                        }
+                    ]
+                },
+                separators=(",", ":"),
+            ).encode("utf-8")
+            _post_otlp_http_json(str(exporter.endpoint), exporter.headers, body, "OTEL_EXPORTER_OTLP_METRICS_TIMEOUT")
+            self.last_export_error = None
+        except Exception as exc:
+            self.last_export_error = str(exc)
+
+
+def _metric_record_attributes(tags: list[tuple[str, str]]) -> list[dict[str, str]]:
+    return [{"key": key, "value": value} for key, value in tags]
+
+
+def _post_otlp_http_json(endpoint: str, headers: Mapping[str, str], body: bytes, timeout_var: str) -> None:
+    parsed = urlsplit(endpoint)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError(f"invalid OTLP HTTP endpoint: {endpoint}")
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+    connection_cls = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+    conn = connection_cls(
+        parsed.hostname,
+        parsed.port,
+        timeout=resolve_otlp_timeout(timeout_var) / 1000,
+    )
+    request_headers = dict(build_header_map(headers))
+    request_headers["content-type"] = "application/json"
+    request_headers["content-length"] = str(len(body))
+    try:
+        conn.request("POST", path, body=body, headers=request_headers)
+        response = conn.getresponse()
+        response.read()
+        if response.status < 200 or response.status >= 300:
+            raise OSError(f"OTLP HTTP export failed with status {response.status}")
+    finally:
+        conn.close()
+
+
+@dataclass
+class OtelLogger:
+    exporter: OtelExporter | None
+    records: list[dict[str, Any]] = field(default_factory=list)
+
+    def emit(self, event_name: str, attributes: Mapping[str, Any] | None = None, body: str | None = None) -> None:
+        record = {"event.name": str(event_name)}
+        if attributes:
+            record.update({str(key): value for key, value in attributes.items()})
+        if body is not None:
+            record["body"] = str(body)
+        self.records.append(record)
+
+
+@dataclass
+class OtelProvider:
+    logger: OtelLogger | None = None
+    tracer_provider: object | None = None
+    tracer: object | None = None
+    metrics_client: MetricsClient | None = None
+    environment: str = ""
+    service_name: str = ""
+    service_version: str = ""
+    trace_exporter: OtelExporter | None = None
+    span_attributes: dict[str, str] = field(default_factory=dict)
+    finished_spans: list[OtelTraceSpan] = field(default_factory=list)
+    last_trace_export_error: str | None = None
+    last_log_export_error: str | None = None
+
+    @classmethod
+    def from_settings(cls, settings: OtelSettings) -> "OtelProvider | None":
+        log_enabled = settings.exporter.kind != "none"
+        trace_enabled = settings.trace_exporter.kind != "none"
+        log_exporter = resolve_exporter(settings.exporter)
+        metric_exporter = resolve_exporter(settings.metrics_exporter)
+        trace_exporter = resolve_exporter(settings.trace_exporter)
+        log_enabled = log_exporter.kind != "none"
+        metrics_enabled = metric_exporter.kind != "none"
+
+        if not log_enabled and not trace_enabled and not metrics_enabled:
+            set_tracestate_entries({})
+            return None
+
+        if trace_enabled:
+            validate_span_attributes(settings.span_attributes)
+        validate_tracestate_entries(settings.tracestate)
+
+        metrics = None
+        if metrics_enabled:
+            metrics_config = MetricsConfig.otlp(
+                settings.environment,
+                settings.service_name,
+                settings.service_version,
+                metric_exporter,
+            )
+            if settings.runtime_metrics:
+                metrics_config = metrics_config.with_runtime_reader()
+            metrics = MetricsClient.new(metrics_config)
+
+        provider = cls(
+            logger=OtelLogger(log_exporter) if log_enabled else None,
+            tracer_provider=object() if trace_enabled else None,
+            tracer=object() if trace_enabled else None,
+            metrics_client=metrics,
+            environment=settings.environment,
+            service_name=settings.service_name,
+            service_version=settings.service_version,
+            trace_exporter=trace_exporter if trace_enabled else None,
+            span_attributes=dict(settings.span_attributes),
+        )
+        set_tracestate_entries(settings.tracestate)
+        if metrics is not None:
+            install_global_metrics(metrics)
+            if settings.metrics_exporter.kind == "statsig":
+                install_global_statsig_metrics_settings(StatsigMetricsSettings(settings.environment))
+        return provider
+
+    def shutdown(self) -> None:
+        self._export_otlp_http_json_traces()
+        if self.metrics_client is not None:
+            self.metrics_client.shutdown()
+        self._export_otlp_http_json_logs()
+
+    def metrics(self) -> MetricsClient | None:
+        return self.metrics_client
+
+    def trace_span(self, name: str, attributes: Mapping[str, str] | None = None) -> OtelTraceSpan:
+        span_attributes = dict(self.span_attributes)
+        if attributes:
+            span_attributes.update({str(key): str(value) for key, value in attributes.items()})
+        return OtelTraceSpan(self, str(name), span_attributes)
+
+    def logger_layer(self) -> object | None:
+        return object() if self.logger is not None else None
+
+    def tracing_layer(self) -> object | None:
+        return object() if self.tracer is not None else None
+
+    def _export_otlp_http_json_traces(self) -> None:
+        exporter = self.trace_exporter
+        if exporter is None or exporter.kind != "otlp_http" or exporter.protocol != OtelHttpProtocol.JSON:
+            return
+        if not self.finished_spans:
+            return
+        try:
+            body = json.dumps(
+                {
+                    "resourceSpans": [
+                        {
+                            "resource": {
+                                "attributes": [
+                                    {"key": "service.name", "value": self.service_name},
+                                    {"key": SERVICE_VERSION_ATTRIBUTE, "value": self.service_version},
+                                    {"key": ENV_ATTRIBUTE, "value": self.environment},
+                                ]
+                            },
+                            "scopeSpans": [
+                                {
+                                    "spans": [
+                                        {
+                                            "name": span.name,
+                                            "attributes": _metric_record_attributes(sorted(span.attributes.items())),
+                                        }
+                                        for span in self.finished_spans
+                                    ]
+                                }
+                            ],
+                        }
+                    ]
+                },
+                separators=(",", ":"),
+            ).encode("utf-8")
+            _post_otlp_http_json(str(exporter.endpoint), exporter.headers, body, "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT")
+            self.last_trace_export_error = None
+        except Exception as exc:
+            self.last_trace_export_error = str(exc)
+
+    def emit_log_event(self, event_name: str, attributes: Mapping[str, Any] | None = None, body: str | None = None) -> None:
+        if self.logger is not None:
+            self.logger.emit(event_name, attributes, body)
+
+    def _export_otlp_http_json_logs(self) -> None:
+        logger = self.logger
+        if logger is None:
+            return
+        exporter = logger.exporter
+        if exporter is None or exporter.kind != "otlp_http" or exporter.protocol != OtelHttpProtocol.JSON:
+            return
+        if not logger.records:
+            return
+        try:
+            body = json.dumps(
+                {
+                    "resourceLogs": [
+                        {
+                            "resource": {
+                                "attributes": [
+                                    {"key": "service.name", "value": self.service_name},
+                                    {"key": SERVICE_VERSION_ATTRIBUTE, "value": self.service_version},
+                                    {"key": ENV_ATTRIBUTE, "value": self.environment},
+                                ]
+                            },
+                            "scopeLogs": [
+                                {
+                                    "logRecords": [
+                                        {
+                                            "body": {"stringValue": str(record.get("body", record.get("event.name", "")))},
+                                            "attributes": [
+                                                {"key": str(key), "value": str(value)}
+                                                for key, value in sorted(record.items())
+                                                if key != "body"
+                                            ],
+                                        }
+                                        for record in logger.records
+                                    ]
+                                }
+                            ],
+                        }
+                    ]
+                },
+                separators=(",", ":"),
+            ).encode("utf-8")
+            _post_otlp_http_json(str(exporter.endpoint), exporter.headers, body, "OTEL_EXPORTER_OTLP_LOGS_TIMEOUT")
+            self.last_log_export_error = None
+        except Exception as exc:
+            self.last_log_export_error = str(exc)
+
+    @staticmethod
+    def codex_export_filter(meta: Any) -> bool:
+        return codex_export_filter(meta)
+
+    @staticmethod
+    def log_export_filter(meta: Any) -> bool:
+        return log_export_filter(meta)
+
+    @staticmethod
+    def trace_export_filter(meta: Any) -> bool:
+        return trace_export_filter(meta)
+
+    def __del__(self) -> None:
+        try:
+            self.shutdown()
+        except Exception:
+            return
 
 
 def validate_metric_name(name: str) -> None:
@@ -615,12 +1105,36 @@ def _reset_process_start_once_for_tests() -> None:
         _PROCESS_START_RECORDED = False
 
 
-def start_global_timer(_name: str, _tags: list[tuple[str, str]] | tuple[tuple[str, str], ...]) -> Timer:
-    raise MetricsError("exporter disabled")
+def install_global_metrics(metrics: MetricsClient) -> None:
+    global _GLOBAL_METRICS
+    _GLOBAL_METRICS = metrics
+
+
+def global_metrics() -> MetricsClient | None:
+    return _GLOBAL_METRICS
+
+
+def install_global_statsig_metrics_settings(settings: StatsigMetricsSettings) -> None:
+    global _GLOBAL_STATSIG_METRICS_SETTINGS
+    _GLOBAL_STATSIG_METRICS_SETTINGS = settings
+
+
+def _reset_global_otel_state_for_tests() -> None:
+    global _GLOBAL_METRICS, _GLOBAL_STATSIG_METRICS_SETTINGS, _TRACESTATE_ENTRIES
+    _GLOBAL_METRICS = None
+    _GLOBAL_STATSIG_METRICS_SETTINGS = None
+    _TRACESTATE_ENTRIES = {}
+
+
+def start_global_timer(name: str, tags: list[tuple[str, str]] | tuple[tuple[str, str], ...]) -> Timer:
+    metrics = global_metrics()
+    if metrics is None:
+        raise MetricsError("metrics exporter is disabled")
+    return metrics.start_timer(name, tags)
 
 
 def global_statsig_metrics_settings() -> StatsigMetricsSettings | None:
-    return None
+    return _GLOBAL_STATSIG_METRICS_SETTINGS
 
 
 @dataclass
@@ -658,6 +1172,8 @@ class SessionTelemetry:
     metadata: SessionTelemetryMetadata
     metrics: MetricsClient | None = None
     metrics_use_metadata_tags: bool = True
+    log_events: list[dict[str, str]] = field(default_factory=list)
+    trace_events: list[dict[str, str]] = field(default_factory=list)
 
     @classmethod
     def new(
@@ -737,6 +1253,24 @@ class SessionTelemetry:
             return
         self.metrics.record_duration(name, duration_ms, self._tags_with_metadata(tags))
 
+    def record_startup_phase(
+        self,
+        phase: str,
+        duration_ms: int | float,
+        status: str | None = None,
+    ) -> None:
+        tags = [("phase", str(phase))]
+        if status is not None:
+            tags.append(("status", str(status)))
+        self.record_duration(STARTUP_PHASE_DURATION_METRIC, duration_ms, tags)
+        attrs = {
+            "startup.phase": phase,
+            "startup.status": status,
+            "duration_ms": _duration_to_millis(duration_ms),
+        }
+        self._record_log_event("codex.startup_phase", attrs)
+        self._record_trace_event("codex.startup_phase", attrs)
+
     def start_timer(self, name: str, tags: list[tuple[str, str]] | tuple[tuple[str, str], ...] = ()) -> Timer:
         if self.metrics is None:
             raise MetricsError("metrics exporter is disabled")
@@ -786,6 +1320,157 @@ class SessionTelemetry:
             ],
         )
 
+    def record_responses(self, handle_responses_span: Any, event: Any) -> None:
+        response_type = self.responses_type(event)
+        _record_span_attr(handle_responses_span, "otel.name", response_type)
+
+        kind = _response_event_kind(event)
+        value = _response_event_value(event)
+        if kind in {"output_item_done", "output_item_added"}:
+            _record_span_attr(
+                handle_responses_span,
+                "from",
+                "output_item_done" if kind == "output_item_done" else "output_item_added",
+            )
+            if _response_item_type(value) == "function_call":
+                name = _get_value(value, "name")
+                if name is not None:
+                    _record_span_attr(handle_responses_span, "tool_name", str(name))
+            return
+
+        if kind == "completed":
+            token_usage = _get_value(value, "token_usage")
+            if token_usage is None:
+                return
+            _record_span_attr(handle_responses_span, "gen_ai.usage.input_tokens", _token_usage_value(token_usage, "input_tokens"))
+            _record_span_attr(
+                handle_responses_span,
+                "gen_ai.usage.cache_read.input_tokens",
+                _token_usage_cached_input(token_usage),
+            )
+            _record_span_attr(handle_responses_span, "gen_ai.usage.output_tokens", _token_usage_value(token_usage, "output_tokens"))
+            _record_span_attr(
+                handle_responses_span,
+                "codex.usage.reasoning_output_tokens",
+                _token_usage_value(token_usage, "reasoning_output_tokens"),
+            )
+            _record_span_attr(handle_responses_span, "codex.usage.total_tokens", _token_usage_value(token_usage, "total_tokens"))
+
+    @staticmethod
+    def responses_type(event: Any) -> str:
+        kind = _response_event_kind(event)
+        if kind == "created":
+            return "created"
+        if kind in {"output_item_done", "output_item_added"}:
+            return SessionTelemetry.responses_item_type(_response_event_value(event))
+        if kind == "completed":
+            return "completed"
+        if kind == "output_text_delta":
+            return "text_delta"
+        if kind == "tool_call_input_delta":
+            return "tool_input_delta"
+        if kind == "reasoning_summary_delta":
+            return "reasoning_summary_delta"
+        if kind == "reasoning_content_delta":
+            return "reasoning_content_delta"
+        if kind == "reasoning_summary_part_added":
+            return "reasoning_summary_part_added"
+        if kind == "server_model":
+            return "server_model"
+        if kind == "model_verifications":
+            return "model_verifications"
+        if kind == "server_reasoning_included":
+            return "server_reasoning_included"
+        if kind == "rate_limits":
+            return "rate_limits"
+        if kind == "models_etag":
+            return "models_etag"
+        return str(kind)
+
+    @staticmethod
+    def responses_item_type(item: Any) -> str:
+        item_type = _response_item_type(item)
+        if item_type == "message":
+            return f"message_from_{_get_value(item, 'role')}"
+        mapping = {
+            "reasoning": "reasoning",
+            "local_shell_call": "local_shell_call",
+            "function_call": "function_call",
+            "tool_search_call": "tool_search_call",
+            "function_call_output": "function_call_output",
+            "tool_search_output": "tool_search_output",
+            "custom_tool_call": "custom_tool_call",
+            "custom_tool_call_output": "custom_tool_call_output",
+            "web_search_call": "web_search_call",
+            "image_generation_call": "image_generation_call",
+            "compaction": "compaction",
+            "compaction_trigger": "compaction_trigger",
+            "context_compaction": "context_compaction",
+            "other": "other",
+        }
+        return mapping.get(str(item_type), "other")
+
+    def conversation_starts(
+        self,
+        provider_name: str,
+        reasoning_effort: str | None = None,
+        reasoning_summary: str | None = None,
+        context_window: int | None = None,
+        auto_compact_token_limit: int | None = None,
+        approval_policy: str | None = None,
+        sandbox_policy: str | None = None,
+        mcp_servers: list[str] | tuple[str, ...] = (),
+    ) -> None:
+        common: dict[str, Any] = {
+            "provider_name": provider_name,
+            "reasoning_effort": reasoning_effort,
+            "reasoning_summary": reasoning_summary,
+            "context_window": context_window,
+            "auto_compact_token_limit": auto_compact_token_limit,
+            "approval_policy": approval_policy,
+            "sandbox_policy": sandbox_policy,
+        }
+        common.update(_auth_env_event_attrs(self.metadata.auth_env))
+        self._record_log_event(
+            "codex.conversation_starts",
+            {**common, "mcp_servers": ", ".join(str(server) for server in mcp_servers)},
+        )
+        self._record_trace_event(
+            "codex.conversation_starts",
+            {**common, "mcp_server_count": len(mcp_servers)},
+        )
+
+    def user_prompt(self, items: list[Any] | tuple[Any, ...]) -> None:
+        prompt_parts: list[str] = []
+        text_input_count = 0
+        image_input_count = 0
+        local_image_input_count = 0
+        for item in items:
+            kind = _user_input_kind(item)
+            if kind == "text":
+                text_input_count += 1
+                prompt_parts.append(_user_input_text(item))
+            elif kind == "image":
+                image_input_count += 1
+            elif kind == "local_image":
+                local_image_input_count += 1
+        prompt = "".join(prompt_parts)
+        prompt_to_log = prompt if self.metadata.log_user_prompts else "[REDACTED]"
+        prompt_len = str(len(prompt))
+        self._record_log_event(
+            "codex.user_prompt",
+            {"prompt_length": prompt_len, "prompt": prompt_to_log},
+        )
+        self._record_trace_event(
+            "codex.user_prompt",
+            {
+                "prompt_length": prompt_len,
+                "text_input_count": str(text_input_count),
+                "image_input_count": str(image_input_count),
+                "local_image_input_count": str(local_image_input_count),
+            },
+        )
+
     def tool_result_with_tags(
         self,
         tool_name: str,
@@ -802,6 +1487,36 @@ class SessionTelemetry:
         tags.extend((str(key), str(value)) for key, value in extra_tags)
         self.counter(TOOL_CALL_COUNT_METRIC, 1, tags)
         self.record_duration(TOOL_CALL_DURATION_METRIC, duration_ms, tags)
+        trace_fields = {str(key): str(value) for key, value in extra_trace_fields}
+        mcp_server = trace_fields.get("mcp_server", "")
+        mcp_server_origin = trace_fields.get("mcp_server_origin", "")
+        self._record_log_event(
+            "codex.tool_result",
+            {
+                "tool_name": tool_name,
+                "call_id": call_id,
+                "arguments": arguments,
+                "duration_ms": str(_duration_to_millis(duration_ms)),
+                "success": success_str,
+                "output": output,
+                "mcp_server": mcp_server,
+                "mcp_server_origin": mcp_server_origin,
+            },
+        )
+        self._record_trace_event(
+            "codex.tool_result",
+            {
+                "tool_name": tool_name,
+                "call_id": call_id,
+                "duration_ms": str(_duration_to_millis(duration_ms)),
+                "success": success_str,
+                "arguments_length": str(len(arguments)),
+                "output_length": str(len(output)),
+                "output_line_count": str(_rust_line_count(output)),
+                "tool_origin": "mcp" if mcp_server else "builtin",
+                "mcp_tool": "true" if mcp_server else "false",
+            },
+        )
 
     def record_api_request(
         self,
@@ -825,6 +1540,90 @@ class SessionTelemetry:
         tags = [("status", status_str), ("success", "true" if success else "false")]
         self.counter(API_CALL_COUNT_METRIC, 1, tags)
         self.record_duration(API_CALL_DURATION_METRIC, duration_ms, tags)
+        attrs: dict[str, Any] = {
+            "duration_ms": _duration_to_millis(duration_ms),
+            "http.response.status_code": status,
+            "error.message": error,
+            "attempt": attempt,
+            "auth.header_attached": auth_header_attached,
+            "auth.header_name": auth_header_name,
+            "auth.retry_after_unauthorized": retry_after_unauthorized,
+            "auth.recovery_mode": recovery_mode,
+            "auth.recovery_phase": recovery_phase,
+            "endpoint": endpoint,
+            "auth.request_id": request_id,
+            "auth.cf_ray": cf_ray,
+            "auth.error": auth_error,
+            "auth.error_code": auth_error_code,
+        }
+        attrs.update(_auth_env_event_attrs(self.metadata.auth_env))
+        self._record_log_event("codex.api_request", attrs)
+        self._record_trace_event("codex.api_request", attrs)
+
+    def record_auth_recovery(
+        self,
+        mode: str,
+        step: str,
+        outcome: str,
+        request_id: str | None = None,
+        cf_ray: str | None = None,
+        auth_error: str | None = None,
+        auth_error_code: str | None = None,
+        recovery_reason: str | None = None,
+        auth_state_changed: bool | None = None,
+    ) -> None:
+        attrs = {
+            "auth.mode": mode,
+            "auth.step": step,
+            "auth.outcome": outcome,
+            "auth.request_id": request_id,
+            "auth.cf_ray": cf_ray,
+            "auth.error": auth_error,
+            "auth.error_code": auth_error_code,
+            "auth.recovery_reason": recovery_reason,
+            "auth.state_changed": auth_state_changed,
+        }
+        self._record_log_event("codex.auth_recovery", attrs)
+        self._record_trace_event("codex.auth_recovery", attrs)
+
+    def record_websocket_connect(
+        self,
+        duration_ms: int | float,
+        status: int | None = None,
+        error: str | None = None,
+        auth_header_attached: bool = False,
+        auth_header_name: str | None = None,
+        retry_after_unauthorized: bool = False,
+        recovery_mode: str | None = None,
+        recovery_phase: str | None = None,
+        endpoint: str = "unknown",
+        connection_reused: bool = False,
+        request_id: str | None = None,
+        cf_ray: str | None = None,
+        auth_error: str | None = None,
+        auth_error_code: str | None = None,
+    ) -> None:
+        success = error is None and (status is None or 200 <= status <= 299)
+        attrs: dict[str, Any] = {
+            "duration_ms": _duration_to_millis(duration_ms),
+            "http.response.status_code": status,
+            "success": success,
+            "error.message": error,
+            "auth.header_attached": auth_header_attached,
+            "auth.header_name": auth_header_name,
+            "auth.retry_after_unauthorized": retry_after_unauthorized,
+            "auth.recovery_mode": recovery_mode,
+            "auth.recovery_phase": recovery_phase,
+            "endpoint": endpoint,
+            "auth.connection_reused": connection_reused,
+            "auth.request_id": request_id,
+            "auth.cf_ray": cf_ray,
+            "auth.error": auth_error,
+            "auth.error_code": auth_error_code,
+        }
+        attrs.update(_auth_env_event_attrs(self.metadata.auth_env))
+        self._record_log_event("codex.websocket_connect", attrs)
+        self._record_trace_event("codex.websocket_connect", attrs)
 
     def record_websocket_request(
         self,
@@ -836,6 +1635,15 @@ class SessionTelemetry:
         tags = [("success", success_str)]
         self.counter(WEBSOCKET_REQUEST_COUNT_METRIC, 1, tags)
         self.record_duration(WEBSOCKET_REQUEST_DURATION_METRIC, duration_ms, tags)
+        attrs: dict[str, Any] = {
+            "duration_ms": _duration_to_millis(duration_ms),
+            "success": success_str,
+            "error.message": error,
+            "auth.connection_reused": connection_reused,
+        }
+        attrs.update(_auth_env_event_attrs(self.metadata.auth_env))
+        self._record_log_event("codex.websocket_request", attrs)
+        self._record_trace_event("codex.websocket_request", attrs)
 
     def record_websocket_event(self, message: Any, duration_ms: int | float) -> None:
         kind: str | None = None
@@ -920,6 +1728,164 @@ class SessionTelemetry:
             model=self.metadata.model,
             app_version=self.metadata.app_version,
         ).into_tags()
+
+    def _record_log_event(self, event_name: str, attrs: Mapping[str, Any]) -> None:
+        event = self._base_log_event(event_name)
+        _extend_event_attrs(event, attrs)
+        self.log_events.append(event)
+
+    def _record_trace_event(self, event_name: str, attrs: Mapping[str, Any]) -> None:
+        event = self._base_trace_event(event_name)
+        _extend_event_attrs(event, attrs)
+        self.trace_events.append(event)
+
+    def _base_log_event(self, event_name: str) -> dict[str, str]:
+        event = {
+            "target": OTEL_LOG_ONLY_TARGET,
+            "event.name": event_name,
+            "conversation.id": self.metadata.conversation_id,
+            "app.version": self.metadata.app_version,
+            "originator": self.metadata.originator,
+            "terminal.type": self.metadata.terminal_type,
+            "model": self.metadata.model,
+            "slug": self.metadata.slug,
+        }
+        if self.metadata.auth_mode is not None:
+            event["auth_mode"] = self.metadata.auth_mode
+        if self.metadata.account_id is not None:
+            event["user.account_id"] = self.metadata.account_id
+        if self.metadata.account_email is not None:
+            event["user.email"] = self.metadata.account_email
+        return event
+
+    def _base_trace_event(self, event_name: str) -> dict[str, str]:
+        event = {
+            "target": OTEL_TRACE_SAFE_TARGET,
+            "event.name": event_name,
+            "conversation.id": self.metadata.conversation_id,
+            "app.version": self.metadata.app_version,
+            "originator": self.metadata.originator,
+            "terminal.type": self.metadata.terminal_type,
+            "model": self.metadata.model,
+            "slug": self.metadata.slug,
+        }
+        if self.metadata.auth_mode is not None:
+            event["auth_mode"] = self.metadata.auth_mode
+        return event
+
+
+def _record_span_attr(span: Any, key: str, value: Any) -> None:
+    if hasattr(span, "record") and callable(span.record):
+        span.record(key, value)
+        return
+    if isinstance(span, dict):
+        span[key] = value
+        return
+    attrs = getattr(span, "attributes", None)
+    if isinstance(attrs, dict):
+        attrs[key] = value
+        return
+    setattr(span, key.replace(".", "_"), value)
+
+
+def _response_event_kind(event: Any) -> str:
+    return str(_get_value(event, "kind") or _get_value(event, "type") or event)
+
+
+def _response_event_value(event: Any) -> Any:
+    return _get_value(event, "value")
+
+
+def _response_item_type(item: Any) -> str:
+    return str(_get_value(item, "type") or "other")
+
+
+def _get_value(value: Any, key: str) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, Mapping):
+        return value.get(key)
+    return getattr(value, key, None)
+
+
+def _token_usage_value(token_usage: Any, key: str) -> int:
+    value = _get_value(token_usage, key)
+    return int(value or 0)
+
+
+def _token_usage_cached_input(token_usage: Any) -> int:
+    cached_input = getattr(token_usage, "cached_input", None)
+    if callable(cached_input):
+        return int(cached_input())
+    return _token_usage_value(token_usage, "cached_input_tokens")
+
+
+def _extend_event_attrs(event: dict[str, str], attrs: Mapping[str, Any]) -> None:
+    for key, value in attrs.items():
+        if value is not None:
+            event[str(key)] = _event_value(value)
+
+
+def _auth_env_event_attrs(auth_env: AuthEnvTelemetryMetadata) -> dict[str, Any]:
+    return {
+        "auth.env_openai_api_key_present": auth_env.openai_api_key_env_present,
+        "auth.env_codex_api_key_present": auth_env.codex_api_key_env_present,
+        "auth.env_codex_api_key_enabled": auth_env.codex_api_key_env_enabled,
+        "auth.env_provider_key_name": auth_env.provider_env_key_name,
+        "auth.env_provider_key_present": auth_env.provider_env_key_present,
+        "auth.env_refresh_token_url_override_present": auth_env.refresh_token_url_override_present,
+    }
+
+
+def _event_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _duration_to_millis(value: int | float) -> int:
+    return int(value)
+
+
+def _rust_line_count(value: str) -> int:
+    if value == "":
+        return 0
+    return len(value.splitlines())
+
+
+def _user_input_kind(item: Any) -> str:
+    if isinstance(item, Mapping):
+        kind = item.get("type") or item.get("kind")
+        if kind in {"Text", "text"}:
+            return "text"
+        if kind in {"Image", "image"}:
+            return "image"
+        if kind in {"LocalImage", "local_image", "localImage"}:
+            return "local_image"
+    kind = getattr(item, "type", None) or getattr(item, "kind", None)
+    if callable(kind):
+        kind = kind()
+    kind_text = str(kind or "").lower()
+    if kind_text in {"text", "userinput.text"}:
+        return "text"
+    if kind_text in {"image", "userinput.image"}:
+        return "image"
+    if kind_text in {"localimage", "local_image", "userinput.localimage"}:
+        return "local_image"
+    if hasattr(item, "text"):
+        return "text"
+    if hasattr(item, "image_url"):
+        return "image"
+    if hasattr(item, "path"):
+        return "local_image"
+    return ""
+
+
+def _user_input_text(item: Any) -> str:
+    if isinstance(item, Mapping):
+        return str(item.get("text", ""))
+    text = getattr(item, "text", "")
+    return str(text() if callable(text) else text)
 
 
 U64_MAX = (1 << 64) - 1
@@ -1142,9 +2108,6 @@ def _duration_from_ms_value(value: Any) -> int | None:
     if numeric < 0 or not math.isfinite(numeric):
         return None
     return min(U64_MAX, int(math.floor(numeric + 0.5)))
-
-
-OtelProvider = object
 
 SSE_UNKNOWN_KIND = "unknown"
 WEBSOCKET_UNKNOWN_KIND = "unknown"

@@ -10,11 +10,23 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from types import SimpleNamespace
 from typing import Any, Dict, Mapping, Optional, Protocol, Union
 
 from .._porting import RustTuiModule
 from ..token_usage import TokenUsage, TokenUsageInfo
 from .replay import ThreadItemRenderSource
+from .command_lifecycle import CommandLifecycleState
+from .status_surfaces import run_state_status_text
+from .status_state import TerminalTitleStatusKind
+from .streaming import StreamingWidgetState
+from .turn_runtime import (
+    ChatWidgetTurnRuntime,
+    RateLimitErrorKind as TurnRateLimitErrorKind,
+    TurnAbortReason,
+    app_server_rate_limit_error_kind,
+    is_app_server_cyber_policy_error,
+)
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -29,6 +41,7 @@ __all__ = [
     "ReplayKind",
     "RUST_MODULE",
     "ServerNotification",
+    "ChatWidgetProtocolRuntime",
     "TurnCompletedNotification",
     "TurnStatus",
     "handle_item_completed_notification",
@@ -72,6 +85,153 @@ class ItemStartedNotification:
 class ItemCompletedNotification:
     item: Any
     turn_id: str
+
+
+class ChatWidgetProtocolRuntime:
+    """Compose Rust ``chatwidget::protocol`` with turn/status/streaming state.
+
+    Rust ``protocol.rs`` is the point where server notifications become
+    ``ChatWidget`` lifecycle and streaming calls.  This lightweight runtime is
+    intentionally scoped to that Rust boundary: it exposes the callbacks
+    consumed by ``handle_server_notification`` and delegates their effects to
+    the already-ported ``turn_runtime`` and ``streaming`` modules.
+    """
+
+    def __init__(self) -> None:
+        self.turn = ChatWidgetTurnRuntime()
+        self.streaming = StreamingWidgetState()
+        self.command_lifecycle = CommandLifecycleState()
+        self.config = SimpleNamespace(show_raw_agent_reasoning=False)
+        self.turn_lifecycle = self.turn.turn_lifecycle
+        self.last_non_retry_error: Optional[Any] = None
+        self.last_rendered_user_message_display: Optional[Any] = None
+        self.active_side_conversation = False
+        self._assistant_text = ""
+
+    def handle(self, notification: Union[ServerNotification, Mapping[str, Any], Any]) -> None:
+        handle_server_notification(self, notification, None)
+
+    def on_task_started(self) -> None:
+        self.turn.on_task_started()
+        self._sync_streaming_task_state()
+        self.streaming.status_state.terminal_title_status_kind = TerminalTitleStatusKind.Working
+        self.streaming.set_status_header("Working")
+        self.streaming.request_redraw()
+
+    def on_agent_message_delta(self, delta: str | None) -> None:
+        text = "" if delta is None else str(delta)
+        self._assistant_text += text
+        self._sync_streaming_task_state()
+        self.streaming.on_agent_message_delta(text)
+
+    def on_command_execution_started(self, item: Any) -> None:
+        self.command_lifecycle.on_command_execution_started(item)
+        self.streaming.had_work_activity = True
+        self.streaming.request_redraw()
+
+    def on_command_execution_completed(self, item: Any) -> None:
+        self.command_lifecycle.on_command_execution_completed(item)
+        self.streaming.had_work_activity = True
+        self.streaming.request_redraw()
+
+    def on_exec_command_output_delta(self, call_id: str, delta: str) -> bool:
+        handled = self.command_lifecycle.on_exec_command_output_delta(call_id, delta)
+        if handled:
+            self.streaming.request_redraw()
+        return handled
+
+    def on_agent_reasoning_delta(self, delta: str | None) -> None:
+        self._sync_streaming_task_state()
+        self.streaming.on_agent_reasoning_delta("" if delta is None else str(delta))
+
+    def on_reasoning_section_break(self) -> None:
+        self.streaming.on_reasoning_section_break()
+
+    def handle_thread_item(self, item: Any, _turn_id: str | None, _source: ThreadItemRenderSource) -> None:
+        kind = _kind(item)
+        if kind != "CommandExecution":
+            return
+        if _status_name(_get(item, "status", None)) == "InProgress":
+            self.on_command_execution_started(item)
+        else:
+            self.on_command_execution_completed(item)
+
+    def on_task_complete(
+        self,
+        last_agent_message: Optional[str],
+        duration_ms: Optional[int],
+        from_replay: bool,
+    ) -> None:
+        self.streaming.flush_answer_stream_with_separator()
+        self.streaming.on_agent_reasoning_final()
+        self.turn.on_task_complete(last_agent_message, duration_ms, from_replay)
+        self._sync_streaming_task_state()
+
+    def finalize_turn(self) -> None:
+        self.streaming.flush_answer_stream_with_separator()
+        self.streaming.on_agent_reasoning_final()
+        self.turn.finalize_turn()
+        self._sync_streaming_task_state()
+
+    def request_redraw(self) -> None:
+        self.turn.request_redraw()
+        self.streaming.request_redraw()
+
+    def maybe_send_next_queued_input(self) -> bool:
+        return self.turn.maybe_send_next_queued_input()
+
+    def handle_non_retry_error(self, message: str, codex_error_info: Any = None) -> None:
+        rate_limit_kind = app_server_rate_limit_error_kind(codex_error_info)
+        should_flush = (
+            not is_app_server_cyber_policy_error(codex_error_info)
+            and rate_limit_kind is not TurnRateLimitErrorKind.SERVER_OVERLOADED
+        )
+        if should_flush:
+            self.streaming.flush_answer_stream_with_separator()
+        else:
+            self.streaming.clear_active_stream_tail()
+            self.streaming.stream_controller = None
+            self.streaming.adaptive_chunking_resets += 1
+        self.turn.handle_non_retry_error(message, codex_error_info)
+        self._sync_streaming_task_state()
+
+    def on_stream_error(self, message: str, additional_details: str | None = None) -> None:
+        self.streaming.on_stream_error(message, additional_details)
+
+    def on_interrupted_turn(self, reason: str) -> None:
+        self.streaming.clear_active_stream_tail()
+        self.streaming.stream_controller = None
+        self.streaming.adaptive_chunking_resets += 1
+        abort_reason = TurnAbortReason.BUDGET_LIMITED if str(reason) == "BudgetLimited" else TurnAbortReason.OTHER
+        message = self.turn.interrupted_turn_message(abort_reason)
+        self.turn.finalize_turn()
+        self.turn.add_to_history({"kind": "error", "message": message})
+        self.turn.request_redraw()
+        self._sync_streaming_task_state()
+
+    def restore_retry_status_header_if_present(self) -> bool:
+        header = self.streaming.status_state.take_retry_status_header()
+        if header is None:
+            return False
+        self.streaming.set_status_header(header)
+        return True
+
+    def run_state_status_text(self) -> str:
+        return run_state_status_text(
+            self.streaming.status_state.terminal_title_status_kind,
+            task_running=self.turn.bottom_pane.task_running,
+            mcp_startup_active=self.turn.mcp_startup_status is not None,
+        )
+
+    def assistant_text(self) -> str:
+        if self.streaming.consolidation_events:
+            kind, source = self.streaming.consolidation_events[-1]
+            if kind == "agent_message":
+                return source
+        return self._assistant_text
+
+    def _sync_streaming_task_state(self) -> None:
+        self.streaming.task_running = self.turn.bottom_pane.task_running
 
 
 class ProtocolWidget(Protocol):
@@ -138,6 +298,8 @@ def handle_server_notification(
         handle_item_completed_notification(widget, payload, replay_kind)
     elif kind == "AgentMessageDelta":
         _call(widget, "on_agent_message_delta", _get(payload, "delta"))
+    elif kind == "ResponseStarted":
+        _call_optional(widget, "request_redraw")
     elif kind == "PlanDelta":
         _call(widget, "on_plan_delta", _get(payload, "delta"))
     elif kind == "ReasoningSummaryTextDelta":

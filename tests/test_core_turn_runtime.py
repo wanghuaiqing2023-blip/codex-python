@@ -1454,7 +1454,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 ),
             )
 
-        await run_user_turn_sampling_from_session(
+        result = await run_user_turn_sampling_from_session(
             session,
             (),
             client,
@@ -2840,7 +2840,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 ),
             )
 
-        await run_user_turn_sampling_from_session(
+        result = await run_user_turn_sampling_from_session(
             session,
             (UserInput.text_input("hello"),),
             client,
@@ -3144,6 +3144,157 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(delta_events[0].payload.thread_id, "thread-1")
         self.assertEqual(delta_events[0].payload.turn_id, "turn-1")
         self.assertEqual(delta_events[0].payload.delta, "hello")
+
+    async def test_run_user_turn_sampling_live_stream_observer_emits_before_sampler_returns(self) -> None:
+        # Rust-derived contract:
+        # codex-core/src/session/turn.rs handles ResponseEvent::OutputTextDelta
+        # by immediately sending EventMsg::AgentMessageContentDelta through
+        # sess.send_event while the stream is still being consumed.
+        session = Session()
+        session.turn_context.turn_id = "turn-1"
+        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        observed_order = []
+        pending_assistant = ResponseItem.message("assistant", (), id="msg-1")
+        assistant = ResponseItem.message("assistant", (ContentItem.output_text("live"),), id="msg-1")
+
+        async def sampler(request):
+            await request.stream_event_observer({"type": "output_item_added", "item": pending_assistant})
+            await request.stream_event_observer({"type": "output_text_delta", "delta": "live"})
+            observed_order.append(("during_sampler", tuple(event.type for event in session.emitted_events)))
+            return SimpleNamespace(
+                response_items=(assistant,),
+                stream_events=(
+                    {"type": "output_item_added", "item": pending_assistant},
+                    {"type": "output_text_delta", "delta": "live"},
+                    {"type": "output_item_done", "item": assistant},
+                    {"type": "completed", "response_id": "resp-1", "end_turn": True},
+                ),
+                live_stream_events_emitted=True,
+            )
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(observed_order, [("during_sampler", ("task_started", "agent_message_content_delta"))])
+        self.assertEqual(
+            tuple(event.payload.delta for event in events_of_type(session, "agent_message_content_delta")),
+            ("live",),
+        )
+        self.assertEqual(
+            tuple(record["visible_text_delta"] for record in result.stream_runtime_state_summary["assistant_text_deltas"]),
+            ("live",),
+        )
+
+    async def test_run_user_turn_sampling_emits_response_created_live_status(self) -> None:
+        # Rust source: codex-core records response.created as a first-token
+        # timing event while streaming. Contract: Python's TUI-facing session
+        # lane gets an early non-transcript event so complex turns visibly move
+        # out of "waiting for model" before text deltas arrive.
+        session = Session()
+        session.turn_context.turn_id = "turn-1"
+        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        observed_order = []
+
+        async def sampler(request):
+            await request.stream_event_observer({"type": "created"})
+            observed_order.append(("during_sampler", tuple(event.type for event in session.emitted_events)))
+            assistant = ResponseItem.message("assistant", (ContentItem.output_text("done"),), id="msg-1")
+            return SimpleNamespace(
+                response_items=(assistant,),
+                stream_events=(
+                    {"type": "created"},
+                    {"type": "output_item_done", "item": assistant},
+                    {"type": "completed", "response_id": "resp-1", "end_turn": True},
+                ),
+                live_stream_events_emitted=True,
+            )
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(observed_order, [("during_sampler", ("task_started", "response_created"))])
+        self.assertEqual(tuple(event.type for event in events_of_type(session, "response_created")), ("response_created",))
+        self.assertEqual(result.response_items[0].content[0].text, "done")
+
+    async def test_run_user_turn_sampling_emits_function_call_item_done_live_status(self) -> None:
+        # Rust-derived contract:
+        # codex-core turns completed tool-call output items into live turn
+        # lifecycle activity before the final assistant answer. The TUI app
+        # consumes this as CommandExecution progress so tool-heavy turns do not
+        # look idle while waiting for the first assistant text delta.
+        session = Session()
+        session.turn_context.turn_id = "turn-1"
+        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        tool_call = ResponseItem.function_call(
+            "exec_command",
+            '{"cmd":"Get-Location","workdir":"C:\\\\repo"}',
+            "call-1",
+            id="item-1",
+        )
+        assistant = ResponseItem.message("assistant", (ContentItem.output_text("done"),), id="msg-1")
+
+        async def sampler(request):
+            await request.stream_event_observer({"type": "output_item_done", "item": tool_call})
+            return SimpleNamespace(
+                response_items=(assistant,),
+                stream_events=(
+                    {"type": "output_item_done", "item": tool_call},
+                    {"type": "output_item_done", "item": assistant},
+                    {"type": "completed", "response_id": "resp-1", "end_turn": True},
+                ),
+                live_stream_events_emitted=True,
+            )
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        tool_events = events_of_type(session, "response_output_item_done")
+        self.assertEqual(len(tool_events), 1)
+        self.assertEqual(tool_events[0].payload["item"]["name"], "exec_command")
+        self.assertEqual(tool_events[0].payload["item"]["call_id"], "call-1")
+        self.assertEqual(result.response_items[0].content[0].text, "done")
 
     async def test_run_user_turn_sampling_parses_streamed_citations_across_boundaries(self) -> None:
         session = Session()

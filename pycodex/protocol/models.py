@@ -634,8 +634,6 @@ class ResponseInputItem:
         if self.type in {"function_call_output", "mcp_tool_call_output", "custom_tool_call_output"}:
             if isinstance(self.output, FunctionCallOutputPayload):
                 data["output"] = self.output.to_json()
-                if self.output.success is not None:
-                    data["success"] = self.output.success
             else:
                 data["output"] = self.output
         if self.type == "custom_tool_call_output" and self.name is not None:
@@ -1213,15 +1211,15 @@ class ResponseItem:
             data["content"] = [item.to_mapping() for item in self.content]
         if self.phase is not None:
             data["phase"] = self.phase.value
-        if self.summary:
+        if self.type == "reasoning":
+            data["summary"] = [item.to_mapping() for item in self.summary]
+        elif self.summary:
             data["summary"] = [item.to_mapping() for item in self.summary]
         if should_serialize_reasoning_content(self.reasoning_content):
             data["content"] = [item.to_mapping() for item in self.reasoning_content or ()]
         if self.output is not None:
             if isinstance(self.output, FunctionCallOutputPayload):
                 data["output"] = self.output.to_json()
-                if self.output.success is not None:
-                    data["success"] = self.output.success
             else:
                 data["output"] = self.output
         if self.type == "tool_search_output" or self.tools:

@@ -1,399 +1,446 @@
-"""Python interface scaffold for Rust ``codex-tui::streaming::controller``.
+"""Semantic port of Rust ``codex-tui::streaming::controller``.
 
-Upstream source: ``codex/codex-rs/tui/src/streaming/controller.rs``.
-Concrete behavior should be filled in from the Rust source and tests.
+This module owns the two-region streaming controller contract: complete source
+lines are queued into a stable region, table-shaped regions remain mutable tail
+until finalization, and resize/render-mode changes rebuild pending queue state
+without replaying already emitted lines.  Python keeps markdown rendering as a
+semantic plain-line dependency boundary; the controller state machine mirrors
+Rust's ownership.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
-from typing import Any, Protocol
+from pathlib import Path
+from typing import Iterable, Optional, Sequence
 
-from .._porting import RustTuiModule, not_ported
+from .._porting import RustTuiModule
+from ..history_cell import HistoryRenderMode
+from ..history_cell.messages import AgentMessageCell
+from ..history_cell.plans import ProposedPlanStreamCell
+from ..line_truncation import Line
+from ..markdown_stream import MarkdownStreamCollector
+from ..terminal_hyperlinks import HyperlinkLine, line_text, plain_hyperlink_lines, visible_lines
+from . import StreamState, test_cwd as _streaming_test_cwd
+from .table_holdback import TableHoldbackScanner, TableHoldbackState, table_holdback_state
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="streaming::controller", source="codex/codex-rs/tui/src/streaming/controller.rs")
 
-@dataclass
-class StreamCore:
-    """Python boundary for Rust ``streaming::controller::StreamCore``."""
-    _payload: Any = None
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="streaming::controller",
+    source="codex/codex-rs/tui/src/streaming/controller.rs",
+    status="complete",
+)
 
-    def new(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamCore.new")
-
-    def push_delta(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamCore.push_delta")
-
-    def finalize_remaining(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamCore.finalize_remaining")
-
-    def tick(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamCore.tick")
-
-    def tick_batch(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamCore.tick_batch")
-
-    def is_idle(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamCore.is_idle")
-
-    def queued_lines(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamCore.queued_lines")
-
-    def oldest_queued_age(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamCore.oldest_queued_age")
-
-    def current_tail_lines(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamCore.current_tail_lines")
-
-    def has_tail(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamCore.has_tail")
-
-    def set_width(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamCore.set_width")
-
-    def reset(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamCore.reset")
-
-    def render_source(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamCore.render_source")
-
-    def recompute_streaming_render(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamCore.recompute_streaming_render")
-
-    def set_render_mode(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamCore.set_render_mode")
-
-    def compute_target_stable_len(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamCore.compute_target_stable_len")
-
-    def sync_stable_queue(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamCore.sync_stable_queue")
-
-    def rebuild_stable_queue_from_render(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamCore.rebuild_stable_queue_from_render")
-
-    def active_tail_budget_lines(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamCore.active_tail_budget_lines")
-
-    def tail_budget_from_source_start(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamCore.tail_budget_from_source_start")
-
-    def stable_prefix_len_for_source_start(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamCore.stable_prefix_len_for_source_start")
 
 @dataclass
 class StablePrefixLenCache:
-    """Python boundary for Rust ``streaming::controller::StablePrefixLenCache``."""
-    _payload: Any = None
+    source_start: int
+    width: Optional[int]
+    stable_prefix_len: int
+
+
+@dataclass
+class StreamCore:
+    state: StreamState
+    width: Optional[int]
+    raw_source: str
+    rendered_lines: list[HyperlinkLine]
+    enqueued_stable_len: int
+    emitted_stable_len: int
+    cwd: Path
+    render_mode: HistoryRenderMode
+    stable_prefix_len_cache: Optional[StablePrefixLenCache]
+    holdback_scanner: TableHoldbackScanner
+
+    @classmethod
+    def new(
+        cls,
+        width: Optional[int],
+        cwd: str | Path,
+        render_mode: HistoryRenderMode = HistoryRenderMode.RICH,
+    ) -> "StreamCore":
+        cwd_path = Path(cwd)
+        return cls(
+            state=StreamState.new(width, cwd_path, collector=MarkdownStreamCollector.new(width, cwd_path)),
+            width=width,
+            raw_source="",
+            rendered_lines=[],
+            enqueued_stable_len=0,
+            emitted_stable_len=0,
+            cwd=cwd_path,
+            render_mode=render_mode,
+            stable_prefix_len_cache=None,
+            holdback_scanner=TableHoldbackScanner.new(),
+        )
+
+    def push_delta(self, delta: str) -> bool:
+        if delta:
+            self.state.has_seen_delta = True
+        self.state.collector.push_delta(delta)
+        if "\n" not in delta:
+            return False
+        committed_source = self.state.collector.commit_complete_source()
+        if committed_source is None:
+            return False
+        self.raw_source += committed_source
+        self.holdback_scanner.push_source_chunk(committed_source)
+        self.recompute_streaming_render()
+        return self.sync_stable_queue()
+
+    def finalize_remaining(self) -> list[HyperlinkLine]:
+        remainder = self.state.collector.finalize_and_drain_source()
+        if remainder:
+            self.raw_source += remainder
+            self.holdback_scanner.push_source_chunk(remainder)
+        rendered = self.render_source(self.raw_source)
+        if self.emitted_stable_len >= len(rendered):
+            return []
+        return rendered[self.emitted_stable_len :]
+
+    def tick(self) -> list[HyperlinkLine]:
+        step = self.state.step()
+        self.emitted_stable_len += len(step)
+        return list(step)
+
+    def tick_batch(self, max_lines: int) -> list[HyperlinkLine]:
+        if max_lines <= 0:
+            return []
+        step = self.state.drain_n(max_lines)
+        self.emitted_stable_len += len(step)
+        return list(step)
+
+    def is_idle(self) -> bool:
+        return self.state.is_idle()
+
+    def queued_lines(self) -> int:
+        return self.state.queued_len()
+
+    def oldest_queued_age(self, now: Optional[float] = None) -> Optional[float]:
+        return self.state.oldest_queued_age(now)
+
+    def current_tail_lines(self) -> list[HyperlinkLine]:
+        start = min(self.enqueued_stable_len, len(self.rendered_lines))
+        return self.rendered_lines[start:]
+
+    def has_tail(self) -> bool:
+        return self.enqueued_stable_len < len(self.rendered_lines)
+
+    def set_width(self, width: Optional[int]) -> None:
+        if self.width == width:
+            return
+        had_pending_queue = self.state.queued_len() > 0
+        had_live_tail = self.has_tail()
+        self.width = width
+        self.state.collector.set_width(width)
+        if not self.raw_source:
+            return
+        self.recompute_streaming_render()
+        self.emitted_stable_len = min(self.emitted_stable_len, len(self.rendered_lines))
+        if had_pending_queue and self.emitted_stable_len == len(self.rendered_lines) and self.emitted_stable_len > 0:
+            self.emitted_stable_len -= 1
+        self.state.clear_queue()
+        if self.emitted_stable_len > 0 and not had_pending_queue and not had_live_tail:
+            self.enqueued_stable_len = len(self.rendered_lines)
+            return
+        self.rebuild_stable_queue_from_render()
+
+    def reset(self) -> None:
+        self.state.clear()
+        self.raw_source = ""
+        self.rendered_lines = []
+        self.enqueued_stable_len = 0
+        self.emitted_stable_len = 0
+        self.stable_prefix_len_cache = None
+        self.holdback_scanner.reset()
+
+    def render_source(self, source: str) -> list[HyperlinkLine]:
+        if self.render_mode is HistoryRenderMode.RAW:
+            return plain_hyperlink_lines(_raw_source_lines(source))
+        return plain_hyperlink_lines(_semantic_markdown_lines(source))
+
+    def recompute_streaming_render(self) -> None:
+        self.rendered_lines = self.render_source(self.raw_source)
+
+    def set_render_mode(self, render_mode: HistoryRenderMode) -> None:
+        if self.render_mode == render_mode:
+            return
+        had_pending_queue = self.state.queued_len() > 0
+        had_live_tail = self.has_tail()
+        self.render_mode = render_mode
+        if not self.raw_source:
+            return
+        self.recompute_streaming_render()
+        self.emitted_stable_len = min(self.emitted_stable_len, len(self.rendered_lines))
+        if had_pending_queue and self.emitted_stable_len == len(self.rendered_lines) and self.emitted_stable_len > 0:
+            self.emitted_stable_len -= 1
+        self.state.clear_queue()
+        if self.emitted_stable_len > 0 and not had_pending_queue and not had_live_tail:
+            self.enqueued_stable_len = len(self.rendered_lines)
+            return
+        self.rebuild_stable_queue_from_render()
+
+    def compute_target_stable_len(self) -> int:
+        tail_budget = self.active_tail_budget_lines()
+        return max(len(self.rendered_lines) - tail_budget, self.emitted_stable_len)
+
+    def sync_stable_queue(self) -> bool:
+        target = self.compute_target_stable_len()
+        if target < self.enqueued_stable_len:
+            self.state.clear_queue()
+            if self.emitted_stable_len < target:
+                self.state.enqueue(self.rendered_lines[self.emitted_stable_len : target])
+            self.enqueued_stable_len = target
+            return self.state.queued_len() > 0
+        if target == self.enqueued_stable_len:
+            return False
+        self.state.enqueue(self.rendered_lines[self.enqueued_stable_len : target])
+        self.enqueued_stable_len = target
+        return True
+
+    def rebuild_stable_queue_from_render(self) -> None:
+        target = self.compute_target_stable_len()
+        self.state.clear_queue()
+        if self.emitted_stable_len < target:
+            self.state.enqueue(self.rendered_lines[self.emitted_stable_len : target])
+        self.enqueued_stable_len = target
+
+    def active_tail_budget_lines(self) -> int:
+        if self.render_mode is HistoryRenderMode.RAW:
+            return 0
+        state = self.holdback_scanner.state()
+        if state.kind == "Confirmed" and state.table_start is not None:
+            return self.tail_budget_from_source_start(state.table_start)
+        if state.kind == "PendingHeader" and state.header_start is not None:
+            return self.tail_budget_from_source_start(state.header_start)
+        return 0
+
+    def tail_budget_from_source_start(self, source_start: int) -> int:
+        if source_start <= 0:
+            return len(self.rendered_lines)
+        prefix_len = self.stable_prefix_len_for_source_start(min(source_start, len(self.raw_source.encode("utf-8"))))
+        return max(0, len(self.rendered_lines) - prefix_len)
+
+    def stable_prefix_len_for_source_start(self, source_start: int) -> int:
+        if (
+            self.stable_prefix_len_cache is not None
+            and self.stable_prefix_len_cache.source_start == source_start
+            and self.stable_prefix_len_cache.width == self.width
+        ):
+            return self.stable_prefix_len_cache.stable_prefix_len
+        prefix = _slice_by_byte_range(self.raw_source, 0, source_start)
+        stable_prefix_len = len(self.render_source(prefix))
+        self.stable_prefix_len_cache = StablePrefixLenCache(source_start, self.width, stable_prefix_len)
+        return stable_prefix_len
+
 
 @dataclass
 class StreamController:
-    """Python boundary for Rust ``streaming::controller::StreamController``."""
-    _payload: Any = None
+    core: StreamCore
+    header_emitted: bool = False
 
-    def new(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamController.new")
+    @classmethod
+    def new(
+        cls,
+        width: Optional[int],
+        cwd: str | Path,
+        render_mode: HistoryRenderMode = HistoryRenderMode.RICH,
+    ) -> "StreamController":
+        return cls(StreamCore.new(width, cwd, render_mode))
 
-    def push(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamController.push")
+    def push(self, delta: str) -> bool:
+        return self.core.push_delta(delta)
 
-    def finalize(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamController.finalize")
+    def finalize(self) -> tuple[Optional[AgentMessageCell], str]:
+        remaining = self.core.finalize_remaining()
+        raw_source = self.core.raw_source
+        self.core.reset()
+        if not remaining:
+            return None, raw_source
+        cell = self.emit(remaining)
+        self.header_emitted = False
+        return cell, raw_source
 
-    def on_commit_tick(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamController.on_commit_tick")
+    def on_commit_tick(self) -> tuple[Optional[AgentMessageCell], bool]:
+        return self._emit_tick(self.core.tick())
 
-    def on_commit_tick_batch(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamController.on_commit_tick_batch")
+    def on_commit_tick_batch(self, max_lines: int) -> tuple[Optional[AgentMessageCell], bool]:
+        return self._emit_tick(self.core.tick_batch(max_lines))
 
-    def queued_lines(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamController.queued_lines")
+    def _emit_tick(self, lines: list[HyperlinkLine]) -> tuple[Optional[AgentMessageCell], bool]:
+        cell = self.emit(lines) if lines else None
+        return cell, self.core.is_idle()
 
-    def oldest_queued_age(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamController.oldest_queued_age")
+    def queued_lines(self) -> int:
+        return self.core.queued_lines()
 
-    def current_tail_lines(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamController.current_tail_lines")
+    def oldest_queued_age(self, now: Optional[float] = None) -> Optional[float]:
+        return self.core.oldest_queued_age(now)
 
-    def tail_starts_stream(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamController.tail_starts_stream")
+    def current_tail_lines(self) -> list[HyperlinkLine]:
+        return self.core.current_tail_lines()
 
-    def has_live_tail(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamController.has_live_tail")
+    def tail_starts_stream(self) -> bool:
+        return not self.header_emitted and self.core.emitted_stable_len == 0 and self.core.enqueued_stable_len == 0
 
-    def clear_queue(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamController.clear_queue")
+    def has_live_tail(self) -> bool:
+        return self.core.has_tail()
 
-    def set_width(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamController.set_width")
+    def clear_queue(self) -> None:
+        self.core.state.clear_queue()
 
-    def set_render_mode(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamController.set_render_mode")
+    def set_width(self, width: Optional[int]) -> None:
+        self.core.set_width(width)
 
-    def emit(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "StreamController.emit")
+    def set_render_mode(self, render_mode: HistoryRenderMode) -> None:
+        self.core.set_render_mode(render_mode)
+
+    def emit(self, lines: Iterable[HyperlinkLine]) -> AgentMessageCell:
+        is_first_line = not self.header_emitted
+        self.header_emitted = True
+        return AgentMessageCell.new_hyperlink_lines(lines, is_first_line)
+
 
 @dataclass
 class PlanStreamController:
-    """Python boundary for Rust ``streaming::controller::PlanStreamController``."""
-    _payload: Any = None
+    core: StreamCore
 
-    def new(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "PlanStreamController.new")
+    @classmethod
+    def new(
+        cls,
+        width: Optional[int],
+        cwd: str | Path,
+        render_mode: HistoryRenderMode = HistoryRenderMode.RICH,
+    ) -> "PlanStreamController":
+        return cls(StreamCore.new(width, cwd, render_mode))
 
-    def push(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "PlanStreamController.push")
+    def push(self, delta: str) -> bool:
+        return self.core.push_delta(delta)
 
-    def finalize(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "PlanStreamController.finalize")
+    def finalize(self) -> tuple[Optional[ProposedPlanStreamCell], str]:
+        remaining = self.core.finalize_remaining()
+        raw_source = self.core.raw_source
+        self.core.reset()
+        if not remaining:
+            return None, raw_source
+        return self.emit(remaining), raw_source
 
-    def on_commit_tick(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "PlanStreamController.on_commit_tick")
+    def on_commit_tick(self) -> tuple[Optional[ProposedPlanStreamCell], bool]:
+        return self._emit_tick(self.core.tick())
 
-    def on_commit_tick_batch(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "PlanStreamController.on_commit_tick_batch")
+    def on_commit_tick_batch(self, max_lines: int) -> tuple[Optional[ProposedPlanStreamCell], bool]:
+        return self._emit_tick(self.core.tick_batch(max_lines))
 
-    def queued_lines(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "PlanStreamController.queued_lines")
+    def _emit_tick(self, lines: list[HyperlinkLine]) -> tuple[Optional[ProposedPlanStreamCell], bool]:
+        return (self.emit(lines) if lines else None), self.core.is_idle()
 
-    def has_live_tail(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "PlanStreamController.has_live_tail")
+    def queued_lines(self) -> int:
+        return self.core.queued_lines()
 
-    def current_tail_lines(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "PlanStreamController.current_tail_lines")
+    def has_live_tail(self) -> bool:
+        return self.core.has_tail()
 
-    def tail_starts_stream(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "PlanStreamController.tail_starts_stream")
+    def current_tail_lines(self) -> list[HyperlinkLine]:
+        return self.core.current_tail_lines()
 
-    def current_tail_display_lines(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "PlanStreamController.current_tail_display_lines")
+    def tail_starts_stream(self) -> bool:
+        return self.core.emitted_stable_len == 0 and self.core.enqueued_stable_len == 0
 
-    def oldest_queued_age(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "PlanStreamController.oldest_queued_age")
+    def current_tail_display_lines(self) -> list[Line]:
+        return self.render_display_lines(self.current_tail_lines())
 
-    def clear_queue(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "PlanStreamController.clear_queue")
+    def oldest_queued_age(self, now: Optional[float] = None) -> Optional[float]:
+        return self.core.oldest_queued_age(now)
 
-    def set_width(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "PlanStreamController.set_width")
+    def clear_queue(self) -> None:
+        self.core.state.clear_queue()
 
-    def set_render_mode(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "PlanStreamController.set_render_mode")
+    def set_width(self, width: Optional[int]) -> None:
+        self.core.set_width(width)
 
-    def emit(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "PlanStreamController.emit")
+    def set_render_mode(self, render_mode: HistoryRenderMode) -> None:
+        self.core.set_render_mode(render_mode)
 
-    def render_display_lines(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "PlanStreamController.render_display_lines")
+    def emit(self, lines: Iterable[HyperlinkLine]) -> ProposedPlanStreamCell:
+        return ProposedPlanStreamCell(list(lines), stream_continuation=not self.tail_starts_stream())
 
-def test_cwd(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::test_cwd``."""
-    return not_ported(RUST_MODULE, "test_cwd")
+    def render_display_lines(self, lines: Iterable[HyperlinkLine]) -> list[Line]:
+        return visible_lines(lines)
 
-def stream_controller(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::stream_controller``."""
-    return not_ported(RUST_MODULE, "stream_controller")
 
-def plan_stream_controller(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::plan_stream_controller``."""
-    return not_ported(RUST_MODULE, "plan_stream_controller")
+def test_cwd() -> Path:
+    return _streaming_test_cwd()
 
-def lines_to_plain_strings(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::lines_to_plain_strings``."""
-    return not_ported(RUST_MODULE, "lines_to_plain_strings")
 
-def hyperlink_lines_to_plain_strings(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::hyperlink_lines_to_plain_strings``."""
-    return not_ported(RUST_MODULE, "hyperlink_lines_to_plain_strings")
+test_cwd.__test__ = False
 
-def collect_streamed_lines(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::collect_streamed_lines``."""
-    return not_ported(RUST_MODULE, "collect_streamed_lines")
 
-def collect_plan_streamed_lines(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::collect_plan_streamed_lines``."""
-    return not_ported(RUST_MODULE, "collect_plan_streamed_lines")
+def stream_controller(width: Optional[int] = None) -> StreamController:
+    return StreamController.new(width, test_cwd(), HistoryRenderMode.RICH)
 
-def controller_set_width_rebuilds_queued_lines(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::controller_set_width_rebuilds_queued_lines``."""
-    return not_ported(RUST_MODULE, "controller_set_width_rebuilds_queued_lines")
 
-def controller_set_width_no_duplicate_after_emit(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::controller_set_width_no_duplicate_after_emit``."""
-    return not_ported(RUST_MODULE, "controller_set_width_no_duplicate_after_emit")
+def plan_stream_controller(width: Optional[int] = None) -> PlanStreamController:
+    return PlanStreamController.new(width, test_cwd(), HistoryRenderMode.RICH)
 
-def controller_tick_batch_zero_is_noop(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::controller_tick_batch_zero_is_noop``."""
-    return not_ported(RUST_MODULE, "controller_tick_batch_zero_is_noop")
 
-def controller_has_live_tail_reflects_tail_presence(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::controller_has_live_tail_reflects_tail_presence``."""
-    return not_ported(RUST_MODULE, "controller_has_live_tail_reflects_tail_presence")
+def lines_to_plain_strings(lines: Iterable[Line]) -> list[str]:
+    return [line_text(line) for line in lines]
 
-def plan_controller_has_live_tail_reflects_tail_presence(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::plan_controller_has_live_tail_reflects_tail_presence``."""
-    return not_ported(RUST_MODULE, "plan_controller_has_live_tail_reflects_tail_presence")
 
-def controller_live_tail_keeps_uncommitted_table_cell_newline_gated(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::controller_live_tail_keeps_uncommitted_table_cell_newline_gated``."""
-    return not_ported(RUST_MODULE, "controller_live_tail_keeps_uncommitted_table_cell_newline_gated")
-
-def controller_live_tail_requires_table_holdback_state(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::controller_live_tail_requires_table_holdback_state``."""
-    return not_ported(RUST_MODULE, "controller_live_tail_requires_table_holdback_state")
-
-def controller_live_tail_rerenders_table_tail_after_resize(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::controller_live_tail_rerenders_table_tail_after_resize``."""
-    return not_ported(RUST_MODULE, "controller_live_tail_rerenders_table_tail_after_resize")
-
-def controller_set_width_partial_drain_no_lost_lines(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::controller_set_width_partial_drain_no_lost_lines``."""
-    return not_ported(RUST_MODULE, "controller_set_width_partial_drain_no_lost_lines")
-
-def controller_set_width_partial_drain_keeps_pending_queue(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::controller_set_width_partial_drain_keeps_pending_queue``."""
-    return not_ported(RUST_MODULE, "controller_set_width_partial_drain_keeps_pending_queue")
-
-def controller_set_width_preserves_in_flight_tail(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::controller_set_width_preserves_in_flight_tail``."""
-    return not_ported(RUST_MODULE, "controller_set_width_preserves_in_flight_tail")
-
-def controller_set_width_preserves_table_tail_when_queue_is_empty(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::controller_set_width_preserves_table_tail_when_queue_is_empty``."""
-    return not_ported(RUST_MODULE, "controller_set_width_preserves_table_tail_when_queue_is_empty")
-
-def plan_controller_set_width_preserves_in_flight_tail(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::plan_controller_set_width_preserves_in_flight_tail``."""
-    return not_ported(RUST_MODULE, "plan_controller_set_width_preserves_in_flight_tail")
-
-def plan_controller_holds_table_header_as_live_tail(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::plan_controller_holds_table_header_as_live_tail``."""
-    return not_ported(RUST_MODULE, "plan_controller_holds_table_header_as_live_tail")
-
-def controller_loose_vs_tight_with_commit_ticks_matches_full(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::controller_loose_vs_tight_with_commit_ticks_matches_full``."""
-    return not_ported(RUST_MODULE, "controller_loose_vs_tight_with_commit_ticks_matches_full")
-
-def controller_streamed_table_matches_full_render_widths(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::controller_streamed_table_matches_full_render_widths``."""
-    return not_ported(RUST_MODULE, "controller_streamed_table_matches_full_render_widths")
-
-def controller_holds_blockquoted_table_tail_until_stable(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::controller_holds_blockquoted_table_tail_until_stable``."""
-    return not_ported(RUST_MODULE, "controller_holds_blockquoted_table_tail_until_stable")
-
-def controller_keeps_pre_table_lines_queued_when_table_is_confirmed(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::controller_keeps_pre_table_lines_queued_when_table_is_confirmed``."""
-    return not_ported(RUST_MODULE, "controller_keeps_pre_table_lines_queued_when_table_is_confirmed")
-
-def controller_set_width_during_confirmed_table_stream_matches_finalize_render(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::controller_set_width_during_confirmed_table_stream_matches_finalize_render``."""
-    return not_ported(RUST_MODULE, "controller_set_width_during_confirmed_table_stream_matches_finalize_render")
-
-def controller_does_not_hold_back_pipe_prose_without_table_delimiter(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::controller_does_not_hold_back_pipe_prose_without_table_delimiter``."""
-    return not_ported(RUST_MODULE, "controller_does_not_hold_back_pipe_prose_without_table_delimiter")
-
-def controller_does_not_stall_repeated_pipe_prose_paragraphs(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::controller_does_not_stall_repeated_pipe_prose_paragraphs``."""
-    return not_ported(RUST_MODULE, "controller_does_not_stall_repeated_pipe_prose_paragraphs")
-
-def controller_handles_table_immediately_after_heading(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::controller_handles_table_immediately_after_heading``."""
-    return not_ported(RUST_MODULE, "controller_handles_table_immediately_after_heading")
-
-def controller_renders_separators_for_multi_table_response_shape(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::controller_renders_separators_for_multi_table_response_shape``."""
-    return not_ported(RUST_MODULE, "controller_renders_separators_for_multi_table_response_shape")
-
-def controller_renders_separators_for_no_outer_pipes_table_shape(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::controller_renders_separators_for_no_outer_pipes_table_shape``."""
-    return not_ported(RUST_MODULE, "controller_renders_separators_for_no_outer_pipes_table_shape")
-
-def controller_stabilizes_first_no_outer_pipes_table_in_response(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::controller_stabilizes_first_no_outer_pipes_table_in_response``."""
-    return not_ported(RUST_MODULE, "controller_stabilizes_first_no_outer_pipes_table_in_response")
-
-def controller_stabilizes_two_column_no_outer_table_in_response(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::controller_stabilizes_two_column_no_outer_table_in_response``."""
-    return not_ported(RUST_MODULE, "controller_stabilizes_two_column_no_outer_table_in_response")
-
-def controller_converts_no_outer_table_between_preboxed_sections(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::controller_converts_no_outer_table_between_preboxed_sections``."""
-    return not_ported(RUST_MODULE, "controller_converts_no_outer_table_between_preboxed_sections")
-
-def controller_keeps_markdown_fenced_tables_mutable_until_finalize(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::controller_keeps_markdown_fenced_tables_mutable_until_finalize``."""
-    return not_ported(RUST_MODULE, "controller_keeps_markdown_fenced_tables_mutable_until_finalize")
-
-def controller_keeps_markdown_fenced_no_outer_tables_mutable_until_finalize(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::controller_keeps_markdown_fenced_no_outer_tables_mutable_until_finalize``."""
-    return not_ported(RUST_MODULE, "controller_keeps_markdown_fenced_no_outer_tables_mutable_until_finalize")
-
-def controller_live_view_matches_render_during_interleaved_table_streaming(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::controller_live_view_matches_render_during_interleaved_table_streaming``."""
-    return not_ported(RUST_MODULE, "controller_live_view_matches_render_during_interleaved_table_streaming")
-
-def finalized_stream_table_preserves_semantic_url_fragments(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::finalized_stream_table_preserves_semantic_url_fragments``."""
-    return not_ported(RUST_MODULE, "finalized_stream_table_preserves_semantic_url_fragments")
-
-def controller_keeps_non_markdown_fenced_tables_as_code(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::controller_keeps_non_markdown_fenced_tables_as_code``."""
-    return not_ported(RUST_MODULE, "controller_keeps_non_markdown_fenced_tables_as_code")
-
-def plan_controller_streamed_table_matches_final_render(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::plan_controller_streamed_table_matches_final_render``."""
-    return not_ported(RUST_MODULE, "plan_controller_streamed_table_matches_final_render")
-
-def finalized_plan_stream_preserves_semantic_url_fragments(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::finalized_plan_stream_preserves_semantic_url_fragments``."""
-    return not_ported(RUST_MODULE, "finalized_plan_stream_preserves_semantic_url_fragments")
-
-def plan_controller_streamed_markdown_fenced_table_matches_final_render(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::plan_controller_streamed_markdown_fenced_table_matches_final_render``."""
-    return not_ported(RUST_MODULE, "plan_controller_streamed_markdown_fenced_table_matches_final_render")
-
-def table_holdback_state_detects_header_plus_delimiter(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::table_holdback_state_detects_header_plus_delimiter``."""
-    return not_ported(RUST_MODULE, "table_holdback_state_detects_header_plus_delimiter")
-
-def table_holdback_state_detects_single_column_header_plus_delimiter(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::table_holdback_state_detects_single_column_header_plus_delimiter``."""
-    return not_ported(RUST_MODULE, "table_holdback_state_detects_single_column_header_plus_delimiter")
-
-def table_holdback_state_ignores_table_like_lines_inside_unclosed_long_fence(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::table_holdback_state_ignores_table_like_lines_inside_unclosed_long_fence``."""
-    return not_ported(RUST_MODULE, "table_holdback_state_ignores_table_like_lines_inside_unclosed_long_fence")
-
-def table_holdback_state_treats_indented_fence_text_as_plain_content(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::table_holdback_state_treats_indented_fence_text_as_plain_content``."""
-    return not_ported(RUST_MODULE, "table_holdback_state_treats_indented_fence_text_as_plain_content")
-
-def table_holdback_state_ignores_table_like_lines_inside_blockquoted_other_fence(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::table_holdback_state_ignores_table_like_lines_inside_blockquoted_other_fence``."""
-    return not_ported(RUST_MODULE, "table_holdback_state_ignores_table_like_lines_inside_blockquoted_other_fence")
-
-def incremental_holdback_matches_stateless_scan_per_chunk(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::incremental_holdback_matches_stateless_scan_per_chunk``."""
-    return not_ported(RUST_MODULE, "incremental_holdback_matches_stateless_scan_per_chunk")
-
-def incremental_holdback_detects_header_delimiter_across_chunk_boundary(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::incremental_holdback_detects_header_delimiter_across_chunk_boundary``."""
-    return not_ported(RUST_MODULE, "incremental_holdback_detects_header_delimiter_across_chunk_boundary")
-
-def controller_set_width_after_first_line_emit_does_not_requeue_first_line(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::controller_set_width_after_first_line_emit_does_not_requeue_first_line``."""
-    return not_ported(RUST_MODULE, "controller_set_width_after_first_line_emit_does_not_requeue_first_line")
-
-def controller_set_width_partial_wrapped_emit_preserves_remaining_content(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::controller_set_width_partial_wrapped_emit_preserves_remaining_content``."""
-    return not_ported(RUST_MODULE, "controller_set_width_partial_wrapped_emit_preserves_remaining_content")
-
-def controller_set_width_partial_wrapped_emit_keeps_wrapped_remainder(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``streaming::controller::controller_set_width_partial_wrapped_emit_keeps_wrapped_remainder``."""
-    return not_ported(RUST_MODULE, "controller_set_width_partial_wrapped_emit_keeps_wrapped_remainder")
+def hyperlink_lines_to_plain_strings(lines: Iterable[HyperlinkLine]) -> list[str]:
+    return [line_text(line) for line in lines]
+
+
+def collect_streamed_lines(deltas: Sequence[str], width: Optional[int] = None) -> list[str]:
+    ctrl = stream_controller(width)
+    out: list[str] = []
+    for delta in deltas:
+        ctrl.push(delta)
+        while True:
+            cell, idle = ctrl.on_commit_tick()
+            if cell is not None:
+                out.extend(lines_to_plain_strings(cell.display_lines(65535)))
+            if idle:
+                break
+    cell, _ = ctrl.finalize()
+    if cell is not None:
+        out.extend(lines_to_plain_strings(cell.display_lines(65535)))
+    return [line[2:] if line.startswith(("> ", "  ")) else line for line in out]
+
+
+def collect_plan_streamed_lines(deltas: Sequence[str], width: Optional[int] = None) -> list[str]:
+    ctrl = plan_stream_controller(width)
+    out: list[str] = []
+    for delta in deltas:
+        ctrl.push(delta)
+        while True:
+            cell, idle = ctrl.on_commit_tick()
+            if cell is not None:
+                out.extend(lines_to_plain_strings(cell.display_lines(65535)))
+            if idle:
+                break
+    cell, _ = ctrl.finalize()
+    if cell is not None:
+        out.extend(lines_to_plain_strings(cell.display_lines(65535)))
+    return out
+
+
+def _semantic_markdown_lines(source: str) -> list[Line]:
+    # This intentionally preserves source-line ordering and table-shaped text.
+    # Concrete ratatui Markdown rendering belongs to markdown/history-cell modules.
+    return _raw_source_lines(source)
+
+
+def _raw_source_lines(source: str) -> list[Line]:
+    return [Line.from_text(line) for line in source.splitlines()]
+
+
+def _slice_by_byte_range(text: str, start: int, end: int) -> str:
+    encoded = text.encode("utf-8")
+    start = max(0, min(start, len(encoded)))
+    end = max(start, min(end, len(encoded)))
+    return encoded[start:end].decode("utf-8", errors="ignore")
+
 
 __all__ = [
     "PlanStreamController",
@@ -403,54 +450,11 @@ __all__ = [
     "StreamCore",
     "collect_plan_streamed_lines",
     "collect_streamed_lines",
-    "controller_converts_no_outer_table_between_preboxed_sections",
-    "controller_does_not_hold_back_pipe_prose_without_table_delimiter",
-    "controller_does_not_stall_repeated_pipe_prose_paragraphs",
-    "controller_handles_table_immediately_after_heading",
-    "controller_has_live_tail_reflects_tail_presence",
-    "controller_holds_blockquoted_table_tail_until_stable",
-    "controller_keeps_markdown_fenced_no_outer_tables_mutable_until_finalize",
-    "controller_keeps_markdown_fenced_tables_mutable_until_finalize",
-    "controller_keeps_non_markdown_fenced_tables_as_code",
-    "controller_keeps_pre_table_lines_queued_when_table_is_confirmed",
-    "controller_live_tail_keeps_uncommitted_table_cell_newline_gated",
-    "controller_live_tail_requires_table_holdback_state",
-    "controller_live_tail_rerenders_table_tail_after_resize",
-    "controller_live_view_matches_render_during_interleaved_table_streaming",
-    "controller_loose_vs_tight_with_commit_ticks_matches_full",
-    "controller_renders_separators_for_multi_table_response_shape",
-    "controller_renders_separators_for_no_outer_pipes_table_shape",
-    "controller_set_width_after_first_line_emit_does_not_requeue_first_line",
-    "controller_set_width_during_confirmed_table_stream_matches_finalize_render",
-    "controller_set_width_no_duplicate_after_emit",
-    "controller_set_width_partial_drain_keeps_pending_queue",
-    "controller_set_width_partial_drain_no_lost_lines",
-    "controller_set_width_partial_wrapped_emit_keeps_wrapped_remainder",
-    "controller_set_width_partial_wrapped_emit_preserves_remaining_content",
-    "controller_set_width_preserves_in_flight_tail",
-    "controller_set_width_preserves_table_tail_when_queue_is_empty",
-    "controller_set_width_rebuilds_queued_lines",
-    "controller_stabilizes_first_no_outer_pipes_table_in_response",
-    "controller_stabilizes_two_column_no_outer_table_in_response",
-    "controller_streamed_table_matches_full_render_widths",
-    "controller_tick_batch_zero_is_noop",
-    "finalized_plan_stream_preserves_semantic_url_fragments",
-    "finalized_stream_table_preserves_semantic_url_fragments",
     "hyperlink_lines_to_plain_strings",
-    "incremental_holdback_detects_header_delimiter_across_chunk_boundary",
-    "incremental_holdback_matches_stateless_scan_per_chunk",
     "lines_to_plain_strings",
-    "plan_controller_has_live_tail_reflects_tail_presence",
-    "plan_controller_holds_table_header_as_live_tail",
-    "plan_controller_set_width_preserves_in_flight_tail",
-    "plan_controller_streamed_markdown_fenced_table_matches_final_render",
-    "plan_controller_streamed_table_matches_final_render",
     "plan_stream_controller",
     "stream_controller",
-    "table_holdback_state_detects_header_plus_delimiter",
-    "table_holdback_state_detects_single_column_header_plus_delimiter",
-    "table_holdback_state_ignores_table_like_lines_inside_blockquoted_other_fence",
-    "table_holdback_state_ignores_table_like_lines_inside_unclosed_long_fence",
-    "table_holdback_state_treats_indented_fence_text_as_plain_content",
+    "table_holdback_state",
+    "TableHoldbackState",
     "test_cwd",
 ]

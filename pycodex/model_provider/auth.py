@@ -103,6 +103,10 @@ def auth_provider_from_auth(auth: Any) -> Any:
     token = token_method() if callable(token_method) else _get(auth, "token")
     account_method = getattr(auth, "get_account_id", None)
     account_id = account_method() if callable(account_method) else _get(auth, "account_id")
+    tokens = _get(auth, "tokens")
+    if isinstance(tokens, dict):
+        token = token or tokens.get("access_token")
+        account_id = account_id or tokens.get("account_id")
     fedramp_method = getattr(auth, "is_fedramp_account", None)
     is_fedramp_account = (
         bool(fedramp_method()) if callable(fedramp_method) else bool(_get(auth, "is_fedramp_account", False))

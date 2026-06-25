@@ -49,6 +49,8 @@ from pycodex.core.http_transport import (
     http_sampling_stream_max_retries,
     http_transport_config_from_provider,
     model_client_http_sampler,
+    model_client_websocket_preferred_sampler,
+    prewarm_model_client_websocket_session,
     response_items_from_responses_payload,
     run_user_turn_http_sampling_from_session,
 )
@@ -83,7 +85,11 @@ from pycodex.core.tools.handlers.shell_spec import (
     unified_exec_output_schema,
 )
 from pycodex.core.tools.events import command_actions_from_argv
-from pycodex.core.session.turn.runtime import UserTurnSamplingResult, run_user_turn_sampling_from_session
+from pycodex.core.session.turn.runtime import (
+    UserTurnSamplingResult,
+    build_user_turn_responses_request_from_session,
+    run_user_turn_sampling_from_session,
+)
 from pycodex.core.tools.handlers.view_image import (
     ViewImageHandler,
     ViewImageToolOptions,
@@ -134,6 +140,7 @@ from pycodex.protocol import (
 )
 from pycodex.protocol import TurnAbortReason, TurnAbortedEvent, TurnItem
 from pycodex.protocol.models import AdditionalPermissionProfile, FunctionCallOutputPayload
+from pycodex.model_provider_info import CHATGPT_CODEX_BASE_URL, ModelProviderInfo
 
 from .event_processor import HumanEventProcessor, JsonEventProcessor, exec_turn_completed_notification
 from .events import (
@@ -200,9 +207,47 @@ class LocalHttpProvider:
 
     base_url: str = DEFAULT_OPENAI_BASE_URL
     auth: Any = None
+    name: str = "OpenAI"
+    supports_websockets: bool = True
+    stream_idle_timeout_ms: int = 300_000
+    websocket_connect_timeout_ms: int = 15_000
 
     def is_azure_responses_endpoint(self) -> bool:
         return False
+
+    def info(self) -> ModelProviderInfo:
+        return ModelProviderInfo(
+            name=self.name,
+            base_url=self.base_url,
+            supports_websockets=self.supports_websockets,
+            stream_idle_timeout_ms=self.stream_idle_timeout_ms,
+            websocket_connect_timeout_ms=self.websocket_connect_timeout_ms,
+        )
+
+    async def api_provider(self) -> Any:
+        return self.info().to_api_provider(_local_http_auth_mode(self.auth))
+
+    async def api_auth(self) -> Any:
+        return self.auth
+
+
+@dataclass(frozen=True)
+class LocalHttpBearerAuthProvider:
+    """Bearer/account header provider for first-party OAuth auth snapshots."""
+
+    token: str | None = None
+    account_id: str | None = None
+    is_fedramp_account: bool = False
+
+    def to_auth_headers(self) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        if self.token is not None and _local_http_valid_header_value(f"Bearer {self.token}"):
+            headers["Authorization"] = f"Bearer {self.token}"
+        if self.account_id is not None and _local_http_valid_header_value(self.account_id):
+            headers["ChatGPT-Account-ID"] = self.account_id
+        if self.is_fedramp_account:
+            headers["X-OpenAI-Fedramp"] = "true"
+        return headers
 
 
 @dataclass(frozen=True)
@@ -922,9 +967,7 @@ def local_http_exec_enabled(env: Any = None) -> bool:
         return True
     if explicit_state in {"0", "false", "no", "off", "disable", "disabled"}:
         return False
-    return bool(str(source.get("OPENAI_API_KEY", "")).strip()) or bool(
-        str(source.get("CODEX_API_KEY", "")).strip()
-    )
+    return False
 
 
 def local_core_exec_enabled(env: Any = None) -> bool:
@@ -954,12 +997,8 @@ def local_core_exec_enabled(env: Any = None) -> bool:
     }:
         return False
     if local_http_state in {"0", "false", "no", "off", "disable", "disabled"}:
-        return False
-    if str(source.get("OPENAI_API_KEY", "")).strip():
         return True
-    if str(source.get("CODEX_API_KEY", "")).strip():
-        return True
-    return False
+    return True
 
 
 def local_http_exec_shell_tools_enabled(env: Any = None) -> bool:
@@ -1042,6 +1081,8 @@ def default_local_http_exec_auth(
     auth_api_key = getattr(auth, "openai_api_key", None) or getattr(auth, "api_key", None)
     if isinstance(auth_api_key, str) and auth_api_key:
         return auth
+    if _local_http_auth_uses_codex_backend(auth):
+        return _local_http_bearer_auth_provider_from_auth(auth)
     if isinstance(auth, str) and auth:
         return auth
     return None
@@ -1068,8 +1109,17 @@ def build_default_local_http_exec_runtime(
         raise ValueError("OPENAI_API_KEY or CODEX_API_KEY is required for PYCODEX_EXEC_LOCAL_HTTP=1")
 
     model = default_local_http_exec_model(config, env=source, config_toml=config_toml)
-    base_url = default_local_http_exec_base_url(env=source, config_toml=config_toml, provider_id=provider_id)
-    provider = LocalHttpProvider(base_url=base_url, auth=resolved_auth)
+    base_url = default_local_http_exec_base_url(
+        env=source,
+        config_toml=config_toml,
+        provider_id=provider_id,
+        auth=auth,
+    )
+    provider = LocalHttpProvider(
+        base_url=base_url,
+        auth=resolved_auth,
+        supports_websockets=_config_provider_supports_websockets(config_toml, provider_id, base_url),
+    )
     model_info = LocalHttpModelInfo(
         slug=model,
         supports_parallel_tool_calls=_config_provider_supports_parallel_tool_calls(config_toml, provider_id),
@@ -1106,11 +1156,68 @@ def default_local_http_exec_base_url(
     env: Any = None,
     config_toml: Mapping[str, Any] | None = None,
     provider_id: str | None = None,
+    auth: Any = None,
 ) -> str:
     """Resolve the default local HTTP exec provider base URL."""
 
     source = os.environ if env is None else env
-    return source.get("OPENAI_BASE_URL") or _config_provider_base_url(config_toml, provider_id) or DEFAULT_OPENAI_BASE_URL
+    configured = source.get("OPENAI_BASE_URL") or _config_provider_base_url(config_toml, provider_id)
+    if configured:
+        return configured
+    if _local_http_auth_uses_codex_backend(auth):
+        return CHATGPT_CODEX_BASE_URL
+    return DEFAULT_OPENAI_BASE_URL
+
+
+def _local_http_auth_mode(auth: Any) -> str | None:
+    if auth is None:
+        return None
+    if isinstance(auth, Mapping):
+        value = auth.get("auth_mode") or auth.get("mode")
+    else:
+        value = getattr(auth, "auth_mode", None)
+        if callable(value):
+            value = value()
+    return str(value).strip().lower() if value is not None else None
+
+
+def _local_http_auth_uses_codex_backend(auth: Any) -> bool:
+    mode = _local_http_auth_mode(auth)
+    return mode in {
+        "chatgpt",
+        "chatgpt_auth",
+        "chatgpt_auth_tokens",
+        "chatgptauthtokens",
+        "codex_backend",
+    }
+
+
+def _local_http_bearer_auth_provider_from_auth(auth: Any) -> LocalHttpBearerAuthProvider:
+    token_method = getattr(auth, "get_token", None)
+    token = token_method() if callable(token_method) else _local_http_get(auth, "token")
+    account_method = getattr(auth, "get_account_id", None)
+    account_id = account_method() if callable(account_method) else _local_http_get(auth, "account_id")
+    tokens = _local_http_get(auth, "tokens")
+    if isinstance(tokens, Mapping):
+        token = token or tokens.get("access_token")
+        account_id = account_id or tokens.get("account_id")
+    fedramp_method = getattr(auth, "is_fedramp_account", None)
+    is_fedramp = bool(fedramp_method()) if callable(fedramp_method) else bool(_local_http_get(auth, "is_fedramp_account", False))
+    return LocalHttpBearerAuthProvider(
+        token=str(token) if token is not None else None,
+        account_id=str(account_id) if account_id is not None else None,
+        is_fedramp_account=is_fedramp,
+    )
+
+
+def _local_http_get(value: Any, name: str, default: Any = None) -> Any:
+    if isinstance(value, Mapping):
+        return value.get(name, default)
+    return getattr(value, name, default)
+
+
+def _local_http_valid_header_value(value: str) -> bool:
+    return not any(char in value for char in "\r\n\0")
 
 
 def _config_model(config_toml: Mapping[str, Any] | None) -> str | None:
@@ -1166,6 +1273,27 @@ def _config_provider_supports_parallel_tool_calls(
     if not isinstance(provider, Mapping):
         return False
     return provider.get("supports_parallel_tool_calls") is True
+
+
+def _config_provider_supports_websockets(
+    config_toml: Mapping[str, Any] | None,
+    provider_id: str | None,
+    base_url: str,
+) -> bool:
+    if provider_id == "openai" and base_url.rstrip("/") in {
+        DEFAULT_OPENAI_BASE_URL,
+        CHATGPT_CODEX_BASE_URL,
+    }:
+        return True
+    if config_toml is None or provider_id is None:
+        return False
+    providers = config_toml.get("model_providers")
+    if not isinstance(providers, Mapping):
+        return False
+    provider = providers.get(provider_id)
+    if not isinstance(provider, Mapping):
+        return False
+    return provider.get("supports_websockets") is True
 
 
 def local_http_exec_config_summary(
@@ -1527,6 +1655,7 @@ async def run_exec_resume_user_turn_core_http_sampling(
     built_tools: Any = None,
     resolved_rollout_path: Path | None = None,
     max_tool_followups: int | None = None,
+    auth_manager: Any = None,
 ) -> UserTurnSamplingResult:
     """Run a resumed ``codex exec`` turn through the in-memory core loop."""
 
@@ -1559,6 +1688,7 @@ async def run_exec_resume_user_turn_core_http_sampling(
         built_tools=built_tools,
         history_items=history_items,
         max_tool_followups=max_tool_followups,
+        auth_manager=auth_manager,
     )
     operation = plan.initial_operation
     input_items = operation.items if operation.kind == "user_turn" else ()
@@ -1705,6 +1835,7 @@ def _in_memory_exec_session(
     model_info: Any,
     *,
     environments: tuple[TurnEnvironmentSelection, ...] = (),
+    event_observer: Any = None,
 ) -> InMemoryCodexSession:
     return InMemoryCodexSession(
         cwd=config.cwd,
@@ -1724,6 +1855,7 @@ def _in_memory_exec_session(
         ),
         _granted_session_permissions=config.granted_session_permissions,
         environments=environments,
+        event_observer=event_observer,
     )
 
 
@@ -1785,6 +1917,7 @@ async def run_exec_user_turn_core_sampling(
     built_tools: Any = None,
     history_items: tuple[ResponseItem, ...] | list[ResponseItem] = (),
     max_tool_followups: int | None = None,
+    session_event_observer: Any = None,
 ) -> UserTurnSamplingResult:
     """Run a prepared ``codex exec`` user turn through the in-memory core loop."""
 
@@ -1795,6 +1928,7 @@ async def run_exec_user_turn_core_sampling(
         config,
         model_info,
         environments=(TurnEnvironmentSelection("local", str(config.cwd)),),
+        event_observer=session_event_observer,
     )
     if history_items:
         turn_context = await session.new_default_turn()
@@ -1831,21 +1965,33 @@ async def run_exec_user_turn_core_http_sampling(
     built_tools: Any = None,
     history_items: tuple[ResponseItem, ...] | list[ResponseItem] = (),
     max_tool_followups: int | None = None,
+    auth_manager: Any = None,
+    codex_home: Path | str | None = None,
+    session_event_observer: Any = None,
 ) -> UserTurnSamplingResult:
     """Run ``codex exec`` through the in-memory core loop with stdlib HTTP sampling."""
 
-    transport_config = http_transport_config_from_provider(
-        model_client,
-        provider,
-        auth=auth,
-        endpoint=endpoint,
-        timeout=timeout,
-    )
+    if auth_manager is None and codex_home is not None:
+        from pycodex.login.auth.manager import AuthManager
+
+        auth_manager = await AuthManager.new(codex_home, True)
+
+    def transport_config() -> Any:
+        return http_transport_config_from_provider(
+            model_client,
+            provider,
+            auth=_local_http_auth_for_recovered_manager(auth_manager, auth),
+            endpoint=endpoint,
+            timeout=timeout,
+        )
+
     sampler = model_client_http_sampler(
         model_client.new_session(),
-        transport_config,
+        transport_config(),
         opener=opener,
         max_retries=http_sampling_stream_max_retries(provider),
+        auth_manager=auth_manager,
+        config_factory=transport_config,
     )
     return await run_exec_user_turn_core_sampling(
         config,
@@ -1857,7 +2003,135 @@ async def run_exec_user_turn_core_http_sampling(
         built_tools=built_tools,
         history_items=history_items,
         max_tool_followups=max_tool_followups,
+        session_event_observer=session_event_observer,
     )
+
+
+async def run_exec_user_turn_core_sampling_websocket_preferred(
+    config: ExecSessionConfig,
+    plan: ExecRunPlan,
+    model_client: ModelClient,
+    provider: Any,
+    model_info: Any,
+    *,
+    auth: Any = None,
+    endpoint: str | None = None,
+    timeout: float | None = None,
+    opener: Any = None,
+    built_tools: Any = None,
+    history_items: tuple[ResponseItem, ...] | list[ResponseItem] = (),
+    max_tool_followups: int | None = None,
+    auth_manager: Any = None,
+    codex_home: Path | str | None = None,
+    session_event_observer: Any = None,
+    stream_event_observer: Any = None,
+    model_session: Any = None,
+) -> UserTurnSamplingResult:
+    """Run a core user turn through Rust's websocket-preferred transport shape."""
+
+    if auth_manager is None and codex_home is not None:
+        from pycodex.login.auth.manager import AuthManager
+
+        auth_manager = await AuthManager.new(codex_home, True)
+
+    if model_session is None:
+        model_session = model_client.new_session()
+
+    def transport_config() -> Any:
+        return http_transport_config_from_provider(
+            model_client,
+            provider,
+            auth=_local_http_auth_for_recovered_manager(auth_manager, auth),
+            endpoint=endpoint,
+            timeout=timeout,
+        )
+
+    sampler = model_client_websocket_preferred_sampler(
+        model_session,
+        transport_config(),
+        opener=opener,
+        max_retries=http_sampling_stream_max_retries(provider),
+        auth_manager=auth_manager,
+        config_factory=transport_config,
+        stream_event_observer=stream_event_observer,
+    )
+    return await run_exec_user_turn_core_sampling(
+        config,
+        plan,
+        model_client,
+        provider,
+        model_info,
+        sampler,
+        built_tools=built_tools,
+        history_items=history_items,
+        max_tool_followups=max_tool_followups,
+        session_event_observer=session_event_observer,
+    )
+
+
+async def prewarm_exec_core_websocket_session(
+    config: ExecSessionConfig,
+    model_client: ModelClient,
+    provider: Any,
+    model_info: Any,
+    *,
+    auth: Any = None,
+    endpoint: str | None = None,
+    timeout: float | None = None,
+    built_tools: Any = None,
+    auth_manager: Any = None,
+    codex_home: Path | str | None = None,
+    model_session: Any = None,
+) -> Any | None:
+    """Build a Rust-shaped startup prompt and prewarm its websocket session."""
+
+    if auth_manager is None and codex_home is not None:
+        from pycodex.login.auth.manager import AuthManager
+
+        auth_manager = await AuthManager.new(codex_home, True)
+    if model_session is None:
+        model_session = model_client.new_session()
+    session = _in_memory_exec_session(
+        config,
+        model_info,
+        environments=(TurnEnvironmentSelection("local", str(config.cwd)),),
+    )
+    request_plan = await build_user_turn_responses_request_from_session(
+        session,
+        (),
+        model_client,
+        provider,
+        model_info,
+        built_tools=built_tools,
+        effort=config.reasoning_effort,
+    )
+
+    def transport_config() -> Any:
+        return http_transport_config_from_provider(
+            model_client,
+            provider,
+            auth=_local_http_auth_for_recovered_manager(auth_manager, auth),
+            endpoint=endpoint,
+            timeout=timeout,
+        )
+
+    result = await prewarm_model_client_websocket_session(
+        model_session,
+        transport_config(),
+        request=request_plan.request,
+    )
+    return model_session if result is not None else None
+
+
+def _local_http_auth_for_recovered_manager(auth_manager: Any, fallback_auth: Any) -> Any:
+    if auth_manager is None:
+        return fallback_auth
+    cached = auth_manager.auth_cached() if callable(getattr(auth_manager, "auth_cached", None)) else None
+    if cached is None:
+        return fallback_auth
+    if _local_http_auth_uses_codex_backend(cached):
+        return _local_http_bearer_auth_provider_from_auth(cached)
+    return cached
 
 
 def local_http_review_user_turn_plan(config: ExecSessionConfig, plan: ExecRunPlan) -> ExecRunPlan:
@@ -1949,6 +2223,7 @@ async def run_exec_review_core_http_sampling(
     opener: Any = None,
     built_tools: Any = None,
     max_tool_followups: int | None = None,
+    auth_manager: Any = None,
 ) -> UserTurnSamplingResult:
     """Run a review turn through the in-memory core loop and render review output."""
 
@@ -1967,6 +2242,7 @@ async def run_exec_review_core_http_sampling(
         opener=opener,
         built_tools=built_tools,
         max_tool_followups=max_tool_followups,
+        auth_manager=auth_manager,
     )
     return _render_local_http_review_result(result, review_request)
 
@@ -5284,10 +5560,12 @@ __all__ = [
     "parse_local_http_review_output",
     "render_local_http_review_interrupted_rollout_user_message",
     "render_local_http_review_rollout_user_message",
+    "prewarm_exec_core_websocket_session",
     "run_exec_review_http_sampling",
     "run_exec_review_core_http_sampling",
     "run_exec_resume_user_turn_core_http_sampling",
     "run_exec_user_turn_core_http_sampling",
+    "run_exec_user_turn_core_sampling_websocket_preferred",
     "run_exec_user_turn_core_sampling",
     "run_exec_user_turn_default_local_http_sampling",
     "run_exec_tool_output_http_sampling",

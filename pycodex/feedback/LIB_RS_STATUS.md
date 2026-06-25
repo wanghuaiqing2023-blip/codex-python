@@ -49,7 +49,7 @@ Validation:
 
 - `python -m pytest tests/test_feedback_lib_rs.py tests/test_feedback_feedback_diagnostics_rs.py -q`
   (`9 passed`)
-- `python -m pytest tests/test_app_server_request_processors_feedback_processor_rs.py tests/test_app_server_request_processors_feedback_doctor_report_rs.py tests/test_tui_bottom_pane_feedback_view.py tests/test_external_crate_interfaces.py::test_core_plugins_feedback_image_and_escalation_interfaces -q`
+- `python -m pytest tests/test_app_server_request_processors_feedback_processor_rs.py tests/test_app_server_request_processors_feedback_doctor_report_rs.py pycodex/tui/bottom_pane/tests/test_feedback_view.py tests/test_external_crate_interfaces.py::test_core_plugins_feedback_image_and_escalation_interfaces -q`
   (`22 passed`)
 - `python -m py_compile pycodex/feedback/__init__.py pycodex/feedback/feedback_diagnostics.py tests/test_feedback_lib_rs.py tests/test_feedback_feedback_diagnostics_rs.py`
   (passed)
