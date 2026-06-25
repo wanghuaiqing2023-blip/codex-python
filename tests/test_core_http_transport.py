@@ -291,6 +291,66 @@ class HttpTransportTests(unittest.TestCase):
         self.assertEqual(session.websocket_session.last_response.response_id, "resp-warm")
         self.assertIs(session.websocket_session.last_response_from_untraced_warmup, True)
 
+    def test_websocket_preferred_sampler_passes_provider_connect_timeout(self) -> None:
+        # Rust crate/module: codex-core/src/client.rs::ModelClient::connect_websocket.
+        # Contract: websocket connection setup is wrapped in
+        # provider.info().websocket_connect_timeout().
+        class Provider(_WebsocketProvider):
+            def info(self):
+                return SimpleNamespace(
+                    supports_websockets=True,
+                    websocket_connect_timeout=lambda: 12_345,
+                )
+
+        provider = Provider()
+        client = ModelClient(
+            session_id="session",
+            thread_id="thread",
+            installation_id="install",
+            provider=provider,
+        )
+        session = client.new_session()
+        seen: dict[str, float | None] = {}
+
+        def connector(_url, _headers, _turn_state, *, timeout=None):
+            seen["timeout"] = timeout
+            return (
+                ResponsesWebsocketMemoryStream(
+                    [
+                        ResponsesWebsocketTextMessage(
+                            json.dumps(
+                                {
+                                    "type": "response.completed",
+                                    "response": {"id": "resp-ws-timeout", "end_turn": True, "usage": {}},
+                                }
+                            )
+                        )
+                    ]
+                ),
+                101,
+                False,
+                None,
+                "gpt-ws",
+            )
+
+        sampler = model_client_websocket_preferred_sampler(
+            session,
+            HttpTransportConfig("https://api.example.test/responses", headers={"Authorization": "Bearer test"}),
+            websocket_connector=connector,
+        )
+
+        _run_sampler(
+            sampler,
+            {
+                "model": "gpt-test",
+                "input": [],
+                "stream": True,
+                "store": False,
+            },
+        )
+
+        self.assertEqual(seen["timeout"], 12.345)
+
     def test_websocket_preferred_sampler_falls_back_to_http_on_upgrade_required(self) -> None:
         # Rust crate/module: codex-core/src/client.rs::stream_responses_websocket
         # Contract: HTTP 426 Upgrade Required during websocket connection

@@ -70,3 +70,24 @@ No third-party package source has been vendored yet.
 - Helper: `pycodex/vendor/__init__.py`
 - Compatibility entrypoint: `pycodex/tui/textual_compat/__init__.py`
 - Notes: Added a vendored import helper that prepends `pycodex/vendor/_packages` and verifies imported modules resolve from that tree. `textual_compat` now lazily exposes a conservative Textual/Rich API subset (`App`, `Widget`, `ComposeResult`, containers, events, Rich `Text`/`Style`) without requiring existing TUI modules to change.
+
+## Runtime WebSocket protocol implementation
+
+- Package: `websockets`
+- Version: `11.0.3`
+- Purpose: Replace the Python port's standard-library WebSocket protocol subset
+  for the product-critical Responses websocket path while preserving the
+  existing Rust-aligned `codex-api::endpoint::responses_websocket` module
+  boundary.
+- License: BSD-3-Clause upstream.
+- Source: https://github.com/python-websockets/websockets
+- Package index: https://pypi.org/project/websockets/
+- Wheel: `websockets-11.0.3-py3-none-any.whl`
+- Wheel SHA256: `6681ba9e7f8f3b19440921e99efbb40fc89f26cd71bf539e45d8c8a25c976dc6`
+- License file: `pycodex/vendor/licenses/websockets/LICENSE`
+- Import roots: `websockets`
+- Status: extracted and wired behind `pycodex.codex_api.endpoint._websocket_client`
+- Audit report: `pycodex/vendor/WEBSOCKET_VENDOR_AUDIT.md`
+- Notes: The historical Python implementation remains available as a private
+  stdlib fallback/testing helper, but the public Responses websocket connect
+  path now uses the vendored `websockets` sync client.

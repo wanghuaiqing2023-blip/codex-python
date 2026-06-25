@@ -13,6 +13,7 @@ import os
 import socket
 import ssl
 import struct
+import inspect
 from collections.abc import Callable
 from collections.abc import Iterable
 from collections.abc import Iterator
@@ -25,6 +26,9 @@ from pycodex.codex_client import TransportError
 from pycodex.codex_client.custom_ca import ProcessEnv
 from pycodex.codex_client.custom_ca import configured_ca_bundle
 
+from ._websocket_client import DEFAULT_MAX_WEBSOCKET_MESSAGE_SIZE
+from ._websocket_client import VendoredWebsocketMessage
+from ._websocket_client import connect_vendored_websocket
 from ..auth import SharedAuthProvider
 from ..common import ResponseEvent
 from ..common import ResponseProcessedWsRequest
@@ -344,6 +348,7 @@ class ResponsesWebsocketClient:
         default_headers: dict[str, str] | None = None,
         turn_state: Any | None = None,
         telemetry: Any | None = None,
+        timeout: float | None = None,
     ) -> ResponsesWebsocketConnection:
         ws_url = self.provider.websocket_url_for_path("responses")
         headers = merge_request_headers(
@@ -352,10 +357,12 @@ class ResponsesWebsocketClient:
             dict(default_headers or {}),
         )
         self.auth.add_auth_headers(headers)
-        stream, _status, reasoning_included, models_etag, server_model = self.connector(
+        stream, _status, reasoning_included, models_etag, server_model = _call_connector(
+            self.connector,
             ws_url,
             headers,
             turn_state,
+            timeout=timeout,
         )
         return ResponsesWebsocketConnection(
             stream,
@@ -379,7 +386,8 @@ class ResponsesWebsocketClient:
             dict(default_headers or {}),
         )
         self.auth.add_auth_headers(headers)
-        stream, status, reasoning_included, models_etag, server_model = self.connector(
+        stream, status, reasoning_included, models_etag, server_model = _call_connector(
+            self.connector,
             ws_url,
             headers,
             None,
@@ -398,11 +406,78 @@ class ResponsesWebsocketClient:
         )
 
 
+def _call_connector(
+    connector: Callable[..., tuple[Any, int, bool, str | None, str | None]],
+    url: str,
+    headers: dict[str, str],
+    turn_state: Any | None,
+    *,
+    timeout: float | None = None,
+) -> tuple[Any, int, bool, str | None, str | None]:
+    if timeout is not None and _callable_accepts_timeout(connector):
+        return connector(url, headers, turn_state, timeout=timeout)
+    return connector(url, headers, turn_state)
+
+
+def _callable_accepts_timeout(value: Callable[..., Any]) -> bool:
+    try:
+        signature = inspect.signature(value)
+    except (TypeError, ValueError):
+        return False
+    for parameter in signature.parameters.values():
+        if parameter.kind is inspect.Parameter.VAR_KEYWORD:
+            return True
+        if parameter.name == "timeout":
+            return True
+    return False
+
+
 def websocket_config() -> WebSocketConfigProjection:
     return WebSocketConfigProjection(permessage_deflate=True)
 
 
 def connect_websocket(
+    url: str,
+    headers: dict[str, str],
+    turn_state: Any | None = None,
+    *,
+    timeout: float | None = None,
+) -> tuple[Any, int, bool, str | None, str | None]:
+    parsed = urlsplit(url)
+    if parsed.scheme not in ("ws", "wss") or not parsed.hostname:
+        raise ApiError.stream(f"failed to build websocket request: unsupported URL: {url}")
+    try:
+        tls_context = None
+        if parsed.scheme == "wss":
+            try:
+                tls_context = _ssl_context_for_websocket()
+            except Exception as err:
+                raise ApiError.stream(f"failed to configure websocket TLS: {err}") from err
+        stream, status, response_headers = connect_vendored_websocket(
+            url,
+            headers,
+            ssl_context=tls_context,
+            timeout=timeout,
+            max_message_size=DEFAULT_MAX_WEBSOCKET_MESSAGE_SIZE,
+        )
+    except ApiError:
+        raise
+    except Exception as err:
+        raise ApiError.transport_error(TransportError.network(str(err))) from err
+    if turn_state is not None:
+        turn_state_value = _header_lookup(response_headers, X_CODEX_TURN_STATE_HEADER)
+        if turn_state_value is not None:
+            _set_turn_state(turn_state, turn_state_value)
+    return (
+        stream,
+        status,
+        _header_lookup(response_headers, X_REASONING_INCLUDED_HEADER) is not None,
+        _header_lookup(response_headers, X_MODELS_ETAG_HEADER),
+        _header_lookup(response_headers, OPENAI_MODEL_HEADER),
+    )
+
+
+def _connect_websocket_stdlib(
     url: str,
     headers: dict[str, str],
     turn_state: Any | None = None,
@@ -728,11 +803,30 @@ def iter_websocket_response_stream(
 def _next_message(ws_stream: Any, idle_timeout: float | None = None) -> Any | None:
     timeout_receiver = getattr(ws_stream, "next_with_timeout", None)
     if timeout_receiver is not None:
-        return timeout_receiver(idle_timeout)
+        return _coerce_vendored_message(timeout_receiver(idle_timeout))
     receiver = getattr(ws_stream, "next", None) or getattr(ws_stream, "recv", None)
     if receiver is None:
         raise TypeError("websocket stream must provide next() or recv()")
-    return receiver()
+    return _coerce_vendored_message(receiver())
+
+
+def _coerce_vendored_message(message: Any) -> Any:
+    if not isinstance(message, VendoredWebsocketMessage):
+        return message
+    if message.kind == "text":
+        return ResponsesWebsocketTextMessage(message.text or "")
+    if message.kind == "binary":
+        return ResponsesWebsocketBinaryMessage(message.data or b"")
+    if message.kind == "close":
+        return ResponsesWebsocketCloseMessage(
+            message.close_code,
+            message.close_reason,
+        )
+    if message.kind == "ping":
+        return ResponsesWebsocketPingMessage(message.data or b"")
+    if message.kind == "pong":
+        return ResponsesWebsocketPongMessage(message.data or b"")
+    return ResponsesWebsocketFrameMessage(message.data)
 
 
 def _next_probe_message(stream: Any, timeout: float | None) -> Any | None:
@@ -744,6 +838,7 @@ def _next_probe_message(stream: Any, timeout: float | None) -> Any | None:
             return None
     else:
         message = _next_message(stream)
+    message = _coerce_vendored_message(message)
     if isinstance(message, Exception):
         raise message
     return message
