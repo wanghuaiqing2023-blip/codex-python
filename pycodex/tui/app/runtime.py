@@ -325,14 +325,7 @@ class CoreExecActiveThreadRuntime:
                     else:
                         _timing_trace("startup_prewarm_unavailable")
             except BaseException as exc:
-                fallback = getattr(self.model_client, "force_http_fallback", None)
-                activated = False
-                if callable(fallback):
-                    try:
-                        activated = bool(fallback())
-                    except Exception:
-                        activated = False
-                _timing_trace("startup_prewarm_failed", error=str(exc), http_fallback=activated)
+                _timing_trace("startup_prewarm_failed", error=str(exc))
                 pass
             finally:
                 self._startup_prewarm_ready.set()
@@ -526,13 +519,13 @@ def _server_notifications_from_session_event(
         delta = getattr(payload, "delta", None)
         if isinstance(delta, str) and delta:
             return (ServerNotification("AgentMessageDelta", {"delta": delta, "thread_id": thread_id, "turn_id": turn_id}),)
-    if event_type == "reasoning_summary_delta":
+    if event_type in {"reasoning_summary_delta", "reasoning_content_delta"}:
         delta = getattr(payload, "delta", None)
         if isinstance(delta, str) and delta:
             return (ServerNotification("ReasoningSummaryTextDelta", {"delta": delta, "thread_id": thread_id, "turn_id": turn_id}),)
-    if event_type == "reasoning_summary_part_added":
+    if event_type in {"reasoning_summary_part_added", "agent_reasoning_section_break"}:
         return (ServerNotification("ReasoningSummaryPartAdded", {"thread_id": thread_id, "turn_id": turn_id}),)
-    if event_type == "reasoning_content_delta":
+    if event_type == "reasoning_raw_content_delta":
         delta = getattr(payload, "delta", None)
         if isinstance(delta, str) and delta:
             return (ServerNotification("ReasoningTextDelta", {"delta": delta, "thread_id": thread_id, "turn_id": turn_id}),)

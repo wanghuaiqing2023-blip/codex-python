@@ -177,6 +177,22 @@
       "wheel": "zipp-3.15.0-py3-none-any.whl"
     },
     {
+      "copied_dist_info_files": 5,
+      "copied_license_files": 1,
+      "copied_package_files": 71,
+      "dist_info": "websockets-11.0.3.dist-info",
+      "import_roots": [
+        "websockets"
+      ],
+      "license_files": [
+        "websockets-11.0.3.dist-info/LICENSE"
+      ],
+      "package": "websockets",
+      "sha256": "6681ba9e7f8f3b19440921e99efbb40fc89f26cd71bf539e45d8c8a25c976dc6",
+      "version": "11.0.3",
+      "wheel": "websockets-11.0.3-py3-none-any.whl"
+    },
+    {
       "filename": "typing_extensions-4.3.0-py3-none-any.whl",
       "name": "typing-extensions",
       "reason": "Textual 0.43.2 dependency; Python 3.7-compatible runtime shim.",

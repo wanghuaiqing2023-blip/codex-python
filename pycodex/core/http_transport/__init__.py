@@ -1672,7 +1672,11 @@ async def _send_prepared_websocket_sampling_request(
             connector=connector,
         )
         try:
-            connection = websocket_client.connect(extra_headers=headers, turn_state=model_session.turn_state)
+            connection = websocket_client.connect(
+                extra_headers=headers,
+                turn_state=model_session.turn_state,
+                timeout=_websocket_connect_timeout_seconds(model_session.client.state.provider),
+            )
         except ApiError as exc:
             if _api_error_is_upgrade_required(exc):
                 _timing_trace("websocket_connect_fallback_to_http", warmup=warmup)
@@ -2040,6 +2044,31 @@ def _codex_err_is_unauthorized(error: CodexErr) -> bool:
         and isinstance(payload, UnexpectedResponseError)
         and payload.status == 401
     )
+
+
+def _websocket_connect_timeout_seconds(provider: Any) -> float | None:
+    """Return Rust-shaped provider websocket connect timeout in seconds."""
+
+    info = _provider_info(provider)
+    for source in (info, provider):
+        method = getattr(source, "websocket_connect_timeout", None)
+        if callable(method):
+            value = method()
+            if value is None:
+                continue
+            return _timeout_millis_to_seconds(value)
+        value = getattr(source, "websocket_connect_timeout_ms", None)
+        if value is not None:
+            return _timeout_millis_to_seconds(value)
+    return None
+
+
+def _timeout_millis_to_seconds(value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise TypeError("websocket connect timeout must be a number of milliseconds")
+    if value < 0:
+        raise ValueError("websocket connect timeout must be non-negative")
+    return float(value) / 1000.0
 
 
 def http_sampling_stream_max_retries(provider: Any) -> int:

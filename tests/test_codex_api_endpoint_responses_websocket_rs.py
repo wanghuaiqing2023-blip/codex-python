@@ -629,6 +629,33 @@ class CodexApiEndpointResponsesWebsocketRsTests(unittest.TestCase):
         self.assertEqual(connection.server_model, "gpt-5.3-codex")
         self.assertEqual(connection.telemetry, "telemetry")
 
+    def test_client_connect_passes_optional_timeout_to_connector(self) -> None:
+        # Rust crate/modules:
+        # - codex-core/src/client.rs::ModelClient::connect_websocket wraps the
+        #   codex-api connect future in provider.websocket_connect_timeout().
+        # - codex-api/src/endpoint/responses_websocket.rs owns the concrete
+        #   websocket connector boundary.
+        # Contract: Python's codex-api client must expose the connect timeout
+        # to the concrete connector so core can enforce the Rust timeout.
+        seen: dict[str, float | None] = {}
+
+        def connector(
+            url: str,
+            headers: dict[str, str],
+            turn_state: object,
+            *,
+            timeout: float | None = None,
+        ):
+            del url, headers, turn_state
+            seen["timeout"] = timeout
+            return (ResponsesWebsocketMemoryStream(), 101, False, None, None)
+
+        client = ResponsesWebsocketClient.new(_provider(), _Auth("token-1"), connector)
+
+        client.connect(timeout=15.0)
+
+        self.assertEqual(seen["timeout"], 15.0)
+
     def test_client_probe_reports_upgrade_metadata_and_immediate_close(self) -> None:
         def connector(url: str, headers: dict[str, str], turn_state: object):
             del headers, turn_state
@@ -729,7 +756,7 @@ class CodexApiEndpointResponsesWebsocketRsTests(unittest.TestCase):
             module.socket.create_connection = lambda address, timeout=None: fake_socket
             module.os.urandom = lambda size: fixed_nonce
 
-            stream, status, reasoning, models_etag, server_model = connect_websocket(
+            stream, status, reasoning, models_etag, server_model = module._connect_websocket_stdlib(
                 "ws://[::1]:9000/v1/responses?api-version=1#ignored",
                 {"x-test": "1"},
             )
@@ -784,7 +811,7 @@ class CodexApiEndpointResponsesWebsocketRsTests(unittest.TestCase):
             module.socket.create_connection = lambda address, timeout=None: fake_socket
             module.os.urandom = lambda size: fixed_nonce
 
-            stream, status, reasoning, models_etag, server_model = connect_websocket(
+            stream, status, reasoning, models_etag, server_model = module._connect_websocket_stdlib(
                 "ws://api.example.test/v1/responses",
                 {},
                 turn_state,
@@ -845,7 +872,7 @@ class CodexApiEndpointResponsesWebsocketRsTests(unittest.TestCase):
                     fake_socket = _FakeHandshakeSocket(response)
                     module.socket.create_connection = lambda address, timeout=None: fake_socket
                     with self.assertRaises(ApiError) as caught:
-                        connect_websocket("ws://api.example.test/v1/responses", {})
+                        module._connect_websocket_stdlib("ws://api.example.test/v1/responses", {})
                     self.assertEqual(caught.exception.kind, "stream")
                     self.assertIn(expected, caught.exception.message)
         finally:
@@ -858,46 +885,35 @@ class CodexApiEndpointResponsesWebsocketRsTests(unittest.TestCase):
         # maybe_build_rustls_client_config_with_custom_ca() and supplies the
         # resulting TLS connector to connect_async_tls_with_config, so secure
         # websocket connections honor the same custom-CA policy as HTTPS.
-        fixed_nonce = b"\x02" * 16
-        key = base64.b64encode(fixed_nonce).decode("ascii")
-        accept = base64.b64encode(
-            hashlib.sha1(
-                (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")
-            ).digest()
-        ).decode("ascii")
-        fake_socket = _FakeHandshakeSocket(
-            (
-                "HTTP/1.1 101 Switching Protocols\r\n"
-                "Upgrade: websocket\r\n"
-                "Connection: Upgrade\r\n"
-                f"Sec-WebSocket-Accept: {accept}\r\n"
-                "\r\n"
-            ).encode("ascii")
-        )
         captures: dict[str, object] = {}
         fake_bundle = _FakeCaBundle("C:/ca/custom.pem")
 
         class FakeSslContext:
-            def wrap_socket(self, sock, server_hostname=None):
-                captures["wrapped_socket"] = sock
-                captures["server_hostname"] = server_hostname
-                return sock
+            pass
+
+        def fake_connect_vendored(url, headers, *, ssl_context=None, timeout=None, max_message_size=None):
+            captures["url"] = url
+            captures["headers"] = headers
+            captures["ssl_context"] = ssl_context
+            captures["timeout"] = timeout
+            captures["max_message_size"] = max_message_size
+            return (
+                ResponsesWebsocketMemoryStream(),
+                101,
+                {"x-reasoning-included": "true", "x-models-etag": "models", "openai-model": "gpt"},
+            )
 
         from pycodex.codex_api.endpoint import responses_websocket as module
 
-        original_create_connection = module.socket.create_connection
-        original_urandom = module.os.urandom
         original_configured_ca_bundle = module.configured_ca_bundle
         original_create_default_context = module.ssl.create_default_context
+        original_connect_vendored = module.connect_vendored_websocket
         try:
-            module.socket.create_connection = lambda address, timeout=None: captures.update(
-                {"address": address, "timeout": timeout}
-            ) or fake_socket
-            module.os.urandom = lambda size: fixed_nonce
             module.configured_ca_bundle = lambda env_source: fake_bundle
             module.ssl.create_default_context = lambda cafile=None: captures.update(
                 {"cafile": cafile}
             ) or FakeSslContext()
+            module.connect_vendored_websocket = fake_connect_vendored
 
             stream, status, reasoning, models_etag, server_model = connect_websocket(
                 "wss://api.example.test/v1/responses",
@@ -905,22 +921,20 @@ class CodexApiEndpointResponsesWebsocketRsTests(unittest.TestCase):
                 timeout=4.0,
             )
         finally:
-            module.socket.create_connection = original_create_connection
-            module.os.urandom = original_urandom
             module.configured_ca_bundle = original_configured_ca_bundle
             module.ssl.create_default_context = original_create_default_context
+            module.connect_vendored_websocket = original_connect_vendored
 
         self.assertEqual(status, 101)
-        self.assertFalse(reasoning)
-        self.assertIsNone(models_etag)
-        self.assertIsNone(server_model)
+        self.assertTrue(reasoning)
+        self.assertEqual(models_etag, "models")
+        self.assertEqual(server_model, "gpt")
         self.assertIsNotNone(stream)
         self.assertTrue(fake_bundle.loaded)
         self.assertEqual(captures["cafile"], "C:/ca/custom.pem")
-        self.assertEqual(captures["address"], ("api.example.test", 443))
         self.assertEqual(captures["timeout"], 4.0)
-        self.assertIs(captures["wrapped_socket"], fake_socket)
-        self.assertEqual(captures["server_hostname"], "api.example.test")
+        self.assertEqual(captures["url"], "wss://api.example.test/v1/responses")
+        self.assertIsInstance(captures["ssl_context"], FakeSslContext)
 
     def test_connect_websocket_custom_ca_error_is_stream_error(self) -> None:
         # Rust crate/module: codex-api/src/endpoint/responses_websocket.rs
@@ -969,7 +983,7 @@ class CodexApiEndpointResponsesWebsocketRsTests(unittest.TestCase):
             module.socket.create_connection = lambda address, timeout=None: fake_socket
 
             with self.assertRaises(ApiError) as caught:
-                connect_websocket("ws://api.example.test/v1/responses", {})
+                module._connect_websocket_stdlib("ws://api.example.test/v1/responses", {})
         finally:
             module.socket.create_connection = original_create_connection
 
@@ -1002,7 +1016,7 @@ class CodexApiEndpointResponsesWebsocketRsTests(unittest.TestCase):
             module.socket.create_connection = lambda address, timeout=None: fake_socket
 
             with self.assertRaises(ApiError) as caught:
-                connect_websocket("ws://api.example.test/v1/responses?api-version=1", {})
+                module._connect_websocket_stdlib("ws://api.example.test/v1/responses?api-version=1", {})
         finally:
             module.socket.create_connection = original_create_connection
 
@@ -1043,7 +1057,7 @@ class CodexApiEndpointResponsesWebsocketRsTests(unittest.TestCase):
             module.socket.create_connection = lambda address, timeout=None: fake_socket
 
             with self.assertRaises(ApiError) as caught:
-                connect_websocket("ws://api.example.test/v1/responses", {})
+                module._connect_websocket_stdlib("ws://api.example.test/v1/responses", {})
         finally:
             module.socket.create_connection = original_create_connection
 

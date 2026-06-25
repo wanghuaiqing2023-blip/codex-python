@@ -422,11 +422,13 @@ def test_core_exec_active_thread_runtime_does_not_wait_full_timeout_for_stale_pr
     assert seen_sessions == [None]
 
 
-def test_core_exec_active_thread_runtime_disables_websockets_after_prewarm_failure(monkeypatch) -> None:
-    # Rust module boundary: codex-core/src/client.rs fallback transport state.
-    # Contract: once startup websocket setup proves unusable for the shared
-    # model client, the first regular turn should not spend its first-token
-    # budget retrying the same broken websocket connection.
+def test_core_exec_active_thread_runtime_does_not_force_fallback_after_generic_prewarm_failure(monkeypatch) -> None:
+    # Rust modules:
+    # - codex-core/src/session_startup_prewarm.rs
+    # - codex-core/src/client.rs::ModelClientSession::prewarm_websocket
+    # Contract: a generic startup prewarm failure resolves as unavailable and
+    # is not itself a sticky fallback decision. Sticky HTTP fallback is owned by
+    # the websocket transport fallback policy, such as 426 or retry exhaustion.
     fallback_calls = []
     seen_disabled = []
 
@@ -494,8 +496,8 @@ def test_core_exec_active_thread_runtime_disables_websockets_after_prewarm_failu
         if event is None or event.kind == "TurnCompleted":
             break
 
-    assert fallback_calls == [True]
-    assert seen_disabled == [True]
+    assert fallback_calls == []
+    assert seen_disabled == [False]
 
 
 def test_core_exec_active_thread_runtime_forwards_core_delta_before_result(monkeypatch) -> None:
@@ -981,10 +983,12 @@ def test_core_exec_active_thread_runtime_forwards_canonical_item_lifecycle(monke
 
 
 def test_core_exec_active_thread_runtime_forwards_reasoning_delta(monkeypatch) -> None:
-    # Rust composition contract: websocket reasoning summary deltas are routed
-    # through codex-tui::app as ReasoningSummaryTextDelta before final text.
+    # Rust composition contract:
+    # codex-core/src/session/turn.rs maps ResponseEvent::ReasoningSummaryDelta
+    # into EventMsg::ReasoningContentDelta. codex-tui::app must treat that
+    # session event as a visible ReasoningSummaryTextDelta.
     async def fake_core_sampling(session_config, plan, model_client, provider, model_info, **kwargs):
-        kwargs["session_event_observer"](SimpleNamespace(type="reasoning_summary_delta", payload=SimpleNamespace(delta="**Reading**")))
+        kwargs["session_event_observer"](SimpleNamespace(type="reasoning_content_delta", payload=SimpleNamespace(delta="**Reading**")))
         await asyncio.sleep(0.05)
         return UserTurnSamplingResult(request_plan=None, response_items=(), turn_status="completed")
 
@@ -1023,14 +1027,15 @@ def test_core_exec_active_thread_runtime_forwards_reasoning_delta(monkeypatch) -
 
 def test_core_exec_active_thread_runtime_forwards_reasoning_section_and_raw_delta(monkeypatch) -> None:
     # Rust composition contract:
-    # - codex-core/src/session/turn.rs forwards reasoning summary section breaks
-    #   and raw reasoning text as session events.
+    # - codex-core/src/session/turn.rs forwards summary text as
+    #   ReasoningContentDelta, section breaks as AgentReasoningSectionBreak,
+    #   and raw text as ReasoningRawContentDelta.
     # - codex-tui::app preserves them as distinct ServerNotification variants.
     async def fake_core_sampling(session_config, plan, model_client, provider, model_info, **kwargs):
         observer = kwargs["session_event_observer"]
-        observer(SimpleNamespace(type="reasoning_summary_delta", payload=SimpleNamespace(delta="**Inspecting**")))
-        observer(SimpleNamespace(type="reasoning_summary_part_added", payload=SimpleNamespace(summary_index=0)))
-        observer(SimpleNamespace(type="reasoning_content_delta", payload=SimpleNamespace(delta="raw detail")))
+        observer(SimpleNamespace(type="reasoning_content_delta", payload=SimpleNamespace(delta="**Inspecting**")))
+        observer(SimpleNamespace(type="agent_reasoning_section_break", payload=SimpleNamespace(summary_index=0)))
+        observer(SimpleNamespace(type="reasoning_raw_content_delta", payload=SimpleNamespace(delta="raw detail")))
         await asyncio.sleep(0.01)
         return UserTurnSamplingResult(request_plan=None, response_items=(), turn_status="completed")
 

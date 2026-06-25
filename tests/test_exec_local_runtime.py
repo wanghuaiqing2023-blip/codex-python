@@ -9705,6 +9705,62 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(model_info.supports_parallel_tool_calls)
 
+    def test_default_local_http_runtime_enables_reasoning_summaries_for_openai_codex_models(self) -> None:
+        # Rust crate/module: codex-core::client and session::turn_context.
+        # Rust request construction sends reasoning.summary when model metadata
+        # says reasoning summaries are supported. The Python core/TUI runtime
+        # uses LocalHttpModelInfo, so its fallback metadata must not suppress
+        # reasoning summary deltas for the default OpenAI Codex model.
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+        )
+
+        _client, _provider, model_info, _auth = build_default_local_http_exec_runtime(
+            config,
+            env={"OPENAI_API_KEY": "sk-local"},
+        )
+
+        self.assertEqual(model_info.slug, "gpt-5.3-codex")
+        self.assertTrue(model_info.supports_reasoning_summaries)
+
+    def test_default_local_http_runtime_reasoning_summary_support_respects_config_override(self) -> None:
+        # Rust crate/module: codex-core::config::model_supports_reasoning_summaries.
+        config = ExecSessionConfig(
+            model="custom-model",
+            model_provider_id="local-openai",
+            cwd=Path("C:/work/project"),
+        )
+
+        _client, _provider, model_info, _auth = build_default_local_http_exec_runtime(
+            config,
+            env={"LOCAL_OPENAI_KEY": "sk-local"},
+            config_toml={
+                "model_supports_reasoning_summaries": True,
+                "model_providers": {"local-openai": {"env_key": "LOCAL_OPENAI_KEY"}},
+            },
+        )
+
+        self.assertTrue(model_info.supports_reasoning_summaries)
+
+    def test_default_local_http_runtime_keeps_custom_provider_reasoning_summaries_disabled_by_default(self) -> None:
+        # Rust parity guard: without model metadata or explicit config override,
+        # a custom provider is not assumed to support OpenAI reasoning summaries.
+        config = ExecSessionConfig(
+            model="custom-model",
+            model_provider_id="local-openai",
+            cwd=Path("C:/work/project"),
+        )
+
+        _client, _provider, model_info, _auth = build_default_local_http_exec_runtime(
+            config,
+            env={"LOCAL_OPENAI_KEY": "sk-local"},
+            config_toml={"model_providers": {"local-openai": {"env_key": "LOCAL_OPENAI_KEY"}}},
+        )
+
+        self.assertFalse(model_info.supports_reasoning_summaries)
+
     def test_local_http_exec_config_summary_uses_model_provider_and_cwd(self) -> None:
         config = ExecSessionConfig(
             model=None,

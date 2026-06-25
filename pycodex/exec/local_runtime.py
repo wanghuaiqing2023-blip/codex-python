@@ -1122,6 +1122,12 @@ def build_default_local_http_exec_runtime(
     )
     model_info = LocalHttpModelInfo(
         slug=model,
+        supports_reasoning_summaries=_config_or_default_model_supports_reasoning_summaries(
+            config_toml,
+            provider_id,
+            model,
+            base_url,
+        ),
         supports_parallel_tool_calls=_config_provider_supports_parallel_tool_calls(config_toml, provider_id),
     )
     client = ModelClient(
@@ -1273,6 +1279,35 @@ def _config_provider_supports_parallel_tool_calls(
     if not isinstance(provider, Mapping):
         return False
     return provider.get("supports_parallel_tool_calls") is True
+
+
+def _config_or_default_model_supports_reasoning_summaries(
+    config_toml: Mapping[str, Any] | None,
+    provider_id: str | None,
+    model: str,
+    base_url: str,
+) -> bool:
+    configured = _config_model_supports_reasoning_summaries(config_toml)
+    if configured is not None:
+        return configured
+    return _default_model_supports_reasoning_summaries(provider_id, model, base_url)
+
+
+def _config_model_supports_reasoning_summaries(config_toml: Mapping[str, Any] | None) -> bool | None:
+    if config_toml is None:
+        return None
+    value = config_toml.get("model_supports_reasoning_summaries")
+    return value if isinstance(value, bool) else None
+
+
+def _default_model_supports_reasoning_summaries(provider_id: str | None, model: str, base_url: str) -> bool:
+    if provider_id != "openai" and base_url.rstrip("/") not in {
+        DEFAULT_OPENAI_BASE_URL,
+        CHATGPT_CODEX_BASE_URL,
+    }:
+        return False
+    slug = str(model).lower()
+    return slug.startswith("gpt-5") or "codex" in slug
 
 
 def _config_provider_supports_websockets(
