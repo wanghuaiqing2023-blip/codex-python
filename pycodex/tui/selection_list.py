@@ -8,6 +8,15 @@ from __future__ import annotations
 import unicodedata
 from dataclasses import dataclass
 
+from ._porting import RustTuiModule
+
+RUST_MODULE = RustTuiModule(
+    crate="codex-tui",
+    module="selection_list",
+    source="codex/codex-rs/tui/src/selection_list.rs",
+    status="complete",
+)
+
 SELECTED_MARKER = "›"
 UNSELECTED_MARKER = " "
 MAX_LABEL_WIDTH = 65535
@@ -107,6 +116,7 @@ def selection_option_row_with_dim(
 
 __all__ = [
     "MAX_LABEL_WIDTH",
+    "RUST_MODULE",
     "SELECTED_MARKER",
     "UNSELECTED_MARKER",
     "SelectionOptionRow",

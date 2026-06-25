@@ -2,18 +2,19 @@
 
 This ports the local behavior of Rust
 ``codex-tui::chatwidget::input_submission`` into semantic Python DTOs and
-widget callback hooks.  The generated command is a plain dataclass rather than
-the Rust ``AppCommand`` enum.
+widget callback hooks.  Like Rust, submitted user turns are constructed through
+the crate-level ``app_command::AppCommand`` boundary.
 """
 
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, List, Optional, Protocol, Set, Tuple
 
 from .._porting import RustTuiModule
+from ..app_command import AppCommand
 from .skills import (
     collect_tool_mentions,
     find_app_mentions,
@@ -105,20 +106,6 @@ class UserMessageHistoryRecord:
 class UserInput:
     kind: str
     payload: Dict[str, Any]
-
-
-@dataclass(frozen=True)
-class AppCommand:
-    kind: str
-    payload: Dict[str, Any] = field(default_factory=dict)
-
-    @classmethod
-    def run_user_shell_command(cls, command: str) -> "AppCommand":
-        return cls("RunUserShellCommand", {"command": command})
-
-    @classmethod
-    def user_turn(cls, items: List[UserInput], **payload: Any) -> "AppCommand":
-        return cls("UserTurn", {"items": items, **payload})
 
 
 @dataclass(frozen=True)
@@ -245,8 +232,10 @@ def submit_user_message_with_history_and_shell_escape_policy(
         approval_policy=getattr(widget.config.permissions, "approval_policy", None),
         active_permission_profile=widget.config.permissions.active_permission_profile(),
         model=model,
-        reasoning_effort=effective_mode.reasoning_effort(),
+        effort=effective_mode.reasoning_effort(),
+        summary=None,
         service_tier=widget.service_tier_update_for_core(),
+        final_output_json_schema=None,
         collaboration_mode=collaboration_mode,
         personality=personality,
     )

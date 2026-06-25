@@ -3,8 +3,6 @@
 Rust source: ``codex/codex-rs/tui/src/markdown.rs``.
 """
 
-import pytest
-
 from pycodex.tui.markdown import (
     Fence,
     append_markdown,
@@ -17,6 +15,7 @@ from pycodex.tui.markdown import (
     unwrap_markdown_fences,
     unwrap_markdown_fences_repro_keeps_fence_without_header_delimiter_pair,
 )
+from pycodex.tui.terminal_hyperlinks import line_text
 
 
 def test_strip_line_indent_matches_commonmark_fence_indent_rule() -> None:
@@ -81,5 +80,8 @@ def test_unwrap_markdown_fences_keeps_non_adjacent_delimiter_cases() -> None:
 
 
 def test_append_markdown_delegates_to_renderer_boundary() -> None:
-    with pytest.raises(NotImplementedError):
-        append_markdown("plain text", None, None, [])
+    # Rust source: codex-tui/src/markdown.rs delegates append_markdown to
+    # markdown_render::render_markdown_text_with_width_and_cwd.
+    lines = append_markdown("plain text", None, None, [])
+
+    assert [line_text(line) for line in lines] == ["plain text"]

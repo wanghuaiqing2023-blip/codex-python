@@ -3,7 +3,7 @@ import asyncio
 import io
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from pycodex.exec import core_runtime
 from pycodex.exec import local_runtime
@@ -369,7 +369,9 @@ class ExecCoreRuntimeTests(unittest.TestCase):
             opener=None,
             built_tools=None,
             max_tool_followups=2,
+            auth_manager=ANY,
         )
+        self.assertTrue(hasattr(run_fresh.call_args.kwargs["auth_manager"], "unauthorized_recovery"))
         persist_result.assert_called_once_with(
             "exec",
             "home",
@@ -421,7 +423,9 @@ class ExecCoreRuntimeTests(unittest.TestCase):
             opener=None,
             built_tools=None,
             max_tool_followups=3,
+            auth_manager=ANY,
         )
+        self.assertTrue(hasattr(run_review.call_args.kwargs["auth_manager"], "unauthorized_recovery"))
         persist_result.assert_called_once_with(
             "review",
             Path("home"),
@@ -514,7 +518,9 @@ class ExecCoreRuntimeTests(unittest.TestCase):
             opener=None,
             built_tools=None,
             max_tool_followups=5,
+            auth_manager=ANY,
         )
+        self.assertTrue(hasattr(run_fresh.call_args.kwargs["auth_manager"], "unauthorized_recovery"))
         persist_result.assert_called_once_with(
             "exec",
             "home",

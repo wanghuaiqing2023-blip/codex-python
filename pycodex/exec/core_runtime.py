@@ -155,8 +155,14 @@ async def run_core_exec_command(
     built_tools: Any = None,
     max_tool_followups: int | None = None,
     cli_version: str,
+    auth_manager: Any = None,
 ) -> Any:
     """Run one prepared non-interactive core exec command and persist owned turns."""
+
+    if auth_manager is None:
+        from pycodex.login.auth.manager import AuthManager
+
+        auth_manager = await AuthManager.new(codex_home, True)
 
     if command == "review":
         result = await run_exec_review_core_http_sampling(
@@ -171,6 +177,7 @@ async def run_core_exec_command(
             opener=opener,
             built_tools=built_tools,
             max_tool_followups=max_tool_followups,
+            auth_manager=auth_manager,
         )
         persist_core_exec_result(
             command,
@@ -207,6 +214,7 @@ async def run_core_exec_command(
                 opener=opener,
                 built_tools=built_tools,
                 max_tool_followups=max_tool_followups,
+                auth_manager=auth_manager,
             )
             persist_core_exec_result(
                 "exec",
@@ -236,6 +244,7 @@ async def run_core_exec_command(
             built_tools=built_tools,
             resolved_rollout_path=target.rollout_path,
             max_tool_followups=max_tool_followups,
+            auth_manager=auth_manager,
         )
 
     result = await run_exec_user_turn_core_http_sampling(
@@ -250,6 +259,7 @@ async def run_core_exec_command(
         opener=opener,
         built_tools=built_tools,
         max_tool_followups=max_tool_followups,
+        auth_manager=auth_manager,
     )
     persist_core_exec_result(
         command or "exec",

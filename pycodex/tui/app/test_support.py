@@ -69,6 +69,11 @@ def test_session_telemetry(config: Any, model: str) -> TestSessionTelemetry:
     )
 
 
+TestSessionTelemetry.__test__ = False
+TestAppFixturePlan.__test__ = False
+test_session_telemetry.__test__ = False
+
+
 def app_enabled_in_effective_config(config: Any, app_id: str) -> Optional[bool]:
     stack = _get(config, "config_layer_stack")
     if stack is None:

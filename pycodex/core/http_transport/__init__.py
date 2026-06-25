@@ -8,16 +8,19 @@ import os
 import re
 import inspect
 import importlib
-from collections.abc import Mapping
+import time
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
+from types import SimpleNamespace
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from urllib.parse import urljoin
 
 from pycodex.core.client import (
+    LastResponse,
     ModelClient,
     ModelClientSession,
     RESPONSES_ENDPOINT,
@@ -25,13 +28,21 @@ from pycodex.core.client import (
     build_responses_headers,
     build_session_headers,
     insert_header_if_valid,
+    stamp_ws_stream_request_start_ms,
 )
+from pycodex.codex_api import map_api_error
+from pycodex.codex_api.common import ResponseEvent
+from pycodex.codex_api.endpoint.responses_websocket import ResponsesWebsocketClient
+from pycodex.codex_api.error import ApiError
+from pycodex.codex_api.provider import Provider as CodexApiProvider
+from pycodex.codex_api.provider import RetryConfig
+from pycodex.codex_client import TransportError
 from pycodex.core.session.turn.sampler import PreparedSamplingRequest, PreparedSamplingResult
 from pycodex.core.session.turn.sampler import sample_with_model_client_session
 from pycodex.core.session.turn.sampler import sample_with_model_client_session_retries
 from pycodex.core.session.turn.runtime import BuiltToolsFn, SamplerFn, UserTurnSamplingResult
 from pycodex.core.session.turn.runtime import run_user_turn_sampling_from_session
-from pycodex.protocol import AuthPlanType, CodexErr, CodexErrorInfo, ConnectionFailedError, ContentItem, CreditsSnapshot
+from pycodex.protocol import AccountPlanType, AuthPlanType, CodexErr, CodexErrorInfo, ConnectionFailedError, ContentItem, CreditsSnapshot
 from pycodex.protocol import EventMsg, StreamErrorEvent, WarningEvent
 from pycodex.protocol import ModelVerification
 from pycodex.protocol import RateLimitReachedType, RateLimitSnapshot, RateLimitWindow
@@ -46,6 +57,18 @@ X_REASONING_INCLUDED_HEADER = "x-reasoning-included"
 X_MODELS_ETAG_HEADER = "x-models-etag"
 DEFAULT_STREAM_MAX_RETRIES = 5
 MAX_STREAM_MAX_RETRIES = 100
+
+
+def _timing_trace(event: str, **fields: Any) -> None:
+    path = os.environ.get("PYCODEX_TUI_TIMING_LOG")
+    if not path:
+        return
+    record = {"t": time.monotonic(), "event": event, **fields}
+    try:
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True, default=str) + "\n")
+    except OSError:
+        return
 
 
 @dataclass(frozen=True)
@@ -154,6 +177,142 @@ def send_prepared_http_sampling_request(
     )
 
 
+async def send_prepared_http_sampling_request_live(
+    prepared: PreparedSamplingRequest,
+    config: HttpTransportConfig,
+    *,
+    opener: Any = None,
+) -> PreparedSamplingResult:
+    """Send a prepared HTTP request and forward SSE events as they arrive.
+
+    Rust source: ``codex-core/src/client.rs::stream_responses_api`` maps the
+    response stream into Codex events before the full response completes.  This
+    async wrapper keeps stdlib HTTP but preserves that live-event contract for
+    callers that provide ``sampling_request.stream_event_observer``.
+    """
+
+    json_request = _to_json_compatible(prepared.prepared_request)
+    body = json.dumps(json_request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    headers = _request_headers_for_config(config)
+    body, headers = prepare_request_body_for_transport(body, headers, config)
+    request = Request(config.endpoint, data=body, headers=headers, method="POST")
+    open_fn = opener if opener is not None else urlopen
+    try:
+        response = open_fn(request, timeout=config.timeout) if config.timeout is not None else open_fn(request)
+    except HTTPError as exc:
+        raise _codex_err_from_http_error(exc) from exc
+    except TimeoutError as exc:
+        raise CodexErr.simple("request_timeout") from exc
+    except URLError as exc:
+        raise _codex_err_from_url_error(exc) from exc
+    response_headers = _response_headers(response)
+    _record_turn_state_from_headers(config.turn_state, response_headers)
+    live_stream_events_emitted = False
+    with response:
+        try:
+            readline = getattr(response, "readline", None)
+            if callable(readline):
+                payload, live_stream_events_emitted = await _read_http_response_payload_live(
+                    prepared,
+                    response,
+                    readline,
+                )
+            else:
+                payload = response.read()
+        except OSError as exc:
+            raise CodexErr.response_stream_failed(ResponseStreamFailed(str(exc))) from exc
+    try:
+        decoded = json.loads(payload.decode("utf-8"))
+    except UnicodeDecodeError as exc:
+        raise CodexErr.response_stream_failed(ResponseStreamFailed(str(exc))) from exc
+    except json.JSONDecodeError:
+        return _prepared_sampling_result_from_sse(
+            prepared,
+            payload,
+            headers=response_headers,
+            live_stream_events_emitted=live_stream_events_emitted,
+        )
+    payload_error = _codex_err_from_responses_payload(decoded)
+    if payload_error is not None:
+        raise payload_error
+    response_items = response_items_from_responses_payload(decoded)
+    return PreparedSamplingResult(
+        prepared_request=prepared.prepared_request,
+        response_items=response_items,
+        raw_result=decoded,
+        mode=prepared.mode,
+        rate_limits=_parse_all_rate_limits(response_headers),
+        server_model=_non_empty_header(response_headers, OPENAI_MODEL_HEADER),
+        server_models=tuple(_single_optional(_non_empty_header(response_headers, OPENAI_MODEL_HEADER))),
+        server_reasoning_included=_server_reasoning_included(response_headers),
+        models_etag=_non_empty_header(response_headers, X_MODELS_ETAG_HEADER),
+        end_turn=decoded.get("end_turn") if isinstance(decoded.get("end_turn"), bool) else None,
+        stream_events=(),
+        live_stream_events_emitted=live_stream_events_emitted,
+    )
+
+
+async def _read_http_response_payload_live(
+    prepared: PreparedSamplingRequest,
+    response: Any,
+    readline: Any,
+) -> tuple[bytes, bool]:
+    chunks: list[bytes] = []
+    data_lines: list[str] = []
+    event_name: str | None = None
+    live_stream_events_emitted = False
+    while True:
+        line_bytes = readline()
+        if not line_bytes:
+            break
+        if isinstance(line_bytes, str):
+            raw_line = line_bytes
+            chunks.append(line_bytes.encode("utf-8"))
+        else:
+            chunks.append(bytes(line_bytes))
+            raw_line = bytes(line_bytes).decode("utf-8", errors="replace")
+        line = raw_line.rstrip("\r\n")
+        if not line:
+            event = _sse_json_event_from_lines(data_lines, event_name)
+            data_lines = []
+            event_name = None
+            if event is not None:
+                live_stream_events_emitted = (
+                    await _notify_live_sse_event(prepared, event) or live_stream_events_emitted
+                )
+            continue
+        if line.startswith(":"):
+            continue
+        if line.startswith("event:"):
+            event_name = line[6:].strip() or None
+        elif line.startswith("data:"):
+            data_lines.append(line[5:].lstrip(" "))
+    event = _sse_json_event_from_lines(data_lines, event_name)
+    if event is not None:
+        live_stream_events_emitted = await _notify_live_sse_event(prepared, event) or live_stream_events_emitted
+    return b"".join(chunks), live_stream_events_emitted
+
+
+async def _notify_live_sse_event(prepared: PreparedSamplingRequest, event: Mapping[str, Any]) -> bool:
+    if event.get("type") == "response.completed":
+        return False
+    response_event = _response_event_from_sse_event(event)
+    if response_event is None:
+        return False
+    item = response_event.get("item")
+    _timing_trace(
+        "http_sse_live_event",
+        type=response_event.get("type"),
+        item_type=getattr(item, "type", None),
+        item_name=getattr(item, "name", None),
+        call_id=getattr(item, "call_id", None),
+    )
+    return await _notify_stream_event_observer(
+        getattr(prepared.sampling_request, "stream_event_observer", None),
+        response_event,
+    )
+
+
 def _request_headers_for_config(config: HttpTransportConfig) -> dict[str, str]:
     headers = {"Content-Type": "application/json", **dict(config.headers or {})}
     turn_state = getattr(config, "turn_state", None)
@@ -231,6 +390,7 @@ def _prepared_sampling_result_from_sse(
     payload: bytes,
     *,
     headers: Any = None,
+    live_stream_events_emitted: bool = False,
 ) -> PreparedSamplingResult:
     try:
         text = payload.decode("utf-8")
@@ -260,6 +420,7 @@ def _prepared_sampling_result_from_sse(
         model_verifications=tuple(parsed.get("model_verifications") or ()),
         end_turn=parsed.get("end_turn") if isinstance(parsed.get("end_turn"), bool) else None,
         stream_events=header_events + parsed_stream_events,
+        live_stream_events_emitted=live_stream_events_emitted,
     )
 
 
@@ -515,20 +676,26 @@ def _iter_sse_json_events(text: str) -> tuple[Mapping[str, Any], ...]:
 
 
 def _append_sse_event(events: list[Mapping[str, Any]], data_lines: list[str], event_name: str | None = None) -> None:
+    parsed = _sse_json_event_from_lines(data_lines, event_name)
+    if parsed is not None:
+        events.append(parsed)
+
+
+def _sse_json_event_from_lines(data_lines: list[str], event_name: str | None = None) -> Mapping[str, Any] | None:
     if not data_lines:
-        return
+        return None
     data = "\n".join(data_lines).strip()
     if not data or data == "[DONE]":
-        return
+        return None
     try:
         parsed = json.loads(data)
     except json.JSONDecodeError:
-        return
+        return None
     if not isinstance(parsed, Mapping):
-        return
+        return None
     if event_name and "type" not in parsed:
         parsed = {"type": event_name, **dict(parsed)}
-    events.append(parsed)
+    return parsed
 
 
 def _sse_response_model(event: Mapping[str, Any]) -> str | None:
@@ -1228,15 +1395,38 @@ def model_client_http_sampler(
     max_retries: int | None = None,
     sleep: Any = None,
     on_retry_decision: Any = None,
+    auth_manager: Any = None,
+    config_factory: Any = None,
 ) -> SamplerFn:
     """Create a sampler using ``ModelClientSession`` plus stdlib HTTP."""
 
     effective_config = config
     if getattr(effective_config, "turn_state", None) is None:
         effective_config = replace(effective_config, turn_state=model_session.turn_state)
+    auth_recovery = auth_manager.unauthorized_recovery() if auth_manager is not None else None
 
     async def sampler(sampling_request):
-        transport = lambda prepared: send_prepared_http_sampling_request(prepared, effective_config, opener=opener)
+        async def transport(prepared):
+            nonlocal effective_config
+            while True:
+                try:
+                    return await send_prepared_http_sampling_request_live(prepared, effective_config, opener=opener)
+                except CodexErr as exc:
+                    if not _codex_err_is_unauthorized(exc):
+                        raise
+                    if auth_recovery is None or not auth_recovery.has_next():
+                        raise
+                    try:
+                        await _maybe_await(auth_recovery.next())
+                    except Exception as refresh_exc:
+                        error = getattr(refresh_exc, "error", refresh_exc)
+                        raise CodexErr("refresh_token_failed", payload=error) from refresh_exc
+                    if callable(config_factory):
+                        rebuilt = config_factory()
+                        if getattr(rebuilt, "turn_state", None) is None:
+                            rebuilt = replace(rebuilt, turn_state=model_session.turn_state)
+                        effective_config = rebuilt
+
         if max_retries is None:
             return await sample_with_model_client_session(sampling_request, model_session, transport)
         retry_decision_callback = _http_sampling_retry_decision_callback(
@@ -1254,6 +1444,602 @@ def model_client_http_sampler(
         )
 
     return sampler
+
+
+class _FallbackToHttp(Exception):
+    pass
+
+
+@dataclass(frozen=True)
+class _JsonWsRequest:
+    payload: Mapping[str, Any]
+
+    def to_json_dict(self) -> dict[str, Any]:
+        return dict(self.payload)
+
+
+@dataclass(frozen=True)
+class _AuthHeadersAdapter:
+    auth: Any
+
+    def add_auth_headers(self, headers: dict[str, str]) -> None:
+        for key, value in _auth_headers_from_value(self.auth).items():
+            headers[key] = value
+
+
+def model_client_websocket_preferred_sampler(
+    model_session: ModelClientSession,
+    config: HttpTransportConfig,
+    *,
+    opener: Any = None,
+    max_retries: int | None = None,
+    sleep: Any = None,
+    on_retry_decision: Any = None,
+    auth_manager: Any = None,
+    config_factory: Any = None,
+    websocket_connector: Any = None,
+    turn_metadata_header: str | None = None,
+    stream_event_observer: Any = None,
+) -> SamplerFn:
+    """Create a Rust-shaped sampler that prefers Responses WebSocket.
+
+    Rust source: ``codex-rs/core/src/client.rs::ModelClientSession::stream``.
+    Contract: Responses transport first attempts ``stream_responses_websocket``
+    when the provider supports websockets; HTTP is used only after a websocket
+    fallback decision or when websockets are disabled.
+    """
+
+    effective_config = config
+    auth_recovery = auth_manager.unauthorized_recovery() if auth_manager is not None else None
+    async def sampler(sampling_request):
+        if model_session.client.responses_websocket_enabled():
+            nonlocal effective_config
+
+            async def websocket_transport(prepared: PreparedSamplingRequest) -> PreparedSamplingResult:
+                nonlocal effective_config
+                try:
+                    return await _send_prepared_websocket_sampling_request(
+                        prepared,
+                        model_session,
+                        auth=_websocket_auth_for_config(effective_config),
+                        connector=websocket_connector,
+                        turn_metadata_header=turn_metadata_header,
+                        stream_event_observer=stream_event_observer,
+                    )
+                except _FallbackToHttp:
+                    raise
+                except ApiError as exc:
+                    if _api_error_is_unauthorized(exc) and auth_recovery is not None and auth_recovery.has_next():
+                        try:
+                            await _maybe_await(auth_recovery.next())
+                        except Exception as refresh_exc:
+                            error = getattr(refresh_exc, "error", refresh_exc)
+                            raise CodexErr("refresh_token_failed", payload=error) from refresh_exc
+                        if callable(config_factory):
+                            rebuilt = config_factory()
+                            if getattr(rebuilt, "turn_state", None) is None:
+                                rebuilt = replace(rebuilt, turn_state=model_session.turn_state)
+                            effective_config = rebuilt
+                        model_session.reset_websocket_session()
+                        return await websocket_transport(prepared)
+                    raise map_api_error(exc) from exc
+
+            async def http_fallback_transport(prepared: PreparedSamplingRequest) -> Any:
+                _timing_trace("websocket_fallback_to_http")
+                model_session.force_http_fallback(
+                    getattr(sampling_request, "session_telemetry", None),
+                    getattr(sampling_request, "model_info", None),
+                )
+                return await http_transport(prepared)
+
+            async def http_transport(prepared: PreparedSamplingRequest) -> Any:
+                nonlocal effective_config
+                while True:
+                    try:
+                        _timing_trace("http_sampling_request_start")
+                        return await send_prepared_http_sampling_request_live(prepared, effective_config, opener=opener)
+                    except CodexErr as exc:
+                        if not _codex_err_is_unauthorized(exc):
+                            raise
+                        if auth_recovery is None or not auth_recovery.has_next():
+                            raise
+                        try:
+                            await _maybe_await(auth_recovery.next())
+                        except Exception as refresh_exc:
+                            error = getattr(refresh_exc, "error", refresh_exc)
+                            raise CodexErr("refresh_token_failed", payload=error) from refresh_exc
+                        if callable(config_factory):
+                            rebuilt = config_factory()
+                            if getattr(rebuilt, "turn_state", None) is None:
+                                rebuilt = replace(rebuilt, turn_state=model_session.turn_state)
+                            effective_config = rebuilt
+
+            try:
+                sampled = await sample_with_model_client_session_retries(
+                    sampling_request,
+                    model_session,
+                    websocket_transport,
+                    max_retries=http_sampling_stream_max_retries(model_session.client.state.provider)
+                    if max_retries is None
+                    else max_retries,
+                    fallback_transport=http_fallback_transport,
+                    responses_websocket_enabled=True,
+                    sleep=sleep,
+                    on_retry_decision=_http_sampling_retry_decision_callback(
+                        getattr(sampling_request, "session", None),
+                        getattr(sampling_request, "turn_context", None),
+                        on_retry_decision,
+                    ),
+                    mode="http",
+                )
+                if isinstance(sampled.raw_result, PreparedSamplingResult):
+                    return sampled.raw_result
+                return sampled
+            except _FallbackToHttp:
+                model_session.force_http_fallback(
+                    getattr(sampling_request, "session_telemetry", None),
+                    getattr(sampling_request, "model_info", None),
+                )
+        http_sampler = model_client_http_sampler(
+            model_session,
+            effective_config,
+            opener=opener,
+            max_retries=max_retries,
+            sleep=sleep,
+            on_retry_decision=on_retry_decision,
+            auth_manager=auth_manager,
+            config_factory=config_factory,
+        )
+        return await http_sampler(sampling_request)
+
+    return sampler
+
+
+async def prewarm_model_client_websocket_session(
+    model_session: ModelClientSession,
+    config: HttpTransportConfig,
+    *,
+    model: str | None = None,
+    request: Mapping[str, Any] | None = None,
+    connector: Any = None,
+    turn_metadata_header: str | None = None,
+) -> PreparedSamplingResult | None:
+    """Warm a ``ModelClientSession`` websocket before the first regular turn.
+
+    Rust source:
+    ``codex-rs/core/src/session_startup_prewarm.rs::schedule_startup_prewarm_inner``.
+    Contract: startup prewarm creates a client session, sends a
+    ``generate=false`` websocket request, and returns that same session for the
+    first regular turn to consume.
+    """
+
+    if not model_session.client.responses_websocket_enabled():
+        _timing_trace("prewarm_websocket_skipped", reason="websocket_disabled")
+        return None
+    if request is None:
+        if not model:
+            raise ValueError("model is required when request is not provided")
+        request = {
+            "model": model,
+            "input": [],
+            "stream": True,
+            "store": False,
+        }
+    logical_request = dict(request)
+    prepared = PreparedSamplingRequest(
+        sampling_request=SimpleNamespace(stream_event_observer=None),
+        prepared_request=model_session.prepare_http_request(logical_request),
+        mode="responses_websocket",
+    )
+    _timing_trace("prewarm_websocket_request_built", input_len=len(logical_request.get("input") or ()))
+    result = await _send_prepared_websocket_sampling_request(
+        prepared,
+        model_session,
+        auth=_websocket_auth_for_config(config),
+        connector=connector,
+        turn_metadata_header=turn_metadata_header,
+        warmup=True,
+    )
+    _timing_trace("prewarm_websocket_completed", events=len(result.stream_events))
+    return result
+
+
+async def _send_prepared_websocket_sampling_request(
+    prepared: PreparedSamplingRequest,
+    model_session: ModelClientSession,
+    *,
+    auth: Any,
+    connector: Any = None,
+    turn_metadata_header: str | None = None,
+    stream_event_observer: Any = None,
+    warmup: bool = False,
+) -> PreparedSamplingResult:
+    setup = await model_session.client.current_client_setup()
+    api_provider = setup.api_provider or await _api_provider_from_model_provider(model_session.client.state.provider)
+    api_auth = auth if auth is not None else setup.api_auth
+    provider = _codex_api_provider(api_provider)
+
+    needs_new = model_session.websocket_connection_needs_new()
+    if needs_new:
+        _timing_trace("websocket_connect_start", warmup=warmup)
+        headers = model_session.client.build_websocket_headers(
+            turn_state=model_session.turn_state,
+            turn_metadata_header=turn_metadata_header,
+        )
+        websocket_client = ResponsesWebsocketClient.new(
+            provider,
+            _AuthHeadersAdapter(api_auth),
+            connector=connector,
+        )
+        try:
+            connection = websocket_client.connect(extra_headers=headers, turn_state=model_session.turn_state)
+        except ApiError as exc:
+            if _api_error_is_upgrade_required(exc):
+                _timing_trace("websocket_connect_fallback_to_http", warmup=warmup)
+                raise _FallbackToHttp() from exc
+            _timing_trace("websocket_connect_failed", warmup=warmup, error=str(exc))
+            raise
+        model_session.apply_websocket_connection_lifecycle(True, connection=connection)
+        _timing_trace("websocket_connect_done", warmup=warmup)
+    else:
+        model_session.apply_websocket_connection_lifecycle(False)
+        _timing_trace("websocket_connect_reused", warmup=warmup)
+
+    payload = model_session.client.build_websocket_payload(
+        prepared.prepared_request,
+        turn_metadata_header=turn_metadata_header,
+    )
+    if warmup:
+        payload = dict(payload)
+        payload["generate"] = False
+    websocket_request, from_untraced_warmup = model_session.prepare_websocket_request(
+        payload,
+        prepared.prepared_request,
+    )
+    stamp_ws_stream_request_start_ms(websocket_request)
+    connection = model_session.websocket_session.connection
+    if connection is None:
+        raise ApiError.stream("websocket connection is unavailable")
+    _timing_trace("websocket_stream_request_start", warmup=warmup, reused=model_session.websocket_session.connection_reused())
+    stream = connection.stream_request(
+        _JsonWsRequest(websocket_request),
+        model_session.websocket_session.connection_reused(),
+    )
+    result = await _prepared_sampling_result_from_response_stream(
+        prepared,
+        stream,
+        stream_event_observer=stream_event_observer,
+    )
+    completed_id = _completed_response_id_from_stream_events(result.stream_events)
+    if completed_id is not None:
+        model_session.websocket_session.last_response = LastResponse(
+            completed_id,
+            result.response_items,
+        )
+        model_session.websocket_session.last_response_from_untraced_warmup = warmup
+    model_session.websocket_session.last_request = dict(prepared.prepared_request)
+    _timing_trace(
+        "websocket_stream_request_done",
+        warmup=warmup,
+        completed_id=completed_id,
+        items=len(result.response_items),
+        events=len(result.stream_events),
+    )
+    return result
+
+
+async def _prepared_sampling_result_from_response_stream(
+    prepared: PreparedSamplingRequest,
+    stream: Any,
+    *,
+    stream_event_observer: Any = None,
+) -> PreparedSamplingResult:
+    response_items: list[ResponseItem] = []
+    stream_events: list[dict[str, Any]] = []
+    server_model: str | None = None
+    server_models: list[str] = []
+    models_etag: str | None = None
+    model_verifications: list[Any] = []
+    rate_limits: list[Any] = []
+    server_reasoning_included: bool | None = None
+    end_turn: bool | None = None
+    live_stream_events_emitted = False
+
+    first_event = True
+    for event in stream:
+        if first_event:
+            _timing_trace("websocket_stream_first_event")
+            first_event = False
+        if isinstance(event, ApiError):
+            _timing_trace("websocket_stream_api_error", error=str(event))
+            raise event
+        if not isinstance(event, ResponseEvent):
+            continue
+        kind = event.kind
+        value = event.value
+        if kind == "server_model":
+            server_model = str(value)
+            server_models.append(server_model)
+            stream_events.append({"type": "server_model", "server_model": server_model})
+        elif kind == "models_etag":
+            models_etag = str(value)
+            stream_events.append({"type": "models_etag", "models_etag": models_etag})
+        elif kind == "model_verifications":
+            values = tuple(value or ())
+            model_verifications.extend(values)
+            stream_events.append({"type": "model_verifications", "model_verifications": values})
+        elif kind == "rate_limits":
+            snapshot = _protocol_rate_limit_snapshot_or_none(value)
+            if snapshot is not None:
+                event = {"type": "rate_limits", "rate_limits": snapshot}
+                rate_limits.append(snapshot)
+                stream_events.append(event)
+                live_stream_events_emitted = await _notify_stream_event_observers(prepared, stream_event_observer, event) or live_stream_events_emitted
+        elif kind == "server_reasoning_included":
+            server_reasoning_included = bool(value)
+            event = {"type": "server_reasoning_included", "server_reasoning_included": True}
+            stream_events.append(event)
+            live_stream_events_emitted = await _notify_stream_event_observers(prepared, stream_event_observer, event) or live_stream_events_emitted
+        elif kind == "output_item_added":
+            item = _response_item_or_none(value)
+            if item is not None:
+                event = {"type": "output_item_added", "item": item}
+                stream_events.append(event)
+                live_stream_events_emitted = await _notify_stream_event_observers(prepared, stream_event_observer, event) or live_stream_events_emitted
+        elif kind == "output_item_done":
+            item = _response_item_or_none(value)
+            if item is not None:
+                response_items.append(item)
+                event = {"type": "output_item_done", "item": item}
+                stream_events.append(event)
+                live_stream_events_emitted = await _notify_stream_event_observers(prepared, stream_event_observer, event) or live_stream_events_emitted
+        elif kind == "output_text_delta":
+            event = {"type": "output_text_delta", "delta": str(value)}
+            stream_events.append(event)
+            live_stream_events_emitted = await _notify_stream_event_observers(prepared, stream_event_observer, event) or live_stream_events_emitted
+        elif kind == "tool_call_input_delta":
+            if isinstance(value, Mapping):
+                event = {"type": "tool_call_input_delta", **dict(value)}
+                stream_events.append(event)
+                live_stream_events_emitted = await _notify_stream_event_observers(prepared, stream_event_observer, event) or live_stream_events_emitted
+        elif kind in {"reasoning_summary_delta", "reasoning_content_delta"}:
+            if isinstance(value, Mapping):
+                event = {"type": kind, **dict(value)}
+                stream_events.append(event)
+                live_stream_events_emitted = await _notify_stream_event_observers(prepared, stream_event_observer, event) or live_stream_events_emitted
+        elif kind == "completed":
+            if isinstance(value, Mapping):
+                end_turn_value = value.get("end_turn")
+                end_turn = end_turn_value if isinstance(end_turn_value, bool) else None
+                event = {"type": "completed", **dict(value)}
+                stream_events.append(event)
+                live_stream_events_emitted = await _notify_stream_event_observers(prepared, stream_event_observer, event) or live_stream_events_emitted
+
+    if not any(event.get("type") == "completed" for event in stream_events):
+        raise ApiError.stream("stream closed before response.completed")
+
+    return PreparedSamplingResult(
+        prepared_request=prepared.prepared_request,
+        response_items=tuple(response_items),
+        raw_result=None,
+        mode="responses_websocket",
+        rate_limits=tuple(rate_limits),
+        server_model=server_model,
+        server_models=tuple(server_models),
+        server_reasoning_included=server_reasoning_included,
+        models_etag=models_etag,
+        model_verifications=tuple(model_verifications),
+        end_turn=end_turn,
+        stream_events=tuple(stream_events),
+        live_stream_events_emitted=live_stream_events_emitted,
+    )
+
+
+async def _notify_stream_event_observers(
+    prepared: PreparedSamplingRequest,
+    observer: Any,
+    event: Mapping[str, Any],
+) -> bool:
+    internal_emitted = await _notify_stream_event_observer(
+        getattr(prepared.sampling_request, "stream_event_observer", None),
+        event,
+    )
+    external_emitted = await _notify_stream_event_observer(observer, event)
+    return internal_emitted or external_emitted
+
+
+async def _notify_stream_event_observer(observer: Any, event: Mapping[str, Any]) -> bool:
+    if not callable(observer):
+        return False
+    result = observer(dict(event))
+    if inspect.isawaitable(result):
+        await result
+    return True
+
+
+def _response_item_or_none(value: Any) -> ResponseItem | None:
+    if isinstance(value, ResponseItem):
+        return value
+    if isinstance(value, Mapping):
+        try:
+            return ResponseItem.from_mapping(value)
+        except Exception:
+            return None
+    return None
+
+
+def _protocol_rate_limit_snapshot_or_none(value: Any) -> RateLimitSnapshot | None:
+    if isinstance(value, RateLimitSnapshot):
+        return value
+    primary = _protocol_rate_limit_window_or_none(getattr(value, "primary", None))
+    secondary = _protocol_rate_limit_window_or_none(getattr(value, "secondary", None))
+    credits = _protocol_credits_snapshot_or_none(getattr(value, "credits", None))
+    limit_id = getattr(value, "limit_id", None)
+    limit_name = getattr(value, "limit_name", None)
+    plan_type = getattr(value, "plan_type", None)
+    reached_type = getattr(value, "rate_limit_reached_type", None)
+    if not any(item is not None for item in (primary, secondary, credits, limit_id, limit_name, plan_type, reached_type)):
+        return None
+    return RateLimitSnapshot(
+        limit_id=limit_id if isinstance(limit_id, str) else None,
+        limit_name=limit_name if isinstance(limit_name, str) else None,
+        primary=primary,
+        secondary=secondary,
+        credits=credits,
+        plan_type=_parse_account_plan_type_or_none(plan_type),
+        rate_limit_reached_type=_parse_rate_limit_reached_type_or_none(reached_type),
+    )
+
+
+def _protocol_rate_limit_window_or_none(value: Any) -> RateLimitWindow | None:
+    if isinstance(value, RateLimitWindow):
+        return value
+    used_percent = getattr(value, "used_percent", None)
+    if not isinstance(used_percent, int | float):
+        return None
+    window_minutes = getattr(value, "window_minutes", None)
+    resets_at = getattr(value, "resets_at", None)
+    return RateLimitWindow(
+        used_percent=float(used_percent),
+        window_minutes=window_minutes if isinstance(window_minutes, int) else None,
+        resets_at=resets_at if isinstance(resets_at, int) else None,
+    )
+
+
+def _protocol_credits_snapshot_or_none(value: Any) -> CreditsSnapshot | None:
+    if isinstance(value, CreditsSnapshot):
+        return value
+    has_credits = getattr(value, "has_credits", None)
+    unlimited = getattr(value, "unlimited", None)
+    if not isinstance(has_credits, bool) or not isinstance(unlimited, bool):
+        return None
+    balance = getattr(value, "balance", None)
+    return CreditsSnapshot(
+        has_credits=has_credits,
+        unlimited=unlimited,
+        balance=balance if isinstance(balance, str) else None,
+    )
+
+
+def _parse_account_plan_type_or_none(value: Any) -> AccountPlanType | None:
+    if isinstance(value, AccountPlanType):
+        return value
+    if not isinstance(value, str):
+        return None
+    try:
+        return AccountPlanType.parse(value)
+    except ValueError:
+        return None
+
+
+def _parse_rate_limit_reached_type_or_none(value: Any) -> RateLimitReachedType | None:
+    if isinstance(value, RateLimitReachedType):
+        return value
+    if not isinstance(value, str):
+        return None
+    try:
+        return RateLimitReachedType.parse(value)
+    except ValueError:
+        return None
+
+
+def _completed_response_id_from_stream_events(events: Sequence[Any]) -> str | None:
+    for event in reversed(tuple(events)):
+        if isinstance(event, Mapping) and event.get("type") == "completed":
+            response_id = event.get("response_id")
+            return response_id if isinstance(response_id, str) else None
+    return None
+
+
+def _api_error_is_upgrade_required(error: ApiError) -> bool:
+    transport = error.transport if error.kind == "transport" else None
+    return isinstance(transport, TransportError) and transport.kind == "http" and transport.status == 426
+
+
+def _api_error_is_unauthorized(error: ApiError) -> bool:
+    transport = error.transport if error.kind == "transport" else None
+    return isinstance(transport, TransportError) and transport.kind == "http" and transport.status == 401
+
+
+def _websocket_auth_for_config(config: HttpTransportConfig) -> Any:
+    headers = dict(config.headers or {})
+    auth_header = headers.get("Authorization") or headers.get("authorization")
+    account_id = headers.get("ChatGPT-Account-ID") or headers.get("chatgpt-account-id")
+    fedramp = (headers.get("X-OpenAI-Fedramp") or headers.get("x-openai-fedramp")) == "true"
+    return {
+        **({"Authorization": auth_header} if auth_header else {}),
+        **({"ChatGPT-Account-ID": account_id} if account_id else {}),
+        **({"X-OpenAI-Fedramp": "true"} if fedramp else {}),
+    }
+
+
+def _auth_headers_from_value(auth: Any) -> dict[str, str]:
+    if auth is None:
+        return {}
+    if isinstance(auth, Mapping):
+        if "Authorization" in auth or "authorization" in auth:
+            return {str(key): str(value) for key, value in auth.items()}
+        if "token" in auth:
+            return {"Authorization": f"Bearer {auth['token']}"}
+        return {str(key): str(value) for key, value in auth.items()}
+    to_auth_headers = getattr(auth, "to_auth_headers", None)
+    if callable(to_auth_headers):
+        return {str(key): str(value) for key, value in dict(to_auth_headers() or {}).items()}
+    add_auth_headers = getattr(auth, "add_auth_headers", None)
+    if callable(add_auth_headers):
+        headers: dict[str, str] = {}
+        add_auth_headers(headers)
+        return headers
+    if isinstance(auth, str):
+        return {"Authorization": f"Bearer {auth}"}
+    return {}
+
+
+async def _api_provider_from_model_provider(provider: Any) -> Any:
+    api_provider = getattr(provider, "api_provider", None)
+    if callable(api_provider):
+        value = api_provider()
+        return await value if inspect.isawaitable(value) else value
+    return provider
+
+
+def _codex_api_provider(value: Any) -> Any:
+    if hasattr(value, "websocket_url_for_path"):
+        return value
+    base_url = getattr(value, "base_url", None)
+    if base_url is None and isinstance(value, Mapping):
+        base_url = value.get("base_url")
+    if not isinstance(base_url, str) or not base_url:
+        raise ApiError.stream("websocket provider missing base_url")
+    headers = getattr(value, "headers", None)
+    if headers is None and isinstance(value, Mapping):
+        headers = value.get("headers")
+    query_params = getattr(value, "query_params", None)
+    if query_params is None and isinstance(value, Mapping):
+        query_params = value.get("query_params")
+    idle_ms = getattr(value, "stream_idle_timeout_ms", None)
+    if idle_ms is None:
+        idle_method = getattr(value, "stream_idle_timeout", None)
+        if callable(idle_method):
+            idle_ms = idle_method()
+    idle_seconds = (float(idle_ms) / 1000.0) if idle_ms is not None else None
+    return CodexApiProvider(
+        name=str(getattr(value, "name", "OpenAI")),
+        base_url=base_url,
+        query_params=query_params,
+        headers=dict(headers or {}),
+        retry=RetryConfig(max_attempts=1, base_delay=0.0, retry_429=False, retry_5xx=False, retry_transport=False),
+        stream_idle_timeout=idle_seconds,
+    )
+
+
+def _codex_err_is_unauthorized(error: CodexErr) -> bool:
+    payload = getattr(error, "payload", None)
+    return (
+        getattr(error, "kind", None) == "unexpected_status"
+        and isinstance(payload, UnexpectedResponseError)
+        and payload.status == 401
+    )
 
 
 def http_sampling_stream_max_retries(provider: Any) -> int:
@@ -1439,6 +2225,8 @@ __all__ = [
     "http_sampling_stream_max_retries",
     "http_transport_config_from_provider",
     "model_client_http_sampler",
+    "model_client_websocket_preferred_sampler",
+    "prewarm_model_client_websocket_session",
     "prepare_request_body_for_transport",
     "response_items_from_responses_payload",
     "run_user_turn_http_sampling_from_session",

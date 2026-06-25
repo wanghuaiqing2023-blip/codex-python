@@ -473,6 +473,26 @@ class ProtocolModelsContentTests(unittest.TestCase):
         self.assertEqual(custom_output.name, "tool")
         self.assertEqual(tool_search.to_mapping()["tools"], [{"name": "lookup"}])
 
+    def test_response_item_function_call_output_keeps_success_internal_for_followup_requests(self):
+        # Rust parity: codex-protocol/src/models.rs FunctionCallOutputPayload
+        # serializes the payload body as function_call_output.output while
+        # `success` remains internal metadata for downstream handling.
+        item = ResponseItem(
+            type="function_call_output",
+            call_id="call-1",
+            output=FunctionCallOutputPayload.text("failed", success=False),
+        )
+
+        self.assertEqual(item.output.success, False)
+        self.assertEqual(
+            item.to_mapping(),
+            {
+                "type": "function_call_output",
+                "call_id": "call-1",
+                "output": "failed",
+            },
+        )
+
     def test_response_input_function_call_output_success_serializes_plain_string_match_rust(self):
         # Rust parity: codex-protocol/src/models.rs
         # serializes_success_as_plain_string.
@@ -498,13 +518,13 @@ class ProtocolModelsContentTests(unittest.TestCase):
             FunctionCallOutputPayload.text("bad", success=False),
         )
 
+        self.assertEqual(item.output.success, False)
         self.assertEqual(
             item.to_mapping(),
             {
                 "type": "function_call_output",
                 "call_id": "call1",
                 "output": "bad",
-                "success": False,
             },
         )
 
@@ -537,7 +557,6 @@ class ProtocolModelsContentTests(unittest.TestCase):
                         "detail": DEFAULT_IMAGE_DETAIL.to_json(),
                     },
                 ],
-                "success": True,
             },
         )
 
@@ -1167,6 +1186,16 @@ class ProtocolModelsContentTests(unittest.TestCase):
         self.assertFalse(should_serialize_reasoning_content(reasoning))
         self.assertTrue(should_serialize_reasoning_content(public))
         self.assertEqual(ReasoningItemReasoningSummary.summary_text("summary").to_mapping(), {"type": "summary_text", "text": "summary"})
+
+    def test_reasoning_item_serializes_empty_summary_for_responses_followup(self):
+        # Rust/Responses contract:
+        # codex-rs core keeps ResponseItem::Reasoning { summary: Vec::new(), .. }
+        # as `"summary": []` when replaying prior output items into a follow-up
+        # request. The live Responses API rejects omitted reasoning summaries.
+        self.assertEqual(
+            ResponseItem.reasoning("rs-empty").to_mapping(),
+            {"type": "reasoning", "id": "rs-empty", "summary": []},
+        )
 
     def test_reasoning_tagged_variants_reject_non_rust_shapes(self):
         with self.assertRaisesRegex(TypeError, "type must be a string"):

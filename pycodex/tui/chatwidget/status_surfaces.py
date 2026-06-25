@@ -15,6 +15,7 @@ from ..bottom_pane.status_line_setup import StatusLineItem
 from ..bottom_pane.title_setup import TerminalTitleItem
 from ..status.rate_limits import RateLimitSnapshotDisplay, RateLimitWindowDisplay
 from .rate_limits import get_limits_duration
+from .status_state import TerminalTitleStatusKind
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -197,6 +198,31 @@ def action_required_terminal_title_prefix_at(
     )
 
 
+def run_state_status_text(
+    terminal_title_status_kind: TerminalTitleStatusKind | str,
+    *,
+    task_running: bool,
+    mcp_startup_active: bool = False,
+) -> str:
+    """Compute Rust ``ChatWidget::run_state_status_text``.
+
+    Rust source: ``codex-tui/src/chatwidget/status_surfaces.rs``. Startup
+    takes precedence, idle state renders ``Ready``, and running state maps the
+    compact terminal-title bucket to the status-line label.
+    """
+
+    if mcp_startup_active:
+        return "Starting"
+    kind = _terminal_title_status_kind(terminal_title_status_kind)
+    if not task_running:
+        return "Ready"
+    if kind is TerminalTitleStatusKind.WaitingForBackgroundTerminal:
+        return "Waiting"
+    if kind is TerminalTitleStatusKind.Thinking:
+        return "Thinking"
+    return "Working"
+
+
 def parse_items_with_invalids(
     ids: Iterable[Any],
     parser: Any | None = None,
@@ -360,6 +386,20 @@ def _is_combining_mark(ch: str) -> bool:
     return bool(unicodedata.combining(ch))
 
 
+def _terminal_title_status_kind(value: TerminalTitleStatusKind | str) -> TerminalTitleStatusKind:
+    if isinstance(value, TerminalTitleStatusKind):
+        return value
+    text = str(value)
+    for candidate in TerminalTitleStatusKind:
+        if text in {candidate.name, candidate.value}:
+            return candidate
+    normalized = text.replace("-", "_").lower()
+    for candidate in TerminalTitleStatusKind:
+        if normalized in {candidate.name.lower(), candidate.value}:
+            return candidate
+    return TerminalTitleStatusKind.Working
+
+
 __all__ = [
     "CachedProjectRootName",
     "DEFAULT_STATUS_LINE_ITEMS",
@@ -383,6 +423,7 @@ __all__ = [
     "parse_status_line_items_with_invalids",
     "parse_terminal_title_items_with_invalids",
     "permissions_display",
+    "run_state_status_text",
     "secondary_window_with_label_when_weekly_is_available",
     "status_surface_selections",
     "terminal_title_spinner_frame_at",

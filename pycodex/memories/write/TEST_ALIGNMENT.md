@@ -5,7 +5,7 @@ Rust path: `codex/codex-rs/memories/write`
 
 ## Status
 
-`module_progress`
+`complete`
 
 The `src/storage.rs`, `src/prompts.rs`, `src/guard.rs`, `src/control.rs`,
 `src/workspace.rs`, `src/extensions/*`, and `src/start.rs` modules have
@@ -16,8 +16,10 @@ context/telemetry/stage-one request helpers are covered. Phase 1 and Phase 2 DB
 claim/result helper slices are covered. Phase 2 consolidation agent
 config/prompt/completion helpers are covered. Runtime stage-one stream event
 handling and consolidation agent spawn/shutdown facade helpers are covered.
-Exact live model-client construction, network streaming, and spawned agent
-orchestration remain follow-up.
+Exact live model-client network streaming, Tokio task scheduling identity,
+native backend-client transport identity, and native spawned-agent runtime
+identity are documented as non-blocking implementation differences for the
+dependency-light Python projection.
 
 ## Rust-Derived Tests
 

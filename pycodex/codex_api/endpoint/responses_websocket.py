@@ -15,6 +15,7 @@ import ssl
 import struct
 from collections.abc import Callable
 from collections.abc import Iterable
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
@@ -274,7 +275,7 @@ class ResponsesWebsocketConnection:
         self,
         request: ResponsesWsRequest,
         connection_reused: bool,
-    ) -> ResponseStream:
+    ) -> Any:
         events: list[ResponseEvent | ApiError] = []
         if self.server_model is not None:
             events.append(ResponseEvent("server_model", self.server_model))
@@ -288,20 +289,33 @@ class ResponsesWebsocketConnection:
             events.append(ApiError.stream("websocket connection is closed"))
             return ResponseStream.from_iterable(events)
 
-        try:
-            events.extend(
-                run_websocket_response_stream(
+        def iter_events() -> Iterator[ResponseEvent | ApiError]:
+            yield from events
+            try:
+                yield from iter_websocket_response_stream(
                     stream,
                     request.to_json_dict(),
                     self.idle_timeout,
                     self.telemetry,
                     connection_reused,
                 )
-            )
-        except ApiError as err:
-            self.stream = None
-            events.append(err)
-        return ResponseStream.from_iterable(events)
+            except ApiError as err:
+                self.stream = None
+                yield err
+
+        return _IteratorResponseStream(iter_events())
+
+
+@dataclass
+class _IteratorResponseStream:
+    iterator: Iterator[Any]
+    upstream_request_id: str | None = None
+
+    def __iter__(self) -> "_IteratorResponseStream":
+        return self
+
+    def __next__(self) -> Any:
+        return next(self.iterator)
 
 
 class ResponsesWebsocketClient:
@@ -606,7 +620,24 @@ def run_websocket_response_stream(
     telemetry: Any | None = None,
     connection_reused: bool = False,
 ) -> list[ResponseEvent]:
-    events: list[ResponseEvent] = []
+    return list(
+        iter_websocket_response_stream(
+            ws_stream,
+            request_body,
+            idle_timeout,
+            telemetry,
+            connection_reused,
+        )
+    )
+
+
+def iter_websocket_response_stream(
+    ws_stream: Any,
+    request_body: Any,
+    idle_timeout: float | None = None,
+    telemetry: Any | None = None,
+    connection_reused: bool = False,
+) -> Iterator[ResponseEvent]:
     last_server_model: str | None = None
     send_websocket_request(
         ws_stream,
@@ -618,7 +649,7 @@ def run_websocket_response_stream(
 
     while True:
         try:
-            message = _next_message(ws_stream)
+            message = _next_message(ws_stream, idle_timeout)
             event_error = None
         except ResponsesWebsocketIdleTimeout as err:
             event_error = ApiError.stream("idle timeout waiting for websocket")
@@ -659,24 +690,24 @@ def run_websocket_response_stream(
             if stream_event.kind == "codex.rate_limits":
                 snapshot = parse_rate_limit_event(text)
                 if snapshot is not None:
-                    events.append(ResponseEvent("rate_limits", snapshot))
+                    yield ResponseEvent("rate_limits", snapshot)
                 continue
             model = stream_event.response_model()
             if model is not None and model != last_server_model:
-                events.append(ResponseEvent("server_model", model))
+                yield ResponseEvent("server_model", model)
                 last_server_model = model
             verifications = stream_event.model_verifications()
             if verifications is not None:
-                events.append(ResponseEvent("model_verifications", verifications))
+                yield ResponseEvent("model_verifications", verifications)
             try:
                 mapped = process_responses_event(stream_event)
             except ResponsesEventError as err:
                 raise err.into_api_error() from err
             if mapped is None:
                 continue
-            events.append(mapped)
+            yield mapped
             if mapped.kind == "completed":
-                return events
+                return
             continue
 
         if isinstance(message, ResponsesWebsocketBinaryMessage):
@@ -694,7 +725,10 @@ def run_websocket_response_stream(
             continue
 
 
-def _next_message(ws_stream: Any) -> Any | None:
+def _next_message(ws_stream: Any, idle_timeout: float | None = None) -> Any | None:
+    timeout_receiver = getattr(ws_stream, "next_with_timeout", None)
+    if timeout_receiver is not None:
+        return timeout_receiver(idle_timeout)
     receiver = getattr(ws_stream, "next", None) or getattr(ws_stream, "recv", None)
     if receiver is None:
         raise TypeError("websocket stream must provide next() or recv()")

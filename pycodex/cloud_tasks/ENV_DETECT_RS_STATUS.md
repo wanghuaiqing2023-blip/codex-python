@@ -19,7 +19,7 @@ Status: `complete`
 - `uniq`
 - `parse_owner_repo`
 - `list_environments`
-- adjacent `crate::app::EnvironmentRow`
+- adjacent `crate::app::EnvironmentRow` re-exported from `pycodex.cloud_tasks.app`
 
 ## Ported behavior
 
@@ -29,7 +29,7 @@ Status: `complete`
 - Environment selection order: desired label case-insensitive match, single row, first pinned row, then Rust `max_by_key`-style highest task count with last-tie selection.
 - Rust-shaped GET status and JSON decode error messages.
 - Autodetect by-repo-first behavior, by-repo failure tolerance, global fallback, and empty-list error.
-- Environment row merge behavior across by-repo and global sources, including label retention, pinned OR merge, repo hint preservation, and pinned/label/id sorting.
+- Environment row merge behavior across by-repo and global sources, including label retention, pinned OR merge, repo hint preservation, pinned/label/id sorting, and returning the `src/app.rs` row model rather than a duplicate package-root type.
 
 ## Evidence
 
@@ -40,7 +40,7 @@ Status: `complete`
 
 ## Validation
 
-- `python -m pytest tests/test_cloud_tasks_env_detect_rs.py -q --tb=short` -> `10 passed`
+- `python -m pytest tests/test_cloud_tasks_env_detect_rs.py -q --tb=short` -> `11 passed`
 - `python -m py_compile pycodex/cloud_tasks/__init__.py tests/test_cloud_tasks_env_detect_rs.py` -> passed
 
 ## Remaining crate gaps

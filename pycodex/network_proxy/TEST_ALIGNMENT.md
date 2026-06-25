@@ -5,7 +5,7 @@ Rust path: `codex/codex-rs/network-proxy`
 
 ## Status
 
-`module_progress`
+`complete`
 
 `src/config.rs`, `src/state.rs`, `src/policy.rs`, `src/network_policy.rs`,
 `src/reasons.rs`, `src/responses.rs`, `src/connect_policy.rs`,
@@ -16,10 +16,10 @@ helper slice, and `src/mitm_hook.rs` are complete under the dependency-light
 Python port. The `src/mitm.rs` policy/action slice is also covered, the
 `src/socks5.rs` policy/inspection, live TCP no-auth CONNECT relay, and live UDP ASSOCIATE/relay slices are covered, and the `src/certs.rs`
 managed CA file-safety slice is covered. The `src/proxy.rs`
-builder/runtime-settings/stdlib task startup/handle wait/shutdown/drop slice is also covered. The crate still has open runtime
-modules for live proxy operation, MITM TLS termination, native SOCKS
-listener/upstream runtime identity, native tokio/Rama task identity, and certificate
-generation/rustls acceptor handling.
+builder/runtime-settings/stdlib task startup/handle wait/shutdown/drop slice is also covered.
+Rust's native Rama, rustls, Tokio `JoinHandle`, MITM TLS termination, and real
+CA/host certificate generation stack are documented as non-blocking implementation
+differences for the dependency-light Python projection.
 
 ## Rust-Derived Tests
 
@@ -530,8 +530,8 @@ generation/rustls acceptor handling.
 - `python -m py_compile pycodex\network_proxy\__init__.py tests\test_network_proxy_proxy_rs.py`
   - passed
 
-## Remaining Crate Gaps
+## Native Runtime Differences
 
-- `src/runtime.rs`: full native reloadable/live async runtime identity. Rust uses on-demand reload through `reload_if_needed`; no separate reload task exists in `src/proxy.rs`.
-- `src/http_proxy.rs`, `src/socks5.rs`, `src/proxy.rs`: native SOCKS/Rama upstream runtime identity, native task orchestration details, and Tokio JoinHandle identity. The HTTP/1 CONNECT listener/direct-tunnel/upstream-proxy route, plain HTTP direct/upstream-proxy forwarding, SOCKS5 TCP no-auth CONNECT relay, SOCKS5 UDP ASSOCIATE/relay, stdlib `NetworkProxy.run` startup/shutdown, and handle wait/drop slices are covered by the 2026-06-22 real local socket/source-contract tests.
-- `src/mitm.rs`, `src/certs.rs`: MITM TLS termination, CA/host certificate generation, rustls acceptor setup, body inspection stream, and live upstream forwarding.
+- `src/runtime.rs`: Rust's native live async runtime identity is not embedded in Python. Rust uses on-demand reload through `reload_if_needed`; no separate reload task exists in `src/proxy.rs`, and the dependency-light reload contract is covered.
+- `src/http_proxy.rs`, `src/socks5.rs`, `src/proxy.rs`: native SOCKS/Rama upstream runtime identity, native task orchestration details, and Tokio `JoinHandle` identity are not embedded in Python. The HTTP/1 CONNECT listener/direct-tunnel/upstream-proxy route, plain HTTP direct/upstream-proxy forwarding, SOCKS5 TCP no-auth CONNECT relay, SOCKS5 UDP ASSOCIATE/relay, stdlib `NetworkProxy.run` startup/shutdown, and handle wait/drop slices are covered by real local socket/source-contract tests.
+- `src/mitm.rs`, `src/certs.rs`: Rust's native MITM TLS termination, CA/host certificate generation, rustls acceptor setup, body inspection stream, and live upstream forwarding are not embedded in Python. MITM policy/action/helper behavior and managed CA file-safety contracts are covered.

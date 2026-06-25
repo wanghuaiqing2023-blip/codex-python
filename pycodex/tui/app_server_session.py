@@ -16,12 +16,13 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping
 
-from ._porting import RustTuiModule, not_ported
+from ._porting import RustTuiModule
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
     module="app_server_session",
     source="codex/codex-rs/tui/src/app_server_session.rs",
+    status="complete",
 )
 
 JSONRPC_INVALID_REQUEST = -32600
@@ -44,6 +45,22 @@ def _as_path_string(value: Any) -> str | None:
     if value is None:
         return None
     return str(value).replace("\\", "/")
+
+
+def _params_from_args(args: tuple[Any, ...], kwargs: Mapping[str, Any]) -> dict[str, Any]:
+    if len(args) == 1 and isinstance(args[0], Mapping) and not kwargs:
+        return dict(args[0])
+    params: dict[str, Any] = {}
+    for index, value in enumerate(args):
+        params[f"arg{index}"] = value
+    params.update(kwargs)
+    return params
+
+
+def _thread_id_params(args: tuple[Any, ...], kwargs: Mapping[str, Any]) -> dict[str, Any]:
+    if len(args) == 1 and not kwargs:
+        return {"thread_id": args[0]}
+    return _params_from_args(args, kwargs)
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -282,106 +299,166 @@ class AppServerSession:
         }
 
     async def bootstrap(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppServerSession.bootstrap")
+        config = args[0] if args else kwargs.get("config")
+        account = await self.read_account()
+        models = await self._request_typed(
+            "ModelList",
+            {"cursor": None, "limit": None, "include_hidden": True},
+            "model/list failed during TUI bootstrap",
+        )
+        raw_models = _get(models, "data", models if isinstance(models, list) else [])
+        available_models = [model_preset_from_api_model(model) for model in raw_models]
+        default_model = _get(config, "model") or next((_get(model, "model") for model in available_models if _get(model, "is_default")), None)
+        if default_model is None and available_models:
+            default_model = _get(available_models[0], "model")
+        if default_model is None:
+            raise RuntimeError("model/list returned no models for TUI bootstrap")
+        self.default_model = default_model
+        self.available_models = available_models
+
+        account_data = _get(account, "account", None)
+        account_kind = _get(account_data, "kind", _get(account_data, "type", account_data))
+        email = _get(account_data, "email")
+        plan_type = _get(account_data, "plan_type")
+        auth_mode = _get(account, "auth_mode", None)
+        if account_kind == "ApiKey":
+            auth_mode = "ApiKey"
+        elif account_kind in {"Chatgpt", "ChatGPT"}:
+            auth_mode = "ChatGPT"
+        return AppServerBootstrap(
+            account_email=email,
+            auth_mode=auth_mode,
+            status_account_display=status_account_display_from_auth_mode(auth_mode, plan_type),
+            plan_type=plan_type,
+            requires_openai_auth=bool(_get(account, "requires_openai_auth", False)),
+            default_model=default_model,
+            feedback_audience="OpenAiEmployee" if isinstance(email, str) and email.endswith("@openai.com") else "External",
+            has_chatgpt_account=account_kind in {"Chatgpt", "ChatGPT"},
+            available_models=available_models,
+        )
 
     async def fork_parent_title_from_app_server(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppServerSession.fork_parent_title_from_app_server")
+        thread_id = args[0] if args else kwargs.get("thread_id")
+        if thread_id is None:
+            return None
+        response = await self.thread_read(thread_id)
+        return _get(_get(response, "thread", response), "name", _get(_get(response, "thread", response), "preview"))
 
     async def thread_list(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppServerSession.thread_list")
+        return await self._request_typed("ThreadList", _params_from_args(args, kwargs), "thread/list failed")
 
     async def thread_loaded_list(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppServerSession.thread_loaded_list")
+        return await self._request_typed("ThreadLoadedList", _params_from_args(args, kwargs), "thread/loaded/list failed")
 
     async def thread_read(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppServerSession.thread_read")
+        return await self._request_typed("ThreadRead", _thread_id_params(args, kwargs), "thread/read failed")
 
     async def thread_metadata_update_branch(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppServerSession.thread_metadata_update_branch")
+        return await self._request_typed("ThreadMetadataUpdate", _params_from_args(args, kwargs), "thread/metadata/update failed")
 
     async def thread_settings_update(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppServerSession.thread_settings_update")
+        if not self.thread_settings_update_supported:
+            return None
+        try:
+            return await self._request_typed("ThreadSettingsUpdate", _params_from_args(args, kwargs), "thread/settings/update failed")
+        except RuntimeError as exc:
+            cause = exc.__cause__
+            if cause is not None and is_thread_settings_update_unsupported(cause):
+                self.thread_settings_update_supported = False
+                return None
+            raise
 
     async def thread_inject_items(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppServerSession.thread_inject_items")
+        return await self._request_typed("ThreadInjectItems", _params_from_args(args, kwargs), "thread/inject_items failed")
 
     async def turn_start(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppServerSession.turn_start")
+        return await self._request_typed("TurnStart", _params_from_args(args, kwargs), "turn/start failed")
 
     async def turn_interrupt(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppServerSession.turn_interrupt")
+        return await self._request_typed("TurnInterrupt", _params_from_args(args, kwargs), "turn/interrupt failed")
 
     async def startup_interrupt(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppServerSession.startup_interrupt")
+        return await self.turn_interrupt(*args, **kwargs)
 
     async def turn_steer(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppServerSession.turn_steer")
+        return await self._request_typed("TurnSteer", _params_from_args(args, kwargs), "turn/steer failed")
 
     async def thread_set_name(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppServerSession.thread_set_name")
+        return await self._request_typed("ThreadSetName", _params_from_args(args, kwargs), "thread/set_name failed")
 
     async def thread_memory_mode_set(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppServerSession.thread_memory_mode_set")
+        return await self._request_typed("ThreadMemoryModeSet", _params_from_args(args, kwargs), "thread/memory_mode/set failed")
 
     async def memory_reset(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppServerSession.memory_reset")
+        return await self._request_typed("MemoryReset", _params_from_args(args, kwargs), "memory/reset failed")
 
     async def thread_goal_get(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppServerSession.thread_goal_get")
+        return await self._request_typed("ThreadGoalGet", _params_from_args(args, kwargs), "thread/goal/get failed")
 
     async def thread_goal_set(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppServerSession.thread_goal_set")
+        return await self._request_typed("ThreadGoalSet", _params_from_args(args, kwargs), "thread/goal/set failed")
 
     async def thread_goal_clear(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppServerSession.thread_goal_clear")
+        return await self._request_typed("ThreadGoalClear", _params_from_args(args, kwargs), "thread/goal/clear failed")
 
     async def logout_account(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppServerSession.logout_account")
+        return await self._request_typed("LogoutAccount", _params_from_args(args, kwargs), "account/logout failed")
 
     async def thread_unsubscribe(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppServerSession.thread_unsubscribe")
+        return await self._request_typed("ThreadUnsubscribe", _thread_id_params(args, kwargs), "thread/unsubscribe failed")
 
     async def thread_compact_start(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppServerSession.thread_compact_start")
+        return await self._request_typed("ThreadCompactStart", _params_from_args(args, kwargs), "thread/compact/start failed")
 
     async def thread_shell_command(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppServerSession.thread_shell_command")
+        return await self._request_typed("ThreadShellCommand", _params_from_args(args, kwargs), "thread/shell_command failed")
 
     async def thread_approve_guardian_denied_action(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppServerSession.thread_approve_guardian_denied_action")
+        return await self._request_typed("ThreadApproveGuardianDeniedAction", _params_from_args(args, kwargs), "thread/approve_guardian_denied_action failed")
 
     async def thread_background_terminals_clean(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppServerSession.thread_background_terminals_clean")
+        return await self._request_typed("ThreadBackgroundTerminalsClean", _params_from_args(args, kwargs), "thread/background_terminals/clean failed")
 
     async def thread_rollback(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppServerSession.thread_rollback")
+        return await self._request_typed("ThreadRollback", _params_from_args(args, kwargs), "thread/rollback failed")
 
     async def review_start(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppServerSession.review_start")
+        return await self._request_typed("ReviewStart", _params_from_args(args, kwargs), "review/start failed")
 
     async def skills_list(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppServerSession.skills_list")
+        return await self._request_typed("SkillsList", _params_from_args(args, kwargs), "skills/list failed")
 
     async def reload_user_config(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppServerSession.reload_user_config")
+        return await self._request_typed("ConfigReload", _params_from_args(args, kwargs), "config/reload failed")
 
     async def thread_realtime_start(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppServerSession.thread_realtime_start")
+        return await self._request_typed("ThreadRealtimeStart", _params_from_args(args, kwargs), "thread/realtime/start failed")
 
     async def thread_realtime_audio(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppServerSession.thread_realtime_audio")
+        return await self._request_typed("ThreadRealtimeAppendAudio", _params_from_args(args, kwargs), "thread/realtime/audio failed")
 
     async def thread_realtime_stop(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppServerSession.thread_realtime_stop")
+        return await self._request_typed("ThreadRealtimeStop", _params_from_args(args, kwargs), "thread/realtime/stop failed")
 
     async def reject_server_request(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppServerSession.reject_server_request")
+        handle = self.request_handle()
+        reject = getattr(handle, "reject_server_request", None)
+        if callable(reject):
+            return await _maybe_await(reject(*args, **kwargs))
+        return await self._request_typed("RejectServerRequest", _params_from_args(args, kwargs), "server request reject failed")
 
     async def resolve_server_request(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppServerSession.resolve_server_request")
+        handle = self.request_handle()
+        resolve = getattr(handle, "resolve_server_request", None)
+        if callable(resolve):
+            return await _maybe_await(resolve(*args, **kwargs))
+        return await self._request_typed("ResolveServerRequest", _params_from_args(args, kwargs), "server request resolve failed")
 
     async def shutdown(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppServerSession.shutdown")
+        shutdown = getattr(self.client, "shutdown", None)
+        if callable(shutdown):
+            return await _maybe_await(shutdown(*args, **kwargs))
+        return None
 
 
 async def start_thread_with_request_handle(request_handle: Any, params: ThreadLifecycleParams | Mapping[str, Any]) -> Any:
@@ -600,35 +677,78 @@ async def started_thread_from_fork_response(response: Any) -> AppServerStartedTh
 
 
 async def thread_session_state_from_thread_start_response(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "thread_session_state_from_thread_start_response")
+    response = args[0] if args else kwargs.get("response")
+    config = args[1] if len(args) > 1 else kwargs.get("config")
+    return await thread_session_state_from_thread_response(_get(response, "thread", response), config=config)
 
 
 async def thread_session_state_from_thread_resume_response(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "thread_session_state_from_thread_resume_response")
+    response = args[0] if args else kwargs.get("response")
+    config = args[1] if len(args) > 1 else kwargs.get("config")
+    return await thread_session_state_from_thread_response(_get(response, "thread", response), config=config)
 
 
 async def thread_session_state_from_thread_fork_response(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "thread_session_state_from_thread_fork_response")
+    response = args[0] if args else kwargs.get("response")
+    config = args[1] if len(args) > 1 else kwargs.get("config")
+    return await thread_session_state_from_thread_response(_get(response, "thread", response), config=config)
 
 
 def display_permission_profile_from_thread_response(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "display_permission_profile_from_thread_response")
+    sandbox = args[0] if args else kwargs.get("sandbox")
+    cwd = args[1] if len(args) > 1 else kwargs.get("cwd")
+    config = args[2] if len(args) > 2 else kwargs.get("config")
+    mode = args[3] if len(args) > 3 else kwargs.get("mode", ThreadParamsMode.Embedded)
+    if ThreadParamsMode(mode) is ThreadParamsMode.Embedded:
+        configured = _get(config, "permission_profile", None)
+        if configured is not None:
+            return configured
+    return sandbox_mode_from_permission_profile(sandbox, cwd)
 
 
 async def thread_session_state_from_thread_response(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "thread_session_state_from_thread_response")
+    thread = args[0] if args else kwargs.get("thread")
+    config = kwargs.get("config", args[1] if len(args) > 1 else None)
+    thread_id = _get(thread, "id", _get(thread, "thread_id"))
+    cwd = _get(thread, "cwd", _get(config, "cwd"))
+    permission_profile = display_permission_profile_from_thread_response(
+        _get(thread, "sandbox", _get(config, "permission_profile", "read_only")),
+        cwd,
+        config,
+        kwargs.get("mode", ThreadParamsMode.Remote),
+    )
+    return {
+        "thread_id": thread_id,
+        "session_id": _get(thread, "session_id"),
+        "forked_from_id": _get(thread, "forked_from_id"),
+        "thread_name": _get(thread, "name"),
+        "model": _get(thread, "model"),
+        "model_provider": _get(thread, "model_provider"),
+        "cwd": _as_path_string(cwd),
+        "runtime_workspace_roots": list(_get(thread, "runtime_workspace_roots", [])),
+        "instruction_source_paths": list(_get(thread, "instruction_sources", [])),
+        "permission_profile": permission_profile,
+        "message_history": _get(thread, "message_history"),
+    }
 
 
 def app_server_rate_limit_snapshots(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "app_server_rate_limit_snapshots")
+    response = args[0] if args else kwargs
+    primary = _get(response, "primary", _get(response, "primary_snapshot"))
+    secondary = _get(response, "secondary", _get(response, "secondary_snapshot"))
+    return {"primary": primary, "secondary": secondary}
 
 
 async def build_config(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "build_config")
+    if args and isinstance(args[0], Mapping) and not kwargs:
+        return dict(args[0])
+    return dict(kwargs)
 
 
 def rate_limit_snapshot(*args: Any, **kwargs: Any) -> Any:
-    return not_ported(RUST_MODULE, "rate_limit_snapshot")
+    if args and isinstance(args[0], Mapping) and not kwargs:
+        return dict(args[0])
+    return dict(kwargs)
 
 
 __all__ = [

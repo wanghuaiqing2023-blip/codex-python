@@ -104,6 +104,7 @@ from pycodex.exec.local_runtime import (
     persist_local_http_exec_resume_rollout,
     response_items_from_local_http_tool_outputs,
     resolve_local_http_exec_resume_rollout_path,
+    prewarm_exec_core_websocket_session,
     run_exec_tool_output_http_sampling,
     run_exec_review_core_http_sampling,
     run_exec_resume_user_turn_core_http_sampling,
@@ -129,6 +130,7 @@ from pycodex.exec.local_runtime import (
 )
 from pycodex.exec.run import ExecRunPlan, InitialOperation
 from pycodex.exec.session import ExecSessionConfig
+from pycodex.model_provider_info import CHATGPT_CODEX_BASE_URL
 from pycodex.protocol import (
     AdditionalPermissionProfile,
     CodexErrorInfo,
@@ -1384,6 +1386,50 @@ class LocalHttpShellToolSpecTests(unittest.TestCase):
 
 
 class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_prewarm_exec_core_websocket_session_builds_startup_request(self) -> None:
+        # Rust crate/module: codex-core/src/session_startup_prewarm.rs.
+        # Contract: startup prewarm builds the same model-visible prompt/tools
+        # request shape as a regular turn, then sends it over websocket warmup.
+        cwd = Path.cwd()
+        config = ExecSessionConfig(
+            model="gpt-test",
+            model_provider_id="openai",
+            cwd=cwd,
+            user_instructions="project instructions",
+        )
+        provider = LocalHttpProvider()
+        model_info = LocalHttpModelInfo(slug="gpt-test", base_instructions="base")
+        client = ModelClient(
+            session_id="session",
+            thread_id="thread",
+            installation_id="install",
+            provider=provider,
+        )
+        captured: dict[str, object] = {}
+
+        async def fake_prewarm(model_session, transport_config, *, request, **kwargs):
+            captured["model_session"] = model_session
+            captured["transport_config"] = transport_config
+            captured["request"] = request
+            return object()
+
+        with patch("pycodex.exec.local_runtime.prewarm_model_client_websocket_session", fake_prewarm):
+            warmed_session = await prewarm_exec_core_websocket_session(
+                config,
+                client,
+                provider,
+                model_info,
+            )
+
+        request = captured["request"]
+        self.assertIs(warmed_session, captured["model_session"])
+        self.assertEqual(request["model"], "gpt-test")
+        self.assertIn("base", request["instructions"])
+        self.assertIsInstance(request["input"], list)
+        self.assertIn("tools", request)
+        self.assertTrue(request["stream"])
+        self.assertNotIn("generate", request)
+
     async def test_run_exec_user_turn_core_sampling_runs_default_exec_tool_loop(self) -> None:
         cwd = Path.cwd()
         config = ExecSessionConfig(
@@ -2605,16 +2651,18 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen["body"]["client_metadata"]["x-codex-installation-id"], "pycodex-local-exec")
         self.assertEqual(seen["body"]["model"], "gpt-env")
         self.assertEqual(final_text_from_response_items(result.response_items), "done")
-        self.assertTrue(local_http_exec_enabled({"OPENAI_API_KEY": "sk-env"}))
-        self.assertTrue(local_http_exec_enabled({"CODEX_API_KEY": "sk-codex"}))
+        self.assertFalse(local_http_exec_enabled({"OPENAI_API_KEY": "sk-env"}))
+        self.assertFalse(local_http_exec_enabled({"CODEX_API_KEY": "sk-codex"}))
         self.assertFalse(local_http_exec_enabled({"PYCODEX_EXEC_LOCAL_HTTP": "0", "OPENAI_API_KEY": "sk-env"}))
         self.assertTrue(local_core_exec_enabled({"PYCODEX_EXEC_CORE": "1"}))
         self.assertTrue(local_core_exec_enabled({"PYCODEX_EXEC_CORE": "enabled"}))
         self.assertFalse(local_core_exec_enabled({"PYCODEX_EXEC_CORE": "0", "OPENAI_API_KEY": "sk-env"}))
         self.assertFalse(local_core_exec_enabled({"PYCODEX_EXEC_LOCAL_HTTP": "1", "OPENAI_API_KEY": "sk-env"}))
+        self.assertTrue(local_core_exec_enabled({}))
         self.assertTrue(local_core_exec_enabled({"OPENAI_API_KEY": "sk-env"}))
         self.assertTrue(local_core_exec_enabled({"CODEX_API_KEY": "sk-codex"}))
         self.assertTrue(core_exec_enabled({"PYCODEX_EXEC_CORE": "1"}))
+        self.assertTrue(core_exec_enabled({}))
         self.assertTrue(core_exec_enabled({"OPENAI_API_KEY": "sk-env"}))
 
         stdout = io.StringIO()
@@ -9447,6 +9495,25 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIs(resolved, auth)
 
+    def test_default_local_http_auth_uses_chatgpt_oauth_tokens(self) -> None:
+        # Rust crate/module: codex-model-provider::provider::api_auth plus
+        # codex-model-provider::auth::auth_provider_from_auth. ChatGPT auth is
+        # converted into bearer/account headers for Codex backend requests.
+        auth = SimpleNamespace(
+            auth_mode="chatgpt",
+            tokens={"access_token": "access-token", "account_id": "workspace-123"},
+        )
+
+        resolved = default_local_http_exec_auth(auth=auth, env={})
+
+        self.assertEqual(
+            resolved.to_auth_headers(),
+            {
+                "Authorization": "Bearer access-token",
+                "ChatGPT-Account-ID": "workspace-123",
+            },
+        )
+
     def test_default_local_http_auth_uses_codex_api_key_env_var(self) -> None:
         resolved = default_local_http_exec_auth(env={"CODEX_API_KEY": "sk-codex"})
 
@@ -9548,6 +9615,49 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             "https://local.example.test/v1",
         )
         self.assertEqual(default_local_http_exec_base_url(env={}), "https://api.openai.com/v1")
+
+    def test_default_local_http_base_url_uses_chatgpt_codex_backend_for_oauth(self) -> None:
+        # Rust crate/module: codex-model-provider-info::ModelProviderInfo::to_api_provider.
+        # OpenAI provider defaults to CHATGPT_CODEX_BASE_URL when auth_mode is ChatGPT.
+        auth = SimpleNamespace(auth_mode="chatgpt", tokens={"access_token": "access-token"})
+
+        self.assertEqual(default_local_http_exec_base_url(env={}, auth=auth), CHATGPT_CODEX_BASE_URL)
+        self.assertEqual(
+            default_local_http_exec_base_url(
+                env={"OPENAI_BASE_URL": "https://override.example/v1"},
+                auth=auth,
+            ),
+            "https://override.example/v1",
+        )
+
+    def test_default_local_http_runtime_uses_chatgpt_oauth_backend(self) -> None:
+        # Rust crate/module: codex-model-provider::provider::api_provider/api_auth.
+        # The runtime pairs ChatGPT auth headers with the ChatGPT Codex backend URL.
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+        )
+        auth = SimpleNamespace(
+            auth_mode="chatgpt",
+            tokens={"access_token": "access-token", "account_id": "workspace-123"},
+        )
+
+        _client, provider, _model_info, resolved_auth = build_default_local_http_exec_runtime(
+            config,
+            auth=auth,
+            env={"PYCODEX_EXEC_LOCAL_HTTP": "1"},
+        )
+
+        self.assertEqual(provider.base_url, CHATGPT_CODEX_BASE_URL)
+        self.assertIs(provider.auth, resolved_auth)
+        self.assertEqual(
+            resolved_auth.to_auth_headers(),
+            {
+                "Authorization": "Bearer access-token",
+                "ChatGPT-Account-ID": "workspace-123",
+            },
+        )
 
     def test_default_local_http_runtime_uses_config_provider_env_key(self) -> None:
         config = ExecSessionConfig(

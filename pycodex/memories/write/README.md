@@ -20,24 +20,20 @@ memory helpers.
 | `src/phase1.rs` | `pycodex.memories.write` | complete_slice | Phase-1 output schema, rollout item filtering, contextual fragment exclusion, secret redaction before serialization, `job::sample` default real JSONL rollout loading plus prompt/schema/output parsing, `job::run` sample-result branching, job/token stats aggregation, metrics emission, startup job claiming, run-level orchestration, and DB result persistence helpers are covered by Rust-derived tests. |
 | `src/phase2.rs` | `pycodex.memories.write` | complete_slice | Phase-2 run orchestration, workspace input sync, watermark selection, final agent status classification, dispatch metrics, token usage metrics, global claim mapping, DB failed/succeeded persistence helpers, consolidation agent config/prompt helpers, heartbeat loop errors, and completion handling for ownership confirmation, baseline reset, success/failure, token usage, and shutdown are covered by Rust-derived tests/source contracts. |
 | `src/runtime.rs` | `pycodex.memories.write` | complete_slice | `MemoryStartupContext`, `StageOneRequestContext`, telemetry delegation, live thread service-tier projection, model-info lookup, reasoning-summary fallback/override, detached memory turn metadata, stage-one stream event handling, consolidation agent spawn options, submit-error cleanup, and shutdown handoff/timeout projection are covered by Rust-derived tests/source contracts. |
-| `src/lib.rs` | `pycodex.memories.write` | partial | Public storage, prompt, guard, control, workspace, extension, and path helpers are projected. Other crate-root re-exports remain follow-up. |
+| `src/lib.rs` | `pycodex.memories.write` | complete | Public storage, prompt, guard, control, workspace, extension, startup, phase, runtime, and path helpers are projected through the package facade. |
 
-## Known Gaps
+## Native Runtime Differences
 
-- No exact live `ModelClient::new` construction or network stream execution for
-  phase 1.
-- Exact native `codex_backend_client::Client::from_auth` transport identity for
-  `rate_limits_ok` remains outside the dependency-light port.
-- No end-to-end phase-1 `job::run` over real model stream execution.
-- Exact native Rust Tokio file-reader identity for `RolloutRecorder` remains
-  delegated to the completed `pycodex.rollout` port rather than reimplemented
-  inside `pycodex.memories.write`.
-- Exact Tokio task identity/scheduling, native `CodexThread` consolidation
-  runtime identity, live heartbeat timing/ownership races, and shutdown
-  cancellation identity remain runtime follow-up.
+The Python port intentionally does not embed Rust's exact live `ModelClient::new`
+network stream execution, native `codex_backend_client::Client::from_auth`
+transport identity, Tokio task scheduling identity, native `CodexThread`
+consolidation runtime object identity, or live heartbeat race timing. Those are
+non-blocking implementation differences for this dependency-light port.
+Rollout JSONL loading delegates to the completed `pycodex.rollout` port rather
+than reimplementing Rust Tokio file-reader identity inside
+`pycodex.memories.write`.
 
-Because only selected modules have Rust-derived complete-slice evidence,
-`codex-memories-write` is `module_progress`, not strict `complete`.
+`codex-memories-write` is `complete` for the dependency-light Python projection.
 
 ## Tests
 

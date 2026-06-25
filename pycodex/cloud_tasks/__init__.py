@@ -12,14 +12,24 @@ from datetime import datetime, timezone
 from enum import Enum
 import inspect
 import json
+import os
+from pathlib import Path
 import subprocess
 from typing import Any, Callable, Iterable, Mapping, MutableMapping, Protocol, Sequence
 from urllib import request
 
+from pycodex.config import ConfigToml
+from pycodex.core.config.edit import CONFIG_TOML_FILE, read_toml_mapping
+from pycodex.login.auth import default_client
+from pycodex.login.auth.manager import AuthManager
+from pycodex.model_provider import auth_provider_from_auth
+from pycodex.utils.home_dir import find_codex_home
 from pycodex.cloud_tasks_client import DiffSummary
 from pycodex.cloud_tasks_client import ApplyStatus
+from pycodex.cloud_tasks_client import HttpClient
 from pycodex.cloud_tasks_client import TaskId
 from pycodex.cloud_tasks_client import TaskStatus
+from pycodex.cloud_tasks_mock_client import MockClient
 from pycodex.cloud_tasks.scrollable_diff import ScrollableDiff
 from pycodex.cloud_tasks.scrollable_diff import ScrollViewState
 from pycodex.cloud_tasks.cli import ApplyCommand
@@ -34,20 +44,37 @@ from pycodex.cloud_tasks.cli import parse_limit
 from pycodex.cloud_tasks.new_task import NEW_TASK_HINT_ITEMS
 from pycodex.cloud_tasks.new_task import NewTaskPage
 from pycodex.cloud_tasks.app import App
+from pycodex.cloud_tasks.app import AppEvent
 from pycodex.cloud_tasks.app import ApplyModalState
 from pycodex.cloud_tasks.app import AttemptView
 from pycodex.cloud_tasks.app import BestOfModalState
 from pycodex.cloud_tasks.app import DetailView
 from pycodex.cloud_tasks.app import DiffOverlay
 from pycodex.cloud_tasks.app import EnvModalState
+from pycodex.cloud_tasks.app import EnvironmentRow
+from pycodex.cloud_tasks.app import conversation_lines
+from pycodex.cloud_tasks.app import handle_app_event
+from pycodex.cloud_tasks.app import handle_apply_preflight_finished_event
+from pycodex.cloud_tasks.app import handle_apply_finished_event
+from pycodex.cloud_tasks.app import handle_attempts_loaded_event
+from pycodex.cloud_tasks.app import handle_environment_autodetected_event
+from pycodex.cloud_tasks.app import handle_environments_loaded_event
+from pycodex.cloud_tasks.app import handle_details_diff_loaded_event
+from pycodex.cloud_tasks.app import handle_details_failed_event
+from pycodex.cloud_tasks.app import handle_details_messages_loaded_event
+from pycodex.cloud_tasks.app import handle_new_task_submitted_event
+from pycodex.cloud_tasks.app import handle_tasks_loaded_event
 from pycodex.cloud_tasks.app import load_tasks
+from pycodex.cloud_tasks.app import pretty_lines_from_error
 
 
 __all__ = [
     "AutodetectSelection",
+    "ApplyJob",
     "ApplyResultLevel",
     "ApplyCommand",
     "App",
+    "AppEvent",
     "ApplyModalState",
     "AttemptView",
     "BestOfModalState",
@@ -55,11 +82,15 @@ __all__ = [
     "CloudTasksHttpResponse",
     "Command",
     "CodeEnvironment",
+    "BackendContext",
+    "diff_command_projection",
     "EnvironmentRow",
     "DiffCommand",
     "DetailView",
     "DiffOverlay",
+    "ExecCommandProjection",
     "ExecCommand",
+    "RunMainDispatchProjection",
     "AttemptDiffData",
     "EnvModalState",
     "ListCommand",
@@ -68,27 +99,55 @@ __all__ = [
     "ScrollableDiff",
     "ScrollViewState",
     "StatusCommand",
+    "append_error_log",
     "autodetect_environment_id",
     "by_repo_environments_url",
+    "build_chatgpt_headers",
     "collect_attempt_diffs",
+    "conversation_lines",
     "format_relative_time",
+    "format_list_command_text_lines",
+    "list_command_json_payload",
     "format_task_list_lines",
     "format_task_status_lines",
+    "apply_command_projection",
+    "apply_finished_event_projection",
+    "apply_preflight_finished_event_projection",
+    "spawn_apply_start_projection",
+    "spawn_preflight_start_projection",
     "environment_list_url",
+    "exec_command_projection",
     "get_git_origins",
     "get_json",
+    "handle_app_event",
+    "handle_apply_preflight_finished_event",
+    "handle_apply_finished_event",
+    "handle_attempts_loaded_event",
+    "handle_environment_autodetected_event",
+    "handle_environments_loaded_event",
+    "handle_details_diff_loaded_event",
+    "handle_details_failed_event",
+    "handle_details_messages_loaded_event",
+    "handle_new_task_submitted_event",
+    "handle_tasks_loaded_event",
+    "init_backend",
     "level_from_status",
     "list_environments",
+    "load_auth_manager",
     "load_tasks",
     "parse_owner_repo",
     "parse_attempts",
     "parse_limit",
+    "pretty_lines_from_error",
     "parse_task_id",
     "pick_environment_row",
     "resolve_environment_id_from_rows",
     "resolve_git_ref_with_git_info",
     "resolve_query_input",
+    "run_main_dispatch_projection",
     "select_attempt",
+    "set_user_agent_suffix",
+    "status_command_projection",
     "summary_line",
     "task_status_label",
     "task_url",
@@ -98,6 +157,11 @@ __all__ = [
 
 Headers = Mapping[str, str]
 Transport = Callable[[str, Headers], "CloudTasksHttpResponse"]
+DEFAULT_CLOUD_TASKS_BASE_URL = "https://chatgpt.com/backend-api"
+NOT_SIGNED_IN_MESSAGE = (
+    "Not signed in. Please run 'codex login' to sign in with ChatGPT, "
+    "then re-run 'codex cloud'."
+)
 
 
 class GitInfoProvider(Protocol):
@@ -134,14 +198,6 @@ class AutodetectSelection:
 
 
 @dataclass(frozen=True)
-class EnvironmentRow:
-    id: str
-    label: str | None = None
-    is_pinned: bool = False
-    repo_hints: str | None = None
-
-
-@dataclass(frozen=True)
 class CloudTasksHttpResponse:
     status: int
     body: str
@@ -165,6 +221,35 @@ class AttemptDiffData:
     diff: str
 
 
+@dataclass(frozen=True)
+class ApplyJob:
+    task_id: TaskId
+    diff_override: str | None = None
+
+
+@dataclass(frozen=True)
+class BackendContext:
+    backend: Any
+    base_url: str
+
+
+@dataclass(frozen=True)
+class ExecCommandProjection:
+    env_id: str
+    prompt: str
+    git_ref: str
+    qa_mode: bool
+    best_of_n: int
+    output_url: str
+
+
+@dataclass(frozen=True)
+class RunMainDispatchProjection:
+    handler: str
+    command_kind: str | None
+    enters_tui: bool
+
+
 def normalize_base_url(input_url: str) -> str:
     base_url = input_url
     while base_url.endswith("/"):
@@ -175,6 +260,103 @@ def normalize_base_url(input_url: str) -> str:
     ) and "/backend-api" not in base_url:
         base_url = f"{base_url}/backend-api"
     return base_url
+
+
+def append_error_log(message: object) -> None:
+    ts = datetime.now(timezone.utc).isoformat()
+    try:
+        with open("error.log", "a", encoding="utf-8") as f:
+            f.write(f"[{ts}] {message}\n")
+    except OSError:
+        return
+
+
+def set_user_agent_suffix(suffix: str) -> None:
+    default_client.set_user_agent_suffix(suffix)
+
+
+async def load_auth_manager(chatgpt_base_url: str | None = None) -> Any | None:
+    try:
+        codex_home = find_codex_home()
+        config_toml = ConfigToml.from_mapping(
+            read_toml_mapping(Path(codex_home) / CONFIG_TOML_FILE)
+        )
+        store_mode = config_toml.cli_auth_credentials_store or "file"
+        resolved_chatgpt_base_url = chatgpt_base_url or config_toml.chatgpt_base_url
+        return await AuthManager.new(
+            Path(codex_home),
+            False,
+            _enum_value(store_mode),
+            resolved_chatgpt_base_url,
+        )
+    except Exception:
+        return None
+
+
+async def build_chatgpt_headers(auth_manager: Any | None = None) -> dict[str, str]:
+    set_user_agent_suffix("codex_cloud_tasks_tui")
+    headers = {
+        default_client.USER_AGENT_HEADER_NAME: default_client.get_codex_user_agent()
+    }
+
+    manager = auth_manager
+    if manager is None:
+        manager = await load_auth_manager(None)
+    auth = await _auth_from_manager(manager)
+    if auth is not None and _auth_uses_codex_backend(auth):
+        headers.update(auth_provider_from_auth(auth).to_auth_headers())
+    return headers
+
+
+async def init_backend(
+    user_agent_suffix: str,
+    *,
+    env: Mapping[str, str] | None = None,
+    debug_build: bool = True,
+    http_client_factory: Callable[[str], Any] | None = None,
+    mock_client_factory: Callable[[], Any] | None = None,
+    auth_manager_loader: Callable[..., Any] | None = None,
+    logger: Callable[[object], None] | None = None,
+) -> BackendContext:
+    env_map = os.environ if env is None else env
+    base_url = env_map.get("CODEX_CLOUD_TASKS_BASE_URL", DEFAULT_CLOUD_TASKS_BASE_URL)
+    set_user_agent_suffix(user_agent_suffix)
+
+    mode = env_map.get("CODEX_CLOUD_TASKS_MODE")
+    if debug_build and mode in {"mock", "MOCK"}:
+        mock_factory = mock_client_factory or MockClient
+        return BackendContext(backend=mock_factory(), base_url=base_url)
+
+    http_factory = http_client_factory or HttpClient.new
+    http = http_factory(base_url)
+    if hasattr(http, "with_user_agent"):
+        http = http.with_user_agent(default_client.get_codex_user_agent())
+
+    log = logger or append_error_log
+    style = "wham" if "/backend-api" in base_url else "codex-api"
+    log(f"startup: base_url={base_url} path_style={style}")
+
+    loader = auth_manager_loader or load_auth_manager
+    auth_manager = loader(base_url)
+    if inspect.isawaitable(auth_manager):
+        auth_manager = await auth_manager
+    auth = await _auth_from_manager(auth_manager)
+    if auth is None:
+        raise RuntimeError(NOT_SIGNED_IN_MESSAGE)
+
+    account_id = _auth_account_id(auth)
+    if account_id is not None:
+        log(f"auth: mode=ChatGPT account_id={account_id}")
+
+    if not _auth_uses_codex_backend(auth):
+        raise RuntimeError(NOT_SIGNED_IN_MESSAGE)
+
+    if hasattr(http, "with_auth_provider"):
+        http = http.with_auth_provider(auth_provider_from_auth(auth))
+    if account_id is not None:
+        log(f"auth: set ChatGPT-Account-Id header: {account_id}")
+
+    return BackendContext(backend=http, base_url=base_url)
 
 
 def task_url(base_url: str, task_id: str) -> str:
@@ -198,6 +380,43 @@ def parse_task_id(raw: str) -> TaskId:
     if not task:
         raise ValueError("task id must not be empty")
     return TaskId(task)
+
+
+async def _auth_from_manager(auth_manager: Any | None) -> Any | None:
+    if auth_manager is None:
+        return None
+    auth_method = getattr(auth_manager, "auth", None)
+    if not callable(auth_method):
+        return None
+    auth = auth_method()
+    if inspect.isawaitable(auth):
+        auth = await auth
+    return auth
+
+
+def _auth_uses_codex_backend(auth: Any) -> bool:
+    uses = getattr(auth, "uses_codex_backend", None)
+    if callable(uses):
+        return bool(uses())
+    if isinstance(auth, Mapping):
+        return bool(auth.get("uses_codex_backend"))
+    return bool(getattr(auth, "uses_codex_backend", False))
+
+
+def _auth_account_id(auth: Any) -> str | None:
+    getter = getattr(auth, "get_account_id", None)
+    if callable(getter):
+        value = getter()
+    elif isinstance(auth, Mapping):
+        value = auth.get("account_id")
+    else:
+        value = getattr(auth, "account_id", None)
+    return None if value is None else str(value)
+
+
+def _enum_value(value: Any) -> str:
+    raw = getattr(value, "value", value)
+    return str(raw)
 
 
 def resolve_environment_id_from_rows(
@@ -343,6 +562,97 @@ def select_attempt(
     return attempts[idx]
 
 
+def diff_command_projection(
+    attempts: Sequence[AttemptDiffData],
+    attempt: int | None = None,
+) -> str:
+    return select_attempt(attempts, attempt).diff
+
+
+def apply_command_projection(outcome: Any) -> tuple[list[str], int]:
+    status = getattr(outcome, "status")
+    return [str(getattr(outcome, "message"))], 0 if status == ApplyStatus.SUCCESS else 1
+
+
+def spawn_preflight_start_projection(app: App) -> bool:
+    if app.apply_inflight:
+        app.status = "An apply is already running; wait for it to finish first."
+        return False
+    if app.apply_preflight_inflight:
+        app.status = "A preflight is already running; wait for it to finish first."
+        return False
+    app.apply_preflight_inflight = True
+    return True
+
+
+def spawn_apply_start_projection(app: App) -> bool:
+    if app.apply_inflight:
+        app.status = "An apply is already running; wait for it to finish first."
+        return False
+    if app.apply_preflight_inflight:
+        app.status = "Finish the current preflight before starting another apply."
+        return False
+    app.apply_inflight = True
+    return True
+
+
+def apply_preflight_finished_event_projection(
+    *,
+    task_id: TaskId,
+    title: str,
+    result: Any,
+) -> AppEvent:
+    if isinstance(result, BaseException) or isinstance(result, str):
+        return AppEvent.apply_preflight_finished(
+            task_id,
+            title,
+            f"Preflight failed: {result}",
+            ApplyResultLevel.ERROR,
+            [],
+            [],
+        )
+    return AppEvent.apply_preflight_finished(
+        task_id,
+        title,
+        str(getattr(result, "message")),
+        level_from_status(getattr(result, "status")),
+        list(getattr(result, "skipped_paths", [])),
+        list(getattr(result, "conflict_paths", [])),
+    )
+
+
+def apply_finished_event_projection(*, task_id: TaskId, result: Any) -> AppEvent:
+    if isinstance(result, BaseException) or isinstance(result, str):
+        return AppEvent.apply_finished(task_id, str(result))
+    return AppEvent.apply_finished(task_id, result)
+
+
+def run_main_dispatch_projection(cli: Cli) -> RunMainDispatchProjection:
+    command = cli.command
+    if command is None:
+        return RunMainDispatchProjection(
+            handler="tui",
+            command_kind=None,
+            enters_tui=True,
+        )
+    handler_by_kind = {
+        "exec": "run_exec_command",
+        "status": "run_status_command",
+        "list": "run_list_command",
+        "apply": "run_apply_command",
+        "diff": "run_diff_command",
+    }
+    try:
+        handler = handler_by_kind[command.kind]
+    except KeyError as exc:
+        raise ValueError(f"unknown cloud-tasks command: {command.kind}") from exc
+    return RunMainDispatchProjection(
+        handler=handler,
+        command_kind=command.kind,
+        enters_tui=False,
+    )
+
+
 def task_status_label(status: TaskStatus | str) -> str:
     value = status.value if hasattr(status, "value") else str(status)
     return {
@@ -421,6 +731,93 @@ def format_task_list_lines(
         if idx + 1 < len(tasks):
             lines.append("")
     return lines
+
+
+def list_command_json_payload(
+    tasks: Sequence[Any],
+    cursor: str | None,
+    base_url: str,
+) -> dict[str, Any]:
+    return {
+        "tasks": [
+            {
+                "id": _task_id_text(task.id),
+                "url": task_url(base_url, _task_id_text(task.id)),
+                "title": task.title,
+                "status": _enum_value(task.status),
+                "updated_at": _jsonable_time(task.updated_at),
+                "environment_id": task.environment_id,
+                "environment_label": task.environment_label,
+                "summary": {
+                    "files_changed": task.summary.files_changed,
+                    "lines_added": task.summary.lines_added,
+                    "lines_removed": task.summary.lines_removed,
+                },
+                "is_review": task.is_review,
+                "attempt_total": task.attempt_total,
+            }
+            for task in tasks
+        ],
+        "cursor": cursor,
+    }
+
+
+def format_list_command_text_lines(
+    tasks: Sequence[Any],
+    cursor: str | None,
+    base_url: str,
+    now: datetime,
+    colorize: bool = False,
+) -> list[str]:
+    if not tasks:
+        return ["No tasks found."]
+    lines = format_task_list_lines(tasks, base_url, now, colorize)
+    if cursor is not None:
+        lines.append("")
+        lines.append(f"To fetch the next page, run codex cloud list --cursor='{cursor}'")
+    return lines
+
+
+def status_command_projection(
+    task: Any,
+    now: datetime,
+    colorize: bool = False,
+) -> tuple[list[str], int]:
+    lines = format_task_status_lines(task, now, colorize)
+    status = getattr(task, "status")
+    return lines, 0 if status == TaskStatus.READY else 1
+
+
+def _task_id_text(task_id: Any) -> str:
+    return str(getattr(task_id, "value", task_id))
+
+
+def exec_command_projection(
+    *,
+    env_id: str,
+    prompt: str,
+    git_ref: str,
+    attempts: int,
+    created_task: Any,
+    base_url: str,
+) -> ExecCommandProjection:
+    task_id = _task_id_text(getattr(created_task, "id"))
+    return ExecCommandProjection(
+        env_id=env_id,
+        prompt=prompt,
+        git_ref=git_ref,
+        qa_mode=False,
+        best_of_n=attempts,
+        output_url=task_url(base_url, task_id),
+    )
+
+
+def _jsonable_time(value: Any) -> Any:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.isoformat().replace("+00:00", "Z")
+    return value
 
 
 def environment_list_url(base_url: str) -> str:

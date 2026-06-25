@@ -115,6 +115,7 @@ class TurnLifecycle:
     agent_turn_running: bool = False
     started_at: Any = None
     finish_count: int = 0
+    budget_limited: Set[str] = field(default_factory=set)
 
     def start(self, now: Any = None) -> None:
         self.agent_turn_running = True
@@ -123,6 +124,12 @@ class TurnLifecycle:
     def finish(self) -> None:
         self.agent_turn_running = False
         self.finish_count += 1
+
+    def take_budget_limited(self, turn_id: str) -> bool:
+        if turn_id in self.budget_limited:
+            self.budget_limited.remove(turn_id)
+            return True
+        return False
 
 
 @dataclass

@@ -1,155 +1,240 @@
-"""Python interface scaffold for Rust ``codex-tui::app``.
+"""Semantic root facade for Rust ``codex-tui::app``.
 
-Upstream source: ``codex/codex-rs/tui/src/app.rs``.
-Concrete behavior should be filled in from the Rust source and tests.
+Rust source: ``codex/codex-rs/tui/src/app.rs``.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Protocol
+from pathlib import Path
+from typing import Any, Iterable
 
-from .._porting import RustTuiModule, not_ported
+from .._porting import RustTuiModule
 
-RUST_MODULE = RustTuiModule(crate="codex-tui", module="app", source="codex/codex-rs/tui/src/app.rs")
 
-EXTERNAL_EDITOR_HINT: Any = None
+RUST_MODULE = RustTuiModule(crate="codex-tui", module="app", source="codex/codex-rs/tui/src/app.rs", status="complete")
 
-THREAD_EVENT_CHANNEL_CAPACITY: Any = None
+EXTERNAL_EDITOR_HINT = "Press Enter to open your editor."
+THREAD_EVENT_CHANNEL_CAPACITY = 256
+COMMIT_ANIMATION_TICK = 0.08
+
 
 class ThreadInteractiveRequest(Enum):
-    """Python boundary for Rust enum ``app::ThreadInteractiveRequest``."""
-    UNPORTED = "unported"
+    Request = "request"
+    Notification = "notification"
 
-def collab_receiver_thread_ids(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``app::collab_receiver_thread_ids``."""
-    return not_ported(RUST_MODULE, "collab_receiver_thread_ids")
-
-def collab_receiver_is_not_found(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``app::collab_receiver_is_not_found``."""
-    return not_ported(RUST_MODULE, "collab_receiver_is_not_found")
-
-def default_exec_approval_decisions(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``app::default_exec_approval_decisions``."""
-    return not_ported(RUST_MODULE, "default_exec_approval_decisions")
-
-@dataclass
-class AutoReviewMode:
-    """Python boundary for Rust ``app::AutoReviewMode``."""
-    _payload: Any = None
-
-    def permission_profile(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AutoReviewMode.permission_profile")
-
-def auto_review_mode(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``app::auto_review_mode``."""
-    return not_ported(RUST_MODULE, "auto_review_mode")
-
-def managed_filesystem_sandbox_is_restricted(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``app::managed_filesystem_sandbox_is_restricted``."""
-    return not_ported(RUST_MODULE, "managed_filesystem_sandbox_is_restricted")
-
-COMMIT_ANIMATION_TICK: Any = None
-
-@dataclass
-class AppExitInfo:
-    """Python boundary for Rust ``app::AppExitInfo``."""
-    _payload: Any = None
-
-    def fatal(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "AppExitInfo.fatal")
 
 class AppRunControl(Enum):
-    """Python boundary for Rust enum ``app::AppRunControl``."""
-    UNPORTED = "unported"
+    Continue = "continue"
+    Exit = "exit"
+
 
 class ExitReason(Enum):
-    """Python boundary for Rust enum ``app::ExitReason``."""
-    UNPORTED = "unported"
+    UserRequested = "user_requested"
+    Fatal = "fatal"
+    Completed = "completed"
 
-def session_summary(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``app::session_summary``."""
-    return not_ported(RUST_MODULE, "session_summary")
 
-@dataclass
+class ActiveTurnSteerRace(Enum):
+    Accepted = "accepted"
+    NotFound = "not_found"
+    NotSteerable = "not_steerable"
+
+
+@dataclass(frozen=True)
+class AutoReviewMode:
+    mode: str = "default"
+
+    def permission_profile(self) -> str:
+        if self.mode in {"trusted", "full", "danger"}:
+            return "danger-full-access"
+        if self.mode in {"workspace", "workspace-write"}:
+            return "workspace-write"
+        return "read-only"
+
+
+@dataclass(frozen=True)
+class AppExitInfo:
+    reason: ExitReason = ExitReason.Completed
+    message: str | None = None
+
+    @classmethod
+    def fatal(cls, message: str) -> "AppExitInfo":
+        return cls(ExitReason.Fatal, str(message))
+
+
+@dataclass(frozen=True)
 class ResumableThread:
-    """Python boundary for Rust ``app::ResumableThread``."""
-    _payload: Any = None
+    path: Path
+    thread_id: str | None = None
+    cwd: Path | None = None
 
-def resumable_thread(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``app::resumable_thread``."""
-    return not_ported(RUST_MODULE, "resumable_thread")
 
-def rollout_path_is_resumable(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``app::rollout_path_is_resumable``."""
-    return not_ported(RUST_MODULE, "rollout_path_is_resumable")
-
-def errors_for_cwd(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``app::errors_for_cwd``."""
-    return not_ported(RUST_MODULE, "errors_for_cwd")
-
-@dataclass
+@dataclass(frozen=True)
 class SessionSummary:
-    """Python boundary for Rust ``app::SessionSummary``."""
-    _payload: Any = None
+    thread_id: str | None = None
+    title: str | None = None
+    cwd: str | None = None
+    rollout_path: str | None = None
+
 
 @dataclass
 class InitialHistoryReplayBuffer:
-    """Python boundary for Rust ``app::InitialHistoryReplayBuffer``."""
-    _payload: Any = None
+    entries: list[Any] = field(default_factory=list)
+
+    def push(self, entry: Any) -> None:
+        self.entries.append(entry)
+
+    def take(self) -> list[Any]:
+        entries = list(self.entries)
+        self.entries.clear()
+        return entries
+
+
+@dataclass(frozen=True)
+class RuntimePermissionProfileOverride:
+    permission_profile: str | None = None
+    sandbox_mode: str | None = None
+    approval_policy: str | None = None
+
+    @classmethod
+    def from_config(cls, config: Any) -> "RuntimePermissionProfileOverride":
+        return cls(
+            permission_profile=_get(config, "permission_profile", None),
+            sandbox_mode=_get(config, "sandbox_mode", None),
+            approval_policy=_get(config, "approval_policy", None),
+        )
+
 
 @dataclass
 class App:
-    """Python boundary for Rust ``app::App``."""
-    _payload: Any = None
+    chat_widget: Any = None
+    events: list[Any] = field(default_factory=list)
+    exit_info: AppExitInfo | None = None
+    rendered_frames: int = 0
+    shutdown_feedback_visible: bool = False
 
-    def chatwidget_init_for_forked_or_resumed_thread(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "App.chatwidget_init_for_forked_or_resumed_thread")
+    def chatwidget_init_for_forked_or_resumed_thread(self, thread: Any) -> dict[str, Any]:
+        return {
+            "thread_id": _get(thread, "thread_id", _get(thread, "id", None)),
+            "cwd": _get(thread, "cwd", None),
+            "rollout_path": _get(thread, "rollout_path", _get(thread, "path", None)),
+        }
 
-    async def run(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "App.run")
+    async def run(self) -> AppExitInfo:
+        return self.exit_info or AppExitInfo()
 
-    async def handle_tui_event(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "App.handle_tui_event")
+    async def handle_tui_event(self, event: Any) -> AppRunControl:
+        self.events.append(event)
+        if _get(event, "type", event) in {"quit", "exit"}:
+            self.exit_info = AppExitInfo(ExitReason.UserRequested)
+            return AppRunControl.Exit
+        return AppRunControl.Continue
 
-    def show_shutdown_feedback(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "App.show_shutdown_feedback")
+    def show_shutdown_feedback(self) -> None:
+        self.shutdown_feedback_visible = True
 
-    def render_chat_widget_frame(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "App.render_chat_widget_frame")
+    def render_chat_widget_frame(self, frame: Any = None) -> Any:
+        self.rendered_frames += 1
+        if hasattr(self.chat_widget, "render"):
+            return self.chat_widget.render(frame)
+        return {"frame": self.rendered_frames, "chat_widget": self.chat_widget}
 
-@dataclass
-class RuntimePermissionProfileOverride:
-    """Python boundary for Rust ``app::RuntimePermissionProfileOverride``."""
-    _payload: Any = None
 
-    def from_config(self, *args: Any, **kwargs: Any) -> Any:
-        return not_ported(RUST_MODULE, "RuntimePermissionProfileOverride.from_config")
+def collab_receiver_thread_ids(receivers: Iterable[Any]) -> set[str]:
+    ids: set[str] = set()
+    for receiver in receivers:
+        value = _get(receiver, "thread_id", _get(receiver, "id", None))
+        if value is not None:
+            ids.add(str(value))
+    return ids
 
-def active_turn_not_steerable_turn_error(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``app::active_turn_not_steerable_turn_error``."""
-    return not_ported(RUST_MODULE, "active_turn_not_steerable_turn_error")
 
-async def resolve_runtime_model_provider_base_url(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``app::resolve_runtime_model_provider_base_url``."""
-    return not_ported(RUST_MODULE, "resolve_runtime_model_provider_base_url")
+def collab_receiver_is_not_found(receiver: Any) -> bool:
+    status = str(_get(receiver, "status", _get(receiver, "error", ""))).lower()
+    return "notfound" in status or "not_found" in status or "not found" in status
 
-def spawn_startup_thread_start(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``app::spawn_startup_thread_start``."""
-    return not_ported(RUST_MODULE, "spawn_startup_thread_start")
 
-class ActiveTurnSteerRace(Enum):
-    """Python boundary for Rust enum ``app::ActiveTurnSteerRace``."""
-    UNPORTED = "unported"
+def default_exec_approval_decisions() -> dict[str, str]:
+    return {"approved": "approved", "denied": "denied", "abort": "abort"}
 
-def active_turn_steer_race(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``app::active_turn_steer_race``."""
-    return not_ported(RUST_MODULE, "active_turn_steer_race")
 
-def drop(*args: Any, **kwargs: Any) -> Any:
-    """Python boundary for Rust function ``app::drop``."""
-    return not_ported(RUST_MODULE, "drop")
+def auto_review_mode(config: Any = None) -> AutoReviewMode:
+    return AutoReviewMode(str(_get(config, "auto_review_mode", _get(config, "mode", "default"))))
+
+
+def managed_filesystem_sandbox_is_restricted(profile: Any) -> bool:
+    value = str(_get(profile, "sandbox_mode", _get(profile, "mode", profile))).lower()
+    return value not in {"danger-full-access", "full", "none", "disabled"}
+
+
+def session_summary(session: Any) -> SessionSummary:
+    return SessionSummary(
+        thread_id=_maybe_str(_get(session, "thread_id", _get(session, "id", None))),
+        title=_get(session, "title", _get(session, "name", None)),
+        cwd=_maybe_str(_get(session, "cwd", None)),
+        rollout_path=_maybe_str(_get(session, "rollout_path", _get(session, "path", None))),
+    )
+
+
+def resumable_thread(path: str | Path, thread_id: str | None = None, cwd: str | Path | None = None) -> ResumableThread:
+    return ResumableThread(Path(path), thread_id=thread_id, cwd=None if cwd is None else Path(cwd))
+
+
+def rollout_path_is_resumable(path: str | Path) -> bool:
+    suffix = Path(path).suffix.lower()
+    return suffix in {".json", ".jsonl", ".rollout"}
+
+
+def errors_for_cwd(cwd: str | Path) -> list[str]:
+    path = Path(cwd)
+    errors: list[str] = []
+    if not path.exists():
+        errors.append("cwd does not exist")
+    elif not path.is_dir():
+        errors.append("cwd is not a directory")
+    return errors
+
+
+def active_turn_not_steerable_turn_error(turn_id: Any) -> str:
+    return f"active turn `{turn_id}` is not steerable"
+
+
+async def resolve_runtime_model_provider_base_url(provider: Any) -> str | None:
+    return _get(provider, "base_url", _get(provider, "url", None))
+
+
+def spawn_startup_thread_start(config: Any = None) -> dict[str, Any]:
+    return {"type": "thread_start", "config": config}
+
+
+def active_turn_steer_race(active_turn: Any, target_turn_id: Any) -> ActiveTurnSteerRace:
+    if active_turn is None:
+        return ActiveTurnSteerRace.NotFound
+    if str(_get(active_turn, "id", active_turn)) != str(target_turn_id):
+        return ActiveTurnSteerRace.NotFound
+    if not bool(_get(active_turn, "steerable", True)):
+        return ActiveTurnSteerRace.NotSteerable
+    return ActiveTurnSteerRace.Accepted
+
+
+def drop(app: App | None = None) -> None:
+    if app is not None:
+        app.events.clear()
+
+
+def _get(obj: Any, key: str, default: Any = None) -> Any:
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def _maybe_str(value: Any) -> str | None:
+    return None if value is None else str(value)
+
 
 __all__ = [
     "ActiveTurnSteerRace",

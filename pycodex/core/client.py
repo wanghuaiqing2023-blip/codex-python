@@ -806,7 +806,6 @@ class ModelClientSession:
         warmup_payload = dict(payload)
         warmup_payload["generate"] = False
         warmup_request = dict(request)
-        warmup_request["generate"] = False
         result = prepare_and_execute_sampling_request_runtime_state_driven_session_plan(
             self,
             features,
@@ -1093,6 +1092,7 @@ def serialize_responses_request(request: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(request, Mapping):
         raise TypeError("request must be a mapping")
     serialized = {str(key): _serialize_request_value(value) for key, value in request.items()}
+    _strip_skipped_response_item_ids(serialized.get("input"))
     if serialized.get("instructions") == "":
         serialized.pop("instructions", None)
     for key in (
@@ -1108,9 +1108,32 @@ def serialize_responses_request(request: Mapping[str, Any]) -> dict[str, Any]:
     return serialized
 
 
+_RESPONSE_ITEM_ID_SKIPPED_ON_REQUEST_TYPES = {
+    "reasoning",
+    "message",
+    "web_search_call",
+    "function_call",
+    "tool_search_call",
+    "local_shell_call",
+    "custom_tool_call",
+}
+
+
+def _strip_skipped_response_item_ids(input_value: Any) -> None:
+    if not isinstance(input_value, list):
+        return
+    for item in input_value:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") in _RESPONSE_ITEM_ID_SKIPPED_ON_REQUEST_TYPES:
+            item.pop("id", None)
+
+
 def _serialize_request_value(value: Any) -> Any:
     if isinstance(value, Enum):
         return value.value
+    if isinstance(value, ResponseItem):
+        return _serialize_request_value(value.to_mapping())
     if isinstance(value, Mapping):
         return {
             str(key): _serialize_request_value(item)

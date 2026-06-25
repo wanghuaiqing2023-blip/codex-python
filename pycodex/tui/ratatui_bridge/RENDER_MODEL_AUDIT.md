@@ -1,4 +1,4 @@
-﻿# Render model unification audit
+# Render model unification audit
 
 Date: 2026-06-13
 
@@ -41,7 +41,7 @@ Some modules still define local `Span`/`Line` or backend classes. Those are not 
 
 Run targeted parity tests for the touched modules before relying on this migration broadly:
 
-- `tests/test_tui_render_renderable.py`
-- `tests/test_tui_ratatui_bridge.py`
+- `pycodex/tui/render/tests/test_renderable.py`
+- `pycodex/tui/ratatui_bridge/tests/test_ratatui_bridge.py`
 - `tests/test_tui_pager_overlay.py`
-- `tests/test_tui_chatwidget_rendering.py`
+- `pycodex/tui/chatwidget/tests/test_rendering.py`

@@ -4,11 +4,17 @@ from pycodex.tui.diff_render import (
     DARK_TC_ADD_LINE_BG_RGB,
     DiffColorLevel,
     DiffLineType,
+    DiffSummary,
     DiffTheme,
+    FileChange,
     ResolvedDiffBackgrounds,
     Span,
     Style,
+    calculate_add_remove_from_diff,
+    collect_rows,
+    create_diff_summary,
     detect_lang_for_path,
+    desired_height,
     diff_color_level_for_terminal,
     display_width,
     fallback_diff_backgrounds,
@@ -126,3 +132,49 @@ def test_wrap_styled_spans_preserves_styles_and_display_width() -> None:
 def test_wrap_styled_spans_handles_explicit_newlines() -> None:
     lines = wrap_styled_spans([Span("ab\ncd")], max_cols=10)
     assert [line.text() for line in lines] == ["ab", "cd"]
+
+
+def test_calculate_add_remove_from_diff_ignores_headers() -> None:
+    # Rust: codex-tui/src/diff_render.rs::calculate_add_remove_from_diff.
+    diff = "\n".join(
+        [
+            "--- a/src/lib.rs",
+            "+++ b/src/lib.rs",
+            "@@ -1,2 +1,3 @@",
+            " context",
+            "-old",
+            "+new",
+            "+extra",
+        ]
+    )
+    assert calculate_add_remove_from_diff(diff) == (2, 1)
+
+
+def test_create_diff_summary_orders_rows_and_renders_semantic_blocks() -> None:
+    # Rust: codex-tui/src/diff_render.rs create_diff_summary/collect_rows
+    # sort by path, summarize counts, and render per-file blocks.
+    changes = {
+        "z_delete.txt": FileChange.Delete("gone\n"),
+        "a_add.txt": FileChange.Add("one\ntwo\n"),
+        "m_update.txt": FileChange.Update("@@ -1 +1 @@\n-old\n+new\n", move_path="renamed.rs"),
+    }
+
+    rows = collect_rows(changes)
+    assert [row.path.as_posix() for row in rows] == ["a_add.txt", "m_update.txt", "z_delete.txt"]
+    assert [(row.added, row.removed) for row in rows] == [(2, 0), (1, 1), (0, 1)]
+
+    lines = create_diff_summary(changes, ".", wrap_cols=80)
+    text = [line.text() for line in lines]
+    assert text[0] == "- Edited 3 files (+3 -2)"
+    assert any("a_add.txt (+2 -0)" in line for line in text)
+    assert any("m_update.txt -> renamed.rs (+1 -1)" in line for line in text)
+    assert any("+ one" in line for line in text)
+    assert any("- old" in line for line in text)
+
+
+def test_diff_summary_render_and_desired_height_share_line_count() -> None:
+    # Rust Renderable::desired_height renders to a temporary line buffer and
+    # returns that line count.
+    summary = DiffSummary.new({"src/lib.rs": FileChange.Add("hello\n")}, cwd=".")
+    lines = create_diff_summary(summary.changes, summary.cwd, wrap_cols=40)
+    assert desired_height(summary, width=40) == len(lines)
