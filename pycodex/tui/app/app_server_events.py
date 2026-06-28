@@ -53,7 +53,7 @@ def refresh_mcp_startup_expected_servers_from_config(config: Any) -> List[str]:
     if servers is None:
         servers = _get(config, "mcp_servers", {})
     items = servers.items() if hasattr(servers, "items") else []
-    return [name for name, server in items if bool(_get(server, "enabled", False))]
+    return [name for name, server in items if bool(_get(server, "enabled", True))]
 
 
 def plan_app_server_event(

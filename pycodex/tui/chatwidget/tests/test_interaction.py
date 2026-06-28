@@ -258,7 +258,11 @@ def test_paste_burst_tick_flushes_or_schedules_or_allows_render() -> None:
     assert handle_paste_burst_tick(widget, FrameRequester([])) is False
 
 
-def test_ctrl_c_stops_realtime_or_arms_interrupts_and_double_press_quits() -> None:
+def test_ctrl_c_stops_realtime_interrupts_or_quits_without_double_press() -> None:
+    # Rust source contract:
+    # - codex-tui::bottom_pane::DOUBLE_PRESS_QUIT_SHORTCUT_ENABLED is false.
+    # - chatwidget::interaction::on_ctrl_c stops realtime first, interrupts
+    #   cancellable work immediately, and quits immediately when idle.
     widget = Widget()
     widget.realtime_conversation = Realtime(live=True)
     on_ctrl_c(widget)
@@ -269,15 +273,20 @@ def test_ctrl_c_stops_realtime_or_arms_interrupts_and_double_press_quits() -> No
     widget.turn_lifecycle.agent_turn_running = True
     widget.current_goal_status = Goal(active=True)
     on_ctrl_c(widget)
-    assert widget.quit_shortcut_key == KeyBinding("ctrl-c")
+    assert widget.quit_shortcut_key is None
     assert widget.ops == [AppCommand.interrupt()]
     assert widget.app_event_tx.events == [{"kind": "SetThreadGoalStatus", "thread_id": "thread", "status": "Paused"}]
 
+    widget = Widget()
     on_ctrl_c(widget)
     assert ("request_quit_without_confirmation",) in widget.events
 
 
-def test_ctrl_c_bottom_pane_handled_modal_clears_or_arms_hint() -> None:
+def test_ctrl_c_bottom_pane_handled_does_not_arm_hint_when_double_press_disabled() -> None:
+    # Rust source contract:
+    # - BottomPane may clear a draft or dismiss a modal and report Handled.
+    # - With DOUBLE_PRESS_QUIT_SHORTCUT_ENABLED=false, ChatWidget does not arm
+    #   the quit shortcut after a handled bottom-pane Ctrl+C.
     widget = Widget()
     widget.bottom_pane.ctrl_c_result = CancellationEvent.HANDLED
     widget.bottom_pane.modal_clear = False
@@ -286,25 +295,26 @@ def test_ctrl_c_bottom_pane_handled_modal_clears_or_arms_hint() -> None:
 
     on_ctrl_c(widget)
 
-    assert widget.quit_shortcut_key is None
-    assert ("clear_quit_shortcut_hint",) in widget.bottom_pane.events
+    assert widget.quit_shortcut_key == KeyBinding("ctrl-c")
+    assert ("clear_quit_shortcut_hint",) not in widget.bottom_pane.events
 
     widget = Widget()
     widget.bottom_pane.ctrl_c_result = CancellationEvent.HANDLED
     on_ctrl_c(widget)
-    assert widget.quit_shortcut_key == KeyBinding("ctrl-c")
+    assert widget.quit_shortcut_key is None
+    assert ("request_quit_without_confirmation",) not in widget.events
 
 
-def test_ctrl_d_only_arms_when_composer_empty_and_modal_clear_then_second_press_quits() -> None:
+def test_ctrl_d_quits_immediately_only_when_composer_empty_and_modal_clear() -> None:
+    # Rust source contract:
+    # - With DOUBLE_PRESS_QUIT_SHORTCUT_ENABLED=false, Ctrl-D quits immediately
+    #   only when the composer is empty and no modal/popup is active.
     widget = Widget()
     widget.bottom_pane.empty = False
 
     assert on_ctrl_d(widget) is False
 
     widget = Widget()
-    assert on_ctrl_d(widget) is True
-    assert widget.quit_shortcut_key == KeyBinding("ctrl-d")
-
     assert on_ctrl_d(widget) is True
     assert ("request_quit_without_confirmation",) in widget.events
 

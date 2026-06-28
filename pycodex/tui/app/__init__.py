@@ -183,8 +183,12 @@ def resumable_thread(path: str | Path, thread_id: str | None = None, cwd: str | 
 
 
 def rollout_path_is_resumable(path: str | Path) -> bool:
-    suffix = Path(path).suffix.lower()
-    return suffix in {".json", ".jsonl", ".rollout"}
+    rollout_path = Path(path)
+    try:
+        stat = rollout_path.stat()
+    except OSError:
+        return False
+    return rollout_path.is_file() and stat.st_size > 0
 
 
 def errors_for_cwd(cwd: str | Path) -> list[str]:

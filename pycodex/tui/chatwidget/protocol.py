@@ -9,17 +9,19 @@ protocol enums.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from types import SimpleNamespace
 from typing import Any, Dict, Mapping, Optional, Protocol, Union
 
 from .._porting import RustTuiModule
 from ..token_usage import TokenUsage, TokenUsageInfo
-from .replay import ThreadItemRenderSource
+from .replay import AgentMessageItem, ThreadItemRenderSource, handle_thread_item as replay_handle_thread_item
 from .command_lifecycle import CommandLifecycleState
+from .mcp_startup import McpServerStatusUpdatedNotification, McpStartupModel
 from .status_surfaces import run_state_status_text
 from .status_state import TerminalTitleStatusKind
-from .streaming import StreamingWidgetState
+from .streaming import MessagePhase, StreamingWidgetState
 from .turn_runtime import (
     ChatWidgetTurnRuntime,
     RateLimitErrorKind as TurnRateLimitErrorKind,
@@ -101,12 +103,27 @@ class ChatWidgetProtocolRuntime:
         self.turn = ChatWidgetTurnRuntime()
         self.streaming = StreamingWidgetState()
         self.command_lifecycle = CommandLifecycleState()
+        self.mcp_startup = McpStartupModel()
         self.config = SimpleNamespace(show_raw_agent_reasoning=False)
         self.turn_lifecycle = self.turn.turn_lifecycle
+        self.transcript = self.turn.transcript
         self.last_non_retry_error: Optional[Any] = None
         self.last_rendered_user_message_display: Optional[Any] = None
         self.active_side_conversation = False
         self._assistant_text = ""
+        self.token_info: Optional[TokenUsageInfo] = None
+        self.thread_name: Optional[str] = None
+        self.active_agent_label: Optional[str] = None
+        self.selected_model: Optional[str] = None
+        self.shutdown_complete = False
+        self.immediate_exit_requested = False
+        self.active_cell: Any | None = None
+        self.history: list[Any] = []
+        self.clipboard_lease: Any = None
+        self.info_messages: list[tuple[str, Optional[str]]] = []
+        self.error_messages: list[str] = []
+        self.rate_limit_snapshots_by_limit_id: dict[str, Any] = {}
+        self.refreshing_status_outputs: list[tuple[int, Any]] = []
 
     def handle(self, notification: Union[ServerNotification, Mapping[str, Any], Any]) -> None:
         handle_server_notification(self, notification, None)
@@ -147,14 +164,129 @@ class ChatWidgetProtocolRuntime:
     def on_reasoning_section_break(self) -> None:
         self.streaming.on_reasoning_section_break()
 
+    def on_agent_reasoning_final(self) -> None:
+        self.streaming.on_agent_reasoning_final()
+        self._sync_streaming_task_state()
+
+    def on_committed_user_message(self, content: Any, from_replay: bool = False) -> None:
+        self.last_rendered_user_message_display = content
+        self.request_redraw()
+
+    def add_diff_in_progress(self, diff: Any = None) -> None:
+        self.active_cell = {"diff_in_progress": diff}
+        self.request_redraw()
+
+    def on_diff_complete(self, diff: Any = None) -> None:
+        self.history.append({"diff_complete": diff})
+        self.active_cell = None
+        self.request_redraw()
+
+    def add_to_history(self, item: Any) -> None:
+        self.history.append(item)
+
+    def set_token_info(self, info: Optional[TokenUsageInfo]) -> None:
+        self.token_info = info
+        self.turn.token_info = info
+
+    def on_thread_name_updated(self, _thread_id: str, thread_name: Optional[str]) -> None:
+        self.thread_name = thread_name
+
+    def set_active_agent_label(self, label: Optional[str]) -> None:
+        self.active_agent_label = None if label is None else str(label)
+
+    def set_model(self, model: str) -> None:
+        self.selected_model = str(model)
+        setattr(self.config, "model", self.selected_model)
+        self.streaming.request_redraw()
+
+    def set_reasoning_effort(self, effort: Any | None) -> None:
+        setattr(self.config, "model_reasoning_effort", effort)
+        self.streaming.request_redraw()
+
+    def on_rate_limit_snapshot(self, snapshot: Any) -> None:
+        if snapshot is None:
+            return
+        limit_id = _get(snapshot, "limit_id", None) or _get(snapshot, "limit_name", None) or "codex"
+        self.rate_limit_snapshots_by_limit_id[str(limit_id)] = snapshot
+        self.streaming.request_redraw()
+
+    def add_refreshing_status_output(self, request_id: int, handle: Any) -> None:
+        self.refreshing_status_outputs.append((int(request_id), handle))
+
+    def finish_status_rate_limit_refresh(self, request_id: int) -> None:
+        if not self.refreshing_status_outputs:
+            return
+        snapshots = list(self.rate_limit_snapshots_by_limit_id.values())
+        remaining: list[tuple[int, Any]] = []
+        updated_any = False
+        for pending_request_id, handle in self.refreshing_status_outputs:
+            if pending_request_id == int(request_id):
+                updated_any = True
+                finish = getattr(handle, "finish_rate_limit_refresh", None)
+                if callable(finish):
+                    finish(snapshots, datetime.now().astimezone())
+            else:
+                remaining.append((pending_request_id, handle))
+        self.refreshing_status_outputs = remaining
+        if updated_any:
+            self.request_redraw()
+
+    def on_shutdown_complete(self) -> None:
+        self.request_immediate_exit()
+
+    def request_immediate_exit(self) -> None:
+        self.shutdown_complete = True
+        self.immediate_exit_requested = True
+
+    def add_info_message(self, message: str, hint: Optional[str] = None) -> None:
+        self.info_messages.append((str(message), hint))
+
+    def add_error_message(self, message: str) -> None:
+        self.error_messages.append(str(message))
+
+    def on_mcp_server_status_updated(self, payload: Any) -> None:
+        """Apply Rust ``chatwidget::mcp_startup`` state to protocol runtime."""
+
+        notification = McpServerStatusUpdatedNotification(
+            name=str(_get(payload, "name", "")),
+            status=_get(payload, "status"),
+            error=_get(payload, "error", None),
+        )
+        previous_warning_count = len(self.mcp_startup.warnings)
+        self.mcp_startup.on_mcp_server_status_updated(notification)
+        self.turn.mcp_startup_status = self.mcp_startup.startup_status
+        self.turn.update_task_running_state()
+        if self.mcp_startup.status_header:
+            self.turn.set_status_header(self.mcp_startup.status_header)
+            self.streaming.set_status_header(self.mcp_startup.status_header)
+        for warning in self.mcp_startup.warnings[previous_warning_count:]:
+            self.turn.on_warning(warning)
+        if self.mcp_startup.startup_status is None and self.turn.bottom_pane.task_running:
+            self.streaming.restore_reasoning_status_header()
+            self.turn.set_status_header(self.streaming.status_state.current_status.header)
+        self.request_redraw()
+
     def handle_thread_item(self, item: Any, _turn_id: str | None, _source: ThreadItemRenderSource) -> None:
         kind = _kind(item)
-        if kind != "CommandExecution":
+        if kind == "CommandExecution":
+            if _status_name(_get(item, "status", None)) == "InProgress":
+                self.on_command_execution_started(item)
+            else:
+                self.on_command_execution_completed(item)
             return
-        if _status_name(_get(item, "status", None)) == "InProgress":
-            self.on_command_execution_started(item)
-        else:
-            self.on_command_execution_completed(item)
+        replay_handle_thread_item(self, item, _turn_id or "", _source)
+
+    def on_agent_message_item_completed(
+        self,
+        item: AgentMessageItem,
+        from_replay: bool = False,
+    ) -> None:
+        text = _agent_message_item_text(item)
+        phase = _message_phase(_get(item, "phase", None))
+        self.streaming.on_agent_message_item_completed(text, phase, from_replay)
+        if text.strip():
+            self._assistant_text = text.strip()
+        self._sync_streaming_task_state()
 
     def on_task_complete(
         self,
@@ -194,6 +326,9 @@ class ChatWidgetProtocolRuntime:
             self.streaming.adaptive_chunking_resets += 1
         self.turn.handle_non_retry_error(message, codex_error_info)
         self._sync_streaming_task_state()
+
+    def on_warning(self, message: Any) -> None:
+        self.turn.on_warning(message)
 
     def on_stream_error(self, message: str, additional_details: str | None = None) -> None:
         self.streaming.on_stream_error(message, additional_details)
@@ -475,6 +610,31 @@ def _plan_update_args(payload: Any) -> Dict[str, Any]:
             for step in (_get(payload, "plan", ()) or ())
         ],
     }
+
+
+def _agent_message_item_text(item: AgentMessageItem) -> str:
+    parts: list[str] = []
+    for content in item.content:
+        content_type = str(_get(content, "type", "") or "")
+        if content_type.lower() in {"text", "output_text"}:
+            parts.append(str(_get(content, "text", "") or ""))
+    return "".join(parts)
+
+
+def _message_phase(value: Any) -> MessagePhase | None:
+    if value is None:
+        return None
+    if isinstance(value, MessagePhase):
+        return value
+    text = _status_name(value)
+    aliases = {
+        "final": MessagePhase.FinalAnswer,
+        "final_answer": MessagePhase.FinalAnswer,
+        "FinalAnswer": MessagePhase.FinalAnswer,
+        "commentary": MessagePhase.Commentary,
+        "Commentary": MessagePhase.Commentary,
+    }
+    return aliases.get(text)
 
 
 def token_usage_info_from_app_server(token_usage: Any) -> TokenUsageInfo:

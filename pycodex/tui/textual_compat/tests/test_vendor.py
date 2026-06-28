@@ -31,6 +31,7 @@ def test_textual_compat_lazy_exports_core_textual_api_from_vendor_tree() -> None
     assert textual_compat.App.__module__ == "textual.app"
     assert textual_compat.Widget.__module__ == "textual.widget"
     assert textual_compat.ComposeResult is app_module.ComposeResult
+    assert textual_compat.TextArea.__module__ == "textual.widgets._text_area"
 
 
 def test_textual_compat_lazy_exports_rich_api_from_vendor_tree() -> None:

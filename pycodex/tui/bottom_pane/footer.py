@@ -24,9 +24,9 @@ RUST_MODULE = RustTuiModule(
 MODE_CYCLE_HINT = "shift+tab to cycle"
 FOOTER_CONTEXT_GAP_COLS = 1
 FOOTER_INDENT_COLS = 2
-COLUMNS = 3
-COLUMN_PADDING = 2
-COLUMN_GAP = 2
+COLUMNS = 2
+COLUMN_PADDING = (4, 4)
+COLUMN_GAP = 4
 
 
 @dataclass(frozen=True)
@@ -184,12 +184,20 @@ class ShortcutsState:
 
 
 class ShortcutId(Enum):
+    COMMANDS = "Commands"
+    SHELL_COMMANDS = "ShellCommands"
     PASTE_IMAGE = "PasteImage"
     INSERT_NEWLINE = "InsertNewline"
+    QUEUE_MESSAGE_TAB = "QueueMessageTab"
+    FILE_PATHS = "FilePaths"
     EXTERNAL_EDITOR = "ExternalEditor"
     EDIT_PREVIOUS = "EditPrevious"
     SHOW_TRANSCRIPT = "ShowTranscript"
     HISTORY_SEARCH = "HistorySearch"
+    QUIT = "Quit"
+    CHANGE_MODE = "ChangeMode"
+    REASONING_DOWN = "ReasoningDown"
+    REASONING_UP = "ReasoningUp"
 
 
 @dataclass(frozen=True)
@@ -213,16 +221,26 @@ class ShortcutDescriptor:
     description: str
 
     def binding_for(self, state: ShortcutsState) -> Optional[ShortcutBinding]:
-        if self.id is ShortcutId.PASTE_IMAGE:
-            return ShortcutBinding(ctrl_alt("v") if state.is_wsl else ctrl("v"))
         if self.id is ShortcutId.INSERT_NEWLINE:
             key = shift("Enter") if state.use_shift_enter_hint else state.key_hints.insert_newline
             return None if key is None else ShortcutBinding(key)
+        if self.id is ShortcutId.PASTE_IMAGE:
+            return ShortcutBinding(ctrl_alt("v") if state.is_wsl else ctrl("v"))
+        if self.id is ShortcutId.CHANGE_MODE and not state.collaboration_modes_enabled:
+            return None
         mapping = {
+            ShortcutId.COMMANDS: plain("/"),
+            ShortcutId.SHELL_COMMANDS: plain("!"),
+            ShortcutId.QUEUE_MESSAGE_TAB: state.key_hints.queue,
+            ShortcutId.FILE_PATHS: plain("@"),
             ShortcutId.EXTERNAL_EDITOR: state.key_hints.external_editor,
             ShortcutId.EDIT_PREVIOUS: state.key_hints.edit_previous,
             ShortcutId.SHOW_TRANSCRIPT: state.key_hints.show_transcript,
             ShortcutId.HISTORY_SEARCH: state.key_hints.history_search,
+            ShortcutId.QUIT: ctrl("c"),
+            ShortcutId.CHANGE_MODE: shift("Tab"),
+            ShortcutId.REASONING_DOWN: state.key_hints.reasoning_down,
+            ShortcutId.REASONING_UP: state.key_hints.reasoning_up,
         }
         key = mapping.get(self.id)
         return None if key is None else ShortcutBinding(key)
@@ -231,16 +249,26 @@ class ShortcutDescriptor:
         binding = self.binding_for(state)
         if binding is None:
             return None
-        return f"{binding.key} {self.description}"
+        if self.id is ShortcutId.EDIT_PREVIOUS:
+            return f"{_display_key(binding.key)} again to edit previous message"
+        return f"{_display_key(binding.key)} {self.description}".rstrip()
 
 
 SHORTCUTS = [
-    ShortcutDescriptor(ShortcutId.PASTE_IMAGE, "paste image"),
-    ShortcutDescriptor(ShortcutId.INSERT_NEWLINE, "insert newline"),
-    ShortcutDescriptor(ShortcutId.EXTERNAL_EDITOR, "open editor"),
-    ShortcutDescriptor(ShortcutId.EDIT_PREVIOUS, "edit previous message"),
-    ShortcutDescriptor(ShortcutId.SHOW_TRANSCRIPT, "show transcript"),
+    ShortcutDescriptor(ShortcutId.COMMANDS, "for commands"),
+    ShortcutDescriptor(ShortcutId.SHELL_COMMANDS, "for shell commands"),
+    ShortcutDescriptor(ShortcutId.INSERT_NEWLINE, "for newline"),
+    ShortcutDescriptor(ShortcutId.QUEUE_MESSAGE_TAB, "to queue message"),
+    ShortcutDescriptor(ShortcutId.FILE_PATHS, "for file paths"),
+    ShortcutDescriptor(ShortcutId.PASTE_IMAGE, "to paste images"),
+    ShortcutDescriptor(ShortcutId.EXTERNAL_EDITOR, "to edit in external editor"),
+    ShortcutDescriptor(ShortcutId.EDIT_PREVIOUS, ""),
     ShortcutDescriptor(ShortcutId.HISTORY_SEARCH, "search history"),
+    ShortcutDescriptor(ShortcutId.QUIT, "to exit"),
+    ShortcutDescriptor(ShortcutId.REASONING_DOWN, "reasoning down"),
+    ShortcutDescriptor(ShortcutId.REASONING_UP, "reasoning up"),
+    ShortcutDescriptor(ShortcutId.CHANGE_MODE, "to change mode"),
+    ShortcutDescriptor(ShortcutId.SHOW_TRANSCRIPT, "to view transcript"),
 ]
 
 
@@ -381,7 +409,7 @@ def goal_status_indicator_line(indicator: GoalStatusIndicator) -> str:
 
 def status_line_right_indicator_line(status_line: Optional[str], active_agent_label: Optional[str] = None) -> Optional[str]:
     if status_line and active_agent_label:
-        return f"{status_line} ? {active_agent_label}"
+        return f"{status_line} · {active_agent_label}"
     return status_line or active_agent_label
 
 
@@ -495,19 +523,47 @@ def quit_shortcut_reminder_line(props: FooterProps) -> str:
 
 def esc_hint_line(props: FooterProps) -> str:
     if props.esc_backtrack_hint:
-        return "Press Esc again to go back"
-    return "Press Esc again to clear"
+        return "esc again to edit previous message"
+    return "esc esc to edit previous message"
 
 
 def shortcut_overlay_lines(state: ShortcutsState) -> List[str]:
-    return [entry for descriptor in SHORTCUTS if (entry := descriptor.overlay_entry(state)) is not None]
+    entries = [entry for descriptor in SHORTCUTS if (entry := descriptor.overlay_entry(state)) is not None]
+    return build_columns(entries) + ["", "customize shortcuts with /keymap"]
 
 
-def build_columns(items: Iterable[str], columns: int = COLUMNS) -> list[list[str]]:
-    out: List[List[str]] = [[] for _ in range(max(columns, 1))]
-    for idx, item in enumerate(items):
-        out[idx % len(out)].append(str(item))
-    return out
+def build_columns(items: Iterable[str], columns: int = COLUMNS) -> list[str]:
+    entries = [str(item) for item in items]
+    if not entries:
+        return []
+    columns = max(int(columns), 1)
+    rows = (len(entries) + columns - 1) // columns
+    target_len = rows * columns
+    entries.extend([""] * (target_len - len(entries)))
+    widths = [0 for _ in range(columns)]
+    for idx, entry in enumerate(entries):
+        widths[idx % columns] = max(widths[idx % columns], len(entry))
+    padding = [COLUMN_PADDING[idx] if idx < len(COLUMN_PADDING) else COLUMN_PADDING[-1] for idx in range(columns)]
+    widths = [width + padding[idx] for idx, width in enumerate(widths)]
+    lines: list[str] = []
+    for row in range(rows):
+        parts: list[str] = []
+        for col in range(columns):
+            idx = row * columns + col
+            entry = entries[idx]
+            parts.append(entry)
+            if col < columns - 1:
+                parts.append(" " * (max(widths[col] - len(entry), 0) + COLUMN_GAP))
+        lines.append("".join(parts).rstrip())
+    return lines
+
+
+def _display_key(key: Union[KeyBinding, str]) -> str:
+    if isinstance(key, KeyBinding):
+        if not key.modifiers:
+            return key.code.lower() if key.code == "Esc" else key.code
+        return " + ".join((*key.modifiers, key.code))
+    return str(key)
 
 
 def context_window_line(percent: Optional[int] = None, used_tokens: Optional[int] = None) -> str:

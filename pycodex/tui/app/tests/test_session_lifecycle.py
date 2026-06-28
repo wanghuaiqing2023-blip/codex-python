@@ -10,6 +10,7 @@ from pycodex.tui.app.session_lifecycle import (
     closed_state_for_thread_read_error,
     is_terminal_thread_read_error,
     open_agent_picker,
+    open_agent_picker_plan,
     refresh_agent_picker_thread_liveness,
     resume_target_session,
     select_agent_thread,
@@ -77,6 +78,13 @@ def test_agent_picker_and_liveness_are_semantic_plans() -> None:
     picker = run(open_agent_picker(entries, active_thread_id="t1", primary_thread_id="p"))
     assert picker.action == "show_agent_picker"
     assert picker.items == (AgentPickerItemPlan("t1", "Builder (coder)", "t1", is_current=True),)
+
+    # Rust-derived contract:
+    # codex-tui::app::session_lifecycle::open_agent_picker prompts to enable
+    # Feature::Collab when subagents are disabled and no non-primary agent
+    # thread exists.
+    disabled = open_agent_picker_plan([{"thread_id": "p"}], primary_thread_id="p", collab_enabled=False)
+    assert disabled == SessionLifecyclePlan(action="open_multi_agent_enable_prompt")
 
     terminal = RuntimeError("thread/read failed: thread not loaded: t2")
     removed = run(refresh_agent_picker_thread_liveness("t2", read_error=terminal, has_replay_channel=False))

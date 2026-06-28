@@ -33,6 +33,7 @@ from pycodex.cli.parser import (
     _collect_cloud_attempt_diffs,
     _parse_mcp_env_pair,
     _print_local_app_server_connect_hint,
+    _build_tui_core_active_thread_runtime,
     _read_responses_api_auth_header,
     _resolve_exec_remote_endpoint,
     _remote_control_human_lines,
@@ -11800,7 +11801,7 @@ class TopLevelCliParserTests(unittest.TestCase):
             else:
                 os.environ["PYCODEX_TEST_REMOTE_AUTH_TOKEN"] = previous_token
 
-    def test_main_without_subcommand_runs_terminal_tui_exec_loop(self):
+    def legacy_main_without_subcommand_runs_terminal_tui_exec_loop(self):
         # Rust crates/modules:
         # - codex-cli/src/main.rs run_interactive_tui normalizes/dispatches
         #   the no-subcommand entry point into codex_tui::run_main.
@@ -11832,7 +11833,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertIn("\x1b[?1049l", stdout.getvalue())
         self.assertEqual(stderr.getvalue(), "")
 
-    def test_main_without_subcommand_hides_exec_stderr_when_reply_is_available(self):
+    def legacy_main_without_subcommand_hides_exec_stderr_when_reply_is_available(self):
         # Rust crates/modules:
         # - codex-cli/src/main.rs dispatches no-subcommand invocations into
         #   codex_tui::run_main.
@@ -11853,7 +11854,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertNotIn("prepared non-interactive exec plan", stdout.getvalue())
         self.assertEqual(stderr.getvalue(), "")
 
-    def test_main_without_subcommand_shows_exec_stderr_when_turn_fails_without_reply(self):
+    def legacy_main_without_subcommand_shows_exec_stderr_when_turn_fails_without_reply(self):
         # Rust crates/modules:
         # - codex-tui/src/lib.rs::run_main keeps terminal output visible until
         #   exit.
@@ -11873,7 +11874,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertIn("Try `codex login`.", stdout.getvalue())
         self.assertEqual(stderr.getvalue(), "")
 
-    def test_main_without_subcommand_appends_long_tui_reply_to_history(self):
+    def legacy_main_without_subcommand_appends_long_tui_reply_to_history(self):
         # Rust crates/modules:
         # - codex-tui/src/insert_history.rs inserts finalized history rows into
         #   terminal scrollback instead of repainting and clipping the transcript.
@@ -11900,7 +11901,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertIn(f"  {long_answer.splitlines()[-1]}\n", output)
         self.assertEqual(stderr.getvalue(), "")
 
-    def test_main_without_subcommand_auto_pages_long_tui_reply_for_tty(self):
+    def legacy_main_without_subcommand_auto_pages_long_tui_reply_for_tty(self):
         # Rust crates/modules:
         # - codex-tui/src/pager_overlay.rs owns TranscriptOverlay and PagerView.
         # - codex-tui/src/keymap.rs binds global.open_transcript and pager
@@ -11932,7 +11933,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertIn("-- ", output)
         self.assertEqual(stderr.getvalue(), "")
 
-    def test_main_without_subcommand_transcript_command_opens_history_pager(self):
+    def legacy_main_without_subcommand_transcript_command_opens_history_pager(self):
         # Rust source: codex-tui/src/app/input.rs dispatches the
         # global.open_transcript keybinding into the transcript overlay.
         stdout = io.StringIO()
@@ -11953,7 +11954,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertIn("short transcript answer", output)
         self.assertEqual(stderr.getvalue(), "")
 
-    def test_main_without_subcommand_no_alt_screen_stays_inline(self):
+    def legacy_main_without_subcommand_no_alt_screen_stays_inline(self):
         # Rust crate/module/test source:
         # - codex-tui/src/cli.rs exposes --no-alt-screen.
         # - codex-tui/src/lib.rs::determine_alt_screen_mode returns false when
@@ -11971,6 +11972,193 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertNotIn("\x1b[?1049h", stdout.getvalue())
         self.assertNotIn("\x1b[?1049l", stdout.getvalue())
         self.assertIn("Codex", stdout.getvalue())
+
+    def test_main_without_subcommand_tty_uses_textual_even_with_no_alt_screen(self):
+        # Rust/Python product-path contract:
+        # - codex-tui/src/tui.rs owns the real interactive terminal loop.
+        # - pycodex.tui.textual_runtime.should_use_textual_tui is the Python
+        #   product-entry guard for real TTY sessions.
+        # Contract: --no-alt-screen does not revive the legacy inline renderer
+        # for real TTY use; it only remains relevant to non-TTY compatibility
+        # harnesses while they are migrated.
+        class TtyInput(io.StringIO):
+            def isatty(self):
+                return True
+
+        class TtyOutput(io.StringIO):
+            def isatty(self):
+                return True
+
+        stdout = TtyOutput()
+        stderr = io.StringIO()
+        runtime = ExecFunctionActiveThreadRuntime(lambda _prompt: (0, "unused"))
+
+        with patch.dict(os.environ, {"TERM": "xterm-256color"}):
+            with patch("pycodex.cli.parser._build_tui_core_active_thread_runtime", return_value=runtime):
+                with patch("pycodex.tui.textual_runtime.run_textual_tui", return_value=0) as run_textual:
+                    with patch(
+                        "pycodex.tui.run_terminal_tui",
+                        side_effect=AssertionError("TTY product path must not enter legacy terminal renderer"),
+                    ):
+                        code = main(
+                            ["--no-alt-screen"],
+                            stdout=stdout,
+                            stderr=stderr,
+                            stdin=TtyInput("/quit\n"),
+                            stdin_is_terminal=True,
+                        )
+
+        self.assertEqual(code, 0)
+        run_textual.assert_called_once_with(active_thread_runtime=runtime, stdout=stdout)
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_tui_core_runtime_reads_reasoning_summary_from_config_toml(self):
+        # Rust source contract:
+        # - codex-core/src/config/mod.rs loads Config.model_reasoning_summary
+        #   from config.toml.
+        # - codex-cli/src/main.rs::run_interactive_tui passes loaded Config
+        #   into codex_tui::run_main.
+        # Python's Textual TUI must receive the same value through the active
+        # core runtime session config so reasoning summary visibility is
+        # controlled by config.toml rather than a local UI default.
+        parsed = parse_args([])
+        codex_home = Path("C:/Users/test/.codex")
+
+        with patch("pycodex.cli.parser.find_codex_home", return_value=str(codex_home)):
+            with patch(
+                "pycodex.cli.parser.read_toml_mapping",
+                return_value={"model": "gpt-5.5", "model_reasoning_summary": "none"},
+            ):
+                with patch(
+                    "pycodex.cli.parser.maybe_migrate_personality",
+                    return_value=PersonalityMigrationStatus.SKIPPED_MARKER,
+                ):
+                    with patch("pycodex.cli.parser.ensure_exec_trusted_directory"):
+                        with patch("pycodex.cli.parser._execpolicy_rules_for_local_http_exec", return_value=()):
+                            with patch("pycodex.cli.parser.read_auth_json", return_value={}):
+                                with patch(
+                                    "pycodex.cli.parser.build_default_core_exec_runtime",
+                                    return_value=(
+                                        SimpleNamespace(thread_id=None, session_id=None),
+                                        SimpleNamespace(),
+                                        SimpleNamespace(slug="gpt-5.5"),
+                                        None,
+                                    ),
+                                ):
+                                    runtime = _build_tui_core_active_thread_runtime(parsed, stderr=io.StringIO())
+
+        self.assertEqual(runtime.session_config.model_reasoning_summary, "none")
+
+    def test_main_without_subcommand_non_tty_refuses_after_runtime_setup(self):
+        # Rust source/native contract:
+        # - codex-cli/src/main.rs::run_interactive_tui dispatches into
+        #   codex_tui::run_main for ordinary non-TERM=dumb sessions.
+        # - codex-tui/src/tui.rs::init then rejects non-terminal stdin with
+        #   `stdin is not a terminal`.
+        # Native evidence:
+        #   `"/quit" | codex.exe --no-alt-screen -C <repo> -s read-only -a never`
+        #   exits 1 and prints `Error: stdin is not a terminal`.
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        runtime = ExecFunctionActiveThreadRuntime(lambda _prompt: (0, "unused"))
+
+        with patch.dict(os.environ, {"TERM": "xterm-256color"}):
+            with patch("pycodex.cli.parser._build_tui_core_active_thread_runtime", return_value=runtime) as build_runtime:
+                code = main(
+                    ["--no-alt-screen"],
+                    stdout=stdout,
+                    stderr=stderr,
+                    stdin=io.StringIO("/quit\n"),
+                    stdin_is_terminal=False,
+                )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(stderr.getvalue(), "Error: stdin is not a terminal\n")
+        build_runtime.assert_called_once()
+
+    def test_main_without_subcommand_term_dumb_non_tty_refuses_interactive_tui(self):
+        # Rust source/native contract:
+        # - codex-cli/src/main.rs::run_interactive_tui refuses TERM=dumb when
+        #   stdin/stderr are not TTYs because the confirmation prompt cannot be
+        #   shown safely.
+        # - Native run:
+        #   `"/quit" | codex.exe --no-alt-screen ...` returns 1 and prints the
+        #   same ERROR line before codex-tui starts.
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with patch.dict(os.environ, {"TERM": "dumb"}):
+            with patch("pycodex.cli.parser._build_tui_core_active_thread_runtime") as build_runtime:
+                code = main(
+                    ["--no-alt-screen"],
+                    stdout=stdout,
+                    stderr=stderr,
+                    stdin=io.StringIO("/quit\n"),
+                    stdin_is_terminal=False,
+                )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn('ERROR: TERM is set to "dumb". Refusing to start the interactive TUI', stderr.getvalue())
+        build_runtime.assert_not_called()
+
+    def test_native_and_python_term_dumb_non_tty_guard_match_when_enabled(self):
+        # Rust crate/module contract:
+        # - codex-cli/src/main.rs::run_interactive_tui owns the TERM=dumb
+        #   startup guard before dispatching into codex-tui.
+        # - codex-tui/src/cli.rs exposes --no-alt-screen so the same inline
+        #   entry path can be compared without alternate-screen capture.
+        # Native evidence command:
+        #   `"/quit" | codex.exe --no-alt-screen -C <repo> -s read-only -a never`
+        # Python parity:
+        #   `"/quit" | python -m pycodex --no-alt-screen -C <repo> -s read-only -a never`
+        # The opt-in gate keeps default CI independent from a locally built Rust
+        # binary while preserving an executable native comparison harness.
+        if os.environ.get("PYCODEX_RUN_NATIVE_TUI_COMPARISON") != "1":
+            self.skipTest("set PYCODEX_RUN_NATIVE_TUI_COMPARISON=1 to compare against a local Rust codex.exe")
+
+        repo_root = Path(__file__).resolve().parents[1]
+        default_native = Path(
+            r"C:\Users\27605\AppData\Local\codex-rust-target\codex-rs\debug\codex.exe"
+        )
+        native_exe = Path(os.environ.get("PYCODEX_NATIVE_CODEX_EXE", str(default_native)))
+        if not native_exe.exists():
+            self.skipTest(f"native codex executable not found: {native_exe}")
+
+        env = os.environ.copy()
+        env["TERM"] = "dumb"
+        expected = (
+            'ERROR: TERM is set to "dumb". Refusing to start the interactive TUI because '
+            "no terminal is available for a confirmation prompt (stdin/stderr is not a TTY). "
+            "Run in a supported terminal or unset TERM."
+        )
+        common_args = ["--no-alt-screen", "-C", str(repo_root), "-s", "read-only", "-a", "never"]
+        native = subprocess.run(
+            [str(native_exe), *common_args],
+            input="/quit\n",
+            text=True,
+            capture_output=True,
+            cwd=str(repo_root),
+            env=env,
+            timeout=10,
+        )
+        python = subprocess.run(
+            [sys.executable, "-m", "pycodex", *common_args],
+            input="/quit\n",
+            text=True,
+            capture_output=True,
+            cwd=str(repo_root),
+            env=env,
+            timeout=15,
+        )
+
+        self.assertEqual(native.returncode, 1, native.stdout + native.stderr)
+        self.assertEqual(python.returncode, 1, python.stdout + python.stderr)
+        self.assertIn(expected, native.stdout + native.stderr)
+        self.assertIn(expected, python.stdout + python.stderr)
+        self.assertEqual(native.stdout.strip(), python.stdout.strip())
+        self.assertEqual(native.stderr.strip(), python.stderr.strip())
 
     def test_main_mcp_server_not_implemented(self):
         stderr = io.StringIO()
@@ -12623,32 +12811,37 @@ class TopLevelCliParserTests(unittest.TestCase):
         reply_call = json.loads([line for line in stdout_reply.getvalue().splitlines() if line.strip()][0])
         self.assertEqual(reply_call["result"]["structuredContent"]["threadId"], thread_id)
 
-    def test_main_resume_without_fallback_uses_tui_path(self):
-        stdout = io.StringIO()
+    def test_main_resume_without_fallback_uses_textual_tui_path(self):
+        class TtyInput(io.StringIO):
+            def isatty(self):
+                return True
+
+        class TtyOutput(io.StringIO):
+            def isatty(self):
+                return True
+
+        stdout = TtyOutput()
         stderr = io.StringIO()
-        seen = []
+        runtime = ExecFunctionActiveThreadRuntime(lambda _prompt: (0, "unused"))
 
-        def fake_exec(prompt):
-            seen.append(prompt)
-            return 0, "resume terminal answer\n"
-
-        with patch("pycodex.cli.parser._build_tui_core_active_thread_runtime", return_value=ExecFunctionActiveThreadRuntime(fake_exec)):
-            code = main(
-                ["resume", "--last"],
-                stdout=stdout,
-                stderr=stderr,
-                stdin=io.StringIO("continue\n/quit\n"),
-            )
+        with patch.dict(os.environ, {"TERM": "xterm-256color"}):
+            with patch("pycodex.cli.parser._build_tui_core_active_thread_runtime", return_value=runtime):
+                with patch("pycodex.tui.textual_runtime.run_textual_tui", return_value=0) as run_textual:
+                    with patch(
+                        "pycodex.tui.run_terminal_tui",
+                        side_effect=AssertionError("resume TTY product path must not enter legacy terminal renderer"),
+                    ):
+                        code = main(
+                            ["resume", "--last"],
+                            stdout=stdout,
+                            stderr=stderr,
+                            stdin=TtyInput("continue\n/quit\n"),
+                            stdin_is_terminal=True,
+                        )
 
         self.assertEqual(code, 0)
         self.assertIn("resume request parsed with session_id=None, last=True, all=False, include_non_interactive=False.", stderr.getvalue())
-        self.assertIn("\x1b[?1049h", stdout.getvalue())
-        self.assertIn("\x1b[?1049l", stdout.getvalue())
-        self.assertEqual(seen, ["continue"])
-        self.assertIn("resume terminal answer\n", stdout.getvalue())
-        final_screen = stdout.getvalue().rsplit("\x1b[2J", 1)[-1]
-        self.assertIn("resume terminal answer", final_screen)
-        self.assertEqual(stdout.getvalue().count("\x1b[2J"), 1)
+        run_textual.assert_called_once_with(active_thread_runtime=runtime, stdout=stdout)
 
     def test_main_resume_with_exec_fallback_uses_noninteractive_resume_exec(self):
         stdout = io.StringIO()

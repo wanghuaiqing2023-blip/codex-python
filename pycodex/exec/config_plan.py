@@ -99,6 +99,9 @@ class ExecHarnessOverrides:
     sandbox_mode: SandboxMode | None = None
     cwd: Path | None = None
     model_provider: str | None = None
+    model_reasoning_effort: JsonValue | None = None
+    model_reasoning_summary: JsonValue | None = None
+    service_tier: str | None = None
     show_raw_agent_reasoning: bool | None = None
     ephemeral: bool | None = None
     bypass_hook_trust: bool | None = None
@@ -121,6 +124,9 @@ class ExecHarnessOverrides:
             "sandboxMode": _enum_value(self.sandbox_mode),
             "cwd": str(self.cwd) if self.cwd is not None else None,
             "modelProvider": self.model_provider,
+            "modelReasoningEffort": self.model_reasoning_effort,
+            "modelReasoningSummary": self.model_reasoning_summary,
+            "serviceTier": self.service_tier,
             "showRawAgentReasoning": self.show_raw_agent_reasoning,
             "ephemeral": self.ephemeral,
             "bypassHookTrust": self.bypass_hook_trust,
@@ -142,9 +148,14 @@ class ExecConfigBootstrapPlan:
     user_instructions: str | None = None
     instruction_sources: tuple[Path, ...] = ()
     startup_warnings: tuple[str, ...] = ()
+    mcp_servers: Mapping[str, JsonValue] | None = None
     allow_login_shell: bool = True
+    features: Features | None = None
     exec_permission_approvals_enabled: bool = False
     request_permissions_tool_enabled: bool = False
+    tui_status_line: tuple[str, ...] | None = None
+    tui_status_line_use_colors: bool = True
+    tui_terminal_title: tuple[str, ...] | None = None
     upstream_source: str = UPSTREAM_EXEC_RUN_MAIN
 
     def __post_init__(self) -> None:
@@ -153,6 +164,14 @@ class ExecConfigBootstrapPlan:
         object.__setattr__(self, "cli_overrides", tuple(self.cli_overrides))
         object.__setattr__(self, "instruction_sources", tuple(Path(path) for path in self.instruction_sources))
         object.__setattr__(self, "startup_warnings", tuple(str(warning) for warning in self.startup_warnings))
+        if self.tui_status_line is not None:
+            object.__setattr__(self, "tui_status_line", tuple(str(item) for item in self.tui_status_line))
+        if self.tui_terminal_title is not None:
+            object.__setattr__(self, "tui_terminal_title", tuple(str(item) for item in self.tui_terminal_title))
+        servers = self.mcp_servers if isinstance(self.mcp_servers, Mapping) else {}
+        object.__setattr__(self, "mcp_servers", copy.deepcopy(dict(servers)))
+        if self.features is None:
+            object.__setattr__(self, "features", Features.with_defaults())
 
     def to_mapping(self) -> dict[str, JsonValue]:
         return {
@@ -167,9 +186,13 @@ class ExecConfigBootstrapPlan:
             "userInstructions": self.user_instructions,
             "instructionSources": [str(path) for path in self.instruction_sources],
             "startupWarnings": list(self.startup_warnings),
+            "mcpServers": copy.deepcopy(dict(self.mcp_servers or {})),
             "allowLoginShell": self.allow_login_shell,
             "execPermissionApprovalsEnabled": self.exec_permission_approvals_enabled,
             "requestPermissionsToolEnabled": self.request_permissions_tool_enabled,
+            "tuiStatusLine": list(self.tui_status_line) if self.tui_status_line is not None else None,
+            "tuiStatusLineUseColors": self.tui_status_line_use_colors,
+            "tuiTerminalTitle": list(self.tui_terminal_title) if self.tui_terminal_title is not None else None,
         }
 
 
@@ -1366,6 +1389,9 @@ def exec_harness_overrides_from_cli(
         sandbox_mode=exec_sandbox_mode_from_cli(cli),
         cwd=Path(cli.cwd) if cli.cwd is not None else None,
         model_provider=model_provider,
+        model_reasoning_effort=_optional_str((config_toml or {}).get("model_reasoning_effort")),
+        model_reasoning_summary=_optional_str((config_toml or {}).get("model_reasoning_summary")),
+        service_tier=_optional_str((config_toml or {}).get("service_tier")),
         show_raw_agent_reasoning=True if cli.oss else None,
         ephemeral=True if cli.ephemeral else None,
         bypass_hook_trust=True if cli.dangerously_bypass_hook_trust else None,
@@ -1415,9 +1441,14 @@ def build_exec_config_bootstrap_plan(
         user_instructions=user_instructions,
         instruction_sources=instruction_sources,
         startup_warnings=tuple(warnings),
+        mcp_servers=effective_config.get("mcp_servers") if isinstance(effective_config.get("mcp_servers"), Mapping) else {},
         allow_login_shell=_allow_login_shell_from_config(effective_config),
+        features=features,
         exec_permission_approvals_enabled=features.enabled(Feature.EXEC_PERMISSION_APPROVALS),
         request_permissions_tool_enabled=features.enabled(Feature.REQUEST_PERMISSIONS_TOOL),
+        tui_status_line=_tui_config_str_tuple(effective_config, "status_line"),
+        tui_status_line_use_colors=_tui_config_bool(effective_config, "status_line_use_colors", True),
+        tui_terminal_title=_tui_config_str_tuple(effective_config, "terminal_title"),
     )
 
 
@@ -1434,14 +1465,22 @@ def exec_session_config_from_bootstrap_plan(plan: ExecConfigBootstrapPlan) -> Ex
         user_instructions=plan.user_instructions,
         instruction_sources=plan.instruction_sources,
         startup_warnings=plan.startup_warnings,
+        mcp_servers=plan.mcp_servers,
         approval_policy=harness.approval_policy or AskForApproval.NEVER,
         permission_profile=_permission_profile_from_sandbox_mode(
             harness.sandbox_mode,
             (cwd, *harness.additional_writable_roots),
         ),
         ephemeral=bool(harness.ephemeral),
+        reasoning_effort=harness.model_reasoning_effort,
+        model_reasoning_summary=harness.model_reasoning_summary,
+        service_tier=harness.service_tier,
         show_raw_agent_reasoning=bool(harness.show_raw_agent_reasoning),
+        tui_status_line=plan.tui_status_line,
+        tui_status_line_use_colors=plan.tui_status_line_use_colors,
+        tui_terminal_title=plan.tui_terminal_title,
         allow_login_shell=plan.allow_login_shell,
+        features=plan.features,
         exec_permission_approvals_enabled=plan.exec_permission_approvals_enabled,
         request_permissions_tool_enabled=plan.request_permissions_tool_enabled,
     )
@@ -1455,6 +1494,27 @@ def _exec_config_with_overrides(
     for override in cli_overrides:
         apply_single_override(config, override.path, override.value)
     return config
+
+
+def _tui_config_mapping(config_toml: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
+    tui = config_toml.get("tui")
+    if isinstance(tui, Mapping):
+        return tui
+    return {}
+
+
+def _tui_config_str_tuple(config_toml: Mapping[str, JsonValue], key: str) -> tuple[str, ...] | None:
+    value = _tui_config_mapping(config_toml).get(key)
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)):
+        return None
+    return tuple(str(item) for item in value)
+
+
+def _tui_config_bool(config_toml: Mapping[str, JsonValue], key: str, default: bool) -> bool:
+    value = _tui_config_mapping(config_toml).get(key)
+    return value if isinstance(value, bool) else default
 
 
 def _allow_login_shell_from_config(config_toml: Mapping[str, JsonValue]) -> bool:
@@ -1763,8 +1823,13 @@ def _exec_session_config_to_mapping(config: ExecSessionConfig) -> dict[str, Json
         "approvalPolicy": _enum_value(config.approval_policy),
         "permissionProfile": config.permission_profile.to_mapping(),
         "ephemeral": config.ephemeral,
+        "reasoningEffort": config.reasoning_effort,
+        "serviceTier": config.service_tier,
         "hideAgentReasoning": config.hide_agent_reasoning,
         "showRawAgentReasoning": config.show_raw_agent_reasoning,
+        "tuiStatusLine": list(config.tui_status_line) if config.tui_status_line is not None else None,
+        "tuiStatusLineUseColors": config.tui_status_line_use_colors,
+        "tuiTerminalTitle": list(config.tui_terminal_title) if config.tui_terminal_title is not None else None,
         "allowLoginShell": config.allow_login_shell,
         "execPermissionApprovalsEnabled": config.exec_permission_approvals_enabled,
         "requestPermissionsToolEnabled": config.request_permissions_tool_enabled,

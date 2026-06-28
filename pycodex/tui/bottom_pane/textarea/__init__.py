@@ -71,6 +71,7 @@ class TextArea:
     vim_mode: VimMode = VimMode.Insert
     vim_pending: Any = None
     keymap: Any = None
+    visual_wrap_width: int = 80
 
     @classmethod
     def new(cls) -> "TextArea":
@@ -180,6 +181,7 @@ class TextArea:
         self.cursor_pos_value = self.clamp_pos_to_nearest_boundary(max(0, min(int(pos), len(self.text_value))))
 
     def desired_height(self, width: int) -> int:
+        self.visual_wrap_width = max(1, int(width))
         return len(self.wrapped_lines(width))
 
     def cursor_pos(self, area: Any) -> tuple[int, int] | None:
@@ -187,6 +189,7 @@ class TextArea:
 
     def cursor_pos_with_state(self, area: Any, state: TextAreaState) -> tuple[int, int] | None:
         width = _area(area, "width", 80)
+        self.visual_wrap_width = max(1, int(width))
         height = _area(area, "height", 1)
         x0 = _area(area, "x", 0)
         y0 = _area(area, "y", 0)
@@ -432,14 +435,14 @@ class TextArea:
         self.set_cursor(self.next_atomic_boundary(self.cursor_pos_value))
 
     def move_cursor_up(self) -> None:
-        lines = self.wrapped_lines(80)
+        lines = self.wrapped_lines(self.visual_wrap_width)
         idx = self.wrapped_line_index_by_start(lines, self.cursor_pos_value)
         if idx is not None and idx > 0:
             col = self.cursor_pos_value - lines[idx].start
             self.set_cursor(min(lines[idx - 1].start + col, lines[idx - 1].stop))
 
     def move_cursor_down(self) -> None:
-        lines = self.wrapped_lines(80)
+        lines = self.wrapped_lines(self.visual_wrap_width)
         idx = self.wrapped_line_index_by_start(lines, self.cursor_pos_value)
         if idx is not None and idx + 1 < len(lines):
             col = self.cursor_pos_value - lines[idx].start
@@ -637,13 +640,30 @@ class TextArea:
             else:
                 start = 0
                 while start < len(line):
-                    end = min(start + width, len(line))
+                    end = self._wrapped_line_end(line, start, width)
                     ranges.append(range(offset + start, offset + end))
                     start = end
             offset += len(raw)
         if self.text_value.endswith("\n"):
             ranges.append(range(len(self.text_value), len(self.text_value)))
         return ranges or [range(0, 0)]
+
+    @staticmethod
+    def _wrapped_line_end(line: str, start: int, width: int) -> int:
+        hard_end = min(start + width, len(line))
+        if hard_end >= len(line):
+            return len(line)
+        split = -1
+        for idx in range(start, hard_end):
+            if line[idx].isspace():
+                split = idx
+        if split >= start:
+            end = split + 1
+            while end < len(line) and line[end].isspace():
+                end += 1
+            if end > start:
+                return end
+        return hard_end
 
     def effective_scroll(self, height: int, lines: list[range], scroll: int) -> int:
         if len(lines) <= height:
@@ -748,6 +768,49 @@ def wrapping_and_cursor_positions() -> bool:
     return t.desired_height(4) == 3 and t.cursor_pos({"x": 0, "y": 0, "width": 4, "height": 3}) == (2, 1)
 
 
+def wrapped_navigation_across_visual_lines() -> bool:
+    t = ta_with("abcdefghij")
+    t.desired_height(4)
+
+    t.set_cursor(0)
+    t.move_cursor_down()
+    if t.cursor() != 4:
+        return False
+
+    t.set_cursor(4)
+    if t.cursor_pos({"x": 0, "y": 0, "width": 4, "height": 10}) != (0, 1):
+        return False
+
+    t.set_cursor(6)
+    t.move_cursor_up()
+    if t.cursor() != 2:
+        return False
+    t.move_cursor_down()
+    if t.cursor() != 6:
+        return False
+    t.move_cursor_down()
+    return t.cursor() == len(t.text())
+
+
+def wrapped_navigation_with_newlines_and_spaces() -> bool:
+    t = ta_with("word1  word2\nword3")
+    t.desired_height(6)
+    start_word2 = t.text().find("word2")
+    start_word3 = t.text().find("word3")
+    if start_word2 < 0 or start_word3 < 0:
+        return False
+
+    t.set_cursor(start_word2 + 1)
+    t.move_cursor_up()
+    if t.cursor() != 1:
+        return False
+    t.move_cursor_down()
+    if t.cursor() != start_word2 + 1:
+        return False
+    t.move_cursor_down()
+    return start_word3 <= t.cursor() <= start_word3 + len("word3")
+
+
 def word_navigation_helpers() -> bool:
     t = ta_with("alpha beta")
     return t.beginning_of_previous_word() == 6 and t.end_of_next_word_from(0) == 5
@@ -800,5 +863,7 @@ __all__ = [
     "ta_with",
     "word_navigation_helpers",
     "wrapping_and_cursor_positions",
+    "wrapped_navigation_across_visual_lines",
+    "wrapped_navigation_with_newlines_and_spaces",
     "yank_restores_last_kill",
 ]

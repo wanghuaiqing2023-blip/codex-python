@@ -196,6 +196,29 @@ def test_protocol_runtime_finalizes_reasoning_summary_on_turn_completed() -> Non
     assert "raw hidden" not in runtime.streaming.history[0][1]
 
 
+def test_protocol_runtime_completed_reasoning_item_uses_replay_final_callback() -> None:
+    # Rust parity:
+    # - codex-tui::chatwidget::protocol ItemCompleted dispatches thread items
+    #   through chatwidget::replay::handle_thread_item.
+    # - chatwidget::replay Reasoning items call on_agent_reasoning_final on the
+    #   ChatWidget target, even for live completed items.
+    runtime = ChatWidgetProtocolRuntime()
+
+    runtime.handle(
+        ServerNotification(
+            "ItemCompleted",
+            {
+                "item": {"kind": "Reasoning", "summary": ["**Reading** project"], "content": ["raw"]},
+                "turn_id": "t1",
+            },
+        )
+    )
+
+    assert runtime.streaming.history == []
+    assert runtime.streaming.reasoning_buffer == ""
+    assert runtime.streaming.full_reasoning_buffer == ""
+
+
 def test_protocol_runtime_raw_reasoning_delta_is_config_gated() -> None:
     # Rust parity: codex-tui::chatwidget::protocol only forwards
     # ReasoningTextDelta to streaming when show_raw_agent_reasoning is enabled.

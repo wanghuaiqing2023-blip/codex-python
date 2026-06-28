@@ -19,6 +19,7 @@ from pycodex.exec import (
     ensure_exec_trusted_directory,
     exec_trusted_directory_check,
     exec_harness_overrides_from_cli,
+    exec_session_config_mapping,
     exec_model_override,
     exec_model_provider_override,
     exec_sandbox_mode_from_cli,
@@ -34,6 +35,7 @@ from pycodex.exec import (
     thread_bootstrap_request_from_startup_plan,
 )
 from pycodex.arg0 import Arg0DispatchPaths
+from pycodex.features import Feature
 from pycodex.protocol import AskForApproval, GranularApprovalConfig, SandboxMode
 
 
@@ -88,6 +90,31 @@ class ExecConfigPlanTests(unittest.TestCase):
 
         self.assertEqual(exec_model_provider_override(cli, {"model_provider": "local-openai"}), "local-openai")
         self.assertEqual(exec_model_override(cli, config_toml={"model": "gpt-config"}), "gpt-config")
+
+    def test_exec_session_config_preserves_mcp_servers_for_tui_startup(self):
+        # Rust source/test contract:
+        # - codex-tui::app::app_server_events refreshes expected MCP servers
+        #   from runtime Config before forwarding McpServerStatusUpdated.
+        # - chatwidget/tests/mcp_startup.rs::app_server_mcp_startup_failure_renders_warning_history
+        #   depends on configured servers being visible to the TUI startup
+        #   surface even before a user turn is submitted.
+        cli = parse_exec_args(["-c", 'mcp_servers.beta.command="cmd"', "prompt"])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plan = build_exec_config_bootstrap_plan(
+                cli,
+                config_toml={"mcp_servers": {"alpha": {"command": "cmd"}, "disabled": {"enabled": False}}},
+                current_dir=tmpdir,
+            )
+
+        session_config = exec_session_config_from_bootstrap_plan(plan)
+
+        self.assertEqual(plan.mcp_servers["alpha"]["command"], "cmd")
+        self.assertEqual(plan.mcp_servers["beta"]["command"], "cmd")
+        self.assertFalse(plan.mcp_servers["disabled"]["enabled"])
+        self.assertEqual(session_config.mcp_servers["alpha"]["command"], "cmd")
+        self.assertEqual(session_config.mcp_servers["beta"]["command"], "cmd")
+        self.assertIn("mcpServers", exec_session_config_mapping(session_config))
 
     def test_harness_overrides_mapping_matches_upstream_config_overrides_slice(self):
         cli = parse_exec_args(
@@ -182,12 +209,21 @@ class ExecConfigPlanTests(unittest.TestCase):
 
         plan = build_exec_config_bootstrap_plan(
             cli,
-            config_toml={"model": "gpt-config", "model_provider": "local-openai"},
+            config_toml={
+                "model": "gpt-config",
+                "model_provider": "local-openai",
+                "model_reasoning_effort": "xhigh",
+                "model_reasoning_summary": "none",
+                "service_tier": "priority",
+            },
             current_dir=Path.cwd(),
         )
 
         self.assertEqual(plan.harness_overrides.model, "gpt-config")
         self.assertEqual(plan.harness_overrides.model_provider, "local-openai")
+        self.assertEqual(plan.harness_overrides.model_reasoning_effort, "xhigh")
+        self.assertEqual(plan.harness_overrides.model_reasoning_summary, "none")
+        self.assertEqual(plan.harness_overrides.service_tier, "priority")
 
     def test_exec_session_config_from_bootstrap_plan_projects_runtime_config(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -234,10 +270,38 @@ class ExecConfigPlanTests(unittest.TestCase):
             SandboxMode.WORKSPACE_WRITE.value,
         )
         self.assertTrue(config.ephemeral)
+        self.assertIsNone(config.reasoning_effort)
+        self.assertIsNone(config.service_tier)
         self.assertFalse(config.show_raw_agent_reasoning)
         self.assertTrue(config.allow_login_shell)
         self.assertFalse(config.exec_permission_approvals_enabled)
         self.assertFalse(config.request_permissions_tool_enabled)
+
+    def test_exec_session_config_projects_reasoning_and_service_tier_from_config(self):
+        # Rust source/test contract:
+        # - codex-tui/src/app_server_session.rs::thread_lifecycle_params_forward_config_overrides_and_service_tier
+        #   forwards Config.model_reasoning_effort and Config.service_tier into
+        #   lifecycle/start params.
+        # - codex-rs/exec/src/lib.rs forwards Config.model_reasoning_effort as
+        #   TurnStartParams.effort for exec-style startup.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cli = parse_exec_args(["prompt"])
+            plan = build_exec_config_bootstrap_plan(
+                cli,
+                config_toml={
+                    "model_reasoning_effort": "xhigh",
+                    "model_reasoning_summary": "none",
+                    "service_tier": "priority",
+                },
+                current_dir=root,
+            )
+
+        config = exec_session_config_from_bootstrap_plan(plan)
+
+        self.assertEqual(config.reasoning_effort, "xhigh")
+        self.assertEqual(config.model_reasoning_summary, "none")
+        self.assertEqual(config.service_tier, "priority")
 
     def test_exec_session_config_projects_shell_feature_flags_from_config(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -249,6 +313,7 @@ class ExecConfigPlanTests(unittest.TestCase):
                     "allow_login_shell": False,
                     "features": {
                         "exec_permission_approvals": True,
+                        "multi_agent": False,
                         "request_permissions_tool": True,
                     },
                 },
@@ -258,8 +323,80 @@ class ExecConfigPlanTests(unittest.TestCase):
         config = exec_session_config_from_bootstrap_plan(plan)
 
         self.assertFalse(config.allow_login_shell)
+        self.assertFalse(config.features.enabled(Feature.COLLAB))
         self.assertTrue(config.exec_permission_approvals_enabled)
         self.assertTrue(config.request_permissions_tool_enabled)
+
+    def test_exec_session_config_projects_tui_status_surfaces_from_config(self):
+        # Rust source/test contract:
+        # - codex-core/src/config/mod.rs maps cfg.tui.status_line,
+        #   status_line_use_colors, and terminal_title into Config.
+        # - codex-tui/src/app.rs constructs ChatWidget with that Config before
+        #   status_surfaces.rs::configured_status_line_items reads it.
+        # - chatwidget/tests/status_and_layout.rs::status_line_invalid_items_warn_once
+        #   depends on configured status-line ids being visible at TUI runtime.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cli = parse_exec_args(["prompt"])
+            plan = build_exec_config_bootstrap_plan(
+                cli,
+                config_toml={
+                    "tui": {
+                        "status_line": ["model-name", "context-used"],
+                        "status_line_use_colors": False,
+                        "terminal_title": ["status", "model"],
+                    }
+                },
+                current_dir=root,
+            )
+
+        config = exec_session_config_from_bootstrap_plan(plan)
+
+        self.assertEqual(plan.tui_status_line, ("model-name", "context-used"))
+        self.assertFalse(plan.tui_status_line_use_colors)
+        self.assertEqual(plan.tui_terminal_title, ("status", "model"))
+        self.assertEqual(config.tui_status_line, ("model-name", "context-used"))
+        self.assertFalse(config.tui_status_line_use_colors)
+        self.assertEqual(config.tui_terminal_title, ("status", "model"))
+        mapping = exec_session_config_mapping(config)
+        self.assertEqual(mapping["tuiStatusLine"], ["model-name", "context-used"])
+        self.assertFalse(mapping["tuiStatusLineUseColors"])
+        self.assertEqual(mapping["tuiTerminalTitle"], ["status", "model"])
+
+    def test_exec_session_config_applies_cli_overrides_before_projecting_tui_status_surfaces(self):
+        # Rust source: codex-tui/src/lib.rs parses `-c` raw overrides before
+        # load_config_or_exit, so CLI `tui.*` values override config.toml before
+        # codex-tui::app receives Config.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cli = parse_exec_args(
+                [
+                    "-c",
+                    'tui.status_line=["context-remaining","status"]',
+                    "-c",
+                    "tui.status_line_use_colors=false",
+                    "-c",
+                    'tui.terminal_title=["app-name"]',
+                    "prompt",
+                ]
+            )
+            plan = build_exec_config_bootstrap_plan(
+                cli,
+                config_toml={
+                    "tui": {
+                        "status_line": ["model-name"],
+                        "status_line_use_colors": True,
+                        "terminal_title": ["model"],
+                    }
+                },
+                current_dir=root,
+            )
+
+        config = exec_session_config_from_bootstrap_plan(plan)
+
+        self.assertEqual(config.tui_status_line, ("context-remaining", "status"))
+        self.assertFalse(config.tui_status_line_use_colors)
+        self.assertEqual(config.tui_terminal_title, ("app-name",))
 
     def test_exec_session_config_applies_cli_overrides_before_projecting_shell_features(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -460,7 +597,12 @@ class ExecConfigPlanTests(unittest.TestCase):
             project.mkdir()
             startup = build_exec_runtime_startup_plan(
                 parse_exec_args(["-C", "project", "Summarize"]),
-                config_toml={"model": "gpt-config", "model_provider": "openai"},
+                config_toml={
+                    "model": "gpt-config",
+                    "model_provider": "openai",
+                    "model_reasoning_effort": "high",
+                    "service_tier": "priority",
+                },
                 current_dir=root,
                 stdin_is_terminal=True,
             )
@@ -482,7 +624,12 @@ class ExecConfigPlanTests(unittest.TestCase):
             project.mkdir()
             startup = build_exec_runtime_startup_plan(
                 parse_exec_args(["-C", "project", "Summarize"]),
-                config_toml={"model": "gpt-config", "model_provider": "openai"},
+                config_toml={
+                    "model": "gpt-config",
+                    "model_provider": "openai",
+                    "model_reasoning_effort": "high",
+                    "service_tier": "priority",
+                },
                 current_dir=root,
                 stdin_is_terminal=True,
             )
@@ -503,7 +650,12 @@ class ExecConfigPlanTests(unittest.TestCase):
             project.mkdir()
             startup = build_exec_runtime_startup_plan(
                 parse_exec_args(["-C", "project", "Summarize"]),
-                config_toml={"model": "gpt-config", "model_provider": "openai"},
+                config_toml={
+                    "model": "gpt-config",
+                    "model_provider": "openai",
+                    "model_reasoning_effort": "high",
+                    "service_tier": "priority",
+                },
                 current_dir=root,
                 stdin_is_terminal=True,
             )
@@ -532,6 +684,8 @@ class ExecConfigPlanTests(unittest.TestCase):
         self.assertEqual(payload["requestId"], 9)
         self.assertEqual(payload["params"]["threadId"], "22222222-2222-4222-8222-222222222222")
         self.assertEqual(payload["params"]["input"][0]["text"], "Summarize")
+        self.assertEqual(payload["params"]["effort"], "high")
+        self.assertEqual(payload["params"]["serviceTier"], "priority")
 
     def test_exec_session_startup_result_from_responses_composes_loop_state(self):
         with tempfile.TemporaryDirectory() as tmpdir:

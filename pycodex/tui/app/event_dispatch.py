@@ -172,6 +172,8 @@ def _event_payload(event: Any) -> Any:
                 return event[key]
         if len(event) == 1:
             return next(iter(event.values()))
+        if any(isinstance(event.get(key), str) for key in ("variant", "type", "kind", "event")):
+            return event
     return getattr(event, "payload", None)
 
 
@@ -292,6 +294,49 @@ def dispatch_event_plan(state: EventDispatchState, event: Any) -> EventDispatchP
             action="fatal_exit_request",
             run_control=AppRunControl.exit("fatal:{0}".format(reason)),
             messages=(str(reason),),
+        )
+    if variant == "UpdateModel":
+        model = _payload_value(payload, "model", payload)
+        return EventDispatchPlan(
+            action="update_model",
+            updates=(("update_model", model),),
+            schedule_frame=True,
+        )
+    if variant == "UpdateReasoningEffort":
+        effort = _payload_value(payload, "effort", payload)
+        return EventDispatchPlan(
+            action="update_reasoning_effort",
+            updates=(("update_reasoning_effort", effort),),
+            schedule_frame=True,
+        )
+    if variant == "PersistModelSelection":
+        model = _payload_value(payload, "model", None)
+        effort = _payload_value(payload, "effort", None)
+        return EventDispatchPlan(
+            action="persist_model_selection",
+            updates=(("persist_model_selection", {"model": model, "effort": effort}),),
+            schedule_frame=True,
+        )
+    if variant == "RefreshRateLimits":
+        origin = _payload_value(payload, "origin", payload)
+        return EventDispatchPlan(
+            action="refresh_rate_limits",
+            updates=(("refresh_rate_limits", origin),),
+        )
+    if variant == "RateLimitsLoaded":
+        origin = _payload_value(payload, "origin", None)
+        result = _payload_value(payload, "result", None)
+        return EventDispatchPlan(
+            action="rate_limits_loaded",
+            updates=(("rate_limits_loaded", {"origin": origin, "result": result}),),
+            schedule_frame=True,
+        )
+    if variant == "DiffResult":
+        text = _payload_value(payload, "text", payload)
+        return EventDispatchPlan(
+            action="diff_result",
+            updates=(("diff_result", text),),
+            schedule_frame=True,
         )
 
     delegated_actions = {

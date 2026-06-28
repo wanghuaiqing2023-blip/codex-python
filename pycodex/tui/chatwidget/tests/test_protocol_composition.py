@@ -94,6 +94,57 @@ def test_protocol_completion_without_deltas_does_not_invent_message() -> None:
     ] == []
 
 
+def test_protocol_item_completed_agent_message_without_deltas_is_visible() -> None:
+    # Rust sources:
+    # - codex-core/src/session/turn.rs::handle_output_item_done emits a
+    #   completed AgentMessage item even when no text deltas were observed.
+    # - codex-tui/src/chatwidget/protocol.rs routes ItemCompleted through
+    #   handle_thread_item, whose AgentMessage branch enters streaming history.
+    runtime = ChatWidgetProtocolRuntime()
+
+    runtime.handle(ServerNotification("TurnStarted", {"turn": {"id": "turn-1"}}))
+    runtime.handle(
+        ServerNotification(
+            "ItemCompleted",
+            {
+                "turn_id": "turn-1",
+                "item": {
+                    "kind": "AgentMessage",
+                    "id": "msg-1",
+                    "text": "done-only answer",
+                    "phase": "final_answer",
+                },
+            },
+        )
+    )
+
+    assert runtime.assistant_text() == "done-only answer"
+    assert ("agent_message", "done-only answer") in runtime.streaming.consolidation_events
+    assert ("agent_markdown", "done-only answer") in runtime.streaming.history
+
+
+def test_protocol_item_completed_user_message_records_without_duplicate_answer() -> None:
+    # Rust source: codex-tui/src/chatwidget/protocol.rs routes completed
+    # UserMessage items through on_committed_user_message. The lightweight
+    # terminal path has already echoed the prompt, so this must update widget
+    # state without fabricating assistant output.
+    runtime = ChatWidgetProtocolRuntime()
+
+    runtime.handle(
+        ServerNotification(
+            "ItemCompleted",
+            {
+                "turn_id": "turn-1",
+                "item": {"kind": "UserMessage", "content": "hello"},
+            },
+        )
+    )
+
+    assert runtime.last_rendered_user_message_display == "hello"
+    assert runtime.assistant_text() == ""
+    assert runtime.streaming.redraw_requests >= 1
+
+
 def test_protocol_command_execution_lifecycle_updates_runtime_state() -> None:
     # Source: Rust test
     # Rust crate: codex-tui

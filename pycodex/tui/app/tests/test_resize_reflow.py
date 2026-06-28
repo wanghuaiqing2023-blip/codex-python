@@ -12,6 +12,7 @@
     finish_initial_history_replay_buffer_plan,
     handle_draw_size_change_plan,
     insert_history_cell_lines_plan,
+    maybe_finish_stream_reflow_plan,
     maybe_run_resize_reflow,
     history_line_wrap_policy,
     render_transcript_lines_for_reflow,
@@ -165,3 +166,53 @@ def test_resize_scheduling_and_reflow_runtime_paths_are_semantic_plans():
     deferred = maybe_run_resize_reflow(state, 100, pending_due=False)
     assert deferred.action == "defer_resize_reflow"
     assert deferred.schedule_frame_in == "pending_until"
+
+
+def test_maybe_finish_stream_reflow_runs_immediate_source_backed_reflow_after_stream_resize() -> None:
+    # Rust source contract:
+    # - codex-tui::app::resize_reflow::App::maybe_finish_stream_reflow drains
+    #   TranscriptReflowState::take_stream_finish_reflow_needed().
+    # - If a resize happened while streaming, it schedules an immediate reflow
+    #   and runs maybe_run_resize_reflow so finalized source-backed cells replace
+    #   transient stream rows.
+    state = ResizeReflowState(transcript_cells=[HistoryCell(["finalized stream"])])
+    state.transcript_reflow.mark_resize_requested_during_stream()
+
+    plan = maybe_finish_stream_reflow_plan(state, 100)
+
+    assert plan.action == "finish_stream_reflow"
+    assert plan.schedule_frame is True
+    assert ("transcript_reflow.schedule_immediate", True) in plan.updates
+    assert ("transcript_reflow.mark_reflowed_width", 100) in plan.updates
+    assert plan.lines == (HyperlinkLine("finalized stream"),)
+    assert not state.transcript_reflow.take_stream_finish_reflow_needed()
+
+
+def test_maybe_finish_stream_reflow_schedules_frame_when_existing_pending_reflow_is_due() -> None:
+    # Rust source contract:
+    # - App::maybe_finish_stream_reflow schedules a frame when no stream-finish
+    #   repair is needed but an existing pending resize reflow is due.
+    state = ResizeReflowState(transcript_cells=[HistoryCell(["history"])])
+
+    plan = maybe_finish_stream_reflow_plan(state, 100, pending_due=True)
+
+    assert plan.action == "stream_finish_pending_reflow_due"
+    assert plan.schedule_frame is True
+    assert plan.updates == (("frame_requester.schedule_frame", True),)
+
+
+def test_maybe_finish_stream_reflow_disabled_clears_transcript_reflow_state() -> None:
+    # Rust source contract:
+    # - App::maybe_finish_stream_reflow clears TranscriptReflowState when
+    #   TerminalResizeReflow is disabled.
+    state = ResizeReflowState(transcript_cells=[HistoryCell(["history"])])
+    state.transcript_reflow.note_width(80)
+    state.transcript_reflow.schedule_debounced(100)
+    state.transcript_reflow.mark_ran_during_stream()
+
+    plan = maybe_finish_stream_reflow_plan(state, 100, enabled=False)
+
+    assert plan.action == "clear_disabled_stream_finish_reflow"
+    assert state.transcript_reflow.last_observed_width is None
+    assert not state.transcript_reflow.has_pending_reflow()
+    assert not state.transcript_reflow.take_stream_finish_reflow_needed()

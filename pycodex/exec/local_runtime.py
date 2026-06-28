@@ -1953,6 +1953,7 @@ async def run_exec_user_turn_core_sampling(
     history_items: tuple[ResponseItem, ...] | list[ResponseItem] = (),
     max_tool_followups: int | None = None,
     session_event_observer: Any = None,
+    cancellation_token: Any = None,
 ) -> UserTurnSamplingResult:
     """Run a prepared ``codex exec`` user turn through the in-memory core loop."""
 
@@ -1980,6 +1981,7 @@ async def run_exec_user_turn_core_sampling(
             effort=config.reasoning_effort,
             output_schema=operation.output_schema,
             max_tool_followups=max_tool_followups,
+            cancellation_token=cancellation_token,
         )
     except CodexErr as exc:
         _attach_local_http_session_events(exc, session)
@@ -2003,6 +2005,7 @@ async def run_exec_user_turn_core_http_sampling(
     auth_manager: Any = None,
     codex_home: Path | str | None = None,
     session_event_observer: Any = None,
+    cancellation_token: Any = None,
 ) -> UserTurnSamplingResult:
     """Run ``codex exec`` through the in-memory core loop with stdlib HTTP sampling."""
 
@@ -2039,6 +2042,7 @@ async def run_exec_user_turn_core_http_sampling(
         history_items=history_items,
         max_tool_followups=max_tool_followups,
         session_event_observer=session_event_observer,
+        cancellation_token=cancellation_token,
     )
 
 
@@ -2061,6 +2065,7 @@ async def run_exec_user_turn_core_sampling_websocket_preferred(
     session_event_observer: Any = None,
     stream_event_observer: Any = None,
     model_session: Any = None,
+    cancellation_token: Any = None,
 ) -> UserTurnSamplingResult:
     """Run a core user turn through Rust's websocket-preferred transport shape."""
 
@@ -2090,18 +2095,24 @@ async def run_exec_user_turn_core_sampling_websocket_preferred(
         config_factory=transport_config,
         stream_event_observer=stream_event_observer,
     )
-    return await run_exec_user_turn_core_sampling(
-        config,
-        plan,
-        model_client,
-        provider,
-        model_info,
-        sampler,
-        built_tools=built_tools,
-        history_items=history_items,
-        max_tool_followups=max_tool_followups,
-        session_event_observer=session_event_observer,
-    )
+    try:
+        return await run_exec_user_turn_core_sampling(
+            config,
+            plan,
+            model_client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=built_tools,
+            history_items=history_items,
+            max_tool_followups=max_tool_followups,
+            session_event_observer=session_event_observer,
+            cancellation_token=cancellation_token,
+        )
+    finally:
+        close = getattr(model_session, "close", None)
+        if callable(close):
+            close()
 
 
 async def prewarm_exec_core_websocket_session(

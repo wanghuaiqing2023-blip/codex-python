@@ -4,8 +4,11 @@ from pycodex.tui.chatwidget.constructor import (
     BottomPaneParams,
     ChatWidgetInit,
     CodexOpTarget,
+    PLACEHOLDERS,
+    SIDE_PLACEHOLDERS,
     new_with_app_event,
     new_with_op_target,
+    select_placeholder,
 )
 from pycodex.tui.chatwidget.settings import FeatureSet, ModeKind, SettingsConfig
 
@@ -18,6 +21,41 @@ def config() -> SettingsConfig:
     cfg.animations = True
     cfg.tui_vim_mode_default = True
     return cfg
+
+
+class FakeRng:
+    def __init__(self, indexes: list[int]):
+        self.indexes = list(indexes)
+
+    def random_range(self, start: int, end: int) -> int:
+        assert start == 0
+        assert end > 0
+        return self.indexes.pop(0)
+
+
+def test_placeholder_sets_match_rust_chatwidget_constructor_constants() -> None:
+    # Rust source contract:
+    # codex-tui/src/chatwidget.rs::PLACEHOLDERS and SIDE_PLACEHOLDERS provide
+    # the candidate composer examples used by chatwidget/constructor.rs.
+    assert PLACEHOLDERS == (
+        "Explain this codebase",
+        "Summarize recent commits",
+        "Implement {feature}",
+        "Find and fix a bug in @filename",
+        "Write tests for @filename",
+        "Improve documentation in @filename",
+        "Run /review on my current changes",
+        "Use /skills to list available skills",
+    )
+    assert SIDE_PLACEHOLDERS == (
+        "Check recently modified functions for compatibility",
+        "How many files have been modified?",
+        "Will this algorithm scale well?",
+    )
+
+
+def test_select_placeholder_uses_rust_random_range_shape() -> None:
+    assert select_placeholder(PLACEHOLDERS, rng=FakeRng([4])) == "Write tests for @filename"
 
 
 def test_new_with_app_event_delegates_to_app_event_target_and_filters_blank_model() -> None:
@@ -34,8 +72,8 @@ def test_new_with_app_event_delegates_to_app_event_target_and_filters_blank_mode
 
     assert widget.codex_op_target == CodexOpTarget.APP_EVENT
     assert widget.config.model is None
-    assert widget.session_header == {"model": "Default"}
-    assert widget.current_collaboration_mode.model() == "Default"
+    assert widget.session_header == {"model": "loading"}
+    assert widget.current_collaboration_mode.model() == "loading"
     assert widget.active_collaboration_mask is None
     assert widget.show_welcome_banner is True
     assert widget.current_cwd == "/repo"
@@ -74,7 +112,7 @@ def test_bottom_pane_params_and_transcript_active_cell_are_wired() -> None:
 
     widget = new_with_app_event(
         ChatWidgetInit(config=config(), frame_requester="frame", app_event_tx="tx", model="gpt"),
-        factories={"bottom_pane": bottom_factory},
+        factories={"bottom_pane": bottom_factory, "rng": FakeRng([4, 1])},
     )
 
     params = captured[0]
@@ -82,10 +120,16 @@ def test_bottom_pane_params_and_transcript_active_cell_are_wired() -> None:
     assert params.app_event_tx == "tx"
     assert params.has_input_focus is True
     assert params.enhanced_keys_supported is False
-    assert params.placeholder_text == "Ask Codex"
+    assert params.placeholder_text == "Write tests for @filename"
+    assert widget.normal_placeholder_text == "Write tests for @filename"
+    assert widget.side_placeholder_text == "How many files have been modified?"
     assert params.disable_paste_burst is True
     assert params.animations_enabled is True
-    assert widget.transcript.active_cell == {"kind": "placeholder_session_header", "cwd": "/repo"}
+    assert widget.transcript.active_cell == {
+        "kind": "placeholder_session_header",
+        "model": "loading",
+        "cwd": "/repo",
+    }
 
 
 def test_post_construct_sync_calls_bottom_pane_and_widget_hooks() -> None:

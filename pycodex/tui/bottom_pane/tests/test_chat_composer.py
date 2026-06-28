@@ -9,6 +9,7 @@ from pycodex.tui.bottom_pane.chat_composer import (
     InputResult,
     KeyEvent,
     QueuedInputAction,
+    expand_pending_pastes,
     plan_mode_nudge_line,
     user_input_too_large_message,
 )
@@ -139,6 +140,144 @@ def test_handle_key_event_without_popup_supports_plain_text_submit_boundary():
     assert handled is True
     assert composer.dispatch_log == ["without_popup", "without_popup"]
     assert composer.sync_count == 2
+
+
+def test_shift_enter_inserts_newline_without_submitting():
+    # Rust source: codex-tui::bottom_pane::chat_composer::handle_key_event_without_popup.
+    # Rust test: chatwidget/tests/composer_submission.rs
+    # shift_enter_with_only_remote_images_does_not_submit_user_turn.
+    # Contract: only plain Enter is a submit key; Shift+Enter is textarea input.
+    composer = ChatComposer()
+    composer.handle_key_event(KeyEvent.char_event("a"))
+
+    result, handled = composer.handle_key_event(KeyEvent.key("enter", modifiers=("shift",)))
+
+    assert result.kind == "None"
+    assert handled is True
+    assert composer.render().text == "a\n"
+    assert composer.dispatch_log == ["without_popup", "without_popup"]
+
+    result, handled = composer.handle_key_event(KeyEvent.char_event("b"))
+    assert result.kind == "None"
+    assert handled is True
+
+    result, handled = composer.handle_key_event(KeyEvent.key("enter"))
+    assert result == InputResult.Submitted("a\nb")
+    assert handled is True
+
+
+def test_enter_with_only_remote_images_submits_empty_text_boundary():
+    # Rust test: chatwidget/tests/composer_submission.rs
+    # enter_with_only_remote_images_submits_user_turn, plus
+    # chat_composer.rs::prepare_submission_with_only_remote_images_returns_empty_text.
+    composer = ChatComposer(remote_image_urls=["https://example.com/remote-only.png"])
+
+    result, handled = composer.handle_key_event(KeyEvent.key("enter"))
+
+    assert result == InputResult.Submitted("")
+    assert handled is True
+    assert composer.current_text() == ""
+
+
+def test_shift_enter_with_only_remote_images_does_not_submit():
+    # Rust test: chatwidget/tests/composer_submission.rs
+    # shift_enter_with_only_remote_images_does_not_submit_user_turn.
+    composer = ChatComposer(remote_image_urls=["https://example.com/remote-only.png"])
+
+    result, handled = composer.handle_key_event(KeyEvent.key("enter", modifiers=("shift",)))
+
+    assert result.kind == "None"
+    assert handled is True
+    assert composer.remote_image_urls == ["https://example.com/remote-only.png"]
+
+
+def test_enter_with_only_remote_images_does_not_submit_when_modal_active_or_disabled():
+    # Rust tests:
+    # enter_with_only_remote_images_does_not_submit_when_modal_is_active
+    # enter_with_only_remote_images_does_not_submit_when_input_disabled.
+    modal = ChatComposer(active_popup="review", remote_image_urls=["https://example.com/remote-only.png"])
+    result, handled = modal.handle_key_event(KeyEvent.key("enter"))
+    assert result.kind == "None"
+    assert handled is False
+    assert modal.remote_image_urls == ["https://example.com/remote-only.png"]
+
+    disabled = ChatComposer(input_enabled=False, remote_image_urls=["https://example.com/remote-only.png"])
+    result, handled = disabled.handle_key_event(KeyEvent.key("enter"))
+    assert result.kind == "None"
+    assert handled is False
+    assert disabled.remote_image_urls == ["https://example.com/remote-only.png"]
+
+
+def test_empty_enter_during_task_does_not_submit_or_queue():
+    # Rust test: chatwidget/tests/composer_submission.rs
+    # empty_enter_during_task_does_not_queue.
+    composer = ChatComposer(is_task_running=True)
+
+    result, handled = composer.handle_key_event(KeyEvent.key("enter"))
+
+    assert result.kind == "None"
+    assert handled is False
+    assert composer.current_text() == ""
+
+
+def test_large_paste_placeholder_expands_on_submit_and_clears_pending_state():
+    # Rust tests: chat_composer.rs handle_paste_large_uses_placeholder_and_replaces_on_submit,
+    # current_text_with_pending_expands_placeholders, and test_multiple_pastes_submission.
+    payload = "x" * (LARGE_PASTE_CHAR_THRESHOLD + 1)
+    composer = ChatComposer()
+
+    assert composer.handle_paste(payload) is True
+    assert composer.current_text() == f"[Pasted Content {len(payload)} chars]"
+    assert composer.current_text_with_pending() == payload
+
+    result, handled = composer.handle_key_event(KeyEvent.key("enter"))
+
+    assert result == InputResult.Submitted(payload, composer.text_elements)
+    assert handled is True
+    assert composer.current_text() == ""
+    assert composer.pending_pastes_value() == []
+
+
+def test_pending_paste_expansion_is_fifo_and_normalizes_crlf():
+    # Rust tests: current_text_with_pending_expands_overlapping_placeholders
+    # and pasted_crlf_normalizes_newlines_for_elements.
+    composer = ChatComposer()
+    first = "a" * (LARGE_PASTE_CHAR_THRESHOLD + 4)
+    second = "b\r\nc"
+
+    composer.handle_paste(first)
+    composer.handle_paste(second)
+
+    assert composer.current_text_with_pending() == first + "b\nc"
+
+
+def test_prepare_submission_rejects_expanded_input_over_limit_without_clearing_draft():
+    # Rust tests: oversized direct and pending-paste submissions emit
+    # user_input_too_large_message and suppress submission.
+    placeholder = "[Pasted Content oversized chars]"
+    payload = "x" * (MAX_USER_INPUT_TEXT_CHARS + 1)
+    composer = ChatComposer(text=placeholder, pending_pastes=[(placeholder, payload)])
+
+    result, handled = composer.handle_key_event(KeyEvent.key("enter"))
+
+    assert result.kind == "None"
+    assert handled is True
+    assert composer.current_text() == placeholder
+    assert composer.pending_pastes_value() == [(placeholder, payload)]
+    assert composer.errors == [user_input_too_large_message(len(payload))]
+
+
+def test_expand_pending_pastes_replaces_placeholders_once_in_order():
+    # Rust source: ChatComposer::expand_pending_pastes walks pending placeholders
+    # in order so duplicate-sized large pastes preserve FIFO payload mapping.
+    text, elements = expand_pending_pastes(
+        "<paste><paste>",
+        [{"range": (0, 7), "placeholder": "<paste>"}],
+        [("<paste>", "first"), ("<paste>", "second")],
+    )
+
+    assert text == "firstsecond"
+    assert elements == [{"range": (0, 7), "placeholder": "<paste>"}]
 
 
 def test_render_delegates_to_masked_render_and_returns_semantic_snapshot():

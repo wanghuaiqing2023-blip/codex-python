@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import gc
 import unittest
+import warnings
 
 from pycodex.core import (
     DEFAULT_MCP_SERVER_ENVIRONMENT_ID,
@@ -14,6 +16,7 @@ from pycodex.core import (
     format_missing_mcp_dependencies,
     mcp_dependency_to_server_config,
 )
+from pycodex.core.mcp_skill_dependencies import _cancellation_token_is_cancelled
 from pycodex.core_skills.model import (
     SkillDependencies,
     SkillMetadata,
@@ -135,6 +138,24 @@ class McpSkillDependenciesTests(unittest.TestCase):
         }
 
         self.assertEqual(format_missing_mcp_dependencies(missing), "alpha, zeta")
+
+    def test_sync_poll_does_not_call_async_cancelled_waiter(self) -> None:
+        # Rust source: codex-rs/core/src/mcp_skill_dependencies.rs.
+        # Contract: prompt filtering polls cancellation synchronously; async
+        # cancellation waiters are owned by async runtime paths.
+        class AsyncOnlyToken:
+            async def cancelled(self) -> None:
+                return None
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", RuntimeWarning)
+            self.assertFalse(_cancellation_token_is_cancelled(AsyncOnlyToken()))
+            gc.collect()
+
+        self.assertEqual(
+            [str(warning.message) for warning in caught if issubclass(warning.category, RuntimeWarning)],
+            [],
+        )
 
 
 if __name__ == "__main__":

@@ -56,6 +56,7 @@ from pycodex.core.responses_retry import (
     response_stream_retry_decision,
 )
 from pycodex.core.tools.spec_plan import build_environment_tool_router_from_turn_context
+from pycodex.core.tools.network_approval import CancellationToken as ToolCancellationToken
 from pycodex.core.tools.parallel import ToolCallRuntime
 from pycodex.core.tools.router import FunctionCallError, ToolRouter
 from pycodex.core.stream_events_utils import AssistantMessageStreamParsers, OutputItemResult, SamplingOutputState
@@ -84,7 +85,7 @@ from pycodex.protocol import FunctionCallOutputContentItem, FunctionCallOutputPa
 from pycodex.protocol import HookPromptFragment, Op, ResponseInputItem, ResponseItem
 
 _I64_MAX = 2**63 - 1
-from pycodex.protocol import TurnCompleteEvent, TurnDiffEvent, TurnItem, TurnStartedEvent, UserMessageItem
+from pycodex.protocol import TurnAbortReason, TurnAbortedEvent, TurnCompleteEvent, TurnDiffEvent, TurnItem, TurnStartedEvent, UserMessageItem
 from pycodex.protocol import ThreadSettingsOverrides, TokenUsage, UsageLimitReachedError, UserInput, WarningEvent
 from pycodex.protocol import build_hook_prompt_message
 
@@ -108,6 +109,7 @@ class UserTurnSamplingRequest:
     turn_context: Any
     request_plan: TurnResponsesRequestPlan
     stream_event_observer: Any = None
+    cancellation_token: Any = None
 
 
 @dataclass(frozen=True)
@@ -230,6 +232,7 @@ async def run_user_turn_sampling_from_session(
     max_tool_followups: int | None = None,
     emit_user_prompt_turn_item: bool = True,
     emit_response_item_turn_item: bool = True,
+    cancellation_token: Any = None,
 ) -> UserTurnSamplingResult:
     """Build a request, run an injected sampler, and record response items."""
 
@@ -257,6 +260,7 @@ async def run_user_turn_sampling_from_session(
             run_pre_sampling_compact=True,
             run_user_prompt_submit_hooks=True,
             emit_turn_started_lifecycle=True,
+            cancellation_token=cancellation_token,
         )
     except _PreSamplingCompactError as exc:
         prepared = _PreparedUserTurnRequest(
@@ -330,6 +334,7 @@ async def run_user_turn_sampling_from_session(
         turn_context=prepared.turn_context,
         request_plan=prepared.request_plan,
         stream_event_observer=live_stream_event_observer,
+        cancellation_token=cancellation_token,
     )
     while True:
         try:
@@ -338,7 +343,7 @@ async def run_user_turn_sampling_from_session(
             break
         except CodexErr as exc:
             if exc.kind == "turn_aborted":
-                return _user_turn_sampling_result(
+                return await _interrupted_user_turn_sampling_result(
                     prepared,
                     (),
                     (),
@@ -350,7 +355,6 @@ async def run_user_turn_sampling_from_session(
                     (),
                     (),
                     SamplingRuntimeEventApplicationState(),
-                    turn_status="interrupted",
                 )
             if exc.kind == "invalid_image_request":
                 if await _recover_invalid_image_request(sess, prepared.turn_context, exc):
@@ -366,6 +370,7 @@ async def run_user_turn_sampling_from_session(
                         turn_context=prepared.turn_context,
                         request_plan=retry_plan,
                         stream_event_observer=live_stream_event_observer,
+                        cancellation_token=cancellation_token,
                     )
                     continue
                 return await _completed_user_turn_sampling_result(
@@ -458,7 +463,7 @@ async def run_user_turn_sampling_from_session(
         )
     except CodexErr as exc:
         if exc.kind == "turn_aborted":
-            return _user_turn_sampling_result(
+            return await _interrupted_user_turn_sampling_result(
                 prepared,
                 all_response_items,
                 all_tool_response_items,
@@ -470,7 +475,6 @@ async def run_user_turn_sampling_from_session(
                 all_stream_event_dispatch_plans,
                 stream_event_apply_plans,
                 stream_runtime_state,
-                turn_status="interrupted",
             )
         raise
     stream_response_items = _stream_non_tool_response_items(
@@ -482,19 +486,36 @@ async def run_user_turn_sampling_from_session(
         await _record_response_items_turn_ttfm(sess, prepared.turn_context, stream_response_items)
         _update_stream_runtime_last_agent_message_from_response_items(stream_runtime_state, stream_response_items)
         all_response_items.extend(stream_response_items)
-    stream_tool_response_items = await _handle_stream_response_tool_calls(
-        sess,
-        prepared.turn_context,
-        prepared.router,
-        all_stream_events,
-        skip_call_ids=_tool_call_ids(response_items),
-    )
-    tool_response_items = stream_tool_response_items + await _handle_response_tool_calls(
-        sess,
-        prepared.turn_context,
-        prepared.router,
-        response_items,
-    )
+    try:
+        stream_tool_response_items = await _handle_stream_response_tool_calls(
+            sess,
+            prepared.turn_context,
+            prepared.router,
+            all_stream_events,
+            skip_call_ids=_tool_call_ids(response_items),
+        )
+        tool_response_items = stream_tool_response_items + await _handle_response_tool_calls(
+            sess,
+            prepared.turn_context,
+            prepared.router,
+            response_items,
+        )
+    except CodexErr as exc:
+        if exc.kind == "turn_aborted":
+            return await _interrupted_user_turn_sampling_result(
+                prepared,
+                all_response_items,
+                all_tool_response_items,
+                request_plans,
+                raw_results,
+                raw_result,
+                sess,
+                all_stream_events,
+                all_stream_event_dispatch_plans,
+                stream_event_apply_plans,
+                stream_runtime_state,
+            )
+        raise
     needs_model_followup = (
         _sampling_result_needs_followup(raw_result)
         or _stream_completed_end_turn_needs_followup(all_stream_events)
@@ -633,6 +654,7 @@ async def run_user_turn_sampling_from_session(
             turn_context=prepared.turn_context,
             request_plan=followup_plan,
             stream_event_observer=live_stream_event_observer,
+            cancellation_token=cancellation_token,
         )
         while True:
             try:
@@ -641,7 +663,7 @@ async def run_user_turn_sampling_from_session(
                 break
             except CodexErr as exc:
                 if exc.kind == "turn_aborted":
-                    return _user_turn_sampling_result(
+                    return await _interrupted_user_turn_sampling_result(
                         prepared,
                         all_response_items,
                         all_tool_response_items,
@@ -653,7 +675,6 @@ async def run_user_turn_sampling_from_session(
                         all_stream_event_dispatch_plans,
                         stream_event_apply_plans,
                         stream_runtime_state,
-                        turn_status="interrupted",
                     )
                 if exc.kind == "invalid_image_request":
                     if await _recover_invalid_image_request(sess, prepared.turn_context, exc):
@@ -669,6 +690,7 @@ async def run_user_turn_sampling_from_session(
                             turn_context=prepared.turn_context,
                             request_plan=followup_plan,
                             stream_event_observer=live_stream_event_observer,
+                            cancellation_token=cancellation_token,
                         )
                         continue
                     return await _completed_user_turn_sampling_result(
@@ -747,7 +769,7 @@ async def run_user_turn_sampling_from_session(
             )
         except CodexErr as exc:
             if exc.kind == "turn_aborted":
-                return _user_turn_sampling_result(
+                return await _interrupted_user_turn_sampling_result(
                     prepared,
                     all_response_items,
                     all_tool_response_items,
@@ -759,7 +781,6 @@ async def run_user_turn_sampling_from_session(
                     all_stream_event_dispatch_plans,
                     stream_event_apply_plans,
                     stream_runtime_state,
-                    turn_status="interrupted",
                 )
             raise
         response_items = _response_items_from_sampling_result(raw_result)
@@ -782,19 +803,36 @@ async def run_user_turn_sampling_from_session(
             await _record_response_items_turn_ttfm(sess, prepared.turn_context, stream_response_items)
             _update_stream_runtime_last_agent_message_from_response_items(stream_runtime_state, stream_response_items)
             all_response_items.extend(stream_response_items)
-        stream_tool_response_items = await _handle_stream_response_tool_calls(
-            sess,
-            prepared.turn_context,
-            prepared.router,
-            followup_stream_events,
-            skip_call_ids=_tool_call_ids(response_items),
-        )
-        tool_response_items = stream_tool_response_items + await _handle_response_tool_calls(
-            sess,
-            prepared.turn_context,
-            prepared.router,
-            response_items,
-        )
+        try:
+            stream_tool_response_items = await _handle_stream_response_tool_calls(
+                sess,
+                prepared.turn_context,
+                prepared.router,
+                followup_stream_events,
+                skip_call_ids=_tool_call_ids(response_items),
+            )
+            tool_response_items = stream_tool_response_items + await _handle_response_tool_calls(
+                sess,
+                prepared.turn_context,
+                prepared.router,
+                response_items,
+            )
+        except CodexErr as exc:
+            if exc.kind == "turn_aborted":
+                return await _interrupted_user_turn_sampling_result(
+                    prepared,
+                    all_response_items,
+                    all_tool_response_items,
+                    request_plans,
+                    raw_results,
+                    raw_result,
+                    sess,
+                    all_stream_events,
+                    all_stream_event_dispatch_plans,
+                    stream_event_apply_plans,
+                    stream_runtime_state,
+                )
+            raise
         needs_model_followup = (
             _sampling_result_needs_followup(raw_result)
             or _stream_completed_end_turn_needs_followup(followup_stream_events)
@@ -900,6 +938,36 @@ async def _completed_user_turn_sampling_result(
     )
 
 
+async def _interrupted_user_turn_sampling_result(
+    prepared: _PreparedUserTurn,
+    all_response_items: Sequence[ResponseItem],
+    all_tool_response_items: Sequence[ResponseItem],
+    request_plans: Sequence[TurnResponsesRequestPlan],
+    raw_results: Sequence[Any],
+    raw_result: Any,
+    sess: Any,
+    all_stream_events: Sequence[Any],
+    all_stream_event_dispatch_plans: Sequence[Any],
+    stream_event_apply_plans: Sequence[Any],
+    stream_runtime_state: SamplingRuntimeEventApplicationState,
+) -> UserTurnSamplingResult:
+    await _emit_turn_aborted_lifecycle(sess, prepared.turn_context)
+    return _user_turn_sampling_result(
+        prepared,
+        all_response_items,
+        all_tool_response_items,
+        request_plans,
+        raw_results,
+        raw_result,
+        sess,
+        all_stream_events,
+        all_stream_event_dispatch_plans,
+        stream_event_apply_plans,
+        stream_runtime_state,
+        turn_status="interrupted",
+    )
+
+
 async def run_user_input_op_sampling_from_session(
     sess: Any,
     op: Op | dict[str, Any],
@@ -988,6 +1056,7 @@ async def _prepare_user_turn_request_from_session(
     run_pre_sampling_compact: bool = False,
     run_user_prompt_submit_hooks: bool = False,
     emit_turn_started_lifecycle: bool = False,
+    cancellation_token: Any = None,
 ) -> _PreparedUserTurnRequest:
     user_input = _user_inputs(input)
     await _apply_thread_settings_overrides(sess, thread_settings)
@@ -995,6 +1064,7 @@ async def _prepare_user_turn_request_from_session(
     if apply_output_schema_update:
         await _apply_final_output_json_schema(sess, output_schema)
     turn_context = await _maybe_await(sess.new_default_turn())
+    _set_turn_cancellation_token(turn_context, cancellation_token)
     _apply_responsesapi_client_metadata(turn_context, responsesapi_client_metadata)
     if emit_turn_started_lifecycle:
         await _emit_turn_started_lifecycle(sess, turn_context)
@@ -2533,7 +2603,7 @@ async def _sample_with_retry(
     max_retries = _provider_stream_max_retries(provider)
     while True:
         try:
-            return await _maybe_await(sampler(sampling_request))
+            return await _sample_once_with_cancellation(sampler, sampling_request)
         except CodexErr as err:
             if not err.is_retryable():
                 raise
@@ -2557,6 +2627,40 @@ async def _sample_with_retry(
                     retries = decision.retries
                     continue
             raise decision.error or err
+
+
+async def _sample_once_with_cancellation(
+    sampler: SamplerFn,
+    sampling_request: UserTurnSamplingRequest,
+) -> Any:
+    cancellation_token = getattr(sampling_request, "cancellation_token", None)
+    if _token_cancelled(cancellation_token):
+        raise CodexErr.simple("turn_aborted")
+    cancellation_waiter = _token_cancelled_waiter(cancellation_token)
+    if cancellation_waiter is None:
+        result = await _maybe_await(sampler(sampling_request))
+        if _token_cancelled(cancellation_token):
+            raise CodexErr.simple("turn_aborted")
+        return result
+
+    sample_task = asyncio.create_task(_maybe_await(sampler(sampling_request)))
+    cancellation_task = asyncio.create_task(_await_token_cancelled(cancellation_waiter))
+    done, pending = await asyncio.wait(
+        (sample_task, cancellation_task),
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    if cancellation_task in done:
+        sample_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await sample_task
+        raise CodexErr.simple("turn_aborted")
+    cancellation_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await cancellation_task
+    result = await sample_task
+    if _token_cancelled(cancellation_token):
+        raise CodexErr.simple("turn_aborted")
+    return result
 
 
 def _provider_stream_max_retries(provider: Any) -> int:
@@ -3126,6 +3230,38 @@ def _cancellation_requested(turn_context: Any) -> bool:
     if callable(checker):
         return bool(checker())
     return bool(token)
+
+
+def _set_turn_cancellation_token(turn_context: Any, cancellation_token: Any) -> None:
+    if cancellation_token is None:
+        return
+    try:
+        setattr(turn_context, "cancellation_token", cancellation_token)
+    except Exception:
+        try:
+            object.__setattr__(turn_context, "cancellation_token", cancellation_token)
+        except Exception:
+            pass
+
+
+def _token_cancelled(cancellation_token: Any) -> bool:
+    if cancellation_token is None:
+        return False
+    checker = getattr(cancellation_token, "is_cancelled", None)
+    if callable(checker):
+        return bool(checker())
+    return bool(cancellation_token)
+
+
+def _token_cancelled_waiter(cancellation_token: Any) -> Any:
+    if cancellation_token is None:
+        return None
+    waiter = getattr(cancellation_token, "cancelled", None)
+    return waiter if callable(waiter) else None
+
+
+async def _await_token_cancelled(waiter: Any) -> None:
+    await _maybe_await(waiter())
 
 
 async def _stream_runtime_unified_diff(sess: Any, turn_context: Any) -> str | None:
@@ -3880,6 +4016,27 @@ async def _emit_turn_complete_lifecycle(
         )
 
 
+async def _emit_turn_aborted_lifecycle(
+    sess: Any,
+    turn_context: Any,
+    reason: TurnAbortReason = TurnAbortReason.INTERRUPTED,
+) -> None:
+    sender = getattr(sess, "send_event", None)
+    if callable(sender):
+        await _maybe_await(
+            sender(
+                turn_context,
+                EventMsg.with_payload(
+                    "turn_aborted",
+                    TurnAbortedEvent(
+                        turn_id=_turn_context_turn_id(turn_context),
+                        reason=reason,
+                    ),
+                ),
+            )
+        )
+
+
 async def _mark_turn_timing_started(sess: Any, turn_context: Any) -> None:
     timing_state = _turn_timing_state(sess, turn_context)
     marker = getattr(timing_state, "mark_turn_started", None)
@@ -4304,8 +4461,6 @@ async def _record_sampling_token_usage(sess: Any, turn_context: Any, raw_result:
     recorder = getattr(sess, "record_token_usage_info", None)
     if callable(recorder):
         await _maybe_await(recorder(turn_context, usage))
-    if stream_events:
-        return
     sender = getattr(sess, "send_token_count_event", None)
     if callable(sender):
         await _maybe_await(sender(turn_context))
@@ -4580,48 +4735,124 @@ async def _handle_tool_call_items(
     if not isinstance(router, ToolRouter):
         return ()
     runtime = ToolCallRuntime(router)
+    cancellation_token = getattr(turn_context, "cancellation_token", None)
+    if _token_cancelled(cancellation_token):
+        raise CodexErr.simple("turn_aborted")
+    tool_cancellation_token, cancellation_bridge_task = _tool_runtime_cancellation_token(cancellation_token)
     tool_outputs: list[ResponseItem | None] = []
     pending: list[tuple[int, Any]] = []
-    for item in response_items:
-        try:
-            call = ToolRouter.build_tool_call(item)
-        except FunctionCallError as exc:
-            if exc.is_model_response:
-                if record_tool_call_items:
-                    await _maybe_await(sess.record_conversation_items(turn_context, (item,)))
-                response_input_item = ResponseInputItem.function_call_output("", exc.message)
-                tool_outputs.append(ResponseItem.from_response_input_item(response_input_item))
+    try:
+        for item in response_items:
+            try:
+                call = ToolRouter.build_tool_call(item)
+            except FunctionCallError as exc:
+                if exc.is_model_response:
+                    if record_tool_call_items:
+                        await _maybe_await(sess.record_conversation_items(turn_context, (item,)))
+                    response_input_item = ResponseInputItem.function_call_output("", exc.message)
+                    tool_outputs.append(ResponseItem.from_response_input_item(response_input_item))
+                    continue
+                raise CodexErr.fatal(exc.message) from exc
+            if call is None:
                 continue
-            raise CodexErr.fatal(exc.message) from exc
-        if call is None:
-            continue
-        if record_tool_call_items:
-            await _maybe_await(sess.record_conversation_items(turn_context, (item,)))
-        output_index = len(tool_outputs)
-        tool_outputs.append(None)
-        pending.append(
-            (
-                output_index,
-                asyncio.create_task(
-                    runtime.handle_tool_call(
-                        call,
-                        session=sess,
-                        turn=turn_context,
-                    )
-                ),
+            if record_tool_call_items:
+                await _maybe_await(sess.record_conversation_items(turn_context, (item,)))
+            output_index = len(tool_outputs)
+            tool_outputs.append(None)
+            pending.append(
+                (
+                    output_index,
+                    asyncio.create_task(
+                        runtime.handle_tool_call(
+                            call,
+                            session=sess,
+                            turn=turn_context,
+                            cancellation_token=tool_cancellation_token,
+                        )
+                    ),
+                )
             )
-        )
-    for output_index, task in pending:
-        try:
-            response_input_item = await task
-        except RuntimeError as exc:
-            for _, pending_task in pending:
-                if pending_task is not task:
-                    pending_task.cancel()
-            await _drain_cancelled_tool_tasks(pending)
-            raise CodexErr.fatal(str(exc)) from exc
-        tool_outputs[output_index] = ResponseItem.from_response_input_item(response_input_item)
+        for output_index, task in pending:
+            try:
+                response_input_item = await _await_tool_task_with_cancellation(task, cancellation_token)
+            except RuntimeError as exc:
+                for _, pending_task in pending:
+                    if pending_task is not task:
+                        pending_task.cancel()
+                await _drain_cancelled_tool_tasks(pending)
+                raise CodexErr.fatal(str(exc)) from exc
+            except CodexErr as exc:
+                if exc.kind == "turn_aborted":
+                    tool_cancellation_token.cancel()
+                    for _, pending_task in pending:
+                        if pending_task is not task:
+                            pending_task.cancel()
+                    await _drain_cancelled_tool_tasks(pending)
+                raise
+            tool_outputs[output_index] = ResponseItem.from_response_input_item(response_input_item)
+    finally:
+        if cancellation_bridge_task is not None:
+            cancellation_bridge_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await cancellation_bridge_task
     return tuple(item for item in tool_outputs if item is not None)
+
+
+def _tool_runtime_cancellation_token(cancellation_token: Any) -> tuple[ToolCancellationToken, Any | None]:
+    if isinstance(cancellation_token, ToolCancellationToken):
+        return cancellation_token, None
+    tool_token = ToolCancellationToken()
+    if _token_cancelled(cancellation_token):
+        tool_token.cancel()
+        return tool_token, None
+    cancellation_waiter = _token_cancelled_waiter(cancellation_token)
+    if cancellation_waiter is None:
+        return tool_token, None
+
+    async def bridge() -> None:
+        try:
+            await _await_token_cancelled(cancellation_waiter)
+        finally:
+            tool_token.cancel()
+
+    return tool_token, asyncio.create_task(bridge())
+
+
+async def _await_tool_task_with_cancellation(task: Any, cancellation_token: Any) -> Any:
+    if _token_cancelled(cancellation_token):
+        await _await_or_cancel_tool_task_after_cancellation(task)
+        raise CodexErr.simple("turn_aborted")
+    cancellation_waiter = _token_cancelled_waiter(cancellation_token)
+    if cancellation_waiter is None:
+        result = await task
+        if _token_cancelled(cancellation_token):
+            raise CodexErr.simple("turn_aborted")
+        return result
+    cancellation_task = asyncio.create_task(_await_token_cancelled(cancellation_waiter))
+    done, _pending = await asyncio.wait(
+        (task, cancellation_task),
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    if cancellation_task in done:
+        await _await_or_cancel_tool_task_after_cancellation(task)
+        raise CodexErr.simple("turn_aborted")
+    cancellation_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await cancellation_task
+    result = await task
+    if _token_cancelled(cancellation_token):
+        raise CodexErr.simple("turn_aborted")
+    return result
+
+
+async def _await_or_cancel_tool_task_after_cancellation(task: Any) -> None:
+    if not task.done():
+        with contextlib.suppress(asyncio.CancelledError, Exception, TimeoutError):
+            await asyncio.wait_for(asyncio.shield(task), timeout=0.2)
+    if not task.done():
+        task.cancel()
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        await task
 
 
 def _tool_call_ids(response_items: Sequence[ResponseItem]) -> set[str]:

@@ -336,18 +336,25 @@ class ExecSessionConfig:
     user_instructions: str | None = None
     instruction_sources: tuple[Path, ...] = ()
     startup_warnings: tuple[str, ...] = ()
+    mcp_servers: Mapping[str, JsonValue] | None = None
     approval_policy: AskForApproval | GranularApprovalConfig = AskForApproval.NEVER
     approvals_reviewer: ApprovalsReviewer = ApprovalsReviewer.USER
     permission_profile: PermissionProfile = PermissionProfile.read_only()
     active_permission_profile: ActivePermissionProfile | None = None
     ephemeral: bool = False
     reasoning_effort: JsonValue | None = None
+    model_reasoning_summary: JsonValue | None = None
+    service_tier: str | None = None
     hide_agent_reasoning: bool = False
     show_raw_agent_reasoning: bool = False
+    tui_status_line: tuple[str, ...] | None = None
+    tui_status_line_use_colors: bool = True
+    tui_terminal_title: tuple[str, ...] | None = None
     request_permissions_callback: Any = None
     granted_session_permissions: AdditionalPermissionProfile | None = None
     exec_policy_rules: tuple[Any, ...] = ()
     allow_login_shell: bool = True
+    features: Any = None
     exec_permission_approvals_enabled: bool = False
     request_permissions_tool_enabled: bool = False
 
@@ -357,6 +364,14 @@ class ExecSessionConfig:
         object.__setattr__(self, "workspace_roots", tuple(Path(root) for root in self.workspace_roots))
         object.__setattr__(self, "instruction_sources", tuple(Path(path) for path in self.instruction_sources))
         object.__setattr__(self, "startup_warnings", tuple(str(warning) for warning in self.startup_warnings))
+        servers = self.mcp_servers if isinstance(self.mcp_servers, Mapping) else {}
+        object.__setattr__(self, "mcp_servers", dict(servers))
+        if self.tui_status_line is not None:
+            object.__setattr__(self, "tui_status_line", tuple(str(item) for item in self.tui_status_line))
+        if self.tui_terminal_title is not None:
+            object.__setattr__(self, "tui_terminal_title", tuple(str(item) for item in self.tui_terminal_title))
+        if not isinstance(self.tui_status_line_use_colors, bool):
+            raise TypeError("tui_status_line_use_colors must be a bool")
         if self.request_permissions_callback is not None and not callable(self.request_permissions_callback):
             raise TypeError("request_permissions_callback must be callable or None")
         if self.granted_session_permissions is not None and not isinstance(
@@ -1035,14 +1050,20 @@ def exec_session_config_mapping(config: ExecSessionConfig) -> dict[str, JsonValu
             "userInstructions": config.user_instructions,
             "instructionSources": [str(path) for path in config.instruction_sources],
             "startupWarnings": list(config.startup_warnings),
+            "mcpServers": _to_json(config.mcp_servers),
             "approvalPolicy": _enum(config.approval_policy),
             "approvalsReviewer": _enum(config.approvals_reviewer),
             "permissionProfile": _to_json(config.permission_profile),
             "activePermissionProfile": _to_json(config.active_permission_profile),
             "ephemeral": config.ephemeral,
             "reasoningEffort": _to_json(config.reasoning_effort),
+            "modelReasoningSummary": _to_json(config.model_reasoning_summary),
+            "serviceTier": config.service_tier,
             "hideAgentReasoning": config.hide_agent_reasoning,
             "showRawAgentReasoning": config.show_raw_agent_reasoning,
+            "tuiStatusLine": list(config.tui_status_line) if config.tui_status_line is not None else None,
+            "tuiStatusLineUseColors": config.tui_status_line_use_colors,
+            "tuiTerminalTitle": list(config.tui_terminal_title) if config.tui_terminal_title is not None else None,
         }
     )
 
@@ -2858,6 +2879,7 @@ def turn_start_params_from_plan(config: ExecSessionConfig, thread_id: str, plan:
         cwd=config.cwd,
         approval_policy=config.approval_policy,
         effort=config.reasoning_effort,
+        service_tier=config.service_tier,
         output_schema=operation.output_schema,
     )
 

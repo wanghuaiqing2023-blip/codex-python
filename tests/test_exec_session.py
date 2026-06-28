@@ -402,12 +402,14 @@ class ExecSessionRequestBuilderTests(unittest.TestCase):
             model=None,
             model_provider_id=None,
             cwd=Path("C:/work/project"),
+            model_reasoning_summary="none",
             hide_agent_reasoning=True,
             show_raw_agent_reasoning=True,
         )
 
         mapped = exec_session_config_mapping(config)
 
+        self.assertEqual(mapped["modelReasoningSummary"], "none")
         self.assertTrue(mapped["hideAgentReasoning"])
         self.assertTrue(mapped["showRawAgentReasoning"])
 
