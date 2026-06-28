@@ -10,6 +10,8 @@ from pycodex.tui.bottom_pane.textarea import (
     set_text_clamps_cursor_to_char_boundary,
     split_word_pieces,
     word_navigation_helpers,
+    wrapped_navigation_across_visual_lines,
+    wrapped_navigation_with_newlines_and_spaces,
     wrapping_and_cursor_positions,
     yank_restores_last_kill,
 )
@@ -64,6 +66,16 @@ def test_wrapping_cursor_position_and_word_navigation_helpers():
     # Rust tests: wrapping_and_cursor_positions and word_navigation_helpers.
     assert wrapping_and_cursor_positions() is True
     assert word_navigation_helpers() is True
+
+
+def test_wrapped_visual_navigation_uses_last_layout_width():
+    # Rust tests:
+    # - codex-tui::bottom_pane::textarea::tests::wrapped_navigation_across_visual_lines
+    # - codex-tui::bottom_pane::textarea::tests::wrapped_navigation_with_newlines_and_spaces
+    # Contract: vertical cursor motion uses the active wrapped visual lines,
+    # not the logical line alone and not a fixed default width.
+    assert wrapped_navigation_across_visual_lines() is True
+    assert wrapped_navigation_with_newlines_and_spaces() is True
 
 
 def test_vim_mode_public_state_contracts():

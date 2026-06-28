@@ -8,6 +8,7 @@ wiring, and the post-construction sync calls.
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple
@@ -28,15 +29,31 @@ __all__ = [
     "ChatWidgetInit",
     "CodexOpTarget",
     "ConstructedChatWidget",
+    "PLACEHOLDERS",
     "RUST_MODULE",
+    "SIDE_PLACEHOLDERS",
+    "select_placeholder",
     "new_with_app_event",
     "new_with_op_target",
 ]
 
 
-DEFAULT_MODEL_DISPLAY_NAME = "Default"
-PLACEHOLDERS = ("Ask Codex",)
-SIDE_PLACEHOLDERS = ("Ask Codex in side conversation",)
+DEFAULT_MODEL_DISPLAY_NAME = "loading"
+PLACEHOLDERS = (
+    "Explain this codebase",
+    "Summarize recent commits",
+    "Implement {feature}",
+    "Find and fix a bug in @filename",
+    "Write tests for @filename",
+    "Improve documentation in @filename",
+    "Run /review on my current changes",
+    "Use /skills to list available skills",
+)
+SIDE_PLACEHOLDERS = (
+    "Check recently modified functions for compatibility",
+    "How many files have been modified?",
+    "Will this algorithm scale well?",
+)
 
 
 class CodexOpTarget(str, Enum):
@@ -151,8 +168,9 @@ def new_with_op_target(
     model = common.model.strip() if isinstance(common.model, str) and common.model.strip() else None
     common.config.model = model
     prevent_idle_sleep = common.config.features.enabled("PreventIdleSleep")
-    placeholder = PLACEHOLDERS[0]
-    side_placeholder = SIDE_PLACEHOLDERS[0]
+    rng = factories.get("rng")
+    placeholder = select_placeholder(PLACEHOLDERS, rng=rng)
+    side_placeholder = select_placeholder(SIDE_PLACEHOLDERS, rng=rng)
     model_for_header = model or DEFAULT_MODEL_DISPLAY_NAME
     active_collaboration_mask = _initial_collaboration_mask(common.config, common.model_catalog, model)
     header_model = active_collaboration_mask.model if active_collaboration_mask and active_collaboration_mask.model else model_for_header
@@ -217,6 +235,24 @@ def new_with_op_target(
     return widget
 
 
+def select_placeholder(placeholders: Tuple[str, ...], *, rng: Any = None) -> str:
+    """Select a composer placeholder like Rust ``rand::Rng::random_range``."""
+
+    if not placeholders:
+        return ""
+    if rng is not None:
+        random_range = getattr(rng, "random_range", None)
+        if callable(random_range):
+            return placeholders[int(random_range(0, len(placeholders))) % len(placeholders)]
+        randrange = getattr(rng, "randrange", None)
+        if callable(randrange):
+            return placeholders[int(randrange(len(placeholders))) % len(placeholders)]
+        randint = getattr(rng, "randint", None)
+        if callable(randint):
+            return placeholders[int(randint(0, len(placeholders) - 1)) % len(placeholders)]
+    return placeholders[random.randrange(len(placeholders))]
+
+
 def _initial_collaboration_mask(
     config: SettingsConfig,
     model_catalog: Any,
@@ -231,7 +267,11 @@ def _initial_collaboration_mask(
 
 
 def _placeholder_session_header_cell(config: SettingsConfig) -> dict[str, Any]:
-    return {"kind": "placeholder_session_header", "cwd": getattr(config, "cwd", None)}
+    return {
+        "kind": "placeholder_session_header",
+        "model": DEFAULT_MODEL_DISPLAY_NAME,
+        "cwd": getattr(config, "cwd", None),
+    }
 
 
 def _default_bottom_pane(params: BottomPaneParams) -> Any:

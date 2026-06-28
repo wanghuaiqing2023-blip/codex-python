@@ -136,6 +136,9 @@ def _is_thread_closed_notification(notification: Any) -> bool:
     if isinstance(notification, dict):
         kind = notification.get("type") or notification.get("kind")
         return kind in {"thread_closed", "ThreadClosed", "thread/closed"}
+    kind = getattr(notification, "kind", None)
+    if isinstance(kind, str):
+        return kind in {"thread_closed", "ThreadClosed", "thread/closed"}
     return notification.__class__.__name__ in {"ThreadClosed", "ThreadClosedNotification"}
 
 

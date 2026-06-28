@@ -58,8 +58,8 @@ def test_footer_height_uses_rendered_line_count_for_modes():
 def test_quit_and_esc_hint_copy_follows_running_and_backtrack_flags():
     assert quit_shortcut_reminder_line(FooterProps(is_task_running=False)) == "Press ctrl+c again to quit"
     assert quit_shortcut_reminder_line(FooterProps(is_task_running=True)) == "Press ctrl+c again to interrupt"
-    assert esc_hint_line(FooterProps(esc_backtrack_hint=False)) == "Press Esc again to clear"
-    assert esc_hint_line(FooterProps(esc_backtrack_hint=True)) == "Press Esc again to go back"
+    assert esc_hint_line(FooterProps(esc_backtrack_hint=False)) == "esc esc to edit previous message"
+    assert esc_hint_line(FooterProps(esc_backtrack_hint=True)) == "esc again to edit previous message"
 
 
 def test_footer_from_props_prefers_status_line_but_queue_hint_yields():
@@ -98,10 +98,27 @@ def test_context_line_and_shortcut_binding_wsl_variant():
     assert context_window_line(None, 123_456) == "123K tokens"
 
     paste_descriptor = next(descriptor for descriptor in shortcut_overlay_lines(ShortcutsState(is_wsl=True)) if "paste image" in descriptor)
-    assert paste_descriptor.startswith("ctrl+alt+v")
+    assert "ctrl + alt + v to paste images" in paste_descriptor
 
     non_wsl = shortcut_overlay_lines(ShortcutsState(is_wsl=False))
-    assert any(line.startswith("ctrl+v") and "paste image" in line for line in non_wsl)
+    assert any("ctrl + v to paste images" in line for line in non_wsl)
+
+
+def test_shortcut_overlay_lines_match_rust_footer_snapshot_semantics():
+    # Rust source/test contract:
+    # - codex-tui/src/bottom_pane/footer.rs::shortcut_overlay_lines orders
+    #   shortcut hints in two columns and appends the /keymap customization row.
+    # - Snapshot:
+    #   bottom_pane/chat_composer__tests__footer_mode_shortcut_overlay.snap.
+    lines = shortcut_overlay_lines(ShortcutsState(use_shift_enter_hint=True))
+
+    assert any("/ for commands" in line and "! for shell commands" in line for line in lines)
+    assert any("shift + Enter for newline" in line and "Tab to queue message" in line for line in lines)
+    assert any("@ for file paths" in line and "ctrl + v to paste images" in line for line in lines)
+    assert any("ctrl + r search history" in line and "ctrl + c to exit" in line for line in lines)
+    assert any("alt + , reasoning down" in line and "alt + . reasoning up" in line for line in lines)
+    assert "ctrl + t to view transcript" in lines
+    assert lines[-1] == "customize shortcuts with /keymap"
 
 
 def test_default_key_hints_match_rust_test_bindings_shape():
@@ -113,6 +130,12 @@ def test_default_key_hints_match_rust_test_bindings_shape():
 
 
 def test_passive_status_line_combines_agent_and_yields_to_queue_hint():
+    # Rust source/test contract:
+    # - codex-tui/src/bottom_pane/footer.rs::passive_footer_status_line
+    #   appends FooterProps.active_agent_label to an enabled status line with
+    #   " · ".
+    # - codex-tui/src/bottom_pane/footer.rs::footer_snapshots includes
+    #   footer_active_agent_label and footer_status_line_with_active_agent_label.
     props = FooterProps(
         mode=FooterMode.COMPOSER_EMPTY,
         status_line_enabled=True,
@@ -122,12 +145,13 @@ def test_passive_status_line_combines_agent_and_yields_to_queue_hint():
 
     assert (
         status_line_right_indicator_line("Status line content", "Robie [explorer]")
-        == "Status line content ? Robie [explorer]"
+        == "Status line content · Robie [explorer]"
     )
+    assert status_line_right_indicator_line(None, "Robie [explorer]") == "Robie [explorer]"
     assert shows_passive_footer_line(props, show_queue_hint=False) is True
     assert uses_passive_footer_status_layout(props, show_queue_hint=False) is True
     assert footer_from_props_lines(props, show_shortcuts_hint=True) == [
-        "Status line content ? Robie [explorer]"
+        "Status line content · Robie [explorer]"
     ]
 
     assert shows_passive_footer_line(props, show_queue_hint=True) is False

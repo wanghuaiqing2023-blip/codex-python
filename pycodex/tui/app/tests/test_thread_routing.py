@@ -4,6 +4,7 @@ from collections import deque
 from types import SimpleNamespace
 
 from pycodex.tui.app_command import AppCommand
+from pycodex.tui.chatwidget.protocol import ServerNotification
 from pycodex.tui.app.thread_routing import (
     SessionSelection,
     ThreadChannelState,
@@ -66,6 +67,18 @@ def test_active_non_primary_shutdown_target_ignores_primary_and_pending_exit() -
     assert active_non_primary_shutdown_target({"type": "other"}, "agent", "primary") is None
     assert active_non_primary_shutdown_target(notification, None, "primary") is None
     assert active_non_primary_shutdown_target(notification, "agent", None) is None
+
+
+def test_active_non_primary_shutdown_target_accepts_server_notification_shape() -> None:
+    # Rust/Python composition contract:
+    # codex-tui::app::thread_routing receives ServerNotification::ThreadClosed
+    # from the active thread stream. Python's app runtime uses the
+    # chatwidget.protocol ServerNotification DTO for that same app-server event,
+    # so the routing predicate must recognize that runtime shape before
+    # chatwidget::protocol sees it.
+    notification = ServerNotification("ThreadClosed", {"thread_id": "agent"})
+
+    assert active_non_primary_shutdown_target(notification, "agent", "primary") == ("agent", "primary")
 
 
 def test_activate_store_and_clear_thread_channel_match_rust_state_transitions() -> None:

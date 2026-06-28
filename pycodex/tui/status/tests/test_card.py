@@ -65,6 +65,11 @@ def test_rate_limit_lines_cover_missing_stale_and_narrow_window_rows() -> None:
     missing = cell.rate_limit_lines(StatusRateLimitState(StatusRateLimitData.missing(), False), 80, formatter)
     assert "data not available yet" in "".join(span.content for span in missing[0].spans)
 
+    refreshing_missing = cell.rate_limit_lines(StatusRateLimitState(StatusRateLimitData.missing(), True), 80, formatter)
+    assert "refresh requested; run /status again shortly" in "".join(
+        span.content for line in refreshing_missing for span in line.spans
+    )
+
     stale = StatusRateLimitData.stale([RateLimitSnapshotDisplay("unused", datetime.now(timezone.utc)).primary])  # type: ignore[list-item]
     stale = StatusRateLimitData.stale([])
     stale_lines = cell.rate_limit_lines(StatusRateLimitState(stale, True), 80, formatter)
@@ -85,6 +90,17 @@ def test_permission_label_helpers_match_rust_branches() -> None:
     assert status_permissions_label("workspace-write", "enabled", "on-request", "workspace", "on-request", " [/tmp/extra]") == "Workspace [/tmp/extra] (on-request)"
     assert status_permissions_label("danger-full-access", "disabled", "never", "none", "never") == "Full Access"
     assert status_permissions_label("custom", "enabled", "on-request", "workspace", "on-request", " [/tmp/extra]") == "Profile custom (workspace [/tmp/extra], on-request)"
+
+
+def test_permission_label_helpers_cover_full_disk_managed_status_tests() -> None:
+    # Rust crate/module/test:
+    # - codex-tui::status::card
+    # - status/tests.rs::status_permissions_full_disk_managed_with_network_is_danger_full_access
+    # - status/tests.rs::status_permissions_full_disk_managed_without_network_is_external_sandbox
+    # Contract: /status keeps custom managed full-disk profiles as Custom,
+    # distinguishing network-enabled danger-full-access from external-sandbox.
+    assert status_permissions_label(None, "enabled", "on-request", "danger-full-access", "on-request") == "Custom (danger-full-access, on-request)"
+    assert status_permissions_label(None, "enabled", "on-request", "external-sandbox", "on-request") == "Custom (external-sandbox, on-request)"
 
 
 def test_model_provider_and_base_url_sanitizing_match_rust_contract() -> None:

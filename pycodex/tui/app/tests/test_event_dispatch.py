@@ -121,6 +121,74 @@ def test_fatal_exit_request_dispatches_to_exit_control():
     assert plan.messages == ("boom",)
 
 
+def test_update_model_dispatches_to_model_update_plan():
+    """Rust codex-tui app::event_dispatch::handle_event AppEvent::UpdateModel branch."""
+
+    state = EventDispatchState(active_thread_id="thread-model")
+
+    plan = dispatch_event_plan(state, {"type": "UpdateModel", "model": "gpt-new"})
+
+    assert plan == EventDispatchPlan(
+        action="update_model",
+        updates=(("update_model", "gpt-new"),),
+        schedule_frame=True,
+    )
+
+
+def test_update_reasoning_effort_dispatches_to_runtime_plan():
+    """Rust codex-tui app::event_dispatch::handle_event AppEvent::UpdateReasoningEffort branch."""
+
+    state = EventDispatchState(active_thread_id="thread-model")
+
+    plan = dispatch_event_plan(state, {"type": "UpdateReasoningEffort", "effort": "high"})
+
+    assert plan == EventDispatchPlan(
+        action="update_reasoning_effort",
+        updates=(("update_reasoning_effort", "high"),),
+        schedule_frame=True,
+    )
+
+
+def test_persist_model_selection_dispatches_to_config_write_plan():
+    """Rust codex-tui app::event_dispatch::handle_event AppEvent::PersistModelSelection branch."""
+
+    state = EventDispatchState(active_thread_id="thread-model")
+
+    plan = dispatch_event_plan(
+        state,
+        {"type": "PersistModelSelection", "model": "gpt-new", "effort": "high"},
+    )
+
+    assert plan == EventDispatchPlan(
+        action="persist_model_selection",
+        updates=(("persist_model_selection", {"model": "gpt-new", "effort": "high"}),),
+        schedule_frame=True,
+    )
+
+
+def test_rate_limit_refresh_events_dispatch_to_refresh_and_completion_plans():
+    """Rust codex-tui app::event_dispatch handles RefreshRateLimits/RateLimitsLoaded."""
+
+    state = EventDispatchState(active_thread_id="thread-status")
+    origin = {"kind": "StatusCommand", "request_id": 7}
+
+    refresh = dispatch_event_plan(state, {"type": "RefreshRateLimits", "origin": origin})
+    assert refresh == EventDispatchPlan(
+        action="refresh_rate_limits",
+        updates=(("refresh_rate_limits", origin),),
+    )
+
+    loaded = dispatch_event_plan(
+        state,
+        {"type": "RateLimitsLoaded", "origin": origin, "result": ["snapshot"]},
+    )
+    assert loaded == EventDispatchPlan(
+        action="rate_limits_loaded",
+        updates=(("rate_limits_loaded", {"origin": origin, "result": ["snapshot"]}),),
+        schedule_frame=True,
+    )
+
+
 def test_logout_success_uses_shutdown_first_exit_mode_plan():
     """Rust codex-tui app::event_dispatch::handle_event AppEvent::Logout Ok branch."""
 

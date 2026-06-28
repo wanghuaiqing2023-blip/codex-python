@@ -10,6 +10,7 @@ from pycodex.tui.tui.event_stream import (
     FakeEventSourceHandle,
     FocusFlag,
     TuiEvent,
+    WindowsConsoleEventSource,
     make_stream,
     setup,
 )
@@ -126,3 +127,103 @@ def test_pause_drops_source_and_ignores_sends_until_resume() -> None:
     broker.resume_events()
     handle.send(("key", "y"))
     assert stream.poll_next() == TuiEvent.key("y")
+
+
+def test_windows_console_source_maps_chars_and_special_keys_through_event_stream() -> None:
+    # Rust source contract:
+    # - codex-tui::tui::event_stream maps Event::Key through TuiEvent::Key.
+    # - Python's Windows product path keeps msvcrt polling behind EventSource
+    #   instead of letting the app/composer layer consume raw terminal bytes.
+    class FakeMsvcrt:
+        def __init__(self) -> None:
+            self.chars = list("a") + ["\xe0", "K"] + list("b")
+
+        def kbhit(self) -> bool:
+            return bool(self.chars)
+
+        def getwch(self) -> str:
+            return self.chars.pop(0)
+
+    source = WindowsConsoleEventSource(FakeMsvcrt())
+    broker = EventBroker.new(lambda: source)
+    stream = make_stream(broker, terminal_focused=FocusFlag(True))
+
+    assert stream.poll_next() == TuiEvent.key("a")
+    assert stream.poll_next() == TuiEvent.key("left")
+    assert stream.poll_next() == TuiEvent.key("b")
+    assert stream.poll_next() is None
+
+
+def test_windows_console_source_maps_virtual_return_without_unicode_char() -> None:
+    # Rust source/product contract:
+    # - codex-tui::tui::event_stream receives crossterm KeyCode::Enter from
+    #   Windows console input records, not only from UnicodeChar payloads.
+    # - Windows Terminal/IME can deliver VK_RETURN with an empty UnicodeChar;
+    #   Python must still surface it as the composer submit key.
+    class FakeMsvcrt:
+        def kbhit(self) -> bool:
+            return False
+
+        def getwch(self) -> str:
+            raise AssertionError("console record path should be used before msvcrt fallback")
+
+    records = [
+        {"kind": "key", "key_down": True, "virtual_key": 0x0D, "char": ""},
+    ]
+
+    source = WindowsConsoleEventSource(FakeMsvcrt(), console_record_reader=lambda: records.pop(0) if records else None)
+    broker = EventBroker.new(lambda: source)
+    stream = make_stream(broker, terminal_focused=FocusFlag(True))
+
+    assert stream.poll_next() == TuiEvent.key("\r")
+    assert stream.poll_next() is None
+
+
+def test_windows_console_source_maps_escape_prefixed_char_to_alt_key() -> None:
+    # Rust source/test contract:
+    # - codex-tui::keymap default_bindings maps app.toggle_raw_output to
+    #   Alt+R, and tui::event_stream preserves key modifiers from crossterm.
+    # - Python's Windows console source receives Alt+letter as an ESC-prefixed
+    #   byte pair under ConPTY and must preserve the Alt modifier before the
+    #   app keymap layer consumes it.
+    class FakeMsvcrt:
+        def __init__(self) -> None:
+            self.chars = ["\x1b", "r"]
+
+        def kbhit(self) -> bool:
+            return bool(self.chars)
+
+        def getwch(self) -> str:
+            return self.chars.pop(0)
+
+    source = WindowsConsoleEventSource(FakeMsvcrt())
+    broker = EventBroker.new(lambda: source)
+    stream = make_stream(broker, terminal_focused=FocusFlag(True))
+
+    assert stream.poll_next() == TuiEvent.key("alt-r")
+    assert stream.poll_next() is None
+
+
+def test_windows_console_source_keeps_repeated_escape_as_two_escape_keys() -> None:
+    # Rust source contract:
+    # - crossterm EventStream yields Esc key events independently unless a real
+    #   modified key is reported by the terminal.
+    # - Python's Windows ESC-prefix adapter must not collapse Esc Esc into one
+    #   key while trying to preserve Alt+letter.
+    class FakeMsvcrt:
+        def __init__(self) -> None:
+            self.chars = ["\x1b", "\x1b"]
+
+        def kbhit(self) -> bool:
+            return bool(self.chars)
+
+        def getwch(self) -> str:
+            return self.chars.pop(0)
+
+    source = WindowsConsoleEventSource(FakeMsvcrt())
+    broker = EventBroker.new(lambda: source)
+    stream = make_stream(broker, terminal_focused=FocusFlag(True))
+
+    assert stream.poll_next() == TuiEvent.key("\x1b")
+    assert stream.poll_next() == TuiEvent.key("\x1b")
+    assert stream.poll_next() is None

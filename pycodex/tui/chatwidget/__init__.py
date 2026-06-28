@@ -321,7 +321,9 @@ class ChatWidget:
         self.raw_mode = bool(enabled)
 
     def raw_output_mode_notice(self) -> str:
-        return "Raw output mode enabled" if self.raw_mode else "Raw output mode disabled"
+        if self.raw_mode:
+            return "Raw output mode on: transcript text is shown for clean terminal selection."
+        return "Raw output mode off: rich transcript rendering restored."
 
     def set_raw_output_mode_and_notify(self, enabled: bool) -> str:
         self.set_raw_output_mode(enabled)
@@ -354,7 +356,7 @@ class ChatWidget:
     def toggle_vim_mode_and_notify(self) -> str:
         state = not bool(_get(self, "vim_enabled", False))
         setattr(self, "vim_enabled", state)
-        notice = "Vim mode enabled" if state else "Vim mode disabled"
+        notice = "Vim mode enabled." if state else "Vim mode disabled."
         self.add_info_message(notice)
         return notice
 

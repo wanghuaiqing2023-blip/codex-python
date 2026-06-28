@@ -100,6 +100,25 @@ class ParallelEchoHandler:
         return FunctionToolOutput.from_text(invocation.call_id, True)
 
 
+class SlowCancellableHandler:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.cancelled = asyncio.Event()
+        self.invocations = []
+
+    def tool_name(self) -> ToolName:
+        return ToolName.plain("slow_cancel")
+
+    async def handle(self, invocation):
+        self.invocations.append(invocation)
+        self.started.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+
+
 class FatalHandler:
     def tool_name(self) -> ToolName:
         return ToolName.plain("fatal_tool")
@@ -153,6 +172,20 @@ class CancellationToken:
 
     def is_cancelled(self) -> bool:
         return self.cancelled
+
+
+class AsyncCancellationToken:
+    def __init__(self) -> None:
+        self.event = asyncio.Event()
+
+    def cancel(self) -> None:
+        self.event.set()
+
+    def is_cancelled(self) -> bool:
+        return self.event.is_set()
+
+    async def cancelled(self) -> None:
+        await self.event.wait()
 
 
 class PendingInputQueue:
@@ -1228,6 +1261,57 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.recorded[-1], result.response_items)
         self.assertEqual(session.history[-1].content[0].text, "done")
         self.assertEqual(result.last_agent_message, "done")
+
+    async def test_run_user_turn_sampling_cancellation_token_aborts_sampler_and_emits_turn_aborted(self) -> None:
+        # Rust source/test contract:
+        # - codex-core/src/session/handlers.rs routes Op::Interrupt to Session::interrupt_task.
+        # - codex-core/src/tasks/mod.rs::abort_all_tasks emits EventMsg::TurnAborted.
+        # - codex-rs/core/tests/suite/abort_tasks.rs::interrupt_long_running_tool_emits_turn_aborted
+        #   waits for active work, submits Op::Interrupt, and expects TurnAborted soon after.
+        session = Session()
+        session.turn_context.turn_id = "turn-cancel"
+        token = AsyncCancellationToken()
+        started = asyncio.Event()
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+
+        async def sampler(request):
+            self.assertIs(request.cancellation_token, token)
+            self.assertIs(request.turn_context.cancellation_token, token)
+            started.set()
+            await asyncio.sleep(30)
+            return [ResponseItem.message("assistant", (ContentItem.output_text("late completion"),))]
+
+        task = asyncio.create_task(
+            run_user_turn_sampling_from_session(
+                session,
+                (UserInput.text_input("start long turn"),),
+                client,
+                provider,
+                model_info,
+                sampler,
+                built_tools=lambda _sess, _turn: Router(),
+                cancellation_token=token,
+            )
+        )
+
+        await asyncio.wait_for(started.wait(), timeout=1)
+        token.cancel()
+        result = await asyncio.wait_for(task, timeout=1)
+
+        self.assertEqual(result.turn_status, "interrupted")
+        self.assertEqual(result.response_items, ())
+        self.assertEqual([event.type for event in session.emitted_events], ["task_started", "turn_aborted"])
+        aborted = session.emitted_events[-1].payload
+        self.assertEqual(aborted.turn_id, "turn-cancel")
+        self.assertEqual(aborted.reason.value, "interrupted")
+        self.assertFalse(any(item.content[0].text == "late completion" for item in session.history if item.content))
 
     async def test_run_user_turn_sampling_user_prompt_submit_hook_blocks_input(self) -> None:
         session = Session()
@@ -3008,7 +3092,8 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 ("token_count", session.turn_context),
             ],
         )
-        self.assertEqual([event.type for event in session.emitted_events], ["task_started"])
+        self.assertEqual([event.type for event in session.emitted_events], ["task_started", "turn_aborted"])
+        self.assertEqual(session.emitted_events[-1].payload.reason.value, "interrupted")
         self.assertEqual(session.recorded_token_usage[0][1].total_tokens, 7)
 
     async def test_run_user_turn_sampling_turn_aborted_before_sampling_result_returns_interrupted(self) -> None:
@@ -3039,7 +3124,8 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.response_items, ())
         self.assertEqual(result.raw_results, ())
         self.assertIsNone(result.raw_result)
-        self.assertEqual([event.type for event in session.emitted_events], ["task_started"])
+        self.assertEqual([event.type for event in session.emitted_events], ["task_started", "turn_aborted"])
+        self.assertEqual(session.emitted_events[-1].payload.reason.value, "interrupted")
 
     async def test_run_user_turn_sampling_turn_aborted_during_followup_returns_accumulated_interrupted(self) -> None:
         session = Session()
@@ -3080,7 +3166,8 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.response_items, (first,))
         self.assertEqual(len(result.request_plans), 2)
         self.assertEqual(len(result.raw_results), 1)
-        self.assertEqual([event.type for event in session.emitted_events], ["task_started"])
+        self.assertEqual([event.type for event in session.emitted_events], ["task_started", "turn_aborted"])
+        self.assertEqual(session.emitted_events[-1].payload.reason.value, "interrupted")
 
     async def test_run_user_turn_sampling_emits_assistant_text_stream_deltas(self) -> None:
         session = Session()
@@ -3198,6 +3285,62 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
             tuple(record["visible_text_delta"] for record in result.stream_runtime_state_summary["assistant_text_deltas"]),
             ("live",),
         )
+
+    async def test_run_user_turn_sampling_live_observer_emits_done_only_assistant_item(self) -> None:
+        # Rust source/test contract:
+        # - codex-rs/core/src/session/turn.rs::ResponseEvent::OutputItemDone
+        #   routes assistant ResponseItem::Message through handle_output_item_done
+        #   and emits a completed TurnItem::AgentMessage.
+        # - tests/test_core_stream_events_utils.py::
+        #   test_handle_output_item_done_records_non_tool_item_and_emits_turn_items
+        #   proves the non-tool completion contract.
+        # A stream that only has output_item.done, with no output_text.delta,
+        # must still produce a visible completed assistant item for TUI clients.
+        session = Session()
+        session.turn_context.turn_id = "turn-1"
+        client = ModelClient(session_id="session", thread_id="123e4567-e89b-12d3-a456-426614174000", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        observed_order = []
+        assistant = ResponseItem.message(
+            "assistant",
+            (ContentItem.output_text("done-only visible answer"),),
+            id="msg-1",
+        )
+
+        async def sampler(request):
+            await request.stream_event_observer({"type": "output_item_done", "item": assistant})
+            observed_order.append(("during_sampler", tuple(event.type for event in session.emitted_events)))
+            return SimpleNamespace(
+                response_items=(assistant,),
+                stream_events=(
+                    {"type": "output_item_done", "item": assistant},
+                    {"type": "completed", "response_id": "resp-1", "end_turn": True},
+                ),
+                live_stream_events_emitted=True,
+            )
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(observed_order, [("during_sampler", ("task_started", "item_completed"))])
+        completed = events_of_type(session, "item_completed")
+        self.assertEqual(len(completed), 1)
+        self.assertEqual(completed[0].payload.item.type, "AgentMessage")
+        self.assertEqual(completed[0].payload.item.item.content[0].text, "done-only visible answer")
+        self.assertEqual(result.response_items[0].content[0].text, "done-only visible answer")
 
     async def test_run_user_turn_sampling_emits_response_created_live_status(self) -> None:
         # Rust source: codex-core records response.created as a first-token
@@ -3870,6 +4013,64 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.recorded[-2], result.tool_response_items)
         self.assertEqual(session.history[-1].content[0].text, "done after tool")
         self.assertEqual(len(result.request_plans), 2)
+
+    async def test_run_user_turn_sampling_cancellation_token_aborts_inflight_tool_call(self) -> None:
+        # Rust source/test contract:
+        # - codex-rs/core/src/tasks/mod.rs::abort_all_tasks cancels the active
+        #   task's CancellationToken and emits EventMsg::TurnAborted.
+        # - codex-rs/core/tests/suite/abort_tasks.rs::interrupt_long_running_tool_emits_turn_aborted
+        #   is the closest long-running tool contract but is Unix-only here.
+        # - codex-rs/core/tests/suite/user_shell_cmd.rs::user_shell_cmd_can_be_interrupted
+        #   is the Windows-runnable native equivalent.
+        session = Session()
+        session.turn_context.turn_id = "turn-tool-cancel"
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        handler = SlowCancellableHandler()
+        router = ToolRouter.from_parts(ToolRegistry.from_tools([handler]), ())
+        token = AsyncCancellationToken()
+        seen_requests = []
+
+        async def sampler(request):
+            seen_requests.append(request)
+            return [ResponseItem.function_call("slow_cancel", "{}", "call-slow")]
+
+        task = asyncio.create_task(
+            run_user_turn_sampling_from_session(
+                session,
+                (UserInput.text_input("start slow tool"),),
+                client,
+                provider,
+                model_info,
+                sampler,
+                built_tools=lambda _sess, _turn: router,
+                cancellation_token=token,
+            )
+        )
+
+        await asyncio.wait_for(handler.started.wait(), timeout=1.0)
+        self.assertIs(handler.invocations[0].session, session)
+        self.assertIs(handler.invocations[0].turn, session.turn_context)
+        self.assertIsNotNone(getattr(handler.invocations[0], "cancellation_token", None))
+        token.cancel()
+        result = await asyncio.wait_for(task, timeout=1.0)
+
+        self.assertEqual(result.turn_status, "interrupted")
+        self.assertEqual(len(seen_requests), 1)
+        self.assertEqual(result.response_items[0].type, "function_call")
+        self.assertEqual(result.response_items[0].call_id, "call-slow")
+        self.assertEqual(result.tool_response_items, ())
+        self.assertEqual([event.type for event in session.emitted_events], ["task_started", "turn_aborted"])
+        aborted = session.emitted_events[-1].payload
+        self.assertEqual(aborted.turn_id, "turn-tool-cancel")
+        self.assertEqual(aborted.reason.value, "interrupted")
+        self.assertTrue(handler.cancelled.is_set())
 
     async def test_run_user_turn_sampling_default_session_exec_command_uses_unified_exec_manager(self) -> None:
         cwd = Path.cwd()

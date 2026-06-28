@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import os
 import queue
 import random
@@ -498,16 +499,38 @@ def exec_server_params_for_request(
 def _cancellation_token_is_cancelled(token: Any) -> bool:
     if token is None:
         return False
+    saw_cancellation_attr = False
     for name in ("is_cancelled", "is_set"):
         value = getattr(token, name, None)
         if callable(value):
-            return bool(value())
+            saw_cancellation_attr = True
+            result = _sync_callable_bool(value)
+            if result is not None:
+                return result
     value = getattr(token, "cancelled", None)
     if callable(value):
-        return bool(value())
-    if value is not None:
+        saw_cancellation_attr = True
+        result = _sync_callable_bool(value)
+        if result is not None:
+            return result
+    if value is not None and not callable(value):
+        saw_cancellation_attr = True
         return bool(value)
+    if saw_cancellation_attr:
+        return False
     return bool(token)
+
+
+def _sync_callable_bool(value: Any) -> bool | None:
+    if inspect.iscoroutinefunction(value):
+        return None
+    result = value()
+    if inspect.isawaitable(result):
+        close = getattr(result, "close", None)
+        if callable(close):
+            close()
+        return None
+    return bool(result)
 
 
 def wait_for_late_network_denial(
@@ -1397,12 +1420,20 @@ def _receiver_closed(receiver: Any) -> bool:
 def _token_cancelled(token: Any) -> bool:
     if token is None:
         return False
+    saw_cancellation_attr = False
     for name in ("is_cancelled", "is_set", "cancelled"):
         value = getattr(token, name, None)
         if callable(value):
-            return bool(value())
+            saw_cancellation_attr = True
+            result = _sync_callable_bool(value)
+            if result is not None:
+                return result
+            continue
         if value is not None and not callable(value):
+            saw_cancellation_attr = True
             return bool(value)
+    if saw_cancellation_attr:
+        return False
     return bool(token)
 
 

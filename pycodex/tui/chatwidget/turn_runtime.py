@@ -14,6 +14,7 @@ from enum import Enum
 from typing import Any, List, Optional, Set, Tuple
 
 from .._porting import RustTuiModule
+from .mcp_startup import MCP_STARTUP_MULTI_HEADER_PREFIX, MCP_STARTUP_SINGLE_HEADER_PREFIX
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -530,7 +531,13 @@ class SemanticTurnRuntime:
         return info.total_tokens
 
     def status_header_is_mcp_startup_owned(self) -> bool:
-        return self.status_header == "MCP startup"
+        return bool(
+            self.status_header
+            and (
+                self.status_header.startswith(MCP_STARTUP_SINGLE_HEADER_PREFIX)
+                or self.status_header.startswith(MCP_STARTUP_MULTI_HEADER_PREFIX)
+            )
+        )
 
     def set_status_header(self, value: str) -> None:
         self.status_header = value

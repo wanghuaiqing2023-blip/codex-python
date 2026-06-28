@@ -167,12 +167,26 @@ class WebsocketSession:
         return self._connection_reused
 
     def reset(self) -> None:
+        self.close()
         self.connection = None
         self.last_request = None
         self.last_response = None
         self.last_response_pending = False
         self.last_response_from_untraced_warmup = False
         self.set_connection_reused(False)
+
+    def close(self) -> None:
+        connection = self.connection
+        if connection is None:
+            return
+        closer = getattr(connection, "close", None)
+        if callable(closer):
+            result = closer()
+            if isawaitable(result):
+                try:
+                    result.close()
+                except Exception:
+                    pass
 
 
 class WebsocketStreamOutcome(str, Enum):
@@ -296,11 +310,11 @@ class ModelClient:
         if isinstance(window_generation, bool) or not isinstance(window_generation, int) or window_generation < 0:
             raise ValueError("window_generation must be a non-negative integer")
         self.state.window_generation = window_generation
-        self.store_cached_websocket_session(WebsocketSession())
+        self.close_cached_websocket_session()
 
     def advance_window_generation(self) -> None:
         self.state.window_generation += 1
-        self.store_cached_websocket_session(WebsocketSession())
+        self.close_cached_websocket_session()
 
     def current_window_id(self) -> str:
         return f"{self.state.thread_id}:{self.state.window_generation}"
@@ -314,6 +328,10 @@ class ModelClient:
         if not isinstance(websocket_session, WebsocketSession):
             raise TypeError("websocket_session must be WebsocketSession")
         self.state.cached_websocket_session = websocket_session
+
+    def close_cached_websocket_session(self) -> None:
+        self.state.cached_websocket_session.reset()
+        self.state.cached_websocket_session = WebsocketSession()
 
     def responses_websocket_enabled(self) -> bool:
         provider_info = _provider_info(self.state.provider)
@@ -335,7 +353,7 @@ class ModelClient:
             if callable(counter):
                 counter("codex.transport.fallback_to_http", 1, (("from_wire_api", "responses_websocket"),))
             self.state.disable_websockets = True
-            self.store_cached_websocket_session(WebsocketSession())
+            self.close_cached_websocket_session()
         return activated
 
     def build_subagent_headers(self) -> dict[str, str]:
@@ -2057,6 +2075,18 @@ def _apply_sampling_event_plan_to_state(
                 turn_id=getattr(transition, "turn_id", ""),
                 completed_item=completed_item,
             )
+        elif _should_emit_completed_assistant_item_from_done(completed_item, state):
+            turn_item = _assistant_response_item_to_agent_turn_item(completed_item)
+            if turn_item is not None:
+                _append_stream_event(
+                    state,
+                    _item_lifecycle_event(
+                        "item_completed",
+                        getattr(transition, "thread_id", ""),
+                        getattr(transition, "turn_id", ""),
+                        turn_item,
+                    ),
+                )
         if output_result is not None:
             state.output_result = output_result
             state.result_needs_follow_up = getattr(output_result, "needs_follow_up", state.result_needs_follow_up)
@@ -2280,6 +2310,21 @@ def _plan_mode_contributed_agent_turn_item(
     if not isinstance(contributed, TurnItem):
         raise TypeError("turn item contributors must return a TurnItem")
     return contributed
+
+
+def _should_emit_completed_assistant_item_from_done(
+    item: ResponseItem | None,
+    state: SamplingRuntimeEventApplicationState,
+) -> bool:
+    if not isinstance(item, ResponseItem) or item.type != "message" or item.role != "assistant":
+        return False
+    item_id = item.id
+    if not isinstance(item_id, str) or not item_id:
+        return True
+    for record in tuple(getattr(state, "assistant_text_deltas", ()) or ()):
+        if isinstance(record, Mapping) and record.get("item_id") == item_id:
+            return False
+    return True
 
 
 def _assistant_response_item_to_agent_turn_item(item: ResponseItem | None) -> TurnItem | None:

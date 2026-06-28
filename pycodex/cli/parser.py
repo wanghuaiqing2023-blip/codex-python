@@ -158,7 +158,7 @@ from .doctor_updates import (
     redacted_doctor_checks_mapping,
     redacted_doctor_report_mapping,
 )
-from pycodex.tui import run_terminal_tui, run_tui
+from pycodex.tui import run_tui
 from pycodex.tui.app.runtime import CoreExecActiveThreadRuntime
 from pycodex.execpolicy import ExecPolicyPrefixRule
 from pycodex.git_utils import current_branch_name, default_branch_name
@@ -2474,6 +2474,10 @@ def _run_tui(
         return run_tui(stderr=stderr)
 
     out = sys.stdout if stdout is None else stdout
+    terminal_guard_message = _interactive_tui_terminal_guard_message(stdin_is_terminal, stderr)
+    if terminal_guard_message is not None:
+        print(f"ERROR: {terminal_guard_message}", file=stderr)
+        return 1
     try:
         active_thread_runtime = _build_tui_core_active_thread_runtime(parsed, stderr=stderr)
     except (CliParseError, ExecCliParseError, ExecConfigPlanError, ExecRunError, ValueError) as exc:
@@ -2484,13 +2488,49 @@ def _run_tui(
         return 1
 
     tui_stdin = sys.stdin if stdin_is_terminal and stdin is getattr(sys.stdin, "buffer", None) else stdin
-    return run_terminal_tui(
+    from pycodex.tui.textual_runtime import run_textual_tui, should_use_textual_tui
+
+    if should_use_textual_tui(
         stdout=out,
-        stderr=stderr,
         stdin=tui_stdin,
         active_thread_runtime=active_thread_runtime,
         use_alt_screen=not bool(parsed.root_options.get("no_alt_screen", False)),
+    ):
+
+        return run_textual_tui(active_thread_runtime=active_thread_runtime, stdout=out)
+    print("Error: stdin is not a terminal", file=stderr)
+    return 1
+
+
+def _interactive_tui_terminal_guard_message(stdin_is_terminal: bool | None, stderr: TextIO) -> str | None:
+    """Mirror Rust ``codex-cli::run_interactive_tui`` TERM=dumb startup guard.
+
+    Rust refuses to start the interactive TUI when TERM is ``dumb`` and no real
+    terminal is available for the confirmation prompt.  Other non-terminal
+    startup failures are owned by ``codex-tui/src/tui.rs::init``; Python mirrors
+    that boundary in ``_run_tui`` after constructing the active-thread runtime.
+    """
+
+    if os.environ.get("TERM") != "dumb":
+        return None
+    if stdin_is_terminal is None:
+        return None
+    stderr_is_terminal = _stream_is_terminal(stderr)
+    if bool(stdin_is_terminal) and stderr_is_terminal:
+        return None
+    return (
+        'TERM is set to "dumb". Refusing to start the interactive TUI because '
+        "no terminal is available for a confirmation prompt (stdin/stderr is "
+        "not a TTY). Run in a supported terminal or unset TERM."
     )
+
+
+def _stream_is_terminal(stream: object) -> bool:
+    isatty = getattr(stream, "isatty", None)
+    try:
+        return bool(isatty()) if callable(isatty) else False
+    except OSError:
+        return False
 
 
 def _normalize_tui_prompt(prompt: str) -> str:

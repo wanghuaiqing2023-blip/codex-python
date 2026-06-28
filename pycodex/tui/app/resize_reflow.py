@@ -14,6 +14,7 @@ from enum import Enum
 from typing import Any, Iterable, List, Optional, Tuple
 
 from .._porting import RustTuiModule
+from ..transcript_reflow import TranscriptReflowState
 
 
 RUST_MODULE = RustTuiModule(
@@ -73,6 +74,7 @@ class ResizeReflowState:
     transcript_cells: List[HistoryCell] = field(default_factory=list)
     has_emitted_history_lines: bool = False
     terminal_resize_reflow: Any = None
+    transcript_reflow: TranscriptReflowState = field(default_factory=TranscriptReflowState)
     raw_output_mode: bool = False
     resize_reflow_max_rows_value: Optional[int] = None
 
@@ -300,6 +302,57 @@ def maybe_run_resize_reflow(state: ResizeReflowState, width: int, pending_due: b
     return ResizeReflowPlan(action="run_resize_reflow", width=width, lines=plan.lines, wrap_policy=plan.wrap_policy, updates=updates, schedule_frame_in="TRANSCRIPT_REFLOW_DEBOUNCE")
 
 
+def maybe_finish_stream_reflow_plan(
+    state: ResizeReflowState,
+    width: int,
+    *,
+    enabled: bool = True,
+    pending_due: bool | None = None,
+    overlay_active: bool = False,
+) -> ResizeReflowPlan:
+    """Port Rust ``App::maybe_finish_stream_reflow`` as a semantic plan."""
+
+    if not enabled:
+        state.transcript_reflow.clear()
+        return ResizeReflowPlan(
+            action="clear_disabled_stream_finish_reflow",
+            updates=(("transcript_reflow.clear", True),),
+        )
+
+    if state.transcript_reflow.take_stream_finish_reflow_needed():
+        state.transcript_reflow.schedule_immediate()
+        plan = maybe_run_resize_reflow(
+            state,
+            width,
+            pending_due=True,
+            overlay_active=overlay_active,
+            enabled=True,
+            active_stream=False,
+        )
+        return ResizeReflowPlan(
+            action="finish_stream_reflow",
+            width=width,
+            lines=plan.lines,
+            wrap_policy=plan.wrap_policy,
+            updates=(
+                ("transcript_reflow.schedule_immediate", True),
+                ("frame_requester.schedule_frame", True),
+            )
+            + plan.updates,
+            schedule_frame=True,
+            schedule_frame_in=plan.schedule_frame_in,
+        )
+
+    due = state.transcript_reflow.pending_is_due() if pending_due is None else bool(pending_due)
+    if due:
+        return ResizeReflowPlan(
+            action="stream_finish_pending_reflow_due",
+            updates=(("frame_requester.schedule_frame", True),),
+            schedule_frame=True,
+        )
+    return ResizeReflowPlan(action="stream_finish_no_reflow")
+
+
 def reflow_transcript_now(state: ResizeReflowState, terminal_width: int) -> ResizeReflowPlan:
     width = terminal_width
     if not state.transcript_cells:
@@ -328,6 +381,7 @@ __all__ = [
     "insert_history_cell_lines_plan",
     "history_line_wrap_policy",
     "maybe_run_resize_reflow",
+    "maybe_finish_stream_reflow_plan",
     "reflow_transcript_now",
     "render_transcript_lines_for_reflow",
     "reset_history_emission_state",

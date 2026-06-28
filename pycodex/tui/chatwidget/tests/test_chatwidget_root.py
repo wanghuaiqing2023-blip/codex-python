@@ -50,7 +50,10 @@ def test_chatwidget_root_transcript_and_raw_mode_helpers():
     assert widget.active_cell_transcript_lines() == ["live"]
     widget.flush_active_cell()
     assert widget.history == [["live"]]
-    assert widget.toggle_raw_output_mode_and_notify() == "Raw output mode enabled"
+    assert (
+        widget.toggle_raw_output_mode_and_notify()
+        == "Raw output mode on: transcript text is shown for clean terminal selection."
+    )
     assert widget.history_render_mode() == "raw"
 
 

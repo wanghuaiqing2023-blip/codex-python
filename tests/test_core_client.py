@@ -1077,6 +1077,44 @@ def test_model_client_session_builds_sampling_runtime_adapter_bound_to_websocket
     assert adapter.event_application_state is state
 
 
+def test_websocket_session_reset_closes_underlying_connection():
+    # Rust source contract:
+    # codex-rs/core/src/client.rs owns websocket connection lifetime through
+    # ModelClientSession/WebSocket reuse. When a websocket session is discarded
+    # instead of cached, the transport must be closed rather than leaked.
+    closed = []
+
+    class Connection:
+        def close(self):
+            closed.append(True)
+
+    session = WebsocketSession(connection=Connection())
+
+    session.reset()
+
+    assert closed == [True]
+    assert session.connection is None
+
+
+def test_model_client_close_cached_websocket_session_closes_cached_connection():
+    # Rust source contract:
+    # codex-rs/core/src/client.rs drops cached websocket state when the window
+    # generation changes or websocket fallback disables the transport.
+    closed = []
+
+    class Connection:
+        def close(self):
+            closed.append(True)
+
+    client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+    client.store_cached_websocket_session(WebsocketSession(connection=Connection()))
+
+    client.close_cached_websocket_session()
+
+    assert closed == [True]
+    assert client.state.cached_websocket_session.connection is None
+
+
 def test_sampling_request_runtime_hook_adapter_summarizes_apply_event_plan_without_callback():
     plan = SamplingStreamEventApplyPlan(
         event_type="completed",
@@ -1206,6 +1244,72 @@ def test_sampling_request_runtime_hook_adapter_applies_output_item_done_to_state
     assert state_snapshot["output_result"] is output_result
     assert state_snapshot["state_after_output_result"] is state_after
     assert state_snapshot["mailbox_preemption_plan"] is mailbox_preemption
+
+
+def test_sampling_request_runtime_hook_adapter_emits_done_only_assistant_item_completed():
+    # Rust source: codex-core/src/session/turn.rs::ResponseEvent::OutputItemDone
+    # Contract: handle_output_item_done emits the completed assistant turn item
+    # even when the stream did not contain output_text.delta events.
+    state = SamplingRuntimeEventApplicationState()
+    adapter = SamplingRequestRuntimeHookAdapter(event_application_state=state)
+    assistant_item = ResponseItem.message(
+        "assistant",
+        (ContentItem.output_text("done-only answer"),),
+        id="msg-done-only",
+    )
+    plan = SamplingStreamEventApplyPlan(
+        event_type="response.output_item.done",
+        output_item_done_apply_plan=SamplingOutputItemDoneApplyPlan(
+            transition_plan=SamplingOutputItemDoneTransitionPlan(thread_id="thread-1", turn_id="turn-1"),
+            completed_item=assistant_item,
+            output_result=OutputItemResult(last_agent_message="done-only answer"),
+            state_after_output_result=SamplingOutputState(last_agent_message="done-only answer"),
+        ),
+    )
+
+    result = adapter.apply_event_plan({"type": "apply_event_plan", "plan": plan})
+
+    emitted = result["state"]["emitted_stream_events"]
+    assert emitted[-1]["type"] == "item_completed"
+    assert emitted[-1]["thread_id"] == "thread-1"
+    assert emitted[-1]["turn_id"] == "turn-1"
+    assert emitted[-1]["item"]["type"] == "AgentMessage"
+    assert emitted[-1]["item"]["content"][0]["text"] == "done-only answer"
+
+
+def test_sampling_request_runtime_hook_adapter_does_not_duplicate_streamed_assistant_done():
+    # Rust source: codex-core/src/session/turn.rs flushes an active streamed
+    # assistant item before handling OutputItemDone; Python should not expose a
+    # second visible assistant answer when deltas already rendered this item.
+    state = SamplingRuntimeEventApplicationState(
+        assistant_text_deltas=(
+            {
+                "item_id": "msg-streamed",
+                "visible_text_delta": "already streamed",
+                "event_to_emit": {"type": "agent_message_content_delta"},
+            },
+        )
+    )
+    adapter = SamplingRequestRuntimeHookAdapter(event_application_state=state)
+    assistant_item = ResponseItem.message(
+        "assistant",
+        (ContentItem.output_text("already streamed"),),
+        id="msg-streamed",
+    )
+    plan = SamplingStreamEventApplyPlan(
+        event_type="response.output_item.done",
+        output_item_done_apply_plan=SamplingOutputItemDoneApplyPlan(
+            transition_plan=SamplingOutputItemDoneTransitionPlan(thread_id="thread-1", turn_id="turn-1"),
+            completed_item=assistant_item,
+            output_result=OutputItemResult(last_agent_message="already streamed"),
+            state_after_output_result=SamplingOutputState(last_agent_message="already streamed"),
+        ),
+    )
+
+    result = adapter.apply_event_plan({"type": "apply_event_plan", "plan": plan})
+
+    emitted = result["state"]["emitted_stream_events"]
+    assert all(event.get("type") != "item_completed" for event in emitted)
 
 
 def test_plan_mode_uses_contributed_turn_item_for_last_agent_message():

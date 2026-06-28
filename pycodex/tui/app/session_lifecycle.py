@@ -97,7 +97,7 @@ def _agent_name(entry: Any, is_primary: bool = False) -> str:
     return "Primary" if is_primary else "Agent"
 
 
-async def open_agent_picker(
+def open_agent_picker_plan(
     navigation_entries: List[Any],
     active_thread_id: Optional[Any] = None,
     primary_thread_id: Optional[Any] = None,
@@ -123,6 +123,20 @@ async def open_agent_picker(
             )
         )
     return SessionLifecyclePlan(action="show_agent_picker", items=tuple(items))
+
+
+async def open_agent_picker(
+    navigation_entries: List[Any],
+    active_thread_id: Optional[Any] = None,
+    primary_thread_id: Optional[Any] = None,
+    collab_enabled: bool = True,
+) -> SessionLifecyclePlan:
+    return open_agent_picker_plan(
+        navigation_entries,
+        active_thread_id=active_thread_id,
+        primary_thread_id=primary_thread_id,
+        collab_enabled=collab_enabled,
+    )
 
 
 async def refresh_agent_picker_thread_liveness(thread_id: Any, existing_entry: Any = None, read_result: Any = None, read_error: Any = None, has_replay_channel: bool = False) -> SessionLifecyclePlan:
@@ -209,6 +223,7 @@ __all__ = [
     "closed_state_for_thread_read_error",
     "is_terminal_thread_read_error",
     "open_agent_picker",
+    "open_agent_picker_plan",
     "refresh_agent_picker_thread_liveness",
     "resume_target_session",
     "select_agent_thread",

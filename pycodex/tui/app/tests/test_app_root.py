@@ -19,12 +19,16 @@ from pycodex.tui.app import (
 
 def test_app_root_helpers_match_rust_module_contracts(tmp_path):
     # Rust: codex-tui::app root helpers.
+    rollout_path = tmp_path / "turns.jsonl"
+    rollout_path.write_text("{}\n", encoding="utf-8")
     assert collab_receiver_thread_ids([{"thread_id": "a"}, {"id": "b"}, {}]) == {"a", "b"}
     assert default_exec_approval_decisions()["approved"] == "approved"
     assert AutoReviewMode("workspace").permission_profile() == "workspace-write"
     assert managed_filesystem_sandbox_is_restricted({"sandbox_mode": "read-only"})
     assert not managed_filesystem_sandbox_is_restricted({"sandbox_mode": "danger-full-access"})
-    assert rollout_path_is_resumable("turns.jsonl")
+    assert rollout_path_is_resumable(rollout_path)
+    assert not rollout_path_is_resumable(tmp_path / "missing.jsonl")
+    assert not rollout_path_is_resumable(tmp_path)
     assert errors_for_cwd(tmp_path) == []
 
 

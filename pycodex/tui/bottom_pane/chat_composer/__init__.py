@@ -173,10 +173,13 @@ class ChatComposer:
             kwargs.pop("handlers", {})
         )
         self.dispatch_log: list[str] = []
+        self.errors: list[str] = []
         self.sync_count = 0
         self.reset_vim_count = 0
         self.render_log: list[tuple[str, Any, str | None, int]] = []
         self._text = str(kwargs.pop("text", ""))
+        self.text_elements = list(kwargs.pop("text_elements", []))
+        self.pending_pastes: list[tuple[str, str]] = list(kwargs.pop("pending_pastes", []))
 
     @classmethod
     def new_with_config(cls, *args: Any, config: ChatComposerConfig | None = None, **kwargs: Any) -> "ChatComposer":
@@ -200,6 +203,9 @@ class ChatComposer:
             "mentionv2": "mentions_v2_popup",
             "mention_v2": "mentions_v2_popup",
         }.get(self.active_popup, "without_popup")
+        if target == "without_popup" and self.active_popup not in {"none", "", "without_popup"}:
+            self.dispatch_log.append(self.active_popup)
+            return (InputResult.None_(), False)
         result = self._dispatch(target, event)
         self.reset_vim_mode_after_successful_dispatch(result[0])
         self.sync_popups()
@@ -270,15 +276,131 @@ class ChatComposer:
             if key_event.code.lower() == "char" and key_event.char is not None:
                 self._text += key_event.char
                 return (InputResult.None_(), True)
-            if key_event.code.lower() == "enter" and self._text.strip():
-                text = self._text
+            if key_event.code.lower() == "enter" and _has_modifier(key_event, "shift"):
+                self._text += "\n"
+                return (InputResult.None_(), True)
+            if key_event.code.lower() == "enter" and not key_event.modifiers:
+                prepared = self.prepare_submission_text(record_history=True)
+                if prepared is None:
+                    return (InputResult.None_(), bool(self.errors))
+                text, text_elements = prepared
                 self._text = ""
-                return (InputResult.Submitted(text), True)
+                self.pending_pastes.clear()
+                return (InputResult.Submitted(text, text_elements), True)
         return (InputResult.None_(), False)
+
+    def current_text(self) -> str:
+        return self._text
+
+    def set_text_content(
+        self,
+        text: str,
+        text_elements: list[Any] | None = None,
+        local_image_paths: list[Any] | None = None,
+    ) -> None:
+        self._text = str(text)
+        self.text_elements = list(text_elements or [])
+
+    def set_remote_image_urls(self, urls: list[str]) -> None:
+        self.remote_image_urls = list(urls)
+
+    def take_remote_image_urls(self) -> list[str]:
+        urls = self.remote_image_urls
+        self.remote_image_urls = []
+        return urls
+
+    def remote_image_urls_value(self) -> list[str]:
+        return list(self.remote_image_urls)
+
+    def set_pending_pastes(self, pending_pastes: list[tuple[str, str]]) -> None:
+        self.pending_pastes = list(pending_pastes)
+
+    def pending_pastes_value(self) -> list[tuple[str, str]]:
+        return list(self.pending_pastes)
+
+    def handle_paste(self, pasted: str) -> bool:
+        if not self.input_enabled:
+            return False
+        normalized = _normalize_pasted_text(str(pasted))
+        if not normalized:
+            return False
+        if len(normalized) > LARGE_PASTE_CHAR_THRESHOLD:
+            placeholder = self.next_large_paste_placeholder(len(normalized))
+            self._text += placeholder
+            self.text_elements.append({"range": (len(self._text) - len(placeholder), len(self._text)), "placeholder": placeholder})
+            self.pending_pastes.append((placeholder, normalized))
+        else:
+            self._text += normalized
+        return True
+
+    def next_large_paste_placeholder(self, char_count: int) -> str:
+        base = f"[Pasted Content {int(char_count)} chars]"
+        used = {placeholder for placeholder, _payload in self.pending_pastes}
+        if base not in used:
+            return base
+        suffix = 2
+        while f"{base} #{suffix}" in used:
+            suffix += 1
+        return f"{base} #{suffix}"
+
+    def current_text_with_pending(self) -> str:
+        expanded, _elements = expand_pending_pastes(self._text, self.text_elements, self.pending_pastes)
+        return expanded
+
+    def prepare_submission_text(self, record_history: bool = True) -> tuple[str, list[Any]] | None:
+        expanded, elements = expand_pending_pastes(self._text, self.text_elements, self.pending_pastes)
+        trimmed, elements = _trim_and_rebase_elements(expanded, elements)
+        if not trimmed and not self.remote_image_urls:
+            return None
+        actual_chars = len(trimmed)
+        if actual_chars > MAX_USER_INPUT_TEXT_CHARS:
+            self.errors.append(user_input_too_large_message(actual_chars))
+            return None
+        return trimmed, elements
+
+
+def expand_pending_pastes(
+    text: str,
+    text_elements: list[Any],
+    pending_pastes: list[tuple[str, str]],
+) -> tuple[str, list[Any]]:
+    expanded = str(text)
+    rebuilt_elements = list(text_elements or [])
+    for placeholder, payload in pending_pastes:
+        expanded = expanded.replace(placeholder, payload, 1)
+    return expanded, rebuilt_elements
+
+
+def _trim_and_rebase_elements(text: str, elements: list[Any]) -> tuple[str, list[Any]]:
+    left_trimmed = len(text) - len(text.lstrip())
+    trimmed = text.strip()
+    if not left_trimmed:
+        return trimmed, elements
+    rebased: list[Any] = []
+    for element in elements:
+        if isinstance(element, dict) and "range" in element:
+            start, end = element["range"]
+            new_start = max(0, int(start) - left_trimmed)
+            new_end = max(new_start, int(end) - left_trimmed)
+            updated = dict(element)
+            updated["range"] = (new_start, new_end)
+            rebased.append(updated)
+        else:
+            rebased.append(element)
+    return trimmed, rebased
+
+
+def _normalize_pasted_text(value: str) -> str:
+    return value.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _binding_key(item: KeyEvent | dict[str, Any] | str) -> tuple[str, tuple[str, ...], str | None]:
     return _coerce_key_event(item).binding_key()
+
+
+def _has_modifier(event: KeyEvent, modifier: str) -> bool:
+    expected = modifier.lower()
+    return any(str(value).lower() == expected for value in event.modifiers)
 
 
 def _coerce_key_event(event: KeyEvent | dict[str, Any] | str, **kwargs: Any) -> KeyEvent:
@@ -315,6 +437,7 @@ __all__ = [
     "MAX_USER_INPUT_TEXT_CHARS",
     "QueuedInputAction",
     "RUST_MODULE",
+    "expand_pending_pastes",
     "plan_mode_nudge_line",
     "user_input_too_large_message",
 ]

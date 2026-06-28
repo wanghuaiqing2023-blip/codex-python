@@ -1,7 +1,9 @@
+import gc
 import sys
 import threading
 import time
 import unittest
+import warnings
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -50,6 +52,8 @@ from pycodex.core.unified_exec import (
     NETWORK_ACCESS_DENIED_MESSAGE,
     ExecServerEnvConfig,
     UnifiedExecRemoteProcessModel,
+    _cancellation_token_is_cancelled,
+    _token_cancelled,
     exec_server_env_for_request,
     exec_server_params_for_request,
     network_denial_message_for_session,
@@ -860,6 +864,47 @@ class FakeUnifiedExecProcess:
 
     def terminate(self) -> None:
         self.terminated = True
+
+
+class CoreUnifiedExecCancellationTokenTests(unittest.TestCase):
+    def test_sync_poll_does_not_call_async_cancelled_waiter(self) -> None:
+        # Rust source: codex-rs/core/src/unified_exec/process_manager.rs.
+        # Contract: cancellation polling and async cancellation waiting are separate
+        # channels; a synchronous poll must not consume an async waiter.
+        class AsyncOnlyToken:
+            async def cancelled(self) -> None:
+                return None
+
+        token = AsyncOnlyToken()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", RuntimeWarning)
+            self.assertFalse(_cancellation_token_is_cancelled(token))
+            self.assertFalse(_token_cancelled(token))
+            gc.collect()
+
+        self.assertEqual(
+            [str(warning.message) for warning in caught if issubclass(warning.category, RuntimeWarning)],
+            [],
+        )
+
+    def test_sync_poll_prefers_is_cancelled_over_async_waiter(self) -> None:
+        # Rust source: codex-rs/core/src/unified_exec/process_manager.rs.
+        # Contract: synchronous cancellation checks use the immediate cancellation
+        # state even when the token also exposes an async waiter.
+        class Token:
+            def __init__(self, cancelled: bool) -> None:
+                self._cancelled = cancelled
+
+            def is_cancelled(self) -> bool:
+                return self._cancelled
+
+            async def cancelled(self) -> None:
+                return None
+
+        self.assertFalse(_cancellation_token_is_cancelled(Token(False)))
+        self.assertFalse(_token_cancelled(Token(False)))
+        self.assertTrue(_cancellation_token_is_cancelled(Token(True)))
+        self.assertTrue(_token_cancelled(Token(True)))
 
 
 if __name__ == "__main__":

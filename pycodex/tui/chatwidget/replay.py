@@ -195,7 +195,7 @@ def handle_thread_item(
             "on_agent_message_item_completed",
             AgentMessageItem(
                 id=_get(item, "id", None),
-                content=({"type": "Text", "text": _get(item, "text")},),
+                content=_agent_message_content(item),
                 phase=_get(item, "phase", None),
                 memory_citation=_convert_memory_citation(_get(item, "memory_citation", None)),
             ),
@@ -264,6 +264,16 @@ def _coerce_turn(turn: Union[Turn, Mapping[str, Any], Any]) -> Turn:
         completed_at=_get(turn, "completed_at", None),
         duration_ms=_get(turn, "duration_ms", None),
     )
+
+
+def _agent_message_content(item: Union[Mapping[str, Any], Any]) -> Tuple[Mapping[str, Any], ...]:
+    content = _get(item, "content", None)
+    if content is not None:
+        return tuple(
+            part if isinstance(part, Mapping) else {"type": _get(part, "type", "Text"), "text": _get(part, "text", "")}
+            for part in (content or ())
+        )
+    return ({"type": "Text", "text": _get(item, "text")},)
 
 
 def _call(target: Any, method_name: str, *args: Any) -> Any:
