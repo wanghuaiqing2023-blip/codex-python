@@ -386,9 +386,9 @@ class ChatComposerHistory:
         while 0 <= current < self.total_entries():
             entry = self.entry_at_cached_offset(current)
             if entry is None:
-                self._request_persistent_offset(current, app_event_tx)
                 if self.search_state is not None:
                     self.search_state.awaiting = PendingHistorySearch(current, direction, boundary_if_exhausted)
+                self._request_persistent_offset(current, app_event_tx)
                 return HistorySearchResult.PENDING
             if self.search_matches(entry) and self.search_result_is_unique(entry):
                 return self.search_match(current, entry)

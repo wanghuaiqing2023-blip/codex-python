@@ -60,7 +60,7 @@ from pycodex.rollout import (
 from pycodex.exec import app_server_control_socket_path
 from pycodex.core.session.turn.runtime import UserTurnSamplingResult
 from pycodex.protocol import AskForApproval, ContentItem, ProfileV2Name, ResponseItem, SandboxMode
-from pycodex.tui.app.runtime import ExecFunctionActiveThreadRuntime
+from pycodex.tui.app.runtime import ExecFunctionActiveThreadRuntime, TuiAppRuntime
 
 
 class TopLevelCliParserTests(unittest.TestCase):
@@ -11996,17 +11996,13 @@ class TopLevelCliParserTests(unittest.TestCase):
         with patch.dict(os.environ, {"TERM": "xterm-256color"}):
             with patch("pycodex.cli.parser._build_tui_core_active_thread_runtime", return_value=runtime):
                 with patch("pycodex.tui.textual_runtime.run_textual_tui", return_value=0) as run_textual:
-                    with patch(
-                        "pycodex.tui.run_terminal_tui",
-                        side_effect=AssertionError("TTY product path must not enter legacy terminal renderer"),
-                    ):
-                        code = main(
-                            ["--no-alt-screen"],
-                            stdout=stdout,
-                            stderr=stderr,
-                            stdin=TtyInput("/quit\n"),
-                            stdin_is_terminal=True,
-                        )
+                    code = main(
+                        ["--no-alt-screen"],
+                        stdout=stdout,
+                        stderr=stderr,
+                        stdin=TtyInput("/quit\n"),
+                        stdin_is_terminal=True,
+                    )
 
         self.assertEqual(code, 0)
         run_textual.assert_called_once_with(active_thread_runtime=runtime, stdout=stdout)
@@ -12827,17 +12823,13 @@ class TopLevelCliParserTests(unittest.TestCase):
         with patch.dict(os.environ, {"TERM": "xterm-256color"}):
             with patch("pycodex.cli.parser._build_tui_core_active_thread_runtime", return_value=runtime):
                 with patch("pycodex.tui.textual_runtime.run_textual_tui", return_value=0) as run_textual:
-                    with patch(
-                        "pycodex.tui.run_terminal_tui",
-                        side_effect=AssertionError("resume TTY product path must not enter legacy terminal renderer"),
-                    ):
-                        code = main(
-                            ["resume", "--last"],
-                            stdout=stdout,
-                            stderr=stderr,
-                            stdin=TtyInput("continue\n/quit\n"),
-                            stdin_is_terminal=True,
-                        )
+                    code = main(
+                        ["resume", "--last"],
+                        stdout=stdout,
+                        stderr=stderr,
+                        stdin=TtyInput("continue\n/quit\n"),
+                        stdin_is_terminal=True,
+                    )
 
         self.assertEqual(code, 0)
         self.assertIn("resume request parsed with session_id=None, last=True, all=False, include_non_interactive=False.", stderr.getvalue())
@@ -12870,20 +12862,53 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertEqual(run_noninteractive.call_args.kwargs["stdin"], "continue from stdin\n")
         self.assertFalse(run_noninteractive.call_args.kwargs["stdin_is_terminal"])
 
-    def test_main_fork_with_tui_fallback_runs_as_noop(self):
+    def test_main_fork_routes_to_textual_tui_startup(self):
         stderr = io.StringIO()
-        previous = os.environ.get("PYCODEX_TUI_FALLBACK")
-        os.environ["PYCODEX_TUI_FALLBACK"] = "1"
-        try:
+        with patch("pycodex.cli.parser._run_tui", return_value=13) as run_tui:
             code = main(["fork", "abc"], stderr=stderr)
-        finally:
-            if previous is None:
-                os.environ.pop("PYCODEX_TUI_FALLBACK", None)
-            else:
-                os.environ["PYCODEX_TUI_FALLBACK"] = previous
+
+        self.assertEqual(code, 13)
+        run_tui.assert_called_once()
+        self.assertIn("fork request parsed with session_id='abc'", stderr.getvalue())
+        self.assertNotIn("non-interactive fallback mode", stderr.getvalue())
+
+    def test_main_fork_without_id_enters_textual_fork_picker_startup(self):
+        # Rust source/test contract:
+        # - codex-rs/cli/src/main.rs::finalize_fork_interactive sets
+        #   fork_picker when `codex fork` has no session id and no --last.
+        # - Rust test: fork_picker_logic_none_and_not_last.
+        class TtyInput(io.StringIO):
+            def isatty(self):
+                return True
+
+        class TtyOutput(io.StringIO):
+            def isatty(self):
+                return True
+
+        stdout = TtyOutput()
+        stderr = io.StringIO()
+        runtime = ExecFunctionActiveThreadRuntime(lambda _prompt: (0, "unused"))
+
+        with patch.dict(os.environ, {"TERM": "xterm-256color"}):
+            with patch("pycodex.cli.parser._build_tui_core_active_thread_runtime", return_value=runtime):
+                with patch("pycodex.tui.textual_runtime.run_textual_tui", return_value=0) as run_textual:
+                    code = main(
+                        ["fork"],
+                        stdout=stdout,
+                        stderr=stderr,
+                        stdin=TtyInput("/quit\n"),
+                        stdin_is_terminal=True,
+                    )
 
         self.assertEqual(code, 0)
-        self.assertIn("fork accepted and running in non-interactive fallback mode.", stderr.getvalue())
+        called_runtime = run_textual.call_args.kwargs["active_thread_runtime"]
+        self.assertIsInstance(called_runtime, TuiAppRuntime)
+        self.assertIs(called_runtime.active_thread_runtime, runtime)
+        self.assertEqual(called_runtime.startup_session_action, "fork")
+        self.assertIsNone(called_runtime.startup_session_id)
+        self.assertFalse(called_runtime.startup_session_last)
+        self.assertFalse(called_runtime.startup_session_show_all)
+        self.assertIn("fork request parsed with session_id=None, last=False, all=False.", stderr.getvalue())
 
     def test_main_fork_with_exec_fallback_uses_noninteractive_fork_exec(self):
         stdout = io.StringIO()

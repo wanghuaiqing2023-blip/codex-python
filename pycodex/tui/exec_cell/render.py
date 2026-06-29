@@ -265,7 +265,13 @@ def command_display_lines(cell: ExecCell, width: int) -> list[Line]:
         raise ValueError("Expected exactly one call in a command display cell")
     call = cell.calls[0]
     success = None if call.output is None else call.output.exit_code == 0
-    bullet = Span("✓", GREEN_BOLD_STYLE) if success is True else Span("✗", RED_BOLD_STYLE) if success is False else activity_marker(call.start_time, cell.animations_enabled())
+    bullet = (
+        Span("•", GREEN_BOLD_STYLE)
+        if success is True
+        else Span("•", RED_BOLD_STYLE)
+        if success is False
+        else activity_marker(call.start_time, cell.animations_enabled())
+    )
     is_interaction = call.is_unified_exec_interaction()
     title = "" if is_interaction else "Running" if cell.is_active() else "You ran" if call.is_user_shell_command() else "Ran"
     command_text = format_unified_exec_interaction(call.command, call.interaction_input) if is_interaction else _strip_bash_lc(call.command)

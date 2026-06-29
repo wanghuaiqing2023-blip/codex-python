@@ -108,6 +108,13 @@ def test_get_tooltip_prefers_announcement_then_plan_specific_paths() -> None:
     assert get_tooltip(None, rng=random.Random(1), announcement_text=None) == OTHER_TOOLTIP_NON_MAC
 
 
+def test_free_go_tooltip_matches_rust_text() -> None:
+    # Rust source contract:
+    # codex-tui/src/tooltips.rs::FREE_GO_TOOLTIP uses an en dash and curly
+    # apostrophe, not mojibake replacement text.
+    assert FREE_GO_TOOLTIP == "*New* For a limited time, Codex is included in your plan for free – let’s build together."
+
+
 def test_pick_paid_tooltip_suppresses_fast_when_enabled() -> None:
     assert pick_paid_tooltip(random.Random(1), True) is not FAST_TOOLTIP
 

@@ -6,11 +6,9 @@ Rust evidence:
 - ``codex/codex-rs/tui/src/app/event_dispatch.rs`` applies model update app
   events before the footer/status surfaces render them.
 - ``codex/codex-rs/cli/src/main.rs::run_interactive_tui`` dispatches
-  interactive sessions into ``codex_tui::run_main`` rather than a second
-  line-mode renderer.
+  interactive sessions into ``codex_tui::run_main``.
 
-The old Python ``run_terminal_tui`` projection has been removed.  This file
-keeps only the product-neutral runtime/status assertions that still describe
+This file keeps only product-neutral runtime/status assertions that describe
 the Textual-backed TUI boundary.
 """
 
@@ -181,9 +179,6 @@ def test_cli_tui_uses_text_stdin_for_interactive_textual_terminal(monkeypatch: p
 
     monkeypatch.setattr(sys, "stdin", fake_text_stdin)
     monkeypatch.setattr(cli_parser, "_build_tui_core_active_thread_runtime", lambda parsed, *, stderr: object())
-    import pycodex.tui as tui
-
-    monkeypatch.setattr(tui, "run_terminal_tui", lambda **_kwargs: (_ for _ in ()).throw(AssertionError("product TTY must enter Textual")))
 
     import pycodex.tui.textual_runtime as textual_runtime
 

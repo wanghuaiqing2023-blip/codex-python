@@ -216,3 +216,67 @@ def test_picker_transcript_loading_overlay_and_footer_percent() -> None:
 
     state.handle_overlay_event(None, "esc")
     assert state.overlay is None
+
+
+def test_picker_search_space_backspace_and_toolbar_reload_match_rust_contract() -> None:
+    # Rust-derived contract:
+    # codex-tui::resume_picker::PickerState::handle_key treats a literal
+    # space as searchable text, backspace edits the search query, Tab moves
+    # toolbar focus to Sort, and Right/Ctrl-L reload with the new sort/filter.
+    # Rust tests:
+    # - resume_picker.rs::space_appends_to_search_query.
+    # - resume_picker.rs::toggle_sort_key_reloads_with_new_sort.
+    # - resume_picker.rs::default_filter_focus_arrows_reload_with_new_filter.
+    requests = []
+    state = PickerState(picker_loader=requests.append, show_all=False, filter_cwd=Path("/repo"))
+    state.ingest_page(PickerPage([Row(Path("/tmp/a.jsonl"), "a", "resize row", cwd=Path("/repo"))]))
+
+    state.set_query("resize")
+    asyncio.run(state.handle_key(" "))
+    asyncio.run(state.handle_key("r"))
+    assert state.query == "resize r"
+
+    asyncio.run(state.handle_key("backspace"))
+    assert state.query == "resize "
+
+    state.start_initial_load()
+    assert requests[-1].payload.sort_key == "UpdatedAt"
+    assert requests[-1].payload.cwd_filter == Path("/repo")
+
+    asyncio.run(state.handle_key("tab"))
+    asyncio.run(state.handle_key("right"))
+    assert state.sort_key == "CreatedAt"
+    assert requests[-1].payload.sort_key == "CreatedAt"
+
+    asyncio.run(state.handle_key("tab"))
+    asyncio.run(state.handle_key("right"))
+    assert requests[-1].payload.cwd_filter is None
+
+
+def test_picker_transcript_loading_consumes_input_except_ctrl_c() -> None:
+    # Rust-derived contract:
+    # codex-tui::resume_picker::PickerState::handle_key delegates to
+    # handle_transcript_loading_key while a transcript is pending; ordinary
+    # navigation/text does not mutate selection/search, while Ctrl-C exits.
+    # Rust tests:
+    # - resume_picker.rs::transcript_loading_consumes_picker_input.
+    # - resume_picker.rs::transcript_loading_still_allows_ctrl_c_exit.
+    state = PickerState(show_all=True)
+    state.ingest_page(
+        PickerPage(
+            [
+                Row(Path("/tmp/a.jsonl"), "a", "alpha"),
+                Row(Path("/tmp/b.jsonl"), "b", "beta"),
+            ]
+        )
+    )
+    state.begin_transcript_loading("a")
+
+    assert asyncio.run(state.handle_key("down")) is None
+    assert state.selected == 0
+    assert state.query == ""
+
+    assert asyncio.run(state.handle_key("x")) is None
+    assert state.query == ""
+
+    assert asyncio.run(state.handle_key("ctrl-c")) == SessionSelection.exit()

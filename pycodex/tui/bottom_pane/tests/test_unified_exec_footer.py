@@ -30,10 +30,10 @@ def test_summary_text_uses_singular_and_plural_grammar():
     footer = UnifiedExecFooter.new()
 
     footer.set_processes(["cmd 1"])
-    assert footer.summary_text() == "1 background terminal running 路 /ps to view 路 /stop to close"
+    assert footer.summary_text() == "1 background terminal running · /ps to view · /stop to close"
 
     footer.set_processes(["cmd 1", "cmd 2"])
-    assert footer.summary_text() == "2 background terminals running 路 /ps to view 路 /stop to close"
+    assert footer.summary_text() == "2 background terminals running · /ps to view · /stop to close"
 
 
 def test_render_lines_width_boundaries_and_dim_semantics():
@@ -45,7 +45,9 @@ def test_render_lines_width_boundaries_and_dim_semantics():
 
     line = footer.render_lines(50)[0]
     assert line.dim is True
-    assert line.text == "  1 background terminal running 路 /ps to view "
+    assert line.text == "  1 background terminal running · /ps to view · /s"
+    assert "\u8def" not in line.text
+    assert "\ufffd" not in line.text
 
 
 def test_many_sessions_summary_is_count_based_not_command_based():

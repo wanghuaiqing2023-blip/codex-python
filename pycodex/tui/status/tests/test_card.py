@@ -20,6 +20,7 @@ from pycodex.tui.status.card import (
     workspace_root_suffix,
 )
 from pycodex.tui.status.rate_limits import RateLimitSnapshotDisplay, RateLimitWindowDisplay, StatusRateLimitData
+from pycodex.protocol.config_types import AskForApproval
 
 
 def test_status_handle_finish_rate_limit_refresh_updates_shared_state() -> None:
@@ -90,6 +91,18 @@ def test_permission_label_helpers_match_rust_branches() -> None:
     assert status_permissions_label("workspace-write", "enabled", "on-request", "workspace", "on-request", " [/tmp/extra]") == "Workspace [/tmp/extra] (on-request)"
     assert status_permissions_label("danger-full-access", "disabled", "never", "none", "never") == "Full Access"
     assert status_permissions_label("custom", "enabled", "on-request", "workspace", "on-request", " [/tmp/extra]") == "Profile custom (workspace [/tmp/extra], on-request)"
+
+
+def test_permission_label_helpers_use_rust_enum_display_values() -> None:
+    # Rust crate/module/test:
+    # - codex-tui::status::card::status_permissions_label
+    # - status/tests.rs::status_permissions_read_only_uses_approval_policy_display
+    # Contract: AskForApproval is displayed through its kebab-case value, not
+    # its debug/type representation.
+    assert (
+        status_permissions_label("read-only", "enabled", AskForApproval.NEVER, "read-only", AskForApproval.NEVER)
+        == "Read Only (never)"
+    )
 
 
 def test_permission_label_helpers_cover_full_disk_managed_status_tests() -> None:

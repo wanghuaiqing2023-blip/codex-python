@@ -717,6 +717,9 @@ async def thread_session_state_from_thread_response(*args: Any, **kwargs: Any) -
         config,
         kwargs.get("mode", ThreadParamsMode.Remote),
     )
+    message_history = _get(thread, "message_history")
+    if message_history is None and config is not None:
+        message_history = await _message_history_metadata_from_config(config)
     return {
         "thread_id": thread_id,
         "session_id": _get(thread, "session_id"),
@@ -728,8 +731,23 @@ async def thread_session_state_from_thread_response(*args: Any, **kwargs: Any) -
         "runtime_workspace_roots": list(_get(thread, "runtime_workspace_roots", [])),
         "instruction_source_paths": list(_get(thread, "instruction_sources", [])),
         "permission_profile": permission_profile,
-        "message_history": _get(thread, "message_history"),
+        "message_history": message_history,
     }
+
+
+async def _message_history_metadata_from_config(config: Any) -> dict[str, int] | None:
+    codex_home = _get(config, "codex_home")
+    if codex_home is None:
+        return None
+    try:
+        from pycodex.config.types import History
+        from pycodex.message_history import HistoryConfig, history_metadata
+
+        history = _get(config, "history", None) or History()
+        log_id, entry_count = await history_metadata(HistoryConfig.new(Path(codex_home), history))
+    except Exception:
+        return None
+    return {"log_id": int(log_id), "entry_count": int(entry_count)}
 
 
 def app_server_rate_limit_snapshots(*args: Any, **kwargs: Any) -> Any:

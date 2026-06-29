@@ -8,6 +8,7 @@ event actions so callers can integrate them with a Python UI shell.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
@@ -166,39 +167,42 @@ def builtin_approval_presets(cwd: str = ".") -> List[ApprovalPreset]:
         ApprovalPreset(
             id="read-only",
             label="Read Only",
-            description="Can read files and answer questions.",
+            description="Codex can read files in the current workspace. Approval is required to edit files or access the internet.",
             approval=AskForApproval.ON_REQUEST,
             permission_profile=PermissionProfile.read_only(network_access=False),
-            active_permission_profile=ActivePermissionProfile("read-only", "Read Only"),
+            active_permission_profile=ActivePermissionProfile(":read-only", "Read Only"),
         ),
         ApprovalPreset(
             id="auto",
-            label="Agent",
-            description="Can edit files in the workspace. Runs commands in a sandbox.",
+            label="Default",
+            description="Codex can read and edit files in the current workspace, and run commands. Approval is required to access the internet or edit other files. (Identical to Agent mode)",
             approval=AskForApproval.ON_REQUEST,
             permission_profile=PermissionProfile.auto(cwd, network_access=False),
-            active_permission_profile=ActivePermissionProfile("auto", "Agent"),
+            active_permission_profile=ActivePermissionProfile(":workspace", "Default"),
         ),
         ApprovalPreset(
             id="full-access",
             label="Full Access",
-            description="Can edit files and run commands without sandbox restrictions.",
+            description="Codex can edit files outside this workspace and access the internet without asking for approval. Exercise caution when using.",
             approval=AskForApproval.NEVER,
             permission_profile=PermissionProfile.disabled(),
-            active_permission_profile=ActivePermissionProfile("full-access", "Full Access"),
+            active_permission_profile=ActivePermissionProfile(":danger-no-sandbox", "Full Access"),
         ),
     ]
 
 
-def open_approvals_popup(widget: Any, include_read_only: bool = False) -> SelectionViewParams:
+def open_approvals_popup(widget: Any, include_read_only: bool | None = None) -> SelectionViewParams:
     return open_permissions_popup(widget, include_read_only=include_read_only)
 
 
-def open_permissions_popup(widget: Any, include_read_only: bool = False) -> SelectionViewParams:
+def open_permissions_popup(widget: Any, include_read_only: bool | None = None) -> SelectionViewParams:
     """Build and show the generic permissions popup."""
 
     if bool(getattr(widget.config, "explicit_permission_profile_mode", False)):
         return _call(widget, "open_permission_profiles_popup")
+
+    if include_read_only is None:
+        include_read_only = os.name == "nt"
 
     current_approval = _approval(getattr(widget.config.permissions, "approval_policy", AskForApproval.ON_REQUEST))
     current_profile = widget.config.permissions.permission_profile
@@ -546,11 +550,44 @@ def action_summary(action: Any) -> str:
 
 
 def _approval(value: Union[AskForApproval, str]) -> AskForApproval:
-    return value if isinstance(value, AskForApproval) else AskForApproval(str(value))
+    if isinstance(value, AskForApproval):
+        return value
+    raw = getattr(value, "value", value)
+    text = str(raw)
+    if "." in text:
+        text = text.rsplit(".", 1)[-1]
+    key = text.strip().lower().replace("_", "-")
+    aliases = {
+        "never": AskForApproval.NEVER,
+        "on-request": AskForApproval.ON_REQUEST,
+        "onrequest": AskForApproval.ON_REQUEST,
+        "on-failure": AskForApproval.ON_FAILURE,
+        "onfailure": AskForApproval.ON_FAILURE,
+        "unless-trusted": AskForApproval.UNLESS_TRUSTED,
+        "unlesstrusted": AskForApproval.UNLESS_TRUSTED,
+    }
+    if key in aliases:
+        return aliases[key]
+    return AskForApproval(key)
 
 
 def _reviewer(value: Union[ApprovalsReviewer, str]) -> ApprovalsReviewer:
-    return value if isinstance(value, ApprovalsReviewer) else ApprovalsReviewer(str(value))
+    if isinstance(value, ApprovalsReviewer):
+        return value
+    raw = getattr(value, "value", value)
+    text = str(raw)
+    if "." in text:
+        text = text.rsplit(".", 1)[-1]
+    key = text.strip().lower().replace("_", "-")
+    aliases = {
+        "user": ApprovalsReviewer.USER,
+        "auto": ApprovalsReviewer.AUTO_REVIEW,
+        "auto-review": ApprovalsReviewer.AUTO_REVIEW,
+        "autoreview": ApprovalsReviewer.AUTO_REVIEW,
+    }
+    if key in aliases:
+        return aliases[key]
+    return ApprovalsReviewer(key)
 
 
 def _call(target: Any, method_name: str, *args: Any) -> Any:

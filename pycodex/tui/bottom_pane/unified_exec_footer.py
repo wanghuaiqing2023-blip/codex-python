@@ -52,7 +52,7 @@ class UnifiedExecFooter:
             return None
         count = len(self.processes)
         plural = "" if count == 1 else "s"
-        return f"{count} background terminal{plural} running 路 /ps to view 路 /stop to close"
+        return f"{count} background terminal{plural} running · /ps to view · /stop to close"
 
     def render_lines(self, width: int) -> List[FooterLine]:
         width = int(width)
@@ -63,15 +63,6 @@ class UnifiedExecFooter:
             return []
         message = f"  {summary}"
         truncated, _suffix, _taken = take_prefix_by_width(message, width)
-        for separator in ("\u8def", "璺?", "·"):
-            suffix_with_space = f" {separator} "
-            if truncated.endswith(suffix_with_space):
-                truncated = truncated[: -len(suffix_with_space)] + " "
-                break
-            suffix = f" {separator}"
-            if truncated.endswith(suffix):
-                truncated = truncated[: -len(suffix)] + " "
-                break
         return [FooterLine(truncated, dim=True)]
 
     def render(self, area: Any = None, buf: Any = None) -> List[FooterLine]:

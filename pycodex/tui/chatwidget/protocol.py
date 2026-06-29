@@ -18,6 +18,7 @@ from .._porting import RustTuiModule
 from ..token_usage import TokenUsage, TokenUsageInfo
 from .replay import AgentMessageItem, ThreadItemRenderSource, handle_thread_item as replay_handle_thread_item
 from .command_lifecycle import CommandLifecycleState
+from .constructor import PLACEHOLDERS, SIDE_PLACEHOLDERS
 from .mcp_startup import McpServerStatusUpdatedNotification, McpStartupModel
 from .status_surfaces import run_state_status_text
 from .status_state import TerminalTitleStatusKind
@@ -115,6 +116,11 @@ class ChatWidgetProtocolRuntime:
         self.thread_name: Optional[str] = None
         self.active_agent_label: Optional[str] = None
         self.selected_model: Optional[str] = None
+        # Rust ``chatwidget::constructor`` initializes these fields from
+        # ``PLACEHOLDERS``/``SIDE_PLACEHOLDERS`` and the bottom pane renders
+        # the active one as the composer placeholder.
+        self.normal_placeholder_text = PLACEHOLDERS[6]
+        self.side_placeholder_text = SIDE_PLACEHOLDERS[0]
         self.shutdown_complete = False
         self.immediate_exit_requested = False
         self.active_cell: Any | None = None
@@ -127,6 +133,13 @@ class ChatWidgetProtocolRuntime:
 
     def handle(self, notification: Union[ServerNotification, Mapping[str, Any], Any]) -> None:
         handle_server_notification(self, notification, None)
+
+    def handle_turn_completed_notification(
+        self,
+        notification: Any,
+        replay_kind: Optional[Union[ReplayKind, str]],
+    ) -> None:
+        handle_turn_completed_notification(self, notification, replay_kind)
 
     def on_task_started(self) -> None:
         self.turn.on_task_started()
@@ -170,6 +183,10 @@ class ChatWidgetProtocolRuntime:
 
     def on_committed_user_message(self, content: Any, from_replay: bool = False) -> None:
         self.last_rendered_user_message_display = content
+        if from_replay:
+            text = _user_message_display_text(content).strip()
+            if text:
+                self.streaming.history.append(("user_message", text))
         self.request_redraw()
 
     def add_diff_in_progress(self, diff: Any = None) -> None:
@@ -673,6 +690,33 @@ def _payload(value: Union[ServerNotification, Mapping[str, Any], Any]) -> Any:
         return value.payload
     payload = _get(value, "payload", None)
     return value if payload is None else payload
+
+
+def _user_message_display_text(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, Mapping):
+        text = _get(content, "text", None)
+        if text is not None:
+            return str(text)
+        nested = _get(content, "content", None)
+        if nested is not None and nested is not content:
+            return _user_message_display_text(nested)
+        return ""
+    if isinstance(content, (list, tuple)):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            else:
+                text = _get(item, "text", None)
+                if text is not None:
+                    parts.append(str(text))
+        return "".join(parts)
+    text = _get(content, "text", None)
+    return "" if text is None else str(text)
 
 
 def _get(value: Union[Mapping[str, Any], Any], key: str, default: Any = ...):

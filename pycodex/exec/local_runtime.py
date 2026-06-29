@@ -191,6 +191,7 @@ class LocalHttpModelInfo:
     slug: str
     base_instructions: str = "You are Codex, a coding agent."
     supports_reasoning_summaries: bool = False
+    default_reasoning_summary: Any = "auto"
     support_verbosity: bool = False
     apply_patch_tool_type: str | None = "freeform"
     input_modalities: tuple[str, ...] = ("text", "image")
@@ -1128,6 +1129,7 @@ def build_default_local_http_exec_runtime(
             model,
             base_url,
         ),
+        default_reasoning_summary=_config_or_default_model_reasoning_summary(config_toml, model),
         supports_parallel_tool_calls=_config_provider_supports_parallel_tool_calls(config_toml, provider_id),
     )
     client = ModelClient(
@@ -1298,6 +1300,36 @@ def _config_model_supports_reasoning_summaries(config_toml: Mapping[str, Any] | 
         return None
     value = config_toml.get("model_supports_reasoning_summaries")
     return value if isinstance(value, bool) else None
+
+
+def _config_or_default_model_reasoning_summary(config_toml: Mapping[str, Any] | None, model: str) -> Any:
+    if config_toml is not None:
+        configured = config_toml.get("model_reasoning_summary")
+        if isinstance(configured, str) and configured:
+            return configured
+    return _default_model_reasoning_summary(model)
+
+
+def _default_model_reasoning_summary(model: str) -> str:
+    try:
+        from pycodex.models_manager import load_remote_models_from_file
+
+        candidates = load_remote_models_from_file()
+    except Exception:
+        return "auto"
+    best = None
+    model_text = str(model)
+    for candidate in candidates:
+        slug = getattr(candidate, "slug", None)
+        if not isinstance(slug, str) or not model_text.startswith(slug):
+            continue
+        if best is None or len(slug) > len(str(getattr(best, "slug", ""))):
+            best = candidate
+    if best is None:
+        return "auto"
+    summary = getattr(best, "default_reasoning_summary", None)
+    value = getattr(summary, "value", summary)
+    return str(value) if value is not None else "auto"
 
 
 def _default_model_supports_reasoning_summaries(provider_id: str | None, model: str, base_url: str) -> bool:
@@ -1872,6 +1904,9 @@ def _in_memory_exec_session(
     environments: tuple[TurnEnvironmentSelection, ...] = (),
     event_observer: Any = None,
 ) -> InMemoryCodexSession:
+    reasoning_summary = config.model_reasoning_summary
+    if reasoning_summary is None:
+        reasoning_summary = getattr(model_info, "default_reasoning_summary", "auto")
     return InMemoryCodexSession(
         cwd=config.cwd,
         model_info=model_info,
@@ -1891,6 +1926,9 @@ def _in_memory_exec_session(
         _granted_session_permissions=config.granted_session_permissions,
         environments=environments,
         event_observer=event_observer,
+        reasoning_effort=config.reasoning_effort,
+        reasoning_summary=reasoning_summary,
+        service_tier=config.service_tier,
     )
 
 
@@ -1934,6 +1972,8 @@ async def run_exec_user_turn_http_sampling(
             opener=opener,
             built_tools=built_tools,
             effort=config.reasoning_effort,
+            summary=config.model_reasoning_summary,
+            service_tier=config.service_tier,
             output_schema=operation.output_schema,
         )
     except CodexErr as exc:
@@ -1979,6 +2019,8 @@ async def run_exec_user_turn_core_sampling(
             sampler,
             built_tools=built_tools,
             effort=config.reasoning_effort,
+            summary=config.model_reasoning_summary,
+            service_tier=config.service_tier,
             output_schema=operation.output_schema,
             max_tool_followups=max_tool_followups,
             cancellation_token=cancellation_token,
@@ -2150,6 +2192,8 @@ async def prewarm_exec_core_websocket_session(
         model_info,
         built_tools=built_tools,
         effort=config.reasoning_effort,
+        summary=config.model_reasoning_summary,
+        service_tier=config.service_tier,
     )
 
     def transport_config() -> Any:
@@ -2454,6 +2498,8 @@ async def run_exec_tool_output_http_sampling(
             opener=opener,
             built_tools=built_tools,
             effort=config.reasoning_effort,
+            summary=config.model_reasoning_summary,
+            service_tier=config.service_tier,
             output_schema=output_schema,
         )
     except CodexErr as exc:
@@ -5122,10 +5168,7 @@ def reasoning_turn_items_from_local_http_exec_result(result: UserTurnSamplingRes
 
 
 def _reasoning_summary_entries_from_item(item: Mapping[str, Any]) -> tuple[str, ...]:
-    entries = _text_entries_from_value(_first_present(item, "summary", "summary_text", "summaryText"))
-    if entries:
-        return entries
-    return _text_entries_from_value(_first_present(item, "text"))
+    return _text_entries_from_value(_first_present(item, "summary", "summary_text", "summaryText"))
 
 
 def _reasoning_raw_content_entries_from_item(item: Mapping[str, Any]) -> tuple[str, ...]:

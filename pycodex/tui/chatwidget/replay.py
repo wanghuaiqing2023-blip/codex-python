@@ -39,6 +39,7 @@ class ReplayKind(str, Enum):
     """Replay source used by Rust ``ReplayKind``."""
 
     THREAD_SNAPSHOT = "ThreadSnapshot"
+    RESUME_INITIAL_MESSAGES = "ResumeInitialMessages"
     INITIAL_HISTORY = "InitialHistory"
     OTHER = "Other"
 

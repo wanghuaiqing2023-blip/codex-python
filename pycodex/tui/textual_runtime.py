@@ -45,9 +45,28 @@ from .app.event_dispatch import SHUTDOWN_FIRST_EXIT_TIMEOUT
 from .app_event import AppEvent, KeymapEditIntent, RateLimitRefreshOrigin
 from .app.agent_navigation import AgentNavigationDirection, format_agent_picker_item_name
 from .app.runtime import ActiveThreadRuntime, TuiAppRuntime
+from .app.runtime import _run_coro_blocking as _runtime_run_coro_blocking
 from .app.session_lifecycle import open_agent_picker_plan
+from .app.input import EXTERNAL_EDITOR_HINT, MISSING_EDITOR_MESSAGE
 from .app_command import AppCommand
+from .app_backtrack import (
+    BacktrackState,
+    NO_PREVIOUS_MESSAGE_TO_EDIT,
+    agent_cell as backtrack_agent_cell,
+    apply_backtrack_rollback_state,
+    apply_backtrack_selection_index,
+    backtrack_selection,
+    begin_overlay_backtrack_preview_state,
+    close_transcript_overlay_state,
+    handle_backtrack_overlay_event_state,
+    info_cell as backtrack_info_cell,
+    next_backtrack_selection_index,
+    next_forward_backtrack_selection_index,
+    user_cell as backtrack_user_cell,
+    user_count as backtrack_user_count,
+)
 from .bottom_pane.command_popup import CommandPopup, CommandPopupFlags
+from .bottom_pane.slash_commands import ServiceTierCommand
 from .bottom_pane.chat_composer import ChatComposer
 from .bottom_pane.chat_composer.slash_input import selected_command_completion
 from .bottom_pane.chat_composer.history_search import (
@@ -55,8 +74,22 @@ from .bottom_pane.chat_composer.history_search import (
     HistorySearchStatus,
     history_search_footer_line,
 )
-from .bottom_pane.footer import FooterMode, ShortcutsState, shortcut_overlay_lines, toggle_shortcut_mode
-from .bottom_pane.chat_composer_history import ChatComposerHistory, HistoryEntry, HistorySearchDirection
+from .bottom_pane.footer import (
+    FooterKeyHints,
+    FooterMode,
+    KeyBinding as FooterKeyBinding,
+    ShortcutsState,
+    shortcut_overlay_lines,
+    status_line_right_indicator_line,
+    toggle_shortcut_mode,
+)
+from .bottom_pane.chat_composer_history import (
+    ChatComposerHistory,
+    HistoryEntry,
+    HistoryEntryResponse,
+    HistorySearchDirection,
+    HistorySearchResult,
+)
 from .bottom_pane.list_selection_view import SelectionItem, SelectionViewParams
 from .bottom_pane.title_setup import TerminalTitleItem
 from .chatwidget import (
@@ -69,6 +102,7 @@ from .chatwidget import (
 from .chatwidget.input_submission import UserInput as SubmissionUserInput
 from .collaboration_modes import plan_mask
 from .bottom_pane.status_line_setup import StatusLineItem
+from . import external_editor
 from .chatwidget.model_popups import (
     ModelPopupContext,
     ModelPopupEvent,
@@ -112,14 +146,29 @@ from .chatwidget.status_surfaces import (
     truncate_terminal_title_part,
 )
 from .resume_picker import (
+    BackgroundEvent,
+    PickerPage,
+    PickerState,
     Row as ResumePickerRow,
     SessionPickerAction,
     SessionSelection,
+    picker_footer_progress_label,
     row_from_app_server_thread,
+    sort_key_label,
 )
+from .resume_picker.transcript import RawReasoningVisibility, TranscriptCell, thread_to_transcript_cells
 from .get_git_diff import get_git_diff
 from .history_cell.exec import UnifiedExecProcessDetails, new_unified_exec_processes_output
-from .keymap import RuntimeKeymap, primary_binding
+from .history_cell.messages import new_reasoning_summary_block
+from .history_cell.session import SessionHeaderHistoryCell, has_yolo_permissions
+from .exec_cell.model import CommandOutput as ExecCellCommandOutput
+from .exec_cell.model import ExecCall as ExecCellCall
+from .exec_cell.model import ExecCell
+from .exec_cell.model import UNIFIED_EXEC_INTERACTION as EXEC_CELL_UNIFIED_EXEC_INTERACTION
+from .exec_cell.model import USER_SHELL as EXEC_CELL_USER_SHELL
+from .exec_cell.render import command_display_lines as exec_cell_command_display_lines
+from .exec_cell.render import render_line_text as render_exec_cell_line_text
+from .keymap import KeyBinding, RuntimeKeymap, primary_binding
 from . import keymap_setup
 from .keymap_setup.picker import (
     KeymapActionFilter as KeymapSetupActionFilter,
@@ -149,7 +198,7 @@ from .workspace_command import AppServerWorkspaceCommandRunner
 RUST_MODULE_CRATE = "codex-tui"
 RUST_MODULE = "tui::textual_runtime"
 RUST_SOURCE = "codex/codex-rs/tui/src/tui.rs"
-_TEXTUAL_DEFAULT_STATUS_LINE_ITEMS = (*DEFAULT_STATUS_LINE_ITEMS, "context-remaining")
+_TEXTUAL_DEFAULT_STATUS_LINE_ITEMS = tuple(DEFAULT_STATUS_LINE_ITEMS)
 
 _INIT_PROMPT = """Generate a file named AGENTS.md that serves as a contributor guide for this repository.
 Your goal is to produce a clear, concise, and well-structured document with descriptive headings and actionable explanations for each section.
@@ -206,6 +255,12 @@ def _textual_timing_trace(event: str, **fields: Any) -> None:
         pass
 
 
+def _plain_status_text(value: object) -> Text:
+    """Render status/footer strings as literal text, not Rich markup."""
+
+    return Text(str(value))
+
+
 def should_use_textual_tui(
     *,
     stdout: Any,
@@ -225,12 +280,16 @@ def should_use_textual_tui(
     return _is_tty(stdout) and _is_tty(stdin)
 
 
-def run_textual_tui(*, active_thread_runtime: ActiveThreadRuntime, stdout: Any | None = None) -> int:
+def run_textual_tui(*, active_thread_runtime: ActiveThreadRuntime | TuiAppRuntime, stdout: Any | None = None) -> int:
     """Run the Textual-backed interactive TUI product shell."""
 
     verify_textual_runtime()
-    app_runtime = TuiAppRuntime(active_thread_runtime=active_thread_runtime)
-    configure_app_runtime_thread_identity(app_runtime, active_thread_runtime)
+    if isinstance(active_thread_runtime, TuiAppRuntime):
+        app_runtime = active_thread_runtime
+        configure_app_runtime_thread_identity(app_runtime, app_runtime.active_thread_runtime)
+    else:
+        app_runtime = TuiAppRuntime(active_thread_runtime=active_thread_runtime)
+        configure_app_runtime_thread_identity(app_runtime, active_thread_runtime)
     app = PyCodexTextualApp(app_runtime)
     result = app.run()
     code = int(result or app.exit_code)
@@ -411,8 +470,6 @@ class PyCodexTextualApp(App[int]):
     BINDINGS = [
         ("ctrl+c", "interrupt_or_quit", "Interrupt"),
         ("escape", "interrupt_or_focus", "Interrupt"),
-        ("ctrl+t", "open_transcript", "Transcript"),
-        ("alt+r", "toggle_raw_output", "Raw"),
         ("ctrl+d", "quit", "Quit"),
     ]
 
@@ -440,40 +497,47 @@ class PyCodexTextualApp(App[int]):
         self._busy = False
         self._turn_started_at = 0.0
         self._prompt_history = ChatComposerHistory.new()
+        self._prompt_history_metadata: tuple[Any, int, int] | None = None
         self._queued_prompts: list[str] = []
         self._transcript_mode = False
+        self._backtrack_state = BacktrackState()
         self._active_selection: _TextualSelection | None = None
         self._active_selection_index = 0
+        self._suppress_selection_enter_until = 0.0
         self._review_custom_prompt_active = False
         self._managed_terminal_title: str | None = None
         self._invalid_status_line_warned = False
         self._invalid_terminal_title_warned = False
         self._notices_ready = False
+        self._session_header_configured = False
         self._shutdown_requested = False
         self.copy_to_clipboard = _copy_to_system_clipboard
         self._post_submit_composer_text: str | None = None
         self._rename_prompt_active = False
         self._shortcut_overlay_mode = FooterMode.COMPOSER_EMPTY
+        self._external_editor_thread: threading.Thread | None = None
 
     def compose(self) -> ComposeResult:
         yield Vertical(
-            Static(self._session_header_text(), id="session-header"),
+            Static(_plain_status_text(self._session_header_text()), id="session-header"),
             CodexTranscriptLog(id="transcript", wrap=True, highlight=False, markup=False, auto_scroll=True),
-            Static(self._startup_status_line_text(), id="status-line"),
+            Static(_plain_status_text(self._startup_status_line_text()), id="status-line"),
             Static("", id="slash-popup"),
-            Static("› Run /review on my current changes", id="composer-prompt"),
+            Static(_plain_status_text(self._composer_prompt_text()), id="composer-prompt"),
             CodexComposerTextArea(id="composer"),
         )
 
     def on_mount(self) -> None:
+        self._sync_composer_history_metadata_from_runtime()
         self._refresh_terminal_title(active_progress=False)
         self._notices_ready = True
         self._append_startup_notices()
+        self._set_status("Ready")
         self._composer().focus()
         self._pump_app_server_events()
         self.set_interval(0.1, self._pump_app_server_events)
         self.set_interval(1.0, self._tick_status)
-        self.set_timer(0.01, self._set_ready_after_startup_if_idle)
+        self.set_timer(0.01, self._apply_startup_session_action)
 
     def on_unmount(self) -> None:
         self._clear_managed_terminal_title()
@@ -521,6 +585,7 @@ class PyCodexTextualApp(App[int]):
                         )
                         return
                     if self._handle_local_slash_command(prompt):
+                        self._guard_selection_enter_from_submit()
                         self._clear_submission_state(composer)
                         return
             composer.clear_submission_state()
@@ -528,31 +593,64 @@ class PyCodexTextualApp(App[int]):
             self._append_system_notice("Queued follow-up inputs")
             return
         if self._handle_local_slash_command(prompt):
+            self._guard_selection_enter_from_submit()
             self._clear_submission_state(composer)
             return
         composer.clear_submission_state()
         self._prompt_history.record_local_submission(HistoryEntry.new(prompt))
+        append_history = getattr(self.app_runtime, "append_message_history_entry", None)
+        if callable(append_history):
+            append_history(prompt)
+            self._sync_composer_history_metadata_from_runtime()
         self._submit_prompt(prompt)
 
     def navigate_composer_history(self, composer: "CodexComposerTextArea", direction: str) -> bool:
+        self._sync_composer_history_metadata_from_runtime()
         text = composer.text
         cursor = composer.byte_cursor_offset()
         if not self._prompt_history.should_handle_navigation(text, cursor):
             return False
+        previous_cursor = self._prompt_history.history_cursor
         if direction == "older":
-            entry = self._prompt_history.navigate_up([])
+            entry = self._prompt_history.navigate_up(self._handle_history_lookup_event)
         else:
-            entry = self._prompt_history.navigate_down([])
+            entry = self._prompt_history.navigate_down(self._handle_history_lookup_event)
         if entry is None:
-            return False
+            return self._prompt_history.history_cursor != previous_cursor
         composer.apply_history_entry(entry)
         return True
 
     def begin_composer_history_search(self, composer: "CodexComposerTextArea") -> None:
+        self._sync_composer_history_metadata_from_runtime()
         composer.begin_history_search()
         self._set_history_search_status(composer)
 
     def update_composer_history_search(self, composer: "CodexComposerTextArea") -> None:
+        self._search_composer_history(
+            composer,
+            direction=HistorySearchDirection.OLDER,
+            restart=True,
+        )
+
+    def step_composer_history_search(
+        self,
+        composer: "CodexComposerTextArea",
+        direction: HistorySearchDirection,
+    ) -> None:
+        self._search_composer_history(
+            composer,
+            direction=direction,
+            restart=False,
+        )
+
+    def _search_composer_history(
+        self,
+        composer: "CodexComposerTextArea",
+        *,
+        direction: HistorySearchDirection,
+        restart: bool,
+    ) -> None:
+        self._sync_composer_history_metadata_from_runtime()
         session = composer.history_search
         if session is None:
             return
@@ -561,7 +659,7 @@ class PyCodexTextualApp(App[int]):
             composer.restore_history_search_original(keep_search=True, status=HistorySearchStatus.IDLE)
             self._set_history_search_status(composer)
             return
-        result = self._prompt_history.search(query, HistorySearchDirection.OLDER, True, [])
+        result = self._prompt_history.search(query, direction, restart, self._handle_history_lookup_event)
         status = _history_search_status_for_result(result)
         entry = getattr(result, "entry", None)
         if status is HistorySearchStatus.MATCH and entry is not None:
@@ -572,6 +670,96 @@ class PyCodexTextualApp(App[int]):
         else:
             composer.set_history_search_status(status)
         self._set_history_search_status(composer)
+
+    def _sync_composer_history_metadata_from_runtime(self) -> None:
+        metadata = getattr(self.app_runtime.chat_widget, "bottom_history_metadata", None)
+        if not metadata:
+            metadata = getattr(self.app_runtime, "message_history_metadata", None)
+        if metadata is None:
+            return
+        try:
+            thread_id, log_id, entry_count = metadata
+        except (TypeError, ValueError):
+            thread_id = _payload_field(metadata, "thread_id", self.app_runtime.current_displayed_thread_id())
+            history = _payload_field(metadata, "message_history", metadata)
+            log_id = _payload_field(history, "log_id", None)
+            entry_count = _payload_field(history, "entry_count", 0)
+        if thread_id is None or log_id is None:
+            return
+        try:
+            normalized = (thread_id, int(log_id), int(entry_count or 0))
+        except (TypeError, ValueError):
+            return
+        if normalized == self._prompt_history_metadata:
+            return
+        self._prompt_history.set_metadata(*normalized)
+        self._prompt_history_metadata = normalized
+
+    def _handle_history_lookup_event(self, event: Any) -> None:
+        if _payload_field(event, "type", None) != "LookupMessageHistoryEntry":
+            return
+        thread_id = _payload_field(event, "thread_id", None)
+        log_id = _payload_field(event, "log_id", None)
+        offset = _payload_field(event, "offset", None)
+        if thread_id is None or log_id is None or offset is None:
+            return
+        try:
+            log_id_int = int(log_id)
+            offset_int = int(offset)
+        except (TypeError, ValueError):
+            return
+        entry = self._lookup_message_history_entry(thread_id, log_id_int, offset_int)
+        response = self._prompt_history.on_entry_response(
+            log_id_int,
+            offset_int,
+            entry,
+            self._handle_history_lookup_event,
+        )
+        self._apply_history_entry_response(response)
+
+    def _lookup_message_history_entry(self, thread_id: Any, log_id: int, offset: int) -> str | None:
+        runtime = self.app_runtime.active_thread_runtime
+        for name in (
+            "lookup_message_history_entry",
+            "message_history_lookup",
+            "lookup_history_entry",
+        ):
+            lookup = getattr(runtime, name, None)
+            if not callable(lookup):
+                continue
+            for args in ((thread_id, log_id, offset), (log_id, offset), (offset,)):
+                try:
+                    result = lookup(*args)
+                except TypeError:
+                    continue
+                if hasattr(result, "__await__"):
+                    result = _runtime_run_coro_blocking(result)
+                return _coerce_history_entry_text(result)
+        return None
+
+    def _apply_history_entry_response(self, response: HistoryEntryResponse) -> bool:
+        composer = self._composer()
+        if response.kind == "Found" and response.entry is not None:
+            composer.apply_history_entry(response.entry)
+            return True
+        if response.kind == "Search" and response.search_result is not None:
+            return self._apply_history_search_result(composer, response.search_result)
+        return False
+
+    def _apply_history_search_result(self, composer: "CodexComposerTextArea", result: HistorySearchResult) -> bool:
+        status = _history_search_status_for_result(result)
+        entry = getattr(result, "entry", None)
+        if status is HistorySearchStatus.MATCH and entry is not None:
+            composer.apply_history_entry(entry)
+            composer.set_history_search_status(status)
+            self._set_history_search_status(composer)
+            return True
+        if status is HistorySearchStatus.NO_MATCH:
+            composer.restore_history_search_original(keep_search=True, status=status)
+        else:
+            composer.set_history_search_status(status)
+        self._set_history_search_status(composer)
+        return False
 
     def accept_composer_history_search(self, composer: "CodexComposerTextArea") -> bool:
         if composer.accept_history_search():
@@ -597,7 +785,7 @@ class PyCodexTextualApp(App[int]):
         popup = composer.sync_command_popup()
         widget = self.query_one("#slash-popup", Static)
         if popup is None:
-            widget.update("")
+            widget.update(_plain_status_text(""))
             return
         widget.update(_render_command_popup_text(popup))
 
@@ -606,7 +794,7 @@ class PyCodexTextualApp(App[int]):
             self._render_transcript_overlay_banner()
             return
         self._shortcut_overlay_mode = FooterMode.COMPOSER_EMPTY
-        self.query_one("#slash-popup", Static).update("")
+        self.query_one("#slash-popup", Static).update(_plain_status_text(""))
 
     def toggle_shortcut_overlay_from_composer(self, composer: "CodexComposerTextArea") -> bool:
         # Rust: bottom_pane::chat_composer::handle_shortcut_overlay_key only
@@ -625,22 +813,27 @@ class PyCodexTextualApp(App[int]):
         if next_mode is FooterMode.SHORTCUT_OVERLAY:
             self._render_shortcut_overlay()
         else:
-            self.query_one("#slash-popup", Static).update("")
+            self.query_one("#slash-popup", Static).update(_plain_status_text(""))
         return changed
 
     def _render_shortcut_overlay(self) -> None:
         self.query_one("#slash-popup", Static).update(
-            "\n".join(shortcut_overlay_lines(ShortcutsState()))
+            _plain_status_text("\n".join(shortcut_overlay_lines(ShortcutsState(key_hints=_footer_key_hints_for_runtime(self.app_runtime)))))
         )
 
     def _clear_shortcut_overlay(self) -> None:
         if self._shortcut_overlay_mode is FooterMode.SHORTCUT_OVERLAY:
             self._shortcut_overlay_mode = FooterMode.COMPOSER_EMPTY
-            self.query_one("#slash-popup", Static).update("")
+            self.query_one("#slash-popup", Static).update(_plain_status_text(""))
 
     def handle_selection_key(self, key: str) -> bool:
         if self._active_selection is None:
             return False
+        if key == "enter" and time.monotonic() < self._suppress_selection_enter_until:
+            self._suppress_selection_enter_until = 0.0
+            return True
+        if self._active_selection.kind in {"resume", "fork"} and isinstance(self._active_selection.context, PickerState):
+            return self._handle_resume_picker_key(self._active_selection, key)
         if key == "up":
             self._active_selection_index = max(self._active_selection_index - 1, 0)
             self._render_active_selection()
@@ -674,12 +867,22 @@ class PyCodexTextualApp(App[int]):
             return True
         return False
 
+    def _guard_selection_enter_from_submit(self) -> None:
+        if self._active_selection is None:
+            return
+        # Rust codex-tui routes Enter through ChatComposer first, yielding an
+        # InputResult::Submitted before the bottom-pane selection surface is
+        # active.  Textual can deliver the same physical Enter to the newly
+        # opened selection in the same event slice, so consume only that
+        # immediate echo and leave subsequent user Enter presses untouched.
+        self._suppress_selection_enter_until = time.monotonic() + 0.03
+
     def _set_history_search_status(self, composer: "CodexComposerTextArea") -> None:
         session = composer.history_search
         if session is None:
             self._set_status("Ready")
             return
-        self.query_one("#status-line", Static).update(history_search_footer_line(session).text)
+        self.query_one("#status-line", Static).update(_plain_status_text(history_search_footer_line(session).text))
 
     def _prepare_composer_submission(self, prompt: str) -> tuple[str, list[Any]] | None:
         composer = self._composer()
@@ -702,7 +905,7 @@ class PyCodexTextualApp(App[int]):
 
     def action_interrupt_or_focus(self) -> None:
         if self._transcript_mode:
-            self._focus_composer_from_transcript()
+            self._handle_transcript_pager_key("escape")
             return
         if self.cancel_composer_history_search(self._composer()):
             return
@@ -737,6 +940,98 @@ class PyCodexTextualApp(App[int]):
         enabled = not _raw_output_mode(self.app_runtime)
         self.app_runtime.apply_raw_output_mode(enabled)
         self._set_status(_raw_output_mode_notice(enabled))
+
+    def action_clear_terminal(self) -> None:
+        # Rust codex-tui::app::input handles keymap.app.clear_terminal through
+        # clear_terminal_ui + reset_app_ui_state_after_clear while idle. During
+        # an active task ChatWidget::can_run_ctrl_l_clear_now reports a local
+        # error and leaves the transcript intact.
+        if self._busy:
+            self._append_system_notice("Ctrl+L is disabled while a task is in progress.")
+            self._set_status("Working")
+            return
+        self._handle_clear_command()
+
+    def action_toggle_vim_mode(self) -> None:
+        # Rust codex-tui::app::input handles keymap.app.toggle_vim_mode by
+        # calling ChatWidget::toggle_vim_mode_and_notify before the key reaches
+        # the composer. Keep this aligned with the local /vim slash command.
+        self._handle_vim_command()
+
+    def action_copy_last_response(self) -> None:
+        # Rust codex-tui::chatwidget::interaction consumes the configured
+        # global.copy binding before normal composer input and calls
+        # ChatWidget::copy_last_agent_markdown.
+        if self._transcript_mode or self._active_selection is not None:
+            return
+        self._handle_copy_command()
+
+    def action_open_external_editor(self) -> None:
+        # Rust codex-tui::app::input requests the external editor first, then
+        # AppEvent::LaunchExternalEditor performs the terminal-restored launch
+        # after a frame. Textual keeps the same visible state transition and
+        # runs the already-ported external_editor helper off the UI thread.
+        if self._transcript_mode or self._active_selection is not None:
+            return
+        if self._external_editor_thread is not None and self._external_editor_thread.is_alive():
+            return
+        self._set_external_editor_state("Requested")
+        self._set_footer_hint_override([(EXTERNAL_EDITOR_HINT, "")])
+        self._set_status(EXTERNAL_EDITOR_HINT)
+        seed = self._composer().text
+        worker = threading.Thread(
+            target=self._external_editor_worker,
+            args=(seed,),
+            name="pycodex-external-editor",
+            daemon=True,
+        )
+        self._external_editor_thread = worker
+        worker.start()
+
+    def _external_editor_worker(self, seed: str) -> None:
+        try:
+            editor_cmd = external_editor.resolve_editor_command()
+            new_text = asyncio.run(external_editor.run_editor(seed, editor_cmd))
+        except external_editor.ExternalEditorError as exc:
+            raw = str(exc)
+            if raw == external_editor.EditorError.MISSING_EDITOR.value:
+                message = MISSING_EDITOR_MESSAGE
+            else:
+                message = f"Failed to open editor: {raw}"
+            self.call_from_thread(self._finish_external_editor, None, message)
+        except Exception as exc:
+            self.call_from_thread(self._finish_external_editor, None, f"Failed to open editor: {exc}")
+        else:
+            self.call_from_thread(self._finish_external_editor, str(new_text).rstrip(), None)
+
+    def _finish_external_editor(self, new_text: str | None, error_message: str | None) -> None:
+        self._set_external_editor_state("Closed")
+        self._set_footer_hint_override(None)
+        if error_message:
+            self._append_system_notice(error_message)
+            self._set_status("Ready")
+            return
+        if new_text is not None:
+            composer = self._composer()
+            composer.text = new_text
+            composer._move_cursor_to_end()
+            composer.focus()
+        self._set_status("Ready")
+
+    def _set_external_editor_state(self, state: str) -> None:
+        try:
+            setattr(self.app_runtime.chat_widget, "external_editor_state", state)
+        except Exception:
+            pass
+
+    def _set_footer_hint_override(self, items: list[tuple[str, str]] | None) -> None:
+        bottom_pane = getattr(getattr(self.app_runtime, "chat_widget", None), "bottom_pane", None)
+        setter = getattr(bottom_pane, "set_footer_hint_override", None)
+        if callable(setter):
+            try:
+                setter(items)
+            except Exception:
+                pass
 
     async def _on_key(self, event: Any) -> None:
         key = str(getattr(event, "key", "") or "")
@@ -785,6 +1080,66 @@ class PyCodexTextualApp(App[int]):
                 self._set_status("Ready")
                 self._composer().focus()
                 return
+        if not self._transcript_mode and _app_keymap_key_matches(
+            self.app_runtime,
+            key,
+            "open_transcript",
+            getattr(event, "character", None),
+        ):
+            event.stop()
+            event.prevent_default()
+            self.action_open_transcript()
+            return
+        if not self._transcript_mode and _app_keymap_key_matches(
+            self.app_runtime,
+            key,
+            "toggle_raw_output",
+            getattr(event, "character", None),
+        ):
+            event.stop()
+            event.prevent_default()
+            self.action_toggle_raw_output()
+            return
+        if not self._transcript_mode and _app_keymap_key_matches(
+            self.app_runtime,
+            key,
+            "open_external_editor",
+            getattr(event, "character", None),
+        ):
+            event.stop()
+            event.prevent_default()
+            self.action_open_external_editor()
+            return
+        if not self._transcript_mode and _app_keymap_key_matches(
+            self.app_runtime,
+            key,
+            "clear_terminal",
+            getattr(event, "character", None),
+        ):
+            event.stop()
+            event.prevent_default()
+            self.action_clear_terminal()
+            return
+        if not self._transcript_mode and _app_keymap_key_matches(
+            self.app_runtime,
+            key,
+            "copy",
+            getattr(event, "character", None),
+        ):
+            event.stop()
+            event.prevent_default()
+            self.action_copy_last_response()
+            return
+        if not self._transcript_mode and _app_keymap_key_matches(
+            self.app_runtime,
+            key,
+            "toggle_vim_mode",
+            getattr(event, "character", None),
+        ):
+            event.stop()
+            event.prevent_default()
+            self.action_toggle_vim_mode()
+            return
         if not self._transcript_mode:
             return
         if self._handle_transcript_pager_key(key):
@@ -797,7 +1152,9 @@ class PyCodexTextualApp(App[int]):
 
         transcript = self._transcript_log()
         normalized = key.replace("-", "_").replace("+", "_").lower()
-        if normalized in {"q", "escape", "ctrl_t"}:
+        if self._handle_transcript_backtrack_key(normalized):
+            return True
+        if normalized in {"q", "ctrl_t"}:
             self._focus_composer_from_transcript()
             return True
         handled = True
@@ -806,9 +1163,9 @@ class PyCodexTextualApp(App[int]):
         elif normalized in {"down", "j"}:
             transcript.scroll_relative(y=1, animate=False, force=True)
         elif normalized in {"pageup", "page_up", "ctrl_b"}:
-            transcript.scroll_page_up(animate=False, force=True)
+            _scroll_transcript_page(transcript, -1)
         elif normalized in {"pagedown", "page_down", "ctrl_f"}:
-            transcript.scroll_page_down(animate=False, force=True)
+            _scroll_transcript_page(transcript, 1)
         elif normalized == "ctrl_u":
             _scroll_transcript_half_page(transcript, -1)
         elif normalized == "ctrl_d":
@@ -823,7 +1180,112 @@ class PyCodexTextualApp(App[int]):
             self.set_timer(0.01, self._render_transcript_overlay_banner)
         return handled
 
+    def _handle_transcript_backtrack_key(self, normalized: str) -> bool:
+        event_code = {
+            "escape": "esc",
+            "esc": "esc",
+            "left": "left",
+            "right": "right",
+            "enter": "enter",
+        }.get(normalized)
+        if event_code is None:
+            return False
+        plan = handle_backtrack_overlay_event_state(
+            self._backtrack_state,
+            event_code=event_code,
+            event_kind="press",
+        )
+        if plan.action == "forward":
+            return False
+        if plan.action == "begin_preview":
+            self._begin_transcript_backtrack_preview()
+            return True
+        if plan.action == "step_backtrack":
+            self._step_transcript_backtrack_preview(-1)
+            return True
+        if plan.action == "step_forward":
+            self._step_transcript_backtrack_preview(1)
+            return True
+        if plan.action == "confirm":
+            self._confirm_transcript_backtrack_preview()
+            return True
+        return False
+
+    def _begin_transcript_backtrack_preview(self) -> None:
+        cells = self._backtrack_transcript_cells()
+        thread_id = self._current_thread_id_for_backtrack()
+        plan = begin_overlay_backtrack_preview_state(self._backtrack_state, thread_id, cells)
+        if plan.action == "no_target_close_overlay":
+            self._focus_composer_from_transcript()
+            self._append_system_notice(plan.info_message or NO_PREVIOUS_MESSAGE_TO_EDIT)
+            return
+        self._render_backtrack_preview_banner()
+        self._set_status("Backtrack: Enter edit; Esc/Left older; Right newer; q close")
+
+    def _step_transcript_backtrack_preview(self, direction: int) -> None:
+        cells = self._backtrack_transcript_cells()
+        total = backtrack_user_count(cells)
+        if direction < 0:
+            next_index = next_backtrack_selection_index(self._backtrack_state.nth_user_message, total)
+        else:
+            next_index = next_forward_backtrack_selection_index(self._backtrack_state.nth_user_message, total)
+        apply_backtrack_selection_index(self._backtrack_state, cells, next_index)
+        self._render_backtrack_preview_banner()
+
+    def _confirm_transcript_backtrack_preview(self) -> None:
+        cells = self._backtrack_transcript_cells()
+        thread_id = self._current_thread_id_for_backtrack()
+        selection = backtrack_selection(self._backtrack_state, thread_id, cells)
+        if selection is None:
+            self._focus_composer_from_transcript()
+            self._append_system_notice(NO_PREVIOUS_MESSAGE_TO_EDIT)
+            return
+        rollback = apply_backtrack_rollback_state(self._backtrack_state, selection, cells, thread_id)
+        if rollback is None:
+            self._focus_composer_from_transcript()
+            return
+        if rollback.error_message:
+            self._focus_composer_from_transcript()
+            self._append_system_notice(rollback.error_message)
+            return
+        self.app_runtime.submit_op(AppCommand.thread_rollback(rollback.num_turns))
+        composer = self._composer()
+        composer.text = rollback.composer_prefill
+        composer._move_cursor_to_end()
+        self._focus_composer_from_transcript()
+
+    def _render_backtrack_preview_banner(self) -> None:
+        cells = self._backtrack_transcript_cells()
+        selection = backtrack_selection(self._backtrack_state, self._current_thread_id_for_backtrack(), cells)
+        preview = "" if selection is None else selection.prefill.strip()
+        if len(preview) > 120:
+            preview = f"{preview[:117]}..."
+        lines = [
+            _render_transcript_overlay_banner_text(self._transcript_log()),
+            "",
+            "B A C K T R A C K",
+            "Enter to edit this message    Esc/Left older    Right newer    q close",
+        ]
+        if preview:
+            lines.append(f"> {preview}")
+        self.query_one("#slash-popup", Static).update(_plain_status_text("\n".join(lines)))
+
+    def _backtrack_transcript_cells(self) -> list[Any]:
+        cells: list[Any] = []
+        for block in self._blocks:
+            if block.label == "you":
+                cells.append(backtrack_user_cell(block.text))
+            elif block.label == "codex":
+                cells.append(backtrack_agent_cell(block.text, stream_continuation=True))
+            else:
+                cells.append(backtrack_info_cell(block.text))
+        return cells
+
+    def _current_thread_id_for_backtrack(self) -> str:
+        return self.app_runtime.current_displayed_thread_id() or self.app_runtime.thread_id
+
     def _focus_composer_from_transcript(self) -> None:
+        close_transcript_overlay_state(self._backtrack_state)
         self._transcript_mode = False
         self.clear_command_popup()
         self._composer().focus()
@@ -833,7 +1295,7 @@ class PyCodexTextualApp(App[int]):
         # Rust codex-tui::pager_overlay::TranscriptOverlay renders this fixed
         # title above the transcript pager plus key hints beneath the page.
         self.query_one("#slash-popup", Static).update(
-            _render_transcript_overlay_banner_text(self._transcript_log())
+            _plain_status_text(_render_transcript_overlay_banner_text(self._transcript_log()))
         )
 
     async def on_mouse_scroll_down(self, event: Any) -> None:
@@ -855,7 +1317,7 @@ class PyCodexTextualApp(App[int]):
             self._append_system_notice("No model choices are available right now.")
             return
         self._active_selection = _TextualSelection(kind="model", view=result.view, context=context, presets=presets)
-        self._active_selection_index = int(getattr(result.view, "initial_selected_idx", None) or 0)
+        self._active_selection_index = _initial_selection_index(self._active_selection)
         self._render_active_selection()
         self._set_status("Select Model: up/down move; Enter select; Esc/q cancel")
 
@@ -913,7 +1375,7 @@ class PyCodexTextualApp(App[int]):
             self._set_status("Ready")
             return
         self._active_selection = _TextualSelection(kind="permissions", view=view, context=widget)
-        self._active_selection_index = int(getattr(view, "initial_selected_idx", None) or 0)
+        self._active_selection_index = _initial_selection_index(self._active_selection)
         self._render_active_selection()
         self._set_status("Update Permissions: up/down move; Enter select; Esc/q cancel")
 
@@ -947,7 +1409,7 @@ class PyCodexTextualApp(App[int]):
         if selection is not None and selection.parent_views:
             selection.view = selection.parent_views.pop()
             selection.search_query = ""
-            self._active_selection_index = int(getattr(selection.view, "initial_selected_idx", None) or 0)
+            self._active_selection_index = _initial_selection_index(selection)
             self._render_active_selection()
             self._set_status(_selection_status_text(selection.kind))
             return
@@ -974,7 +1436,7 @@ class PyCodexTextualApp(App[int]):
         if selection.kind == "review":
             self._accept_review_selection(selection)
             return
-        if selection.kind == "resume":
+        if selection.kind in {"resume", "fork"}:
             self._accept_resume_selection(selection)
             return
         if selection.kind == "settings":
@@ -995,12 +1457,12 @@ class PyCodexTextualApp(App[int]):
         if next_view is not None:
             selection.view = next_view
             selection.search_query = ""
-            self._active_selection_index = int(getattr(next_view, "initial_selected_idx", None) or 0)
+            self._active_selection_index = _initial_selection_index(selection)
             self._render_active_selection()
             return
         self._active_selection = None
         self.clear_command_popup()
-        self.query_one("#session-header", Static).update(self._session_header_text())
+        self._mark_session_header_configured()
         self._set_status("Ready")
         self._composer().focus()
 
@@ -1051,12 +1513,12 @@ class PyCodexTextualApp(App[int]):
         if nested_view is not None:
             selection.view = nested_view
             selection.search_query = ""
-            self._active_selection_index = int(getattr(nested_view, "initial_selected_idx", None) or 0)
+            self._active_selection_index = _initial_selection_index(selection)
             self._render_active_selection()
             return
         self._active_selection = None
         self.clear_command_popup()
-        self.query_one("#session-header", Static).update(self._session_header_text())
+        self._mark_session_header_configured()
         self._set_status("Ready")
         self._composer().focus()
 
@@ -1238,16 +1700,78 @@ class PyCodexTextualApp(App[int]):
             return None
         return None
 
-    def _open_resume_picker(self) -> bool:
+    def _open_session_picker(self, action: SessionPickerAction) -> bool:
         rows = _runtime_resume_picker_rows(self.app_runtime)
         if not rows:
             return False
-        view = _resume_picker_selection_view(rows, SessionPickerAction.RESUME)
-        self._active_selection = _TextualSelection(kind="resume", view=view)
-        self._active_selection_index = int(getattr(view, "initial_selected_idx", None) or 0)
+        state = _resume_picker_state_from_rows(rows, action, self.app_runtime)
+        view = _resume_picker_selection_view_from_state(state)
+        kind = "fork" if action is SessionPickerAction.FORK else "resume"
+        self._active_selection = _TextualSelection(kind=kind, view=view, context=state, search_query=state.query)
+        self._active_selection_index = state.selected
         self._render_active_selection()
-        self._set_status(_selection_status_text("resume"))
+        self._set_status(_selection_status_text(kind))
         return True
+
+    def _open_resume_picker(self) -> bool:
+        return self._open_session_picker(SessionPickerAction.RESUME)
+
+    def _open_fork_picker(self) -> bool:
+        return self._open_session_picker(SessionPickerAction.FORK)
+
+    def _handle_resume_picker_key(self, selection: "_TextualSelection", key: str) -> bool:
+        state = selection.context
+        if not isinstance(state, PickerState):
+            return False
+        code = _resume_picker_textual_key(key)
+        if state.overlay is not None:
+            if code in {"q", "esc"}:
+                state.handle_overlay_event(None, "esc")
+                self._refresh_resume_picker_selection(selection)
+                return True
+            return True
+        if code == "q" and not state.query:
+            self._cancel_active_selection()
+            return True
+        if code == "ctrl-t":
+            state.open_selected_transcript()
+            self._refresh_resume_picker_selection(selection)
+            state.note_transcript_loading_frame_drawn()
+            state.open_pending_transcript_if_ready()
+            self._refresh_resume_picker_selection(selection)
+            return True
+        result = _run_picker_coro_synchronously(state.handle_key(code))
+        self._refresh_resume_picker_selection(selection)
+        if isinstance(result, SessionSelection):
+            if result.kind == "Exit":
+                self._cancel_active_selection()
+                return True
+            if result.kind == "StartFresh":
+                self._cancel_active_selection()
+                return True
+            if result.target is not None:
+                self._accept_resume_selection(selection)
+                return True
+        return True
+
+    def _refresh_resume_picker_selection(self, selection: "_TextualSelection") -> None:
+        state = selection.context
+        if not isinstance(state, PickerState):
+            return
+        selection.view = _resume_picker_selection_view_from_state(state)
+        selection.search_query = state.query
+        self._active_selection_index = state.selected
+        if state.overlay is not None:
+            self.query_one("#slash-popup", Static).update(
+                _plain_status_text(_render_resume_picker_transcript_overlay(state.overlay))
+            )
+            self._set_status("Transcript: q/Esc close")
+            return
+        if state.is_transcript_loading():
+            self.query_one("#slash-popup", Static).update(_plain_status_text("Transcript loading..."))
+            self._set_status("Loading transcript...")
+            return
+        self._render_active_selection()
 
     def _accept_resume_selection(self, selection: "_TextualSelection") -> None:
         items = _selection_active_items(selection)
@@ -1269,8 +1793,16 @@ class PyCodexTextualApp(App[int]):
             self.app_runtime.handle_app_event(AppEvent.of("ResumeSessionByIdOrName", id_or_name=target.thread_id))
             self._append_system_notice(f"Resume requested: {target_label}")
         elif selected.kind == "Fork":
-            self.app_runtime.handle_app_event(AppEvent.of("ForkCurrentSession"))
-            self._append_system_notice(f"Fork requested: {target_label}")
+            forked = self.app_runtime.fork_startup_session_target(target)
+            self._mark_session_header_configured()
+            if forked:
+                self._append_startup_replay_history()
+                self._drain_runtime_notices()
+                self._append_system_notice(
+                    f"Forked session from {target_label} as {self.app_runtime.startup_session_forked_thread_id}."
+                )
+            else:
+                self._append_system_notice(f"Fork requested: {target_label}")
         self._active_selection = None
         self.clear_command_popup()
         self._set_status("Ready")
@@ -1675,7 +2207,7 @@ class PyCodexTextualApp(App[int]):
         if normalized == "/model":
             if argument:
                 self.app_runtime.update_model(argument)
-                self.query_one("#session-header", Static).update(self._session_header_text())
+                self._mark_session_header_configured()
                 self._append_system_notice(f"Model set to {argument}")
                 self._set_status("Ready")
             else:
@@ -1777,6 +2309,45 @@ class PyCodexTextualApp(App[int]):
         self._append_system_notice("Fork current session requested.")
         self._set_status("Ready")
 
+    def _apply_startup_session_action(self) -> None:
+        action = getattr(self.app_runtime, "startup_session_action", None)
+        if action == "fork" and getattr(self.app_runtime, "startup_session_id", None):
+            target = SessionPickerAction.FORK.selection(None, str(self.app_runtime.startup_session_id)).target
+            forked = self.app_runtime.fork_startup_session_target(target) if target is not None else False
+            self._mark_session_header_configured()
+            if forked:
+                self._append_startup_replay_history()
+                self._drain_runtime_notices()
+                self._append_system_notice(
+                    f"Forked session from thread {self.app_runtime.startup_session_id} as {self.app_runtime.startup_session_forked_thread_id}."
+                )
+            else:
+                self._append_system_notice(f"Fork requested: {self.app_runtime.startup_session_id}")
+            self.app_runtime.startup_session_action = None
+            self._set_ready_after_startup_if_idle()
+            return
+        if action == "resume" and getattr(self.app_runtime, "startup_session_id", None):
+            self.app_runtime.handle_app_event(
+                AppEvent.of("ResumeSessionByIdOrName", id_or_name=str(self.app_runtime.startup_session_id))
+            )
+            self._append_system_notice(f"Resume requested: {self.app_runtime.startup_session_id}")
+            self.app_runtime.startup_session_action = None
+            self._set_ready_after_startup_if_idle()
+            return
+        if action == "fork" and not getattr(self.app_runtime, "startup_session_last", False):
+            if self._open_fork_picker():
+                self.app_runtime.startup_session_action = None
+                return
+            self._append_system_notice("Fork picker is not available in the Textual shell yet.")
+            self.app_runtime.startup_session_action = None
+        elif action == "resume" and not getattr(self.app_runtime, "startup_session_last", False):
+            if self._open_resume_picker():
+                self.app_runtime.startup_session_action = None
+                return
+            self._append_system_notice("Resume picker is not available in the Textual shell yet.")
+            self.app_runtime.startup_session_action = None
+        self._set_ready_after_startup_if_idle()
+
     def _handle_new_command(self) -> None:
         self.app_runtime.handle_app_event(AppEvent.new_session())
         self._blocks.clear()
@@ -1784,6 +2355,8 @@ class PyCodexTextualApp(App[int]):
         self._active_reasoning_block = None
         self._reasoning_buffer = ""
         self._reasoning_full_buffer = ""
+        self._session_header_configured = False
+        self._refresh_session_header()
         self._refresh_transcript()
         self._append_startup_notices()
         self._set_status("Ready")
@@ -1851,7 +2424,7 @@ class PyCodexTextualApp(App[int]):
             self._set_status("Ready")
             return
         _apply_textual_collaboration_mask(self.app_runtime, mask)
-        self.query_one("#session-header", Static).update(self._session_header_text())
+        self._mark_session_header_configured()
         if not argument:
             self._append_system_notice("Switched to Plan mode.")
             self._set_status("Plan mode")
@@ -1901,8 +2474,9 @@ class PyCodexTextualApp(App[int]):
         self._active_reasoning_block = None
         self._reasoning_buffer = ""
         self._reasoning_full_buffer = ""
+        self._session_header_configured = False
+        self._refresh_session_header()
         self._refresh_transcript()
-        self._append_startup_notices()
         self._set_status("Ready")
 
     def _handle_rollout_command(self) -> None:
@@ -2021,16 +2595,20 @@ class PyCodexTextualApp(App[int]):
         elif kind == "AgentMessageDelta":
             self._append_agent_delta(_event_delta(event))
         elif kind == "ReasoningSummaryTextDelta":
-            if _show_reasoning_summary(self.app_runtime):
-                self._append_reasoning_delta(_event_delta(event))
+            _trace_reasoning_projection(kind, source="summary_delta", displayed=True)
+            self._append_reasoning_delta(_event_delta(event))
         elif kind == "ReasoningSummaryPartAdded":
-            if _show_reasoning_summary(self.app_runtime):
-                self._push_reasoning_section_break()
+            _trace_reasoning_projection(kind, source="summary_part", displayed=True)
+            self._push_reasoning_section_break()
         elif kind == "ReasoningTextDelta":
-            if _show_raw_agent_reasoning(self.app_runtime):
+            displayed = _show_raw_agent_reasoning(self.app_runtime)
+            _trace_reasoning_projection(kind, source="raw_delta", displayed=displayed)
+            if displayed:
                 self._append_reasoning_delta(_event_delta(event))
         elif kind == "ThreadNameUpdated":
-            self.query_one("#session-header", Static).update(self._session_header_text())
+            self._mark_session_header_configured()
+        elif kind in {"SessionConfigured", "ThreadSessionConfigured", "ThreadSession"}:
+            self._mark_session_header_configured()
         elif kind == "ItemStarted":
             self._append_item_started(event)
         elif kind == "ItemCompleted":
@@ -2122,7 +2700,7 @@ class PyCodexTextualApp(App[int]):
             header = extract_first_bold(self._reasoning_buffer)
             if header:
                 status = header
-        self._set_status(f"{status} {elapsed}s")
+        self._set_active_status(status, elapsed_seconds=elapsed)
 
     def _set_ready_after_startup_if_idle(self) -> None:
         if self._last_mcp_status_header:
@@ -2133,6 +2711,8 @@ class PyCodexTextualApp(App[int]):
         composer = self._composer()
         text = str(getattr(composer, "text", "") or "")
         if "\x14" not in text:
+            return False
+        if not _app_keymap_accepts_control_character(self.app_runtime, "open_transcript", "\x14"):
             return False
         composer.text = text.replace("\x14", "")
         _textual_timing_trace("textual_composer_control_shortcut", shortcut="ctrl+t", source="composer_text")
@@ -2164,18 +2744,22 @@ class PyCodexTextualApp(App[int]):
             self._reasoning_buffer = ""
 
     def _finish_reasoning_block(self) -> None:
-        if not _show_reasoning_summary(self.app_runtime) and not _show_raw_agent_reasoning(self.app_runtime):
-            self._reasoning_full_buffer = ""
-            self._reasoning_buffer = ""
-            return
         text = (self._reasoning_full_buffer + self._reasoning_buffer).strip()
         if not text:
             return
+        cell = new_reasoning_summary_block(text, _runtime_cwd(self.app_runtime))
+        display_text = "\n".join(_line_text(line) for line in cell.display_lines(self._exec_cell_render_width())).strip()
+        if not display_text:
+            self._reasoning_buffer = ""
+            self._reasoning_full_buffer = ""
+            return
         if self._active_reasoning_block is None:
-            self._active_reasoning_block = self._append_block("reasoning", text)
+            self._active_reasoning_block = self._append_block("reasoning", display_text)
         else:
-            self._active_reasoning_block.text = text
+            self._active_reasoning_block.text = display_text
             self._refresh_transcript()
+        self._reasoning_buffer = ""
+        self._reasoning_full_buffer = ""
 
     def _append_item_started(self, event: ServerNotification) -> None:
         item = _event_item(event)
@@ -2187,7 +2771,11 @@ class PyCodexTextualApp(App[int]):
                 # status block for every tool start; that causes the Textual
                 # projection to scroll downward while tools run.
                 call_id = str(_payload_field(item, "id", command) or command)
-                self._active_exec_rows[call_id] = f"\u2022 Running {command}"
+                self._active_exec_rows[call_id] = _render_command_execution_item_text(
+                    item,
+                    active=True,
+                    width=self._exec_cell_render_width(),
+                )
                 self._refresh_active_exec_block()
         elif _item_kind(item) == "Reasoning":
             if not self._has_running_exec_rows():
@@ -2209,7 +2797,16 @@ class PyCodexTextualApp(App[int]):
             self.app_runtime.chat_widget.turn.record_agent_markdown(text)
             return
         if kind == "Reasoning":
-            text = _reasoning_item_text(item, show_summary=_show_reasoning_summary(self.app_runtime))
+            has_summary = _reasoning_item_has_summary(item)
+            has_content = _reasoning_item_has_content(item)
+            text = _reasoning_item_text(item, show_summary=True)
+            _trace_reasoning_projection(
+                "ItemCompleted",
+                source="completed_reasoning",
+                displayed=bool(text),
+                summary_present=has_summary,
+                content_present=has_content,
+            )
             if text:
                 self._reasoning_buffer = text
                 self._finish_reasoning_block()
@@ -2217,12 +2814,13 @@ class PyCodexTextualApp(App[int]):
         if kind != "CommandExecution":
             return
         command = str(_payload_field(item, "command", "") or "").strip()
-        status = str(_payload_field(item, "status", "Completed") or "Completed")
         call_id = str(_payload_field(item, "id", command) or command)
-        if command and status.lower() not in {"completed", "success", "succeeded"}:
-            self._active_exec_rows[call_id] = f"\u2022 Called {command}\n  Error: {status}"
-        elif command:
-            self._active_exec_rows[call_id] = f"\u2022 Ran {command}"
+        if command:
+            self._active_exec_rows[call_id] = _render_command_execution_item_text(
+                item,
+                active=False,
+                width=self._exec_cell_render_width(),
+            )
         self._refresh_active_exec_block()
 
     def _refresh_active_exec_block(self) -> None:
@@ -2244,6 +2842,13 @@ class PyCodexTextualApp(App[int]):
 
     def _has_running_exec_rows(self) -> bool:
         return any(row.startswith("\u2022 Running ") for row in self._active_exec_rows.values())
+
+    def _exec_cell_render_width(self) -> int:
+        width = getattr(getattr(self, "size", None), "width", None)
+        try:
+            return max(int(width or 100) - 4, 20)
+        except (TypeError, ValueError):
+            return 100
 
     def _hide_active_exec_block(self) -> None:
         block = self._active_exec_block
@@ -2333,6 +2938,15 @@ class PyCodexTextualApp(App[int]):
             self._append_system_notice(str(message))
         self._drain_chatwidget_history_notices()
 
+    def _append_startup_replay_history(self) -> None:
+        take = getattr(self.app_runtime, "take_startup_session_replay_history", None)
+        if not callable(take):
+            return
+        for item in take():
+            label, text = _startup_replay_block(item)
+            if text:
+                self._append_block(label, text)
+
     def _drain_chatwidget_history_notices(self) -> None:
         chat_widget = self.app_runtime.chat_widget
         history = getattr(chat_widget, "history", None)
@@ -2376,20 +2990,43 @@ class PyCodexTextualApp(App[int]):
         log.refresh(layout=True)
         self.refresh(layout=True)
 
+    def _refresh_session_header(self) -> None:
+        try:
+            self.query_one("#session-header", Static).update(_plain_status_text(self._session_header_text()))
+        except Exception:
+            return
+
+    def _mark_session_header_configured(self) -> None:
+        self._session_header_configured = True
+        self._refresh_session_header()
+
     def _set_status(self, text: str) -> None:
         if text == "Ready":
             self._refresh_terminal_title(active_progress=False)
-            self.query_one("#status-line", Static).update(self._idle_status_line_text())
+            self.query_one("#status-line", Static).update(_plain_status_text(self._idle_status_line_text()))
             self.refresh(layout=True)
             return
         if text == "Working":
             self._refresh_terminal_title(active_progress=True)
-            self.query_one("#status-line", Static).update(_active_status_line_text(self.app_runtime))
+            self.query_one("#status-line", Static).update(_plain_status_text(_active_status_line_text(self.app_runtime)))
             self.refresh(layout=True)
             return
         if text == "Thinking":
             self._refresh_terminal_title(active_progress=True)
-        self.query_one("#status-line", Static).update(f"status: {text}")
+        self.query_one("#status-line", Static).update(_plain_status_text(f"status: {text}"))
+        self.refresh(layout=True)
+
+    def _set_active_status(self, header: str, *, elapsed_seconds: int | None = None) -> None:
+        self._refresh_terminal_title(active_progress=True)
+        self.query_one("#status-line", Static).update(
+            _plain_status_text(
+                _active_status_line_text(
+                    self.app_runtime,
+                    header=header,
+                    elapsed_seconds=elapsed_seconds,
+                )
+            )
+        )
         self.refresh(layout=True)
 
     def _refresh_terminal_title(self, *, active_progress: bool) -> None:
@@ -2425,7 +3062,9 @@ class PyCodexTextualApp(App[int]):
             for item in items
             if (value := _runtime_status_line_value(self.app_runtime, item, "Ready")) is not None
         ]
-        return " · ".join(part for part in parts if part)
+        status_line = " · ".join(part for part in parts if part)
+        agent_label = getattr(getattr(self.app_runtime, "chat_widget", None), "active_agent_label", None)
+        return status_line_right_indicator_line(status_line or None, agent_label) or ""
 
     def _startup_status_line_text(self) -> str:
         # Rust chatwidget.rs starts with DEFAULT_MODEL_DISPLAY_NAME = "loading"
@@ -2437,10 +3076,10 @@ class PyCodexTextualApp(App[int]):
             parts.append(directory)
         if context_left:
             parts.append(context_left)
-        return " 路 ".join(parts)
+        return " · ".join(parts)
 
     def _append_startup_notices(self) -> None:
-        tooltip = _runtime_startup_tooltip(self.app_runtime)
+        tooltip = _runtime_startup_tooltip(self.app_runtime) if self._session_header_configured else None
         if tooltip:
             self._append_system_notice(f"Tip: {_plain_markdown_text(tooltip)}")
         for warning in _runtime_startup_warnings(self.app_runtime):
@@ -2474,13 +3113,27 @@ class PyCodexTextualApp(App[int]):
     def _transcript_log(self) -> RichLog:
         return self.query_one("#transcript", CodexTranscriptLog)
 
-    def _session_header_text(self) -> Text:
-        text = Text()
-        text.append(">_ OpenAI Codex", style="bold")
-        text.append(f" (v{_display_version()})\n\n")
-        text.append(f"model:     {_runtime_model_with_reasoning(self.app_runtime)}   /model to change\n")
-        text.append(f"directory: {_display_directory_for_path(self.app_runtime.cwd)}")
-        return text
+    def _session_header_text(self) -> str:
+        yolo_mode = _runtime_header_yolo_mode(self.app_runtime)
+        model_text = _runtime_display_model(self.app_runtime) if self._session_header_configured else "loading"
+        reasoning = _runtime_header_reasoning_effort(self.app_runtime) if self._session_header_configured else None
+        cell = SessionHeaderHistoryCell.new(
+            model_text,
+            reasoning,
+            _runtime_show_fast_status(self.app_runtime) if self._session_header_configured else False,
+            self.app_runtime.cwd,
+            _display_version(),
+        ).with_yolo_mode(yolo_mode)
+        return "\n".join(_line_text(line) for line in cell.display_lines(100))
+
+    def _composer_prompt_text(self) -> str:
+        placeholder = getattr(self.app_runtime.chat_widget, "normal_placeholder_text", None)
+        placeholder_text = str(placeholder).strip() if placeholder is not None else ""
+        if not placeholder_text:
+            from .chatwidget.constructor import PLACEHOLDERS
+
+            placeholder_text = PLACEHOLDERS[6]
+        return f"› {placeholder_text}"
 
 
 @dataclass
@@ -2509,6 +3162,8 @@ def _selection_display_name(kind: str) -> str:
         return "Review"
     if kind == "resume":
         return "Resume"
+    if kind == "fork":
+        return "Fork"
     return "Model"
 
 
@@ -2533,6 +3188,8 @@ def _selection_status_text(kind: str) -> str:
         return "Select Review: up/down move; Enter select; Esc/q cancel"
     if kind == "resume":
         return "Resume Session: up/down move; Enter select; Esc/q cancel"
+    if kind == "fork":
+        return "Fork Session: up/down move; Enter select; Esc/q cancel"
     return "Select Model: up/down move; Enter select; Esc/q cancel"
 
 
@@ -2709,8 +3366,15 @@ class _SettingsPopupWidget:
 
 
 def _scroll_transcript_half_page(transcript: RichLog, direction: int) -> None:
-    height = max(int(getattr(getattr(transcript, "size", object()), "height", 1) or 1), 1)
-    rows = max((height + 1) // 2, 1)
+    rows = max((_transcript_overlay_page_rows(transcript) + 1) // 2, 1)
+    _scroll_transcript_rows(transcript, direction, rows)
+
+
+def _scroll_transcript_page(transcript: RichLog, direction: int) -> None:
+    _scroll_transcript_rows(transcript, direction, _transcript_overlay_page_rows(transcript))
+
+
+def _scroll_transcript_rows(transcript: RichLog, direction: int, rows: int) -> None:
     scroll_relative = getattr(transcript, "scroll_relative", None)
     if callable(scroll_relative):
         scroll_relative(y=rows * (1 if direction > 0 else -1), animate=False, force=True)
@@ -2718,6 +3382,18 @@ def _scroll_transcript_half_page(transcript: RichLog, direction: int) -> None:
     action = transcript.action_scroll_down if direction > 0 else transcript.action_scroll_up
     for _ in range(rows):
         action()
+
+
+def _transcript_overlay_page_rows(transcript: RichLog) -> int:
+    app = getattr(transcript, "app", None)
+    app_height = int(getattr(getattr(app, "size", object()), "height", 0) or 0)
+    if app_height > 0:
+        # Rust codex-tui::pager_overlay::TranscriptOverlay reserves three hint
+        # rows, then PagerView::content_area reserves one header and one footer
+        # row inside the remaining top area.
+        return max(app_height - 5, 1)
+    height = max(int(getattr(getattr(transcript, "size", object()), "height", 1) or 1), 1)
+    return height
 
 
 def _transcript_scroll_percent(transcript: RichLog) -> int:
@@ -2754,6 +3430,97 @@ def _compact_live_exec_lines(lines: list[str], *, max_lines: int = LIVE_EXEC_MAX
     return [*lines[-visible:], f"+{hidden} more running"]
 
 
+def _startup_replay_block(item: Any) -> tuple[str, str]:
+    if isinstance(item, tuple) and len(item) >= 2:
+        kind = str(item[0])
+        text = "" if item[1] is None else str(item[1]).strip()
+    elif isinstance(item, dict):
+        kind = str(item.get("kind", "status"))
+        text = str(item.get("message", item.get("text", "")) or "").strip()
+    else:
+        kind = "status"
+        text = str(item).strip()
+    label = {
+        "user_message": "you",
+        "agent_markdown": "codex",
+        "reasoning_summary": "reasoning",
+        "proposed_plan": "codex",
+        "final_message_separator": "status",
+    }.get(kind, "status")
+    if kind == "final_message_separator":
+        text = ""
+    return label, text
+
+
+def _render_command_execution_item_text(item: Any, *, active: bool, width: int) -> str:
+    command = str(_payload_field(item, "command", "") or "").strip()
+    call_id = str(_payload_field(item, "id", command) or command)
+    source = _exec_cell_source(_payload_field(item, "source", "agent"))
+    output = None
+    duration = None
+    if not active:
+        status = str(_payload_field(item, "status", "Completed") or "Completed")
+        exit_code_value = _payload_field(item, "exit_code", None)
+        if exit_code_value is None:
+            exit_code = 0 if status.lower() in {"completed", "success", "succeeded"} else 1
+        else:
+            try:
+                exit_code = int(exit_code_value)
+            except (TypeError, ValueError):
+                exit_code = 1
+        aggregated_output = str(_payload_field(item, "aggregated_output", "") or "")
+        output = ExecCellCommandOutput(
+            exit_code=exit_code,
+            aggregated_output=aggregated_output,
+            formatted_output=aggregated_output,
+        )
+        duration_ms = _payload_field(item, "duration_ms", None)
+        if duration_ms is not None:
+            try:
+                duration = max(float(duration_ms), 0.0) / 1000.0
+            except (TypeError, ValueError):
+                duration = None
+    call = ExecCellCall(
+        call_id=call_id,
+        command=[command],
+        parsed=list(_payload_field(item, "command_actions", ()) or ()),
+        output=output,
+        source=source,
+        start_time=0.0 if active else None,
+        duration=duration,
+    )
+    cell = ExecCell.new(call, animations_enabled=False)
+    lines = exec_cell_command_display_lines(cell, width)
+    return "\n".join(render_exec_cell_line_text(line) for line in lines)
+
+
+def _exec_cell_source(value: Any) -> str:
+    raw = getattr(value, "value", value)
+    normalized = str(raw)
+    return {
+        "user_shell": EXEC_CELL_USER_SHELL,
+        "userShell": EXEC_CELL_USER_SHELL,
+        "UserShell": EXEC_CELL_USER_SHELL,
+        "unified_exec_interaction": EXEC_CELL_UNIFIED_EXEC_INTERACTION,
+        "unifiedExecInteraction": EXEC_CELL_UNIFIED_EXEC_INTERACTION,
+        "UnifiedExecInteraction": EXEC_CELL_UNIFIED_EXEC_INTERACTION,
+    }.get(normalized, normalized)
+
+
+def _coerce_history_entry_text(result: Any) -> str | None:
+    if result is None:
+        return None
+    if isinstance(result, str):
+        return result
+    text = _payload_field(result, "text", None)
+    if text is not None:
+        return str(text)
+    entry = _payload_field(result, "entry", None)
+    if entry is not None and entry is not result:
+        return _coerce_history_entry_text(entry)
+    return str(result)
+
+
 @dataclass
 class _TranscriptBlock:
     label: str
@@ -2774,8 +3541,11 @@ class _TranscriptBlock:
         rendered = Text()
         rendered.append(self.label, style=self.style)
         rendered.append("\n")
-        for line in str(self.text).splitlines() or [""]:
-            rendered.append(f"  {line}\n")
+        lines = str(self.text).splitlines() or [""]
+        for index, line in enumerate(lines):
+            rendered.append(f"  {line}")
+            if index < len(lines) - 1:
+                rendered.append("\n")
         return rendered
 
 
@@ -2785,7 +3555,6 @@ class CodexComposerTextArea(TextArea):
     show_line_numbers = False
     BINDINGS = [
         *getattr(TextArea, "BINDINGS", []),
-        ("ctrl+t", "open_transcript", "Transcript"),
         ("enter", "submit_codex", "Submit"),
     ]
 
@@ -2793,6 +3562,7 @@ class CodexComposerTextArea(TextArea):
         super().__init__(*args, **kwargs)
         self.history_search: HistorySearchSession | None = None
         self.command_popup: CommandPopup | None = None
+        self.command_popup_signature: tuple[Any, ...] | None = None
         self.text_elements: list[Any] = []
         self.pending_pastes: list[tuple[str, str]] = []
 
@@ -2813,12 +3583,36 @@ class CodexComposerTextArea(TextArea):
             character=repr(getattr(event, "character", None)),
             is_ctrl_t=_is_ctrl_t_event(event),
         )
+        app = getattr(self, "app", None)
+        active_selection = getattr(app, "_active_selection", None)
+        if getattr(active_selection, "kind", None) in {"keymap-debug", "keymap-capture"}:
+            return
         if self._handle_shortcut_overlay_key(event):
             return
-        if _is_ctrl_t_event(event):
+        if _app_keymap_key_matches(getattr(getattr(self, "app", None), "app_runtime", None), key, "open_transcript", getattr(event, "character", None)):
             event.stop()
             event.prevent_default()
             self._open_transcript_from_composer()
+            return
+        if _app_keymap_key_matches(getattr(getattr(self, "app", None), "app_runtime", None), key, "open_external_editor", getattr(event, "character", None)):
+            event.stop()
+            event.prevent_default()
+            self._open_external_editor_from_composer()
+            return
+        if _app_keymap_key_matches(getattr(getattr(self, "app", None), "app_runtime", None), key, "clear_terminal", getattr(event, "character", None)):
+            event.stop()
+            event.prevent_default()
+            self._clear_terminal_from_composer()
+            return
+        if _app_keymap_key_matches(getattr(getattr(self, "app", None), "app_runtime", None), key, "copy", getattr(event, "character", None)):
+            event.stop()
+            event.prevent_default()
+            self._copy_last_response_from_composer()
+            return
+        if _app_keymap_key_matches(getattr(getattr(self, "app", None), "app_runtime", None), key, "toggle_vim_mode", getattr(event, "character", None)):
+            event.stop()
+            event.prevent_default()
+            self._toggle_vim_mode_from_composer()
             return
         if key == "enter":
             event.stop()
@@ -2851,23 +3645,60 @@ class CodexComposerTextArea(TextArea):
             character=repr(getattr(event, "character", None)),
             is_ctrl_t=_is_ctrl_t_event(event),
         )
+        app = getattr(self, "app", None)
+        active_selection = getattr(app, "_active_selection", None)
+        if getattr(active_selection, "kind", None) in {"keymap-debug", "keymap-capture"}:
+            return
         if self._handle_shortcut_overlay_key(event):
             return
-        if _is_ctrl_t_event(event):
+        if _app_keymap_key_matches(getattr(getattr(self, "app", None), "app_runtime", None), key, "open_transcript", getattr(event, "character", None)):
             event.stop()
             event.prevent_default()
             self._open_transcript_from_composer()
+            return
+        if _app_keymap_key_matches(getattr(getattr(self, "app", None), "app_runtime", None), key, "open_external_editor", getattr(event, "character", None)):
+            event.stop()
+            event.prevent_default()
+            self._open_external_editor_from_composer()
+            return
+        if _app_keymap_key_matches(getattr(getattr(self, "app", None), "app_runtime", None), key, "clear_terminal", getattr(event, "character", None)):
+            event.stop()
+            event.prevent_default()
+            self._clear_terminal_from_composer()
+            return
+        if _app_keymap_key_matches(getattr(getattr(self, "app", None), "app_runtime", None), key, "copy", getattr(event, "character", None)):
+            event.stop()
+            event.prevent_default()
+            self._copy_last_response_from_composer()
+            return
+        if _app_keymap_key_matches(getattr(getattr(self, "app", None), "app_runtime", None), key, "toggle_vim_mode", getattr(event, "character", None)):
+            event.stop()
+            event.prevent_default()
+            self._toggle_vim_mode_from_composer()
             return
         if self._handle_app_selection_key(key):
             event.stop()
             event.prevent_default()
             return
-        if key == "ctrl+r":
-            event.stop()
-            event.prevent_default()
-            self._begin_or_repeat_history_search()
-            return
         if self.history_search is not None:
+            if _composer_history_search_key_matches(
+                getattr(self, "app", None),
+                key,
+                "history_search_previous",
+            ) or key == "up":
+                event.stop()
+                event.prevent_default()
+                self._step_history_search(HistorySearchDirection.OLDER)
+                return
+            if _composer_history_search_key_matches(
+                getattr(self, "app", None),
+                key,
+                "history_search_next",
+            ) or key == "down":
+                event.stop()
+                event.prevent_default()
+                self._step_history_search(HistorySearchDirection.NEWER)
+                return
             if key == "enter":
                 event.stop()
                 event.prevent_default()
@@ -2889,6 +3720,15 @@ class CodexComposerTextArea(TextArea):
                 event.prevent_default()
                 self._edit_history_search_query(self.history_search.query + str(character))
                 return
+        if _composer_history_search_key_matches(
+            getattr(self, "app", None),
+            key,
+            "history_search_previous",
+        ):
+            event.stop()
+            event.prevent_default()
+            self._begin_or_repeat_history_search()
+            return
         if key == "tab" and self.command_popup is not None:
             event.stop()
             event.prevent_default()
@@ -2914,7 +3754,7 @@ class CodexComposerTextArea(TextArea):
     def _handle_shortcut_overlay_key(self, event: Any) -> bool:
         character = getattr(event, "character", None)
         key = str(getattr(event, "key", "") or "")
-        if character != "?" and key not in {"?", "question_mark", "shift+?"}:
+        if not _composer_toggle_shortcuts_key_matches(getattr(self, "app", None), key, character):
             return False
         app = getattr(self, "app", None)
         toggle = getattr(app, "toggle_shortcut_overlay_from_composer", None)
@@ -2929,6 +3769,30 @@ class CodexComposerTextArea(TextArea):
         open_transcript = getattr(app, "action_open_transcript", None)
         if callable(open_transcript):
             open_transcript()
+
+    def _open_external_editor_from_composer(self) -> None:
+        app = getattr(self, "app", None)
+        open_external_editor = getattr(app, "action_open_external_editor", None)
+        if callable(open_external_editor):
+            open_external_editor()
+
+    def _clear_terminal_from_composer(self) -> None:
+        app = getattr(self, "app", None)
+        clear_terminal = getattr(app, "action_clear_terminal", None)
+        if callable(clear_terminal):
+            clear_terminal()
+
+    def _copy_last_response_from_composer(self) -> None:
+        app = getattr(self, "app", None)
+        copy_last_response = getattr(app, "action_copy_last_response", None)
+        if callable(copy_last_response):
+            copy_last_response()
+
+    def _toggle_vim_mode_from_composer(self) -> None:
+        app = getattr(self, "app", None)
+        toggle_vim_mode = getattr(app, "action_toggle_vim_mode", None)
+        if callable(toggle_vim_mode):
+            toggle_vim_mode()
 
     async def _on_paste(self, event: Any) -> None:
         event.stop()
@@ -2971,12 +3835,18 @@ class CodexComposerTextArea(TextArea):
     def _begin_or_repeat_history_search(self) -> None:
         app = getattr(self, "app", None)
         begin = getattr(app, "begin_composer_history_search", None)
-        update = getattr(app, "update_composer_history_search", None)
+        step = getattr(app, "step_composer_history_search", None)
         if self.history_search is None:
             if callable(begin):
                 begin(self)
-        elif callable(update):
-            update(self)
+        elif callable(step):
+            step(self, HistorySearchDirection.OLDER)
+
+    def _step_history_search(self, direction: HistorySearchDirection) -> None:
+        app = getattr(self, "app", None)
+        step = getattr(app, "step_composer_history_search", None)
+        if callable(step):
+            step(self, direction)
 
     def _edit_history_search_query(self, query: str) -> None:
         if self.history_search is None:
@@ -3064,23 +3934,46 @@ class CodexComposerTextArea(TextArea):
         first_line = self.text.splitlines()[0] if self.text.splitlines() else self.text
         if not first_line.startswith("/") or self.history_search is not None:
             self.command_popup = None
+            self.command_popup_signature = None
             return None
-        popup = self.command_popup or CommandPopup.new(CommandPopupFlags(), [])
+        flags = self._command_popup_flags()
+        service_tiers = self._command_popup_service_tiers()
+        signature = (flags, tuple(service_tiers))
+        popup = self.command_popup if self.command_popup_signature == signature else None
+        if popup is None:
+            popup = CommandPopup.new(flags, service_tiers)
+            self.command_popup_signature = signature
         popup.on_composer_text_change(self.text)
         if not popup.filtered_items():
             self.command_popup = None
+            self.command_popup_signature = None
             return None
         self.command_popup = popup
         return popup
 
     def hide_command_popup(self) -> None:
         self.command_popup = None
+        self.command_popup_signature = None
         app = getattr(self, "app", None)
         if getattr(app, "_active_selection", None) is not None:
             return
         clear = getattr(app, "clear_command_popup", None)
         if callable(clear):
             clear()
+
+    def _command_popup_flags(self) -> CommandPopupFlags:
+        app = getattr(self, "app", None)
+        app_runtime = getattr(app, "app_runtime", None)
+        if app_runtime is None:
+            return CommandPopupFlags()
+        return _command_popup_flags_for_runtime(app_runtime)
+
+    def _command_popup_service_tiers(self) -> tuple[ServiceTierCommand, ...]:
+        app = getattr(self, "app", None)
+        app_runtime = getattr(app, "app_runtime", None)
+        if app_runtime is None:
+            return ()
+        return _service_tier_commands_for_runtime(app_runtime)
 
     def _composer_model(self) -> ChatComposer:
         return ChatComposer(
@@ -3481,6 +4374,31 @@ def _runtime_model_with_reasoning(app_runtime: TuiAppRuntime) -> str:
     return f"{model} {label}" if label and label != "default" else model
 
 
+def _runtime_header_reasoning_effort(app_runtime: TuiAppRuntime) -> str | None:
+    details = _runtime_model_details(app_runtime)
+    for detail in details:
+        normalized = str(detail).strip().lower().replace("-", "_")
+        if normalized and normalized != "fast":
+            return normalized
+    for source in (
+        app_runtime.chat_widget,
+        getattr(app_runtime.chat_widget, "config", None),
+        app_runtime.active_thread_runtime,
+        getattr(app_runtime.active_thread_runtime, "session_config", None),
+    ):
+        for name in ("effective_reasoning_effort", "model_reasoning_effort", "reasoning_effort"):
+            effort = getattr(source, name, None)
+            effort = effort() if callable(effort) else effort
+            if effort is not None and str(effort).strip():
+                label = str(getattr(effort, "value", effort)).replace("-", "_").lower()
+                return label if label and label != "default" else None
+    return None
+
+
+def _runtime_show_fast_status(app_runtime: TuiAppRuntime) -> bool:
+    return any(str(detail).strip().lower() == "fast" for detail in _runtime_model_details(app_runtime))
+
+
 def _line_text(line: object) -> str:
     spans = getattr(line, "spans", None)
     if spans is None:
@@ -3526,6 +4444,18 @@ def _runtime_thread_name(app_runtime: TuiAppRuntime) -> str | None:
     return str(value) if value is not None and str(value).strip() else None
 
 
+def _runtime_header_yolo_mode(app_runtime: TuiAppRuntime) -> bool:
+    sources = (
+        app_runtime.active_thread_runtime,
+        getattr(app_runtime.active_thread_runtime, "session_config", None),
+        getattr(app_runtime, "chat_widget", None),
+        getattr(getattr(app_runtime, "chat_widget", None), "config", None),
+    )
+    approval_policy = _runtime_first_value(*sources, names=("approval_policy", "ask_for_approval"))
+    permission_profile = _runtime_first_value(*sources, names=("permission_profile", "permissions_profile"))
+    return has_yolo_permissions(approval_policy, permission_profile)
+
+
 def _runtime_permissions_label(app_runtime: TuiAppRuntime) -> str:
     sources = (
         app_runtime.active_thread_runtime,
@@ -3535,12 +4465,8 @@ def _runtime_permissions_label(app_runtime: TuiAppRuntime) -> str:
     )
     active_profile = _runtime_first_value(*sources, names=("active_permission_profile", "permission_profile_id"))
     permission_profile = _runtime_first_value(*sources, names=("permission_profile", "permissions_profile"))
-    approval_policy = str(
-        _runtime_first_value(*sources, names=("approval_policy", "ask_for_approval")) or "never"
-    )
-    approvals_reviewer = str(
-        _runtime_first_value(*sources, names=("approvals_reviewer", "approval_reviewer")) or approval_policy
-    )
+    approval_policy = _runtime_first_value(*sources, names=("approval_policy", "ask_for_approval")) or "never"
+    approvals_reviewer = _runtime_first_value(*sources, names=("approvals_reviewer", "approval_reviewer")) or approval_policy
     sandbox_summary = _runtime_first_value(*sources, names=("sandbox_summary", "sandbox", "sandbox_mode"))
     sandbox_text = str(sandbox_summary or "read-only")
     suffix = workspace_root_suffix(_runtime_workspace_roots(app_runtime), app_runtime.cwd)
@@ -3795,12 +4721,19 @@ def _runtime_startup_warnings(app_runtime: TuiAppRuntime) -> tuple[str, ...]:
     return (str(value),)
 
 
-def _active_status_line_text(app_runtime: TuiAppRuntime) -> str:
+def _active_status_line_text(
+    app_runtime: TuiAppRuntime,
+    *,
+    header: str = "Working",
+    elapsed_seconds: int | None = 0,
+) -> str:
+    now = 0.0 if elapsed_seconds is None else float(max(0, int(elapsed_seconds)))
     widget = StatusIndicatorWidget.new(animations_enabled=False, clock=lambda: 0.0)
+    widget.update_header(str(header or "Working"))
     binding = _runtime_interrupt_binding(app_runtime)
     widget.set_interrupt_binding(None if binding is None else StatusKeyBinding(binding))
     width = max(20, int(getattr(getattr(app_runtime, "terminal_size", None), "columns", 100) or 100))
-    line = widget.render_lines(width, height=1, now=0.0)[0]
+    line = widget.render_lines(width, height=1, now=now)[0]
     return _plain_line(line)
 
 
@@ -3838,6 +4771,129 @@ def _runtime_interrupt_binding(app_runtime: TuiAppRuntime) -> str | None:
     if binding is None:
         return None
     return _key_binding_label(binding)
+
+
+def _runtime_keymap_for_app_runtime(app_runtime: TuiAppRuntime | None) -> RuntimeKeymap:
+    raw_keymap = None
+    if app_runtime is not None:
+        raw_keymap = _runtime_first_value(
+            app_runtime.active_thread_runtime,
+            getattr(app_runtime.active_thread_runtime, "session_config", None),
+            names=("tui_keymap", "keymap"),
+        )
+    try:
+        return RuntimeKeymap.from_config(raw_keymap or {})
+    except Exception:
+        return RuntimeKeymap.built_in_defaults()
+
+
+def _footer_key_binding(binding: Any | None) -> FooterKeyBinding | None:
+    if binding is None:
+        return None
+    code = str(getattr(binding, "code", binding) or "")
+    modifiers = tuple(
+        str(modifier).lower().replace("control", "ctrl")
+        for modifier in sorted(getattr(binding, "modifiers", ()) or ())
+    )
+    return FooterKeyBinding(code, modifiers)
+
+
+def _footer_key_hints_for_runtime(app_runtime: TuiAppRuntime | None) -> FooterKeyHints:
+    keymap = _runtime_keymap_for_app_runtime(app_runtime)
+    return FooterKeyHints(
+        toggle_shortcuts=_footer_key_binding(primary_binding(keymap.composer.toggle_shortcuts)),
+        queue=_footer_key_binding(primary_binding(keymap.composer.queue)),
+        insert_newline=_footer_key_binding(primary_binding(keymap.editor.insert_newline)),
+        external_editor=_footer_key_binding(primary_binding(keymap.app.open_external_editor)),
+        edit_previous=FooterKeyBinding("Esc"),
+        show_transcript=_footer_key_binding(primary_binding(keymap.app.open_transcript)),
+        history_search=_footer_key_binding(primary_binding(keymap.composer.history_search_previous)),
+        reasoning_down=_footer_key_binding(primary_binding(keymap.chat.decrease_reasoning_effort)),
+        reasoning_up=_footer_key_binding(primary_binding(keymap.chat.increase_reasoning_effort)),
+    )
+
+
+def _composer_history_search_key_matches(
+    app: object | None,
+    key: str,
+    action: str = "history_search_previous",
+) -> bool:
+    try:
+        code, modifiers = _textual_key_to_key_parts(key)
+        event_binding = KeyBinding(str(code), frozenset(str(item).upper() for item in modifiers))
+        runtime_keymap = _runtime_keymap_for_app_runtime(getattr(app, "app_runtime", None))
+    except Exception:
+        return key == "ctrl+r" if action == "history_search_previous" else key == "ctrl+s"
+    return event_binding in set(getattr(runtime_keymap.composer, action))
+
+
+def _composer_toggle_shortcuts_key_matches(app: object | None, key: str, character: Any = None) -> bool:
+    key_candidates = [str(key or "")]
+    if character is not None:
+        key_candidates.append(str(character))
+    if str(key or "") == "question_mark":
+        key_candidates.append("?")
+    app_runtime = getattr(app, "app_runtime", None)
+    runtime_keymap = _runtime_keymap_for_app_runtime(app_runtime)
+    toggles = set(runtime_keymap.composer.toggle_shortcuts)
+    for candidate in key_candidates:
+        if not candidate:
+            continue
+        try:
+            code, modifiers = _textual_key_to_key_parts(candidate)
+        except Exception:
+            continue
+        if KeyBinding(str(code), frozenset(str(item).upper() for item in modifiers)) in toggles:
+            return True
+    return False
+
+
+def _app_keymap_key_matches(
+    app_runtime: TuiAppRuntime | None,
+    key: str,
+    action: str,
+    character: Any = None,
+) -> bool:
+    runtime_keymap = _runtime_keymap_for_app_runtime(app_runtime)
+    app_keymap = getattr(runtime_keymap, "app", None)
+    bindings = set(getattr(app_keymap, action, ()) or ())
+    for candidate in _key_event_candidates(key, character):
+        try:
+            code, modifiers = _textual_key_to_key_parts(candidate)
+        except Exception:
+            continue
+        if KeyBinding(str(code), frozenset(str(item).upper() for item in modifiers)) in bindings:
+            return True
+    return False
+
+
+def _key_event_candidates(key: str, character: Any = None) -> tuple[str, ...]:
+    candidates: list[str] = []
+    raw_key = str(key or "")
+    if raw_key:
+        candidates.append(raw_key)
+    if character is not None:
+        raw_character = str(character)
+        if raw_character:
+            candidates.append(raw_character)
+            control = _control_character_key_spec(raw_character)
+            if control is not None:
+                candidates.append(control)
+    return tuple(dict.fromkeys(candidates))
+
+
+def _control_character_key_spec(character: str) -> str | None:
+    if len(character) != 1:
+        return None
+    codepoint = ord(character)
+    if 1 <= codepoint <= 26:
+        return f"ctrl+{chr(ord('a') + codepoint - 1)}"
+    return None
+
+
+def _app_keymap_accepts_control_character(app_runtime: TuiAppRuntime | None, action: str, character: str) -> bool:
+    spec = _control_character_key_spec(character)
+    return False if spec is None else _app_keymap_key_matches(app_runtime, spec, action)
 
 
 def _key_binding_label(binding: Any) -> str:
@@ -4023,6 +5079,20 @@ def _reasoning_item_text(item: Any, *, show_summary: bool = True) -> str:
     return "\n".join(parts)
 
 
+def _reasoning_item_has_summary(item: Any) -> bool:
+    summary = _payload_field(item, "summary", ()) or ()
+    if isinstance(summary, str):
+        return bool(summary.strip())
+    return any(bool(_payload_field(entry, "text", entry)) for entry in summary)
+
+
+def _reasoning_item_has_content(item: Any) -> bool:
+    content = _payload_field(item, "content", ()) or ()
+    if isinstance(content, str):
+        return bool(content.strip())
+    return any(bool(_payload_field(entry, "text", entry)) for entry in content)
+
+
 def _show_raw_reasoning_item(item: Any) -> bool:
     # ItemCompleted(Reasoning) normally carries summary text only. This helper
     # exists so raw-content shapes do not accidentally stringify a mapping when
@@ -4041,23 +5111,41 @@ def _show_raw_agent_reasoning(app_runtime: TuiAppRuntime) -> bool:
     return bool(getattr(config, "show_raw_agent_reasoning", False))
 
 
-def _show_reasoning_summary(app_runtime: TuiAppRuntime) -> bool:
-    config = getattr(getattr(app_runtime, "chat_widget", object()), "config", object())
-    if bool(getattr(config, "hide_agent_reasoning", False)):
-        return False
-    value = getattr(config, "model_reasoning_summary", None)
-    if value is None:
-        session_config = getattr(getattr(app_runtime, "active_thread_runtime", object()), "session_config", object())
-        value = getattr(session_config, "model_reasoning_summary", None)
-    return _reasoning_summary_value_enabled(value)
+def _trace_reasoning_projection(
+    kind: str,
+    *,
+    source: str,
+    displayed: bool,
+    summary_present: bool | None = None,
+    content_present: bool | None = None,
+) -> None:
+    """Write a content-free reasoning projection trace when explicitly enabled.
 
+    Rust ``codex-tui::chatwidget::protocol`` distinguishes visible
+    ``ReasoningSummaryTextDelta`` from raw ``ReasoningTextDelta`` gated by
+    ``show_raw_agent_reasoning``.  The live OAuth path can only prove that
+    boundary safely if diagnostics record event classification without writing
+    the reasoning text itself.
+    """
 
-def _reasoning_summary_value_enabled(value: Any) -> bool:
-    if value is None:
-        return True
-    raw = getattr(value, "value", value)
-    text = str(raw).strip().lower().replace("-", "_")
-    return text not in {"none", "reasoningsummary.none"}
+    path = os.environ.get("PYCODEX_TUI_REASONING_TRACE")
+    if not path:
+        return
+    record: dict[str, object] = {
+        "t": time.monotonic(),
+        "kind": str(kind),
+        "source": str(source),
+        "displayed": bool(displayed),
+    }
+    if summary_present is not None:
+        record["summary_present"] = bool(summary_present)
+    if content_present is not None:
+        record["content_present"] = bool(content_present)
+    try:
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True) + "\n")
+    except OSError:
+        pass
 
 
 def _history_search_status_for_result(result: Any) -> HistorySearchStatus:
@@ -4147,6 +5235,33 @@ def _first_enabled_selection_index(selection: _TextualSelection) -> int:
         if not getattr(item, "is_disabled", False) and getattr(item, "disabled_reason", None) is None:
             return index
     return 0
+
+
+def _initial_selection_index(selection: _TextualSelection) -> int:
+    # Rust codex-tui::bottom_pane::list_selection_view::apply_filter restores
+    # the current row before consulting initial_selected_idx.  Textual renders a
+    # lightweight projection of SelectionViewParams, so mirror that selection
+    # policy here rather than defaulting every popup to row zero.
+    items = _selection_active_items(selection)
+    if not bool(getattr(selection.view, "is_searchable", False)):
+        for index, item in enumerate(items):
+            if (
+                getattr(item, "is_current", False)
+                and not getattr(item, "is_disabled", False)
+                and getattr(item, "disabled_reason", None) is None
+            ):
+                return index
+    initial = getattr(selection.view, "initial_selected_idx", None)
+    if initial is not None:
+        try:
+            index = int(initial)
+        except (TypeError, ValueError):
+            index = -1
+        if 0 <= index < len(items):
+            item = items[index]
+            if not getattr(item, "is_disabled", False) and getattr(item, "disabled_reason", None) is None:
+                return index
+    return _first_enabled_selection_index(selection)
 
 
 def _render_selection_view_text(selection: _TextualSelection, selected_idx: int) -> Text:
@@ -4356,6 +5471,8 @@ def _textual_key_to_key_parts(key: str) -> tuple[str, set[str]]:
         "space": " ",
     }
     code = named.get(lower, text)
+    if code == text and len(lower) > 1 and lower[0] == "f" and lower[1:].isdigit():
+        code = "F" + lower[1:]
     if len(code) == 1 and code.isupper():
         modifiers.add("SHIFT")
     return code, modifiers
@@ -4528,6 +5645,86 @@ def _runtime_feature_enabled(app_runtime: TuiAppRuntime, feature: str, default: 
         return bool(default)
 
 
+def _command_popup_flags_for_runtime(app_runtime: TuiAppRuntime) -> CommandPopupFlags:
+    """Mirror Rust ``ChatComposer::builtin_command_flags`` for Textual.
+
+    Rust keeps slash popup visibility on the composer, but the flags are driven
+    by session/runtime feature state.  The Textual shell keeps only a lightweight
+    composer widget, so derive the same semantic flags at popup-sync time.
+    """
+
+    service_tiers = _service_tier_commands_for_runtime(app_runtime)
+    return CommandPopupFlags(
+        collaboration_modes_enabled=(
+            _runtime_feature_enabled(app_runtime, "Collab")
+            or _runtime_feature_enabled(app_runtime, "CollaborationModes")
+        ),
+        connectors_enabled=_runtime_feature_enabled(app_runtime, "Apps"),
+        plugins_command_enabled=_runtime_feature_enabled(app_runtime, "Plugins"),
+        service_tier_commands_enabled=(
+            bool(service_tiers) and _runtime_feature_enabled(app_runtime, "FastMode")
+        ),
+        goal_command_enabled=_runtime_feature_enabled(app_runtime, "Goals"),
+        personality_command_enabled=(
+            _runtime_feature_enabled(app_runtime, "Personality")
+            or _runtime_bool_runtime_value(app_runtime, "supports_personality")
+            or _runtime_bool_runtime_value(app_runtime, "current_model_supports_personality")
+        ),
+        realtime_conversation_enabled=_runtime_feature_enabled(app_runtime, "RealtimeConversation"),
+        audio_device_selection_enabled=(
+            _runtime_bool_runtime_value(app_runtime, "audio_device_selection_enabled")
+            or _runtime_bool_runtime_value(app_runtime, "realtime_audio_device_selection_enabled")
+        ),
+        windows_degraded_sandbox_active=_runtime_bool_runtime_value(app_runtime, "windows_degraded_sandbox_active"),
+        side_conversation_active=_runtime_bool_runtime_value(app_runtime, "side_conversation_active"),
+    )
+
+
+def _service_tier_commands_for_runtime(app_runtime: TuiAppRuntime) -> tuple[ServiceTierCommand, ...]:
+    """Return Rust ``ServiceTierCommand`` values for the current model."""
+
+    current_model = _runtime_display_model(app_runtime)
+    raw_models = _runtime_first_value(
+        app_runtime.active_thread_runtime,
+        getattr(app_runtime.active_thread_runtime, "session_config", None),
+        getattr(app_runtime.chat_widget, "config", None),
+        names=("available_models", "model_presets", "models"),
+    )
+    for model in list(raw_models or ()):
+        model_name = _runtime_value(model, "model") or _runtime_value(model, "id") or _runtime_value(model, "name")
+        if str(model_name or "") != current_model:
+            continue
+        tiers = _runtime_value(model, "service_tiers") or _runtime_value(model, "serviceTiers") or ()
+        commands = tuple(_service_tier_command_from_runtime(tier) for tier in list(tiers or ()))
+        return tuple(command for command in commands if command.name)
+
+    raw_commands = _runtime_first_value(
+        app_runtime.active_thread_runtime,
+        getattr(app_runtime.active_thread_runtime, "session_config", None),
+        getattr(app_runtime.chat_widget, "config", None),
+        names=("service_tier_commands", "serviceTierCommands"),
+    )
+    if raw_commands is None:
+        return ()
+    commands = tuple(_service_tier_command_from_runtime(command) for command in list(raw_commands or ()))
+    return tuple(command for command in commands if command.name)
+
+
+def _service_tier_command_from_runtime(value: object) -> ServiceTierCommand:
+    return ServiceTierCommand(
+        id=str(_runtime_value(value, "id") or _runtime_value(value, "request_value") or _runtime_value(value, "requestValue") or ""),
+        name=str(_runtime_value(value, "name") or "").lower(),
+        description=str(_runtime_value(value, "description") or ""),
+    )
+
+
+def _runtime_bool_runtime_value(app_runtime: TuiAppRuntime, name: str) -> bool:
+    value = _runtime_permission_value(app_runtime, name, None)
+    if value is None:
+        return False
+    return bool(value)
+
+
 def _set_runtime_feature_enabled(app_runtime: TuiAppRuntime, feature: str, enabled: bool) -> None:
     targets = (
         app_runtime.active_thread_runtime,
@@ -4579,7 +5776,7 @@ def _runtime_resume_picker_rows(app_runtime: TuiAppRuntime) -> list[ResumePicker
                 continue
             raw_rows = candidate() if callable(candidate) else candidate
             if hasattr(raw_rows, "__await__"):
-                raw_rows = _run_coro_blocking(raw_rows)
+                raw_rows = _runtime_run_coro_blocking(raw_rows)
             break
         if raw_rows is not None:
             break
@@ -4605,7 +5802,28 @@ def _coerce_resume_picker_row(raw: Any) -> ResumePickerRow | None:
     return None
 
 
-def _resume_picker_selection_view(rows: list[ResumePickerRow], action: SessionPickerAction) -> SelectionViewParams:
+def _resume_picker_state_from_rows(
+    rows: list[ResumePickerRow],
+    action: SessionPickerAction,
+    app_runtime: TuiAppRuntime | None = None,
+) -> PickerState:
+    state = PickerState(show_all=True, action=action)
+    if app_runtime is not None:
+        state.picker_loader = lambda request: _handle_resume_picker_load_request(app_runtime, state, request)
+    state.ingest_page(PickerPage(list(rows)))
+    return state
+
+
+def _resume_picker_selection_view_from_state(state: PickerState) -> SelectionViewParams:
+    return _resume_picker_selection_view(list(state.filtered_rows), state.action, state=state)
+
+
+def _resume_picker_selection_view(
+    rows: list[ResumePickerRow],
+    action: SessionPickerAction,
+    *,
+    state: PickerState | None = None,
+) -> SelectionViewParams:
     items: list[SelectionItem] = []
     for row in rows:
         thread_id = str(row.thread_id or "")
@@ -4619,6 +5837,8 @@ def _resume_picker_selection_view(rows: list[ResumePickerRow], action: SessionPi
             metadata.append(str(row.branch))
         if row.model_provider:
             metadata.append(str(row.model_provider))
+        if state is not None and row.expanded and row.preview:
+            metadata.append(str(row.preview))
         description = " · ".join(metadata) or thread_id
         selected_description = thread_id
         selection = action.selection(row.path, thread_id)
@@ -4638,13 +5858,175 @@ def _resume_picker_selection_view(rows: list[ResumePickerRow], action: SessionPi
         )
     if not items:
         items.append(SelectionItem(name="No sessions found", is_disabled=True))
+    subtitle = "Sort: Updated"
+    footer_hint = "Enter resume; Esc/q cancel."
+    initial_selected_idx = 0
+    if state is not None:
+        filter_label = getattr(getattr(state, "filter_mode", None), "value", "All")
+        sort_label = sort_key_label(getattr(state, "sort_key", "UpdatedAt"))
+        toolbar = getattr(getattr(state, "toolbar_control", None), "value", "Filter")
+        progress = picker_footer_progress_label(state)
+        subtitle = f"Filter: {filter_label}   Sort: {sort_label}   Focus: {toolbar}   {progress}"
+        footer_hint = (
+            "Enter resume; type search; Space search; Backspace erase; Tab focus; "
+            "Right change; Ctrl+T transcript; Ctrl+E expand; Ctrl+O density; Esc clear/cancel."
+        )
+        initial_selected_idx = state.selected
     return SelectionViewParams(
         title=action.title(),
-        subtitle="Sort: Updated",
-        footer_hint="Enter resume; Esc/q cancel.",
+        subtitle=subtitle,
+        footer_hint=footer_hint,
         items=items,
-        initial_selected_idx=0,
+        initial_selected_idx=initial_selected_idx,
     )
+
+
+def _resume_picker_textual_key(key: str) -> str:
+    if key == "escape":
+        return "esc"
+    if key == "space":
+        return " "
+    if key in {"shift+tab", "backtab"}:
+        return "backtab"
+    if key in {"ctrl+t", "ctrl_t"}:
+        return "ctrl-t"
+    if key in {"ctrl+e", "ctrl_e"}:
+        return "ctrl-e"
+    if key in {"ctrl+o", "ctrl_o"}:
+        return "ctrl-o"
+    if key in {"ctrl+l", "ctrl_l"}:
+        return "ctrl-l"
+    if key in {"ctrl+c", "ctrl_c"}:
+        return "ctrl-c"
+    if key in {"ctrl+d", "ctrl_d"}:
+        return "ctrl-d"
+    return key
+
+
+def _run_picker_coro_synchronously(coro: Any) -> Any:
+    try:
+        yielded = coro.send(None)
+    except StopIteration as exc:
+        return exc.value
+    finally:
+        with contextlib.suppress(Exception):
+            coro.close()
+    raise RuntimeError(f"resume picker coroutine yielded unexpectedly: {yielded!r}")
+
+
+def _handle_resume_picker_load_request(app_runtime: TuiAppRuntime, state: PickerState, request: Any) -> None:
+    kind = getattr(request, "kind", None)
+    payload = getattr(request, "payload", None)
+    if kind != "Transcript":
+        return
+    thread_id = str(payload or "").strip()
+    if not thread_id:
+        return
+    try:
+        transcript = _load_resume_picker_transcript(app_runtime, thread_id)
+    except Exception as exc:
+        transcript = [TranscriptCell("plain", f"Failed to load transcript: {exc}", (f"Failed to load transcript: {exc}",))]
+    _run_picker_coro_synchronously(state.handle_background_event(BackgroundEvent.transcript(thread_id, transcript)))
+
+
+def _load_resume_picker_transcript(app_runtime: TuiAppRuntime, thread_id: str) -> list[TranscriptCell]:
+    visibility = _raw_reasoning_visibility_for_runtime(app_runtime)
+    for source in _resume_picker_transcript_sources(app_runtime):
+        if source is None:
+            continue
+        thread = _call_thread_reader(source, thread_id)
+        if thread is not None:
+            return thread_to_transcript_cells(thread, visibility)
+    return _load_resume_picker_local_thread(app_runtime, thread_id, visibility)
+
+
+def _resume_picker_transcript_sources(app_runtime: TuiAppRuntime) -> tuple[Any, ...]:
+    active_runtime = app_runtime.active_thread_runtime
+    return (
+        active_runtime,
+        getattr(active_runtime, "app_server_session", None),
+        getattr(active_runtime, "app_server", None),
+        getattr(active_runtime, "session_config", None),
+        app_runtime,
+    )
+
+
+def _call_thread_reader(source: Any, thread_id: str) -> Any | None:
+    for name in ("thread_read", "read_thread", "load_session_transcript", "load_resume_transcript"):
+        reader = getattr(source, name, None)
+        if not callable(reader):
+            continue
+        for args in ((thread_id, True), (thread_id,), ({"thread_id": thread_id, "include_history": True},)):
+            try:
+                result = reader(*args)
+            except TypeError:
+                continue
+            if hasattr(result, "__await__"):
+                result = _runtime_run_coro_blocking(result)
+            return result
+    return None
+
+
+def _load_resume_picker_local_thread(
+    app_runtime: TuiAppRuntime,
+    thread_id: str,
+    visibility: RawReasoningVisibility,
+) -> list[TranscriptCell]:
+    from pycodex.protocol import ThreadId
+    from pycodex.thread_store import LocalThreadStore, LocalThreadStoreConfig, ReadThreadParams
+
+    active_runtime = app_runtime.active_thread_runtime
+    codex_home = (
+        getattr(active_runtime, "codex_home", None)
+        or getattr(getattr(active_runtime, "session_config", None), "codex_home", None)
+        or getattr(app_runtime, "codex_home", None)
+    )
+    if codex_home is None:
+        raise RuntimeError("resume transcript provider is not available")
+    provider_id = (
+        getattr(getattr(active_runtime, "provider", None), "id", None)
+        or getattr(getattr(active_runtime, "provider", None), "name", None)
+        or getattr(getattr(active_runtime, "session_config", None), "default_model_provider_id", None)
+        or "openai"
+    )
+    store = LocalThreadStore(
+        LocalThreadStoreConfig(
+            codex_home=Path(codex_home),
+            sqlite_home=Path(codex_home),
+            default_model_provider_id=str(provider_id),
+        )
+    )
+    thread = _runtime_run_coro_blocking(
+        store.read_thread(
+            ReadThreadParams(
+                thread_id=ThreadId.from_string(thread_id),
+                include_archived=False,
+                include_history=True,
+            )
+        )
+    )
+    return thread_to_transcript_cells(thread, visibility)
+
+
+def _raw_reasoning_visibility_for_runtime(app_runtime: TuiAppRuntime) -> RawReasoningVisibility:
+    config = getattr(app_runtime, "config", None) or getattr(app_runtime.active_thread_runtime, "session_config", None)
+    return RawReasoningVisibility.Visible if bool(getattr(config, "show_raw_agent_reasoning", False)) else RawReasoningVisibility.Hidden
+
+
+def _render_resume_picker_transcript_overlay(cells: Any) -> str:
+    lines = ["T R A N S C R I P T", "q/Esc close", ""]
+    for cell in list(cells or ()):
+        label = str(getattr(cell, "kind", "plain") or "plain")
+        text_lines = tuple(getattr(cell, "lines", ()) or ())
+        if not text_lines:
+            text = str(getattr(cell, "text", "") or "")
+            text_lines = tuple(text.splitlines()) if text else ()
+        if label:
+            lines.append(label)
+        if text_lines:
+            lines.extend(f"  {line}" for line in text_lines)
+        lines.append("")
+    return "\n".join(lines).rstrip()
 
 
 def _active_agent_selection_notice(app_runtime: TuiAppRuntime) -> str:
@@ -4685,7 +6067,23 @@ def _runtime_model_presets(app_runtime: TuiAppRuntime) -> tuple[ModelPreset, ...
     visible = tuple(preset for preset in presets if preset.model)
     if visible:
         return visible
-    return (ModelPreset(model=current, is_default=True),)
+    return (_fallback_current_model_preset(current),)
+
+
+def _fallback_current_model_preset(current: str) -> ModelPreset:
+    if str(current).startswith("codex-auto-"):
+        return ModelPreset(model=current, is_default=True)
+    return ModelPreset(
+        model=current,
+        default_reasoning_effort=ReasoningEffortConfig.Medium,
+        supported_reasoning_efforts=(
+            ReasoningEffortPreset(ReasoningEffortConfig.Low, "Fast responses with lighter reasoning"),
+            ReasoningEffortPreset(ReasoningEffortConfig.Medium, "Balances speed and reasoning depth for everyday tasks"),
+            ReasoningEffortPreset(ReasoningEffortConfig.High, "Greater reasoning depth for complex problems"),
+            ReasoningEffortPreset(ReasoningEffortConfig.XHigh, "Extra high reasoning depth for complex problems"),
+        ),
+        is_default=True,
+    )
 
 
 def _model_preset_from_runtime(value: object, current_model: str) -> ModelPreset:

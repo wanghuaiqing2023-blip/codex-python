@@ -35,6 +35,13 @@ def test_guardian_status_aggregates_parallel_reviews():
     assert guardian_status_aggregates_parallel_reviews()
 
 
+def test_guardian_review_detail_prefix_matches_rust_bullet():
+    # Rust source contract:
+    # codex-tui::chatwidget::status_state formats parallel guardian details as
+    # `format!("• {}", entry.detail)`.
+    assert GUARDIAN_REVIEW_DETAIL_PREFIX == "• "
+
+
 def test_guardian_status_single_empty_update_finish_and_more_lines():
     """Rust PendingGuardianReviewStatus start_or_update/finish/status_indicator_state semantics."""
 
@@ -58,9 +65,9 @@ def test_guardian_status_single_empty_update_finish_and_more_lines():
     assert state.status_indicator_state() == StatusIndicatorState(
         header="Reviewing 4 approval requests",
         details=(
-            f"{GUARDIAN_REVIEW_DETAIL_PREFIX}updated\n"
-            f"{GUARDIAN_REVIEW_DETAIL_PREFIX}second\n"
-            f"{GUARDIAN_REVIEW_DETAIL_PREFIX}third\n"
+            "• updated\n"
+            "• second\n"
+            "• third\n"
             "+1 more"
         ),
         details_max_lines=4,

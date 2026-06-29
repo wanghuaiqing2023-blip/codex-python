@@ -65,12 +65,12 @@ def with_border_internal(lines: list[Line], forced_inner_width: int | None) -> l
     max_line_width = max((_line_width(line) for line in lines), default=0)
     content_width = max(max_line_width, forced_inner_width or 0)
     border_inner_width = content_width + 2
-    out = [Line.from_text("+" + "-" * border_inner_width + "+", style="dim")]
+    out = [Line.from_text("╭" + "─" * border_inner_width + "╮", style="dim")]
     for line in lines:
         used = _line_width(line)
         padding = " " * max(0, content_width - used)
-        out.append(Line.from_spans([Span("|", "dim"), *line.spans, Span(padding + " |", "dim")]))
-    out.append(Line.from_text("+" + "-" * border_inner_width + "+", style="dim"))
+        out.append(Line.from_spans([Span("│ ", "dim"), *line.spans, Span(padding + " │", "dim")]))
+    out.append(Line.from_text("╰" + "─" * border_inner_width + "╯", style="dim"))
     return out
 
 
@@ -129,6 +129,12 @@ def _permission_profile_name(profile: Any) -> str:
         return profile
     if isinstance(profile, dict):
         return str(profile.get("type", profile.get("name", "")))
+    kind = getattr(profile, "kind", None)
+    if kind is not None:
+        return str(getattr(kind, "value", getattr(kind, "name", kind)))
+    profile_type = getattr(profile, "type", None)
+    if profile_type is not None:
+        return str(getattr(profile_type, "value", getattr(profile_type, "name", profile_type)))
     return str(getattr(profile, "name", profile))
 
 
@@ -143,8 +149,10 @@ def has_yolo_permissions(approval_policy: Any, permission_profile: Any) -> bool:
         fs = str(permission_profile.get("file_system", "")).lower()
         network = str(permission_profile.get("network", "")).lower()
         return fs == "unrestricted" and network == "enabled"
-    fs = str(getattr(permission_profile, "file_system", "")).lower()
-    network = str(getattr(permission_profile, "network", "")).lower()
+    raw_fs = getattr(permission_profile, "file_system", "")
+    raw_network = getattr(permission_profile, "network", "")
+    fs = str(getattr(raw_fs, "type", getattr(raw_fs, "value", raw_fs))).lower()
+    network = str(getattr(raw_network, "value", raw_network)).lower()
     return fs == "unrestricted" and network == "enabled"
 
 

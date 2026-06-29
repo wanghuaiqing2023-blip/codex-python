@@ -19,7 +19,7 @@ import sys
 import time
 import json
 import locale
-from codecs import getincrementaldecoder
+import ctypes
 from threading import Event, Thread
 from typing import Any
 
@@ -60,8 +60,25 @@ def _input_encoding_candidates() -> tuple[str, ...]:
         for value in (getattr(sys.stdin, "encoding", None), locale.getpreferredencoding(False))
         if value
     ]
+    windows_encodings: list[str] = []
     if os.name == "nt":
-        candidates = [encoding for encoding in local_encodings if encoding.lower() != "utf-8"]
+        kernel32 = getattr(ctypes, "windll", None)
+        kernel32 = getattr(kernel32, "kernel32", None)
+        for name in ("GetConsoleCP", "GetACP", "GetOEMCP"):
+            getter = getattr(kernel32, name, None)
+            if callable(getter):
+                try:
+                    codepage = int(getter())
+                except Exception:
+                    continue
+                if codepage > 0:
+                    windows_encodings.append(f"cp{codepage}")
+    if os.name == "nt":
+        candidates = [
+            encoding
+            for encoding in (*local_encodings, *windows_encodings)
+            if encoding.lower() != "utf-8"
+        ]
         candidates.append("utf-8")
     else:
         candidates = ["utf-8"]
@@ -76,29 +93,89 @@ def _input_encoding_candidates() -> tuple[str, ...]:
 class _VtInputDecoder:
     def __init__(self, encodings: tuple[str, ...] | None = None) -> None:
         self.encodings = encodings or _input_encoding_candidates()
-        self._primary_encoding = self.encodings[0] if self.encodings else "utf-8"
-        self._primary_decoder = getincrementaldecoder(self._primary_encoding)()
+        self._pending = b""
 
     def decode(self, data: bytes) -> str:
+        if not data:
+            return ""
+        self._pending += data
+        decoded = _best_decode(self._pending, self.encodings)
+        if decoded is None:
+            if len(self._pending) < 8:
+                return ""
+            encoding = self.encodings[-1] if self.encodings else "utf-8"
+            text = self._pending.decode(encoding, errors="replace")
+            self._pending = b""
+            return text
+        self._pending = b""
+        return decoded
+
+
+def _best_decode(data: bytes, encodings: tuple[str, ...]) -> str | None:
+    candidates: list[tuple[int, int, str, str]] = []
+    for index, encoding in enumerate(encodings or ("utf-8",)):
         try:
-            return self._primary_decoder.decode(data)
-        except UnicodeDecodeError as error:
-            _trace(
-                "textual_windows_vt_input_decode_fallback",
-                error=str(error),
-                encodings=self.encodings,
-            )
-            self._primary_decoder.reset()
-            for encoding in self.encodings:
-                if encoding.lower() == self._primary_encoding.lower():
-                    continue
-                try:
-                    return data.decode(encoding)
-                except UnicodeDecodeError:
-                    continue
-                except LookupError:
-                    continue
-            return data.decode(self.encodings[-1] if self.encodings else "utf-8", errors="replace")
+            text = data.decode(encoding)
+        except (UnicodeDecodeError, LookupError):
+            continue
+        candidates.append((_decoded_text_score(text, encoding), -index, encoding, text))
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    score, _order, encoding, text = candidates[0]
+    if len(candidates) > 1:
+        _trace(
+            "textual_windows_vt_input_decode_selected",
+            encoding=encoding,
+            score=score,
+            encodings=encodings,
+        )
+    return text
+
+
+def _decoded_text_score(text: str, encoding: str) -> int:
+    score = 0
+    if encoding.lower().replace("_", "-") == "utf-8":
+        score += 1
+    for char in text:
+        code = ord(char)
+        if code < 0x80:
+            score += 1
+        elif _is_cjk(code):
+            score += 8
+        elif _is_common_mojibake(code):
+            score -= 10
+        elif code == 0xFFFD:
+            score -= 20
+        elif _is_kana(code):
+            score -= 4
+        else:
+            score += 1
+    return score - max(len(text) - 1, 0)
+
+
+def _is_cjk(code: int) -> bool:
+    return (
+        0x3400 <= code <= 0x4DBF
+        or 0x4E00 <= code <= 0x9FFF
+        or 0xF900 <= code <= 0xFAFF
+        or 0x20000 <= code <= 0x2A6DF
+        or 0x2A700 <= code <= 0x2B73F
+        or 0x2B740 <= code <= 0x2B81F
+        or 0x2B820 <= code <= 0x2CEAF
+    )
+
+
+def _is_kana(code: int) -> bool:
+    return 0x3040 <= code <= 0x30FF
+
+
+def _is_common_mojibake(code: int) -> bool:
+    return (
+        0x0080 <= code <= 0x00FF
+        or 0x02B0 <= code <= 0x02FF
+        or 0xFFFD == code
+    )
 
 
 class _WindowsVtInputMonitor(Thread):

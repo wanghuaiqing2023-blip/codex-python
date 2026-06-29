@@ -1659,7 +1659,7 @@ def sampling_reasoning_summary_delta_plan(
     _ensure_str(delta, "delta")
     _ensure_non_negative_int(summary_index, "summary_index")
     return SamplingReasoningDeltaPlan(
-        event_type="reasoning_content_delta",
+        event_type="reasoning_summary_delta",
         item_id=active_item.id(),
         delta=delta,
         summary_index=summary_index,
@@ -1727,9 +1727,9 @@ def sampling_reasoning_delta_apply_plan(
     if not isinstance(reasoning_delta_plan, SamplingReasoningDeltaPlan):
         raise TypeError("reasoning_delta_plan must be a SamplingReasoningDeltaPlan or None")
     event_type = reasoning_delta_plan.event_type
-    if event_type == "reasoning_content_delta":
+    if event_type in {"reasoning_summary_delta", "reasoning_content_delta"}:
         if reasoning_delta_plan.delta is None or reasoning_delta_plan.summary_index is None:
-            raise TypeError("reasoning_content_delta requires delta and summary_index")
+            raise TypeError(f"{event_type} requires delta and summary_index")
         event_to_emit = {
             "type": event_type,
             "thread_id": reasoning_delta_plan.thread_id,

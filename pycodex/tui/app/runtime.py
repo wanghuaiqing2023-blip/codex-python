@@ -38,6 +38,8 @@ from ..app_command import AppCommand
 from ..app_event import AppEvent, RateLimitRefreshOrigin
 from ..chatwidget.input_submission import UserMessage, UserMessageHistoryRecord, submit_user_message_with_history_record
 from ..chatwidget.protocol import ChatWidgetProtocolRuntime, ServerNotification
+from ..chatwidget.replay import ReplayKind as ChatWidgetReplayKind
+from ..chatwidget.replay import replay_thread_turns
 from ..config_update import build_model_selection_edits, write_config_batch
 from ..status.rate_limits import RateLimitSnapshotDisplay, RateLimitWindowDisplay, rate_limit_snapshot_display_for_limit
 from .agent_navigation import AgentNavigationDirection, AgentNavigationState
@@ -539,6 +541,112 @@ class CoreExecActiveThreadRuntime:
         except Empty:
             return None
 
+    def workspace_command_runner(self) -> Any:
+        """Return the Rust-shaped workspace-command runner for local TUI probes."""
+
+        from ..workspace_command import LocalWorkspaceCommandRunner
+
+        cwd = Path(getattr(self.session_config, "cwd", None) or Path.cwd())
+        return LocalWorkspaceCommandRunner(default_cwd=cwd)
+
+    def list_resume_threads(self) -> tuple[Any, ...]:
+        """Return local thread summaries for the Textual `/resume` picker.
+
+        Rust ownership is split here: ``codex-tui::resume_picker`` owns the
+        picker UI, while ``codex-thread-store::local::list_threads`` owns the
+        local rollout discovery contract.  The product runtime is the boundary
+        that wires those two modules together.
+        """
+
+        try:
+            from pycodex.thread_store import LocalThreadStore, LocalThreadStoreConfig
+            from pycodex.thread_store import ListThreadsParams, SortDirection, ThreadSortKey
+
+            codex_home = self.codex_home or getattr(self.session_config, "codex_home", None)
+            if codex_home is None:
+                return ()
+            provider_id = (
+                getattr(self.provider, "id", None)
+                or getattr(self.provider, "name", None)
+                or getattr(self.session_config, "default_model_provider_id", None)
+                or getattr(self.session_config, "model_provider", None)
+                or "openai"
+            )
+            store = LocalThreadStore(
+                LocalThreadStoreConfig(
+                    codex_home=Path(codex_home),
+                    sqlite_home=Path(codex_home),
+                    default_model_provider_id=str(provider_id),
+                )
+            )
+            page = _run_coro_blocking(
+                store.list_threads(
+                    ListThreadsParams(
+                        page_size=100,
+                        cursor=None,
+                        sort_key=ThreadSortKey.CREATED_AT,
+                        sort_direction=SortDirection.DESC,
+                    )
+                )
+            )
+        except Exception:
+            return ()
+        return tuple(getattr(page, "items", ()) or ())
+
+    def _message_history_config(self) -> Any | None:
+        codex_home = self.codex_home or getattr(self.session_config, "codex_home", None)
+        if codex_home is None:
+            return None
+        try:
+            from pycodex.config.types import History
+            from pycodex.message_history import HistoryConfig
+
+            history = getattr(self.session_config, "history", None) or History()
+            return HistoryConfig.new(Path(codex_home), history)
+        except Exception:
+            return None
+
+    def message_history_metadata(self) -> tuple[int, int] | None:
+        """Return Rust ``codex-message-history`` metadata for TUI session state."""
+
+        config = self._message_history_config()
+        if config is None:
+            return None
+        try:
+            from pycodex.message_history import history_metadata
+
+            log_id, entry_count = _run_coro_blocking(history_metadata(config))
+            return (int(log_id), int(entry_count))
+        except Exception:
+            return None
+
+    def lookup_message_history_entry(self, _thread_id: Any, log_id: int, offset: int) -> Any | None:
+        """Lookup the persistent composer history entry requested by ``codex-tui``."""
+
+        config = self._message_history_config()
+        if config is None:
+            return None
+        try:
+            from pycodex.message_history import lookup
+
+            return lookup(int(log_id), int(offset), config)
+        except Exception:
+            return None
+
+    def append_message_history_entry(self, text: str) -> None:
+        """Persist a submitted user message to ``history.jsonl`` like Rust TUI."""
+
+        config = self._message_history_config()
+        if config is None:
+            return
+        conversation_id = self.conversation_id or self.session_id or "unknown"
+        try:
+            from pycodex.message_history import append_entry
+
+            _run_coro_blocking(append_entry(text, conversation_id, config))
+        except Exception:
+            return
+
     def _seed_configured_mcp_startup_events(self) -> None:
         names = refresh_mcp_startup_expected_servers_from_config(self.session_config)
         for name in names:
@@ -878,6 +986,16 @@ class TuiAppRuntime:
     thread_id: str = "primary"
     rollout_path: Path | None = None
     cwd: Path = field(default_factory=Path.cwd)
+    startup_session_action: str | None = None
+    startup_session_id: str | None = None
+    startup_session_last: bool = False
+    startup_session_show_all: bool = False
+    startup_session_include_non_interactive: bool = False
+    startup_session_selected_action: str | None = None
+    startup_session_selected_thread_id: str | None = None
+    startup_session_selected_path: Path | None = None
+    startup_session_forked_thread_id: str | None = None
+    startup_session_replay_history: list[Any] = field(default_factory=list)
     chat_widget: ChatWidgetProtocolRuntime = field(default_factory=ChatWidgetProtocolRuntime)
     routing_state: ThreadRoutingState = field(default_factory=lambda: ThreadRoutingState(active_thread_id="primary", primary_thread_id="primary"))
     agent_navigation: AgentNavigationState = field(default_factory=AgentNavigationState)
@@ -888,7 +1006,14 @@ class TuiAppRuntime:
     _status_rate_limit_request_id: int = 0
 
     def __post_init__(self) -> None:
+        if self.thread_id and (
+            self.routing_state.active_thread_id,
+            self.routing_state.primary_thread_id,
+        ) == ("primary", "primary"):
+            self.routing_state.active_thread_id = self.thread_id
+            self.routing_state.primary_thread_id = self.thread_id
         self.sync_chat_widget_config_from_runtime()
+        self.sync_message_history_metadata_from_runtime()
 
     def sync_chat_widget_config_from_runtime(self) -> None:
         """Project Rust ``Config`` fields needed by ``chatwidget``.
@@ -922,9 +1047,56 @@ class TuiAppRuntime:
             if hasattr(source, name):
                 setattr(target, name, getattr(source, name))
 
+    def sync_message_history_metadata_from_runtime(self) -> None:
+        metadata = None
+        for source in (
+            self.active_thread_runtime,
+            getattr(self.active_thread_runtime, "app_server_session", None),
+            getattr(self.active_thread_runtime, "app_server", None),
+        ):
+            if source is None:
+                continue
+            method = getattr(source, "message_history_metadata", None)
+            if not callable(method):
+                continue
+            try:
+                metadata = method()
+                if hasattr(metadata, "__await__"):
+                    metadata = _run_coro_blocking(metadata)
+            except Exception:
+                metadata = None
+            if metadata is not None:
+                break
+        if metadata is None:
+            return
+        try:
+            log_id, entry_count = metadata
+        except (TypeError, ValueError):
+            log_id = _field(metadata, "log_id", None)
+            entry_count = _field(metadata, "entry_count", None)
+        if log_id is None:
+            return
+        self.chat_widget.bottom_history_metadata = (
+            self.current_displayed_thread_id(),
+            int(log_id),
+            int(entry_count or 0),
+        )
+
     def submit_user_turn(self, prompt: str) -> ActiveThreadEventStream:
         op = app_command_for_prompt(prompt, cwd=self.cwd)
         return self.submit_op(op)
+
+    def append_message_history_entry(self, text: str) -> None:
+        append = getattr(self.active_thread_runtime, "append_message_history_entry", None)
+        if not callable(append):
+            return
+        try:
+            result = append(text)
+            if hasattr(result, "__await__"):
+                _run_coro_blocking(result)
+        except Exception:
+            return
+        self.sync_message_history_metadata_from_runtime()
 
     def submit_op(self, op: AppCommand) -> ActiveThreadEventStream:
         plan = submit_active_thread_op_plan(self.routing_state, op)
@@ -933,6 +1105,132 @@ class TuiAppRuntime:
             raise RuntimeError(plan.error_message or "failed to submit active thread op")
         self.submitted_ops.append(op)
         return self.active_thread_runtime.submit_thread_op(plan.thread_id, op)
+
+    def fork_startup_session_target(self, target: Any) -> bool:
+        """Fork the selected startup session and install it as the active thread.
+
+        Rust ``codex-tui::app::run`` handles
+        ``SessionSelection::Fork(target_session)`` by calling
+        ``AppServerSession::fork_thread(config, target_session.thread_id)`` and
+        constructing the initial chat widget from the returned started thread.
+        This sync adapter preserves that boundary for the Textual product path:
+        it delegates the fork to the active runtime/app-server facade when one
+        is available, then switches routing identity to the returned forked
+        thread.  It intentionally does not synthesize a local ``UserTurn``.
+        """
+
+        thread_id = str(_field(target, "thread_id", "") or "").strip()
+        if not thread_id:
+            return False
+        path = _field(target, "path", None)
+        self.startup_session_selected_action = "fork"
+        self.startup_session_selected_thread_id = thread_id
+        self.startup_session_selected_path = Path(path) if path is not None else None
+
+        forked = self._call_startup_fork_backend(target, thread_id)
+        if forked is None:
+            return False
+        installed_thread_id = self._install_started_thread(forked, fallback_parent_thread_id=thread_id)
+        return installed_thread_id is not None
+
+    def _call_startup_fork_backend(self, target: Any, thread_id: str) -> Any:
+        config = (
+            getattr(self.active_thread_runtime, "session_config", None)
+            or getattr(self.active_thread_runtime, "config", None)
+        )
+        sources = (
+            self.active_thread_runtime,
+            getattr(self.active_thread_runtime, "app_server_session", None),
+            getattr(self.active_thread_runtime, "app_server", None),
+        )
+        for source in sources:
+            if source is None:
+                continue
+            for name in ("fork_thread_from_selection", "fork_startup_thread", "fork_thread"):
+                method = getattr(source, name, None)
+                if not callable(method):
+                    continue
+                for args in ((target,), (config, thread_id), (thread_id,)):
+                    try:
+                        result = method(*args)
+                    except TypeError:
+                        continue
+                    if hasattr(result, "__await__"):
+                        result = _run_coro_blocking(result)
+                    return result
+        return None
+
+    def _install_started_thread(self, started: Any, *, fallback_parent_thread_id: str | None = None) -> str | None:
+        session = _field(started, "session", None)
+        if session is None:
+            session = _field(started, "thread", started)
+        thread_id = (
+            _field(session, "thread_id", None)
+            or _field(session, "id", None)
+            or _field(started, "thread_id", None)
+            or _field(started, "id", None)
+        )
+        if thread_id is None:
+            return None
+        thread_id_text = str(thread_id)
+        self.thread_id = thread_id_text
+        self.routing_state.active_thread_id = thread_id_text
+        self.routing_state.primary_thread_id = thread_id_text
+        self.startup_session_forked_thread_id = thread_id_text
+
+        for target in (self.active_thread_runtime, getattr(self.active_thread_runtime, "model_client", None)):
+            if target is None:
+                continue
+            try:
+                setattr(target, "thread_id", thread_id_text)
+            except (AttributeError, TypeError):
+                pass
+
+        thread_name = _field(session, "thread_name", None) or _field(session, "name", None)
+        if thread_name is not None:
+            self.chat_widget.thread_name = str(thread_name)
+        forked_from_id = (
+            _field(session, "forked_from_id", None)
+            or _field(session, "forked_from", None)
+            or fallback_parent_thread_id
+        )
+        if forked_from_id is not None:
+            try:
+                setattr(self.chat_widget, "forked_from", str(forked_from_id))
+            except (AttributeError, TypeError):
+                pass
+        cwd = _field(session, "cwd", None)
+        if cwd is not None:
+            self.cwd = Path(cwd)
+        rollout_path = _field(session, "rollout_path", None) or _field(started, "rollout_path", None)
+        if rollout_path is not None:
+            self.rollout_path = Path(rollout_path)
+        self.upsert_agent_picker_thread(thread_id_text)
+        turns = list(_field(started, "turns", []) or [])
+        if turns:
+            self._replay_started_thread_turns(turns)
+        return thread_id_text
+
+    def _replay_started_thread_turns(self, turns: list[Any]) -> None:
+        """Replay returned startup turns through the Rust-shaped chatwidget path.
+
+        Rust ``app::thread_routing::enqueue_primary_thread_session`` installs
+        the returned session, then calls
+        ``ChatWidget::replay_thread_turns(turns, ReplayKind::ResumeInitialMessages)``.
+        The Textual product shell consumes the semantic history emitted by that
+        replay instead of reading app-server turns directly.
+        """
+
+        history = getattr(self.chat_widget.streaming, "history", None)
+        before = len(history) if isinstance(history, list) else 0
+        replay_thread_turns(self.chat_widget, turns, ChatWidgetReplayKind.RESUME_INITIAL_MESSAGES)
+        if isinstance(history, list):
+            self.startup_session_replay_history.extend(history[before:])
+
+    def take_startup_session_replay_history(self) -> list[Any]:
+        history = list(self.startup_session_replay_history)
+        self.startup_session_replay_history.clear()
+        return history
 
     def handle_app_event(self, event: AppEvent | dict[str, Any] | Any) -> EventDispatchPlan:
         """Apply the app-level side effects owned by Rust ``app::event_dispatch``.
@@ -1110,9 +1408,7 @@ class TuiAppRuntime:
             getattr(self.active_thread_runtime, "session_config", None),
             getattr(self.active_thread_runtime, "model_client", None),
         ):
-            if target is not None:
-                setattr(target, "model_reasoning_effort", effort_text)
-                setattr(target, "reasoning_effort", effort_text)
+            _set_runtime_reasoning_effort_value(target, effort_text)
 
     def persist_model_selection(self, model: Any, effort: Any = None) -> bool:
         """Persist a model selection using Rust ``config_update`` semantics."""
@@ -1350,6 +1646,22 @@ def _set_runtime_model_value(target: Any, model: str) -> None:
         return
 
 
+def _set_runtime_reasoning_effort_value(target: Any, effort: str | None) -> None:
+    if target is None:
+        return
+    if isinstance(target, dict):
+        target["model_reasoning_effort"] = effort
+        target["reasoning_effort"] = effort
+        return
+    for name in ("model_reasoning_effort", "reasoning_effort"):
+        if not hasattr(target, name):
+            continue
+        try:
+            setattr(target, name, effort)
+        except (AttributeError, TypeError):
+            pass
+
+
 def exec_run_plan_for_app_command(op: AppCommand) -> ExecRunPlan:
     if op.kind == "Review":
         target = _review_target_for_protocol(op.payload.get("target"))
@@ -1447,13 +1759,13 @@ def _server_notifications_from_session_event(
         delta = getattr(payload, "delta", None)
         if isinstance(delta, str) and delta:
             return (ServerNotification("AgentMessageDelta", {"delta": delta, "thread_id": thread_id, "turn_id": turn_id}),)
-    if event_type in {"reasoning_summary_delta", "reasoning_content_delta"}:
+    if event_type == "reasoning_summary_delta":
         delta = getattr(payload, "delta", None)
         if isinstance(delta, str) and delta:
             return (ServerNotification("ReasoningSummaryTextDelta", {"delta": delta, "thread_id": thread_id, "turn_id": turn_id}),)
     if event_type in {"reasoning_summary_part_added", "agent_reasoning_section_break"}:
         return (ServerNotification("ReasoningSummaryPartAdded", {"thread_id": thread_id, "turn_id": turn_id}),)
-    if event_type == "reasoning_raw_content_delta":
+    if event_type in {"reasoning_content_delta", "reasoning_raw_content_delta"}:
         delta = getattr(payload, "delta", None)
         if isinstance(delta, str) and delta:
             return (ServerNotification("ReasoningTextDelta", {"delta": delta, "thread_id": thread_id, "turn_id": turn_id}),)

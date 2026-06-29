@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import subprocess
 import uuid
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Protocol, Union
+from typing import Any, Dict, List, Mapping, Optional, Protocol, Union
 
 from ._porting import RustTuiModule
 
@@ -146,8 +148,72 @@ class AppServerWorkspaceCommandRunner:
         }
 
 
+@dataclass
+class LocalWorkspaceCommandRunner:
+    """Embedded non-interactive runner for the local Python TUI product path.
+
+    Rust `codex-tui::workspace_command` defines an argv/cwd/env/timeout/output
+    contract and forwards it to the active app-server.  The Python Textual TUI
+    common path currently embeds the active core runtime instead of a full
+    app-server session, so this runner preserves the same workspace-command
+    boundary locally without teaching callers about subprocess details.
+    """
+
+    default_cwd: Path | None = None
+    base_env: Mapping[str, str] | None = None
+
+    async def run(self, command: WorkspaceCommand) -> WorkspaceCommandOutput:
+        return await asyncio.to_thread(self._run_sync, command)
+
+    def _run_sync(self, command: WorkspaceCommand) -> WorkspaceCommandOutput:
+        env = dict(os.environ if self.base_env is None else self.base_env)
+        for key, value in command.env_overrides.items():
+            if value is None:
+                env.pop(key, None)
+            else:
+                env[str(key)] = str(value)
+        cwd = command.cwd_path or self.default_cwd or Path.cwd()
+        try:
+            completed = subprocess.run(
+                list(command.argv),
+                cwd=str(cwd),
+                env=env,
+                input="",
+                text=True,
+                capture_output=True,
+                timeout=max(float(command.timeout_seconds), 0.0),
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise WorkspaceCommandError.new(
+                f"command timed out after {command.timeout_seconds:g}s"
+            ) from None
+        except OSError as exc:
+            raise WorkspaceCommandError.new(exc) from None
+        stdout = completed.stdout or ""
+        stderr = completed.stderr or ""
+        if not command.disable_output_cap_flag:
+            stdout = _cap_text_utf8(stdout, command.output_bytes_cap)
+            stderr = _cap_text_utf8(stderr, command.output_bytes_cap)
+        return WorkspaceCommandOutput(
+            exit_code=int(completed.returncode),
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+
+def _cap_text_utf8(text: str, limit: int) -> str:
+    if limit < 0:
+        limit = 0
+    encoded = text.encode("utf-8")
+    if len(encoded) <= limit:
+        return text
+    return encoded[:limit].decode("utf-8", errors="ignore")
+
+
 __all__ = [
     "AppServerWorkspaceCommandRunner",
+    "LocalWorkspaceCommandRunner",
     "RUST_MODULE",
     "WorkspaceCommand",
     "WorkspaceCommandError",

@@ -6,6 +6,7 @@ from .assertions import assert_status_working
 from .assertions import assert_text_present
 from .events import agent_delta
 from .events import item_completed_command
+from .events import item_completed_reasoning
 from .events import item_started_command
 from .events import mcp_server_status_updated
 from .events import reasoning_raw_delta
@@ -63,6 +64,7 @@ __all__ = [
     "build_rust_python_inline_pair",
     "interactive_tui_comparison_capability",
     "item_completed_command",
+    "item_completed_reasoning",
     "item_started_command",
     "mcp_server_status_updated",
     "native_codex_exe_from_env",

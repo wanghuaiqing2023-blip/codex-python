@@ -90,6 +90,18 @@ class TuiProcessTranscript:
     def normalized_combined(self) -> str:
         return normalize_tui_text(self.stdout + self.stderr)
 
+    def screen_stdout(self, *, rows: int, cols: int) -> str:
+        """Return a best-effort current-screen projection for ConPTY stdout.
+
+        This is intentionally a small VT subset for native comparison tests,
+        not a full terminal emulator. It covers the CSI operations emitted by
+        the Rust Ratatui and Python Textual no-alt-screen paths in current
+        harness traces: cursor positioning/movement, line/screen clearing,
+        character erasure, SGR/color sequences, and repeated blanks.
+        """
+
+        return vt_screen_text(self.stdout, rows=rows, cols=cols)
+
 
 @dataclass(frozen=True)
 class ConptyInputStep:
@@ -139,6 +151,126 @@ def normalize_tui_text(value: str) -> str:
     text = _ANSI_RE.sub("", text)
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     return "\n".join(line.rstrip() for line in text.split("\n")).strip()
+
+
+def vt_screen_text(value: str, *, rows: int, cols: int) -> str:
+    """Render a conservative VT screen snapshot from a captured text stream.
+
+    Rust-focused evidence:
+    - ``codex-tui`` renders through Ratatui/crossterm, which updates terminal
+      cells using CSI cursor movement and erase commands.
+    - Native comparison assertions that need the *current* screen must not use
+      cumulative stdout alone.
+    """
+
+    row_count = max(int(rows), 1)
+    col_count = max(int(cols), 1)
+    screen = [[" "] * col_count for _ in range(row_count)]
+    row = 0
+    col = 0
+    stream = _OSC_RE.sub("", value)
+    index = 0
+    length = len(stream)
+
+    def clamp_cursor() -> None:
+        nonlocal row, col
+        row = min(max(row, 0), row_count - 1)
+        col = min(max(col, 0), col_count - 1)
+
+    def erase_display(mode: int) -> None:
+        nonlocal screen
+        if mode == 2:
+            screen = [[" "] * col_count for _ in range(row_count)]
+        elif mode == 0:
+            for r in range(row, row_count):
+                start = col if r == row else 0
+                for c in range(start, col_count):
+                    screen[r][c] = " "
+        elif mode == 1:
+            for r in range(0, row + 1):
+                end = col if r == row else col_count - 1
+                for c in range(0, min(end + 1, col_count)):
+                    screen[r][c] = " "
+
+    def erase_line(mode: int) -> None:
+        if mode == 2:
+            start, end = 0, col_count
+        elif mode == 1:
+            start, end = 0, min(col + 1, col_count)
+        else:
+            start, end = col, col_count
+        for c in range(start, end):
+            screen[row][c] = " "
+
+    def parse_params(raw: str) -> list[int | None]:
+        if not raw:
+            return []
+        values: list[int | None] = []
+        for part in raw.split(";"):
+            if part == "" or part.startswith("?"):
+                values.append(None)
+                continue
+            try:
+                values.append(int(part))
+            except ValueError:
+                values.append(None)
+        return values
+
+    while index < length:
+        ch = stream[index]
+        if ch == "\x1b" and index + 1 < length and stream[index + 1] == "[":
+            match = re.match(r"\x1b\[([0-?]*)([ -/]*)([@-~])", stream[index:])
+            if not match:
+                index += 1
+                continue
+            params = parse_params(match.group(1))
+            final = match.group(3)
+            first = params[0] if params and params[0] is not None else None
+            count = max(int(first or 1), 1)
+            if final in {"H", "f"}:
+                target_row = params[0] if len(params) >= 1 and params[0] is not None else 1
+                target_col = params[1] if len(params) >= 2 and params[1] is not None else 1
+                row = int(target_row) - 1
+                col = int(target_col) - 1
+                clamp_cursor()
+            elif final == "A":
+                row -= count
+                clamp_cursor()
+            elif final == "B":
+                row += count
+                clamp_cursor()
+            elif final == "C":
+                col += count
+                clamp_cursor()
+            elif final == "D":
+                col -= count
+                clamp_cursor()
+            elif final == "G":
+                col = count - 1
+                clamp_cursor()
+            elif final == "J":
+                erase_display(int(first or 0))
+            elif final == "K":
+                erase_line(int(first or 0))
+            elif final == "X":
+                for c in range(col, min(col + count, col_count)):
+                    screen[row][c] = " "
+            # SGR/color and mode toggles are intentionally ignored.
+            index += len(match.group(0))
+            continue
+        if ch == "\r":
+            col = 0
+        elif ch == "\n":
+            row = min(row + 1, row_count - 1)
+        elif ch == "\b":
+            col = max(col - 1, 0)
+        elif ch >= " ":
+            screen[row][col] = ch
+            if col < col_count - 1:
+                col += 1
+        index += 1
+
+    return "\n".join("".join(line).rstrip() for line in screen).rstrip()
 
 
 def native_comparison_enabled(env: Mapping[str, str] | None = None) -> bool:
@@ -499,11 +631,41 @@ def _write_windows_pipe(handle: object, data: bytes) -> None:
 
 
 def _write_windows_conpty_text(handle: object, text: str, *, chunk_delay: float) -> None:
-    for char in text:
-        _timing_trace("conpty_harness_write_char", char=repr(char), codepoint=ord(char))
-        _write_windows_pipe(handle, char.encode("utf-8", errors="replace"))
+    for chunk in _conpty_input_chunks(text):
+        _timing_trace(
+            "conpty_harness_write_chunk",
+            chunk=repr(chunk),
+            codepoints=[ord(char) for char in chunk],
+        )
+        _write_windows_pipe(handle, chunk.encode("utf-8", errors="replace"))
         if chunk_delay > 0:
             time.sleep(float(chunk_delay))
+
+
+def _conpty_input_chunks(text: str) -> list[str]:
+    """Split typed input while keeping VT special-key sequences atomic."""
+
+    chunks: list[str] = []
+    index = 0
+    while index < len(text):
+        if text[index] == "\x1b":
+            match = re.match(r"\x1bO[P-S]", text[index:])
+            if match:
+                chunks.append(match.group(0))
+                index += len(match.group(0))
+                continue
+            match = re.match(r"\x1b\[[0-?]*[ -/]*[@-~]", text[index:])
+            if match:
+                chunks.append(match.group(0))
+                index += len(match.group(0))
+                continue
+            if index + 1 < len(text):
+                chunks.append(text[index : index + 2])
+                index += 2
+                continue
+        chunks.append(text[index])
+        index += 1
+    return chunks
 
 
 def _resize_windows_conpty(hpc: object, size: TerminalSize) -> None:

@@ -1727,6 +1727,8 @@ class PickerState:
         self.action = action
         self.launch_context = SessionPickerLaunchContext.STARTUP
         self.density = SessionListDensity.COMFORTABLE
+        self.toolbar_control = ToolbarControl.FILTER
+        self.sort_key = "UpdatedAt"
         self.view_persistence = None
         self.pager_keymap = None
         self.list_keymap = None
@@ -1864,7 +1866,7 @@ class PickerState:
             search_token=search_token,
             cwd_filter=self.active_cwd_filter(),
             provider_filter=self.provider_filter,
-            sort_key="UpdatedAt",
+            sort_key=self.sort_key,
         )
         self.pending_load = PendingLoad(token, search_token)
         self.loading_state = LoadingState.LOADING
@@ -1899,6 +1901,8 @@ class PickerState:
 
     async def handle_key(self, key: Any) -> Optional[SessionSelection]:
         code = _key_code(key)
+        if self.is_transcript_loading():
+            return self.handle_transcript_loading_key(code)
         if code == "esc":
             if self.query:
                 self.clear_query_preserving_selection()
@@ -1908,6 +1912,18 @@ class PickerState:
             return SessionSelection.exit()
         if code == "enter":
             return self._selected_selection()
+        if code == "backspace":
+            if self.query:
+                self.set_query(self.query[:-1])
+            return None
+        if code in ("tab", "ctrl-i"):
+            self.focus_next_toolbar_control()
+        elif code in ("backtab", "shift-tab"):
+            self.focus_previous_toolbar_control()
+        elif code in ("right", "ctrl-l"):
+            self.change_focused_toolbar_value()
+        elif code == "left":
+            self.change_focused_toolbar_value()
         if code in ("down", "j"):
             self.selected = min(self.selected + 1, max(0, len(self.filtered_rows) - 1))
             self.ensure_selected_visible()
@@ -1968,6 +1984,7 @@ class PickerState:
         return self.filter_cwd if self.filter_mode is SessionFilterMode.CWD else None
 
     def toggle_sort_key(self) -> None:
+        self.sort_key = "CreatedAt" if sort_key_label(self.sort_key) == "Updated" else "UpdatedAt"
         self.reset_pagination()
         self.load_more_if_needed(LoadTrigger.INITIAL)
 
@@ -2020,7 +2037,7 @@ class PickerState:
         return self.transcript_state.thread_id is not None and self.transcript_state.transcript is None
 
     def note_transcript_loading_frame_drawn(self) -> bool:
-        if self.is_transcript_loading():
+        if self.transcript_state.thread_id is not None and self.overlay is None:
             self.transcript_state.loading_frame_drawn = True
             return True
         return False

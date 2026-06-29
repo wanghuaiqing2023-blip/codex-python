@@ -11,7 +11,7 @@ import os
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any
 from urllib.parse import urlparse
 
 from ._porting import RustTuiModule
@@ -26,10 +26,6 @@ RUST_MODULE = RustTuiModule(
 )
 
 _TOGGLE_RAW_OUTPUT_KEY_ACTION = "/__pycodex_toggle_raw_output"
-
-
-class TUIUnavailableError(RuntimeError):
-    """Backward-compatible exception class for callers that still import it."""
 
 
 class ExitReason(Enum):
@@ -239,50 +235,12 @@ def _environment_manager_is_remote(environment_manager: Any | None) -> bool:
     return bool(is_remote() if callable(is_remote) else is_remote)
 
 
-def _enabled(value: str | None) -> bool:
-    return (value or "").strip().lower() in {"1", "true", "yes", "on", "enable", "enabled"}
-
-
-ENTER_ALT_SCREEN = "\x1b[?1049h"
-LEAVE_ALT_SCREEN = "\x1b[?1049l"
-ENABLE_ALT_SCROLL = "\x1b[?1007h"
-DISABLE_ALT_SCROLL = "\x1b[?1007l"
-HIDE_CURSOR = "\x1b[?25l"
-SHOW_CURSOR = "\x1b[?25h"
-CLEAR_SCREEN = "\x1b[2J"
-CURSOR_HOME = "\x1b[H"
-RESET_STYLE = "\x1b[0m"
-DIM = "\x1b[2m"
-BOLD = "\x1b[1m"
-CYAN = "\x1b[36m"
-GREEN = "\x1b[32m"
-YELLOW = "\x1b[33m"
-RED = "\x1b[31m"
-SAVE_CURSOR = "\x1b[s"
-RESTORE_CURSOR = "\x1b[u"
-def run_terminal_tui(
-    *,
-    stdout: TextIO,
-    stderr: TextIO,
-    stdin: object | None,
-    active_thread_runtime: ActiveThreadRuntime | None = None,
-    use_alt_screen: bool = True,
-) -> int:
-    """Legacy terminal projection compatibility trap.
-
-    Product TTY sessions enter ``textual_runtime.run_textual_tui`` directly
-    from the CLI/app boundary.  The old dependency-light renderer is retained
-    only as a migration symbol so tests can patch/assert it is not used.
-    """
-
-    raise TUIUnavailableError("legacy terminal TUI renderer has been removed; use textual_runtime.run_textual_tui")
-
-
 def run_tui(*_args: object, stderr: object | None = None, **_kwargs: object) -> int:
     """Start the interactive TUI.
 
     Product interactive sessions are owned by ``textual_runtime``.  This
-    compatibility boundary no longer starts the legacy terminal projection.
+    compatibility boundary only accepts an already-constructed active-thread
+    runtime; there is no secondary terminal renderer behind this API.
     """
 
     if stderr is None:
@@ -296,9 +254,6 @@ def run_tui(*_args: object, stderr: object | None = None, **_kwargs: object) -> 
         return run_textual_tui(active_thread_runtime=active_thread_runtime)
     write = getattr(stderr, "write", None)
     if callable(write):
-        if _enabled(os.environ.get("PYCODEX_TUI_FALLBACK")):
-            write("pycodex: interactive TUI is disabled in this Python port.\n")
-            return 0
         write("pycodex: interactive TUI requires an active thread runtime.\n")
     return 64
 
@@ -346,7 +301,6 @@ __all__ = [
     "remote_addr_parse_error_message",
     "remote_addr_supports_auth_token",
     "resolve_remote_addr",
-    "TUIUnavailableError",
     "websocket_url_supports_auth_token",
     "run_main",
     "run_tui",

@@ -1,7 +1,10 @@
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
+from pycodex.config.types import History
+from pycodex.message_history import HistoryConfig, append_entry
 from pycodex.tui.app_server_session import (
     JSONRPC_INVALID_REQUEST,
     JSONRPC_METHOD_NOT_FOUND,
@@ -214,6 +217,36 @@ def test_thread_response_and_rate_limit_helpers_are_semantic_mappings():
         "primary": {"used": 1},
         "secondary": {"used": 2},
     }
+
+
+def test_thread_response_populates_history_metadata_from_config(tmp_path):
+    # Rust test:
+    # codex-tui::app_server_session::tests::session_configured_populates_history_metadata.
+    config = SimpleNamespace(
+        codex_home=tmp_path,
+        history=History(),
+        cwd=tmp_path,
+        permission_profile="read_only",
+    )
+    history_config = HistoryConfig.new(tmp_path, config.history)
+    asyncio.run(append_entry("older", "thread-1", history_config))
+    asyncio.run(append_entry("newer", "thread-1", history_config))
+
+    session_state = asyncio.run(
+        thread_session_state_from_thread_response(
+            {
+                "id": "thread-1",
+                "cwd": str(tmp_path),
+                "sandbox": "read_only",
+            },
+            config=config,
+            mode=ThreadParamsMode.Embedded,
+        )
+    )
+
+    metadata = session_state["message_history"]
+    assert metadata["log_id"] != 0
+    assert metadata["entry_count"] == 2
 
 
 def test_status_account_display_remaps_plan_labels():
