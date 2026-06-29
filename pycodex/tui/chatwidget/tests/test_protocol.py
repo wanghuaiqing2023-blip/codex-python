@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from pycodex.tui.chatwidget.constructor import PLACEHOLDERS, SIDE_PLACEHOLDERS
 from pycodex.tui.chatwidget.protocol import (
     ChatWidgetProtocolRuntime,
     ReplayKind,
@@ -42,6 +43,19 @@ class Widget:
 
     def handle_thread_item(self, item, turn_id, source) -> None:
         self.events.append(("handle_thread_item", item, turn_id, source.is_replay()))
+
+
+def test_protocol_runtime_exposes_constructor_placeholder_fields() -> None:
+    # Rust-derived contract:
+    # - codex-tui::chatwidget::constructor initializes
+    #   normal_placeholder_text/side_placeholder_text from the Rust placeholder
+    #   constant sets.
+    # - Textual product startup reads these ChatWidget fields instead of
+    #   hard-coding a separate composer prompt.
+    runtime = ChatWidgetProtocolRuntime()
+
+    assert runtime.normal_placeholder_text in PLACEHOLDERS
+    assert runtime.side_placeholder_text in SIDE_PLACEHOLDERS
 
 
 def test_handle_server_notification_turn_started_sets_turn_id_and_skips_resume_start() -> None:

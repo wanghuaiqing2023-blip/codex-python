@@ -105,6 +105,31 @@ def reasoning_raw_delta(delta: str, *, thread_id: str = "primary", turn_id: str 
     return ServerNotification("ReasoningTextDelta", {"delta": delta, "thread_id": thread_id, "turn_id": turn_id})
 
 
+def item_completed_reasoning(
+    summary: str | list[str],
+    *,
+    item_id: str = "reasoning-1",
+    thread_id: str = "primary",
+    turn_id: str = "turn-1",
+    content: list[str] | None = None,
+) -> ServerNotification:
+    summary_entries = [summary] if isinstance(summary, str) else list(summary)
+    content_entries = [] if content is None else [{"type": "reasoning_text", "text": text} for text in content]
+    return ServerNotification(
+        "ItemCompleted",
+        {
+            "thread_id": thread_id,
+            "turn_id": turn_id,
+            "item": {
+                "id": item_id,
+                "kind": "Reasoning",
+                "summary": summary_entries,
+                "content": content_entries,
+            },
+        },
+    )
+
+
 def item_started_command(
     command: str,
     *,
@@ -112,6 +137,7 @@ def item_started_command(
     thread_id: str = "primary",
     turn_id: str = "turn-1",
     command_actions: Any = None,
+    source: str = "agent",
 ) -> ServerNotification:
     return ServerNotification(
         "ItemStarted",
@@ -124,6 +150,7 @@ def item_started_command(
                 "status": "InProgress",
                 "command": command,
                 "command_actions": [] if command_actions is None else command_actions,
+                "source": source,
             },
         },
     )
@@ -136,18 +163,30 @@ def item_completed_command(
     thread_id: str = "primary",
     turn_id: str = "turn-1",
     status: str = "Completed",
+    aggregated_output: str | None = None,
+    exit_code: int | None = None,
+    duration_ms: int | None = None,
+    source: str = "agent",
 ) -> ServerNotification:
+    item: dict[str, object] = {
+        "id": item_id,
+        "kind": "CommandExecution",
+        "status": status,
+        "command": command,
+        "command_actions": [],
+        "source": source,
+    }
+    if aggregated_output is not None:
+        item["aggregated_output"] = aggregated_output
+    if exit_code is not None:
+        item["exit_code"] = exit_code
+    if duration_ms is not None:
+        item["duration_ms"] = duration_ms
     return ServerNotification(
         "ItemCompleted",
         {
             "thread_id": thread_id,
             "turn_id": turn_id,
-            "item": {
-                "id": item_id,
-                "kind": "CommandExecution",
-                "status": status,
-                "command": command,
-                "command_actions": [],
-            },
+            "item": item,
         },
     )

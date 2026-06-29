@@ -2734,6 +2734,16 @@ def _parse_reasoning_content_delta(data: Mapping[str, JsonValue]) -> "ReasoningC
     )
 
 
+def _parse_reasoning_summary_delta(data: Mapping[str, JsonValue]) -> "ReasoningSummaryDeltaEvent":
+    return ReasoningSummaryDeltaEvent(
+        thread_id=_required_str(data, "thread_id"),
+        turn_id=_required_str(data, "turn_id"),
+        item_id=_required_str(data, "item_id"),
+        delta=_required_str(data, "delta"),
+        summary_index=_required_int(data, "summary_index") if "summary_index" in data else 0,
+    )
+
+
 def _parse_reasoning_raw_content_delta(data: Mapping[str, JsonValue]) -> "ReasoningRawContentDeltaEvent":
     return ReasoningRawContentDeltaEvent(
         thread_id=_required_str(data, "thread_id"),
@@ -2898,6 +2908,25 @@ class PlanDeltaEvent:
 
 @dataclass(frozen=True)
 class ReasoningContentDeltaEvent:
+    thread_id: str
+    turn_id: str
+    item_id: str
+    delta: str
+    summary_index: int = 0
+
+    def __post_init__(self) -> None:
+        for field_name in ("thread_id", "turn_id", "item_id", "delta"):
+            if not isinstance(getattr(self, field_name), str):
+                raise TypeError(f"{field_name} must be a string")
+        if isinstance(self.summary_index, bool) or not isinstance(self.summary_index, int):
+            raise TypeError("summary_index must be an integer")
+
+    def as_legacy_events(self, show_raw_agent_reasoning: bool = False) -> list["EventMsg"]:
+        return []
+
+
+@dataclass(frozen=True)
+class ReasoningSummaryDeltaEvent:
     thread_id: str
     turn_id: str
     item_id: str
@@ -5074,6 +5103,7 @@ _EVENT_PAYLOAD_PARSERS = {
     "hook_started": HookStartedEvent.from_mapping,
     "hook_completed": HookCompletedEvent.from_mapping,
     "reasoning_content_delta": _parse_reasoning_content_delta,
+    "reasoning_summary_delta": _parse_reasoning_summary_delta,
     "reasoning_raw_content_delta": _parse_reasoning_raw_content_delta,
     "exec_command_begin": _parse_exec_begin,
     "exec_command_end": _parse_exec_end,

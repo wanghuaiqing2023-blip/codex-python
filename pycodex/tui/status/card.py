@@ -384,7 +384,8 @@ def status_permissions_label(
     workspace_root_suffix: Optional[str] = None,
 ) -> str:
     active_id = _active_profile_id(active_permission_profile)
-    approval_policy = str(approval_policy)
+    approval_policy = _display_scalar(approval_policy)
+    approval = _display_scalar(approval)
     if active_id == "read-only":
         label = "Read Only with network access" if sandbox == "read-only with network access" else "Read Only"
         return f"{label} ({approval})"
@@ -408,6 +409,19 @@ def status_permissions_label(
     return f"Custom ({decorated}, {approval})"
 
 
+def _display_scalar(value: Any) -> str:
+    for method_name in ("as_str", "to_json"):
+        method = getattr(value, method_name, None)
+        if callable(method):
+            result = method()
+            if isinstance(result, str):
+                return result
+    enum_value = getattr(value, "value", None)
+    if isinstance(enum_value, str):
+        return enum_value
+    return str(value)
+
+
 def decorate_workspace_sandbox_label(sandbox: str, workspace_root_suffix: Optional[str]) -> str:
     if workspace_root_suffix and str(sandbox).startswith("workspace"):
         return f"{sandbox}{workspace_root_suffix}"
@@ -415,7 +429,10 @@ def decorate_workspace_sandbox_label(sandbox: str, workspace_root_suffix: Option
 
 
 def status_approval_label(approval_policy: str, approvals_reviewer: str, approval: str) -> str:
-    return "auto-review" if str(approval_policy) == "on-request" and str(approvals_reviewer) == "auto-review" else str(approval)
+    approval_policy = _display_scalar(approval_policy)
+    approvals_reviewer = _display_scalar(approvals_reviewer)
+    approval = _display_scalar(approval)
+    return "auto-review" if approval_policy == "on-request" and approvals_reviewer == "auto-review" else approval
 
 
 def display_lines(cell: StatusHistoryCell, width: int) -> Tuple[Line, ...]:

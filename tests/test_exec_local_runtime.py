@@ -1538,6 +1538,111 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("login", tools_when_allowed["exec_command"]["parameters"]["properties"])
         self.assertNotIn("login", tools_when_blocked["exec_command"]["parameters"]["properties"])
 
+    async def test_run_exec_user_turn_core_sampling_projects_reasoning_summary_none(self) -> None:
+        # Rust source contract:
+        # - codex-core/src/session/turn_context.rs resolves
+        #   Config.model_reasoning_summary into TurnContext.reasoning_summary.
+        # - codex-core/src/client.rs::build_reasoning serializes
+        #   ReasoningSummary::None as no `summary` request field.
+        # Product boundary:
+        # - codex-tui uses the same core exec in-memory session path for
+        #   interactive user turns, so `model_reasoning_summary = "none"` must
+        #   suppress server summary requests before Textual decides what to
+        #   render.
+        cwd = Path.cwd()
+        config = ExecSessionConfig(
+            model="gpt-test",
+            model_provider_id="openai",
+            cwd=cwd,
+            reasoning_effort="high",
+            model_reasoning_summary="none",
+            service_tier="priority",
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("inspect request"),)),
+            "inspect request",
+        )
+        provider = LocalHttpProvider()
+        model_info = LocalHttpModelInfo(
+            slug="gpt-test",
+            base_instructions="base",
+            supports_reasoning_summaries=True,
+        )
+        client = ModelClient(
+            session_id="session",
+            thread_id="thread",
+            installation_id="install",
+            provider=provider,
+        )
+        seen_requests = []
+
+        async def sampler(request):
+            seen_requests.append(request.request_plan.request)
+            return [ResponseItem.message("assistant", (ContentItem.output_text("done"),))]
+
+        await run_exec_user_turn_core_sampling(
+            config,
+            plan,
+            client,
+            provider,
+            model_info,
+            sampler,
+        )
+
+        self.assertEqual(seen_requests[0]["reasoning"], {"effort": "high"})
+        self.assertNotIn("summary", seen_requests[0]["reasoning"])
+        self.assertEqual(seen_requests[0]["service_tier"], "priority")
+
+    async def test_run_exec_user_turn_core_sampling_uses_model_default_reasoning_summary(self) -> None:
+        # Rust source contract:
+        # - codex-core/src/session/turn_context.rs resolves turn summary from
+        #   model_info.default_reasoning_summary when config has no explicit
+        #   model_reasoning_summary.
+        # - codex-core/src/client.rs::build_reasoning omits the request
+        #   summary field for ReasoningSummary::None.
+        cwd = Path.cwd()
+        config = ExecSessionConfig(
+            model="gpt-5.5",
+            model_provider_id="openai",
+            cwd=cwd,
+            reasoning_effort="high",
+            model_reasoning_summary=None,
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("inspect request"),)),
+            "inspect request",
+        )
+        provider = LocalHttpProvider()
+        model_info = LocalHttpModelInfo(
+            slug="gpt-5.5",
+            base_instructions="base",
+            supports_reasoning_summaries=True,
+            default_reasoning_summary="none",
+        )
+        client = ModelClient(
+            session_id="session",
+            thread_id="thread",
+            installation_id="install",
+            provider=provider,
+        )
+        seen_requests = []
+
+        async def sampler(request):
+            seen_requests.append(request.request_plan.request)
+            return [ResponseItem.message("assistant", (ContentItem.output_text("done"),))]
+
+        await run_exec_user_turn_core_sampling(
+            config,
+            plan,
+            client,
+            provider,
+            model_info,
+            sampler,
+        )
+
+        self.assertEqual(seen_requests[0]["reasoning"], {"effort": "high"})
+        self.assertNotIn("summary", seen_requests[0]["reasoning"])
+
     async def test_run_exec_user_turn_core_sampling_uses_model_parallel_tool_calls(self) -> None:
         cwd = Path.cwd()
         config = ExecSessionConfig(
@@ -4718,6 +4823,32 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             reasoning_texts_from_local_http_exec_result(result),
             ("public summary",),
         )
+
+    def test_local_http_reasoning_texts_do_not_promote_top_level_text_to_summary(self) -> None:
+        # Rust source contract:
+        # - codex-core/src/event_mapping.rs::parse_turn_item maps only
+        #   ResponseItem::Reasoning.summary into TurnItem::Reasoning.summary_text.
+        # - codex-protocol/src/models.rs defines raw reasoning under
+        #   ResponseItem::Reasoning.content, not as a summary fallback.
+        # Behavior contract: a provider/raw payload with a reasoning `text`
+        # field must not become visible summary text by accident.
+        result = UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(),
+            raw_result={
+                "output": [
+                    {
+                        "type": "reasoning",
+                        "text": "raw-like provider text must stay hidden",
+                        "content": [
+                            {"type": "reasoning_text", "text": "hidden raw chain"},
+                        ],
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(reasoning_texts_from_local_http_exec_result(result), ())
 
     def test_local_http_human_reasoning_uses_raw_content_when_enabled(self) -> None:
         result = UserTurnSamplingResult(
@@ -9725,6 +9856,27 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(model_info.slug, "gpt-5.3-codex")
         self.assertTrue(model_info.supports_reasoning_summaries)
 
+    def test_default_local_http_runtime_uses_bundled_model_reasoning_summary_default(self) -> None:
+        # Rust source contract:
+        # - codex-models-manager/models.json sets gpt-5.5
+        #   default_reasoning_summary to "none".
+        # - codex-core/src/session/turn_context.rs uses
+        #   session_configuration.model_reasoning_summary.unwrap_or(
+        #   model_info.default_reasoning_summary).
+        config = ExecSessionConfig(
+            model="gpt-5.5",
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+        )
+
+        _client, _provider, model_info, _auth = build_default_local_http_exec_runtime(
+            config,
+            env={"OPENAI_API_KEY": "sk-local"},
+        )
+
+        self.assertTrue(model_info.supports_reasoning_summaries)
+        self.assertEqual(model_info.default_reasoning_summary, "none")
+
     def test_default_local_http_runtime_reasoning_summary_support_respects_config_override(self) -> None:
         # Rust crate/module: codex-core::config::model_supports_reasoning_summaries.
         config = ExecSessionConfig(
@@ -9743,6 +9895,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertTrue(model_info.supports_reasoning_summaries)
+        self.assertEqual(model_info.default_reasoning_summary, "auto")
 
     def test_default_local_http_runtime_keeps_custom_provider_reasoning_summaries_disabled_by_default(self) -> None:
         # Rust parity guard: without model metadata or explicit config override,

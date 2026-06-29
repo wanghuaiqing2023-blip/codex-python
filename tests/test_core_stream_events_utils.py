@@ -1380,7 +1380,7 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
                 active_item_is_streaming_to_client=True,
             ),
             SamplingReasoningDeltaPlan(
-                event_type="reasoning_content_delta",
+                event_type="reasoning_summary_delta",
                 item_id="rs-1",
                 delta="summary",
                 summary_index=2,
@@ -1463,17 +1463,17 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
         self.assertEqual(
             sampling_reasoning_delta_apply_plan(
                 SamplingReasoningDeltaPlan(
-                    event_type="reasoning_content_delta",
+                    event_type="reasoning_summary_delta",
                     item_id="rs-1",
                     delta="summary",
                     summary_index=2,
                 )
             ),
             SamplingReasoningDeltaApplyPlan(
-                event_type="reasoning_content_delta",
+                event_type="reasoning_summary_delta",
                 item_id="rs-1",
                 event_to_emit={
-                    "type": "reasoning_content_delta",
+                    "type": "reasoning_summary_delta",
                     "thread_id": "",
                     "turn_id": "",
                     "item_id": "rs-1",
@@ -1485,7 +1485,7 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
         self.assertEqual(
             sampling_reasoning_delta_apply_plan(
                 SamplingReasoningDeltaPlan(
-                    event_type="reasoning_content_delta",
+                    event_type="reasoning_summary_delta",
                     item_id="rs-1",
                     delta="summary",
                     summary_index=2,
@@ -1494,7 +1494,7 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
                 )
             ).event_to_emit,
             {
-                "type": "reasoning_content_delta",
+                "type": "reasoning_summary_delta",
                 "thread_id": "thread-1",
                 "turn_id": "turn-1",
                 "item_id": "rs-1",
@@ -1545,10 +1545,10 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
         self.assertIsNone(sampling_reasoning_delta_apply_plan(None))
 
     def test_sampling_reasoning_delta_apply_plan_rejects_incomplete_or_unknown_shapes(self) -> None:
-        with self.assertRaisesRegex(TypeError, "reasoning_content_delta requires delta"):
+        with self.assertRaisesRegex(TypeError, "reasoning_summary_delta requires delta"):
             sampling_reasoning_delta_apply_plan(
                 SamplingReasoningDeltaPlan(
-                    event_type="reasoning_content_delta",
+                    event_type="reasoning_summary_delta",
                     item_id="rs-1",
                     summary_index=0,
                 )
@@ -1978,7 +1978,7 @@ class CoreStreamEventsUtilsTests(unittest.TestCase):
         self.assertEqual(
             reasoning_delta.reasoning_delta_plan,
             SamplingReasoningDeltaPlan(
-                event_type="reasoning_content_delta",
+                event_type="reasoning_summary_delta",
                 item_id="rs-1",
                 delta="summary",
                 summary_index=0,

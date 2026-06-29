@@ -2,6 +2,9 @@
 
 from pathlib import Path
 
+from pycodex.protocol.models import ManagedFileSystemPermissions, NetworkSandboxPolicy
+from pycodex.protocol.models import PermissionProfile as ProtocolPermissionProfile
+from pycodex.tui.chatwidget.permission_popups import PermissionProfile
 from pycodex.tui.history_cell.session import (
     SESSION_HEADER_MAX_INNER_WIDTH,
     SessionHeaderHistoryCell,
@@ -28,11 +31,11 @@ def test_card_inner_width_matches_rust_boundary() -> None:
 
 
 def test_with_border_uses_widest_content_and_forced_width() -> None:
-    assert texts(with_border(["abc"])) == ["+-----+", "|abc |", "+-----+"]
+    assert texts(with_border(["abc"])) == ["╭─────╮", "│ abc │", "╰─────╯"]
     assert texts(with_border_with_inner_width(["abc"], 5)) == [
-        "+-------+",
-        "|abc   |",
-        "+-------+",
+        "╭───────╮",
+        "│ abc   │",
+        "╰───────╯",
     ]
 
 
@@ -64,10 +67,27 @@ def test_session_header_raw_lines_include_reasoning_and_yolo() -> None:
 
 
 def test_has_yolo_permissions_matches_approval_and_profile_rules() -> None:
+    # Rust crate/module: codex-tui::history_cell::session.
+    # Rust tests: yolo_mode_includes_managed_full_access_profiles and
+    # yolo_mode_excludes_external_sandbox_profiles.
     assert has_yolo_permissions("Never", "Disabled") is True
     assert has_yolo_permissions("never", {"file_system": "unrestricted", "network": "enabled"}) is True
+    assert has_yolo_permissions("never", PermissionProfile.disabled()) is True
+    assert has_yolo_permissions("never", ProtocolPermissionProfile.disabled()) is True
+    assert (
+        has_yolo_permissions(
+            "never",
+            ProtocolPermissionProfile.managed(
+                ManagedFileSystemPermissions.unrestricted(),
+                NetworkSandboxPolicy.ENABLED,
+            ),
+        )
+        is True
+    )
     assert has_yolo_permissions("on-request", "Disabled") is False
     assert has_yolo_permissions("never", {"file_system": "read_only", "network": "enabled"}) is False
+    assert has_yolo_permissions("never", PermissionProfile.read_only(network_access=True)) is False
+    assert has_yolo_permissions("never", ProtocolPermissionProfile.external(NetworkSandboxPolicy.ENABLED)) is False
 
 
 def test_new_session_info_first_event_includes_help_lines() -> None:

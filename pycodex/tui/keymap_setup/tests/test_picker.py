@@ -107,19 +107,19 @@ def test_action_count_line_and_picker_inventory_are_stable() -> None:
 def test_picker_hint_lines_match_rust_visible_copy() -> None:
     assert [span.text for span in keymap_picker_hint_line()] == [
         "left/right",
-        " group 路 ",
+        " group · ",
         "enter",
-        " edit shortcut 路 ",
+        " edit shortcut · ",
         "*",
-        " custom 路 ",
+        " custom · ",
         "-",
-        " unbound 路 ",
+        " unbound · ",
         "esc",
         " close",
     ]
     assert [span.text for span in keymap_debug_hint_line()] == [
         "enter",
-        " start inspector 路 ",
+        " start inspector · ",
         "esc",
         " close",
     ]

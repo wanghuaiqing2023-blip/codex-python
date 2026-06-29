@@ -183,7 +183,10 @@ def item_event_to_server_notification(msg: JsonValue, thread_id: str, turn_id: s
     if event_type == "plan_delta":
         return ServerNotification("PlanDelta", PlanDeltaNotification(thread_id, turn_id, _str(_get(payload, "item_id", "itemId"), "item_id"), _str(_get(payload, "delta"), "delta")))
 
-    if event_type == "reasoning_content_delta":
+    if event_type == "reasoning_summary_delta" or (
+        event_type == "reasoning_content_delta"
+        and _get(payload, "content_index", "contentIndex", default=None) is None
+    ):
         return ServerNotification(
             "ReasoningSummaryTextDelta",
             ReasoningSummaryTextDeltaNotification(
@@ -195,7 +198,10 @@ def item_event_to_server_notification(msg: JsonValue, thread_id: str, turn_id: s
             ),
         )
 
-    if event_type == "reasoning_raw_content_delta":
+    if event_type == "reasoning_raw_content_delta" or (
+        event_type == "reasoning_content_delta"
+        and _get(payload, "content_index", "contentIndex", default=None) is not None
+    ):
         return ServerNotification(
             "ReasoningTextDelta",
             ReasoningTextDeltaNotification(

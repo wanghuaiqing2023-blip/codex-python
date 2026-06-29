@@ -159,7 +159,7 @@ from .doctor_updates import (
     redacted_doctor_report_mapping,
 )
 from pycodex.tui import run_tui
-from pycodex.tui.app.runtime import CoreExecActiveThreadRuntime
+from pycodex.tui.app.runtime import CoreExecActiveThreadRuntime, TuiAppRuntime
 from pycodex.execpolicy import ExecPolicyPrefixRule
 from pycodex.git_utils import current_branch_name, default_branch_name
 from pycodex.utils.home_dir import find_codex_home
@@ -2487,6 +2487,10 @@ def _run_tui(
         print(str(exc), file=stderr)
         return 1
 
+    startup_session_kwargs = _startup_session_kwargs(parsed)
+    if startup_session_kwargs:
+        app_runtime = TuiAppRuntime(active_thread_runtime, **startup_session_kwargs)
+        active_thread_runtime = app_runtime.active_thread_runtime
     tui_stdin = sys.stdin if stdin_is_terminal and stdin is getattr(sys.stdin, "buffer", None) else stdin
     from pycodex.tui.textual_runtime import run_textual_tui, should_use_textual_tui
 
@@ -2497,6 +2501,8 @@ def _run_tui(
         use_alt_screen=not bool(parsed.root_options.get("no_alt_screen", False)),
     ):
 
+        if startup_session_kwargs:
+            return run_textual_tui(active_thread_runtime=app_runtime, stdout=out)
         return run_textual_tui(active_thread_runtime=active_thread_runtime, stdout=out)
     print("Error: stdin is not a terminal", file=stderr)
     return 1
@@ -2587,6 +2593,20 @@ def _build_tui_core_active_thread_runtime(parsed: ParsedCli, *, stderr: TextIO) 
         max_tool_followups=local_http_exec_max_tool_rounds(),
         startup_prewarm_enabled=True,
     )
+
+
+def _startup_session_kwargs(parsed: ParsedCli) -> dict[str, object]:
+    root = parsed.root_options
+    action = root.get("tui_startup_session_action")
+    if action not in {"resume", "fork"}:
+        return {}
+    return {
+        "startup_session_action": action,
+        "startup_session_id": root.get("tui_startup_session_id") if isinstance(root.get("tui_startup_session_id"), str) else None,
+        "startup_session_last": bool(root.get("tui_startup_session_last", False)),
+        "startup_session_show_all": bool(root.get("tui_startup_session_show_all", False)),
+        "startup_session_include_non_interactive": bool(root.get("tui_startup_session_include_non_interactive", False)),
+    }
 
 
 def _read_json_state(path: Path) -> dict[str, Any]:
@@ -5602,13 +5622,6 @@ def _run_resume_or_fork_command(
         print(f"Too many arguments for `{command}`.", file=stderr)
         return 2
 
-    if _fallback_enabled("PYCODEX_TUI_FALLBACK"):
-        print(
-            f"pycodex: {command} accepted and running in non-interactive fallback mode.",
-            file=stderr,
-        )
-        return 0
-
     if command == "resume" and _fallback_enabled("PYCODEX_RESUME_EXEC_FALLBACK"):
         filtered_args = tuple(arg for arg in command_args if arg != "--include-non-interactive")
         return _run_noninteractive_exec(
@@ -5651,13 +5664,64 @@ def _run_resume_or_fork_command(
             file=stderr,
         )
 
-    return _run_tui(
+    tui_parsed = _with_startup_session_options(
         parsed,
+        action=command,
+        session_id=session_id,
+        last=last,
+        show_all=include_all,
+        include_non_interactive=include_non_interactive if command == "resume" else False,
+    )
+    return _run_tui(
+        tui_parsed,
         stdout=stdout,
         stderr=stderr,
         stdin=stdin,
         stdin_is_terminal=stdin_is_terminal,
     )
+
+
+def _with_startup_session_options(
+    parsed: ParsedCli,
+    *,
+    action: str,
+    session_id: str | None,
+    last: bool,
+    show_all: bool,
+    include_non_interactive: bool,
+) -> ParsedCli:
+    """Mirror Rust ``finalize_resume_interactive`` / ``finalize_fork_interactive``.
+
+    Rust converts ``codex resume`` and ``codex fork`` into a normal TUI launch
+    with startup-session fields set on ``TuiCli``.  Python keeps the parsed
+    top-level command for diagnostics, but stores the same launch intent in
+    ``root_options`` so the TUI runtime can project the startup picker.
+    """
+
+    root_options = dict(parsed.root_options)
+    if action == "fork":
+        root_options.update(
+            {
+                "tui_startup_session_action": "fork",
+                "tui_startup_session_picker": session_id is None and not last,
+                "tui_startup_session_last": bool(last),
+                "tui_startup_session_id": session_id,
+                "tui_startup_session_show_all": bool(show_all),
+                "tui_startup_session_include_non_interactive": False,
+            }
+        )
+    else:
+        root_options.update(
+            {
+                "tui_startup_session_action": "resume",
+                "tui_startup_session_picker": session_id is None and not last,
+                "tui_startup_session_last": bool(last),
+                "tui_startup_session_id": session_id,
+                "tui_startup_session_show_all": bool(show_all),
+                "tui_startup_session_include_non_interactive": bool(include_non_interactive),
+            }
+        )
+    return replace(parsed, root_options=root_options)
 
 
 def _run_apply_command(

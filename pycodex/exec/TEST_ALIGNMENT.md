@@ -24,7 +24,10 @@ as they are reconciled against Python modules and focused tests.
   responses, and session-configured mapping. Python `ExecRunMainPlan` mirrors
   Rust `run_main` startup decisions for processor selection, telemetry/logging
   defaults, runtime paths, environment-manager source, config warnings, and
-  in-process app-server start args.
+  in-process app-server start args. The exec bootstrap/session projection also
+  carries effective `tui.keymap` values from config.toml and root `-c`
+  overrides into `ExecSessionConfig.tui_keymap`, matching the path consumed by
+  the TUI runtime for keymap dispatch.
 - Focused validation: `python -m pytest tests/test_exec_cli.py
   tests/test_exec_run.py tests/test_exec_session.py
   tests/test_exec_config_plan.py tests/test_exec_event_processor.py -q` ->

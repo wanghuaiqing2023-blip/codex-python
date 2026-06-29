@@ -13,13 +13,10 @@ terminal harness while moving the UI driver to the Textual product shell.
 from __future__ import annotations
 
 import asyncio
-import inspect
-import io
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
-from pycodex.tui import TUIUnavailableError, run_terminal_tui
 from pycodex.tui.app.runtime import user_turn_prompt
 from pycodex.tui.tests.harness import textual_scenarios
 
@@ -27,6 +24,7 @@ from .harness import agent_delta
 from .harness import assert_no_duplicate
 from .harness import assert_text_present
 from .harness import item_completed_command
+from .harness import item_completed_reasoning
 from .harness import item_started_command
 from .harness import ManualActiveThreadRuntime
 from .harness import mcp_server_status_updated
@@ -47,29 +45,15 @@ def _assert_idle_footer(text: str) -> None:
     assert "status: Ready" not in text
 
 
-def test_textual_harness_runtime_is_independent_of_legacy_terminal_runner() -> None:
+def _jsonl(path: Path) -> list[dict[str, object]]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def test_textual_harness_runtime_uses_textual_active_thread_boundary() -> None:
     # Rust ownership:
     # codex-tui::app owns the active-thread runtime submit boundary. Textual
-    # product harnesses should model that boundary directly rather than importing
-    # the legacy non-TTY terminal-projection runner.
+    # product harnesses should model that boundary directly.
     assert textual_scenarios.ManualActiveThreadRuntime.__module__.endswith(".runtime")
-    assert "run_terminal_tui" not in inspect.getsource(textual_scenarios)
-
-
-def test_legacy_terminal_runner_is_not_a_runnable_tui() -> None:
-    # Rust source contract:
-    # - codex-tui/src/tui.rs owns the single product terminal runtime.
-    # - codex-cli/src/main.rs::run_interactive_tui dispatches interactive
-    #   sessions into codex_tui::run_main, not into a second line-mode renderer.
-    # Python keeps this symbol only as a migration trap so product code/tests can
-    # assert it is not used while Textual owns the TTY surface.
-    with pytest.raises(TUIUnavailableError, match="legacy terminal TUI renderer has been removed"):
-        run_terminal_tui(
-            stdout=io.StringIO(),
-            stderr=io.StringIO(),
-            stdin=io.StringIO("/quit\n"),
-            active_thread_runtime=None,
-        )
 
 
 def test_textual_harness_records_input_to_active_thread_event_trace() -> None:
@@ -191,6 +175,38 @@ def test_textual_harness_active_status_hides_unbound_interrupt_hint() -> None:
             tui.send(agent_delta("done"))
             tui.send(turn_completed())
             await tui.wait_for_idle()
+
+    asyncio.run(scenario())
+
+
+def test_textual_harness_turn_completed_restores_passive_footer() -> None:
+    # Rust source/test contract:
+    # - codex-tui::status_indicator_widget owns the active
+    #   "Working (Ns ... interrupt)" row while a task is running.
+    # - codex-tui::bottom_pane::footer owns the passive model/directory footer
+    #   once chatwidget::turn_runtime::on_task_complete restores idle state.
+    async def scenario() -> None:
+        async with start_textual_scenario() as tui:
+            await tui.submit("finish and return to footer")
+            await tui.wait_for_submit_count(1)
+            active_status = tui.status()
+            assert "Working (0s" in active_status
+            assert "esc to interrupt" in active_status
+
+            tui.send(turn_started())
+            tui.send(agent_delta("done"))
+            tui.send(turn_completed())
+            await tui.wait_for_idle()
+
+            idle_status = tui.status()
+            assert "Working" not in idle_status
+            assert "to interrupt" not in idle_status
+            assert "status: Ready" not in idle_status
+            _assert_idle_footer(idle_status)
+
+            text = tui.text()
+            assert_text_present(text, "done")
+            assert_no_duplicate(text, "done")
 
     asyncio.run(scenario())
 
@@ -331,7 +347,9 @@ def test_textual_harness_submits_queued_followup_after_turn_completed() -> None:
 def test_textual_harness_reasoning_summary_enters_transcript_without_raw_reasoning() -> None:
     # Rust source contract:
     # chatwidget::protocol routes ReasoningSummaryTextDelta into live status and
-    # chatwidget::streaming finalizes it as a reasoning summary block. Raw
+    # chatwidget::streaming finalizes it through history_cell::messages::
+    # new_reasoning_summary_block, which uses the first bold span as status
+    # header but renders only the post-header summary body in history. Raw
     # reasoning text is hidden unless explicitly enabled.
     async def scenario() -> None:
         async with start_textual_scenario() as tui:
@@ -349,21 +367,145 @@ def test_textual_harness_reasoning_summary_enters_transcript_without_raw_reasoni
 
             text = tui.text()
             assert_text_present(text, "reasoning")
-            assert_text_present(text, "**Inspecting** files")
-            assert_text_present(text, "**Planning** answer")
+            assert_text_present(text, "files")
+            assert_text_present(text, "answer")
+            assert "**Inspecting**" not in text
             assert "raw hidden chain" not in text
             assert_no_duplicate(text, "final answer")
 
     asyncio.run(scenario())
 
 
-def test_textual_harness_reasoning_summary_none_suppresses_summary_transcript() -> None:
+def test_textual_harness_live_reasoning_summary_is_not_rendered_twice_when_item_completes() -> None:
     # Rust source/test contract:
-    # - codex-core config accepts model_reasoning_summary = "none" and omits
-    #   summary from model requests.
-    # - codex-tui only displays server-provided summary/raw reasoning through
-    #   chatwidget::protocol; Python must still respect the same config if a
-    #   replay/test stream contains summary events.
+    # codex-tui::chatwidget::tests::history_replay::
+    # live_reasoning_summary_is_not_rendered_twice_when_item_completes proves
+    # live ReasoningSummaryTextDelta and the final Reasoning item summary
+    # consolidate into one reasoning history block, not duplicate transcript
+    # text. Raw reasoning content remains hidden by default.
+    async def scenario() -> None:
+        async with start_textual_scenario() as tui:
+            await tui.submit("reason once")
+            await tui.wait_for_submit_count(1)
+            tui.send(turn_started())
+            tui.send(reasoning_summary_delta("**Inspecting** project"))
+            await tui.wait_for_text("Inspecting", timeout=1.0)
+            tui.send(
+                item_completed_reasoning(
+                    "**Inspecting** project",
+                    content=["raw hidden chain"],
+                )
+            )
+            tui.send(agent_delta("final answer"))
+            tui.send(turn_completed())
+            await tui.wait_for_idle()
+
+            text = tui.text()
+            assert "**Inspecting** project" not in text
+            assert "raw hidden chain" not in text
+            assert_no_duplicate(text, "final answer")
+
+    asyncio.run(scenario())
+
+
+def test_textual_harness_reasoning_projection_trace_classifies_summary_and_raw(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    # Rust source contract:
+    # - codex-tui::chatwidget::protocol routes ReasoningSummaryTextDelta into
+    #   visible reasoning summary state.
+    # - ReasoningTextDelta is raw reasoning and is only visible when
+    #   show_raw_agent_reasoning is true.
+    # - chatwidget::replay records completed Reasoning.summary by default while
+    #   keeping Reasoning.content gated. The trace is content-free: it records
+    #   event classification and visibility only, never reasoning text.
+    trace_path = tmp_path / "reasoning-trace.jsonl"
+    monkeypatch.setenv("PYCODEX_TUI_REASONING_TRACE", str(trace_path))
+
+    async def scenario() -> None:
+        async with start_textual_scenario() as tui:
+            await tui.submit("trace reason")
+            await tui.wait_for_submit_count(1)
+            tui.send(turn_started())
+            tui.send(reasoning_summary_delta("**Inspecting** project details"))
+            tui.send(reasoning_raw_delta("raw hidden chain"))
+            tui.send(
+                item_completed_reasoning(
+                    "**Inspecting** project details",
+                    content=["raw completed reasoning must stay hidden"],
+                )
+            )
+            tui.send(agent_delta("final answer"))
+            tui.send(turn_completed())
+            await tui.wait_for_idle()
+
+            text = tui.text()
+            assert_text_present(text, "project details")
+            assert "**Inspecting**" not in text
+            assert "raw hidden chain" not in text
+            assert "raw completed reasoning must stay hidden" not in text
+
+    asyncio.run(scenario())
+
+    records = _jsonl(trace_path)
+    assert {
+        "kind": "ReasoningSummaryTextDelta",
+        "source": "summary_delta",
+        "displayed": True,
+    } in [{key: record[key] for key in ("kind", "source", "displayed")} for record in records]
+    assert {
+        "kind": "ReasoningTextDelta",
+        "source": "raw_delta",
+        "displayed": False,
+    } in [{key: record[key] for key in ("kind", "source", "displayed")} for record in records]
+    completed = [record for record in records if record.get("source") == "completed_reasoning"]
+    assert completed
+    assert completed[-1]["displayed"] is True
+    assert completed[-1]["summary_present"] is True
+    assert completed[-1]["content_present"] is True
+    serialized = trace_path.read_text(encoding="utf-8")
+    assert "raw hidden chain" not in serialized
+    assert "raw completed reasoning must stay hidden" not in serialized
+    assert "**Inspecting** project" not in serialized
+
+
+def test_textual_harness_completed_reasoning_content_only_is_hidden_by_default() -> None:
+    # Rust source contract:
+    # - codex-tui::chatwidget::replay::handle_thread_item only replays
+    #   ThreadItem::Reasoning.content when show_raw_agent_reasoning is true.
+    # - codex-tui::chatwidget::protocol gates live ReasoningTextDelta the same
+    #   way. A completed reasoning item with raw content but no summary must not
+    #   create a visible reasoning block in the default product path.
+    async def scenario() -> None:
+        async with start_textual_scenario() as tui:
+            await tui.submit("content only")
+            await tui.wait_for_submit_count(1)
+            tui.send(turn_started())
+            tui.send(
+                item_completed_reasoning(
+                    [],
+                    content=["raw completed reasoning must stay hidden"],
+                )
+            )
+            tui.send(agent_delta("final answer"))
+            tui.send(turn_completed())
+            await tui.wait_for_idle()
+
+            text = tui.text()
+            assert "raw completed reasoning must stay hidden" not in text
+            assert_text_present(text, "final answer")
+
+    asyncio.run(scenario())
+
+
+def test_textual_harness_reasoning_summary_event_displays_even_when_request_summary_none() -> None:
+    # Rust source/test contract:
+    # - codex-core config accepts model_reasoning_summary = "none" and uses it
+    #   while constructing model requests.
+    # - codex-tui::chatwidget::protocol does not re-check that request config
+    #   when a ReasoningSummaryTextDelta has already arrived; server-provided
+    #   summary events are rendered, while raw reasoning remains gated.
     runtime = ManualActiveThreadRuntime()
     runtime.session_config = SimpleNamespace(model_reasoning_summary="none", show_raw_agent_reasoning=False)
 
@@ -381,9 +523,44 @@ def test_textual_harness_reasoning_summary_none_suppresses_summary_transcript() 
             await tui.wait_for_idle()
 
             text = tui.text()
-            assert "reasoning" not in text
-            assert "**Inspecting** files" not in text
-            assert "**Planning** answer" not in text
+            assert_text_present(text, "reasoning")
+            assert_text_present(text, "files")
+            assert_text_present(text, "answer")
+            assert "**Inspecting**" not in text
+            assert "raw hidden chain" not in text
+            assert_text_present(text, "final answer")
+
+    asyncio.run(scenario())
+
+
+def test_textual_harness_hide_agent_reasoning_does_not_filter_summary_events() -> None:
+    # Rust source contract:
+    # - codex-core/src/config/mod.rs loads hide_agent_reasoning from Config.
+    # - codex-tui keeps reasoning summary and raw reasoning as distinct events;
+    #   chatwidget::protocol always routes ReasoningSummaryTextDelta, while
+    #   ReasoningTextDelta is still gated by show_raw_agent_reasoning.
+    runtime = ManualActiveThreadRuntime()
+    runtime.session_config = SimpleNamespace(
+        hide_agent_reasoning=True,
+        model_reasoning_summary="auto",
+        show_raw_agent_reasoning=False,
+    )
+
+    async def scenario() -> None:
+        async with start_textual_scenario(runtime=runtime) as tui:
+            await tui.submit("reason hidden")
+            await tui.wait_for_submit_count(1)
+            tui.send(turn_started())
+            tui.send(reasoning_summary_delta("**Inspecting** files"))
+            tui.send(reasoning_raw_delta("raw hidden chain"))
+            tui.send(agent_delta("final answer"))
+            tui.send(turn_completed())
+            await tui.wait_for_idle()
+
+            text = tui.text()
+            assert_text_present(text, "reasoning")
+            assert_text_present(text, "files")
+            assert "**Inspecting**" not in text
             assert "raw hidden chain" not in text
             assert_text_present(text, "final answer")
 
@@ -393,8 +570,8 @@ def test_textual_harness_reasoning_summary_none_suppresses_summary_transcript() 
 def test_textual_harness_raw_reasoning_config_can_show_raw_without_summary() -> None:
     # Rust source contract:
     # codex-tui::chatwidget::protocol only routes ReasoningTextDelta when
-    # show_raw_agent_reasoning is enabled. Summary visibility remains governed
-    # by model_reasoning_summary.
+    # show_raw_agent_reasoning is enabled. Server-provided summary deltas are
+    # still rendered if they arrive.
     runtime = ManualActiveThreadRuntime()
     runtime.session_config = SimpleNamespace(model_reasoning_summary="none", show_raw_agent_reasoning=True)
 
@@ -438,9 +615,9 @@ def test_textual_harness_tool_lifecycle_is_visible_before_final_answer() -> None
             assert "Running Get-ChildItem" in tui.status()
             assert ("exec", "\u2022 Running Get-ChildItem") in tui.blocks()
 
-            tui.send(item_completed_command("Get-ChildItem"))
+            tui.send(item_completed_command("Get-ChildItem", aggregated_output="README.md\npycodex"))
             await tui.wait_for_text("Ran Get-ChildItem", timeout=1.0)
-            assert ("exec", "\u2022 Ran Get-ChildItem") in tui.blocks()
+            assert ("exec", "\u2022 Ran Get-ChildItem\n  \u2503README.md\n    pycodex") in tui.blocks()
             tui.send(agent_delta("final answer"))
             await tui.wait_for_text("final answer", timeout=1.0)
             assert not [block for block in tui.blocks() if block[0] == "exec"]
@@ -503,12 +680,12 @@ def test_textual_harness_parallel_tool_lifecycle_keeps_ran_and_called_until_answ
             assert exec_blocks == ["\u2022 Running Get-ChildItem\n\u2022 Running git status --short"]
 
             tui.send(item_completed_command("Get-ChildItem", item_id="cmd-1"))
-            tui.send(item_completed_command("git status --short", item_id="cmd-2", status="Failed"))
-            await tui.wait_for_text("Called git status --short", timeout=1.0)
+            tui.send(item_completed_command("git status --short", item_id="cmd-2", status="Failed", aggregated_output="fatal: not a repo", exit_code=1))
+            await tui.wait_for_text("Ran git status --short", timeout=1.0)
 
             exec_blocks = [text for label, text in tui.blocks() if label == "exec"]
             assert exec_blocks == [
-                "\u2022 Ran Get-ChildItem\n\u2022 Called git status --short\n  Error: Failed"
+                "\u2022 Ran Get-ChildItem\n  \u2503(no output)\n\u2022 Ran git status --short\n  \u2503fatal: not a repo"
             ]
 
             tui.send(agent_delta("answer starts"))
@@ -516,6 +693,35 @@ def test_textual_harness_parallel_tool_lifecycle_keeps_ran_and_called_until_answ
             assert not [block for block in tui.blocks() if block[0] == "exec"]
             tui.send(turn_completed())
             await tui.wait_for_idle()
+
+    asyncio.run(scenario())
+
+
+def test_textual_harness_completed_tool_output_is_truncated_with_transcript_hint() -> None:
+    # Rust source contract:
+    # - codex-tui::exec_cell::render::command_display_lines renders completed
+    #   command output under the Ran row.
+    # - exec_cell::render::TOOL_CALL_MAX_LINES caps visible tool output and
+    #   includes the transcript shortcut hint for hidden output.
+    async def scenario() -> None:
+        async with start_textual_scenario() as tui:
+            await tui.submit("use verbose tool")
+            await tui.wait_for_submit_count(1)
+            tui.send(turn_started())
+            tui.send(item_started_command("Get-Content big.log"))
+            output = "\n".join(f"line-{index}" for index in range(1, 12))
+            tui.send(item_completed_command("Get-Content big.log", aggregated_output=output))
+            await tui.wait_for_text("ctrl + t to view transcript", timeout=1.0)
+
+            exec_blocks = [text for label, text in tui.blocks() if label == "exec"]
+            assert len(exec_blocks) == 1
+            exec_text = exec_blocks[0]
+            assert "• Ran Get-Content big.log" in exec_text
+            assert "鈥?" not in exec_text
+            assert "line-1" in exec_text
+            assert "line-11" in exec_text
+            assert "...+" in exec_text
+            assert "ctrl + t to view transcript" in exec_text
 
     asyncio.run(scenario())
 

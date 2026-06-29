@@ -303,6 +303,28 @@ class ExecConfigPlanTests(unittest.TestCase):
         self.assertEqual(config.model_reasoning_summary, "none")
         self.assertEqual(config.service_tier, "priority")
 
+    def test_exec_session_config_projects_hide_agent_reasoning_from_config(self):
+        # Rust source/test contract:
+        # - codex-core/src/config/mod.rs loads Config.hide_agent_reasoning from
+        #   config.toml, defaulting to false.
+        # - The Python bootstrap must preserve the same config/session shape.
+        #   codex-tui's event path still renders server-provided summary deltas;
+        #   raw reasoning remains gated by show_raw_agent_reasoning.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cli = parse_exec_args(["prompt"])
+            plan = build_exec_config_bootstrap_plan(
+                cli,
+                config_toml={"hide_agent_reasoning": True},
+                current_dir=root,
+            )
+
+        config = exec_session_config_from_bootstrap_plan(plan)
+
+        self.assertTrue(plan.harness_overrides.hide_agent_reasoning)
+        self.assertTrue(config.hide_agent_reasoning)
+        self.assertTrue(plan.harness_overrides.to_mapping()["hideAgentReasoning"])
+
     def test_exec_session_config_projects_shell_feature_flags_from_config(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -345,6 +367,12 @@ class ExecConfigPlanTests(unittest.TestCase):
                         "status_line": ["model-name", "context-used"],
                         "status_line_use_colors": False,
                         "terminal_title": ["status", "model"],
+                        "keymap": {
+                            "global": {
+                                "open_external_editor": "f12",
+                                "toggle_vim_mode": "ctrl-g",
+                            }
+                        },
                     }
                 },
                 current_dir=root,
@@ -355,13 +383,25 @@ class ExecConfigPlanTests(unittest.TestCase):
         self.assertEqual(plan.tui_status_line, ("model-name", "context-used"))
         self.assertFalse(plan.tui_status_line_use_colors)
         self.assertEqual(plan.tui_terminal_title, ("status", "model"))
+        self.assertEqual(
+            plan.tui_keymap,
+            {"global": {"open_external_editor": "f12", "toggle_vim_mode": "ctrl-g"}},
+        )
         self.assertEqual(config.tui_status_line, ("model-name", "context-used"))
         self.assertFalse(config.tui_status_line_use_colors)
         self.assertEqual(config.tui_terminal_title, ("status", "model"))
+        self.assertEqual(
+            config.tui_keymap,
+            {"global": {"open_external_editor": "f12", "toggle_vim_mode": "ctrl-g"}},
+        )
         mapping = exec_session_config_mapping(config)
         self.assertEqual(mapping["tuiStatusLine"], ["model-name", "context-used"])
         self.assertFalse(mapping["tuiStatusLineUseColors"])
         self.assertEqual(mapping["tuiTerminalTitle"], ["status", "model"])
+        self.assertEqual(
+            mapping["tuiKeymap"],
+            {"global": {"open_external_editor": "f12", "toggle_vim_mode": "ctrl-g"}},
+        )
 
     def test_exec_session_config_applies_cli_overrides_before_projecting_tui_status_surfaces(self):
         # Rust source: codex-tui/src/lib.rs parses `-c` raw overrides before
@@ -377,6 +417,10 @@ class ExecConfigPlanTests(unittest.TestCase):
                     "tui.status_line_use_colors=false",
                     "-c",
                     'tui.terminal_title=["app-name"]',
+                    "-c",
+                    'tui.keymap.global.open_external_editor="f12"',
+                    "-c",
+                    'tui.keymap.global.toggle_vim_mode="ctrl-g"',
                     "prompt",
                 ]
             )
@@ -387,6 +431,7 @@ class ExecConfigPlanTests(unittest.TestCase):
                         "status_line": ["model-name"],
                         "status_line_use_colors": True,
                         "terminal_title": ["model"],
+                        "keymap": {"global": {"toggle_vim_mode": "ctrl-x"}},
                     }
                 },
                 current_dir=root,
@@ -397,6 +442,10 @@ class ExecConfigPlanTests(unittest.TestCase):
         self.assertEqual(config.tui_status_line, ("context-remaining", "status"))
         self.assertFalse(config.tui_status_line_use_colors)
         self.assertEqual(config.tui_terminal_title, ("app-name",))
+        self.assertEqual(
+            config.tui_keymap,
+            {"global": {"toggle_vim_mode": "ctrl-g", "open_external_editor": "f12"}},
+        )
 
     def test_exec_session_config_applies_cli_overrides_before_projecting_shell_features(self):
         with tempfile.TemporaryDirectory() as tmpdir:

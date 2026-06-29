@@ -167,6 +167,31 @@ def test_transcript_overlay_paging_is_continuous_and_round_trips() -> None:
     assert _visible_line_numbers(overlay, area) == before2
 
 
+def test_transcript_overlay_home_then_page_down_lands_on_intermediate_page() -> None:
+    """Rust codex-tui::pager_overlay::PagerView::handle_key_event PageDown contract.
+
+    Source contract: Home sets ``scroll_offset = 0``; PageDown adds the last
+    rendered content-area height returned by ``PagerView::page_height``. This
+    protects the top-edge transition separately from the bottom round trip.
+    """
+
+    overlay = transcript_overlay([TextRenderable([f"line-{i:02}"]) for i in range(70)])
+    area = Rect(0, 0, 40, 15)
+
+    overlay.view.scroll_offset = 0
+    top_page = _visible_line_numbers(overlay, area)
+    page_height = overlay.view.page_height(area)
+
+    overlay.view.scroll_offset += page_height
+    next_page = _visible_line_numbers(overlay, area)
+
+    assert top_page[0] == 0
+    assert page_height > 0
+    assert next_page[0] == page_height
+    assert next_page[0] > top_page[0]
+    assert next_page[-1] < 69
+
+
 def test_static_overlay_wraps_long_lines() -> None:
     """Rust codex-tui::pager_overlay::tests::static_overlay_wraps_long_lines."""
 

@@ -350,6 +350,7 @@ class ExecSessionConfig:
     tui_status_line: tuple[str, ...] | None = None
     tui_status_line_use_colors: bool = True
     tui_terminal_title: tuple[str, ...] | None = None
+    tui_keymap: Mapping[str, JsonValue] | None = None
     request_permissions_callback: Any = None
     granted_session_permissions: AdditionalPermissionProfile | None = None
     exec_policy_rules: tuple[Any, ...] = ()
@@ -372,6 +373,8 @@ class ExecSessionConfig:
             object.__setattr__(self, "tui_terminal_title", tuple(str(item) for item in self.tui_terminal_title))
         if not isinstance(self.tui_status_line_use_colors, bool):
             raise TypeError("tui_status_line_use_colors must be a bool")
+        keymap = self.tui_keymap if isinstance(self.tui_keymap, Mapping) else None
+        object.__setattr__(self, "tui_keymap", dict(keymap) if keymap is not None else None)
         if self.request_permissions_callback is not None and not callable(self.request_permissions_callback):
             raise TypeError("request_permissions_callback must be callable or None")
         if self.granted_session_permissions is not None and not isinstance(
@@ -1064,6 +1067,7 @@ def exec_session_config_mapping(config: ExecSessionConfig) -> dict[str, JsonValu
             "tuiStatusLine": list(config.tui_status_line) if config.tui_status_line is not None else None,
             "tuiStatusLineUseColors": config.tui_status_line_use_colors,
             "tuiTerminalTitle": list(config.tui_terminal_title) if config.tui_terminal_title is not None else None,
+            "tuiKeymap": _to_json(config.tui_keymap),
         }
     )
 

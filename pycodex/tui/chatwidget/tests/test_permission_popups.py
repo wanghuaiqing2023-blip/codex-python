@@ -72,15 +72,25 @@ def test_open_permissions_popup_builds_current_agent_and_guardian_auto_review_it
     widget = Widget()
     widget.config.features = Features({"GuardianApproval"})
 
-    params = open_permissions_popup(widget)
+    params = open_permissions_popup(widget, include_read_only=False)
 
     assert params.title == "Update Model Permissions"
     assert widget.bottom_pane.params is params
     names = [item.name for item in params.items]
-    assert names == ["Agent", "Auto-review", "Full Access"]
+    assert names == ["Default", "Auto-review", "Full Access"]
     assert params.items[0].is_current is True
     assert params.items[1].description
     assert params.items[2].actions[0].kind == "OpenFullAccessConfirmation"
+
+
+def test_open_permissions_popup_includes_read_only_on_windows_product_path() -> None:
+    # Rust parity: codex-tui::chatwidget::permission_popups includes the
+    # read-only preset on Windows via cfg(target_os = "windows").
+    widget = Widget()
+
+    params = open_permissions_popup(widget, include_read_only=True)
+
+    assert [item.name for item in params.items] == ["Read Only", "Default", "Full Access"]
 
 
 def test_open_approvals_popup_aliases_permissions_popup() -> None:
@@ -157,7 +167,7 @@ def test_permission_mode_actions_route_windows_auto_mode_confirmations() -> None
     actions = permission_mode_actions(
         widget,
         preset,
-        "Agent",
+        "Default",
         ApprovalsReviewer.USER,
         profile_selection=None,
         return_to_permissions=True,
@@ -170,7 +180,7 @@ def test_permission_mode_actions_route_windows_auto_mode_confirmations() -> None
     actions = permission_mode_actions(
         widget,
         preset,
-        "Agent",
+        "Default",
         ApprovalsReviewer.USER,
         profile_selection=None,
         return_to_permissions=True,

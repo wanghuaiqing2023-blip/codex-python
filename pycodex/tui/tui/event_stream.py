@@ -132,10 +132,11 @@ class WindowsConsoleEventSource:
 
     Rust production uses ``crossterm::event::EventStream`` and maps
     ``Event::Key`` through ``TuiEventStream::map_crossterm_event``.  Python's
-    lightweight terminal path cannot use crossterm, but keeping the Windows
-    console polling behind an ``EventSource`` preserves the same event-stream
-    boundary: raw terminal input becomes crossterm-shaped key events before the
-    app/composer layer consumes it.
+    Textual product path uses Textual for terminal ownership, but keeping the
+    Windows console adapter behind an ``EventSource`` preserves the same
+    module boundary for tests and host-terminal helpers: raw terminal input
+    becomes crossterm-shaped key events before the app/composer layer consumes
+    it.
     """
 
     msvcrt_module: Any

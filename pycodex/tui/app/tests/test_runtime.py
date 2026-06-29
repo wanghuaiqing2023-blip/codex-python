@@ -1,7 +1,10 @@
 ﻿import asyncio
+import json
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 from pycodex.core.session.turn.runtime import UserTurnSamplingResult
@@ -116,6 +119,124 @@ def test_core_exec_active_thread_runtime_cleans_background_terminals_without_use
 
     assert calls == ["terminate_all_processes"]
     assert stream.next_event(timeout=0.01) is None
+
+
+def test_core_exec_active_thread_runtime_lists_resume_threads_from_local_rollouts(tmp_path) -> None:
+    # Rust-derived contract:
+    # - codex-tui::chatwidget::slash_dispatch maps /resume to
+    #   AppEvent::OpenResumePicker.
+    # - codex-tui::resume_picker asks the app/runtime for prior sessions.
+    # - codex-thread-store::local::list_threads reads rollout
+    #   sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl files whose first line is
+    #   session_meta and whose user_message line supplies the preview.
+    thread_id = "11111111-2222-4333-8444-555555555555"
+    ts = "2025-01-03T10-11-12"
+    day_dir = tmp_path / "sessions" / "2025" / "01" / "03"
+    day_dir.mkdir(parents=True)
+    rollout_path = day_dir / f"rollout-{ts}-{thread_id}.jsonl"
+    rollout_path.write_text(
+        "\n".join(
+            (
+                json.dumps(
+                    {
+                        "timestamp": ts,
+                        "type": "session_meta",
+                        "payload": {
+                            "id": thread_id,
+                            "forked_from_id": None,
+                            "timestamp": ts,
+                            "cwd": str(tmp_path),
+                            "originator": "test_originator",
+                            "cli_version": "test_version",
+                            "source": "cli",
+                            "model_provider": "openai",
+                            "git": {
+                                "commit_hash": "abcdef",
+                                "branch": "main",
+                                "repository_url": "https://example.com/repo.git",
+                            },
+                        },
+                    },
+                    separators=(",", ":"),
+                ),
+                json.dumps(
+                    {
+                        "timestamp": ts,
+                        "type": "event_msg",
+                        "payload": {
+                            "type": "user_message",
+                            "message": "Seeded resume picker prompt",
+                            "kind": "plain",
+                        },
+                    },
+                    separators=(",", ":"),
+                ),
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    runtime = CoreExecActiveThreadRuntime(
+        session_config=SimpleNamespace(codex_home=tmp_path, default_model_provider_id="openai"),
+        model_client=SimpleNamespace(),
+        provider=SimpleNamespace(),
+        model_info=SimpleNamespace(),
+    )
+
+    rows = runtime.list_resume_threads()
+
+    assert len(rows) == 1
+    assert str(rows[0].thread_id) == thread_id
+    assert Path(rows[0].rollout_path) == rollout_path
+    assert rows[0].preview == "Seeded resume picker prompt"
+    assert rows[0].cwd == tmp_path
+
+
+def test_core_exec_active_thread_runtime_message_history_metadata_lookup_and_append(tmp_path) -> None:
+    # Rust-derived contract:
+    # - codex-message-history::history_metadata returns the log id and line
+    #   count for history.jsonl.
+    # - codex-message-history::lookup returns HistoryEntry by log id + offset.
+    # - codex-tui runtime uses this boundary for composer persistent history.
+    runtime = CoreExecActiveThreadRuntime(
+        session_config=SimpleNamespace(codex_home=tmp_path),
+        model_client=SimpleNamespace(thread_id="thread-1"),
+        provider=SimpleNamespace(),
+        model_info=SimpleNamespace(),
+        codex_home=tmp_path,
+    )
+
+    runtime.append_message_history_entry("first prompt")
+    runtime.append_message_history_entry("second prompt")
+
+    metadata = runtime.message_history_metadata()
+    assert metadata is not None
+    log_id, entry_count = metadata
+    assert log_id != 0
+    assert entry_count == 2
+    assert runtime.lookup_message_history_entry("thread-1", log_id, 1).text == "second prompt"
+
+
+def test_tui_app_runtime_syncs_message_history_metadata_from_active_runtime(tmp_path) -> None:
+    # Rust source: codex-tui::app_server_session::thread_session_state_from_thread_response
+    # computes MessageHistoryMetadata during session configuration and
+    # chatwidget::session_flow installs it into bottom-pane history.
+    active = CoreExecActiveThreadRuntime(
+        session_config=SimpleNamespace(codex_home=tmp_path),
+        model_client=SimpleNamespace(thread_id="thread-1"),
+        provider=SimpleNamespace(),
+        model_info=SimpleNamespace(),
+        codex_home=tmp_path,
+    )
+    active.append_message_history_entry("seeded prompt")
+
+    runtime = TuiAppRuntime(active, thread_id="thread-1")
+
+    assert runtime.chat_widget.bottom_history_metadata is not None
+    thread_id, log_id, entry_count = runtime.chat_widget.bottom_history_metadata
+    assert thread_id == "thread-1"
+    assert log_id != 0
+    assert entry_count == 1
 
 
 def test_tui_app_runtime_mcp_startup_notification_refreshes_expected_servers_before_widget() -> None:
@@ -247,6 +368,32 @@ def test_tui_app_runtime_update_reasoning_effort_event_updates_widget_and_sessio
     assert runtime.chat_widget.config.model_reasoning_effort == "high"
     assert active_runtime.model_reasoning_effort == "high"
     assert active_runtime.session_config.model_reasoning_effort == "high"
+
+
+def test_tui_app_runtime_update_reasoning_effort_ignores_frozen_session_config_snapshot() -> None:
+    # Rust source/test contract:
+    # - codex-tui::chatwidget::model_popups::model_selection_actions emits
+    #   AppEvent::UpdateReasoningEffort between UpdateModel and
+    #   PersistModelSelection.
+    # - codex-tui::app::event_dispatch updates live app/chatwidget state; a
+    #   read-only session-config snapshot must not crash the TUI event path.
+    @dataclass(frozen=True)
+    class FrozenSessionConfig:
+        model_reasoning_effort: str = "medium"
+        reasoning_effort: str = "medium"
+
+    active_runtime = SimpleNamespace(
+        model_reasoning_effort="medium",
+        session_config=FrozenSessionConfig(),
+    )
+    runtime = TuiAppRuntime(active_thread_runtime=active_runtime)
+
+    plan = runtime.handle_app_event(AppEvent.update_reasoning_effort("high"))
+
+    assert plan.action == "update_reasoning_effort"
+    assert runtime.chat_widget.config.model_reasoning_effort == "high"
+    assert active_runtime.model_reasoning_effort == "high"
+    assert active_runtime.session_config.model_reasoning_effort == "medium"
 
 
 def test_tui_app_runtime_diff_result_completes_chatwidget_diff_cell() -> None:
@@ -684,6 +831,62 @@ def test_core_exec_active_thread_runtime_maps_live_function_call_item_to_command
     item = events[1].payload["item"]
     assert item["kind"] == "CommandExecution"
     assert item["command"] == "Get-Location"
+
+
+def test_core_exec_active_thread_runtime_preserves_reasoning_summary_config(monkeypatch) -> None:
+    # Rust source/test contract:
+    # - codex-core/src/config/mod.rs loads Config.model_reasoning_summary.
+    # - codex-core/src/session/turn_context.rs copies
+    #   SessionConfiguration.model_reasoning_summary into the turn context,
+    #   falling back to ModelInfo.default_reasoning_summary only when unset.
+    # - codex-core/src/client.rs::build_reasoning serializes
+    #   ReasoningSummary::None as an absent request summary field.
+    #
+    # TUI composition contract:
+    # codex-tui submits AppCommand::UserTurn through the active thread. The
+    # Python Textual product path must not overwrite a config.toml
+    # `model_reasoning_summary = "none"` with a local UI default such as
+    # "auto"; otherwise the live session can request visible reasoning
+    # summaries even though the user disabled them in config.
+    seen: dict[str, object] = {}
+
+    async def fake_core_sampling(session_config, plan, model_client, provider, model_info, **kwargs):
+        seen["model_reasoning_summary"] = getattr(session_config, "model_reasoning_summary", None)
+        return UserTurnSamplingResult(request_plan=None, response_items=(), turn_status="completed")
+
+    monkeypatch.setattr("pycodex.tui.app.runtime.run_exec_user_turn_core_sampling_websocket_preferred", fake_core_sampling)
+    runtime = CoreExecActiveThreadRuntime(
+        session_config=SimpleNamespace(model_reasoning_summary="none"),
+        model_client=object(),
+        provider=object(),
+        model_info=SimpleNamespace(default_reasoning_summary="auto"),
+        auth=None,
+    )
+
+    stream = runtime.submit_thread_op(
+        "primary",
+        AppCommand.user_turn(
+            [{"kind": "Text", "text": "ping"}],
+            cwd=".",
+            approval_policy=None,
+            active_permission_profile=None,
+            model="",
+            effort=None,
+            summary=None,
+            service_tier=None,
+            final_output_json_schema=None,
+            collaboration_mode=None,
+            personality=None,
+        ),
+    )
+
+    while True:
+        event = stream.next_event(timeout=1)
+        assert event is not None
+        if event.kind == "TurnCompleted":
+            break
+
+    assert seen["model_reasoning_summary"] == "none"
 
 
 def test_core_exec_active_thread_runtime_maps_done_only_assistant_item_to_chatwidget(monkeypatch) -> None:
@@ -1855,11 +2058,12 @@ def test_session_event_mapper_accepts_dict_item_completed_agent_message() -> Non
 
 def test_core_exec_active_thread_runtime_forwards_reasoning_delta(monkeypatch) -> None:
     # Rust composition contract:
-    # codex-core/src/session/turn.rs maps ResponseEvent::ReasoningSummaryDelta
-    # into EventMsg::ReasoningContentDelta. codex-tui::app must treat that
-    # session event as a visible ReasoningSummaryTextDelta.
+    # codex-core/src/session/turn.rs maps
+    # ResponseEvent::ReasoningSummaryDelta into summary reasoning events, and
+    # codex-app-server-protocol::event_mapping turns those into
+    # ServerNotification::ReasoningSummaryTextDelta.
     async def fake_core_sampling(session_config, plan, model_client, provider, model_info, **kwargs):
-        kwargs["session_event_observer"](SimpleNamespace(type="reasoning_content_delta", payload=SimpleNamespace(delta="**Reading**")))
+        kwargs["session_event_observer"](SimpleNamespace(type="reasoning_summary_delta", payload=SimpleNamespace(delta="**Reading**")))
         await asyncio.sleep(0.05)
         return UserTurnSamplingResult(request_plan=None, response_items=(), turn_status="completed")
 
@@ -1896,17 +2100,46 @@ def test_core_exec_active_thread_runtime_forwards_reasoning_delta(monkeypatch) -
     assert second.payload["delta"] == "**Reading**"
 
 
+def test_session_reasoning_content_delta_maps_to_raw_text_delta() -> None:
+    # Rust source contract:
+    # - codex-core/src/session/turn.rs maps raw
+    #   ResponseEvent::ReasoningContentDelta into
+    #   EventMsg::ReasoningRawContentDelta.
+    # - codex-app-server-protocol/src/protocol/event_mapping.rs maps raw
+    #   reasoning content to ServerNotification::ReasoningTextDelta, while
+    #   summary text maps to ReasoningSummaryTextDelta.
+    summary = _server_notifications_from_session_event(
+        SimpleNamespace(type="reasoning_summary_delta", payload=SimpleNamespace(delta="**Reading**")),
+        thread_id="thread-1",
+        turn_id="turn-1",
+    )
+    raw = _server_notifications_from_session_event(
+        SimpleNamespace(type="reasoning_content_delta", payload=SimpleNamespace(delta="raw detail")),
+        thread_id="thread-1",
+        turn_id="turn-1",
+    )
+    legacy_raw = _server_notifications_from_session_event(
+        SimpleNamespace(type="reasoning_raw_content_delta", payload=SimpleNamespace(delta="legacy raw detail")),
+        thread_id="thread-1",
+        turn_id="turn-1",
+    )
+
+    assert summary[0].kind == "ReasoningSummaryTextDelta"
+    assert raw[0].kind == "ReasoningTextDelta"
+    assert legacy_raw[0].kind == "ReasoningTextDelta"
+
+
 def test_core_exec_active_thread_runtime_forwards_reasoning_section_and_raw_delta(monkeypatch) -> None:
     # Rust composition contract:
-    # - codex-core/src/session/turn.rs forwards summary text as
-    #   ReasoningContentDelta, section breaks as AgentReasoningSectionBreak,
-    #   and raw text as ReasoningRawContentDelta.
-    # - codex-tui::app preserves them as distinct ServerNotification variants.
+    # - codex-core/src/session/turn.rs forwards summary text and raw reasoning
+    #   text as distinct reasoning events.
+    # - codex-app-server-protocol::event_mapping preserves them as
+    #   ReasoningSummaryTextDelta and ReasoningTextDelta respectively.
     async def fake_core_sampling(session_config, plan, model_client, provider, model_info, **kwargs):
         observer = kwargs["session_event_observer"]
-        observer(SimpleNamespace(type="reasoning_content_delta", payload=SimpleNamespace(delta="**Inspecting**")))
+        observer(SimpleNamespace(type="reasoning_summary_delta", payload=SimpleNamespace(delta="**Inspecting**")))
         observer(SimpleNamespace(type="agent_reasoning_section_break", payload=SimpleNamespace(summary_index=0)))
-        observer(SimpleNamespace(type="reasoning_raw_content_delta", payload=SimpleNamespace(delta="raw detail")))
+        observer(SimpleNamespace(type="reasoning_content_delta", payload=SimpleNamespace(delta="raw detail")))
         await asyncio.sleep(0.01)
         return UserTurnSamplingResult(request_plan=None, response_items=(), turn_status="completed")
 

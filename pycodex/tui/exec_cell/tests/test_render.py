@@ -58,6 +58,45 @@ def test_active_command_without_animations_is_stable_matches_rust() -> None:
     assert first == ["• Running echo done"]
 
 
+def test_completed_command_display_uses_ran_bullet_and_output_preview_matches_rust() -> None:
+    # Rust source: codex-tui::exec_cell::render::command_display_lines.
+    # Contract: completed agent command executions keep the `Ran` title and
+    # render a bounded output preview below the command.
+    call = ExecCall(
+        call_id="call-id",
+        command=["bash", "-lc", "echo done"],
+        parsed=[],
+        output=CommandOutput(exit_code=0, aggregated_output="done", formatted_output="done"),
+        source="Agent",
+        duration=1.0,
+    )
+    cell = ExecCell.new(call, False)
+
+    rendered = [render_line_text(line) for line in command_display_lines(cell, 80)]
+
+    assert rendered == ["• Ran echo done", "  ┃done"]
+
+
+def test_failed_command_display_still_uses_ran_title_matches_rust() -> None:
+    # Rust source: codex-tui::exec_cell::render::command_display_lines.
+    # Contract: CommandExecution failures are still command executions, so the
+    # title remains `Ran`; failure is represented by styling/exit output rather
+    # than changing the label to MCP-style `Called`.
+    call = ExecCall(
+        call_id="call-id",
+        command=["bash", "-lc", "exit 1"],
+        parsed=[],
+        output=CommandOutput(exit_code=1, aggregated_output="boom", formatted_output="boom"),
+        source="Agent",
+        duration=1.0,
+    )
+    cell = ExecCell.new(call, False)
+
+    rendered = [render_line_text(line) for line in command_display_lines(cell, 80)]
+
+    assert rendered == ["• Ran exit 1", "  ┃boom"]
+
+
 def test_command_display_does_not_split_long_url_token_matches_rust() -> None:
     # Rust: command_display_does_not_split_long_url_token.
     url = "http://example.com/long-url-with-dashes-wider-than-terminal-window/blah-blah-blah-text/more-gibberish-text"

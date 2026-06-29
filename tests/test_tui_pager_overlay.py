@@ -78,6 +78,53 @@ def test_pager_view_reports_scrolled_to_bottom_after_max_scroll_render():
     assert view.is_scrolled_to_bottom() is True
 
 
+def test_transcript_overlay_paging_is_continuous_and_round_trips():
+    # Rust-derived contract:
+    # - crate: codex-tui
+    # - module: codex-rs/tui/src/pager_overlay.rs
+    # - Rust test: transcript_overlay_paging_is_continuous_and_round_trips
+    # - behavior: PageDown from the top shows the next contiguous page, and
+    #   PageDown/PageUp round-trip from interior pager offsets.
+    overlay = transcript_overlay([TextRenderable([f"line-{index:02}"]) for index in range(50)])
+    area = Rect(0, 0, 40, 15)
+
+    overlay.view.scroll_offset = 0
+    overlay.view.render(area)
+    page_height = overlay.view.page_height(area)
+
+    def visible_numbers() -> list[int]:
+        visible = overlay.view.render(area)
+        numbers: list[int] = []
+        for line in visible:
+            if line.startswith("line-"):
+                numbers.append(int(line.removeprefix("line-")))
+        return numbers
+
+    overlay.view.scroll_offset = 0
+    page1 = visible_numbers()
+    assert page1 == list(range(len(page1)))
+
+    overlay.view.scroll_offset += page_height
+    page2 = visible_numbers()
+    assert len(page2) == len(page1)
+    assert page2[0] == page1[-1] + 1
+
+    interior_offset = 3
+    overlay.view.scroll_offset = interior_offset
+    before = visible_numbers()
+    overlay.view.scroll_offset += page_height
+    visible_numbers()
+    overlay.view.scroll_offset -= page_height
+    assert visible_numbers() == before
+
+    overlay.view.scroll_offset = page_height
+    before2 = visible_numbers()
+    overlay.view.scroll_offset -= page_height
+    visible_numbers()
+    overlay.view.scroll_offset += page_height
+    assert visible_numbers() == before2
+
+
 def test_transcript_overlay_sync_live_tail_is_noop_for_identical_key():
     overlay = transcript_overlay([TextRenderable(["alpha"])])
     calls = {"count": 0}

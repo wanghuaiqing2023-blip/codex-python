@@ -388,13 +388,13 @@ def action_count_line(count: int) -> str:
 def keymap_picker_hint_line() -> Tuple[Span, ...]:
     return (
         Span("left/right", "accent"),
-        Span(" group 路 ", "dim"),
+        Span(" group · ", "dim"),
         Span("enter", "accent"),
-        Span(" edit shortcut 路 ", "dim"),
+        Span(" edit shortcut · ", "dim"),
         Span("*", "accent"),
-        Span(" custom 路 ", "dim"),
+        Span(" custom · ", "dim"),
         Span("-", "accent"),
-        Span(" unbound 路 ", "dim"),
+        Span(" unbound · ", "dim"),
         Span("esc", "accent"),
         Span(" close", "dim"),
     )
@@ -403,7 +403,7 @@ def keymap_picker_hint_line() -> Tuple[Span, ...]:
 def keymap_debug_hint_line() -> Tuple[Span, ...]:
     return (
         Span("enter", "accent"),
-        Span(" start inspector 路 ", "dim"),
+        Span(" start inspector · ", "dim"),
         Span("esc", "accent"),
         Span(" close", "dim"),
     )

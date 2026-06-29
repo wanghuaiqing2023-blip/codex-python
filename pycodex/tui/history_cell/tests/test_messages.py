@@ -66,6 +66,7 @@ def test_user_history_cell_trims_trailing_blank_message_lines_and_keeps_one_oute
             break
         trailing_blank_count += 1
     assert trailing_blank_count == 1
+    assert "› line one" in rendered
 
 
 def test_user_history_cell_raw_lines_include_remote_image_labels() -> None:
@@ -84,19 +85,26 @@ def test_trim_trailing_blank_lines_removes_blank_only_lines() -> None:
 def test_agent_message_cell_prefixes_and_raw_lines() -> None:
     cell = AgentMessageCell.new([Line.from_text("hello")], is_first_line=True)
 
-    assert texts(cell.display_lines(80)) == ["> hello"]
+    rendered = texts(cell.display_lines(80))
+    assert rendered == ["• hello"]
+    assert "鈥?" not in "\n".join(rendered)
     assert texts(cell.raw_lines()) == ["hello"]
     assert cell.is_stream_continuation() is False
 
 
-def test_streaming_agent_tail_cell_uses_continuation_prefix_when_not_first() -> None:
-    cell = StreamingAgentTailCell.new(
+def test_streaming_agent_tail_cell_uses_bullet_then_continuation_prefixes() -> None:
+    first = StreamingAgentTailCell.new(
+        [HyperlinkLine.new(Line.from_text("tail"))],
+        is_first_line=True,
+    )
+    continuation = StreamingAgentTailCell.new(
         [HyperlinkLine.new(Line.from_text("tail"))],
         is_first_line=False,
     )
 
-    assert texts(cell.display_lines(80)) == ["  tail"]
-    assert cell.is_stream_continuation() is True
+    assert texts(first.display_lines(80)) == ["• tail"]
+    assert texts(continuation.display_lines(80)) == ["  tail"]
+    assert continuation.is_stream_continuation() is True
 
 
 def test_agent_markdown_cell_renders_from_source_and_preserves_raw() -> None:
@@ -104,7 +112,7 @@ def test_agent_markdown_cell_renders_from_source_and_preserves_raw() -> None:
 
     assert texts(cell.raw_lines()) == ["see https://example.com"]
     links = cell.display_hyperlink_lines(80)
-    assert hyperlink_texts(links) == ["> see https://example.com"]
+    assert hyperlink_texts(links) == ["• see https://example.com"]
 
 
 def test_reasoning_summary_block_splits_header_only_when_summary_exists() -> None:
@@ -113,5 +121,6 @@ def test_reasoning_summary_block_splits_header_only_when_summary_exists() -> Non
 
     assert visible.transcript_only is False
     assert texts(visible.raw_lines()) == [" useful detail"]
+    assert texts(visible.display_lines(80)) == ["•  useful detail"]
     assert transcript_only.transcript_only is True
     assert transcript_only.raw_lines() == []

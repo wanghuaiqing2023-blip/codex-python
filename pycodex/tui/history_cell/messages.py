@@ -30,7 +30,8 @@ LIVE_PREFIX_COLS = 2
 USER_MESSAGE_STYLE = "user_message"
 USER_TEXT_ELEMENT_STYLE = "user_message cyan"
 SUMMARY_STYLE = "dim italic"
-ASSISTANT_PREFIX = "> "
+USER_PROMPT_PREFIX = "› "
+ASSISTANT_PREFIX = "• "
 ASSISTANT_CONTINUATION_PREFIX = "  "
 
 
@@ -204,7 +205,7 @@ class UserHistoryCell:
             if wrapped_message is not None:
                 lines.append(Line.from_text("", style=USER_MESSAGE_STYLE))
         if wrapped_message is not None:
-            lines.extend(adaptive_wrap_lines(wrapped_message, max(1, int(width)), ASSISTANT_PREFIX, "  "))
+            lines.extend(adaptive_wrap_lines(wrapped_message, max(1, int(width)), USER_PROMPT_PREFIX, "  "))
         lines.append(Line.from_text("", style=USER_MESSAGE_STYLE))
         return lines
 
@@ -412,6 +413,7 @@ def is_stream_continuation(cell: Any) -> bool:
 __all__ = [
     "ASSISTANT_CONTINUATION_PREFIX",
     "ASSISTANT_PREFIX",
+    "USER_PROMPT_PREFIX",
     "AgentMarkdownCell",
     "AgentMessageCell",
     "ByteRange",

@@ -32,10 +32,20 @@ class TopLevelPackageImportTests(unittest.TestCase):
         self.assertTrue(expected.issubset(set(pycodex.__all__)))
 
     def test_tui_compatibility_exports(self) -> None:
+        import io
+
         from pycodex import tui
 
         self.assertTrue(callable(getattr(tui, "run_tui", None)))
-        self.assertTrue(hasattr(tui, "TUIUnavailableError"))
+        self.assertNotIn("run_terminal_tui", getattr(tui, "__all__", ()))
+        self.assertNotIn("TUIUnavailableError", getattr(tui, "__all__", ()))
+        self.assertFalse(hasattr(tui, "run_terminal_tui"))
+        self.assertFalse(hasattr(tui, "TUIUnavailableError"))
+
+        stderr = io.StringIO()
+        self.assertEqual(tui.run_tui(stderr=stderr), 64)
+        self.assertIn("requires an active thread runtime", stderr.getvalue())
+        self.assertNotIn("disabled in this Python port", stderr.getvalue())
 
     def test_sandboxing_compatibility_exports(self) -> None:
         from pycodex import sandboxing
@@ -65,7 +75,14 @@ class TopLevelPackageImportTests(unittest.TestCase):
             "write_auth_json",
         ])
 
-    def test_python_m_entrypoint_invokes_parser_return_code(self) -> None:
+    def test_python_m_entrypoint_rejects_non_tty_tui_startup(self) -> None:
+        """Rust codex-cli refuses interactive TUI startup without a terminal.
+
+        Rust anchor: codex-rs/cli/src/main.rs::run_interactive_tui and
+        codex-rs/tui/src/tui.rs::init.  Python must not fall back to the
+        deleted legacy terminal projection for piped stdin.
+        """
+
         import subprocess
         import sys
         from pathlib import Path
@@ -79,10 +96,9 @@ class TopLevelPackageImportTests(unittest.TestCase):
             text=True,
             check=False,
         )
-        self.assertEqual(result.returncode, 0)
-        self.assertIn("\x1b[?1049h", result.stdout)
-        self.assertIn("Codex", result.stdout)
-        self.assertIn("\x1b[?1049l", result.stdout)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("Refusing to start the interactive TUI", result.stderr)
 
     def test_python_m_entrypoint_prints_help(self) -> None:
         import subprocess

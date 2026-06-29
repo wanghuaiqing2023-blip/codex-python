@@ -102,6 +102,7 @@ class ExecHarnessOverrides:
     model_reasoning_effort: JsonValue | None = None
     model_reasoning_summary: JsonValue | None = None
     service_tier: str | None = None
+    hide_agent_reasoning: bool | None = None
     show_raw_agent_reasoning: bool | None = None
     ephemeral: bool | None = None
     bypass_hook_trust: bool | None = None
@@ -127,6 +128,7 @@ class ExecHarnessOverrides:
             "modelReasoningEffort": self.model_reasoning_effort,
             "modelReasoningSummary": self.model_reasoning_summary,
             "serviceTier": self.service_tier,
+            "hideAgentReasoning": self.hide_agent_reasoning,
             "showRawAgentReasoning": self.show_raw_agent_reasoning,
             "ephemeral": self.ephemeral,
             "bypassHookTrust": self.bypass_hook_trust,
@@ -156,6 +158,7 @@ class ExecConfigBootstrapPlan:
     tui_status_line: tuple[str, ...] | None = None
     tui_status_line_use_colors: bool = True
     tui_terminal_title: tuple[str, ...] | None = None
+    tui_keymap: Mapping[str, JsonValue] | None = None
     upstream_source: str = UPSTREAM_EXEC_RUN_MAIN
 
     def __post_init__(self) -> None:
@@ -168,6 +171,8 @@ class ExecConfigBootstrapPlan:
             object.__setattr__(self, "tui_status_line", tuple(str(item) for item in self.tui_status_line))
         if self.tui_terminal_title is not None:
             object.__setattr__(self, "tui_terminal_title", tuple(str(item) for item in self.tui_terminal_title))
+        keymap = self.tui_keymap if isinstance(self.tui_keymap, Mapping) else None
+        object.__setattr__(self, "tui_keymap", copy.deepcopy(dict(keymap)) if keymap is not None else None)
         servers = self.mcp_servers if isinstance(self.mcp_servers, Mapping) else {}
         object.__setattr__(self, "mcp_servers", copy.deepcopy(dict(servers)))
         if self.features is None:
@@ -193,6 +198,7 @@ class ExecConfigBootstrapPlan:
             "tuiStatusLine": list(self.tui_status_line) if self.tui_status_line is not None else None,
             "tuiStatusLineUseColors": self.tui_status_line_use_colors,
             "tuiTerminalTitle": list(self.tui_terminal_title) if self.tui_terminal_title is not None else None,
+            "tuiKeymap": copy.deepcopy(dict(self.tui_keymap)) if self.tui_keymap is not None else None,
         }
 
 
@@ -1392,6 +1398,7 @@ def exec_harness_overrides_from_cli(
         model_reasoning_effort=_optional_str((config_toml or {}).get("model_reasoning_effort")),
         model_reasoning_summary=_optional_str((config_toml or {}).get("model_reasoning_summary")),
         service_tier=_optional_str((config_toml or {}).get("service_tier")),
+        hide_agent_reasoning=True if (config_toml or {}).get("hide_agent_reasoning") is True else None,
         show_raw_agent_reasoning=True if cli.oss else None,
         ephemeral=True if cli.ephemeral else None,
         bypass_hook_trust=True if cli.dangerously_bypass_hook_trust else None,
@@ -1449,6 +1456,7 @@ def build_exec_config_bootstrap_plan(
         tui_status_line=_tui_config_str_tuple(effective_config, "status_line"),
         tui_status_line_use_colors=_tui_config_bool(effective_config, "status_line_use_colors", True),
         tui_terminal_title=_tui_config_str_tuple(effective_config, "terminal_title"),
+        tui_keymap=_tui_config_keymap(effective_config),
     )
 
 
@@ -1475,10 +1483,12 @@ def exec_session_config_from_bootstrap_plan(plan: ExecConfigBootstrapPlan) -> Ex
         reasoning_effort=harness.model_reasoning_effort,
         model_reasoning_summary=harness.model_reasoning_summary,
         service_tier=harness.service_tier,
+        hide_agent_reasoning=bool(harness.hide_agent_reasoning),
         show_raw_agent_reasoning=bool(harness.show_raw_agent_reasoning),
         tui_status_line=plan.tui_status_line,
         tui_status_line_use_colors=plan.tui_status_line_use_colors,
         tui_terminal_title=plan.tui_terminal_title,
+        tui_keymap=plan.tui_keymap,
         allow_login_shell=plan.allow_login_shell,
         features=plan.features,
         exec_permission_approvals_enabled=plan.exec_permission_approvals_enabled,
@@ -1515,6 +1525,13 @@ def _tui_config_str_tuple(config_toml: Mapping[str, JsonValue], key: str) -> tup
 def _tui_config_bool(config_toml: Mapping[str, JsonValue], key: str, default: bool) -> bool:
     value = _tui_config_mapping(config_toml).get(key)
     return value if isinstance(value, bool) else default
+
+
+def _tui_config_keymap(config_toml: Mapping[str, JsonValue]) -> Mapping[str, JsonValue] | None:
+    value = _tui_config_mapping(config_toml).get("keymap")
+    if isinstance(value, Mapping):
+        return copy.deepcopy(dict(value))
+    return None
 
 
 def _allow_login_shell_from_config(config_toml: Mapping[str, JsonValue]) -> bool:

@@ -1,7 +1,11 @@
+import sys
+
 import pytest
 
+from pycodex.tui.get_git_diff import get_git_diff
 from pycodex.tui.workspace_command import (
     AppServerWorkspaceCommandRunner,
+    LocalWorkspaceCommandRunner,
     WorkspaceCommand,
     WorkspaceCommandError,
     WorkspaceCommandOutput,
@@ -104,3 +108,66 @@ def test_app_server_runner_saturates_timeout_ms_like_rust() -> None:
     )
 
     assert request["params"]["timeout_ms"] == 9_223_372_036_854_775_807
+
+
+@pytest.mark.asyncio
+async def test_local_workspace_runner_executes_argv_cwd_and_env_like_embedded_app_server(tmp_path) -> None:
+    # Rust source: codex-tui/src/workspace_command.rs::WorkspaceCommandExecutor.
+    # Product adaptation: Python's embedded Textual runtime has no app-server
+    # request handle, so LocalWorkspaceCommandRunner preserves the same
+    # argv/cwd/env/timeout/output-cap contract for TUI-owned probes.
+    script = (
+        "import os, pathlib; "
+        "print(pathlib.Path.cwd().name); "
+        "print(os.environ.get('PYCODEX_WORKSPACE_RUNNER_TEST')); "
+        "print(os.environ.get('PYCODEX_WORKSPACE_RUNNER_REMOVE'))"
+    )
+    runner = LocalWorkspaceCommandRunner(
+        base_env={"PYCODEX_WORKSPACE_RUNNER_REMOVE": "remove-me"},
+    )
+    output = await runner.run(
+        WorkspaceCommand.new([sys.executable, "-c", script])
+        .cwd(tmp_path)
+        .env("PYCODEX_WORKSPACE_RUNNER_TEST", "ok")
+        .remove_env("PYCODEX_WORKSPACE_RUNNER_REMOVE")
+    )
+
+    assert output.exit_code == 0
+    assert output.stdout.splitlines() == [tmp_path.name, "ok", "None"]
+
+
+@pytest.mark.asyncio
+async def test_local_workspace_runner_feeds_get_git_diff_for_dirty_repo(tmp_path) -> None:
+    # Rust source/test:
+    # - codex-tui::chatwidget::slash_dispatch runs /diff through the active
+    #   WorkspaceCommandExecutor.
+    # - get_git_diff.rs::get_git_diff_accepts_diff_exit_code_one proves git
+    #   diff status 1 is successful diff output.
+    import subprocess
+
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True, text=True)
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("old line\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=tmp_path, check=True, capture_output=True, text=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.email=pycodex@example.invalid",
+            "-c",
+            "user.name=PyCodex Test",
+            "commit",
+            "-m",
+            "initial",
+        ],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    tracked.write_text("old line\nPYCODEX_LOCAL_WORKSPACE_DIFF\n", encoding="utf-8")
+
+    is_repo, diff_text = await get_git_diff(LocalWorkspaceCommandRunner(default_cwd=tmp_path), tmp_path)
+
+    assert is_repo is True
+    assert "PYCODEX_LOCAL_WORKSPACE_DIFF" in diff_text

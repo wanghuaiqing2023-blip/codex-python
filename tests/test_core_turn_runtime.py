@@ -2742,7 +2742,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
             emitted,
             (
                 {
-                    "type": "reasoning_content_delta",
+                    "type": "reasoning_summary_delta",
                     "thread_id": "thread-1",
                     "turn_id": "turn-1",
                     "item_id": "reason-1",
@@ -2770,7 +2770,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             tuple(event.type for event in non_lifecycle_events(session)),
             (
-                "reasoning_content_delta",
+                "reasoning_summary_delta",
                 "reasoning_raw_content_delta",
                 "agent_reasoning_section_break",
             ),

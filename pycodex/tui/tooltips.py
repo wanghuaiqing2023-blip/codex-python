@@ -33,7 +33,7 @@ APP_TOOLTIP = "Try the **Codex App**. Run 'codex app' or visit https://chatgpt.c
 FAST_TOOLTIP = "*New* Use **/fast** to enable our fastest inference with increased plan usage."
 OTHER_TOOLTIP = "*New* Build faster with the **Codex App**. Run 'codex app' or visit https://chatgpt.com/codex?app-landing-page=true"
 OTHER_TOOLTIP_NON_MAC = "*New* Build faster with Codex."
-FREE_GO_TOOLTIP = "*New* For a limited time, Codex is included in your plan for free 鈥?let鈥檚 build together."
+FREE_GO_TOOLTIP = "*New* For a limited time, Codex is included in your plan for free – let’s build together."
 
 _RAW_TOOLTIPS_SNAPSHOT = """Use /compact when the conversation gets long to summarize history and free up context.
 Start a fresh idea with /new; the previous session stays in history.

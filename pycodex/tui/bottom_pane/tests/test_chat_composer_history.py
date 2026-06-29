@@ -107,6 +107,29 @@ def test_persistent_search_fetches_until_match_and_repeated_boundary_does_not_re
     assert len(events) == event_count
 
 
+def test_persistent_search_sets_awaiting_before_lookup_callback_can_reply():
+    # Rust-derived contract:
+    # codex-tui::bottom_pane::chat_composer_history::advance_search_from sets
+    # search.awaiting before sending AppEvent::LookupMessageHistoryEntry. Rust
+    # responses are asynchronous, but Python product composition can use a
+    # synchronous lookup facade; the callback must still be recognized as the
+    # pending search response instead of being ignored as stale.
+    history = ChatComposerHistory.new()
+    history.set_metadata("thread", 1, 2)
+    responses = []
+
+    def lookup(event):
+        entry = "not a match" if event["offset"] == 1 else "needle older"
+        responses.append(history.on_entry_response(event["log_id"], event["offset"], entry, lookup))
+
+    assert history.search("needle", HistorySearchDirection.OLDER, True, lookup) == HistorySearchResult.PENDING
+
+    assert HistoryEntryResponse.search(HistorySearchResult.found(HistoryEntry.new("needle older"))) in responses
+    assert HistoryEntryResponse.IGNORED not in responses
+    assert history.fetched_history[1] == HistoryEntry.new("not a match")
+    assert history.fetched_history[0] == HistoryEntry.new("needle older")
+
+
 def test_search_case_insensitive_empty_query_and_navigation_reset():
     history = ChatComposerHistory.new()
     history.record_local_submission(HistoryEntry.new("Build Release"))

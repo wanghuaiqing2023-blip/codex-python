@@ -142,6 +142,7 @@ from pycodex.protocol import (
     ReasoningEffort,
     ReasoningRawContentDeltaEvent,
     ReasoningSummary,
+    ReasoningSummaryDeltaEvent,
     ResumedHistory,
     RolloutItem,
     RequestId,
@@ -1125,10 +1126,21 @@ class ProtocolProtocolTests(unittest.TestCase):
 
     def test_reasoning_delta_events_match_upstream_protocol_contract(self):
         # Rust source: codex-rs/protocol/src/protocol.rs
-        # Behavior anchor: ReasoningContentDeltaEvent.summary_index and
-        # ReasoningRawContentDeltaEvent.content_index are non-Option i64 fields
-        # with #[serde(default)]. Missing fields default, but explicit null or
-        # JSON strings are not accepted.
+        # Rust source: codex-rs/core/src/session/turn.rs maps
+        # ResponseEvent::ReasoningSummaryDelta separately from raw
+        # ReasoningContentDelta, while legacy protocol parsing still accepts
+        # reasoning_content_delta as a summary-shaped event.
+        # Behavior anchor: summary_index and content_index are non-Option i64
+        # fields with #[serde(default)]. Missing fields default, but explicit
+        # null or JSON strings are not accepted.
+        summary_payload = {
+            "type": "reasoning_summary_delta",
+            "thread_id": "thread-1",
+            "turn_id": "turn-1",
+            "item_id": "item-1",
+            "delta": "thinking",
+            "summary_index": 2,
+        }
         content_payload = {
             "type": "reasoning_content_delta",
             "thread_id": "thread-1",
@@ -1146,6 +1158,15 @@ class ProtocolProtocolTests(unittest.TestCase):
             "content_index": 3,
         }
 
+        self.assertEqual(
+            EventMsg.from_mapping(summary_payload).payload,
+            ReasoningSummaryDeltaEvent("thread-1", "turn-1", "item-1", "thinking", summary_index=2),
+        )
+        self.assertEqual(EventMsg.from_mapping(summary_payload).to_mapping(), summary_payload)
+        self.assertEqual(
+            EventMsg.from_mapping({k: v for k, v in summary_payload.items() if k != "summary_index"}).payload,
+            ReasoningSummaryDeltaEvent("thread-1", "turn-1", "item-1", "thinking"),
+        )
         self.assertEqual(
             EventMsg.from_mapping(content_payload).payload,
             ReasoningContentDeltaEvent("thread-1", "turn-1", "item-1", "thinking", summary_index=2),
