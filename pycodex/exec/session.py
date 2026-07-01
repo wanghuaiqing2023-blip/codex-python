@@ -351,6 +351,7 @@ class ExecSessionConfig:
     tui_status_line_use_colors: bool = True
     tui_terminal_title: tuple[str, ...] | None = None
     tui_keymap: Mapping[str, JsonValue] | None = None
+    chatgpt_base_url: str | None = None
     request_permissions_callback: Any = None
     granted_session_permissions: AdditionalPermissionProfile | None = None
     exec_policy_rules: tuple[Any, ...] = ()

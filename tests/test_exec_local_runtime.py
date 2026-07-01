@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.error import HTTPError
 from pathlib import Path
+from uuid import uuid4
 
 from pycodex.execpolicy import (
     ExecPolicyPrefixRule,
@@ -208,6 +209,13 @@ class Router:
 
 def _message_texts(message_items: list[dict]) -> list[str]:
     return [item["content"][0]["text"] for item in message_items if item.get("content")]
+
+
+def _response_input_mapping(item: object) -> dict:
+    to_mapping = getattr(item, "to_mapping", None)
+    if callable(to_mapping):
+        return dict(to_mapping())
+    return dict(item) if isinstance(item, Mapping) else {}
 
 
 def _assert_message_texts_in_order(testcase: unittest.TestCase, message_items: list[dict], expected: list[str]) -> None:
@@ -2287,6 +2295,156 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("project instructions" in text for text in input_texts))
         self.assertIn("hello", input_texts)
         self.assertEqual(seen["body"]["text"]["format"]["schema"]["properties"]["ok"]["type"], "boolean")
+
+    async def test_core_sampling_with_codex_home_exposes_and_executes_goal_tools(self) -> None:
+        # Rust parity: codex-core/src/goals.rs external active goals continue as
+        # hidden turns and may complete only through the update_goal tool.
+        from pycodex.state.model.thread_goal import ThreadGoalStatus as StateThreadGoalStatus
+        from pycodex.state.state_runtime import StateRuntime
+
+        thread_id = str(uuid4())
+        requests = []
+
+        async def sampler(request):
+            requests.append(request.request_plan.request)
+            if len(requests) == 1:
+                tool_names = {
+                    tool.get("name")
+                    for tool in request.request_plan.request.get("tools", ())
+                    if isinstance(tool, Mapping)
+                }
+                self.assertIn("update_goal", tool_names)
+                return SimpleNamespace(
+                    response_items=[
+                        {
+                            "type": "function_call",
+                            "name": "update_goal",
+                            "arguments": json.dumps({"status": "complete"}),
+                            "call_id": "goal-complete-1",
+                        }
+                    ]
+                )
+            return SimpleNamespace(
+                response_items=[
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "goal done"}],
+                    }
+                ]
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            state_runtime = await StateRuntime.init(codex_home, "openai")
+            try:
+                await state_runtime.thread_goals.replace_thread_goal(
+                    thread_id,
+                    "你好",
+                    StateThreadGoalStatus.ACTIVE,
+                    None,
+                )
+            finally:
+                await state_runtime.close()
+
+            config = ExecSessionConfig(model="gpt-test", model_provider_id="openai", cwd=Path("C:/work/project"))
+            plan = ExecRunPlan(InitialOperation.user_turn((UserInput.text_input("<goal_context>你好</goal_context>"),)), "goal")
+            model_info = LocalHttpModelInfo(slug="gpt-test", base_instructions="base")
+
+            result = await run_exec_user_turn_core_sampling(
+                config,
+                plan,
+                ModelClient(session_id="session", thread_id=thread_id, installation_id="install"),
+                {"base_url": "https://api.example.test/v1"},
+                model_info,
+                sampler,
+                codex_home=codex_home,
+            )
+
+            self.assertEqual(final_text_from_response_items(result.response_items), "goal done")
+            self.assertEqual(len(requests), 2)
+            tool_outputs = [
+                _response_input_mapping(item)
+                for item in requests[1].get("input", ())
+                if _response_input_mapping(item).get("type") == "function_call_output"
+            ]
+            self.assertEqual(tool_outputs[0]["call_id"], "goal-complete-1")
+            self.assertIn('"status": "complete"', tool_outputs[0]["output"])
+
+            state_runtime = await StateRuntime.init(codex_home, "openai")
+            try:
+                goal = await state_runtime.thread_goals.get_thread_goal(thread_id)
+            finally:
+                await state_runtime.close()
+            self.assertIsNotNone(goal)
+            self.assertIs(goal.status, StateThreadGoalStatus.COMPLETE)
+
+    async def test_goal_update_with_existing_answer_does_not_wait_for_followup_sampling(self) -> None:
+        # Rust-derived contract: codex-core/src/goals.rs routes externally set
+        # goals through a hidden continuation turn, and update_goal is a terminal
+        # accounting tool when the answer is already present in the same turn.
+        from pycodex.state.model.thread_goal import ThreadGoalStatus as StateThreadGoalStatus
+        from pycodex.state.state_runtime import StateRuntime
+
+        thread_id = str(uuid4())
+        requests = []
+
+        async def sampler(request):
+            requests.append(request.request_plan.request)
+            self.assertEqual(len(requests), 1, "update_goal should not force a second model sample when answer exists")
+            return SimpleNamespace(
+                response_items=[
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "你好！"}],
+                    },
+                    {
+                        "type": "function_call",
+                        "name": "update_goal",
+                        "arguments": json.dumps({"status": "complete"}),
+                        "call_id": "goal-complete-answer-1",
+                    },
+                ]
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            codex_home = Path(tmpdir)
+            state_runtime = await StateRuntime.init(codex_home, "openai")
+            try:
+                await state_runtime.thread_goals.replace_thread_goal(
+                    thread_id,
+                    "你好",
+                    StateThreadGoalStatus.ACTIVE,
+                    None,
+                )
+            finally:
+                await state_runtime.close()
+
+            config = ExecSessionConfig(model="gpt-test", model_provider_id="openai", cwd=Path("C:/work/project"))
+            plan = ExecRunPlan(InitialOperation.user_turn((UserInput.text_input("<goal_context>你好</goal_context>"),)), "goal")
+            model_info = LocalHttpModelInfo(slug="gpt-test", base_instructions="base")
+
+            result = await run_exec_user_turn_core_sampling(
+                config,
+                plan,
+                ModelClient(session_id="session", thread_id=thread_id, installation_id="install"),
+                {"base_url": "https://api.example.test/v1"},
+                model_info,
+                sampler,
+                codex_home=codex_home,
+            )
+
+            self.assertEqual(final_text_from_response_items(result.response_items), "你好！")
+            self.assertEqual(len(requests), 1)
+            self.assertEqual(len(result.tool_response_items), 1)
+            state_runtime = await StateRuntime.init(codex_home, "openai")
+            try:
+                goal = await state_runtime.thread_goals.get_thread_goal(thread_id)
+            finally:
+                await state_runtime.close()
+            self.assertIsNotNone(goal)
+            self.assertIs(goal.status, StateThreadGoalStatus.COMPLETE)
 
     async def test_run_exec_user_turn_http_sampling_can_preload_resume_history(self) -> None:
         seen = {}

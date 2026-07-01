@@ -19,6 +19,7 @@ from ..token_usage import TokenUsage, TokenUsageInfo
 from .replay import AgentMessageItem, ThreadItemRenderSource, handle_thread_item as replay_handle_thread_item
 from .command_lifecycle import CommandLifecycleState
 from .constructor import PLACEHOLDERS, SIDE_PLACEHOLDERS
+from .goal_status import GoalStatusState
 from .mcp_startup import McpServerStatusUpdatedNotification, McpStartupModel
 from .status_surfaces import run_state_status_text
 from .status_state import TerminalTitleStatusKind
@@ -115,6 +116,8 @@ class ChatWidgetProtocolRuntime:
         self.token_info: Optional[TokenUsageInfo] = None
         self.thread_name: Optional[str] = None
         self.active_agent_label: Optional[str] = None
+        self.current_goal_status: Optional[GoalStatusState] = None
+        self.current_goal_status_indicator: Any | None = None
         self.selected_model: Optional[str] = None
         # Rust ``chatwidget::constructor`` initializes these fields from
         # ``PLACEHOLDERS``/``SIDE_PLACEHOLDERS`` and the bottom pane renders
@@ -207,6 +210,32 @@ class ChatWidgetProtocolRuntime:
 
     def on_thread_name_updated(self, _thread_id: str, thread_name: Optional[str]) -> None:
         self.thread_name = thread_name
+
+    def on_thread_goal_updated(self, goal: Any, turn_id: Optional[str] = None) -> None:
+        if goal is None:
+            return
+        if _status_value(_get(goal, "status", None)) == "budget_limited" and turn_id:
+            mark_budget_limited = getattr(self.turn_lifecycle, "mark_budget_limited", None)
+            if callable(mark_budget_limited):
+                mark_budget_limited(str(turn_id))
+        self.current_goal_status = GoalStatusState.new(goal, datetime.now().astimezone())
+        self.refresh_goal_status_indicator_for_time_tick()
+        self.request_redraw()
+
+    def on_thread_goal_cleared(self, thread_id: str) -> None:
+        self.current_goal_status = None
+        self.current_goal_status_indicator = None
+        self.request_redraw()
+
+    def refresh_goal_status_indicator_for_time_tick(self) -> None:
+        if self.current_goal_status is None:
+            self.current_goal_status_indicator = None
+            return
+        started_at = _goal_status_active_turn_started_at(self.turn_lifecycle)
+        self.current_goal_status_indicator = self.current_goal_status.indicator(
+            datetime.now().astimezone(),
+            started_at,
+        )
 
     def set_active_agent_label(self, label: Optional[str]) -> None:
         self.active_agent_label = None if label is None else str(label)
@@ -736,6 +765,27 @@ def _status_name(value: Any) -> str:
     if "." in text:
         text = text.rsplit(".", 1)[-1]
     return text
+
+
+def _status_value(value: Any) -> str:
+    text = _status_name(value)
+    out: list[str] = []
+    for index, char in enumerate(text):
+        if char.isupper() and index > 0:
+            out.append("_")
+        out.append(char.lower())
+    return "".join(out)
+
+
+def _goal_status_active_turn_started_at(turn_lifecycle: Any) -> Any | None:
+    started_at = getattr(turn_lifecycle, "goal_status_active_turn_started_at", None)
+    if started_at is None:
+        started_at = getattr(turn_lifecycle, "started_at", None)
+    if isinstance(started_at, datetime):
+        return started_at
+    if isinstance(started_at, (int, float)):
+        return started_at
+    return None
 
 
 def _replay_name(value: Optional[Union[ReplayKind, str]]) -> Optional[str]:

@@ -751,10 +751,40 @@ async def _message_history_metadata_from_config(config: Any) -> dict[str, int] |
 
 
 def app_server_rate_limit_snapshots(*args: Any, **kwargs: Any) -> Any:
+    """Mirror Rust ``app_server_rate_limit_snapshots``.
+
+    Rust keeps the top-level ``rate_limits`` snapshot, then appends every
+    non-duplicate entry from ``rate_limits_by_limit_id``. The primary snapshot
+    can appear both as the top-level value and inside the map; the map copy is
+    intentionally dropped so display code sees one main quota plus any
+    additional feature/model buckets.
+    """
+
     response = args[0] if args else kwargs
-    primary = _get(response, "primary", _get(response, "primary_snapshot"))
-    secondary = _get(response, "secondary", _get(response, "secondary_snapshot"))
-    return {"primary": primary, "secondary": secondary}
+    primary = _get(response, "rate_limits", _get(response, "rateLimits"))
+    if primary is None:
+        primary = _get(response, "primary", _get(response, "primary_snapshot"))
+    if primary is None:
+        primary = _get(response, "primarySnapshot")
+    snapshots = [primary] if primary is not None else []
+    primary_limit_id = _get(primary, "limit_id", _get(primary, "limitId")) if primary is not None else None
+
+    by_limit_id = _get(response, "rate_limits_by_limit_id", _get(response, "rateLimitsByLimitId"))
+    if isinstance(by_limit_id, Mapping):
+        for limit_id, snapshot in by_limit_id.items():
+            snapshot_limit_id = _get(snapshot, "limit_id", _get(snapshot, "limitId"))
+            if primary_limit_id is not None and (
+                str(primary_limit_id) == str(limit_id) or str(primary_limit_id) == str(snapshot_limit_id)
+            ):
+                continue
+            snapshots.append(snapshot)
+    elif by_limit_id is not None:
+        try:
+            snapshots.extend(list(by_limit_id))
+        except TypeError:
+            snapshots.append(by_limit_id)
+
+    return snapshots
 
 
 async def build_config(*args: Any, **kwargs: Any) -> Any:

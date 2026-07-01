@@ -1,4 +1,4 @@
-"""Semantic footer helpers for Rust ``bottom_pane/footer.rs``.
+﻿"""Semantic footer helpers for Rust ``bottom_pane/footer.rs``.
 
 The Rust module is mostly pure formatting plus ratatui rendering.  Python keeps
 the formatting/state-machine contract as strings and lightweight dataclasses;
@@ -395,22 +395,33 @@ def mode_indicator_line(indicator: CollaborationModeIndicator, show_cycle_hint: 
 
 
 def goal_status_indicator_line(indicator: GoalStatusIndicator) -> str:
-    usage = f" {indicator.usage}" if indicator.usage else ""
-    labels = {
-        "Active": "Goal active",
-        "Paused": "Goal paused",
-        "Blocked": "Goal blocked",
-        "UsageLimited": "Goal usage limited",
-        "BudgetLimited": "Goal budget limited",
-        "Complete": "Goal complete",
-    }
-    return labels.get(indicator.kind, indicator.kind) + usage
+    # Rust source: codex-tui/src/bottom_pane/footer.rs::goal_status_indicator_line.
+    if indicator.kind == "Active":
+        return f"Pursuing goal ({indicator.usage})" if indicator.usage else "Pursuing goal"
+    if indicator.kind == "Paused":
+        return "Goal paused (/goal resume)"
+    if indicator.kind == "Blocked":
+        return "Goal blocked (/goal resume)"
+    if indicator.kind == "UsageLimited":
+        return "Goal hit usage limits (/goal resume)"
+    if indicator.kind == "BudgetLimited":
+        return f"Goal unmet ({indicator.usage})" if indicator.usage else "Goal abandoned"
+    if indicator.kind == "Complete":
+        return f"Goal achieved ({indicator.usage})" if indicator.usage else "Goal achieved"
+    return indicator.kind
 
 
-def status_line_right_indicator_line(status_line: Optional[str], active_agent_label: Optional[str] = None) -> Optional[str]:
-    if status_line and active_agent_label:
-        return f"{status_line} · {active_agent_label}"
-    return status_line or active_agent_label
+def status_line_right_indicator_line(
+    status_line: Optional[str],
+    active_agent_label: Optional[str] = None,
+    goal_status_indicator: Optional[GoalStatusIndicator] = None,
+) -> Optional[str]:
+    right_indicator = active_agent_label or (
+        goal_status_indicator_line(goal_status_indicator) if goal_status_indicator is not None else None
+    )
+    if status_line and right_indicator:
+        return f"{status_line} · {right_indicator}"
+    return status_line or right_indicator
 
 
 def side_conversation_context_line(side_label: Optional[str] = None) -> Optional[str]:
@@ -764,3 +775,4 @@ __all__ = [
     "toggle_shortcut_mode",
     "uses_passive_footer_status_layout",
 ]
+

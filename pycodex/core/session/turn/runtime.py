@@ -12,6 +12,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import json
+import os
+import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from types import SimpleNamespace
@@ -95,6 +98,18 @@ DEFAULT_STREAM_MAX_RETRIES = 5
 MAX_STREAM_MAX_RETRIES = 100
 _LAST_AGENT_MESSAGE_UNSET = object()
 _FIELD_VALUE_MISSING = object()
+
+
+def _goal_debug_trace(event: str, **fields: Any) -> None:
+    path = os.environ.get("PYCODEX_TUI_TIMING_LOG") or os.environ.get("PYCODEX_GOAL_DEBUG_LOG")
+    if not path:
+        return
+    record = {"t": time.monotonic(), "event": event, **fields}
+    try:
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True, default=str) + "\n")
+    except OSError:
+        return
 
 
 BuiltToolsFn = Callable[[Any, Any], Any | Awaitable[Any]]
@@ -500,6 +515,19 @@ async def run_user_turn_sampling_from_session(
             prepared.router,
             response_items,
         )
+        _goal_debug_trace(
+            "goal_core_initial_tools_handled",
+            tool_outputs=len(tool_response_items),
+            update_goal_outputs=_count_goal_update_outputs(response_items, tool_response_items),
+            function_call_names=_function_call_names(response_items),
+            has_agent_message=_last_agent_message_from_sampling(
+                stream_runtime_state,
+                all_response_items,
+                stream_event_apply_plans,
+                all_stream_events,
+            )
+            is not None,
+        )
     except CodexErr as exc:
         if exc.kind == "turn_aborted":
             return await _interrupted_user_turn_sampling_result(
@@ -528,6 +556,19 @@ async def run_user_turn_sampling_from_session(
         if tool_response_items:
             await _maybe_await(sess.record_conversation_items(prepared.turn_context, tool_response_items))
             all_tool_response_items.extend(tool_response_items)
+            if _can_complete_after_goal_update_outputs(
+                tool_response_items,
+                all_response_items,
+                stream_runtime_state,
+                stream_event_apply_plans,
+                all_stream_events,
+            ):
+                _goal_debug_trace(
+                    "goal_core_fast_complete_after_update_goal",
+                    tool_outputs=len(tool_response_items),
+                    response_items=len(all_response_items),
+                )
+                break
         tool_followup_limit_reached = (
             max_tool_followups is not None
             and has_tool_response_items
@@ -816,6 +857,19 @@ async def run_user_turn_sampling_from_session(
                 prepared.turn_context,
                 prepared.router,
                 response_items,
+            )
+            _goal_debug_trace(
+                "goal_core_followup_tools_handled",
+                tool_outputs=len(tool_response_items),
+                update_goal_outputs=_count_goal_update_outputs(response_items, tool_response_items),
+                function_call_names=_function_call_names(response_items),
+                has_agent_message=_last_agent_message_from_sampling(
+                    stream_runtime_state,
+                    all_response_items,
+                    stream_event_apply_plans,
+                    all_stream_events,
+                )
+                is not None,
             )
         except CodexErr as exc:
             if exc.kind == "turn_aborted":
@@ -3213,6 +3267,69 @@ def _last_agent_message_from_sampling(
             if value is not None:
                 return value
     return get_last_assistant_message_from_turn(tuple(response_items)) if response_items else None
+
+
+def _can_complete_after_goal_update_outputs(
+    tool_response_items: Sequence[ResponseItem],
+    response_items: Sequence[ResponseItem],
+    runtime_state: SamplingRuntimeEventApplicationState,
+    apply_plans: Sequence[Any],
+    stream_events: Sequence[Any],
+) -> bool:
+    if not tool_response_items:
+        return False
+    goal_call_ids = _goal_update_call_ids(response_items)
+    if not goal_call_ids:
+        return False
+    for item in tool_response_items:
+        call_id = _response_item_call_id(item)
+        if call_id not in goal_call_ids:
+            return False
+    return (
+        _last_agent_message_from_sampling(
+            runtime_state,
+            response_items,
+            apply_plans,
+            stream_events,
+        )
+        is not None
+    )
+
+
+def _count_goal_update_outputs(
+    response_items: Sequence[ResponseItem],
+    tool_response_items: Sequence[ResponseItem],
+) -> int:
+    goal_call_ids = _goal_update_call_ids(response_items)
+    if not goal_call_ids:
+        return 0
+    return sum(1 for item in tool_response_items if _response_item_call_id(item) in goal_call_ids)
+
+
+def _goal_update_call_ids(response_items: Sequence[ResponseItem]) -> set[str]:
+    call_ids: set[str] = set()
+    for item in response_items:
+        item_type = _field_value(item, "type", None)
+        name = _field_value(item, "name", None)
+        call_id = _response_item_call_id(item)
+        if item_type == "function_call" and name == "update_goal" and call_id:
+            call_ids.add(call_id)
+    return call_ids
+
+
+def _function_call_names(response_items: Sequence[ResponseItem]) -> tuple[str, ...]:
+    names: list[str] = []
+    for item in response_items:
+        if _field_value(item, "type", None) != "function_call":
+            continue
+        name = _field_value(item, "name", None)
+        names.append(name if isinstance(name, str) else "")
+    return tuple(names)
+
+
+def _response_item_call_id(item: Any) -> str | None:
+    value = _field_value(item, "call_id", None)
+    return value if isinstance(value, str) and value else None
 
 
 def _session_or_turn_features(sess: Any, turn_context: Any) -> Any:

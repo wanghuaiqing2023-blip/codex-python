@@ -317,12 +317,12 @@ async def set_thread_goal(session: Any, turn_context: Any, request: SetGoalReque
         )
         replacing_goal = True
     else:
-        update = {
-            "objective": objective,
-            "status": None if request.status is None else state_goal_status_from_protocol(request.status),
-            "token_budget": request.token_budget,
-            "expected_goal_id": None if existing is None else existing.goal_id,
-        }
+        update = _state_goal_update(
+            objective=objective,
+            status=None if request.status is None else state_goal_status_from_protocol(request.status),
+            token_budget=request.token_budget,
+            expected_goal_id=None if existing is None else existing.goal_id,
+        )
         goal = await _maybe_await(_call_required(goals, "update_thread_goal", _thread_id(session), update))
         if goal is None:
             raise ValueError(f"cannot update goal for thread {_thread_id(session)}: no goal exists")
@@ -596,6 +596,31 @@ def _thread_goals(state_db: Any) -> Any:
     if thread_goals is None:
         raise RuntimeError("state DB must provide thread_goals")
     return thread_goals
+
+
+def _state_goal_update(
+    *,
+    objective: str | None,
+    status: Any,
+    token_budget: int | None,
+    expected_goal_id: str | None,
+) -> Any:
+    try:
+        from pycodex.state.runtime.goals import GoalUpdate
+
+        return GoalUpdate(
+            objective=objective,
+            status=status,
+            token_budget=token_budget,
+            expected_goal_id=expected_goal_id,
+        )
+    except Exception:
+        return {
+            "objective": objective,
+            "status": status,
+            "token_budget": token_budget,
+            "expected_goal_id": expected_goal_id,
+        }
 
 
 def _thread_id(session: Any) -> Any:

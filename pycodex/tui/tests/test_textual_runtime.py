@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import io
+import json
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -11,11 +14,12 @@ from types import SimpleNamespace
 from typing import Any
 
 import pycodex.tui as tui_module
+from pycodex.app_server_protocol.account import GetAccountRateLimitsResponse, RateLimitSnapshot, RateLimitWindow
 from pycodex.core.agents_md import DEFAULT_AGENTS_MD_FILENAME
 from pycodex.core.config.edit import read_toml_mapping
 from pycodex.features import Feature, FeatureConfigSource, Features, FeaturesToml
 from pycodex.protocol import AskForApproval, ModeKind, ReviewTarget
-from pycodex.tui.app.runtime import QueueActiveThreadEventStream, TuiAppRuntime
+from pycodex.tui.app.runtime import CoreExecActiveThreadRuntime, QueueActiveThreadEventStream, TuiAppRuntime
 from pycodex.tui.app_command import AppCommand
 from pycodex.tui.bottom_pane.chat_composer import LARGE_PASTE_CHAR_THRESHOLD
 from pycodex.tui.bottom_pane.chat_composer_history import HistoryEntry
@@ -25,11 +29,13 @@ from pycodex.tui.chatwidget.protocol import ServerNotification
 from pycodex.tui.chatwidget.status_surfaces import DEFAULT_STATUS_LINE_ITEMS, terminal_title_spinner_frame_at
 from pycodex.tui.get_git_diff import FakeRunner, null_device, response
 from pycodex.tui.status.rate_limits import RateLimitSnapshotDisplay, RateLimitWindowDisplay
+from pycodex.tui.status.account import StatusAccountDisplay
 from pycodex.tui.resume_picker import PickerState, Row as ResumePickerRow
 from pycodex.tui.textual_compat import Static, Text, events, load_textual_module
 from pycodex.tui.textual_runtime import (
     CodexComposerTextArea,
     _PermissionFeatureSet,
+    _RetryStatus,
     PyCodexTextualApp,
     configure_app_runtime_thread_identity,
     run_textual_tui,
@@ -41,6 +47,16 @@ from pycodex.tui.token_usage import TokenUsage, TokenUsageInfo
 
 
 _STARTUP_TIP_PREFIX = "Tip: Try the Codex App."
+
+
+def _jwt_with_claims(claims: dict[str, Any]) -> str:
+    header = {"alg": "none", "typ": "JWT"}
+
+    def encode(value: dict[str, Any]) -> str:
+        raw = json.dumps(value, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    return f"{encode(header)}.{encode(claims)}.signature"
 
 
 def _transcript_banner_percent(text: object) -> int:
@@ -107,6 +123,53 @@ class _FakeAppServerRuntime(_FakeActiveThreadRuntime):
         if self.app_server_events:
             return self.app_server_events.pop(0)
         return None
+
+
+class _FakeGoalRuntime(_FakeActiveThreadRuntime):
+    def __init__(self, existing_goal: dict[str, object] | None = None) -> None:
+        super().__init__(
+            [
+                ServerNotification("TurnStarted", {"turn": {"id": "goal-turn"}}),
+                ServerNotification("TurnCompleted", {"turn": {"id": "goal-turn", "status": "Completed"}}),
+            ]
+        )
+        self.goal: dict[str, object] | None = existing_goal
+        self.goal_calls: list[tuple[str, dict[str, object]]] = []
+
+    def thread_goal_get(self, thread_id: str) -> dict[str, object] | None:
+        self.goal_calls.append(("get", {"thread_id": thread_id}))
+        return self.goal
+
+    def thread_goal_set(self, **payload: object) -> dict[str, object]:
+        self.goal_calls.append(("set", dict(payload)))
+        self.goal = {
+            "thread_id": str(payload.get("thread_id") or "primary"),
+            "status": payload.get("status") or "active",
+            "objective": payload.get("objective") or (self.goal or {}).get("objective", ""),
+            "tokens_used": 0,
+        }
+        return self.goal
+
+    def thread_goal_clear(self, thread_id: str) -> bool:
+        self.goal_calls.append(("clear", {"thread_id": thread_id}))
+        self.goal = None
+        return True
+
+    def goal_continuation_op(self, goal: object) -> AppCommand:
+        objective = str(getattr(goal, "objective", "") or "")
+        return AppCommand(
+            "UserTurn",
+            {
+                "items": [
+                    {
+                        "kind": "text",
+                        "payload": {"text": f"<goal_context>\nContinue working toward: {objective}\n</goal_context>"},
+                    }
+                ],
+                "hidden_goal_context": True,
+                "final_output_json_schema": None,
+            },
+        )
 
 
 class _WaitingRolloutRuntime(_FakeActiveThreadRuntime):
@@ -920,6 +983,184 @@ def test_textual_runtime_submits_prompt_and_streams_transcript() -> None:
     assert blocks.count(("codex", "hello world")) == 1
 
 
+def test_textual_runtime_retry_stream_error_updates_live_status_without_history_cell() -> None:
+    # Rust source/test contract:
+    # - codex-tui::chatwidget::streaming::on_stream_error sets the live status
+    #   indicator to the reconnect message.
+    # - codex-tui::chatwidget::tests::status_and_layout asserts StreamError
+    #   produces no history cell.
+    # - The retry status indicator remains visible across status ticks until
+    #   normal stream progress resumes.
+    runtime = _FakeActiveThreadRuntime([])
+    app = PyCodexTextualApp(TuiAppRuntime(runtime))
+
+    async def scenario() -> None:
+        async with app.run_test(size=(100, 32)):
+            app._busy = True
+            app._turn_started_at = time.monotonic() - 33
+            app._handle_server_notification(ServerNotification("TurnStarted", {"turn": {"id": "t1"}}))
+            app._handle_server_notification(
+                ServerNotification(
+                    "Error",
+                    {
+                        "thread_id": "primary",
+                        "turn_id": "t1",
+                        "will_retry": True,
+                        "error": {
+                            "message": "Reconnecting... 2/5",
+                            "additional_details": "Idle timeout waiting for SSE",
+                        },
+                    },
+                )
+            )
+            app._tick_status()
+            status = str(app.query_one("#status-line", Static).renderable)
+            assert "Reconnecting... 2/5" in status
+            assert "Idle timeout waiting for SSE" in status
+            assert "33s" in status
+            assert "esc to interrupt" in status.lower()
+            assert len(status.splitlines()) == 2
+            app._handle_server_notification(ServerNotification("ResponseStarted", {"thread_id": "primary", "turn_id": "t1"}))
+            status_after_response_started = str(app.query_one("#status-line", Static).renderable)
+            assert "Reconnecting... 2/5" in status_after_response_started
+            app._handle_server_notification(
+                ServerNotification(
+                    "Error",
+                    {
+                        "thread_id": "primary",
+                        "turn_id": "stale-turn",
+                        "will_retry": True,
+                        "error": {
+                            "message": "Reconnecting... 1/5",
+                            "additional_details": "stale retry",
+                        },
+                    },
+                )
+            )
+            status_after_stale = str(app.query_one("#status-line", Static).renderable)
+            assert "Reconnecting... 2/5" in status_after_stale
+            assert "Reconnecting... 1/5" not in status_after_stale
+            app._handle_server_notification(
+                ServerNotification(
+                    "ItemStarted",
+                    {
+                        "item": {
+                            "kind": "CommandExecution",
+                            "id": "cmd-1",
+                            "command": "dir",
+                        }
+                    },
+                )
+            )
+            status_after_tool = str(app.query_one("#status-line", Static).renderable)
+            assert "Reconnecting... 2/5" in status_after_tool
+            assert "Running dir" not in status_after_tool
+            app._handle_server_notification(ServerNotification("AgentMessageDelta", {"delta": "hello"}))
+            status_after_delta = str(app.query_one("#status-line", Static).renderable)
+            assert "Reconnecting... 2/5" not in status_after_delta
+
+    asyncio.run(scenario())
+
+    assert not any("Reconnecting... 2/5" in block.text for block in app._blocks)
+
+
+def test_textual_runtime_permanent_stream_failure_reports_error_after_retry_status() -> None:
+    # Rust source/test contract:
+    # - codex-core::responses_retry returns Err after retry budget is exhausted
+    #   when fallback is unavailable or cannot be activated.
+    # - codex-tui::chatwidget::protocol routes TurnStatus::Failed into
+    #   handle_non_retry_error, producing an error history cell.
+    # - Retry reconnect status remains live-only and is cleared when the turn
+    #   reaches a terminal failed state.
+    runtime = _FakeActiveThreadRuntime([])
+    app = PyCodexTextualApp(TuiAppRuntime(runtime))
+
+    async def scenario() -> None:
+        async with app.run_test(size=(100, 32)):
+            app._busy = True
+            app._turn_started_at = time.monotonic() - 58
+            app._handle_server_notification(ServerNotification("TurnStarted", {"turn": {"id": "t1"}}))
+            app._handle_server_notification(
+                ServerNotification(
+                    "Error",
+                    {
+                        "thread_id": "primary",
+                        "turn_id": "t1",
+                        "will_retry": True,
+                        "error": {
+                            "message": "Reconnecting... 5/5",
+                            "additional_details": "Request timed out",
+                        },
+                    },
+                )
+            )
+            app._tick_status()
+            retry_status = str(app.query_one("#status-line", Static).renderable)
+            assert "Reconnecting... 5/5" in retry_status
+            assert "Request timed out" in retry_status
+
+            app._handle_server_notification(
+                ServerNotification(
+                    "TurnCompleted",
+                    {
+                        "thread_id": "primary",
+                        "turn": {
+                            "id": "t1",
+                            "status": "Failed",
+                            "error": {
+                                "message": "stream disconnected before completion: Request timed out",
+                                "exit_code": 1,
+                            },
+                        },
+                    },
+                )
+            )
+
+            status_after_failure = str(app.query_one("#status-line", Static).renderable)
+            assert "Reconnecting... 5/5" not in status_after_failure
+            assert app._active_retry_status is None
+            assert app._active_turn_id is None
+            assert app._busy is False
+
+    asyncio.run(scenario())
+
+    blocks = [(block.label, block.text) for block in app._blocks]
+    assert ("error", "stream disconnected before completion: Request timed out") in blocks
+    assert not any(label == "codex" and "stream disconnected" in text for label, text in blocks)
+    assert not any("Reconnecting... 5/5" in text for _label, text in blocks)
+
+
+def test_textual_runtime_closed_event_stream_clears_retry_and_surfaces_error() -> None:
+    # Rust source contract:
+    # - codex-tui::chatwidget::turn_runtime::finalize_turn clears turn-scoped
+    #   live state when a turn terminates without normal completion.
+    # - The reconnect status is a live status indicator, not persisted history.
+    runtime = _FakeActiveThreadRuntime([])
+    app = PyCodexTextualApp(TuiAppRuntime(runtime))
+
+    async def scenario() -> None:
+        async with app.run_test(size=(100, 32)):
+            app._busy = True
+            app._turn_started_at = time.monotonic() - 12
+            app._active_turn_id = "t1"
+            app._active_retry_status = _RetryStatus("Reconnecting... 3/5", "network unreachable")
+            app._set_retry_status(app._active_retry_status)
+            assert "Reconnecting... 3/5" in str(app.query_one("#status-line", Static).renderable)
+
+            app._finish_turn(1, "active thread event stream closed before turn completed", True)
+
+            assert app._active_retry_status is None
+            assert app._active_turn_id is None
+            assert app._busy is False
+            assert "Reconnecting... 3/5" not in str(app.query_one("#status-line", Static).renderable)
+
+    asyncio.run(scenario())
+
+    blocks = [(block.label, block.text) for block in app._blocks]
+    assert ("error", "active thread event stream closed before turn completed") in blocks
+    assert not any("Reconnecting... 3/5" in text for _label, text in blocks)
+
+
 def test_textual_runtime_renders_done_only_agent_item_without_duplicate_delta() -> None:
     # Rust source/test contract:
     # - codex-rs/core/src/session/turn.rs::ResponseEvent::OutputItemDone
@@ -1028,6 +1269,269 @@ def test_textual_runtime_consolidated_local_slash_commands_do_not_submit_user_tu
     assert "Usage: /raw [on|off]" in notice_text
     assert "Available: /model [name]" in notice_text
     assert not any(block.label == "you" and block.text.startswith("/") for block in app._blocks)
+
+
+def test_textual_runtime_registered_slash_commands_are_intercepted_by_dispatch() -> None:
+    # Rust source/test contract:
+    # - codex-tui::slash_command owns the registered slash command set and
+    #   aliases such as /clean and /pet.
+    # - codex-tui::chatwidget::slash_dispatch dispatches recognized commands
+    #   locally instead of submitting them as AppCommand::UserTurn.
+    # This protects the Textual product path from drifting into a second,
+    # hard-coded slash command table.
+    runtime = _FakeActiveThreadRuntime([])
+    app_runtime = TuiAppRuntime(runtime)
+    app = PyCodexTextualApp(app_runtime)
+    commands = (
+        "/clean",
+        "/ide status",
+        "/goal",
+        "/side",
+        "/btw note",
+        "/debug-config",
+        "/title",
+        "/statusline",
+        "/theme",
+        "/pet",
+        "/mcp verbose",
+        "/apps",
+        "/plugins",
+        "/skills",
+        "/hooks",
+        "/approve",
+        "/feedback",
+        "/personality",
+        "/realtime",
+        "/test-approval",
+        "/debug-m-drop",
+        "/debug-m-update",
+    )
+
+    async def scenario() -> None:
+        async with app.run_test(size=(120, 36)):
+            for command in commands:
+                assert app._handle_local_slash_command(command), command
+                app._active_selection = None
+                app.clear_command_popup()
+                app._busy = False
+                await asyncio.sleep(0)
+
+    asyncio.run(scenario())
+
+    assert not any(op.kind == "UserTurn" for _thread_id, op in runtime.submitted)
+    assert not any(block.label == "you" and block.text.startswith("/") for block in app._blocks)
+
+
+def test_textual_goal_command_sets_thread_goal_and_starts_hidden_continuation() -> None:
+    # Rust-derived contract:
+    # - codex-tui::chatwidget::slash_dispatch parses `/goal <objective>` as
+    #   AppEvent::SetThreadGoalObjective with ConfirmIfExists, not a visible
+    #   user message.
+    # - codex-core::goals::GoalRuntimeEvent::ExternalSet then starts an idle
+    #   goal continuation turn with hidden <goal_context> input.
+    runtime = _FakeGoalRuntime()
+    app = PyCodexTextualApp(TuiAppRuntime(runtime))
+
+    async def scenario() -> None:
+        async with app.run_test(size=(120, 32)) as pilot:
+            composer = app.query_one("#composer", CodexComposerTextArea)
+            composer.text = "/goal finish slash command parity"
+            await pilot.press("enter")
+            await pilot.pause(0.1)
+
+    asyncio.run(scenario())
+
+    assert len(runtime.submitted) == 1
+    submitted = runtime.submitted[0][1]
+    assert submitted.kind == "UserTurn"
+    assert submitted.payload.get("hidden_goal_context") is True
+    assert "<goal_context>" in submitted.payload["items"][0]["payload"]["text"]
+    assert not any(block.label == "you" and block.text.startswith("/goal") for block in app._blocks)
+    assert runtime.goal_calls == [
+        ("get", {"thread_id": "primary"}),
+        (
+            "set",
+            {
+                "thread_id": "primary",
+                "objective": "finish slash command parity",
+                "status": "active",
+            },
+        ),
+    ]
+    notices = "\n".join(block.text for block in app._blocks if block.label == "status")
+    assert "Goal active" in notices
+    assert "0 tokens used" in notices
+
+
+def test_textual_goal_command_opens_replace_confirmation_for_active_goal() -> None:
+    # Rust-derived contract:
+    # - codex-tui::app::thread_goal_actions asks for confirmation before
+    #   replacing unfinished goals.
+    # - Accepting the confirmation clears the old goal and sets the new one.
+    runtime = _FakeGoalRuntime(
+        {
+            "thread_id": "primary",
+            "status": "active",
+            "objective": "old goal",
+            "tokens_used": 5,
+        }
+    )
+    app = PyCodexTextualApp(TuiAppRuntime(runtime))
+
+    async def scenario() -> None:
+        async with app.run_test(size=(120, 32)) as pilot:
+            composer = app.query_one("#composer", CodexComposerTextArea)
+            popup = app.query_one("#slash-popup", Static)
+            composer.text = "/goal new goal"
+            await pilot.press("enter")
+            await pilot.pause(0.05)
+            assert "Replace goal?" in str(popup.renderable)
+            await pilot.press("enter")
+            await pilot.pause(0.05)
+
+    asyncio.run(scenario())
+
+    assert ("clear", {"thread_id": "primary"}) in runtime.goal_calls
+    assert (
+        "set",
+        {
+            "thread_id": "primary",
+            "objective": "new goal",
+            "status": "active",
+        },
+    ) in runtime.goal_calls
+    assert any(op.kind == "UserTurn" and op.payload.get("hidden_goal_context") for _thread_id, op in runtime.submitted)
+
+
+def test_textual_goal_edit_opens_prefilled_editor_and_saves_update_existing() -> None:
+    # Rust source/test contract:
+    # - codex-tui::chatwidget::tests::slash_commands::goal_edit_slash_command_opens_goal_editor
+    #   asserts `/goal edit` emits OpenThreadGoalEditor, not a UserTurn.
+    # - codex-tui::chatwidget::goal_menu::show_goal_edit_prompt pre-fills the
+    #   current objective and submits SetThreadGoalObjective(UpdateExisting).
+    # - codex-core::goals::GoalRuntimeEvent::ExternalSet calls
+    #   maybe_continue_goal_if_idle_runtime for active goals; session/tests.rs
+    #   external_objective_change_steers_active_turn proves edited objectives
+    #   steer/continue goal execution.
+    runtime = _FakeGoalRuntime(
+        {
+            "thread_id": "primary",
+            "status": "complete",
+            "objective": "old objective",
+            "token_budget": 1000,
+            "tokens_used": 5,
+        }
+    )
+    app = PyCodexTextualApp(TuiAppRuntime(runtime))
+
+    async def scenario() -> None:
+        async with app.run_test(size=(120, 32)) as pilot:
+            composer = app.query_one("#composer", CodexComposerTextArea)
+            composer.text = "/goal edit"
+            await pilot.press("enter")
+            await pilot.pause(0.05)
+            assert composer.text == "old objective"
+            assert "Edit goal" in str(app.query_one("#status-line", Static).renderable)
+
+            composer.text = "new objective"
+            await pilot.press("enter")
+            await pilot.pause(0.05)
+
+    asyncio.run(scenario())
+
+    assert (
+        "set",
+        {
+            "thread_id": "primary",
+            "objective": "new objective",
+            "status": "active",
+            "token_budget": 1000,
+        },
+    ) in runtime.goal_calls
+    notices = "\n".join(block.text for block in app._blocks if block.label == "status")
+    assert "Goal active" in notices
+    assert "Goal updated." not in notices
+    assert not any(block.label == "you" and "/goal edit" in block.text for block in app._blocks)
+    assert len(runtime.submitted) == 1
+    submitted_thread_id, submitted_op = runtime.submitted[0]
+    assert submitted_thread_id == "primary"
+    assert submitted_op.kind == "UserTurn"
+    assert submitted_op.payload.get("hidden_goal_context") is True
+    assert "new objective" in str(submitted_op.payload.get("items"))
+
+
+def test_textual_goal_command_without_existing_goal_shows_usage() -> None:
+    # Rust-derived contract:
+    # - bare `/goal` sends AppEvent::OpenThreadGoalMenu; if no goal exists,
+    #   app::thread_goal_actions returns the Rust usage message.
+    runtime = _FakeGoalRuntime()
+    app = PyCodexTextualApp(TuiAppRuntime(runtime))
+
+    async def scenario() -> None:
+        async with app.run_test(size=(120, 32)) as pilot:
+            composer = app.query_one("#composer", CodexComposerTextArea)
+            composer.text = "/goal"
+            await pilot.press("enter")
+            await pilot.pause(0.05)
+
+    asyncio.run(scenario())
+
+    notices = "\n".join(block.text for block in app._blocks if block.label == "status")
+    assert "Usage: /goal <objective>" in notices
+    assert "No goal is currently set." in notices
+    assert runtime.goal_calls == [("get", {"thread_id": "primary"})]
+    assert not any(op.kind == "UserTurn" for _thread_id, op in runtime.submitted)
+
+
+def test_textual_goal_command_uses_core_runtime_state_goal_facade(tmp_path: Path) -> None:
+    # Rust-derived contract:
+    # - codex-tui::app::thread_goal_actions calls AppServerSession
+    #   thread_goal_get/set/clear, backed by codex-state thread_goals.
+    # - The Textual product runtime uses CoreExecActiveThreadRuntime, so it
+    #   must expose that same app-server-shaped boundary; otherwise /goal is
+    #   recognized by slash_dispatch but fails with "thread goals are not
+    #   available in this runtime".
+    thread_id = "11111111-1111-4111-8111-111111111111"
+    runtime = CoreExecActiveThreadRuntime(
+        session_config=SimpleNamespace(
+            codex_home=tmp_path,
+            cwd=tmp_path,
+            model="gpt-test",
+            startup_warnings=[],
+        ),
+        model_client=SimpleNamespace(
+            state=SimpleNamespace(thread_id=thread_id, session_id=thread_id),
+        ),
+        provider=SimpleNamespace(id="openai", name="openai"),
+        model_info=SimpleNamespace(slug="gpt-test"),
+        codex_home=tmp_path,
+        startup_prewarm_enabled=False,
+    )
+    runtime.goal_continuation_op = lambda goal: None
+    app_runtime = TuiAppRuntime(runtime)
+    configure_app_runtime_thread_identity(app_runtime, runtime)
+    app = PyCodexTextualApp(app_runtime)
+    footer_lines: list[str] = []
+
+    async def scenario() -> None:
+        async with app.run_test(size=(120, 32)) as pilot:
+            composer = app.query_one("#composer", CodexComposerTextArea)
+            composer.text = "/goal " + "\u4f60\u597d"
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+            footer_lines.append(str(app.query_one("#status-line", Static).renderable))
+
+    try:
+        asyncio.run(scenario())
+
+        notices = "\n".join(block.text for block in app._blocks if block.label == "status")
+        assert "thread goals are not available in this runtime" not in notices
+        assert "Goal active" in notices
+        assert runtime.thread_goal_get(thread_id).objective == "\u4f60\u597d"
+        assert app_runtime.chat_widget.current_goal_status_indicator is not None
+        assert any("Pursuing goal" in footer for footer in footer_lines)
+    finally:
+        runtime.close()
 
 
 def test_textual_keymap_command_opens_picker_without_user_turn() -> None:
@@ -1491,6 +1995,9 @@ def test_textual_status_command_renders_status_card_without_user_turn() -> None:
         sandbox="workspace",
         workspace_roots=[cwd, cwd / "extra"],
         agents_summary="AGENTS.md",
+        status_account_display=StatusAccountDisplay.chat_gpt("user@example.com", "Pro"),
+        collaboration_mode="default",
+        show_chatgpt_usage_link=True,
     )
     app_runtime = TuiAppRuntime(runtime)
     app = PyCodexTextualApp(app_runtime)
@@ -1506,9 +2013,17 @@ def test_textual_status_command_renders_status_card_without_user_turn() -> None:
 
     status_blocks = [block.text for block in app._blocks if block.label == "status"]
     status_text = "\n".join(status_blocks)
+    status_card = next(block for block in app._blocks if block.label == "status" and "/status" in block.text)
+    status_render = status_card.render()
     assert runtime.submitted == []
+    assert status_card.rich_lines is not None
+    assert status_render.plain.startswith("/status\n")
+    assert not status_render.plain.startswith("status\n")
+    assert "╭" in status_render.plain
+    assert "╰" in status_render.plain
     assert "/status" in status_text
     assert ">_ OpenAI Codex" in status_text
+    assert "https://chatgpt.com/codex/settings/usage" in status_text
     assert "Model" in status_text
     assert "gpt-status-model" in status_text
     assert "Directory" in status_text
@@ -1517,6 +2032,10 @@ def test_textual_status_command_renders_status_card_without_user_turn() -> None:
     assert "Workspace" in status_text
     assert "auto-review" in status_text
     assert "Agents.md" in status_text
+    assert "Account" in status_text
+    assert "user@example.com (Pro)" in status_text
+    assert "Collaboration mode" in status_text
+    assert "Default" in status_text
 
 
 def test_textual_status_command_displays_approval_enum_like_rust() -> None:
@@ -2822,6 +3341,255 @@ def test_textual_status_command_uses_and_refreshes_rate_limit_snapshots() -> Non
     assert "8% left" in status_text
 
 
+def test_textual_status_command_refresh_updates_the_same_status_card() -> None:
+    # Rust-derived contract:
+    # - codex-tui::chatwidget::status_controls registers a StatusHistoryHandle
+    #   for the /status cell; RateLimitsLoaded updates that same history cell
+    #   instead of requiring a second /status command to see fresh data.
+    # - Rust source: codex-rs/tui/src/chatwidget/status_controls.rs
+    #   finish_status_rate_limit_refresh.
+    runtime = _FakeActiveThreadRuntime([])
+    runtime.should_refresh_rate_limits = True
+    runtime.rate_limit_snapshots_by_limit_id = {
+        "codex": RateLimitSnapshotDisplay(
+            "codex",
+            datetime.now().astimezone(),
+            primary=RateLimitWindowDisplay(10.0, "soon", 300),
+        )
+    }
+    runtime.fetch_account_rate_limits = lambda: [
+        RateLimitSnapshotDisplay(
+            "codex",
+            datetime.now().astimezone(),
+            primary=RateLimitWindowDisplay(92.0, "soon", 300),
+        )
+    ]
+    app = PyCodexTextualApp(TuiAppRuntime(runtime))
+
+    async def scenario() -> None:
+        async with app.run_test(size=(120, 32)) as pilot:
+            composer = app.query_one("#composer", CodexComposerTextArea)
+            composer.text = "/status"
+            await pilot.press("enter")
+            await pilot.pause(0.05)
+
+    asyncio.run(scenario())
+
+    status_blocks = [block for block in app._blocks if block.label == "status"]
+    assert len(status_blocks) == 1
+    assert "5h limit" in status_blocks[0].text
+    assert "8% left" in status_blocks[0].text
+    assert "90% left" not in status_blocks[0].text
+
+
+def test_textual_status_command_refresh_renders_additional_rate_limit_buckets() -> None:
+    # Rust-derived contract:
+    # - codex-tui::app_server_session::app_server_rate_limit_snapshots keeps
+    #   the top-level codex quota and appends non-duplicate
+    #   rate_limits_by_limit_id buckets.
+    # - codex-tui::status::rate_limits renders non-codex buckets with their
+    #   limit_name prefix, e.g. GPT-5.3-Codex-Spark 5h/weekly rows.
+    runtime = _FakeActiveThreadRuntime([])
+    runtime.should_refresh_rate_limits = True
+    runtime.fetch_account_rate_limits = lambda: GetAccountRateLimitsResponse(
+        rate_limits=RateLimitSnapshot(
+            limit_id="codex",
+            primary=RateLimitWindow(20, 300),
+            secondary=RateLimitWindow(40, 7 * 24 * 60),
+        ),
+        rate_limits_by_limit_id={
+            "codex": RateLimitSnapshot(limit_id="codex", primary=RateLimitWindow(99, 300)),
+            "codex-spark": RateLimitSnapshot(
+                limit_id="codex-spark",
+                limit_name="GPT-5.3-Codex-Spark",
+                primary=RateLimitWindow(0, 300),
+                secondary=RateLimitWindow(10, 7 * 24 * 60),
+            ),
+        },
+    )
+    app = PyCodexTextualApp(TuiAppRuntime(runtime))
+
+    async def scenario() -> None:
+        async with app.run_test(size=(140, 36)) as pilot:
+            composer = app.query_one("#composer", CodexComposerTextArea)
+            composer.text = "/status"
+            await pilot.press("enter")
+            await pilot.pause(0.05)
+
+    asyncio.run(scenario())
+
+    status_blocks = [block for block in app._blocks if block.label == "status"]
+    assert len(status_blocks) == 1
+    text = status_blocks[0].text
+    assert "5h limit" in text
+    assert "Weekly limit" in text
+    assert "GPT-5.3-Codex-Spark limit" in text
+    assert "GPT-5.3-Codex-Spark 5h limit" not in text
+    assert text.count("5h limit") == 2
+    assert text.count("Weekly limit") == 2
+
+
+def test_textual_status_command_refreshes_for_chatgpt_even_when_not_already_refreshing() -> None:
+    # Rust-derived contract:
+    # - codex-tui::chatwidget::slash_dispatch::SlashCommand::Status calls
+    #   should_prefetch_rate_limits(), which is gated on ChatGPT auth/provider
+    #   and cached state, not on the current refreshing_rate_limits flag.
+    # Regression: Python previously treated chat_widget.refreshing_rate_limits
+    # == False as an explicit opt-out and skipped the live /wham/usage refresh.
+    calls: list[str] = []
+    runtime = _FakeActiveThreadRuntime([])
+    runtime.provider = SimpleNamespace(base_url="https://chatgpt.com/backend-api")
+    runtime.auth = SimpleNamespace(is_chatgpt_auth=lambda: True)
+    runtime.fetch_account_rate_limits = lambda: calls.append("fetch") or [
+        RateLimitSnapshotDisplay(
+            "codex",
+            datetime.now().astimezone(),
+            primary=RateLimitWindowDisplay(25.0, "soon", 300),
+        )
+    ]
+    app_runtime = TuiAppRuntime(runtime)
+    app_runtime.chat_widget.refreshing_rate_limits = False
+    app = PyCodexTextualApp(app_runtime)
+
+    async def scenario() -> None:
+        async with app.run_test(size=(120, 32)) as pilot:
+            composer = app.query_one("#composer", CodexComposerTextArea)
+            composer.text = "/status"
+            await pilot.press("enter")
+            await pilot.pause(0.05)
+
+    asyncio.run(scenario())
+
+    assert calls == ["fetch"]
+    status_text = "\n".join(block.text for block in app._blocks if block.label == "status")
+    assert "75% left" in status_text
+
+
+def test_textual_status_command_refreshes_when_chatgpt_account_comes_from_original_auth() -> None:
+    # Rust-derived contract:
+    # - codex-tui::chatwidget::rate_limits::should_prefetch_rate_limits gates
+    #   on ChatGPT auth. The local Textual runtime derives status account data
+    #   from the stored OAuth auth snapshot, so that source must also enable
+    #   the live rate-limit refresh.
+    claims = {
+        "email": "oauth@example.com",
+        "https://api.openai.com/auth": {"chatgpt_plan_type": "Pro"},
+    }
+    calls: list[str] = []
+    runtime = _FakeActiveThreadRuntime([])
+    runtime.original_auth = SimpleNamespace(
+        auth_mode="chatgpt",
+        tokens={"id_token": _jwt_with_claims(claims)},
+    )
+    runtime.fetch_account_rate_limits = lambda: calls.append("fetch") or [
+        RateLimitSnapshotDisplay(
+            "codex",
+            datetime.now().astimezone(),
+            primary=RateLimitWindowDisplay(40.0, "soon", 300),
+        )
+    ]
+    app = PyCodexTextualApp(TuiAppRuntime(runtime))
+
+    async def scenario() -> None:
+        async with app.run_test(size=(120, 32)) as pilot:
+            composer = app.query_one("#composer", CodexComposerTextArea)
+            composer.text = "/status"
+            await pilot.press("enter")
+            await pilot.pause(0.05)
+
+    asyncio.run(scenario())
+
+    assert calls == ["fetch"]
+    status_text = "\n".join(block.text for block in app._blocks if block.label == "status")
+    assert "oauth@example.com (Pro)" in status_text
+    assert "60% left" in status_text
+
+
+def test_textual_status_command_derives_model_details_and_chatgpt_account() -> None:
+    # Rust-derived contract:
+    # - codex-tui::chatwidget::status_controls passes Config reasoning fields
+    #   and StatusAccountDisplay into status::card.
+    # - codex-tui::status::helpers::compose_model_display renders
+    #   "(reasoning <effort>, summaries off)" for model details.
+    runtime = _FakeActiveThreadRuntime([])
+    runtime.session_config = SimpleNamespace(
+        model="gpt-5.4",
+        model_reasoning_effort="low",
+        model_reasoning_summary="none",
+        cwd=".",
+    )
+    runtime.auth = SimpleNamespace(
+        is_chatgpt_auth=lambda: True,
+        get_account_email=lambda: "user@example.com",
+        account_plan_type=lambda: "Pro",
+    )
+    app = PyCodexTextualApp(TuiAppRuntime(runtime))
+
+    async def scenario() -> None:
+        async with app.run_test(size=(120, 32)) as pilot:
+            composer = app.query_one("#composer", CodexComposerTextArea)
+            composer.text = "/status"
+            await pilot.press("enter")
+            await pilot.pause(0.05)
+
+    asyncio.run(scenario())
+
+    status_text = "\n".join(block.text for block in app._blocks if block.label == "status")
+    assert "gpt-5.4 (reasoning low, summaries off)" in status_text
+    assert "Visit https://chatgpt.com/codex/settings/usage for up-to-date" in status_text
+    assert "Account" in status_text
+    assert "user@example.com (Pro)" in status_text
+
+
+def test_textual_status_command_derives_product_fields_from_runtime_sources() -> None:
+    # Rust-derived contract:
+    # - codex-tui::chatwidget::session_flow records SessionConfigured
+    #   instruction_source_paths for /status Agents.md display.
+    # - codex-tui::status::helpers::compose_agents_summary formats those paths.
+    # - codex-tui::status::card hides Token usage for ChatGPT accounts and
+    #   renders context from TokenUsageInfo/model context metadata.
+    claims = {
+        "email": "oauth@example.com",
+        "https://api.openai.com/auth": {"chatgpt_plan_type": "Pro"},
+    }
+    runtime = _FakeActiveThreadRuntime([])
+    runtime.session_header_configured_at_startup = True
+    runtime.session_config = SimpleNamespace(
+        model="gpt-5.4",
+        model_reasoning_effort="low",
+        model_reasoning_summary="none",
+        cwd=Path("C:/repo"),
+        instruction_sources=[Path("C:/repo/AGENTS.md")],
+    )
+    runtime.model_info = SimpleNamespace(context_window=258_000)
+    runtime.original_auth = SimpleNamespace(
+        auth_mode="chatgpt",
+        tokens={"id_token": _jwt_with_claims(claims)},
+    )
+    runtime.provider = SimpleNamespace(base_url="https://chatgpt.com/backend-api")
+    app = PyCodexTextualApp(TuiAppRuntime(runtime))
+
+    async def scenario() -> None:
+        async with app.run_test(size=(120, 32)) as pilot:
+            header = str(app.query_one("#session-header", Static).renderable)
+            assert "loading" not in header
+            assert "gpt-5.4" in header
+            composer = app.query_one("#composer", CodexComposerTextArea)
+            composer.text = "/status"
+            await pilot.press("enter")
+            await pilot.pause(0.05)
+
+    asyncio.run(scenario())
+
+    status_text = "\n".join(block.text for block in app._blocks if block.label == "status")
+    assert "gpt-5.4 (reasoning low, summaries off)" in status_text
+    assert "Agents.md" in status_text
+    assert "oauth@example.com (Pro)" in status_text
+    assert "Visit https://chatgpt.com/codex/settings/usage for up-to-date" in status_text
+    assert "Context window" in status_text
+    assert "Token usage" not in status_text
+
+
 def test_textual_composer_shift_enter_keeps_multiline_draft_until_submit() -> None:
     # Rust-derived contract:
     # - codex-tui::bottom_pane::chat_composer treats plain Enter as submit.
@@ -3966,6 +4734,7 @@ def test_textual_model_command_opens_picker_and_selects_without_user_turn() -> N
         async with app.run_test(size=(100, 32)) as pilot:
             composer = app.query_one("#composer", CodexComposerTextArea)
             popup = app.query_one("#slash-popup", Static)
+            header = app.query_one("#session-header", Static)
             composer.text = "/model"
             await pilot.press("enter")
             await pilot.pause(0.05)
@@ -3974,20 +4743,36 @@ def test_textual_model_command_opens_picker_and_selects_without_user_turn() -> N
             rendered = str(popup.renderable)
             assert "Select Model" in rendered
             assert "Pick a quick auto mode or browse all models." in rendered
-            assert "> codex-auto-fast" in rendered
+            assert "> 1. codex-auto-fast (current) (default)" in rendered
             assert "codex-auto-balanced" in rendered
             assert "codex-auto-thorough" in rendered
+            assert "Fast auto mode" in rendered
             assert "All models" in rendered
             assert "hidden-model" not in rendered
+            assert "Press enter to confirm or esc to go back" in rendered
+            renderable = popup.renderable
+            assert isinstance(renderable, Text)
+            selected_desc_idx = renderable.plain.index("Fast auto mode")
+            selected_desc_span = next(span for span in renderable.spans if span.start <= selected_desc_idx < span.end)
+            assert "cyan" in str(selected_desc_span.style)
+            assert "dim" not in str(selected_desc_span.style)
+            unselected_desc_idx = renderable.plain.index("Balanced auto mode")
+            unselected_desc_span = next(span for span in renderable.spans if span.start <= unselected_desc_idx < span.end)
+            assert "dim" in str(unselected_desc_span.style)
 
             await pilot.press("enter")
             await pilot.pause(0.05)
             assert app._active_selection is None
             assert str(popup.renderable) == ""
+            assert "codex-auto-fast" in str(header.renderable)
+            composer.text = "hello"
+            await pilot.press("enter")
+            await pilot.pause(0.05)
 
     asyncio.run(scenario())
 
-    assert runtime.submitted == []
+    assert len(runtime.submitted) == 1
+    assert getattr(runtime.submitted[0][1], "kind", None) == "UserTurn"
     assert runtime.session_config.model == "codex-auto-fast"
     assert runtime.session_config.model_reasoning_effort == "low"
     assert len(requests) == 1
@@ -3997,6 +4782,11 @@ def test_textual_model_command_opens_picker_and_selects_without_user_turn() -> N
     ]
     notices = [block.text for block in app._blocks if block.label == "status"]
     assert any("Model changed to codex-auto-fast" in notice for notice in notices)
+    model_notice_index = next(
+        index for index, block in enumerate(app._blocks) if block.label == "status" and "Model changed to codex-auto-fast" in block.text
+    )
+    user_index = next(index for index, block in enumerate(app._blocks) if block.label == "you" and block.text == "hello")
+    assert model_notice_index < user_index
 
 
 def test_textual_model_command_initial_selection_prefers_current_all_models_row() -> None:
@@ -4046,20 +4836,20 @@ def test_textual_model_command_initial_selection_prefers_current_all_models_row(
 
             rendered = str(popup.renderable)
             assert "Select Model" in rendered
-            assert "> All models (current)" in rendered
-            assert "> codex-auto-fast" not in rendered
+            assert "> 3. All models (current)" in rendered
+            assert "> 1. codex-auto-fast" not in rendered
 
             await pilot.press("enter")
             await pilot.pause(0.05)
             rendered = str(popup.renderable)
             assert "Select Model and Effort" in rendered
-            assert "> gpt-extra (current) (default)" in rendered
+            assert "> 1. gpt-extra (current) (default)" in rendered
 
             await pilot.press("enter")
             await pilot.pause(0.05)
             rendered = str(popup.renderable)
             assert "Select Reasoning Level for gpt-extra" in rendered
-            assert "> Medium (default)" in rendered
+            assert "> 1. Medium (default)" in rendered
 
     asyncio.run(scenario())
 
@@ -4067,11 +4857,12 @@ def test_textual_model_command_initial_selection_prefers_current_all_models_row(
     assert runtime.session_config.model == "gpt-extra"
 
 
-def test_textual_model_command_without_runtime_catalog_opens_current_reasoning_picker() -> None:
+def test_textual_model_command_without_runtime_catalog_uses_bundled_model_catalog() -> None:
     # Rust-derived contract:
-    # - codex-tui receives a ModelCatalog from the app session; when the current
-    #   model is the only visible model, accepting /model opens the multi-effort
-    #   reasoning picker for that model instead of closing the popup.
+    # - codex-tui::chatwidget::model_popups::open_model_popup reads the session
+    #   ModelCatalog. Startup seeds that catalog from models-manager's bundled
+    #   models.json, so /model still shows the standard picker when no remote
+    #   runtime catalog has been delivered yet.
     runtime = _FakeActiveThreadRuntime([])
     runtime.session_config.model = "gpt-5.5"
     runtime.session_config.model_reasoning_effort = "medium"
@@ -4082,25 +4873,106 @@ def test_textual_model_command_without_runtime_catalog_opens_current_reasoning_p
         async with app.run_test(size=(100, 32)) as pilot:
             composer = app.query_one("#composer", CodexComposerTextArea)
             popup = app.query_one("#slash-popup", Static)
+            header = app.query_one("#session-header", Static)
             composer.text = "/model"
             await pilot.press("enter")
             await pilot.pause(0.05)
 
             rendered = str(popup.renderable)
             assert "Select Model and Effort" in rendered
-            assert "> gpt-5.5 (current) (default)" in rendered
+            assert "> 1. gpt-5.5 (current) (default)" in rendered
+            assert "Frontier model for complex coding" in rendered
+            assert "2. gpt-5.4" in rendered
+            assert "3. gpt-5.4-mini" in rendered
+            assert "Press enter to confirm or esc to go back" in rendered
+            assert "gpt-5.5" in str(header.renderable)
+            assert "loading" not in str(header.renderable)
 
             await pilot.press("enter")
             await pilot.pause(0.05)
             rendered = str(popup.renderable)
             assert "Select Reasoning Level for gpt-5.5" in rendered
-            assert "> Medium (default)" in rendered
+            assert "> 2. Medium (default)" in rendered
             assert "Extra high" in rendered
 
     asyncio.run(scenario())
 
     assert runtime.submitted == []
     assert runtime.session_config.model == "gpt-5.5"
+
+
+def test_textual_model_command_uses_runtime_model_manager_before_bundled_catalog() -> None:
+    # Rust-derived contract:
+    # - codex-models-manager::manager::list_models refreshes the active model
+    #   catalog and filters picker-visible models before codex-tui stores it in
+    #   ModelCatalog.
+    # - codex-tui::chatwidget::model_popups reads that active catalog; it must
+    #   not append stale bundled entries such as legacy picker models.
+    runtime = _FakeActiveThreadRuntime([])
+    runtime.session_config.model = "gpt-5.5"
+    runtime.session_config.model_reasoning_effort = "medium"
+    runtime.session_config.available_models = []
+    calls: list[Any] = []
+
+    def list_models(refresh_strategy: Any = None) -> list[dict[str, Any]]:
+        calls.append(refresh_strategy)
+        return [
+            {
+                "model": "gpt-5.5",
+                "description": "Frontier model for complex coding, research, and real-world work.",
+                "default_reasoning_effort": "medium",
+                "show_in_picker": True,
+                "is_default": True,
+                "supported_reasoning_efforts": [{"effort": "medium", "description": "medium"}],
+            },
+            {
+                "model": "gpt-5.4",
+                "description": "Strong model for everyday coding.",
+                "default_reasoning_effort": "medium",
+                "show_in_picker": True,
+                "supported_reasoning_efforts": [{"effort": "medium", "description": "medium"}],
+            },
+            {
+                "model": "gpt-5.4-mini",
+                "description": "Small, fast, and cost-efficient model for simpler coding tasks.",
+                "default_reasoning_effort": "medium",
+                "show_in_picker": True,
+                "supported_reasoning_efforts": [{"effort": "medium", "description": "medium"}],
+            },
+            {
+                "model": "gpt-5.3-codex-spark",
+                "description": "Ultra-fast coding model.",
+                "default_reasoning_effort": "medium",
+                "show_in_picker": True,
+                "supported_reasoning_efforts": [{"effort": "medium", "description": "medium"}],
+            },
+        ]
+
+    runtime.list_models = list_models  # type: ignore[attr-defined]
+    app = PyCodexTextualApp(TuiAppRuntime(runtime))
+
+    async def scenario() -> None:
+        async with app.run_test(size=(120, 32)) as pilot:
+            composer = app.query_one("#composer", CodexComposerTextArea)
+            popup = app.query_one("#slash-popup", Static)
+            composer.text = "/model"
+            await pilot.press("enter")
+            await pilot.pause(0.05)
+
+            rendered = str(popup.renderable)
+            assert "Select Model and Effort" in rendered
+            assert "> 1. gpt-5.5 (current) (default)" in rendered
+            assert "2. gpt-5.4" in rendered
+            assert "3. gpt-5.4-mini" in rendered
+            assert "4. gpt-5.3-codex-spark" in rendered
+            assert "Ultra-fast coding model." in rendered
+            assert "gpt-5.3-codex " not in rendered
+            assert "gpt-5.2" not in rendered
+
+    asyncio.run(scenario())
+
+    assert calls == ["online_if_uncached"]
+    assert runtime.submitted == []
 
 
 def test_textual_model_reasoning_keyboard_selection_updates_footer_state() -> None:
@@ -4130,7 +5002,7 @@ def test_textual_model_reasoning_keyboard_selection_updates_footer_state() -> No
             assert "Select Reasoning Level for gpt-5.5" in str(popup.renderable)
             await pilot.press("down")
             await pilot.pause(0.05)
-            assert "> High" in str(popup.renderable)
+            assert "> 3. High" in str(popup.renderable)
 
             await pilot.press("enter")
             await pilot.pause(0.05)
