@@ -677,6 +677,10 @@ def build_environment_tool_router_from_turn_context(
         request_permissions_tool_enabled=request_permissions_tool_enabled,
         can_request_original_image_detail=can_request_original_image_detail,
     )
+    if _goal_tools_enabled(turn_context):
+        planned_tools.add(GetGoalHandler())
+        planned_tools.add(CreateGoalHandler())
+        planned_tools.add(UpdateGoalHandler())
     return build_tool_router_from_plan(planned_tools, options)
 
 

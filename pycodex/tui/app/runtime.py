@@ -21,7 +21,7 @@ from pathlib import Path
 from queue import Empty, Queue
 from threading import Event, Lock, Thread
 from types import SimpleNamespace
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Callable, Mapping, MutableMapping, Protocol
 
 from pycodex.core.config.edit import ConfigEditsBuilder
 from pycodex.core.event_mapping import parse_turn_item
@@ -32,10 +32,11 @@ from pycodex.exec.local_runtime import (
     run_exec_user_turn_core_sampling_websocket_preferred,
 )
 from pycodex.exec.run import ExecRunPlan, InitialOperation
-from pycodex.protocol import ResponseItem, ReviewRequest, ReviewTarget, TurnItem, UserInput
+from pycodex.protocol import ResponseItem, ReviewRequest, ReviewTarget, ThreadGoal as ProtocolThreadGoal, ThreadGoalStatus as ProtocolThreadGoalStatus, ThreadId, TurnItem, UserInput
 
 from ..app_command import AppCommand
 from ..app_event import AppEvent, RateLimitRefreshOrigin
+from ..app_server_session import app_server_rate_limit_snapshots
 from ..chatwidget.input_submission import UserMessage, UserMessageHistoryRecord, submit_user_message_with_history_record
 from ..chatwidget.protocol import ChatWidgetProtocolRuntime, ServerNotification
 from ..chatwidget.replay import ReplayKind as ChatWidgetReplayKind
@@ -54,6 +55,21 @@ from .thread_routing import ThreadRoutingPlan, ThreadRoutingState, active_thread
 RUST_MODULE_CRATE = "codex-tui"
 RUST_MODULE = "app"
 RUST_SOURCE = "codex/codex-rs/tui/src/app.rs"
+
+
+@dataclass(frozen=True)
+class _RateLimitsBearerAuthProvider:
+    token: str
+    account_id: str | None = None
+    is_fedramp_account: bool = False
+
+    def to_auth_headers(self) -> dict[str, str]:
+        headers = {"Authorization": f"Bearer {self.token}"}
+        if self.account_id:
+            headers["ChatGPT-Account-ID"] = self.account_id
+        if self.is_fedramp_account:
+            headers["X-OpenAI-Fedramp"] = "true"
+        return headers
 
 
 class ActiveThreadEventStream(Protocol):
@@ -153,11 +169,63 @@ def _request_handle_from_runtime(runtime: Any) -> Any:
 
 
 def _config_from_runtime(runtime: Any) -> Any:
+    first_config = None
     for name in ("session_config", "config"):
         value = getattr(runtime, name, None)
-        if value is not None:
+        if value is None:
+            continue
+        if first_config is None:
+            first_config = value
+        if _config_has_write_target(value):
             return value
-    return None
+    if _config_has_write_target(runtime):
+        return runtime
+    codex_home = _runtime_codex_home(runtime, first_config)
+    if codex_home is None:
+        return first_config
+    if first_config is None:
+        return SimpleNamespace(codex_home=codex_home, config_layer_stack=None)
+    if isinstance(first_config, MutableMapping):
+        first_config.setdefault("codex_home", codex_home)
+        first_config.setdefault("config_layer_stack", None)
+        return first_config
+    try:
+        setattr(first_config, "codex_home", codex_home)
+        if not hasattr(first_config, "config_layer_stack"):
+            setattr(first_config, "config_layer_stack", None)
+        return first_config
+    except Exception:
+        return SimpleNamespace(
+            codex_home=codex_home,
+            config_layer_stack=getattr(first_config, "config_layer_stack", None),
+        )
+
+
+def _config_has_write_target(config: Any) -> bool:
+    if config is None:
+        return False
+    layer_stack = _field(config, "config_layer_stack", None)
+    get_user_config_file = getattr(layer_stack, "get_user_config_file", None)
+    if callable(get_user_config_file):
+        try:
+            if get_user_config_file() is not None:
+                return True
+        except Exception:
+            return True
+    return _field(config, "codex_home", None) is not None
+
+
+def _runtime_codex_home(runtime: Any, config: Any = None) -> Path | None:
+    for source in (runtime, config):
+        value = _field(source, "codex_home", None)
+        if value is not None:
+            return Path(value)
+    try:
+        from pycodex.utils.home_dir import find_codex_home
+
+        return find_codex_home()
+    except Exception:
+        return None
 
 
 def _effort_config_value(effort: Any) -> str | None:
@@ -220,6 +288,8 @@ def _rate_limit_result_snapshots(result: Any) -> list[Any] | None:
         return None
     if isinstance(result, Mapping) and ("error" in result or "err" in result):
         return None
+    if _mapping_or_attr(result, "rate_limits", "rateLimits") is not None:
+        return list(app_server_rate_limit_snapshots(result))
     by_id = _mapping_or_attr(result, "rate_limits_by_limit_id", "rateLimitsByLimitId")
     if by_id:
         if isinstance(by_id, Mapping):
@@ -267,6 +337,118 @@ def _store_runtime_rate_limit_snapshot(runtime: Any, snapshot: RateLimitSnapshot
             setattr(target, "latest_rate_limits", snapshot)
         except Exception:
             pass
+
+
+def _rate_limits_backend_base_url(session_config: Any, provider: Any) -> str | None:
+    for source in (session_config, getattr(session_config, "config", None)):
+        value = _mapping_or_attr(source, "chatgpt_base_url", "chatgptBaseUrl")
+        if isinstance(value, str) and value.strip():
+            return value.strip().rstrip("/")
+    value = _mapping_or_attr(provider, "base_url", "baseUrl")
+    if not isinstance(value, str) or not value.strip():
+        return None
+    normalized = value.strip().rstrip("/")
+    if normalized.endswith("/backend-api/codex"):
+        return normalized[: -len("/codex")]
+    return normalized
+
+
+def _rate_limits_auth_account_id(auth: Any) -> str | None:
+    if auth is None:
+        return None
+    method = getattr(auth, "get_account_id", None)
+    value = method() if callable(method) else _mapping_or_attr(auth, "account_id", "accountId")
+    tokens = _mapping_or_attr(auth, "tokens")
+    if not value and isinstance(tokens, Mapping):
+        value = tokens.get("account_id") or tokens.get("accountId")
+    return str(value) if value is not None else None
+
+
+def _rate_limits_auth_is_fedramp(auth: Any) -> bool:
+    if auth is None:
+        return False
+    method = getattr(auth, "is_fedramp_account", None)
+    if callable(method):
+        return bool(method())
+    value = _mapping_or_attr(auth, "is_fedramp_account", "isFedrampAccount", "chatgpt_account_is_fedramp")
+    if value is not None:
+        return bool(value)
+    tokens = _mapping_or_attr(auth, "tokens")
+    if isinstance(tokens, Mapping):
+        return bool(tokens.get("chatgpt_account_is_fedramp") or tokens.get("is_fedramp_account"))
+    return False
+
+
+def _rate_limits_backend_auth_provider(auth: Any) -> Any | None:
+    if auth is None:
+        return None
+    if callable(getattr(auth, "to_auth_headers", None)) or callable(getattr(auth, "add_auth_headers", None)):
+        return auth
+    token_method = getattr(auth, "get_token", None)
+    token = token_method() if callable(token_method) else _mapping_or_attr(auth, "token", "access_token", "accessToken")
+    tokens = _mapping_or_attr(auth, "tokens")
+    if not token and isinstance(tokens, Mapping):
+        token = tokens.get("access_token") or tokens.get("accessToken")
+    if not isinstance(token, str) or not token:
+        return None
+    return _RateLimitsBearerAuthProvider(
+        token=token,
+        account_id=_rate_limits_auth_account_id(auth),
+        is_fedramp_account=_rate_limits_auth_is_fedramp(auth),
+    )
+
+
+def _normalized_auth_dot_json_snapshot(auth: Any) -> Any:
+    try:
+        from pycodex.login.auth.storage import AuthDotJson
+    except Exception:
+        return auth
+    if not hasattr(auth, "auth_mode") and not isinstance(auth, Mapping):
+        return auth
+    if isinstance(auth, Mapping):
+        return AuthDotJson.from_mapping(auth)
+    tokens = getattr(auth, "tokens", None)
+    if tokens is not None and not isinstance(tokens, Mapping):
+        return auth
+    data: dict[str, Any] = {}
+    for attr, key in (
+        ("auth_mode", "auth_mode"),
+        ("openai_api_key", "OPENAI_API_KEY"),
+        ("tokens", "tokens"),
+        ("last_refresh", "last_refresh"),
+        ("agent_identity", "agent_identity"),
+    ):
+        value = getattr(auth, attr, None)
+        if value is not None:
+            if key == "last_refresh" and isinstance(value, datetime):
+                value = value.isoformat()
+            data[key] = value
+    return AuthDotJson.from_mapping(data)
+
+
+def _models_auth_manager_from_snapshot(codex_home: Path | str, auth: Any, chatgpt_base_url: str | None) -> Any | None:
+    if auth is None:
+        return None
+    if callable(getattr(auth, "auth", None)) and callable(getattr(auth, "auth_cached", None)):
+        return auth
+    try:
+        from pycodex.login.auth.manager import AuthManager, CodexAuth
+
+        if callable(getattr(auth, "auth_mode", None)) and callable(getattr(auth, "get_token", None)):
+            return AuthManager.from_auth_for_testing_with_home(auth, codex_home)
+        if hasattr(auth, "auth_mode"):
+            codex_auth = _run_coro_blocking(
+                CodexAuth.from_auth_dot_json(
+                    codex_home,
+                    _normalized_auth_dot_json_snapshot(auth),
+                    "file",
+                    chatgpt_base_url,
+                )
+            )
+            return AuthManager.from_auth_for_testing_with_home(codex_auth, codex_home)
+    except Exception:
+        return None
+    return None
 
 
 def _mapping_or_attr(value: Any, *names: str) -> Any:
@@ -491,6 +673,7 @@ class CoreExecActiveThreadRuntime:
     provider: Any
     model_info: Any
     auth: Any = None
+    original_auth: Any = None
     codex_home: Path | str | None = None
     auth_manager: Any = None
     endpoint: str | None = None
@@ -499,7 +682,9 @@ class CoreExecActiveThreadRuntime:
     built_tools: Any = None
     max_tool_followups: int | None = None
     startup_prewarm_enabled: bool = False
+    session_header_configured_at_startup: bool = True
     prewarmed_model_session: Any = None
+    _models_manager: Any = field(default=None, init=False, repr=False)
     _startup_prewarm_ready: Event = field(default_factory=Event, init=False, repr=False)
     _startup_prewarm_lock: Lock = field(default_factory=Lock, init=False, repr=False)
     _startup_prewarm_session: Any = field(default=None, init=False, repr=False)
@@ -511,6 +696,7 @@ class CoreExecActiveThreadRuntime:
     _rollout_path_ready: Event = field(default_factory=Event, init=False, repr=False)
     _last_worker_error: BaseException | None = field(default=None, init=False, repr=False)
     _startup_app_server_events: Queue[Any] = field(default_factory=Queue, init=False, repr=False)
+    _state_runtime: Any = field(default=None, init=False, repr=False)
     rollout_path: Path | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
@@ -540,6 +726,248 @@ class CoreExecActiveThreadRuntime:
             return self._startup_app_server_events.get(timeout=wait)
         except Empty:
             return None
+
+    def fetch_account_rate_limits(self) -> Any:
+        """Fetch Codex backend rate limits through the Rust-shaped boundary.
+
+        Rust ``codex-tui::app::background_requests::fetch_account_rate_limits``
+        asks app-server for ``GetAccountRateLimits``; app-server delegates to
+        codex-backend-client.  The local product TUI does not run the daemon, so
+        this method provides the same active-thread request boundary directly.
+        """
+
+        auth = self.auth
+        backend_auth = _rate_limits_backend_auth_provider(auth) or _rate_limits_backend_auth_provider(self.original_auth)
+        base_url = _rate_limits_backend_base_url(self.session_config, self.provider)
+        if backend_auth is None or not isinstance(base_url, str) or not base_url:
+            raise RuntimeError("codex account authentication required to read rate limits")
+        try:
+            from pycodex.backend_client import Client
+
+            client = Client.new(base_url).with_auth_provider(backend_auth)
+            account_id = _rate_limits_auth_account_id(auth) or _rate_limits_auth_account_id(self.original_auth)
+            if isinstance(account_id, str) and account_id:
+                client = client.with_chatgpt_account_id(account_id)
+            if _rate_limits_auth_is_fedramp(auth) or _rate_limits_auth_is_fedramp(self.original_auth):
+                client = client.with_fedramp_routing_header()
+            snapshots = client.get_rate_limits_many()
+            if not snapshots:
+                raise RuntimeError("failed to fetch codex rate limits: no snapshots returned")
+            return snapshots
+        except Exception:
+            raise
+
+    def models_manager(self) -> Any:
+        """Return the Rust-shaped models manager backing TUI model pickers."""
+
+        services = getattr(self.session_config, "services", None)
+        manager = getattr(services, "models_manager", None)
+        if manager is not None:
+            return manager
+        if self._models_manager is not None:
+            return self._models_manager
+
+        codex_home = self.codex_home or getattr(self.session_config, "codex_home", None)
+        if codex_home is None:
+            raise RuntimeError("codex_home is required to build the models manager")
+        auth_manager = self.auth_manager or _models_auth_manager_from_snapshot(
+            codex_home,
+            self.original_auth or self.auth,
+            getattr(self.session_config, "chatgpt_base_url", None),
+        )
+        try:
+            from pycodex.model_provider import create_model_provider
+            from pycodex.model_provider_info import ModelProviderInfo
+
+            base_url = getattr(self.provider, "base_url", None)
+            provider_info = ModelProviderInfo.create_openai_provider(
+                str(base_url) if isinstance(base_url, str) and base_url else None
+            )
+            provider = create_model_provider(provider_info, auth_manager)
+            self._models_manager = provider.models_manager(
+                Path(codex_home),
+                getattr(self.session_config, "model_catalog", None),
+            )
+        except Exception as exc:
+            raise RuntimeError(f"failed to build models manager: {exc}") from exc
+        return self._models_manager
+
+    def try_list_models(self) -> list[Any]:
+        """Mirror Rust ``ModelsManager::try_list_models`` for current catalog."""
+
+        manager = self.models_manager()
+        method = getattr(manager, "try_list_models", None)
+        if not callable(method):
+            return []
+        return list(method() or [])
+
+    def list_models(self, refresh_strategy: Any = None) -> list[Any]:
+        """Mirror Rust ``ModelsManager::list_models`` with refresh support."""
+
+        manager = self.models_manager()
+        method = getattr(manager, "list_models", None)
+        if not callable(method):
+            return self.try_list_models()
+        if refresh_strategy is None:
+            try:
+                from pycodex.models_manager import RefreshStrategy
+
+                refresh_strategy = RefreshStrategy.ONLINE_IF_UNCACHED
+            except Exception:
+                refresh_strategy = "online_if_uncached"
+        try:
+            result = method(refresh_strategy)
+        except TypeError:
+            result = method()
+        if hasattr(result, "__await__"):
+            result = _run_coro_blocking(result)
+        return list(result or [])
+
+    def thread_goal_get(self, thread_id: str) -> Any:
+        """Mirror Rust ``AppServerSession::thread_goal_get`` for local TUI.
+
+        Rust TUI routes `/goal` through app-server thread goal requests backed
+        by codex-state.  The local Python product path runs the core runtime
+        in-process, so this facade provides the same app-server-shaped boundary
+        over the local state runtime.
+        """
+
+        runtime = self._state_runtime_for_thread_goals()
+        goal = _run_coro_blocking(runtime.thread_goals.get_thread_goal(_thread_goal_uuid(thread_id)))
+        return None if goal is None else _app_server_thread_goal_from_state(goal)
+
+    def thread_goal_set(
+        self,
+        thread_id: str,
+        objective: str | None = None,
+        status: Any = None,
+        token_budget: Any = None,
+    ) -> Any:
+        """Mirror Rust ``AppServerSession::thread_goal_set`` for local TUI."""
+
+        runtime = self._state_runtime_for_thread_goals()
+        goals = runtime.thread_goals
+        thread_id_text = _thread_goal_uuid(thread_id)
+        state_status = _state_goal_status(status) if status is not None else None
+        budget = _thread_goal_token_budget(token_budget)
+
+        existing = _run_coro_blocking(goals.get_thread_goal(thread_id_text))
+        if objective is not None:
+            objective_text = str(objective).strip()
+            if existing is None:
+                goal = _run_coro_blocking(
+                    goals.replace_thread_goal(
+                        thread_id_text,
+                        objective_text,
+                        state_status or _default_active_goal_status(),
+                        budget,
+                    )
+                )
+            else:
+                from pycodex.state.runtime.goals import GoalUpdate
+
+                goal = _run_coro_blocking(
+                    goals.update_thread_goal(
+                        thread_id_text,
+                        GoalUpdate(
+                            objective=objective_text,
+                            status=state_status,
+                            token_budget=budget,
+                            expected_goal_id=getattr(existing, "goal_id", None),
+                        ),
+                    )
+                )
+                if goal is None:
+                    raise RuntimeError(f"cannot update goal for thread {thread_id_text}: no goal exists")
+        else:
+            if existing is None:
+                raise RuntimeError(f"cannot update goal for thread {thread_id_text}: no goal exists")
+            from pycodex.state.runtime.goals import GoalUpdate
+
+            goal = _run_coro_blocking(
+                goals.update_thread_goal(
+                    thread_id_text,
+                    GoalUpdate(
+                        objective=None,
+                        status=state_status,
+                        token_budget=budget,
+                        expected_goal_id=getattr(existing, "goal_id", None),
+                    ),
+                )
+            )
+            if goal is None:
+                raise RuntimeError(f"cannot update goal for thread {thread_id_text}: no goal exists")
+
+        api_goal = _app_server_thread_goal_from_state(goal)
+        self._startup_app_server_events.put(
+            {
+                "kind": "ServerNotification",
+                "notification": ServerNotification(
+                    "ThreadGoalUpdated",
+                    {"thread_id": thread_id_text, "turn_id": None, "goal": api_goal},
+                ),
+            }
+        )
+        return api_goal
+
+    def goal_continuation_op(self, goal: Any) -> AppCommand | None:
+        """Build Rust ``goals.rs`` idle-continuation input for an active goal.
+
+        Rust ``GoalRuntimeEvent::ExternalSet`` calls
+        ``maybe_continue_goal_if_idle_runtime`` when an externally set goal is
+        active.  The continuation turn contains hidden ``<goal_context>`` user
+        context, not a visible slash-command user message.  The local product
+        runtime exposes the same boundary as an internal ``UserTurn`` marker
+        consumed by ``exec_run_plan_for_app_command``.
+        """
+
+        protocol_goal = _protocol_thread_goal_from_any(goal)
+        if protocol_goal.status is not ProtocolThreadGoalStatus.ACTIVE:
+            return None
+        from pycodex.core.goals import continuation_prompt
+
+        prompt = continuation_prompt(protocol_goal)
+        cwd = Path(getattr(self.session_config, "cwd", None) or Path.cwd())
+        _timing_trace(
+            "goal_continuation_op_created",
+            objective=protocol_goal.objective,
+            status=getattr(protocol_goal.status, "value", protocol_goal.status),
+        )
+        return _goal_continuation_app_command(prompt, cwd=cwd)
+
+    def thread_goal_clear(self, thread_id: str) -> Any:
+        """Mirror Rust ``AppServerSession::thread_goal_clear`` for local TUI."""
+
+        runtime = self._state_runtime_for_thread_goals()
+        thread_id_text = _thread_goal_uuid(thread_id)
+        cleared = bool(_run_coro_blocking(runtime.thread_goals.delete_thread_goal(thread_id_text)))
+        if cleared:
+            self._startup_app_server_events.put(
+                {
+                    "kind": "ServerNotification",
+                    "notification": ServerNotification(
+                        "ThreadGoalCleared",
+                        {"thread_id": thread_id_text},
+                    ),
+                }
+            )
+        return {"cleared": cleared}
+
+    def _state_runtime_for_thread_goals(self) -> Any:
+        if self._state_runtime is not None:
+            return self._state_runtime
+        codex_home = self.codex_home or getattr(self.session_config, "codex_home", None)
+        if codex_home is None:
+            raise RuntimeError("codex_home is required for thread goals")
+        from pycodex.state.state_runtime import StateRuntime
+
+        self._state_runtime = _run_coro_blocking(
+            StateRuntime.init(
+                Path(codex_home),
+                _runtime_default_provider_id(self.session_config, self.provider),
+            )
+        )
+        return self._state_runtime
 
     def workspace_command_runner(self) -> Any:
         """Return the Rust-shaped workspace-command runner for local TUI probes."""
@@ -832,6 +1260,13 @@ class CoreExecActiveThreadRuntime:
         if self.prewarmed_model_session is not startup_session:
             _close_model_session(self.prewarmed_model_session)
 
+        if self._state_runtime is not None:
+            try:
+                _run_coro_blocking(self._state_runtime.close())
+            except Exception:
+                pass
+            self._state_runtime = None
+
         close_cached = getattr(self.model_client, "close_cached_websocket_session", None)
         if callable(close_cached):
             close_cached()
@@ -934,6 +1369,13 @@ class CoreExecActiveThreadRuntime:
     ) -> Any:
         _timing_trace("core_run_op_started", has_model_session=model_session is not None)
         plan = exec_run_plan_for_app_command(op)
+        hidden_goal_context = bool(op.payload.get("hidden_goal_context")) if isinstance(op.payload, Mapping) else False
+        _timing_trace(
+            "goal_core_run_op_plan",
+            hidden_goal_context=hidden_goal_context,
+            prompt_summary=plan.prompt_summary,
+            has_model_session=model_session is not None,
+        )
         result = await run_exec_user_turn_core_sampling_websocket_preferred(
             self.session_config,
             plan,
@@ -951,6 +1393,14 @@ class CoreExecActiveThreadRuntime:
             session_event_observer=session_event_observer,
             model_session=model_session,
             cancellation_token=cancellation_token,
+        )
+        _timing_trace(
+            "goal_core_run_op_finished",
+            hidden_goal_context=hidden_goal_context,
+            response_items=len(getattr(result, "response_items", ()) or ()),
+            tool_response_items=len(getattr(result, "tool_response_items", ()) or ()),
+            request_count=len(getattr(result, "request_plans", ()) or ()),
+            last_agent_message=bool(getattr(result, "last_agent_message", None)),
         )
         self._persist_rollout(plan, result)
         return result
@@ -1325,13 +1775,22 @@ class TuiAppRuntime:
         if fetcher is None:
             fetcher = getattr(self.active_thread_runtime, "get_account_rate_limits", None)
         if not callable(fetcher):
+            _timing_trace("rate_limits_refresh_skipped", reason="missing_fetcher", origin=_rate_limit_origin_kind(origin))
             return
+        _timing_trace("rate_limits_refresh_start", origin=_rate_limit_origin_kind(origin))
         try:
             result = fetcher()
             if hasattr(result, "__await__"):
                 result = _run_coro_blocking(result)
         except BaseException as exc:
             result = exc
+            _timing_trace("rate_limits_refresh_error", origin=_rate_limit_origin_kind(origin), error=str(exc))
+        else:
+            try:
+                count = len(result)  # type: ignore[arg-type]
+            except TypeError:
+                count = None
+            _timing_trace("rate_limits_refresh_success", origin=_rate_limit_origin_kind(origin), count=count)
         self.handle_app_event(AppEvent.rate_limits_loaded(origin, result))
 
     def on_rate_limits_loaded(self, origin: Any, result: Any) -> None:
@@ -1589,6 +2048,8 @@ class TuiAppRuntime:
             self.finish_mcp_startup_after_lag()
         if "handle_global_server_notification" in plan.actions and plan.notification is not None:
             self.handle_notification(_coerce_server_notification(plan.notification))
+        if "enqueue_primary_thread_notification" in plan.actions and plan.notification is not None:
+            self.handle_notification(_coerce_server_notification(plan.notification))
         if "add_error_message" in plan.actions and plan.message:
             self.chat_widget.add_error_message(plan.message)
 
@@ -1603,6 +2064,18 @@ def app_command_for_prompt(prompt: str, *, cwd: Path | str) -> AppCommand:
     if not accepted or not widget.ops:
         raise ValueError("terminal user input was not accepted for submission")
     return widget.ops[-1]
+
+
+def _goal_continuation_app_command(prompt: str, *, cwd: Path | str) -> AppCommand:
+    return AppCommand(
+        "UserTurn",
+        {
+            "items": [{"kind": "text", "payload": {"text": str(prompt)}}],
+            "cwd": Path(cwd),
+            "final_output_json_schema": None,
+            "hidden_goal_context": True,
+        },
+    )
 
 
 def user_turn_prompt(op: AppCommand) -> str:
@@ -1625,6 +2098,99 @@ def _model_client_state_value(model_client: Any, name: str) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _thread_goal_uuid(thread_id: Any) -> str:
+    import uuid
+
+    try:
+        return str(uuid.UUID(str(thread_id)))
+    except Exception as exc:
+        raise RuntimeError(f"invalid thread id for goal command: {thread_id}") from exc
+
+
+def _runtime_default_provider_id(session_config: Any, provider: Any) -> str:
+    for source in (provider, session_config):
+        for name in ("id", "name", "default_model_provider_id", "model_provider"):
+            value = _field(source, name, None)
+            if value is not None and str(value).strip():
+                return str(value).strip()
+    return "openai"
+
+
+def _default_active_goal_status() -> Any:
+    from pycodex.state.model.thread_goal import ThreadGoalStatus as StateThreadGoalStatus
+
+    return StateThreadGoalStatus.ACTIVE
+
+
+def _state_goal_status(status: Any) -> Any:
+    from pycodex.state.model.thread_goal import ThreadGoalStatus as StateThreadGoalStatus
+
+    raw = getattr(status, "value", status)
+    text = str(raw)
+    mapping = {
+        "active": "active",
+        "paused": "paused",
+        "blocked": "blocked",
+        "usageLimited": "usage_limited",
+        "usage_limited": "usage_limited",
+        "budgetLimited": "budget_limited",
+        "budget_limited": "budget_limited",
+        "complete": "complete",
+    }
+    return StateThreadGoalStatus.parse(mapping.get(text, text))
+
+
+def _app_server_goal_status(status: Any) -> Any:
+    from pycodex.app_server_protocol import ThreadGoalStatus as AppThreadGoalStatus
+
+    raw = getattr(status, "value", status)
+    mapping = {
+        "active": AppThreadGoalStatus.ACTIVE,
+        "paused": AppThreadGoalStatus.PAUSED,
+        "blocked": AppThreadGoalStatus.BLOCKED,
+        "usage_limited": AppThreadGoalStatus.USAGE_LIMITED,
+        "usageLimited": AppThreadGoalStatus.USAGE_LIMITED,
+        "budget_limited": AppThreadGoalStatus.BUDGET_LIMITED,
+        "budgetLimited": AppThreadGoalStatus.BUDGET_LIMITED,
+        "complete": AppThreadGoalStatus.COMPLETE,
+    }
+    return mapping[str(raw)]
+
+
+def _thread_goal_token_budget(value: Any) -> int | None:
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else None
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise RuntimeError("thread goal token budget must be an integer")
+    return int(value)
+
+
+def _app_server_thread_goal_from_state(goal: Any) -> Any:
+    from pycodex.app_server_protocol import ThreadGoal as AppThreadGoal
+
+    created_at = _datetime_millis(_field(goal, "created_at", 0))
+    updated_at = _datetime_millis(_field(goal, "updated_at", 0))
+    return AppThreadGoal(
+        thread_id=str(_field(goal, "thread_id")),
+        objective=str(_field(goal, "objective")),
+        status=_app_server_goal_status(_field(goal, "status")),
+        token_budget=_field(goal, "token_budget", None),
+        tokens_used=int(_field(goal, "tokens_used", 0) or 0),
+        time_used_seconds=int(_field(goal, "time_used_seconds", 0) or 0),
+        created_at=created_at,
+        updated_at=updated_at,
+    )
+
+
+def _datetime_millis(value: Any) -> int:
+    timestamp = getattr(value, "timestamp", None)
+    if callable(timestamp):
+        return int(timestamp() * 1000)
+    return int(value or 0)
 
 
 def _set_runtime_model_value(target: Any, model: str) -> None:
@@ -1668,10 +2234,53 @@ def exec_run_plan_for_app_command(op: AppCommand) -> ExecRunPlan:
         return ExecRunPlan(InitialOperation.review(ReviewRequest(target=target)), _review_prompt_summary(target))
     if op.kind != "UserTurn":
         raise ValueError("active thread runtime supports only AppCommand::UserTurn or AppCommand::Review")
+    if op.payload.get("hidden_goal_context"):
+        return ExecRunPlan(
+            InitialOperation.user_turn(user_inputs_for_app_command(op), op.payload.get("final_output_json_schema")),
+            "Goal continuation",
+        )
     return ExecRunPlan(
         InitialOperation.user_turn(user_inputs_for_app_command(op), op.payload.get("final_output_json_schema")),
         user_turn_prompt(op),
     )
+
+
+def _protocol_thread_goal_from_any(goal: Any) -> ProtocolThreadGoal:
+    if isinstance(goal, ProtocolThreadGoal):
+        return goal
+    thread_id_text = str(_field(goal, "thread_id", "") or "")
+    try:
+        thread_id = ThreadId.from_string(thread_id_text)
+    except Exception:
+        thread_id = ThreadId.new()
+    status = _protocol_thread_goal_status(_field(goal, "status", ProtocolThreadGoalStatus.ACTIVE))
+    return ProtocolThreadGoal(
+        thread_id=thread_id,
+        objective=str(_field(goal, "objective", "") or ""),
+        status=status,
+        tokens_used=int(_field(goal, "tokens_used", 0) or 0),
+        time_used_seconds=int(_field(goal, "time_used_seconds", 0) or 0),
+        created_at=int(_field(goal, "created_at", 0) or 0),
+        updated_at=int(_field(goal, "updated_at", 0) or 0),
+        token_budget=_field(goal, "token_budget", None),
+    )
+
+
+def _protocol_thread_goal_status(value: Any) -> ProtocolThreadGoalStatus:
+    if isinstance(value, ProtocolThreadGoalStatus):
+        return value
+    raw = getattr(value, "value", value)
+    mapping = {
+        "active": ProtocolThreadGoalStatus.ACTIVE,
+        "paused": ProtocolThreadGoalStatus.PAUSED,
+        "blocked": ProtocolThreadGoalStatus.BLOCKED,
+        "usage_limited": ProtocolThreadGoalStatus.USAGE_LIMITED,
+        "usageLimited": ProtocolThreadGoalStatus.USAGE_LIMITED,
+        "budget_limited": ProtocolThreadGoalStatus.BUDGET_LIMITED,
+        "budgetLimited": ProtocolThreadGoalStatus.BUDGET_LIMITED,
+        "complete": ProtocolThreadGoalStatus.COMPLETE,
+    }
+    return mapping[str(raw)]
 
 
 def _review_target_for_protocol(value: Any) -> ReviewTarget:
@@ -1783,6 +2392,37 @@ def _server_notifications_from_session_event(
                     },
                 ),
             )
+    if event_type == "thread_goal_updated":
+        goal = _field(payload, "goal", None)
+        return (
+            ServerNotification(
+                "ThreadGoalUpdated",
+                {
+                    "thread_id": _thread_id_value(_field(payload, "thread_id", thread_id)),
+                    "turn_id": _field(payload, "turn_id", turn_id),
+                    "goal": goal,
+                },
+            ),
+        )
+    if event_type == "stream_error":
+        message = _field(payload, "message", None)
+        if not isinstance(message, str) or not message:
+            return ()
+        return (
+            ServerNotification(
+                "Error",
+                {
+                    "thread_id": _thread_id_value(_field(payload, "thread_id", thread_id)),
+                    "turn_id": _field(payload, "turn_id", turn_id),
+                    "will_retry": True,
+                    "error": {
+                        "message": message,
+                        "codex_error_info": _field(payload, "codex_error_info", None),
+                        "additional_details": _field(payload, "additional_details", None),
+                    },
+                },
+            ),
+        )
     if event_type in {"task_complete", "turn_complete"}:
         return (_turn_completed_notification(thread_id, turn_id, SimpleNamespace(turn_status="completed")),)
     if event_type in {"task_aborted", "turn_aborted"}:

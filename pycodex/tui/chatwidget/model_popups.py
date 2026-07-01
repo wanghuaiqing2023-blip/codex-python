@@ -11,6 +11,7 @@ from typing import Iterable, List, Optional, Tuple, Union
 
 from .._porting import RustTuiModule
 from ..bottom_pane.list_selection_view import SelectionItem, SelectionViewParams
+from ..bottom_pane.popup_consts import standard_popup_hint_line
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -155,7 +156,7 @@ def open_model_popup_with_presets(
                 "Select Model",
                 "Pick a quick auto mode or browse all models.",
             ),
-            footer_hint="standard-popup-hint",
+            footer_hint=standard_popup_hint_line(),
         )
     )
 
@@ -190,7 +191,7 @@ def open_all_models_popup(
                 "Select Model and Effort",
                 "Access legacy models by running codex -m <model_name> or in your config.toml",
             ),
-            footer_hint="standard-popup-hint",
+            footer_hint=standard_popup_hint_line(),
         )
     )
 
@@ -253,7 +254,7 @@ def open_reasoning_popup(
             items=items,
             initial_selected_idx=initial_selected_idx,
             header=f"Select Reasoning Level for {preset.model}",
-            footer_hint="standard-popup-hint",
+            footer_hint=standard_popup_hint_line(),
         )
     )
 
@@ -295,7 +296,7 @@ def open_plan_reasoning_scope_prompt(
         view=SelectionViewParams(
             title=PLAN_MODE_REASONING_SCOPE_TITLE,
             subtitle=f"Choose where to apply {reasoning_phrase}.",
-            footer_hint="standard-popup-hint",
+            footer_hint=standard_popup_hint_line(),
             items=[plan_only, all_modes],
         )
     )

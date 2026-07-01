@@ -20,6 +20,19 @@ from pathlib import Path
 from typing import Any, TextIO
 from uuid import uuid4
 
+
+def _goal_debug_trace(event: str, **fields: Any) -> None:
+    path = os.environ.get("PYCODEX_TUI_TIMING_LOG") or os.environ.get("PYCODEX_GOAL_DEBUG_LOG")
+    if not path:
+        return
+    record = {"t": time.monotonic(), "event": event, **fields}
+    try:
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True, default=str) + "\n")
+    except OSError:
+        return
+
+
 from pycodex.apply_patch import (
     apply_patch_action_to_disk,
     convert_apply_patch_to_protocol,
@@ -197,9 +210,18 @@ class LocalHttpModelInfo:
     input_modalities: tuple[str, ...] = ("text", "image")
     supports_image_detail_original: bool = False
     supports_parallel_tool_calls: bool = False
+    context_window: int | None = 272_000
+    max_context_window: int | None = 272_000
+    effective_context_window_percent: int = 95
 
     def service_tier_for_request(self, service_tier: str | None) -> str | None:
         return service_tier
+
+    def resolved_context_window(self) -> int | None:
+        if self.context_window is None:
+            return None
+        percent = max(min(int(self.effective_context_window_percent), 100), 1)
+        return int(self.context_window) * percent // 100
 
 
 @dataclass(frozen=True)
@@ -1131,6 +1153,8 @@ def build_default_local_http_exec_runtime(
         ),
         default_reasoning_summary=_config_or_default_model_reasoning_summary(config_toml, model),
         supports_parallel_tool_calls=_config_provider_supports_parallel_tool_calls(config_toml, provider_id),
+        context_window=_config_model_context_window(config_toml) or 272_000,
+        max_context_window=272_000,
     )
     client = ModelClient(
         session_id=str(uuid4()),
@@ -1308,6 +1332,17 @@ def _config_or_default_model_reasoning_summary(config_toml: Mapping[str, Any] | 
         if isinstance(configured, str) and configured:
             return configured
     return _default_model_reasoning_summary(model)
+
+
+def _config_model_context_window(config_toml: Mapping[str, Any] | None) -> int | None:
+    if config_toml is None:
+        return None
+    value = config_toml.get("model_context_window")
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value > 0:
+        return value
+    return None
 
 
 def _default_model_reasoning_summary(model: str) -> str:
@@ -1888,12 +1923,15 @@ def _response_item_rollout_payload(item: Any) -> dict[str, Any]:
 class _ExecConfigFeatures:
     exec_permission_approvals_enabled: bool = False
     request_permissions_tool_enabled: bool = False
+    goal_tools_enabled: bool = False
 
     def enabled(self, feature: Feature) -> bool:
         if feature is Feature.EXEC_PERMISSION_APPROVALS:
             return self.exec_permission_approvals_enabled
         if feature is Feature.REQUEST_PERMISSIONS_TOOL:
             return self.request_permissions_tool_enabled
+        if feature is Feature.GOALS:
+            return self.goal_tools_enabled
         return False
 
 
@@ -1903,12 +1941,16 @@ def _in_memory_exec_session(
     *,
     environments: tuple[TurnEnvironmentSelection, ...] = (),
     event_observer: Any = None,
+    thread_id: str | None = None,
+    state_db: Any = None,
+    goal_tools_enabled: bool = False,
 ) -> InMemoryCodexSession:
     reasoning_summary = config.model_reasoning_summary
     if reasoning_summary is None:
         reasoning_summary = getattr(model_info, "default_reasoning_summary", "auto")
     return InMemoryCodexSession(
         cwd=config.cwd,
+        thread_id=thread_id or "thread",
         model_info=model_info,
         user_instructions=config.user_instructions,
         base_instructions=_base_instructions_from_model_info(model_info),
@@ -1922,7 +1964,10 @@ def _in_memory_exec_session(
         features=_ExecConfigFeatures(
             exec_permission_approvals_enabled=config.exec_permission_approvals_enabled,
             request_permissions_tool_enabled=config.request_permissions_tool_enabled,
+            goal_tools_enabled=goal_tools_enabled,
         ),
+        state_db=state_db,
+        goal_tools_enabled_value=goal_tools_enabled,
         _granted_session_permissions=config.granted_session_permissions,
         environments=environments,
         event_observer=event_observer,
@@ -1994,23 +2039,34 @@ async def run_exec_user_turn_core_sampling(
     max_tool_followups: int | None = None,
     session_event_observer: Any = None,
     cancellation_token: Any = None,
+    codex_home: Path | str | None = None,
 ) -> UserTurnSamplingResult:
     """Run a prepared ``codex exec`` user turn through the in-memory core loop."""
 
     operation = plan.initial_operation
     if operation.kind != "user_turn":
         raise ValueError("local exec core runtime currently supports only user_turn operations")
+    state_runtime = await _state_runtime_for_goal_tools(codex_home, config, provider)
+    _goal_debug_trace(
+        "goal_core_sampling_start",
+        prompt_summary=getattr(plan, "prompt_summary", None),
+        state_runtime=state_runtime is not None,
+        max_tool_followups=max_tool_followups,
+    )
     session = _in_memory_exec_session(
         config,
         model_info,
         environments=(TurnEnvironmentSelection("local", str(config.cwd)),),
         event_observer=session_event_observer,
+        thread_id=_model_client_thread_id(model_client),
+        state_db=state_runtime,
+        goal_tools_enabled=state_runtime is not None,
     )
-    if history_items:
-        turn_context = await session.new_default_turn()
-        await session.record_conversation_items(turn_context, tuple(history_items))
     try:
-        return await run_user_turn_sampling_from_session(
+        if history_items:
+            turn_context = await session.new_default_turn()
+            await session.record_conversation_items(turn_context, tuple(history_items))
+        result = await run_user_turn_sampling_from_session(
             session,
             operation.items,
             model_client,
@@ -2025,9 +2081,55 @@ async def run_exec_user_turn_core_sampling(
             max_tool_followups=max_tool_followups,
             cancellation_token=cancellation_token,
         )
+        _goal_debug_trace(
+            "goal_core_sampling_finished",
+            prompt_summary=getattr(plan, "prompt_summary", None),
+            request_count=len(getattr(result, "request_plans", ()) or ()),
+            response_items=len(getattr(result, "response_items", ()) or ()),
+            tool_response_items=len(getattr(result, "tool_response_items", ()) or ()),
+            last_agent_message=bool(getattr(result, "last_agent_message", None)),
+        )
+        return result
     except CodexErr as exc:
         _attach_local_http_session_events(exc, session)
         raise
+    finally:
+        close = getattr(state_runtime, "close", None)
+        if callable(close):
+            closed = close()
+            if inspect.isawaitable(closed):
+                await closed
+
+
+async def _state_runtime_for_goal_tools(
+    codex_home: Path | str | None,
+    config: ExecSessionConfig,
+    provider: Any,
+) -> Any:
+    if codex_home is None or bool(getattr(config, "ephemeral", False)):
+        return None
+    from pycodex.state.state_runtime import StateRuntime
+
+    return await StateRuntime.init(Path(codex_home), _runtime_default_provider_id(config, provider))
+
+
+def _model_client_thread_id(model_client: Any) -> str | None:
+    state = getattr(model_client, "state", None)
+    value = getattr(state, "thread_id", None)
+    if value is None:
+        value = getattr(model_client, "thread_id", None)
+    return str(value) if value is not None else None
+
+
+def _runtime_default_provider_id(config: ExecSessionConfig, provider: Any) -> str:
+    value = getattr(config, "model_provider_id", None)
+    if isinstance(value, str) and value:
+        return value
+    if isinstance(provider, Mapping):
+        value = provider.get("id") or provider.get("name")
+    else:
+        value = getattr(provider, "id", None) or getattr(provider, "name", None)
+    return str(value) if value else "openai"
 
 
 async def run_exec_user_turn_core_http_sampling(
@@ -2085,6 +2187,7 @@ async def run_exec_user_turn_core_http_sampling(
         max_tool_followups=max_tool_followups,
         session_event_observer=session_event_observer,
         cancellation_token=cancellation_token,
+        codex_home=codex_home,
     )
 
 
@@ -2111,6 +2214,12 @@ async def run_exec_user_turn_core_sampling_websocket_preferred(
 ) -> UserTurnSamplingResult:
     """Run a core user turn through Rust's websocket-preferred transport shape."""
 
+    _goal_debug_trace(
+        "goal_ws_preferred_start",
+        prompt_summary=getattr(plan, "prompt_summary", None),
+        has_model_session=model_session is not None,
+        codex_home=bool(codex_home),
+    )
     if auth_manager is None and codex_home is not None:
         from pycodex.login.auth.manager import AuthManager
 
@@ -2138,7 +2247,7 @@ async def run_exec_user_turn_core_sampling_websocket_preferred(
         stream_event_observer=stream_event_observer,
     )
     try:
-        return await run_exec_user_turn_core_sampling(
+        result = await run_exec_user_turn_core_sampling(
             config,
             plan,
             model_client,
@@ -2150,7 +2259,16 @@ async def run_exec_user_turn_core_sampling_websocket_preferred(
             max_tool_followups=max_tool_followups,
             session_event_observer=session_event_observer,
             cancellation_token=cancellation_token,
+            codex_home=codex_home,
         )
+        _goal_debug_trace(
+            "goal_ws_preferred_finished",
+            prompt_summary=getattr(plan, "prompt_summary", None),
+            request_count=len(getattr(result, "request_plans", ()) or ()),
+            response_items=len(getattr(result, "response_items", ()) or ()),
+            tool_response_items=len(getattr(result, "tool_response_items", ()) or ()),
+        )
+        return result
     finally:
         close = getattr(model_session, "close", None)
         if callable(close):

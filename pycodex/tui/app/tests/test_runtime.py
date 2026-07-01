@@ -1,12 +1,14 @@
 ﻿import asyncio
+import base64
 import json
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+from pycodex.app_server_protocol.account import GetAccountRateLimitsResponse, RateLimitSnapshot, RateLimitWindow
 from pycodex.core.session.turn.runtime import UserTurnSamplingResult
 from pycodex.protocol import (
     AgentMessageContent,
@@ -23,18 +25,66 @@ from pycodex.tui.app.runtime import (
     ExecFunctionActiveThreadRuntime,
     QueueActiveThreadEventStream,
     TuiAppRuntime,
+    _rate_limits_auth_account_id,
+    _rate_limits_auth_is_fedramp,
+    _rate_limits_backend_auth_provider,
+    _rate_limits_backend_base_url,
+    _models_auth_manager_from_snapshot,
     _server_notifications_from_session_event,
     app_command_for_prompt,
     exec_run_plan_for_app_command,
     user_inputs_for_app_command,
     user_turn_prompt,
 )
+from pycodex.login.auth.storage import AuthDotJson
 from pycodex.tui.app.agent_navigation import AgentNavigationDirection
 from pycodex.tui.app_command import AppCommand
 from pycodex.tui.app_event import AppEvent, RateLimitRefreshOrigin
 from pycodex.tui.chatwidget.protocol import ServerNotification
 from pycodex.tui.status.card import new_status_output_with_rate_limits_handle
 from pycodex.tui.status.rate_limits import RateLimitSnapshotDisplay, RateLimitWindowDisplay
+
+
+def _jwt_with_claims(claims: dict[str, object]) -> str:
+    def encode_json(value: dict[str, object]) -> str:
+        raw = json.dumps(value, separators=(",", ":")).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    return f"{encode_json({'alg': 'none', 'typ': 'JWT'})}.{encode_json(claims)}.sig"
+
+
+def test_models_auth_manager_normalizes_dict_token_snapshot(tmp_path) -> None:
+    # Rust-derived contract:
+    # - codex-login::auth::storage::AuthDotJson deserializes auth.json tokens
+    #   into TokenData before codex-login::auth::manager::CodexAuth exposes a
+    #   bearer token.
+    # - codex-core model catalog refresh uses that auth manager for the remote
+    #   models endpoint; it must not silently fall back to bundled picker data.
+    auth = AuthDotJson(
+        auth_mode="chatgpt",
+        tokens={
+            "id_token": _jwt_with_claims(
+                {
+                    "email": "user@example.com",
+                    "https://api.openai.com/auth": {
+                        "chatgpt_account_id": "acct-1",
+                        "chatgpt_plan_type": "plus",
+                    },
+                }
+            ),
+            "access_token": "access-token",
+            "refresh_token": "refresh-token",
+            "account_id": "acct-1",
+        },
+        last_refresh=datetime.now(timezone.utc),
+    )
+
+    manager = _models_auth_manager_from_snapshot(tmp_path, auth, "https://chatgpt.com/backend-api")
+
+    assert manager is not None
+    codex_auth = asyncio.run(manager.auth())
+    assert codex_auth.get_token() == "access-token"
+    assert codex_auth.get_account_id() == "acct-1"
 
 
 def test_tui_app_runtime_submits_user_turn_through_active_thread_routing() -> None:
@@ -461,6 +511,27 @@ def test_tui_app_runtime_persist_model_selection_falls_back_to_local_config(tmp_
     assert runtime.chat_widget.info_messages == [("Model changed to gpt-local medium", None)]
 
 
+def test_tui_app_runtime_persist_model_selection_uses_runtime_codex_home_when_session_config_lacks_it(tmp_path) -> None:
+    # Rust module boundary:
+    # - codex-tui::app::event_dispatch owns AppEvent::PersistModelSelection.
+    # - Rust App always has config.codex_home; the Python runtime facade must
+    #   provide the same write target even when the lightweight session_config
+    #   only carries live model fields.
+    active_runtime = SimpleNamespace(
+        codex_home=tmp_path,
+        session_config=SimpleNamespace(model="gpt-old", model_reasoning_effort="high"),
+    )
+    runtime = TuiAppRuntime(active_thread_runtime=active_runtime)
+
+    ok = runtime.persist_model_selection("gpt-local", "medium")
+
+    assert ok is True
+    text = (tmp_path / "config.toml").read_text(encoding="utf-8")
+    assert 'model = "gpt-local"' in text
+    assert 'model_reasoning_effort = "medium"' in text
+    assert runtime.chat_widget.error_messages == []
+
+
 def test_tui_app_runtime_persist_model_selection_reports_write_failure() -> None:
     # Rust source contract:
     # codex-tui::app::event_dispatch logs failure and adds
@@ -602,6 +673,100 @@ def test_tui_app_runtime_rate_limits_loaded_updates_cache_and_finishes_status_ha
     assert runtime.chat_widget.refreshing_status_outputs == []
     assert output.card.rate_limit_state.rate_limits.kind == "available"
     assert output.card.rate_limit_state.rate_limits.rows[0].value.percent_used == 92.0
+
+
+def test_tui_app_runtime_rate_limits_loaded_keeps_primary_and_additional_limits() -> None:
+    # Rust source/test contract:
+    # - codex-tui::app_server_session::app_server_rate_limit_snapshots keeps
+    #   response.rate_limits, drops duplicate primary map entries, and appends
+    #   additional rate-limit buckets.
+    # - Rust test:
+    #   app_server_rate_limit_snapshots_deduplicates_top_level_limit_from_map.
+    runtime = TuiAppRuntime(active_thread_runtime=ExecFunctionActiveThreadRuntime(lambda _prompt: (0, "unused")))
+    output, handle = new_status_output_with_rate_limits_handle(
+        model_name="gpt-5",
+        directory="C:/repo",
+        rate_limits=[],
+        refreshing_rate_limits=False,
+    )
+    runtime.register_status_rate_limit_handle(7, handle)
+    response = GetAccountRateLimitsResponse(
+        rate_limits=RateLimitSnapshot(
+            limit_id="codex",
+            primary=RateLimitWindow(20, 300),
+            secondary=RateLimitWindow(40, 7 * 24 * 60),
+        ),
+        rate_limits_by_limit_id={
+            "codex": RateLimitSnapshot(limit_id="codex", primary=RateLimitWindow(99, 300)),
+            "codex-spark": RateLimitSnapshot(
+                limit_id="codex-spark",
+                limit_name="GPT-5.3-Codex-Spark",
+                primary=RateLimitWindow(0, 300),
+                secondary=RateLimitWindow(10, 7 * 24 * 60),
+            ),
+        },
+    )
+
+    runtime.handle_app_event(AppEvent.rate_limits_loaded(RateLimitRefreshOrigin.status_command(7), response))
+
+    assert list(runtime.chat_widget.rate_limit_snapshots_by_limit_id) == ["codex", "GPT-5.3-Codex-Spark"]
+    assert output.card.rate_limit_state.rate_limits.kind == "available"
+    labels = [row.label for row in output.card.rate_limit_state.rate_limits.rows]
+    assert labels == [
+        "5h limit",
+        "Weekly limit",
+        "GPT-5.3-Codex-Spark limit",
+        "5h limit",
+        "Weekly limit",
+    ]
+
+
+def test_tui_app_runtime_rate_limit_fetch_uses_chatgpt_backend_base_and_auth_metadata() -> None:
+    # Rust source contract:
+    # - codex-tui::app::background_requests::fetch_account_rate_limits asks
+    #   app-server for account/rateLimits/read.
+    # - codex-app-server::account_processor builds BackendClient from
+    #   Config.chatgpt_base_url and CodexAuth, not from the model responses
+    #   `/backend-api/codex` URL.
+    session_config = SimpleNamespace(chatgpt_base_url="https://chatgpt.com/backend-api/")
+    provider = SimpleNamespace(base_url="https://chatgpt.com/backend-api/codex")
+    auth = SimpleNamespace(
+        get_account_id=lambda: "workspace-123",
+        is_fedramp_account=lambda: True,
+        get_token=lambda: "token",
+        tokens={"account_id": "fallback"},
+    )
+
+    assert _rate_limits_backend_base_url(session_config, provider) == "https://chatgpt.com/backend-api"
+    assert _rate_limits_backend_base_url(SimpleNamespace(), provider) == "https://chatgpt.com/backend-api"
+    assert _rate_limits_auth_account_id(auth) == "workspace-123"
+    assert _rate_limits_auth_is_fedramp(auth) is True
+
+
+def test_tui_app_runtime_rate_limit_fetch_can_use_original_auth_snapshot() -> None:
+    # Rust source contract:
+    # - codex-app-server::account_processor obtains CodexAuth from AuthManager,
+    #   then BackendClient::from_auth builds bearer/account headers.
+    # The local Textual runtime may carry resolved runtime auth separately from
+    # the stored AuthDotJson snapshot, so the rate-limit boundary must be able
+    # to build backend auth from the stored ChatGPT OAuth tokens.
+    original_auth = SimpleNamespace(
+        auth_mode="chatgpt",
+        tokens={
+            "access_token": "access-token",
+            "account_id": "workspace-123",
+            "chatgpt_account_is_fedramp": True,
+        },
+    )
+
+    provider = _rate_limits_backend_auth_provider(original_auth)
+
+    assert provider is not None
+    assert provider.to_auth_headers() == {
+        "Authorization": "Bearer access-token",
+        "ChatGPT-Account-ID": "workspace-123",
+        "X-OpenAI-Fedramp": "true",
+    }
 
 
 def test_tui_app_runtime_rate_limits_loaded_error_finishes_status_handle_without_cache() -> None:
@@ -2230,9 +2395,46 @@ def test_core_exec_active_thread_runtime_surfaces_stream_error_when_no_agent_tex
     )
 
     assert stream.next_event(timeout=1).kind == "TurnStarted"
+    retry = stream.next_event(timeout=1)
     completed = stream.next_event(timeout=1)
 
+    assert retry is not None
+    assert retry.kind == "Error"
+    assert retry.payload["will_retry"] is True
+    assert retry.payload["error"]["message"] == "Reconnecting... 1/5"
     assert completed is not None
     assert completed.kind == "TurnCompleted"
     assert completed.payload["turn"]["status"] == "Failed"
     assert "Error while reading the server response" in completed.payload["turn"]["error"]["message"]
+
+
+def test_stream_error_session_event_projects_retry_error_notification() -> None:
+    # Rust source/test contract:
+    # - codex-core::responses_retry::handle_retryable_response_stream_error
+    #   calls Session::notify_stream_error with "Reconnecting... {n}/{max}".
+    # - codex-tui::chatwidget::protocol receives this as
+    #   ServerNotification::Error with will_retry=true, so the TUI updates
+    #   status without treating it as a final turn failure.
+    event = SimpleNamespace(
+        type="stream_error",
+        payload=SimpleNamespace(
+            message="Reconnecting... 2/5",
+            additional_details="Idle timeout waiting for SSE",
+            codex_error_info={"type": "response_stream_disconnected", "http_status_code": 502},
+        ),
+    )
+
+    notifications = _server_notifications_from_session_event(
+        event,
+        thread_id="thread-1",
+        turn_id="turn-1",
+    )
+
+    assert len(notifications) == 1
+    notification = notifications[0]
+    assert notification.kind == "Error"
+    assert notification.payload["will_retry"] is True
+    assert notification.payload["thread_id"] == "thread-1"
+    assert notification.payload["turn_id"] == "turn-1"
+    assert notification.payload["error"]["message"] == "Reconnecting... 2/5"
+    assert notification.payload["error"]["additional_details"] == "Idle timeout waiting for SSE"

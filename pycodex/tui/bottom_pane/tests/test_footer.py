@@ -3,6 +3,7 @@ from pycodex.tui.bottom_pane.footer import (
     FooterKeyHints,
     FooterMode,
     FooterProps,
+    GoalStatusIndicator,
     ShortcutId,
     ShortcutsState,
     SummaryLeft,
@@ -22,6 +23,7 @@ from pycodex.tui.bottom_pane.footer import (
     shortcut_overlay_lines,
     shows_passive_footer_line,
     single_line_footer_layout,
+    goal_status_indicator_line,
     status_line_right_indicator_line,
     toggle_shortcut_mode,
     uses_passive_footer_status_layout,
@@ -156,6 +158,20 @@ def test_passive_status_line_combines_agent_and_yields_to_queue_hint():
 
     assert shows_passive_footer_line(props, show_queue_hint=True) is False
     assert uses_passive_footer_status_layout(props, show_queue_hint=True) is False
+
+
+def test_goal_status_indicator_line_matches_rust_footer_labels():
+    # Rust source: codex-tui/src/bottom_pane/footer.rs::goal_status_indicator_line.
+    assert goal_status_indicator_line(GoalStatusIndicator.Active("3m")) == "Pursuing goal (3m)"
+    assert goal_status_indicator_line(GoalStatusIndicator("Paused")) == "Goal paused (/goal resume)"
+    assert goal_status_indicator_line(GoalStatusIndicator("Blocked")) == "Goal blocked (/goal resume)"
+    assert goal_status_indicator_line(GoalStatusIndicator("UsageLimited")) == "Goal hit usage limits (/goal resume)"
+    assert goal_status_indicator_line(GoalStatusIndicator.BudgetLimited("9K / 10K tokens")) == "Goal unmet (9K / 10K tokens)"
+    assert goal_status_indicator_line(GoalStatusIndicator.Complete("12m")) == "Goal achieved (12m)"
+    assert (
+        status_line_right_indicator_line("gpt-test", goal_status_indicator=GoalStatusIndicator.Active("0s"))
+        == "gpt-test · Pursuing goal (0s)"
+    )
 
 
 def test_footer_rust_snapshot_helpers_have_semantic_coverage():

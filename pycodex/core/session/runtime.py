@@ -158,6 +158,7 @@ class InMemoryTurnContext:
     network: Any = None
     environments: Any = None
     final_output_json_schema: Any = None
+    goal_tools_enabled: bool = False
     server_model_warning_emitted: bool = False
     model_verification_emitted: bool = False
     truncation_policy: TruncationPolicyConfig = field(default_factory=lambda: TruncationPolicyConfig.tokens(10_000))
@@ -436,6 +437,8 @@ class InMemoryCodexSession:
     models_etag: str | None = None
     emitted_events: list[EventMsg] = field(default_factory=list)
     event_observer: Any = None
+    state_db: Any = None
+    goal_tools_enabled_value: bool = False
     input_queue: InMemoryInputQueue = field(default_factory=InMemoryInputQueue)
     active_turn: InMemoryActiveTurn | None = field(default_factory=InMemoryActiveTurn)
     response_processed_ids: list[str] = field(default_factory=list)
@@ -576,9 +579,33 @@ class InMemoryCodexSession:
             network=self.network,
             environments=environments,
             final_output_json_schema=final_output_json_schema,
+            goal_tools_enabled=bool(self.goal_tools_enabled_value),
             truncation_policy=_turn_truncation_policy(model_info),
             session_source=self.session_source,
         )
+
+    def goal_tools_enabled(self) -> bool:
+        return bool(self.goal_tools_enabled_value)
+
+    async def get_thread_goal(self) -> Any:
+        from pycodex.core.goals import get_thread_goal
+
+        return await get_thread_goal(self)
+
+    async def create_thread_goal(self, turn_context: Any, request: Any) -> Any:
+        from pycodex.core.goals import create_thread_goal
+
+        return await create_thread_goal(self, turn_context, request)
+
+    async def set_thread_goal(self, turn_context: Any, request: Any) -> Any:
+        from pycodex.core.goals import set_thread_goal
+
+        return await set_thread_goal(self, turn_context, request)
+
+    async def goal_runtime_apply(self, event: Any) -> None:
+        from pycodex.core.goals import goal_runtime_apply
+
+        await goal_runtime_apply(self, event)
 
     async def preview_settings(self, updates: Any) -> ThreadConfigSnapshot:
         return self._snapshot_for_settings(updates)

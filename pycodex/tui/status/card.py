@@ -15,6 +15,7 @@ from urllib.parse import urlsplit, urlunsplit
 from .._porting import RustTuiModule
 from ..line_truncation import Line, Span
 from ..version import CODEX_CLI_VERSION
+from ..history_cell.session import with_border_with_inner_width
 from .account import StatusAccountDisplay
 from .format import FieldFormatter, line_display_width, push_label, truncate_line_to_width
 from .helpers import format_directory_display, format_tokens_compact
@@ -305,7 +306,8 @@ class StatusHistoryCell:
         lines.extend(self.rate_limit_lines(self.rate_limit_state, available_inner_width, formatter))
 
         content_width = min(max((line_display_width(line) for line in lines), default=0), available_inner_width)
-        return tuple(truncate_line_to_width(line, content_width) for line in lines)
+        truncated_lines = [truncate_line_to_width(line, content_width) for line in lines]
+        return tuple(with_border_with_inner_width(truncated_lines, content_width))
 
     def raw_lines(self) -> Tuple[Line, ...]:
         return self.display_lines(2**16 - 1)
@@ -329,7 +331,7 @@ class StatusHistoryCell:
         if account is None:
             return None
         kind = getattr(account, "kind", None)
-        if kind == "api_key" or account == StatusAccountDisplay.api_key():
+        if str(kind).replace("_", "").lower() == "apikey" or account == StatusAccountDisplay.api_key():
             return "API key configured (run codex login to use ChatGPT)"
         email = getattr(account, "email", None)
         plan = getattr(account, "plan", None)
@@ -508,7 +510,7 @@ def _permission_profile_disabled(value: Any) -> bool:
 
 
 def _is_chatgpt_account(account: Any) -> bool:
-    return account is not None and getattr(account, "kind", None) == "chatgpt"
+    return account is not None and str(getattr(account, "kind", None)).replace("_", "").lower() == "chatgpt"
 
 
 __all__ = [

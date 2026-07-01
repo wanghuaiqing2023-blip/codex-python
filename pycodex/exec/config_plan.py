@@ -159,6 +159,7 @@ class ExecConfigBootstrapPlan:
     tui_status_line_use_colors: bool = True
     tui_terminal_title: tuple[str, ...] | None = None
     tui_keymap: Mapping[str, JsonValue] | None = None
+    chatgpt_base_url: str | None = None
     upstream_source: str = UPSTREAM_EXEC_RUN_MAIN
 
     def __post_init__(self) -> None:
@@ -1457,6 +1458,7 @@ def build_exec_config_bootstrap_plan(
         tui_status_line_use_colors=_tui_config_bool(effective_config, "status_line_use_colors", True),
         tui_terminal_title=_tui_config_str_tuple(effective_config, "terminal_title"),
         tui_keymap=_tui_config_keymap(effective_config),
+        chatgpt_base_url=_optional_config_str(effective_config, "chatgpt_base_url"),
     )
 
 
@@ -1489,6 +1491,7 @@ def exec_session_config_from_bootstrap_plan(plan: ExecConfigBootstrapPlan) -> Ex
         tui_status_line_use_colors=plan.tui_status_line_use_colors,
         tui_terminal_title=plan.tui_terminal_title,
         tui_keymap=plan.tui_keymap,
+        chatgpt_base_url=plan.chatgpt_base_url,
         allow_login_shell=plan.allow_login_shell,
         features=plan.features,
         exec_permission_approvals_enabled=plan.exec_permission_approvals_enabled,
@@ -1511,6 +1514,13 @@ def _tui_config_mapping(config_toml: Mapping[str, JsonValue]) -> Mapping[str, Js
     if isinstance(tui, Mapping):
         return tui
     return {}
+
+
+def _optional_config_str(config_toml: Mapping[str, JsonValue], key: str) -> str | None:
+    value = config_toml.get(key)
+    if isinstance(value, str) and value.strip():
+        return value
+    return None
 
 
 def _tui_config_str_tuple(config_toml: Mapping[str, JsonValue], key: str) -> tuple[str, ...] | None:

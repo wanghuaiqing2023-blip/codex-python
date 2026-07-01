@@ -2578,9 +2578,10 @@ def _build_tui_core_active_thread_runtime(parsed: ParsedCli, *, stderr: TextIO) 
         bootstrap_plan,
         exec_policy_rules=exec_policy_rules,
     )
+    auth_json = read_auth_json()
     model_client, provider, model_info, resolved_auth = build_default_core_exec_runtime(
         session_config,
-        auth=read_auth_json(),
+        auth=auth_json,
         config_toml=config_toml,
     )
     return CoreExecActiveThreadRuntime(
@@ -2589,6 +2590,7 @@ def _build_tui_core_active_thread_runtime(parsed: ParsedCli, *, stderr: TextIO) 
         provider,
         model_info,
         auth=resolved_auth,
+        original_auth=auth_json,
         codex_home=codex_home,
         max_tool_followups=local_http_exec_max_tool_rounds(),
         startup_prewarm_enabled=True,

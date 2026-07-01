@@ -39,6 +39,7 @@ from pycodex.features import feature_for_key as codex_feature_for_key
 from pycodex.core.agents_md import DEFAULT_AGENTS_MD_FILENAME
 from pycodex.core.util import normalize_thread_name
 from pycodex.git_utils import current_branch_name, local_git_branches, recent_commits
+from pycodex.login.token_data import IdTokenInfoError, TokenData, parse_chatgpt_jwt_claims
 from pycodex.protocol import CollaborationMode, ReviewTarget, Settings
 
 from .app.event_dispatch import SHUTDOWN_FIRST_EXIT_TIMEOUT
@@ -46,7 +47,20 @@ from .app_event import AppEvent, KeymapEditIntent, RateLimitRefreshOrigin
 from .app.agent_navigation import AgentNavigationDirection, format_agent_picker_item_name
 from .app.runtime import ActiveThreadRuntime, TuiAppRuntime
 from .app.runtime import _run_coro_blocking as _runtime_run_coro_blocking
+from .app_server_session import app_server_rate_limit_snapshots
 from .app.session_lifecycle import open_agent_picker_plan
+from .app.thread_goal_actions import (
+    ThreadGoal,
+    ThreadGoalActionPlan,
+    ThreadGoalSetMode,
+    ThreadGoalStatus,
+    UpdateExistingMode,
+    clear_thread_goal_plan,
+    open_thread_goal_editor_plan,
+    open_thread_goal_menu_plan,
+    set_thread_goal_objective_plan,
+    set_thread_goal_status_plan,
+)
 from .app.input import EXTERNAL_EDITOR_HINT, MISSING_EDITOR_MESSAGE
 from .app_command import AppCommand
 from .app_backtrack import (
@@ -136,7 +150,7 @@ from .chatwidget.settings_popups import (
 from .chatwidget.protocol import ServerNotification
 from .chatwidget.interaction import copy_last_agent_markdown_with
 from .chatwidget.keymap_picker import KeymapPickerWidgetState, KeymapView
-from .chatwidget.slash_dispatch import RAW_USAGE
+from .chatwidget.slash_dispatch import GOAL_USAGE, GOAL_USAGE_HINT, RAW_USAGE
 from .chatwidget.status_surfaces import (
     DEFAULT_STATUS_LINE_ITEMS,
     DEFAULT_TERMINAL_TITLE_ITEMS,
@@ -175,8 +189,9 @@ from .keymap_setup.picker import (
     build_keymap_picker_params_for_selected_action_with_filter as build_keymap_picker_selection_for_action,
     build_keymap_picker_params_with_filter as build_keymap_picker_selection,
 )
-from .slash_command import SlashCommand
+from .slash_command import SlashCommand, built_in_slash_commands
 from .status.card import (
+    StatusAccountDisplay,
     StatusContextWindowData,
     StatusTokenUsageData,
     new_status_output_with_rate_limits_handle,
@@ -184,12 +199,17 @@ from .status.card import (
     status_permissions_label,
     workspace_root_suffix,
 )
+from .status.helpers import compose_agents_summary, compose_model_display, plan_type_display_name
 from .status.rate_limits import (
     RateLimitSnapshotDisplay,
     RateLimitWindowDisplay,
     rate_limit_snapshot_display_for_limit,
 )
-from .status_indicator_widget import KeyBinding as StatusKeyBinding, StatusIndicatorWidget
+from .status_indicator_widget import (
+    KeyBinding as StatusKeyBinding,
+    StatusDetailsCapitalization,
+    StatusIndicatorWidget,
+)
 from .text_formatting import proper_join
 from .textual_compat import App, ComposeResult, RichLog, Static, Text, TextArea, Vertical, verify_textual_runtime
 from .tooltips import APP_TOOLTIP
@@ -444,7 +464,7 @@ class PyCodexTextualApp(App[int]):
     }
 
     #status-line {
-        height: auto;
+        height: 2;
         padding: 0 1;
         color: $text-muted;
     }
@@ -496,6 +516,7 @@ class PyCodexTextualApp(App[int]):
         self._turn_worker: threading.Thread | None = None
         self._busy = False
         self._turn_started_at = 0.0
+        self._active_turn_id: str | None = None
         self._prompt_history = ChatComposerHistory.new()
         self._prompt_history_metadata: tuple[Any, int, int] | None = None
         self._queued_prompts: list[str] = []
@@ -509,13 +530,15 @@ class PyCodexTextualApp(App[int]):
         self._invalid_status_line_warned = False
         self._invalid_terminal_title_warned = False
         self._notices_ready = False
-        self._session_header_configured = False
+        self._session_header_configured = _runtime_session_header_configured_at_startup(app_runtime)
         self._shutdown_requested = False
         self.copy_to_clipboard = _copy_to_system_clipboard
         self._post_submit_composer_text: str | None = None
         self._rename_prompt_active = False
+        self._goal_edit_prompt: _GoalEditPromptState | None = None
         self._shortcut_overlay_mode = FooterMode.COMPOSER_EMPTY
         self._external_editor_thread: threading.Thread | None = None
+        self._active_retry_status: _RetryStatus | None = None
 
     def compose(self) -> ComposeResult:
         yield Vertical(
@@ -564,6 +587,10 @@ class PyCodexTextualApp(App[int]):
             return
         if self._rename_prompt_active:
             self._handle_rename_prompt_submission(prompt)
+            self._clear_submission_state(composer)
+            return
+        if self._goal_edit_prompt is not None:
+            self._handle_goal_edit_prompt_submission(prompt)
             self._clear_submission_state(composer)
             return
         if self._busy:
@@ -1316,6 +1343,7 @@ class PyCodexTextualApp(App[int]):
         if result.view is None:
             self._append_system_notice("No model choices are available right now.")
             return
+        self._mark_session_header_configured()
         self._active_selection = _TextualSelection(kind="model", view=result.view, context=context, presets=presets)
         self._active_selection_index = _initial_selection_index(self._active_selection)
         self._render_active_selection()
@@ -1436,6 +1464,9 @@ class PyCodexTextualApp(App[int]):
         if selection.kind == "review":
             self._accept_review_selection(selection)
             return
+        if selection.kind == "goal":
+            self._accept_goal_selection(selection)
+            return
         if selection.kind in {"resume", "fork"}:
             self._accept_resume_selection(selection)
             return
@@ -1494,6 +1525,44 @@ class PyCodexTextualApp(App[int]):
             self._append_system_notice(MULTI_AGENT_ENABLE_NOTICE)
         else:
             self._append_system_notice("Subagents not enabled.")
+        self._set_status("Ready")
+        self._composer().focus()
+
+    def _accept_goal_selection(self, selection: "_TextualSelection") -> None:
+        items = _selection_active_items(selection)
+        if not items:
+            self._cancel_active_selection()
+            return
+        item = items[min(max(self._active_selection_index, 0), len(items) - 1)]
+        actions = list(getattr(item, "actions", ()) or ())
+        self._active_selection = None
+        self.clear_command_popup()
+        if actions:
+            event = actions[0]
+            if isinstance(event, Mapping) and event.get("type") == "SetThreadGoalObjective":
+                thread_id = event.get("thread_id")
+                objective = str(event.get("objective") or "")
+                response_goal, error = _runtime_thread_goal_set(
+                    self.app_runtime,
+                    thread_id,
+                    objective=objective,
+                    status=ThreadGoalStatus.Active,
+                    replace=True,
+                )
+                self._apply_thread_goal_plan(
+                    set_thread_goal_objective_plan(
+                        thread_id,
+                        objective,
+                        ThreadGoalSetMode.ReplaceExisting,
+                        response_goal=response_goal,
+                        set_error=error,
+                    )
+                )
+                if self._maybe_start_goal_continuation(response_goal):
+                    self._composer().focus()
+                    return
+        else:
+            self._append_system_notice("Goal update cancelled.")
         self._set_status("Ready")
         self._composer().focus()
 
@@ -2115,7 +2184,8 @@ class PyCodexTextualApp(App[int]):
         if event.kind == "update_model" and event.model is not None:
             self.app_runtime.handle_app_event(AppEvent.update_model(event.model))
             context.current_model = event.model
-            self._append_system_notice(f"Model changed to {event.model}")
+            self._mark_session_header_configured()
+            self._set_status("Ready")
             return None
         if event.kind == "update_reasoning_effort":
             self.app_runtime.handle_app_event(AppEvent.update_reasoning_effort(event.effort))
@@ -2123,6 +2193,7 @@ class PyCodexTextualApp(App[int]):
             return None
         if event.kind == "persist_model_selection" and event.model is not None:
             self.app_runtime.handle_app_event(AppEvent.persist_model_selection(event.model, event.effort))
+            self._drain_runtime_notices()
             return None
         if event.kind == "open_all_models_popup":
             return open_all_models_popup(context, event.models).view
@@ -2165,46 +2236,72 @@ class PyCodexTextualApp(App[int]):
         command, _, arg = trimmed.partition(" ")
         normalized = command.lower()
         argument = arg.strip()
-        if normalized in {"/agent", "/multi-agents", "/subagents"}:
+        if normalized in {"/help", "/?"}:
+            self._append_system_notice(_slash_help_notice())
+            self._set_status("Ready")
+            return True
+        if normalized in {"/transcript", "/history"}:
+            self.action_open_transcript()
+            return True
+        if normalized in {"/raw-output", "/raw_output"}:
+            normalized = "/raw"
+        try:
+            slash_command = SlashCommand.parse(normalized)
+        except ValueError:
+            self._append_system_notice(
+                f"Unrecognized command '{command}'. Type '/' for a list of supported commands."
+            )
+            self._set_status("Ready")
+            return True
+        if slash_command in {SlashCommand.AGENT, SlashCommand.MULTI_AGENTS}:
             self._handle_agent_command(argument)
             return True
-        if normalized == "/logout":
+        if slash_command is SlashCommand.LOGOUT:
             self._handle_logout_command()
             return True
-        if normalized == "/resume":
+        if slash_command is SlashCommand.QUIT or slash_command is SlashCommand.EXIT:
+            self._request_shutdown()
+            return True
+        if slash_command is SlashCommand.RESUME:
             self._handle_resume_command(argument)
             return True
-        if normalized == "/fork":
+        if slash_command is SlashCommand.FORK:
             self._handle_fork_command()
             return True
-        if normalized == "/new":
+        if slash_command is SlashCommand.NEW:
             self._handle_new_command()
             return True
-        if normalized == "/init":
+        if slash_command is SlashCommand.INIT:
             self._handle_init_command()
             return True
-        if normalized == "/compact":
+        if slash_command is SlashCommand.COMPACT:
             self._handle_compact_command()
             return True
-        if normalized == "/review":
+        if slash_command is SlashCommand.REVIEW:
             self._handle_review_command(argument)
             return True
-        if normalized == "/rename":
+        if slash_command is SlashCommand.RENAME:
             self._handle_rename_command(argument)
             return True
-        if normalized == "/plan":
+        if slash_command is SlashCommand.PLAN:
             self._handle_plan_command(argument)
             return True
-        if normalized in {"/permissions", "/approvals"}:
+        if slash_command is SlashCommand.GOAL:
+            self._handle_goal_command(argument)
+            return True
+        if slash_command in {SlashCommand.SIDE, SlashCommand.BTW}:
+            self._handle_side_command(argument)
+            return True
+        if slash_command is SlashCommand.PERMISSIONS:
             self._open_permissions_picker()
             return True
-        if normalized == "/settings":
+        if slash_command is SlashCommand.SETTINGS:
             self._open_settings_picker()
             return True
-        if normalized == "/keymap":
+        if slash_command is SlashCommand.KEYMAP:
             self._handle_keymap_command(argument)
             return True
-        if normalized == "/model":
+        if slash_command is SlashCommand.MODEL:
             if argument:
                 self.app_runtime.update_model(argument)
                 self._mark_session_header_configured()
@@ -2213,37 +2310,83 @@ class PyCodexTextualApp(App[int]):
             else:
                 self._open_model_picker()
             return True
-        if normalized == "/status":
+        if slash_command is SlashCommand.STATUS:
             self._append_status_card()
             self._set_status("Ready")
             return True
-        if normalized == "/clear":
+        if slash_command is SlashCommand.CLEAR:
             self._handle_clear_command()
             return True
-        if normalized == "/diff":
+        if slash_command is SlashCommand.DIFF:
             self._handle_diff_command()
             return True
-        if normalized == "/copy":
+        if slash_command is SlashCommand.COPY:
             self._handle_copy_command()
             return True
-        if normalized == "/mention":
+        if slash_command is SlashCommand.MENTION:
             self._post_submit_composer_text = "@"
             self._set_status("Ready")
             return True
-        if normalized == "/vim":
+        if slash_command is SlashCommand.VIM:
             self._handle_vim_command()
             return True
-        if normalized == "/rollout":
+        if slash_command is SlashCommand.ROLLOUT:
             self._handle_rollout_command()
             return True
-        if normalized == "/ps":
+        if slash_command is SlashCommand.PS:
             self._handle_ps_command()
             return True
-        if normalized == "/stop":
+        if slash_command is SlashCommand.STOP:
             self._handle_stop_command()
             return True
-        if normalized in {"/transcript", "/history"}:
-            self.action_open_transcript()
+        if slash_command is SlashCommand.IDE:
+            self._handle_ide_command(argument)
+            return True
+        if slash_command is SlashCommand.DEBUG_CONFIG:
+            self._handle_debug_config_command()
+            return True
+        if slash_command is SlashCommand.TITLE:
+            self._handle_title_setup_command()
+            return True
+        if slash_command is SlashCommand.STATUSLINE:
+            self._handle_statusline_setup_command()
+            return True
+        if slash_command is SlashCommand.THEME:
+            self._handle_deferred_slash_command(slash_command, "Theme picker is not available in the Textual shell yet.")
+            return True
+        if slash_command is SlashCommand.PETS:
+            self._handle_deferred_slash_command(slash_command, "Terminal pets are not available in the Textual shell yet.")
+            return True
+        if slash_command is SlashCommand.MCP:
+            detail = "verbose" if argument.strip().lower() == "verbose" else "summary"
+            self._handle_deferred_slash_command(slash_command, f"MCP tool listing is recognized ({detail}) but MCP runtime is deferred in PyCodex.")
+            return True
+        if slash_command is SlashCommand.APPS:
+            self._handle_deferred_slash_command(slash_command, "Apps management is recognized but deferred in PyCodex.")
+            return True
+        if slash_command is SlashCommand.PLUGINS:
+            self._handle_deferred_slash_command(slash_command, "Plugin browsing is recognized but deferred in PyCodex.")
+            return True
+        if slash_command is SlashCommand.SKILLS:
+            self._handle_deferred_slash_command(slash_command, "Skills menu is recognized but deferred in PyCodex.")
+            return True
+        if slash_command is SlashCommand.HOOKS:
+            self._handle_deferred_slash_command(slash_command, "Lifecycle hooks are recognized but deferred in PyCodex.")
+            return True
+        if slash_command in {
+            SlashCommand.ELEVATE_SANDBOX,
+            SlashCommand.SANDBOX_READ_ROOT,
+            SlashCommand.EXPERIMENTAL,
+            SlashCommand.AUTO_REVIEW,
+            SlashCommand.MEMORIES,
+            SlashCommand.FEEDBACK,
+            SlashCommand.PERSONALITY,
+            SlashCommand.REALTIME,
+            SlashCommand.TEST_APPROVAL,
+            SlashCommand.MEMORY_DROP,
+            SlashCommand.MEMORY_UPDATE,
+        }:
+            self._handle_deferred_slash_command(slash_command)
             return True
         if normalized in {"/raw", "/raw-output", "/raw_output"}:
             enabled = _parse_raw_output_arg(argument)
@@ -2255,10 +2398,6 @@ class PyCodexTextualApp(App[int]):
                 enabled = not _raw_output_mode(self.app_runtime)
             self.app_runtime.apply_raw_output_mode(enabled)
             self._append_system_notice(_raw_output_mode_notice(enabled))
-            self._set_status("Ready")
-            return True
-        if normalized in {"/help", "/?"}:
-            self._append_system_notice("Available: /model [name], /permissions, /agent [next|previous|thread], /keymap [debug], /status, /new, /init, /compact, /review [instructions], /rename [name], /plan [prompt], /clear, /diff, /copy, /mention, /vim, /rollout, /ps, /stop, /resume [name], /fork, /transcript, /raw [on|off], /logout, /quit")
             self._set_status("Ready")
             return True
         return False
@@ -2302,6 +2441,206 @@ class PyCodexTextualApp(App[int]):
             self._open_keymap_debug()
             return
         self._append_system_notice("Usage: /keymap [debug]")
+        self._set_status("Ready")
+
+    def _handle_goal_command(self, argument: str) -> None:
+        thread_id = self.app_runtime.current_displayed_thread_id()
+        if thread_id is None:
+            self._append_system_notice(f"{GOAL_USAGE}\n{GOAL_USAGE_HINT}")
+            self._set_status("Ready")
+            return
+        trimmed = argument.strip()
+        if not trimmed:
+            goal, error = _runtime_thread_goal_get(self.app_runtime, thread_id)
+            self.app_runtime.handle_app_event(AppEvent.of("OpenThreadGoalMenu", thread_id=thread_id))
+            self._apply_thread_goal_plan(open_thread_goal_menu_plan(goal, error))
+            self._set_status("Ready")
+            return
+        normalized = trimmed.lower()
+        if normalized == "clear":
+            cleared, error = _runtime_thread_goal_clear(self.app_runtime, thread_id)
+            self.app_runtime.handle_app_event(AppEvent.of("ClearThreadGoal", thread_id=thread_id))
+            self._apply_thread_goal_plan(clear_thread_goal_plan(thread_id, cleared, error))
+            self._set_status("Ready")
+            return
+        if normalized == "edit":
+            goal, error = _runtime_thread_goal_get(self.app_runtime, thread_id)
+            self.app_runtime.handle_app_event(AppEvent.of("OpenThreadGoalEditor", thread_id=thread_id))
+            self._apply_thread_goal_plan(open_thread_goal_editor_plan(thread_id, goal, error))
+            if self._goal_edit_prompt is None:
+                self._set_status("Ready")
+            return
+        if normalized in {"pause", "resume"}:
+            status = ThreadGoalStatus.Paused if normalized == "pause" else ThreadGoalStatus.Active
+            response_goal, error = _runtime_thread_goal_set(self.app_runtime, thread_id, status=status)
+            self.app_runtime.handle_app_event(AppEvent.of("SetThreadGoalStatus", thread_id=thread_id, status=status))
+            self._apply_thread_goal_plan(set_thread_goal_status_plan(thread_id, status, error, response_goal))
+            self._set_status("Ready")
+            return
+        objective = trimmed
+        if not objective:
+            self._append_system_notice(f"Goal objective must not be empty.\n{GOAL_USAGE}\n{GOAL_USAGE_HINT}")
+            self._set_status("Ready")
+            return
+        existing_goal, read_error = _runtime_thread_goal_get(self.app_runtime, thread_id)
+        response_goal = None
+        set_error = None
+        plan = set_thread_goal_objective_plan(
+            thread_id,
+            objective,
+            ThreadGoalSetMode.ConfirmIfExists,
+            existing_goal,
+            read_error=read_error,
+        )
+        if plan.selection_view is None and read_error is None:
+            response_goal, set_error = _runtime_thread_goal_set(
+                self.app_runtime,
+                thread_id,
+                objective=objective,
+                status=ThreadGoalStatus.Active,
+            )
+            plan = set_thread_goal_objective_plan(
+                thread_id,
+                objective,
+                ThreadGoalSetMode.ConfirmIfExists,
+                existing_goal,
+                set_error=set_error,
+                response_goal=response_goal,
+            )
+        self.app_runtime.handle_app_event(
+            AppEvent.of(
+                "SetThreadGoalObjective",
+                thread_id=thread_id,
+                objective=objective,
+                mode=ThreadGoalSetMode.ConfirmIfExists,
+            )
+        )
+        self._apply_thread_goal_plan(plan)
+        if set_error is None and response_goal is not None and self._maybe_start_goal_continuation(response_goal):
+            return
+        self._set_status("Ready")
+
+    def _maybe_start_goal_continuation(self, goal: ThreadGoal | None) -> bool:
+        if goal is None or self._busy:
+            _textual_timing_trace("goal_textual_continue_skipped", reason="missing_goal_or_busy", busy=self._busy)
+            return False
+        method = getattr(self.app_runtime.active_thread_runtime, "goal_continuation_op", None)
+        if not callable(method):
+            _textual_timing_trace("goal_textual_continue_skipped", reason="missing_runtime_method")
+            return False
+        try:
+            op = method(goal)
+        except Exception as exc:
+            _textual_timing_trace("goal_textual_continue_failed", error=str(exc))
+            self._append_system_notice(f"Failed to continue goal: {exc}")
+            return False
+        if op is None:
+            _textual_timing_trace("goal_textual_continue_skipped", reason="runtime_returned_none")
+            return False
+        _textual_timing_trace(
+            "goal_textual_continue_requested",
+            objective=getattr(goal, "objective", None),
+            status=getattr(getattr(goal, "status", None), "value", getattr(goal, "status", None)),
+        )
+        self._submit_app_command(op)
+        return True
+
+    def _apply_thread_goal_plan(self, plan: ThreadGoalActionPlan) -> None:
+        if plan.selection_view is not None:
+            self._active_selection = _TextualSelection(kind="goal", view=_thread_goal_selection_view(plan))
+            self._active_selection_index = _initial_selection_index(self._active_selection)
+            self._render_active_selection()
+            self._set_status("Goal: up/down move; Enter select; Esc/q cancel")
+            return
+        if plan.actions == ("show_goal_summary",):
+            goal, error = _runtime_thread_goal_get(self.app_runtime, plan.thread_id)
+            if error is not None:
+                self._append_system_notice(str(error))
+            elif goal is not None:
+                self._append_block("status", _thread_goal_summary_text(goal))
+            else:
+                self._append_system_notice(f"{GOAL_USAGE}\nNo goal is currently set.")
+            return
+        if plan.actions == ("show_goal_edit_prompt",):
+            goal, error = _runtime_thread_goal_get(self.app_runtime, plan.thread_id)
+            if error is not None:
+                self._append_system_notice(str(error))
+                self._set_status("Ready")
+                return
+            if goal is None:
+                self._append_system_notice("No goal to edit.\nCreate a goal before editing it.")
+                self._set_status("Ready")
+                return
+            self._goal_edit_prompt = _GoalEditPromptState(
+                thread_id=plan.thread_id,
+                status=_edited_goal_status(goal.status),
+                token_budget=goal.token_budget,
+            )
+            self._post_submit_composer_text = goal.objective
+            composer = self._composer()
+            composer.text = goal.objective
+            composer.focus()
+            self._set_status("Edit goal: type a goal objective and press Enter")
+            return
+        if plan.message:
+            if plan.hint:
+                self._append_system_notice(f"{plan.message}\n{plan.hint}")
+            else:
+                self._append_system_notice(plan.message)
+        else:
+            self._append_system_notice("Goal updated.")
+
+    def _handle_side_command(self, argument: str) -> None:
+        parent_thread_id = self.app_runtime.current_displayed_thread_id()
+        if parent_thread_id is None:
+            self._append_system_notice("Side conversations require an active saved session.")
+            self._set_status("Ready")
+            return
+        self.app_runtime.handle_app_event(
+            AppEvent.start_side(parent_thread_id=parent_thread_id, user_message=argument or None)
+        )
+        self._append_system_notice("Side conversation requested.")
+        self._set_status("Ready")
+
+    def _handle_ide_command(self, argument: str) -> None:
+        normalized = argument.strip().lower()
+        if normalized and normalized not in {"on", "off", "status"}:
+            self._append_system_notice("Usage: /ide [on|off|status]")
+            self._set_status("Ready")
+            return
+        self.app_runtime.handle_app_event(AppEvent.of("IdeContextCommand", argument=normalized))
+        if normalized == "off":
+            self._append_system_notice("IDE context is off.")
+        elif normalized == "status":
+            self._append_system_notice("IDE context status is not connected.")
+        else:
+            self._append_system_notice("IDE context is not connected.")
+        self._set_status("Ready")
+
+    def _handle_debug_config_command(self) -> None:
+        config = getattr(self.app_runtime, "config", None)
+        lines = [
+            "Debug config",
+            f"cwd: {_runtime_cwd(self.app_runtime)}",
+            f"model: {_runtime_display_model(self.app_runtime)}",
+            f"config: {type(config).__name__ if config is not None else '<none>'}",
+        ]
+        self._append_block("status", "\n".join(lines))
+        self._set_status("Ready")
+
+    def _handle_title_setup_command(self) -> None:
+        items = ", ".join(str(item) for item in _runtime_terminal_title_items(self.app_runtime))
+        self._append_system_notice(f"Terminal title items: {items or '<none>'}")
+        self._set_status("Ready")
+
+    def _handle_statusline_setup_command(self) -> None:
+        items = ", ".join(str(item) for item in _runtime_status_line_items(self.app_runtime))
+        self._append_system_notice(f"Status line items: {items or '<none>'}")
+        self._set_status("Ready")
+
+    def _handle_deferred_slash_command(self, command: SlashCommand, message: str | None = None) -> None:
+        self.app_runtime.handle_app_event(AppEvent.of("SlashCommandRecognized", command=command.command()))
+        self._append_system_notice(message or f"/{command.command()} is recognized but not available in the Textual shell yet.")
         self._set_status("Ready")
 
     def _handle_fork_command(self) -> None:
@@ -2408,6 +2747,45 @@ class PyCodexTextualApp(App[int]):
     def _handle_rename_prompt_submission(self, text: str) -> None:
         self._rename_prompt_active = False
         self._submit_thread_name(text)
+
+    def _handle_goal_edit_prompt_submission(self, text: str) -> None:
+        state = self._goal_edit_prompt
+        self._goal_edit_prompt = None
+        if state is None:
+            self._set_status("Ready")
+            return
+        objective = text.strip()
+        if not objective:
+            self._append_system_notice(f"Goal objective must not be empty.\n{GOAL_USAGE}\n{GOAL_USAGE_HINT}")
+            self._set_status("Ready")
+            return
+        response_goal, error = _runtime_thread_goal_set(
+            self.app_runtime,
+            state.thread_id,
+            objective=objective,
+            status=state.status,
+            token_budget=state.token_budget,
+        )
+        self.app_runtime.handle_app_event(
+            AppEvent.of(
+                "SetThreadGoalObjective",
+                thread_id=state.thread_id,
+                objective=objective,
+                mode=ThreadGoalSetMode.UpdateExisting,
+            )
+        )
+        self._apply_thread_goal_plan(
+            set_thread_goal_objective_plan(
+                state.thread_id,
+                objective,
+                UpdateExistingMode(state.status, state.token_budget),
+                set_error=error,
+                response_goal=response_goal,
+            )
+        )
+        if error is None and response_goal is not None and self._maybe_start_goal_continuation(response_goal):
+            return
+        self._set_status("Ready")
 
     def _submit_thread_name(self, text: str) -> None:
         name = normalize_thread_name(text)
@@ -2542,7 +2920,7 @@ class PyCodexTextualApp(App[int]):
             event_stream = self.app_runtime.submit_user_turn(prompt)
             self._consume_turn_event_stream(event_stream)
         except BaseException as exc:
-            self.call_from_thread(self._finish_turn, 1, str(exc))
+            self.call_from_thread(self._finish_turn, 1, str(exc), True)
 
     def _submit_app_command(self, op: AppCommand, *, expect_turn_completed: bool = True) -> None:
         self._busy = True
@@ -2567,7 +2945,7 @@ class PyCodexTextualApp(App[int]):
             event_stream = self.app_runtime.submit_op(op)
             self._consume_turn_event_stream(event_stream, expect_turn_completed=expect_turn_completed)
         except BaseException as exc:
-            self.call_from_thread(self._finish_turn, 1, str(exc))
+            self.call_from_thread(self._finish_turn, 1, str(exc), True)
 
     def _consume_turn_event_stream(self, event_stream: Any, *, expect_turn_completed: bool = True) -> None:
         while True:
@@ -2575,7 +2953,12 @@ class PyCodexTextualApp(App[int]):
             if event is None:
                 if _event_stream_closed(event_stream):
                     if expect_turn_completed:
-                        self.call_from_thread(self._finish_turn, 1, "active thread event stream closed before turn completed")
+                        self.call_from_thread(
+                            self._finish_turn,
+                            1,
+                            "active thread event stream closed before turn completed",
+                            True,
+                        )
                     else:
                         self.call_from_thread(self._finish_turn, 0, "")
                     return
@@ -2589,14 +2972,24 @@ class PyCodexTextualApp(App[int]):
         self._drain_runtime_notices()
         kind = str(event.kind)
         if kind == "TurnStarted":
+            self._active_turn_id = _notification_turn_id(event)
+            self._active_retry_status = None
             self._set_status("Working")
         elif kind == "ResponseStarted":
             self._set_status("Thinking")
         elif kind == "AgentMessageDelta":
-            self._append_agent_delta(_event_delta(event))
+            delta = _event_delta(event)
+            if delta:
+                self._active_retry_status = None
+                self._append_agent_delta(delta)
+                if self._busy:
+                    self._set_status("Working")
         elif kind == "ReasoningSummaryTextDelta":
+            delta = _event_delta(event)
+            if delta:
+                self._active_retry_status = None
             _trace_reasoning_projection(kind, source="summary_delta", displayed=True)
-            self._append_reasoning_delta(_event_delta(event))
+            self._append_reasoning_delta(delta)
         elif kind == "ReasoningSummaryPartAdded":
             _trace_reasoning_projection(kind, source="summary_part", displayed=True)
             self._push_reasoning_section_break()
@@ -2604,6 +2997,7 @@ class PyCodexTextualApp(App[int]):
             displayed = _show_raw_agent_reasoning(self.app_runtime)
             _trace_reasoning_projection(kind, source="raw_delta", displayed=displayed)
             if displayed:
+                self._active_retry_status = None
                 self._append_reasoning_delta(_event_delta(event))
         elif kind == "ThreadNameUpdated":
             self._mark_session_header_configured()
@@ -2618,7 +3012,14 @@ class PyCodexTextualApp(App[int]):
         elif kind == "ThreadTokenUsageUpdated":
             if not self._busy:
                 self._set_status("Ready")
+        elif kind == "Error":
+            self._handle_error_notification(event)
         elif kind == "TurnCompleted":
+            turn_id = _notification_turn_id(event)
+            if turn_id is not None and self._active_turn_id is not None and turn_id != self._active_turn_id:
+                return
+            self._active_turn_id = None
+            self._active_retry_status = None
             self._handle_turn_completed(event)
 
     def _handle_turn_completed(self, event: ServerNotification) -> None:
@@ -2633,17 +3034,45 @@ class PyCodexTextualApp(App[int]):
         elif str(status) == "Interrupted":
             message = "Interrupted"
         self._finish_reasoning_block()
-        self._finish_turn(code, message)
+        self._finish_turn(code, message, code != 0)
+
+    def _handle_error_notification(self, event: ServerNotification) -> None:
+        if not bool(_payload_field(event.payload, "will_retry", False)):
+            error = _payload_field(event.payload, "error", {})
+            message = str(_payload_field(error, "message", "") or "")
+            if message:
+                self._append_system_notice(message)
+            return
+        turn_id = _notification_turn_id(event)
+        if not self._busy or (
+            turn_id is not None and self._active_turn_id is not None and turn_id != self._active_turn_id
+        ):
+            return
+
+        # Rust codex-tui::chatwidget::protocol routes retryable
+        # ServerNotification::Error to on_stream_error: a live status update,
+        # not a history cell.  Textual mirrors that visible contract here.
+        error = _payload_field(event.payload, "error", {})
+        message = str(_payload_field(error, "message", "") or "")
+        details = _payload_field(error, "additional_details", None)
+        if message:
+            self._active_retry_status = _RetryStatus(message=message, details=None if details is None else str(details))
+            self._set_retry_status(self._active_retry_status)
 
     def _reset_active_exec_state(self) -> None:
         self._active_exec_block = None
         self._active_exec_rows.clear()
 
-    def _finish_turn(self, code: int = 0, message: str = "") -> None:
-        if message and not self._active_codex_block:
-            self._append_block("codex", message)
+    def _finish_turn(self, code: int = 0, message: str = "", is_error: bool = False) -> None:
+        if message:
+            if is_error:
+                self._append_error_notice(message)
+            elif not self._active_codex_block:
+                self._append_block("codex", message)
         self.exit_code = code if code else self.exit_code
         self._busy = False
+        self._active_turn_id = None
+        self._active_retry_status = None
         self._active_codex_block = None
         self._active_reasoning_block = None
         self._active_exec_rows.clear()
@@ -2695,6 +3124,9 @@ class PyCodexTextualApp(App[int]):
         if not self._busy:
             return
         elapsed = int(time.monotonic() - self._turn_started_at)
+        if self._active_retry_status is not None:
+            self._set_retry_status(self._active_retry_status, elapsed_seconds=elapsed)
+            return
         status = self.app_runtime.chat_widget.run_state_status_text()
         if self._reasoning_buffer:
             header = extract_first_bold(self._reasoning_buffer)
@@ -2893,11 +3325,13 @@ class PyCodexTextualApp(App[int]):
         while processed < 64:
             event = next_event(timeout=0)
             if event is None:
-                return
+                break
             processed += 1
             self.app_runtime.handle_app_server_event(event)
             self._drain_runtime_notices()
             self._append_mcp_status()
+        if processed and not self._busy:
+            self._set_status("Ready")
 
     def _append_status_card(self) -> None:
         rate_limits = _runtime_rate_limit_snapshots(self.app_runtime)
@@ -2909,17 +3343,27 @@ class PyCodexTextualApp(App[int]):
             directory=self.app_runtime.cwd,
             permissions=_runtime_permissions_label(self.app_runtime),
             agents_summary=_runtime_agents_summary(self.app_runtime),
+            collaboration_mode=_runtime_collaboration_mode_label(self.app_runtime),
+            show_chatgpt_usage_link=_runtime_show_chatgpt_usage_link(self.app_runtime),
+            account=_runtime_status_account_display(self.app_runtime),
             thread_name=_runtime_thread_name(self.app_runtime),
             session_id=self.app_runtime.current_displayed_thread_id() or self.app_runtime.thread_id,
             token_usage=_runtime_status_token_usage(self.app_runtime),
             rate_limits=rate_limits,
             refreshing_rate_limits=False,
         )
-        text = "\n".join(_line_text(line) for line in output.display_lines(100)).strip()
-        self._append_block("status", text)
+        lines = output.display_lines(100)
+        text = "\n".join(_line_text(line) for line in lines).strip()
+        self._append_block("status", text, rich_lines=lines)
+        block_index = len(self._blocks) - 1
         if request_id is not None:
             self.app_runtime.register_status_rate_limit_handle(request_id, handle)
             self.app_runtime.handle_app_event(AppEvent.refresh_rate_limits(RateLimitRefreshOrigin.status_command(request_id)))
+            refreshed_lines = output.display_lines(100)
+            refreshed_text = "\n".join(_line_text(line) for line in refreshed_lines).strip()
+            if 0 <= block_index < len(self._blocks):
+                self._blocks[block_index] = _TranscriptBlock("status", refreshed_text, rich_lines=refreshed_lines)
+                self._refresh_transcript()
 
     def _drain_runtime_notices(self) -> None:
         chat_widget = self.app_runtime.chat_widget
@@ -2976,8 +3420,11 @@ class PyCodexTextualApp(App[int]):
             self._seen_mcp_warnings.add(notice)
         self._append_block("status", notice)
 
-    def _append_block(self, label: str, text: str) -> "_TranscriptBlock":
-        block = _TranscriptBlock(label=label, text=str(text))
+    def _append_error_notice(self, text: str) -> None:
+        self._append_block("error", str(text))
+
+    def _append_block(self, label: str, text: str, *, rich_lines: Iterable[Any] | None = None) -> "_TranscriptBlock":
+        block = _TranscriptBlock(label=label, text=str(text), rich_lines=tuple(rich_lines) if rich_lines is not None else None)
         self._blocks.append(block)
         self._refresh_transcript()
         return block
@@ -3006,6 +3453,10 @@ class PyCodexTextualApp(App[int]):
             self.query_one("#status-line", Static).update(_plain_status_text(self._idle_status_line_text()))
             self.refresh(layout=True)
             return
+        if self._active_retry_status is not None:
+            elapsed = int(time.monotonic() - self._turn_started_at) if self._turn_started_at else 0
+            self._set_retry_status(self._active_retry_status, elapsed_seconds=elapsed)
+            return
         if text == "Working":
             self._refresh_terminal_title(active_progress=True)
             self.query_one("#status-line", Static).update(_plain_status_text(_active_status_line_text(self.app_runtime)))
@@ -3023,6 +3474,20 @@ class PyCodexTextualApp(App[int]):
                 _active_status_line_text(
                     self.app_runtime,
                     header=header,
+                    elapsed_seconds=elapsed_seconds,
+                )
+            )
+        )
+        self.refresh(layout=True)
+
+    def _set_retry_status(self, status: "_RetryStatus", *, elapsed_seconds: int | None = None) -> None:
+        self._refresh_terminal_title(active_progress=True)
+        self.query_one("#status-line", Static).update(
+            _plain_status_text(
+                _retry_status_line_text(
+                    self.app_runtime,
+                    message=status.message,
+                    details=status.details,
                     elapsed_seconds=elapsed_seconds,
                 )
             )
@@ -3063,8 +3528,10 @@ class PyCodexTextualApp(App[int]):
             if (value := _runtime_status_line_value(self.app_runtime, item, "Ready")) is not None
         ]
         status_line = " · ".join(part for part in parts if part)
-        agent_label = getattr(getattr(self.app_runtime, "chat_widget", None), "active_agent_label", None)
-        return status_line_right_indicator_line(status_line or None, agent_label) or ""
+        chat_widget = getattr(self.app_runtime, "chat_widget", None)
+        agent_label = getattr(chat_widget, "active_agent_label", None)
+        goal_indicator = getattr(chat_widget, "current_goal_status_indicator", None)
+        return status_line_right_indicator_line(status_line or None, agent_label, goal_indicator) or ""
 
     def _startup_status_line_text(self) -> str:
         # Rust chatwidget.rs starts with DEFAULT_MODEL_DISPLAY_NAME = "loading"
@@ -3525,6 +3992,7 @@ def _coerce_history_entry_text(result: Any) -> str | None:
 class _TranscriptBlock:
     label: str
     text: str
+    rich_lines: tuple[Any, ...] | None = None
     style: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -3534,10 +4002,13 @@ class _TranscriptBlock:
             "reasoning": "dim",
             "exec": "yellow",
             "status": "yellow",
+            "error": "bold red",
         }
         object.__setattr__(self, "style", styles.get(self.label, "white"))
 
     def render(self) -> Text:
+        if self.rich_lines is not None:
+            return _rich_lines_to_text(self.rich_lines)
         rendered = Text()
         rendered.append(self.label, style=self.style)
         rendered.append("\n")
@@ -3547,6 +4018,19 @@ class _TranscriptBlock:
             if index < len(lines) - 1:
                 rendered.append("\n")
         return rendered
+
+
+@dataclass(frozen=True)
+class _GoalEditPromptState:
+    thread_id: Any
+    status: ThreadGoalStatus
+    token_budget: int | None
+
+
+@dataclass(frozen=True)
+class _RetryStatus:
+    message: str
+    details: str | None = None
 
 
 class CodexComposerTextArea(TextArea):
@@ -4351,23 +4835,7 @@ def _runtime_display_model(app_runtime: TuiAppRuntime) -> str:
 
 def _runtime_model_with_reasoning(app_runtime: TuiAppRuntime) -> str:
     model = _runtime_display_model(app_runtime)
-    details = _runtime_model_details(app_runtime)
-    if details:
-        return " ".join((model, *details))
-    effort = None
-    for source in (
-        app_runtime.chat_widget,
-        getattr(app_runtime.chat_widget, "config", None),
-        app_runtime.active_thread_runtime,
-        getattr(app_runtime.active_thread_runtime, "session_config", None),
-    ):
-        for name in ("effective_reasoning_effort", "model_reasoning_effort", "reasoning_effort"):
-            effort = getattr(source, name, None)
-            effort = effort() if callable(effort) else effort
-            if effort is not None and str(effort).strip():
-                break
-        if effort is not None and str(effort).strip():
-            break
+    effort = _runtime_header_reasoning_effort(app_runtime)
     if effort is None:
         return model
     label = str(getattr(effort, "value", effort)).replace("_", "-").lower()
@@ -4378,6 +4846,10 @@ def _runtime_header_reasoning_effort(app_runtime: TuiAppRuntime) -> str | None:
     details = _runtime_model_details(app_runtime)
     for detail in details:
         normalized = str(detail).strip().lower().replace("-", "_")
+        if normalized.startswith("reasoning "):
+            normalized = normalized.removeprefix("reasoning ").strip().replace("-", "_")
+        elif normalized.startswith("summaries "):
+            continue
         if normalized and normalized != "fast":
             return normalized
     for source in (
@@ -4406,6 +4878,41 @@ def _line_text(line: object) -> str:
     return "".join(str(getattr(span, "content", span)) for span in spans)
 
 
+def _rich_lines_to_text(lines: Iterable[Any]) -> Text:
+    rendered = Text()
+    materialized = tuple(lines)
+    for line_index, line in enumerate(materialized):
+        spans = getattr(line, "spans", None)
+        if spans is None:
+            rendered.append(str(line))
+        else:
+            for span in spans:
+                rendered.append(str(getattr(span, "content", span)), style=_rich_style_from_semantic(getattr(span, "style", None)))
+        if line_index < len(materialized) - 1:
+            rendered.append("\n")
+    return rendered
+
+
+def _rich_style_from_semantic(style: object) -> str | None:
+    if style is None:
+        return None
+    if isinstance(style, str):
+        return style
+    if isinstance(style, Mapping):
+        parts: list[str] = []
+        fg = style.get("fg") or style.get("color")
+        if fg:
+            parts.append(str(fg))
+        if style.get("bold"):
+            parts.append("bold")
+        if style.get("dim"):
+            parts.append("dim")
+        if style.get("underlined") or style.get("underline"):
+            parts.append("underline")
+        return " ".join(parts) or None
+    return str(style)
+
+
 def _runtime_model_details(app_runtime: TuiAppRuntime) -> tuple[str, ...]:
     details = _runtime_first_value(
         app_runtime.active_thread_runtime,
@@ -4414,23 +4921,75 @@ def _runtime_model_details(app_runtime: TuiAppRuntime) -> tuple[str, ...]:
         getattr(getattr(app_runtime, "chat_widget", None), "config", None),
         names=("model_details", "status_model_details"),
     )
-    if details is None:
-        return ()
     if isinstance(details, str):
         return (details,)
     if isinstance(details, Iterable):
         return tuple(str(item) for item in details if str(item))
-    return (str(details),)
+    if details is not None:
+        return (str(details),)
+    config_entries: list[tuple[str, str]] = []
+    effort = _runtime_reasoning_effort_for_status(app_runtime)
+    if effort:
+        config_entries.append(("reasoning effort", effort))
+    summary = _runtime_reasoning_summary_for_status(app_runtime)
+    if summary:
+        config_entries.append(("reasoning summaries", summary))
+    if not config_entries:
+        return ()
+    _model_name, composed_details = compose_model_display(_runtime_display_model(app_runtime), config_entries)
+    return tuple(composed_details)
 
 
-def _runtime_agents_summary(app_runtime: TuiAppRuntime) -> str:
+def _runtime_reasoning_effort_for_status(app_runtime: TuiAppRuntime) -> str | None:
     value = _runtime_first_value(
         app_runtime.active_thread_runtime,
         getattr(app_runtime.active_thread_runtime, "session_config", None),
         getattr(app_runtime, "chat_widget", None),
         getattr(getattr(app_runtime, "chat_widget", None), "config", None),
-        names=("agents_summary", "agents_md_summary", "agents"),
+        getattr(app_runtime.active_thread_runtime, "model_info", None),
+        names=("effective_reasoning_effort", "model_reasoning_effort", "reasoning_effort", "default_reasoning_level"),
     )
+    if value is None:
+        return None
+    text = str(getattr(value, "value", value)).strip().replace("_", "-").lower()
+    return text or None
+
+
+def _runtime_reasoning_summary_for_status(app_runtime: TuiAppRuntime) -> str | None:
+    value = _runtime_first_value(
+        app_runtime.active_thread_runtime,
+        getattr(app_runtime.active_thread_runtime, "session_config", None),
+        getattr(app_runtime, "chat_widget", None),
+        getattr(getattr(app_runtime, "chat_widget", None), "config", None),
+        getattr(app_runtime.active_thread_runtime, "model_info", None),
+        names=("model_reasoning_summary", "reasoning_summary", "default_reasoning_summary"),
+    )
+    if value is None:
+        return None
+    text = str(getattr(value, "value", value)).strip().replace("_", "-").lower()
+    if text in {"", "default"}:
+        return None
+    return text
+
+
+def _runtime_agents_summary(app_runtime: TuiAppRuntime) -> str:
+    sources = (
+        app_runtime.active_thread_runtime,
+        getattr(app_runtime.active_thread_runtime, "session_config", None),
+        getattr(app_runtime, "chat_widget", None),
+        getattr(getattr(app_runtime, "chat_widget", None), "config", None),
+    )
+    value = _runtime_first_value(*sources, names=("agents_summary", "agents_md_summary", "agents"))
+    if value is None:
+        paths = _runtime_first_value(
+            *sources,
+            names=("instruction_source_paths", "instruction_sources", "agents_md_paths", "instructions_paths"),
+        )
+        if paths is not None and not isinstance(paths, str):
+            try:
+                return compose_agents_summary(getattr(app_runtime.active_thread_runtime, "session_config", None), paths)  # type: ignore[arg-type]
+            except (TypeError, ValueError, OSError):
+                pass
     return str(value) if value is not None and str(value).strip() else "<none>"
 
 
@@ -4442,6 +5001,139 @@ def _runtime_thread_name(app_runtime: TuiAppRuntime) -> str | None:
         names=("thread_name", "conversation_name", "name"),
     )
     return str(value) if value is not None and str(value).strip() else None
+
+
+def _runtime_collaboration_mode_label(app_runtime: TuiAppRuntime) -> str:
+    value = _runtime_first_value(
+        app_runtime.active_thread_runtime,
+        getattr(app_runtime.active_thread_runtime, "session_config", None),
+        getattr(app_runtime, "chat_widget", None),
+        getattr(getattr(app_runtime, "chat_widget", None), "config", None),
+        names=("collaboration_mode_label", "collaboration_mode", "current_collaboration_mode"),
+    )
+    if value is None:
+        return "Default"
+    raw = str(getattr(value, "value", value)).strip()
+    if not raw:
+        return "Default"
+    return raw.replace("_", " ").replace("-", " ").title()
+
+
+def _runtime_status_account_display(app_runtime: TuiAppRuntime) -> StatusAccountDisplay | None:
+    value = _runtime_first_value(
+        app_runtime.active_thread_runtime,
+        getattr(app_runtime.active_thread_runtime, "session_config", None),
+        getattr(app_runtime, "chat_widget", None),
+        getattr(getattr(app_runtime, "chat_widget", None), "config", None),
+        names=("status_account_display", "account_display", "account", "auth_account", "auth_status"),
+    )
+    if value is not None:
+        if isinstance(value, StatusAccountDisplay):
+            return value
+        kind = str(_runtime_value(value, "kind", "") or _runtime_value(value, "type", "") or "").lower()
+        if kind in {"api_key", "apikey", "api-key"} or bool(_runtime_value(value, "api_key", False)):
+            return StatusAccountDisplay.api_key()
+        email = _runtime_value(value, "email", None) or _runtime_value(value, "account_email", None) or _runtime_value(value, "user_email", None)
+        plan = _runtime_value(value, "plan", None) or _runtime_value(value, "plan_type", None) or _runtime_value(value, "subscription_plan", None)
+        if email or plan:
+            return StatusAccountDisplay.chat_gpt(email=str(email) if email else None, plan=str(plan) if plan else None)
+        if isinstance(value, str) and value.strip():
+            return StatusAccountDisplay.chat_gpt(email=value.strip())
+    auth = _runtime_first_value(
+        app_runtime.active_thread_runtime,
+        getattr(app_runtime.active_thread_runtime, "session_config", None),
+        names=("original_auth", "auth_json", "stored_auth", "auth", "resolved_auth", "auth_manager"),
+    )
+    if auth is not None:
+        is_api_key = _runtime_value(auth, "is_api_key_auth", None)
+        if is_api_key is True:
+            return StatusAccountDisplay.api_key()
+        api_key = _runtime_value(auth, "api_key", None) or _runtime_value(auth, "openai_api_key", None)
+        if isinstance(api_key, str) and api_key:
+            return StatusAccountDisplay.api_key()
+        is_chatgpt = _runtime_value(auth, "is_chatgpt_auth", None)
+        mode = _runtime_value(auth, "auth_mode", None)
+        mode_text = "" if mode is None else str(getattr(mode, "value", mode)).lower()
+        if is_chatgpt is True or "chatgpt" in mode_text:
+            parsed = _status_account_from_auth_snapshot(auth)
+            if parsed is not None:
+                return parsed
+            email = _runtime_value(auth, "get_account_email", None) or _runtime_value(auth, "email", None)
+            plan = _runtime_value(auth, "account_plan_type", None) or _runtime_value(auth, "plan_type", None)
+            return StatusAccountDisplay.chat_gpt(
+                email=str(email) if email else None,
+                plan=str(plan) if plan else None,
+            )
+    return None
+
+
+def _status_account_from_auth_snapshot(auth: Any) -> StatusAccountDisplay | None:
+    mode = _runtime_value(auth, "auth_mode", None)
+    mode_text = "" if mode is None else str(getattr(mode, "value", mode)).lower()
+    if mode_text in {"api_key", "apikey", "api-key"}:
+        return StatusAccountDisplay.api_key()
+    if "chatgpt" not in mode_text and mode_text not in {"codex_backend", "codex-backend"}:
+        return None
+    token_data = _runtime_value(auth, "tokens", None) or _runtime_value(auth, "get_current_token_data", None)
+    email = None
+    plan = None
+    if isinstance(token_data, TokenData):
+        email = token_data.id_token.email
+        plan = token_data.id_token.get_chatgpt_plan_type()
+    elif isinstance(token_data, Mapping):
+        id_token = token_data.get("id_token")
+        if isinstance(id_token, str) and id_token:
+            try:
+                parsed = parse_chatgpt_jwt_claims(id_token)
+            except (IdTokenInfoError, ValueError, TypeError, UnicodeDecodeError):
+                parsed = None
+            if parsed is not None:
+                email = parsed.email
+                plan = parsed.get_chatgpt_plan_type()
+        elif isinstance(id_token, Mapping):
+            email = _optional_display_str(id_token.get("email"))
+            raw_plan = id_token.get("chatgpt_plan_type") or id_token.get("plan_type")
+            plan = plan_type_display_name(raw_plan) if raw_plan is not None else None
+    return StatusAccountDisplay.chat_gpt(email=email, plan=plan)
+
+
+def _optional_display_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _runtime_provider_requires_openai_auth(app_runtime: TuiAppRuntime) -> bool:
+    provider = _runtime_first_value(
+        app_runtime.active_thread_runtime,
+        getattr(app_runtime.active_thread_runtime, "session_config", None),
+        names=("model_provider", "provider"),
+    )
+    provider = provider or getattr(app_runtime.active_thread_runtime, "provider", None)
+    for source in (provider, _runtime_value(provider, "info", None)):
+        if source is None:
+            continue
+        value = _runtime_value(source, "requires_openai_auth", None)
+        if value is not None:
+            return bool(value)
+    base_url = _runtime_value(provider, "base_url", None)
+    return isinstance(base_url, str) and "chatgpt.com" in base_url
+
+
+def _runtime_show_chatgpt_usage_link(app_runtime: TuiAppRuntime) -> bool:
+    explicit = _runtime_first_value(
+        app_runtime.active_thread_runtime,
+        getattr(app_runtime.active_thread_runtime, "session_config", None),
+        getattr(app_runtime, "chat_widget", None),
+        names=("show_chatgpt_usage_link", "show_usage_link"),
+    )
+    if explicit is not None:
+        return bool(explicit)
+    if _runtime_provider_requires_openai_auth(app_runtime):
+        return True
+    account = _runtime_status_account_display(app_runtime)
+    return account is not None and account != StatusAccountDisplay.api_key()
 
 
 def _runtime_header_yolo_mode(app_runtime: TuiAppRuntime) -> bool:
@@ -4498,13 +5190,18 @@ def _runtime_workspace_roots(app_runtime: TuiAppRuntime) -> tuple[Path, ...]:
 
 
 def _runtime_status_token_usage(app_runtime: TuiAppRuntime) -> StatusTokenUsageData:
+    token_info = _runtime_first_value(
+        app_runtime.active_thread_runtime,
+        getattr(app_runtime.active_thread_runtime, "session_config", None),
+        getattr(app_runtime, "chat_widget", None),
+        names=("token_info", "latest_token_info"),
+    )
     usage = _runtime_first_value(
         app_runtime.active_thread_runtime,
         getattr(app_runtime.active_thread_runtime, "session_config", None),
         getattr(app_runtime, "chat_widget", None),
         names=("token_usage", "latest_token_usage", "total_token_usage"),
     )
-    token_info = getattr(getattr(app_runtime, "chat_widget", None), "token_info", None)
     if usage is None and token_info is not None:
         usage = getattr(token_info, "total_token_usage", None)
     context_window = _runtime_first_value(
@@ -4515,15 +5212,53 @@ def _runtime_status_token_usage(app_runtime: TuiAppRuntime) -> StatusTokenUsageD
     )
     if context_window is None and token_info is not None:
         context_window = getattr(token_info, "model_context_window", None)
-    total = int(_runtime_value(usage, "total_tokens", 0) or _runtime_value(usage, "total", 0) or 0)
-    input_tokens = int(_runtime_value(usage, "input_tokens", 0) or _runtime_value(usage, "input", 0) or 0)
+    if context_window is None:
+        model_info = _runtime_first_value(
+            app_runtime.active_thread_runtime,
+            getattr(app_runtime.active_thread_runtime, "session_config", None),
+            names=("model_info",),
+        )
+        if model_info is None:
+            model_info = getattr(app_runtime.active_thread_runtime, "model_info", None)
+        for name in ("model_context_window", "context_window", "max_context_window"):
+            context_window = _runtime_value(model_info, name, None)
+            if context_window is not None:
+                break
+        if context_window is None:
+            resolved = getattr(model_info, "resolved_context_window", None)
+            if callable(resolved):
+                try:
+                    context_window = resolved()
+                except Exception:
+                    context_window = None
+    total = int(
+        _call_numeric(usage, "blended_total")
+        or _runtime_value(usage, "total_tokens", 0)
+        or _runtime_value(usage, "total", 0)
+        or 0
+    )
+    input_tokens = int(
+        _call_numeric(usage, "non_cached_input")
+        or _runtime_value(usage, "input_tokens", 0)
+        or _runtime_value(usage, "input", 0)
+        or 0
+    )
     output_tokens = int(_runtime_value(usage, "output_tokens", 0) or _runtime_value(usage, "output", 0) or 0)
     context_data = None
     if context_window:
         window = int(context_window)
-        remaining = max(window - total, 0)
-        percent_remaining = 100 if window <= 0 else round((remaining / window) * 100)
-        context_data = StatusContextWindowData(percent_remaining, total, window)
+        context_usage = getattr(token_info, "last_token_usage", None) if token_info is not None else usage
+        tokens_in_context = int(
+            _call_numeric(context_usage, "tokens_in_context_window")
+            or _runtime_value(context_usage, "total_tokens", 0)
+            or _runtime_value(context_usage, "total", 0)
+            or total
+        )
+        percent_remaining = _call_numeric(context_usage, "percent_of_context_window_remaining", window)
+        if percent_remaining is None:
+            remaining = max(window - tokens_in_context, 0)
+            percent_remaining = 100 if window <= 0 else round((remaining / window) * 100)
+        context_data = StatusContextWindowData(int(percent_remaining), tokens_in_context, window)
     return StatusTokenUsageData(total, input_tokens, output_tokens, context_data)
 
 
@@ -4559,6 +5294,16 @@ def _runtime_terminal_title_item_ids(app_runtime: TuiAppRuntime) -> tuple[Any, .
     if isinstance(value, Iterable):
         return tuple(value)
     return (value,)
+
+
+def _runtime_session_header_configured_at_startup(app_runtime: TuiAppRuntime) -> bool:
+    return bool(
+        _runtime_first_value(
+            app_runtime.active_thread_runtime,
+            getattr(app_runtime.active_thread_runtime, "session_config", None),
+            names=("session_header_configured_at_startup", "session_configured_at_startup"),
+        )
+    )
 
 
 def _runtime_status_line_value(app_runtime: TuiAppRuntime, item: StatusLineItem, status: str) -> str | None:
@@ -4735,6 +5480,31 @@ def _active_status_line_text(
     width = max(20, int(getattr(getattr(app_runtime, "terminal_size", None), "columns", 100) or 100))
     line = widget.render_lines(width, height=1, now=now)[0]
     return _plain_line(line)
+
+
+def _retry_status_line_text(
+    app_runtime: TuiAppRuntime,
+    *,
+    message: str,
+    details: str | None,
+    elapsed_seconds: int | None = 0,
+) -> str:
+    now = 0.0 if elapsed_seconds is None else float(max(0, int(elapsed_seconds)))
+    widget = StatusIndicatorWidget.new(animations_enabled=False, clock=lambda: 0.0)
+    widget.update_header(str(message or "Reconnecting..."))
+    widget.update_details(
+        details,
+        StatusDetailsCapitalization.CapitalizeFirst,
+        1,
+    )
+    binding = _runtime_interrupt_binding(app_runtime)
+    widget.set_interrupt_binding(None if binding is None else StatusKeyBinding(binding))
+    width = max(20, int(getattr(getattr(app_runtime, "terminal_size", None), "columns", 100) or 100))
+    # Rust renders reconnect as a bottom-pane status indicator, not a history
+    # cell. Keep the Textual projection at a stable two-line height so a retry
+    # update does not shrink the transcript and visually clip the user's prompt.
+    lines = widget.render_lines(width, height=2, now=now)
+    return "\n".join(_plain_line(line) for line in lines)
 
 
 def _terminal_title_text(app_runtime: TuiAppRuntime, *, active_progress: bool) -> str:
@@ -4933,22 +5703,34 @@ def _runtime_rate_limit_snapshots(app_runtime: TuiAppRuntime) -> tuple[RateLimit
     model_client = getattr(runtime, "model_client", None)
     model_client_state = getattr(model_client, "state", None)
     now = datetime.now().astimezone()
-    raw = _runtime_first_value(
+    sources = (
         runtime,
         getattr(runtime, "session_config", None),
         model_client,
         model_client_state,
         getattr(app_runtime, "chat_widget", None),
-        names=(
-            "rate_limit_snapshots_by_limit_id",
-            "rate_limits_by_limit_id",
-            "latest_rate_limits_by_limit_id",
-            "latest_rate_limits",
-            "rate_limits",
-            "latest_rate_limit_snapshot",
-        ),
     )
-    return _coerce_runtime_rate_limit_snapshots(raw, now=now)
+    names = (
+        "rate_limit_snapshots_by_limit_id",
+        "rate_limits_by_limit_id",
+        "latest_rate_limits_by_limit_id",
+        "latest_rate_limits",
+        "rate_limits",
+        "latest_rate_limit_snapshot",
+    )
+    snapshots: list[RateLimitSnapshotDisplay] = []
+    seen: set[str] = set()
+    for source in sources:
+        if source is None:
+            continue
+        for name in names:
+            raw = _runtime_value(source, name, None)
+            for snapshot in _coerce_runtime_rate_limit_snapshots(raw, now=now):
+                if snapshot.limit_name in seen:
+                    continue
+                snapshots.append(snapshot)
+                seen.add(snapshot.limit_name)
+    return tuple(snapshots)
 
 
 def _coerce_runtime_rate_limit_snapshots(
@@ -4964,6 +5746,12 @@ def _coerce_runtime_rate_limit_snapshots(
     if isinstance(raw, RateLimitWindowDisplay):
         return (RateLimitSnapshotDisplay(limit_name, now, primary=raw),)
     if isinstance(raw, Mapping):
+        if _runtime_value(raw, "rate_limits") is not None or _runtime_value(raw, "rateLimits") is not None:
+            return tuple(
+                snapshot
+                for value in app_server_rate_limit_snapshots(raw)
+                for snapshot in _coerce_runtime_rate_limit_snapshots(value, now=now, limit_name=limit_name)
+            )
         if _looks_like_rate_limit_snapshot(raw):
             return (_runtime_snapshot_display(raw, now=now, limit_name=limit_name),)
         snapshots: list[RateLimitSnapshotDisplay] = []
@@ -4998,9 +5786,16 @@ def _runtime_should_refresh_rate_limits(app_runtime: TuiAppRuntime) -> bool:
         runtime,
         getattr(runtime, "session_config", None),
         getattr(runtime, "model_client", None),
-        names=("should_refresh_rate_limits", "refresh_rate_limits_on_status", "refreshing_rate_limits"),
+        names=("should_refresh_rate_limits", "refresh_rate_limits_on_status"),
     )
-    return bool(raw)
+    if raw is not None:
+        return bool(raw)
+    if not callable(getattr(runtime, "fetch_account_rate_limits", None)):
+        return False
+    if _runtime_provider_requires_openai_auth(app_runtime):
+        return True
+    account = _runtime_status_account_display(app_runtime)
+    return account is not None and account != StatusAccountDisplay.api_key()
 
 
 def _display_version() -> str:
@@ -5026,6 +5821,15 @@ def _display_directory_for_path(path: Path | str) -> str:
 def _event_delta(event: ServerNotification) -> str:
     value = _payload_field(event.payload, "delta", "")
     return "" if value is None else str(value)
+
+
+def _notification_turn_id(event: ServerNotification) -> str | None:
+    turn = _payload_field(event.payload, "turn", None)
+    value = _payload_field(turn, "id", None) if turn is not None else _payload_field(event.payload, "turn_id", None)
+    if value is None:
+        return None
+    text = str(value)
+    return text if text else None
 
 
 def _event_item(event: ServerNotification) -> Any:
@@ -5289,24 +6093,60 @@ def _render_selection_view_text(selection: _TextualSelection, selected_idx: int)
     items = _selection_active_items(selection)
     if not items:
         rendered.append("  no matches\n", style="dim")
-    for index, item in enumerate(items[:12]):
-        marker = ">" if index == selected_idx else " "
-        current = " (current)" if getattr(item, "is_current", False) else ""
-        default = " (default)" if getattr(item, "is_default", False) else ""
-        style = "bold cyan" if index == selected_idx else "dim"
-        prefix = _plain_line(getattr(item, "name_prefix_spans", ()) or ())
-        rendered.append(f"{marker} {prefix}{getattr(item, 'name', '')}{current}{default}\n", style=style)
-        description = getattr(item, "description", None)
-        if description and index == selected_idx:
-            rendered.append(f"  {description}\n", style="dim")
-        selected_description = getattr(item, "selected_description", None)
-        if selected_description and index == selected_idx:
-            rendered.append(f"  {selected_description}\n", style="yellow")
+    if selection.kind == "model":
+        _append_model_selection_rows(rendered, items[:12], selected_idx)
+    else:
+        for index, item in enumerate(items[:12]):
+            marker = ">" if index == selected_idx else " "
+            current = " (current)" if getattr(item, "is_current", False) else ""
+            default = " (default)" if getattr(item, "is_default", False) else ""
+            style = "bold cyan" if index == selected_idx else "dim"
+            prefix = _plain_line(getattr(item, "name_prefix_spans", ()) or ())
+            rendered.append(f"{marker} {prefix}{getattr(item, 'name', '')}{current}{default}\n", style=style)
+            description = getattr(item, "description", None)
+            if description and index == selected_idx:
+                rendered.append(f"  {description}\n", style="dim")
+            selected_description = getattr(item, "selected_description", None)
+            if selected_description and index == selected_idx:
+                rendered.append(f"  {selected_description}\n", style="yellow")
     footer_hint = _selection_active_footer_hint(selection)
     if footer_hint:
         rendered.append(_plain_line(footer_hint), style="dim")
         rendered.append("\n")
     return rendered
+
+
+def _append_model_selection_rows(rendered: Text, items: list[Any], selected_idx: int) -> None:
+    enabled_items = [item for item in items if not getattr(item, "is_disabled", False) and getattr(item, "disabled_reason", None) is None]
+    number_width = len(str(max(len(enabled_items), 1)))
+    names: list[str] = []
+    descriptions: list[str | None] = []
+    enabled_number = 0
+    for index, item in enumerate(items):
+        if item in enabled_items:
+            enabled_number += 1
+            numbered = f"{enabled_number:>{number_width}}. "
+        else:
+            numbered = " " * (number_width + 2)
+        marker = ">" if index == selected_idx else " "
+        current = " (current)" if getattr(item, "is_current", False) else ""
+        default = " (default)" if getattr(item, "is_default", False) else ""
+        prefix = _plain_line(getattr(item, "name_prefix_spans", ()) or ())
+        names.append(f"{marker} {numbered}{prefix}{getattr(item, 'name', '')}{current}{default}")
+        descriptions.append(
+            getattr(item, "selected_description", None)
+            if index == selected_idx and getattr(item, "selected_description", None) is not None
+            else getattr(item, "description", None)
+        )
+    desc_col = max((len(name) for name in names), default=0) + 2
+    for index, (name, description) in enumerate(zip(names, descriptions)):
+        style = "bold cyan" if index == selected_idx else "dim"
+        if description:
+            rendered.append(name.ljust(desc_col), style=style)
+            rendered.append(str(description), style=style if index == selected_idx else "dim")
+            rendered.append("\n")
+        else:
+            rendered.append(f"{name}\n", style=style)
 
 
 _KEYMAP_PICKER_ACTIONS: tuple[tuple[str, str, str, str], ...] = (
@@ -6067,7 +6907,69 @@ def _runtime_model_presets(app_runtime: TuiAppRuntime) -> tuple[ModelPreset, ...
     visible = tuple(preset for preset in presets if preset.model)
     if visible:
         return visible
+    managed = _runtime_model_manager_presets(app_runtime, current)
+    if managed:
+        return managed
+    bundled = _bundled_model_popup_presets(current)
+    if bundled:
+        return bundled
     return (_fallback_current_model_preset(current),)
+
+
+def _runtime_model_manager_presets(app_runtime: TuiAppRuntime, current: str) -> tuple[ModelPreset, ...]:
+    runtime = app_runtime.active_thread_runtime
+    session_config = getattr(runtime, "session_config", None)
+    services = getattr(session_config, "services", None)
+    sources = (
+        runtime,
+        getattr(services, "models_manager", None),
+        getattr(session_config, "models_manager", None),
+        getattr(app_runtime, "models_manager", None),
+    )
+    for source in sources:
+        if source is None:
+            continue
+        for method_name in ("list_models", "try_list_models"):
+            method = getattr(source, method_name, None)
+            if not callable(method):
+                continue
+            try:
+                if method_name == "list_models":
+                    result = method("online_if_uncached")
+                else:
+                    result = method()
+            except TypeError:
+                try:
+                    result = method()
+                except Exception:
+                    continue
+            except Exception:
+                continue
+            try:
+                if hasattr(result, "__await__"):
+                    result = _runtime_run_coro_blocking(result)
+            except Exception:
+                continue
+            presets = tuple(_model_preset_from_runtime(item, current) for item in (result or ()))
+            visible = tuple(preset for preset in presets if preset.model)
+            if visible:
+                return visible
+    return ()
+
+
+def _bundled_model_popup_presets(current: str) -> tuple[ModelPreset, ...]:
+    try:
+        from pycodex.models_manager import bundled_models_response, model_presets_from_models
+        from pycodex.protocol import ModelsResponse
+    except Exception:
+        return ()
+    try:
+        response = ModelsResponse.from_mapping(bundled_models_response())
+        raw = model_presets_from_models(response.models)
+    except Exception:
+        return ()
+    presets = tuple(_model_preset_from_runtime(item, current) for item in raw)
+    return tuple(preset for preset in presets if preset.model)
 
 
 def _fallback_current_model_preset(current: str) -> ModelPreset:
@@ -6127,6 +7029,24 @@ def _runtime_value(source: object, name: str, default: object | None = None) -> 
         return source.get(name, default)
     value = getattr(source, name, default)
     return value() if callable(value) else value
+
+
+def _call_numeric(source: object, name: str, *args: object) -> int | None:
+    if source is None:
+        return None
+    value = getattr(source, name, None)
+    if not callable(value):
+        return None
+    try:
+        result = value(*args)
+    except Exception:
+        return None
+    if isinstance(result, bool) or result is None:
+        return None
+    try:
+        return int(result)
+    except (TypeError, ValueError):
+        return None
 
 
 def _workspace_command_runner(app_runtime: TuiAppRuntime) -> object | None:
@@ -6230,6 +7150,196 @@ def _parse_slash_command(prompt: str) -> SlashCommand | None:
         return SlashCommand.parse(command)
     except ValueError:
         return None
+
+
+def _runtime_thread_goal_get(app_runtime: TuiAppRuntime, thread_id: Any) -> tuple[ThreadGoal | None, Any | None]:
+    method = _runtime_thread_goal_method(app_runtime, "thread_goal_get", "get_thread_goal")
+    if method is None:
+        return None, RuntimeError("thread goals are not available in this runtime")
+    try:
+        result = _call_thread_goal_method(method, thread_id=thread_id)
+    except Exception as exc:
+        return None, exc
+    return _coerce_thread_goal_result(result), None
+
+
+def _runtime_thread_goal_set(
+    app_runtime: TuiAppRuntime,
+    thread_id: Any,
+    *,
+    objective: str | None = None,
+    status: Any = None,
+    token_budget: int | None = None,
+    replace: bool = False,
+) -> tuple[ThreadGoal | None, Any | None]:
+    if replace:
+        _runtime_thread_goal_clear(app_runtime, thread_id)
+    method = _runtime_thread_goal_method(app_runtime, "thread_goal_set", "set_thread_goal")
+    if method is None:
+        return None, RuntimeError("thread goals are not available in this runtime")
+    payload = {"thread_id": thread_id}
+    if objective is not None:
+        payload["objective"] = objective
+    if status is not None:
+        payload["status"] = getattr(status, "value", status)
+    if token_budget is not None:
+        payload["token_budget"] = token_budget
+    try:
+        result = _call_thread_goal_method(method, **payload)
+    except Exception as exc:
+        return None, exc
+    return _coerce_thread_goal_result(result) or ThreadGoal(
+        status=status or ThreadGoalStatus.Active,
+        thread_id=str(thread_id),
+        objective=objective or "",
+        token_budget=token_budget,
+    ), None
+
+
+def _runtime_thread_goal_clear(app_runtime: TuiAppRuntime, thread_id: Any) -> tuple[bool | None, Any | None]:
+    method = _runtime_thread_goal_method(app_runtime, "thread_goal_clear", "clear_thread_goal")
+    if method is None:
+        return None, RuntimeError("thread goals are not available in this runtime")
+    try:
+        result = _call_thread_goal_method(method, thread_id=thread_id)
+    except Exception as exc:
+        return None, exc
+    if isinstance(result, bool):
+        return result, None
+    if isinstance(result, Mapping):
+        for key in ("cleared", "deleted", "ok", "success"):
+            if key in result:
+                return bool(result[key]), None
+    return True, None
+
+
+def _runtime_thread_goal_method(app_runtime: TuiAppRuntime, *names: str) -> Any | None:
+    runtime = app_runtime.active_thread_runtime
+    sources = (
+        runtime,
+        getattr(runtime, "session_config", None),
+        getattr(runtime, "app_server_session", None),
+        getattr(runtime, "app_server", None),
+        app_runtime,
+    )
+    for source in sources:
+        if source is None:
+            continue
+        for name in names:
+            method = getattr(source, name, None)
+            if callable(method):
+                return method
+    return None
+
+
+def _call_thread_goal_method(method: Any, **payload: Any) -> Any:
+    try:
+        result = method(**payload)
+    except TypeError:
+        thread_id = payload.get("thread_id")
+        if "objective" in payload:
+            try:
+                result = method(thread_id, payload.get("objective"), payload.get("status"), payload.get("token_budget"))
+            except TypeError:
+                result = method(thread_id, payload.get("objective"), payload.get("status"))
+        elif "status" in payload:
+            result = method(thread_id, payload.get("status"))
+        else:
+            result = method(thread_id)
+    if hasattr(result, "__await__"):
+        result = _runtime_run_coro_blocking(result)
+    return result
+
+
+def _coerce_thread_goal_result(result: Any) -> ThreadGoal | None:
+    if result is None:
+        return None
+    if isinstance(result, ThreadGoal):
+        return result
+    raw = result
+    if isinstance(raw, Mapping):
+        raw = raw.get("goal", raw.get("thread_goal", raw.get("data", raw)))
+        if raw is None:
+            return None
+    else:
+        for name in ("goal", "thread_goal", "data"):
+            value = getattr(raw, name, None)
+            if value is not None:
+                raw = value
+                break
+    status = _runtime_value(raw, "status", None)
+    if status is None:
+        return None
+    status = getattr(status, "value", status)
+    return ThreadGoal(
+        status=status,
+        thread_id=str(_runtime_value(raw, "thread_id", _runtime_value(raw, "id", "thread-1"))),
+        objective=str(_runtime_value(raw, "objective", "")),
+        token_budget=_runtime_value(raw, "token_budget", None),
+        tokens_used=int(_runtime_value(raw, "tokens_used", 0) or 0),
+        time_used_seconds=int(_runtime_value(raw, "time_used_seconds", 0) or 0),
+        created_at=int(_runtime_value(raw, "created_at", 0) or 0),
+        updated_at=int(_runtime_value(raw, "updated_at", 0) or 0),
+    )
+
+
+def _thread_goal_summary_text(goal: ThreadGoal) -> str:
+    return "\n".join(
+        part
+        for part in (
+            "Goal",
+            f"Status: {getattr(goal.status, 'value', goal.status)}",
+            f"Objective: {goal.objective}",
+            f"Usage: {goal.tokens_used}/{goal.token_budget} tokens used" if goal.token_budget is not None else f"Usage: {goal.tokens_used} tokens used",
+        )
+        if part
+    )
+
+
+def _edited_goal_status(status: Any) -> ThreadGoalStatus:
+    value = getattr(status, "value", status)
+    normalized = ThreadGoalStatus(value)
+    if normalized in {ThreadGoalStatus.BudgetLimited, ThreadGoalStatus.Complete}:
+        return ThreadGoalStatus.Active
+    return normalized
+
+
+def _thread_goal_selection_view(plan: ThreadGoalActionPlan) -> SelectionViewParams:
+    view = plan.selection_view
+    if view is None:
+        return SelectionViewParams(title="Goal", items=[])
+    return SelectionViewParams(
+        title=view.title,
+        subtitle=view.subtitle,
+        footer_hint=view.footer_hint,
+        items=[
+            SelectionItem(
+                name=item.name,
+                description=item.description,
+                actions=[item.event] if item.event is not None else [],
+                dismiss_on_select=item.dismiss_on_select,
+            )
+            for item in view.items
+        ],
+    )
+
+
+def _slash_help_notice() -> str:
+    commands = [f"/{name}" for name, _command in built_in_slash_commands()]
+    if commands and commands[0] == "/model":
+        commands[0] = "/model [name]"
+    commands.extend(["/transcript", "/raw [on|off]", "/help"])
+    return "Available: " + ", ".join(commands)
+
+
+def _runtime_terminal_title_items(app_runtime: TuiAppRuntime) -> tuple[TerminalTitleItem, ...]:
+    items, _invalid_items = parse_terminal_title_items_with_invalids(_runtime_terminal_title_item_ids(app_runtime))
+    return tuple(items)
+
+
+def _runtime_status_line_items(app_runtime: TuiAppRuntime) -> tuple[StatusLineItem, ...]:
+    items, _invalid_items = parse_status_line_items_with_invalids(_runtime_status_line_item_ids(app_runtime))
+    return tuple(items)
 
 
 def _raw_output_mode_notice(enabled: bool) -> str:
