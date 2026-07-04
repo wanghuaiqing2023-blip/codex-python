@@ -2285,6 +2285,17 @@ def _apply_responsesapi_client_metadata(turn_context: Any, value: Mapping[str, s
 
 
 def _additional_context_response_items(sess: Any, value: Mapping[str, Any] | None) -> tuple[ResponseItem, ...]:
+    merger = getattr(sess, "merge_additional_context", None)
+    if callable(merger):
+        merged = merger(value)
+        if inspect.isawaitable(merged):
+            raise RuntimeError("async merge_additional_context is not supported in sync helper")
+        return tuple(
+            item
+            if isinstance(item, ResponseItem)
+            else ResponseItem.from_response_input_item(item)
+            for item in merged
+        )
     if value is None:
         value = {}
     if not isinstance(value, Mapping):

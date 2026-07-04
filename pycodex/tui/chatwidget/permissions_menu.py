@@ -83,7 +83,7 @@ def builtin_approval_presets() -> List[ApprovalPreset]:
             id="full-access",
             label="Full Access",
             description="Can read files, edit files, and run commands with no sandbox.",
-            approval="on-request",
+            approval="never",
             permission_profile="danger-full-access",
         ),
     ]

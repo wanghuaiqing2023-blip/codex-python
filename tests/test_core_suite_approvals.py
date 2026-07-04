@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from pycodex.execpolicy import (
@@ -8,6 +9,8 @@ from pycodex.execpolicy import (
     match_exec_policy_rules_for_command,
     prefix_rule_would_approve_all_commands,
 )
+from pycodex.core.session.turn.runtime import UserTurnSamplingResult
+from pycodex.exec.local_runtime import ExecSessionConfig, shell_tool_outputs_from_local_http_exec_result
 from pycodex.protocol import (
     AskForApproval,
     ExecApprovalRequestEvent,
@@ -21,6 +24,26 @@ from pycodex.protocol import (
     ReviewDecision,
     SandboxPermissions,
 )
+
+
+def _shell_call_result(command: str, *, sandbox_permissions: str | None = None) -> UserTurnSamplingResult:
+    arguments = {"cmd": command}
+    if sandbox_permissions is not None:
+        arguments["sandbox_permissions"] = sandbox_permissions
+    return UserTurnSamplingResult(
+        request_plan=None,
+        response_items=(),
+        raw_result={
+            "output": [
+                {
+                    "type": "function_call",
+                    "name": "exec_command",
+                    "call_id": "call-shell",
+                    "arguments": json.dumps(arguments),
+                }
+            ]
+        },
+    )
 
 
 def _approval_request(
@@ -44,6 +67,116 @@ def _approval_request(
         prefix_rule=prefix_rule,
         matched_rules=matched_rules,
     )
+
+
+def test_workspace_write_on_request_allows_workspace_write_dynamic_turn(tmp_path):
+    # Rust source: codex/codex-rs/core/tests/suite/approvals.rs
+    # Rust test: approval_matrix_covers_group / workspace_write_on_request_allows_workspace_write.
+    # Contract: workspace-write + on-request + default sandbox can run a workspace
+    # shell action without emitting an approval request.
+    approvals = []
+    ran = []
+
+    def unexpected_approval(*_args):
+        approvals.append(_args)
+        return ReviewDecision.denied()
+
+    def runner(command, **_kwargs):
+        ran.append(command)
+        return type("Completed", (), {"returncode": 0, "stdout": "workspace-on-request\n", "stderr": ""})()
+
+    config = ExecSessionConfig(
+        model=None,
+        model_provider_id=None,
+        cwd=tmp_path,
+        approval_policy=AskForApproval.ON_REQUEST,
+        permission_profile=PermissionProfile.workspace_write((tmp_path,)),
+        exec_approval_callback=unexpected_approval,
+    )
+    outputs = shell_tool_outputs_from_local_http_exec_result(
+        _shell_call_result("echo workspace-on-request"),
+        config,
+        runner=runner,
+    )
+
+    assert approvals == []
+    assert ran == ["echo workspace-on-request"]
+    assert outputs[0]["success"] is True
+    assert "workspace-on-request" in outputs[0]["output"]
+
+
+def test_workspace_write_on_request_requires_approval_outside_workspace_dynamic_turn(tmp_path):
+    # Rust source: codex/codex-rs/core/tests/suite/approvals.rs
+    # Rust test: approval_matrix_covers_group / workspace_write_on_request_requires_approval_outside_workspace.
+    # Contract: an escalated/outside-workspace shell request under on-request is
+    # converted into an approval request; approving it continues execution.
+    approvals = []
+    ran = []
+
+    def approve(invocation, _config, requirement, meta):
+        approvals.append((meta["call_id"], invocation.command, requirement.type))
+        return ReviewDecision.approved()
+
+    def runner(command, **_kwargs):
+        ran.append(command)
+        return type("Completed", (), {"returncode": 0, "stdout": "outside-ok\n", "stderr": ""})()
+
+    config = ExecSessionConfig(
+        model=None,
+        model_provider_id=None,
+        cwd=tmp_path,
+        approval_policy=AskForApproval.ON_REQUEST,
+        permission_profile=PermissionProfile.workspace_write((tmp_path,)),
+        exec_approval_callback=approve,
+    )
+    outputs = shell_tool_outputs_from_local_http_exec_result(
+        _shell_call_result("echo outside-ok", sandbox_permissions="require_escalated"),
+        config,
+        runner=runner,
+    )
+
+    assert approvals == [("call-shell", "echo outside-ok", "needs_approval")]
+    assert ran == ["echo outside-ok"]
+    assert outputs[0]["success"] is True
+    assert "outside-ok" in outputs[0]["output"]
+    assert "approval_required" not in outputs[0]["output"]
+
+
+def test_denied_escalated_approval_returns_rejected_by_user_dynamic_turn(tmp_path):
+    # Rust source: codex/codex-rs/core/tests/suite/approvals.rs
+    # Rust tests:
+    # - approval_matrix_covers_group / compound command with one safe command still requires approval.
+    # - codex-core::tools::orchestrator denied approval path returns "rejected by user".
+    # Contract: once an approval request has been denied, the tool output must be
+    # a rejection result, not another approval_required placeholder.
+    ran = []
+
+    def deny(_invocation, _config, requirement, _meta):
+        assert requirement.type == "needs_approval"
+        return ReviewDecision.denied()
+
+    def runner(command, **_kwargs):
+        ran.append(command)
+        return type("Completed", (), {"returncode": 0, "stdout": "should-not-run\n", "stderr": ""})()
+
+    config = ExecSessionConfig(
+        model=None,
+        model_provider_id=None,
+        cwd=tmp_path,
+        approval_policy=AskForApproval.ON_REQUEST,
+        permission_profile=PermissionProfile.workspace_write((tmp_path,)),
+        exec_approval_callback=deny,
+    )
+    outputs = shell_tool_outputs_from_local_http_exec_result(
+        _shell_call_result("cat ./one.txt && touch ./two.txt", sandbox_permissions="require_escalated"),
+        config,
+        runner=runner,
+    )
+
+    assert ran == []
+    assert outputs[0]["success"] is False
+    assert "rejected by user" in outputs[0]["output"]
+    assert "approval_required" not in outputs[0]["output"]
 
 
 def test_approval_matrix_covers_group():

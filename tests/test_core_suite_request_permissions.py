@@ -1,5 +1,6 @@
 import asyncio
 import json
+import subprocess
 from pathlib import Path
 
 from pycodex.core.session.runtime import InMemoryCodexSession
@@ -14,8 +15,10 @@ from pycodex.exec.local_runtime import (
     _materialize_local_http_additional_permissions,
     local_http_shell_tool_additional_permissions_allowed,
     local_http_shell_tool_approval_required_output,
+    shell_tool_outputs_from_local_http_exec_result,
     local_http_shell_tool_permission_request_error,
 )
+from pycodex.core.session.turn.runtime import UserTurnSamplingResult
 from pycodex.protocol import (
     AdditionalPermissionProfile,
     AskForApproval,
@@ -25,6 +28,8 @@ from pycodex.protocol import (
     FileSystemSandboxEntry,
     GranularApprovalConfig,
     NetworkPermissions,
+    PermissionProfile,
+    ReviewDecision,
     SandboxPermissions,
 )
 from pycodex.protocol.request_permissions import RequestPermissionProfile, RequestPermissionsArgs, RequestPermissionsResponse
@@ -104,6 +109,64 @@ def test_with_additional_permissions_requires_approval_under_on_request(tmp_path
     )
     assert "exit_code: approval_required" in output
     assert "sandbox_permissions: with_additional_permissions" in output
+
+
+def test_default_permissions_shell_approval_callback_runs_approved_command(tmp_path):
+    # Rust-derived contract:
+    # - codex-core::tools::orchestrator sees ExecApprovalRequirement::NeedsApproval,
+    #   emits an approval request, waits for ReviewDecision, then runs the shell
+    #   command when approved.
+    # - A Default/workspace-write profile may write in the workspace, but a
+    #   command such as `Get-Command gcc` still crosses the shell approval
+    #   boundary instead of being returned to the model as `approval_required`.
+    approvals: list[tuple[str, str]] = []
+    ran: list[str] = []
+
+    def approve(invocation, _config, requirement, meta):
+        approvals.append((str(meta["call_id"]), invocation.command))
+        assert requirement.type == "needs_approval"
+        return ReviewDecision.approved()
+
+    def runner(command, **_kwargs):
+        ran.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="gcc exists\n", stderr="")
+
+    result = UserTurnSamplingResult(
+        request_plan=None,
+        response_items=(),
+        raw_result={
+            "output": [
+                {
+                    "type": "function_call",
+                    "name": "exec_command",
+                    "call_id": "call-gcc",
+                    "arguments": json.dumps(
+                        {
+                            "cmd": "Get-Command gcc -ErrorAction SilentlyContinue",
+                            "sandbox_permissions": "require_escalated",
+                        }
+                    ),
+                }
+            ]
+        },
+    )
+    config = ExecSessionConfig(
+        model=None,
+        model_provider_id=None,
+        cwd=tmp_path,
+        approval_policy=AskForApproval.ON_REQUEST,
+        permission_profile=PermissionProfile.workspace_write((tmp_path,)),
+        exec_approval_callback=approve,
+    )
+
+    outputs = shell_tool_outputs_from_local_http_exec_result(result, config, runner=runner)
+
+    assert approvals == [("call-gcc", "Get-Command gcc -ErrorAction SilentlyContinue")]
+    assert ran == ["Get-Command gcc -ErrorAction SilentlyContinue"]
+    assert len(outputs) == 1
+    assert outputs[0]["success"] is True
+    assert "approval_required" not in outputs[0]["output"]
+    assert "gcc exists" in outputs[0]["output"]
 
 
 def test_request_permissions_tool_is_auto_denied_when_granular_request_permissions_is_disabled(tmp_path):

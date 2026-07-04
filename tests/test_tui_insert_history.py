@@ -129,8 +129,12 @@ def test_write_history_line_clears_continuation_rows_for_wide_lines():
     writer = StringIO()
 
     write_history_line(writer, Line.from_text("x" * 45), 20)
+    output = writer.getvalue()
 
-    assert writer.getvalue().count("<clear-eol>") >= 3
+    assert output.count("\x1b[K") >= 3
+    assert "\x1b[s" in output
+    assert "\x1b[u" in output
+    assert "<clear-eol>" not in output
 
 
 def test_insert_history_lines_records_wrapped_rows_and_scroll_region():
@@ -155,5 +159,7 @@ def test_zellij_raw_mode_uses_raw_marker_and_terminal_policy():
     )
 
     assert len(wrapped) == 1
-    assert "<clear-after-viewport><move-viewport-top>" in terminal.output.getvalue()
+    output = terminal.output.getvalue()
+    assert "\x1b[7;1H\x1b[J" in output
+    assert "<clear-after-viewport><move-viewport-top>" not in output
     assert terminal.history_rows_inserted >= 1

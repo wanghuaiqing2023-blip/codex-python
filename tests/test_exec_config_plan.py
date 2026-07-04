@@ -36,7 +36,7 @@ from pycodex.exec import (
 )
 from pycodex.arg0 import Arg0DispatchPaths
 from pycodex.features import Feature
-from pycodex.protocol import AskForApproval, GranularApprovalConfig, SandboxMode
+from pycodex.protocol import AltScreenMode, AskForApproval, GranularApprovalConfig, SandboxMode
 
 
 class ExecConfigPlanTests(unittest.TestCase):
@@ -364,6 +364,7 @@ class ExecConfigPlanTests(unittest.TestCase):
                 cli,
                 config_toml={
                     "tui": {
+                        "alternate_screen": "never",
                         "status_line": ["model-name", "context-used"],
                         "status_line_use_colors": False,
                         "terminal_title": ["status", "model"],
@@ -380,6 +381,7 @@ class ExecConfigPlanTests(unittest.TestCase):
 
         config = exec_session_config_from_bootstrap_plan(plan)
 
+        self.assertEqual(plan.tui_alternate_screen, AltScreenMode.NEVER)
         self.assertEqual(plan.tui_status_line, ("model-name", "context-used"))
         self.assertFalse(plan.tui_status_line_use_colors)
         self.assertEqual(plan.tui_terminal_title, ("status", "model"))
@@ -387,6 +389,7 @@ class ExecConfigPlanTests(unittest.TestCase):
             plan.tui_keymap,
             {"global": {"open_external_editor": "f12", "toggle_vim_mode": "ctrl-g"}},
         )
+        self.assertEqual(config.tui_alternate_screen, AltScreenMode.NEVER)
         self.assertEqual(config.tui_status_line, ("model-name", "context-used"))
         self.assertFalse(config.tui_status_line_use_colors)
         self.assertEqual(config.tui_terminal_title, ("status", "model"))
@@ -395,6 +398,7 @@ class ExecConfigPlanTests(unittest.TestCase):
             {"global": {"open_external_editor": "f12", "toggle_vim_mode": "ctrl-g"}},
         )
         mapping = exec_session_config_mapping(config)
+        self.assertEqual(mapping["tuiAlternateScreen"], "never")
         self.assertEqual(mapping["tuiStatusLine"], ["model-name", "context-used"])
         self.assertFalse(mapping["tuiStatusLineUseColors"])
         self.assertEqual(mapping["tuiTerminalTitle"], ["status", "model"])

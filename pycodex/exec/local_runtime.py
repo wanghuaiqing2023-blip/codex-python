@@ -143,6 +143,7 @@ from pycodex.protocol import (
     ResponseInputItem,
     ResponseItem,
     ReviewOutputEvent,
+    ReviewDecision,
     RequestPermissionProfile,
     PermissionGrantScope,
     RequestPermissionsResponse,
@@ -3815,20 +3816,42 @@ def shell_tool_outputs_from_local_http_exec_result(
         if (
             approval_requirement.type == "needs_approval" or pending_permission_approval
         ) and not preapproved_permissions:
-            outputs.append(
-                {
-                    "type": "function_call_output",
-                    "call_id": str(call_id),
-                    "output": local_http_shell_tool_approval_required_output(
-                        invocation,
-                        config,
-                        granted_permissions=granted_permissions,
-                        exec_approval_requirement=approval_requirement,
-                    ),
-                    "success": False,
-                }
+            approval_decision = local_http_shell_tool_request_approval(
+                invocation,
+                config,
+                call_id=str(call_id),
+                granted_permissions=granted_permissions,
+                exec_approval_requirement=approval_requirement,
             )
-            continue
+            if not local_http_shell_tool_approval_decision_allows_exec(approval_decision):
+                if approval_decision is not None and approval_decision.type in {"denied", "abort"}:
+                    outputs.append(
+                        {
+                            "type": "function_call_output",
+                            "call_id": str(call_id),
+                            "output": local_http_shell_tool_approval_rejected_output(
+                                invocation,
+                                config,
+                                "rejected by user",
+                            ),
+                            "success": False,
+                        }
+                    )
+                    continue
+                outputs.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": str(call_id),
+                        "output": local_http_shell_tool_approval_required_output(
+                            invocation,
+                            config,
+                            granted_permissions=granted_permissions,
+                            exec_approval_requirement=approval_requirement,
+                        ),
+                        "success": False,
+                    }
+                )
+                continue
         apply_patch_command = _local_http_apply_patch_command_from_shell_invocation(
             invocation,
             cwd=invocation.workdir or config.cwd,
@@ -4660,6 +4683,73 @@ def local_http_shell_tool_approval_required_output(
         f"command:\n{command}\n"
         "stderr:\nCommand execution requires approval and was not run by the local HTTP helper."
     )
+
+
+def local_http_shell_tool_request_approval(
+    invocation: LocalHttpShellInvocation,
+    config: ExecSessionConfig,
+    *,
+    call_id: str,
+    granted_permissions: AdditionalPermissionProfile | None,
+    exec_approval_requirement: ExecApprovalRequirement | None = None,
+) -> ReviewDecision | None:
+    """Resolve a shell approval through the interactive product runtime.
+
+    Rust-derived behavior contract:
+    ``codex-core::tools::orchestrator`` does not convert
+    ``ExecApprovalRequirement::NeedsApproval`` into a tool failure. It emits an
+    approval request through session/app-server, waits for a ``ReviewDecision``,
+    and only then runs or rejects the shell command.
+    """
+
+    callback = getattr(config, "exec_approval_callback", None)
+    if not callable(callback):
+        return None
+    decision = callback(
+        invocation,
+        config,
+        exec_approval_requirement,
+        {
+            "call_id": str(call_id),
+            "granted_permissions": granted_permissions,
+        },
+    )
+    if decision is None:
+        return None
+    return ReviewDecision.from_mapping(decision)
+
+
+def local_http_shell_tool_approval_rejected_output(
+    invocation: LocalHttpShellInvocation | str,
+    config: ExecSessionConfig,
+    reason: str,
+) -> str:
+    """Return the Rust-style tool failure after an approval was denied.
+
+    Rust ``codex-core::tools::orchestrator`` turns denied/aborted approval
+    decisions into a rejected tool error instead of re-emitting the pending
+    approval request text.
+    """
+
+    approval = approval_policy_display_value(config.approval_policy)
+    command = invocation.command if isinstance(invocation, LocalHttpShellInvocation) else invocation
+    return (
+        "exit_code: rejected\n"
+        f"approval_policy: {approval}\n"
+        f"command:\n{command}\n"
+        f"stderr:\n{reason}"
+    )
+
+
+def local_http_shell_tool_approval_decision_allows_exec(decision: ReviewDecision | None) -> bool:
+    if decision is None:
+        return False
+    return decision.type in {
+        "approved",
+        "approved_for_session",
+        "approved_execpolicy_amendment",
+        "network_policy_amendment",
+    }
 
 
 def _local_http_shell_tool_pending_permission_approval(
@@ -5758,6 +5848,7 @@ __all__ = [
     "local_http_review_rollout_input_items",
     "local_http_review_user_turn_plan",
     "local_http_shell_tool_approval_required_output",
+    "local_http_shell_tool_approval_rejected_output",
     "local_http_shell_tool_auto_execute_allowed",
     "persist_local_http_exec_rollout",
     "persist_local_http_exec_resume_rollout",

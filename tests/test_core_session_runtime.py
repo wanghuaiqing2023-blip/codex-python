@@ -18,8 +18,13 @@ from pycodex.core.tools.orchestrator import build_tool_orchestrator_plan_for_ses
 from pycodex.core.tools.registry import ToolRegistry
 from pycodex.core.tools.router import ToolRouter
 from pycodex.core.tools.sandboxing import ExecApprovalRequirement
-from pycodex.core.session.turn.runtime import run_user_turn_sampling_from_session
+from pycodex.core.session.turn.runtime import (
+    build_user_turn_responses_request_from_session,
+    run_user_turn_sampling_from_session,
+)
 from pycodex.protocol import (
+    AdditionalContextEntry,
+    AdditionalContextKind,
     AdditionalPermissionProfile,
     AccountPlanType,
     ApprovalsReviewer,
@@ -63,6 +68,7 @@ from pycodex.protocol import (
     TextElement,
     TokenUsage,
     TurnItem,
+    TurnContextItem,
     ThreadSettingsOverrides,
     ToolName,
     TruncationPolicyConfig,
@@ -297,6 +303,150 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("<environment_context>", item.content[0].text)
         self.assertIn(f"<cwd>{Path('C:/work/other')}</cwd>", item.content[0].text)
         self.assertEqual(session.history[-1], item)
+
+    async def test_in_memory_session_records_environment_update_for_time_changes(self) -> None:
+        # Rust test: build_settings_update_items_emits_environment_item_for_time_changes.
+        # Contract: current date/timezone changes are contextual user diffs
+        # layered onto the next turn, not flattened into developer settings.
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+            },
+        )()
+        session = InMemoryCodexSession(
+            cwd="C:/work/project",
+            model_info=model_info,
+            current_date="2026-01-01",
+            timezone="UTC",
+        )
+
+        first_turn = await session.new_default_turn()
+        await session.record_context_updates_and_set_reference_context_item(first_turn)
+        session.current_date = "2026-02-27"
+        session.timezone = "Europe/Berlin"
+        second_turn = await session.new_default_turn()
+        await session.record_context_updates_and_set_reference_context_item(second_turn)
+
+        self.assertEqual(len(session.recorded_batches), 2)
+        item = session.recorded_batches[1][0]
+        self.assertEqual(item.role, "user")
+        self.assertIn("<environment_context>", item.content[0].text)
+        self.assertIn("<current_date>2026-02-27</current_date>", item.content[0].text)
+        self.assertIn("<timezone>Europe/Berlin</timezone>", item.content[0].text)
+        self.assertEqual(len(session.persisted_rollout_items), 2)
+
+    async def test_in_memory_session_omits_environment_update_when_disabled(self) -> None:
+        # Rust test: build_settings_update_items_omits_environment_item_when_disabled.
+        # Contract: disabled environment context suppresses contextual user diffs
+        # even when date/timezone changed, while the turn context baseline is
+        # still advanced for rollout/resume.
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+            },
+        )()
+        session = InMemoryCodexSession(
+            cwd="C:/work/project",
+            model_info=model_info,
+            current_date="2026-01-01",
+            timezone="UTC",
+        )
+
+        first_turn = await session.new_default_turn()
+        await session.record_context_updates_and_set_reference_context_item(first_turn)
+        first_batch_count = len(session.recorded_batches)
+        session.include_environment_context = False
+        session.current_date = "2026-02-27"
+        second_turn = await session.new_default_turn()
+        await session.record_context_updates_and_set_reference_context_item(second_turn)
+
+        self.assertEqual(len(session.recorded_batches), first_batch_count)
+        self.assertEqual(len(session.persisted_rollout_items), 2)
+        reference = await session.reference_context_item()
+        self.assertIsNotNone(reference)
+        self.assertEqual(reference.current_date, "2026-02-27")
+
+    async def test_in_memory_session_additional_context_uses_single_rust_store(self) -> None:
+        # Rust source:
+        # - codex-rs/core/src/state/additional_context.rs::AdditionalContextStore::merge
+        # - codex-rs/core/src/session/handlers.rs::user_input_or_turn_inner
+        # Contract: app-provided additional context is a session-level store,
+        # emits only changed keys, and preserves trusted/developer vs
+        # untrusted/contextual-user layering before the actual user message.
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "input_modalities": ("text",),
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+                "service_tier_for_request": lambda _self, tier: tier,
+            },
+        )()
+        session = InMemoryCodexSession(
+            cwd="C:/work/project",
+            model_info=model_info,
+            current_date="2026-07-02",
+            timezone="Asia/Shanghai",
+        )
+        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        additional_context = {
+            "automation_info": AdditionalContextEntry(
+                value="run one",
+                kind=AdditionalContextKind.APPLICATION,
+            ),
+            "browser_info": AdditionalContextEntry(
+                value="tab one",
+                kind=AdditionalContextKind.UNTRUSTED,
+            ),
+        }
+
+        first_plan = await build_user_turn_responses_request_from_session(
+            session,
+            (UserInput.text_input("first"),),
+            client,
+            provider,
+            model_info,
+            built_tools=lambda _sess, _turn: Router(),
+            additional_context=additional_context,
+        )
+        second_plan = await build_user_turn_responses_request_from_session(
+            session,
+            (UserInput.text_input("second"),),
+            client,
+            provider,
+            model_info,
+            built_tools=lambda _sess, _turn: Router(),
+            additional_context=additional_context,
+        )
+
+        first_input = first_plan.prompt.get_formatted_input()
+        second_input = second_plan.prompt.get_formatted_input()
+        first_developer_texts = [
+            item.content[0].text for item in first_input if item.role == "developer" and item.content
+        ]
+        first_user_texts = [item.content[0].text for item in first_input if item.role == "user" and item.content]
+        second_developer_texts = [
+            item.content[0].text for item in second_input if item.role == "developer" and item.content
+        ]
+        second_user_texts = [item.content[0].text for item in second_input if item.role == "user" and item.content]
+
+        self.assertIn("<automation_info>run one</automation_info>", first_developer_texts)
+        self.assertIn("<external_browser_info>tab one</external_browser_info>", first_user_texts)
+        self.assertEqual(first_user_texts[-1], "first")
+        self.assertEqual(second_user_texts[-1], "second")
+        self.assertEqual(second_developer_texts.count("<automation_info>run one</automation_info>"), 1)
+        self.assertEqual(second_user_texts.count("<external_browser_info>tab one</external_browser_info>"), 1)
 
     async def test_in_memory_session_replace_last_turn_images_rewrites_tool_output_images(self) -> None:
         session = InMemoryCodexSession(
@@ -1682,6 +1832,101 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("<realtime_conversation>", developer_sections[1])
         self.assertIn("Realtime conversation ended.", developer_sections[1])
 
+    async def test_in_memory_session_records_realtime_start_from_reference_context(self) -> None:
+        # Rust test: build_settings_update_items_emits_realtime_start_when_session_becomes_live.
+        # Contract: realtime state changes are developer settings diffs layered
+        # on the next turn, after the prior reference context has been recorded.
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+            },
+        )()
+        session = InMemoryCodexSession(cwd="C:/work/project", model_info=model_info)
+
+        first_turn = await session.new_default_turn()
+        await session.record_context_updates_and_set_reference_context_item(first_turn)
+        session.realtime_active = True
+        second_turn = await session.new_default_turn()
+        await session.record_context_updates_and_set_reference_context_item(second_turn)
+
+        self.assertEqual(len(session.recorded_batches), 2)
+        item = session.recorded_batches[1][0]
+        self.assertEqual(item.role, "developer")
+        self.assertIn("<realtime_conversation>", item.content[0].text)
+        self.assertIn("Realtime conversation started.", item.content[0].text)
+
+    async def test_in_memory_session_records_realtime_end_from_reference_context(self) -> None:
+        # Rust test: build_settings_update_items_emits_realtime_end_when_session_stops_being_live.
+        # Contract: stopping realtime emits the inactive developer update once.
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+            },
+        )()
+        session = InMemoryCodexSession(cwd="C:/work/project", model_info=model_info, realtime_active=True)
+
+        first_turn = await session.new_default_turn()
+        await session.record_context_updates_and_set_reference_context_item(first_turn)
+        session.realtime_active = False
+        second_turn = await session.new_default_turn()
+        await session.record_context_updates_and_set_reference_context_item(second_turn)
+
+        self.assertEqual(len(session.recorded_batches), 2)
+        item = session.recorded_batches[1][0]
+        self.assertEqual(item.role, "developer")
+        self.assertIn("<realtime_conversation>", item.content[0].text)
+        self.assertIn("Realtime conversation ended.", item.content[0].text)
+        self.assertIn("Reason: inactive", item.content[0].text)
+
+    async def test_in_memory_session_uses_previous_turn_settings_for_realtime_end_diff(self) -> None:
+        # Rust test: build_settings_update_items_uses_previous_turn_settings_for_realtime_end.
+        # Contract: if a resumed reference context omits realtime_active, the
+        # previous turn settings still drive the realtime end update.
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+            },
+        )()
+        session = InMemoryCodexSession(cwd="C:/work/project", model_info=model_info)
+        previous_turn = await session.new_default_turn()
+        previous_item = TurnContextItem(
+            cwd=previous_turn.cwd,
+            approval_policy=previous_turn.approval_policy,
+            sandbox_policy=previous_turn.sandbox_policy,
+            permission_profile_value=previous_turn.permission_profile,
+            file_system_sandbox_policy=previous_turn.file_system_sandbox_policy,
+            model="gpt-test",
+            current_date=previous_turn.current_date,
+            timezone=previous_turn.timezone,
+            network=previous_turn.network,
+            personality=previous_turn.personality,
+            collaboration_mode=previous_turn.collaboration_mode,
+            realtime_active=None,
+        )
+        await session.set_reference_context_item(previous_item)
+        await session.set_previous_turn_settings(SimpleNamespace(model="gpt-test", realtime_active=True))
+
+        current_turn = await session.new_default_turn()
+        await session.record_context_updates_and_set_reference_context_item(current_turn)
+
+        self.assertEqual(len(session.recorded_batches), 1)
+        item = session.recorded_batches[0][0]
+        self.assertEqual(item.role, "developer")
+        self.assertIn("<realtime_conversation>", item.content[0].text)
+        self.assertIn("Realtime conversation ended.", item.content[0].text)
+
     async def test_in_memory_session_next_turn_is_first_is_consumed_like_session_state(self) -> None:
         session = InMemoryCodexSession(cwd="C:/work/project")
 
@@ -1803,6 +2048,77 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(reference)
         self.assertEqual(reference.cwd, Path("C:/work/project"))
         self.assertEqual(reference.model, "gpt-test")
+
+    async def test_in_memory_session_persists_turn_context_without_visible_diff(self) -> None:
+        # Rust source: codex-rs/core/src/session/mod.rs::
+        # record_context_updates_and_set_reference_context_item.
+        # Rust test: record_context_updates_and_set_reference_context_item_persists_baseline_without_emitting_diffs.
+        # Contract: every real user turn persists a TurnContextItem even when
+        # no model-visible context diff is emitted.
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+            },
+        )()
+        session = InMemoryCodexSession(cwd="C:/work/project", model_info=model_info)
+
+        first_turn = await session.new_default_turn()
+        await session.record_context_updates_and_set_reference_context_item(first_turn)
+        first_batch_count = len(session.recorded_batches)
+        first_rollout_count = len(session.persisted_rollout_items)
+
+        second_turn = await session.new_default_turn()
+        await session.record_context_updates_and_set_reference_context_item(second_turn)
+        reference = await session.reference_context_item()
+
+        self.assertEqual(len(session.recorded_batches), first_batch_count)
+        self.assertEqual(first_rollout_count, 1)
+        self.assertEqual(len(session.persisted_rollout_items), 2)
+        self.assertEqual(session.persisted_rollout_items[-1].type, "turn_context")
+        self.assertEqual(session.persisted_rollout_items[-1].payload, reference)
+
+    async def test_in_memory_session_reinjects_full_context_after_reference_clear(self) -> None:
+        # Rust test: record_context_updates_and_set_reference_context_item_reinjects_full_context_after_clear.
+        # Contract: clearing the reference baseline causes the next real user
+        # turn to inject full initial context again, while preserving the
+        # replacement history already installed by compaction.
+        model_info = type(
+            "ModelInfo",
+            (),
+            {
+                "slug": "gpt-test",
+                "supports_reasoning_summaries": False,
+                "support_verbosity": False,
+            },
+        )()
+        session = InMemoryCodexSession(
+            cwd="C:/work/project",
+            model_info=model_info,
+            current_date="2026-07-02",
+            timezone="Asia/Shanghai",
+        )
+        compacted_summary = ResponseItem.message("user", (ContentItem.input_text("summary"),))
+
+        await session.record_conversation_items(await session.new_default_turn(), (compacted_summary,))
+        first_turn = await session.new_default_turn()
+        await session.record_context_updates_and_set_reference_context_item(first_turn)
+        await session.set_reference_context_item(None)
+        await session.replace_history([compacted_summary], None)
+
+        second_turn = await session.new_default_turn()
+        await session.record_context_updates_and_set_reference_context_item(second_turn)
+
+        self.assertEqual(session.history[0], compacted_summary)
+        self.assertEqual(session.history[1].role, "developer")
+        self.assertIn("<permissions instructions>", session.history[1].content[0].text)
+        self.assertEqual(session.history[2].role, "user")
+        self.assertIn("<environment_context>", session.history[2].content[0].text)
+        self.assertEqual(len(session.persisted_rollout_items), 2)
+        self.assertEqual(session.persisted_rollout_items[-1].payload, await session.reference_context_item())
 
     async def test_in_memory_session_can_set_and_replace_reference_context_item(self) -> None:
         model_info = type(

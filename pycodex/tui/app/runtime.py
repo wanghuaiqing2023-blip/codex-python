@@ -14,7 +14,7 @@ import asyncio
 import json
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields as dataclass_fields, is_dataclass, replace
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -26,13 +26,14 @@ from typing import Any, Callable, Mapping, MutableMapping, Protocol
 from pycodex.core.config.edit import ConfigEditsBuilder
 from pycodex.core.event_mapping import parse_turn_item
 from pycodex.exec.local_runtime import (
+    _local_http_prompt_visible_rollout_items,
     final_text_from_local_http_exec_result,
     persist_core_exec_rollout,
     prewarm_exec_core_websocket_session,
     run_exec_user_turn_core_sampling_websocket_preferred,
 )
 from pycodex.exec.run import ExecRunPlan, InitialOperation
-from pycodex.protocol import ResponseItem, ReviewRequest, ReviewTarget, ThreadGoal as ProtocolThreadGoal, ThreadGoalStatus as ProtocolThreadGoalStatus, ThreadId, TurnItem, UserInput
+from pycodex.protocol import ResponseInputItem, ResponseItem, ReviewDecision, ReviewRequest, ReviewTarget, ThreadGoal as ProtocolThreadGoal, ThreadGoalStatus as ProtocolThreadGoalStatus, ThreadId, TurnItem, UserInput
 
 from ..app_command import AppCommand
 from ..app_event import AppEvent, RateLimitRefreshOrigin
@@ -489,6 +490,95 @@ def _closed_event_stream() -> QueueActiveThreadEventStream:
     return QueueActiveThreadEventStream(queue)
 
 
+def _apply_override_turn_context_to_runtime(runtime: Any, op: AppCommand) -> None:
+    """Apply Rust ``AppCommand::OverrideTurnContext`` to cached session state.
+
+    Rust ``codex-tui::app`` treats this as a settings update for the active
+    thread, not as a model turn.  Keep the Python product path on the same
+    boundary so a permissions popup selection affects the very next user turn.
+    """
+
+    payload = op.payload if isinstance(op.payload, Mapping) else {}
+    updates: dict[str, Any] = {}
+    for name in (
+        "cwd",
+        "approval_policy",
+        "approvals_reviewer",
+        "permission_profile",
+        "active_permission_profile",
+        "windows_sandbox_level",
+        "model",
+        "service_tier",
+        "collaboration_mode",
+        "personality",
+    ):
+        if payload.get(name) is None:
+            continue
+        updates[name] = payload[name]
+        _set_attr_or_key_silent(runtime, name, payload[name])
+    if payload.get("effort") is not None:
+        updates["reasoning_effort"] = payload["effort"]
+        updates["model_reasoning_effort"] = payload["effort"]
+        _set_attr_or_key_silent(runtime, "reasoning_effort", payload["effort"])
+        _set_attr_or_key_silent(runtime, "model_reasoning_effort", payload["effort"])
+    if payload.get("summary") is not None:
+        updates["reasoning_summary"] = payload["summary"]
+        updates["model_reasoning_summary"] = payload["summary"]
+        _set_attr_or_key_silent(runtime, "reasoning_summary", payload["summary"])
+        _set_attr_or_key_silent(runtime, "model_reasoning_summary", payload["summary"])
+
+    permission_profile = payload.get("permission_profile")
+    if permission_profile is not None:
+        cwd = payload.get("cwd") or getattr(getattr(runtime, "session_config", None), "cwd", None) or getattr(runtime, "cwd", ".")
+        fs_policy = _call_permission_profile_method(permission_profile, "file_system_sandbox_policy")
+        sandbox_policy = _call_permission_profile_method(permission_profile, "to_legacy_sandbox_policy", cwd)
+        updates["file_system_sandbox_policy"] = fs_policy
+        _set_attr_or_key_silent(runtime, "file_system_sandbox_policy", fs_policy)
+        if sandbox_policy is not None:
+            updates["sandbox_policy"] = sandbox_policy
+            _set_attr_or_key_silent(runtime, "sandbox_policy", sandbox_policy)
+    _apply_session_config_updates(runtime, updates)
+
+
+def _apply_session_config_updates(runtime: Any, updates: Mapping[str, Any]) -> None:
+    session_config = getattr(runtime, "session_config", None)
+    if session_config is None or not updates:
+        return
+    if is_dataclass(session_config) and not isinstance(session_config, type):
+        field_names = {field.name for field in dataclass_fields(session_config)}
+        replace_updates = {name: value for name, value in updates.items() if name in field_names}
+        if replace_updates:
+            try:
+                runtime.session_config = replace(session_config, **replace_updates)
+                return
+            except (TypeError, ValueError):
+                pass
+    for name, value in updates.items():
+        _set_attr_or_key_silent(session_config, name, value)
+
+
+def _call_permission_profile_method(profile: Any, name: str, *args: Any) -> Any:
+    method = getattr(profile, name, None)
+    if not callable(method):
+        return None
+    try:
+        return method(*args)
+    except Exception:
+        return None
+
+
+def _set_attr_or_key_silent(target: Any, name: str, value: Any) -> None:
+    if target is None:
+        return
+    try:
+        setattr(target, name, value)
+        return
+    except (AttributeError, TypeError):
+        pass
+    if isinstance(target, MutableMapping):
+        target[name] = value
+
+
 def _clean_background_terminals_for_runtime(runtime: Any) -> None:
     """Mirror Rust core ``session::handlers::clean_background_terminals``.
 
@@ -526,6 +616,12 @@ def _clean_background_terminals_for_runtime(runtime: Any) -> None:
 
 
 @dataclass
+class _PendingExecApproval:
+    event: Event = field(default_factory=Event)
+    decision: Any = None
+
+
+@dataclass
 class _ActiveCoreTurn:
     thread_id: str
     turn_id: str
@@ -534,6 +630,7 @@ class _ActiveCoreTurn:
     cancel_event: Event = field(default_factory=Event)
     terminal_sent: bool = False
     cancellation_requested: bool = False
+    pending_exec_approvals: dict[str, _PendingExecApproval] = field(default_factory=dict)
 
     def put(self, notification: ServerNotification) -> bool:
         with self.lock:
@@ -555,6 +652,10 @@ class _ActiveCoreTurn:
         with self.lock:
             self.cancellation_requested = True
             self.cancel_event.set()
+            for pending in self.pending_exec_approvals.values():
+                pending.decision = ReviewDecision.abort()
+                pending.event.set()
+            self.pending_exec_approvals.clear()
             if self.terminal_sent:
                 return False
             self.terminal_sent = True
@@ -574,6 +675,54 @@ class _ActiveCoreTurn:
             return
         await asyncio.to_thread(self.cancel_event.wait)
 
+    def request_exec_approval(
+        self,
+        *,
+        approval_id: str,
+        command: str,
+        cwd: str | None,
+        reason: str | None,
+        proposed_execpolicy_amendment: Any = None,
+        available_decisions: Any = None,
+    ) -> ReviewDecision:
+        pending = _PendingExecApproval()
+        with self.lock:
+            if self.terminal_sent or self.cancel_event.is_set():
+                return ReviewDecision.abort()
+            self.pending_exec_approvals[approval_id] = pending
+            self.queue.put(
+                ServerNotification(
+                    "ExecApprovalRequested",
+                    {
+                        "id": approval_id,
+                        "turn_id": self.turn_id,
+                        "thread_id": self.thread_id,
+                        "command": command,
+                        "cwd": cwd,
+                        "reason": reason,
+                        "proposed_execpolicy_amendment": proposed_execpolicy_amendment,
+                        "available_decisions": available_decisions,
+                    },
+                )
+            )
+
+        while not pending.event.wait(0.1):
+            if self.cancel_event.is_set():
+                return ReviewDecision.abort()
+        try:
+            return ReviewDecision.from_mapping(pending.decision)
+        except Exception:
+            return ReviewDecision.abort()
+
+    def resolve_exec_approval(self, approval_id: str, decision: Any) -> bool:
+        with self.lock:
+            pending = self.pending_exec_approvals.pop(str(approval_id), None)
+            if pending is None:
+                return False
+            pending.decision = decision
+            pending.event.set()
+            return True
+
 
 @dataclass
 class ExecFunctionActiveThreadRuntime:
@@ -591,6 +740,9 @@ class ExecFunctionActiveThreadRuntime:
             return _closed_event_stream()
         if op.kind == "CleanBackgroundTerminals":
             _clean_background_terminals_for_runtime(self)
+            return _closed_event_stream()
+        if op.kind == "OverrideTurnContext":
+            _apply_override_turn_context_to_runtime(self, op)
             return _closed_event_stream()
         queue: Queue[Any] = Queue()
         turn_id = "terminal-turn"
@@ -693,6 +845,8 @@ class CoreExecActiveThreadRuntime:
     _startup_prewarm_timeout: float = field(default=0.0, init=False, repr=False)
     _active_turn_lock: Lock = field(default_factory=Lock, init=False, repr=False)
     _active_turn: _ActiveCoreTurn | None = field(default=None, init=False, repr=False)
+    _model_history_lock: Lock = field(default_factory=Lock, init=False, repr=False)
+    _model_history_items: list[ResponseItem] = field(default_factory=list, init=False, repr=False)
     _rollout_path_ready: Event = field(default_factory=Event, init=False, repr=False)
     _last_worker_error: BaseException | None = field(default=None, init=False, repr=False)
     _startup_app_server_events: Queue[Any] = field(default_factory=Queue, init=False, repr=False)
@@ -1111,8 +1265,19 @@ class CoreExecActiveThreadRuntime:
             if active_turn is not None:
                 active_turn.interrupt()
             return _closed_event_stream()
+        if op.kind == "ExecApproval":
+            approval_id = str(op.payload.get("id", ""))
+            decision = op.payload.get("decision")
+            with self._active_turn_lock:
+                active_turn = self._active_turn
+            if active_turn is not None and approval_id:
+                active_turn.resolve_exec_approval(approval_id, decision)
+            return _closed_event_stream()
         if op.kind == "CleanBackgroundTerminals":
             _clean_background_terminals_for_runtime(self)
+            return _closed_event_stream()
+        if op.kind == "OverrideTurnContext":
+            _apply_override_turn_context_to_runtime(self, op)
             return _closed_event_stream()
         queue: Queue[Any] = Queue()
         turn_id = "terminal-turn"
@@ -1175,6 +1340,31 @@ class CoreExecActiveThreadRuntime:
                         active_turn.put(notification)
 
             try:
+                previous_session_config = self.session_config
+
+                def request_exec_approval(invocation: Any, _config: Any, requirement: Any, meta: Mapping[str, Any]) -> ReviewDecision:
+                    call_id = str(meta.get("call_id") or "exec-approval")
+                    command = str(getattr(invocation, "command", "") or "")
+                    cwd_value = getattr(invocation, "workdir", None) or getattr(previous_session_config, "cwd", None)
+                    reason = getattr(requirement, "reason", None)
+                    amendment = getattr(requirement, "proposed_execpolicy_amendment", None)
+                    amendment_mapping = None
+                    if amendment is not None:
+                        to_mapping = getattr(amendment, "to_mapping", None)
+                        amendment_mapping = to_mapping() if callable(to_mapping) else amendment
+                    return active_turn.request_exec_approval(
+                        approval_id=call_id,
+                        command=command,
+                        cwd=None if cwd_value is None else str(cwd_value),
+                        reason=None if reason is None else str(reason),
+                        proposed_execpolicy_amendment=amendment_mapping,
+                        available_decisions=None,
+                    )
+
+                try:
+                    self.session_config = replace(previous_session_config, exec_approval_callback=request_exec_approval)
+                except Exception:
+                    self.session_config = previous_session_config
                 model_session = self._take_startup_prewarm_session()
                 result = asyncio.run(
                     self._run_op(
@@ -1184,6 +1374,7 @@ class CoreExecActiveThreadRuntime:
                         cancellation_token=active_turn,
                     )
                 )
+                self.session_config = previous_session_config
                 emitted_delta = observed_delta
                 for event in _server_notifications_from_session_events(
                     result,
@@ -1218,6 +1409,11 @@ class CoreExecActiveThreadRuntime:
                 _timing_trace("core_active_thread_worker_failed", error=str(exc))
                 active_turn.finish(_turn_failed_notification(thread_id, turn_id, str(exc), exit_code=1))
             finally:
+                try:
+                    if "previous_session_config" in locals():
+                        self.session_config = previous_session_config
+                except Exception:
+                    pass
                 if not active_turn.is_terminal_sent():
                     active_turn.finish(_turn_failed_notification(thread_id, turn_id, "active thread event stream closed before turn completed", exit_code=1))
                 with self._active_turn_lock:
@@ -1376,6 +1572,7 @@ class CoreExecActiveThreadRuntime:
             prompt_summary=plan.prompt_summary,
             has_model_session=model_session is not None,
         )
+        history_items = self._model_history_snapshot()
         result = await run_exec_user_turn_core_sampling_websocket_preferred(
             self.session_config,
             plan,
@@ -1393,6 +1590,7 @@ class CoreExecActiveThreadRuntime:
             session_event_observer=session_event_observer,
             model_session=model_session,
             cancellation_token=cancellation_token,
+            history_items=history_items,
         )
         _timing_trace(
             "goal_core_run_op_finished",
@@ -1402,8 +1600,37 @@ class CoreExecActiveThreadRuntime:
             request_count=len(getattr(result, "request_plans", ()) or ()),
             last_agent_message=bool(getattr(result, "last_agent_message", None)),
         )
+        if not hidden_goal_context:
+            self._record_model_history_from_turn(plan, result)
         self._persist_rollout(plan, result)
         return result
+
+    def _model_history_snapshot(self) -> tuple[ResponseItem, ...]:
+        """Return the prompt-visible history for the next core session.
+
+        Rust ``codex-core::session::turn`` samples from
+        ``sess.clone_history().await.for_prompt(...)``.  The Python Textual
+        product path creates a fresh in-memory core session per submitted turn,
+        so this active-thread runtime carries the Rust-shaped history between
+        those per-turn sessions.
+        """
+
+        with self._model_history_lock:
+            return tuple(self._model_history_items)
+
+    def _record_model_history_from_turn(self, plan: ExecRunPlan, result: Any) -> None:
+        operation = getattr(plan, "initial_operation", None)
+        if getattr(operation, "kind", None) != "user_turn":
+            return
+        input_items = tuple(getattr(operation, "items", ()) or ())
+        turn_items: list[ResponseItem] = []
+        if input_items:
+            turn_items.append(ResponseItem.from_response_input_item(ResponseInputItem.from_user_inputs(input_items)))
+        turn_items.extend(_local_http_prompt_visible_rollout_items(result))
+        if not turn_items:
+            return
+        with self._model_history_lock:
+            self._model_history_items.extend(turn_items)
 
     def _persist_rollout(self, plan: ExecRunPlan, result: Any) -> None:
         try:
@@ -1533,7 +1760,15 @@ class TuiAppRuntime:
         )
 
     def submit_user_turn(self, prompt: str) -> ActiveThreadEventStream:
-        op = app_command_for_prompt(prompt, cwd=self.cwd)
+        op = app_command_for_prompt(
+            prompt,
+            cwd=self.cwd,
+            approval_policy=_runtime_turn_context_value(self, "approval_policy"),
+            active_permission_profile=_runtime_active_permission_profile_value(self),
+            model=_runtime_model_for_user_turn(self),
+            reasoning_effort=_runtime_reasoning_effort_for_user_turn(self),
+            service_tier=_runtime_turn_context_value(self, "service_tier"),
+        )
         return self.submit_op(op)
 
     def append_message_history_entry(self, text: str) -> None:
@@ -2054,8 +2289,24 @@ class TuiAppRuntime:
             self.chat_widget.add_error_message(plan.message)
 
 
-def app_command_for_prompt(prompt: str, *, cwd: Path | str) -> AppCommand:
-    widget = _TerminalInputSubmissionWidget(cwd=Path(cwd))
+def app_command_for_prompt(
+    prompt: str,
+    *,
+    cwd: Path | str,
+    approval_policy: Any = None,
+    active_permission_profile: Any = None,
+    model: str | None = None,
+    reasoning_effort: Any = None,
+    service_tier: Any = None,
+) -> AppCommand:
+    widget = _TerminalInputSubmissionWidget(
+        cwd=Path(cwd),
+        approval_policy=approval_policy,
+        active_permission_profile=active_permission_profile,
+        model=str(model or "terminal"),
+        reasoning_effort=reasoning_effort,
+        service_tier=service_tier,
+    )
     accepted = submit_user_message_with_history_record(
         widget,
         UserMessage(prompt),
@@ -2064,6 +2315,70 @@ def app_command_for_prompt(prompt: str, *, cwd: Path | str) -> AppCommand:
     if not accepted or not widget.ops:
         raise ValueError("terminal user input was not accepted for submission")
     return widget.ops[-1]
+
+
+def _runtime_turn_context_value(app_runtime: TuiAppRuntime, name: str, default: Any = None) -> Any:
+    for source in (
+        app_runtime.active_thread_runtime,
+        getattr(app_runtime.active_thread_runtime, "session_config", None),
+        getattr(app_runtime.chat_widget, "config", None),
+    ):
+        value = getattr(source, name, None)
+        value = value() if callable(value) and name != "features" else value
+        if value is not None:
+            return value
+    return default
+
+
+def _runtime_active_permission_profile_value(app_runtime: TuiAppRuntime) -> Any:
+    for source in (
+        app_runtime.active_thread_runtime,
+        getattr(app_runtime.active_thread_runtime, "session_config", None),
+        getattr(app_runtime.chat_widget, "config", None),
+    ):
+        value = getattr(source, "active_permission_profile", None)
+        if callable(value):
+            return value()
+        if value is not None:
+            return value
+    permissions = getattr(getattr(app_runtime.chat_widget, "config", None), "permissions", None)
+    if permissions is not None:
+        value = getattr(permissions, "active_permission_profile", None)
+        if callable(value):
+            return value()
+        if value is not None:
+            return value
+    return None
+
+
+def _runtime_model_for_user_turn(app_runtime: TuiAppRuntime) -> str:
+    for source in (
+        app_runtime.chat_widget,
+        getattr(app_runtime.chat_widget, "config", None),
+        app_runtime.active_thread_runtime,
+        getattr(app_runtime.active_thread_runtime, "session_config", None),
+    ):
+        for name in ("selected_model", "model", "model_slug", "requested_model"):
+            value = getattr(source, name, None)
+            value = value() if callable(value) else value
+            if value is not None and str(value).strip():
+                return str(value).strip()
+    return (os.environ.get("PYCODEX_MODEL") or os.environ.get("OPENAI_MODEL") or "gpt-5.5").strip() or "gpt-5.5"
+
+
+def _runtime_reasoning_effort_for_user_turn(app_runtime: TuiAppRuntime) -> Any:
+    for source in (
+        app_runtime.chat_widget,
+        getattr(app_runtime.chat_widget, "config", None),
+        app_runtime.active_thread_runtime,
+        getattr(app_runtime.active_thread_runtime, "session_config", None),
+    ):
+        for name in ("effective_reasoning_effort", "model_reasoning_effort", "reasoning_effort"):
+            value = getattr(source, name, None)
+            value = value() if callable(value) else value
+            if value is not None:
+                return value
+    return None
 
 
 def _goal_continuation_app_command(prompt: str, *, cwd: Path | str) -> AppCommand:
@@ -2812,20 +3127,22 @@ def _item_text(value: Any) -> Any:
 @dataclass
 class _TerminalMode:
     model_name: str = "terminal"
+    effort: Any = None
 
     def model(self) -> str:
         return self.model_name
 
     def reasoning_effort(self) -> Any:
-        return None
+        return self.effort
 
 
 @dataclass
 class _TerminalPermissions:
     approval_policy: Any = None
+    active_permission_profile_value: Any = None
 
     def active_permission_profile(self) -> Any:
-        return None
+        return self.active_permission_profile_value
 
 
 @dataclass
@@ -2857,6 +3174,11 @@ class _TerminalInputQueue:
 @dataclass
 class _TerminalInputSubmissionWidget:
     cwd: Path
+    approval_policy: Any = None
+    active_permission_profile: Any = None
+    model: str = "terminal"
+    reasoning_effort: Any = None
+    service_tier: Any = None
     ops: list[AppCommand] = field(default_factory=list)
     bottom_pane: _TerminalBottomPane = field(default_factory=_TerminalBottomPane)
     input_queue: _TerminalInputQueue = field(default_factory=_TerminalInputQueue)
@@ -2868,7 +3190,7 @@ class _TerminalInputSubmissionWidget:
         self.transcript = SimpleNamespace(needs_final_message_separator=True, saw_plan_item_this_turn=False)
         self.config = SimpleNamespace(
             cwd=self.cwd,
-            permissions=_TerminalPermissions(),
+            permissions=_TerminalPermissions(self.approval_policy, self.active_permission_profile),
             features=_TerminalFeatures(),
             personality=None,
         )
@@ -2883,7 +3205,7 @@ class _TerminalInputSubmissionWidget:
         return True
 
     def effective_collaboration_mode(self) -> _TerminalMode:
-        return _TerminalMode()
+        return _TerminalMode(self.model, self.reasoning_effort)
 
     def collaboration_modes_enabled(self) -> bool:
         return False
@@ -2892,7 +3214,7 @@ class _TerminalInputSubmissionWidget:
         return False
 
     def service_tier_update_for_core(self) -> Any:
-        return None
+        return self.service_tier
 
     def maybe_apply_ide_context(self, _items: Any) -> None:
         return None
