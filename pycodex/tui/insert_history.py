@@ -315,13 +315,13 @@ def write_history_line(writer: TextIO, line: HyperlinkLine | Line | str, wrap_wi
     hline = _coerce_hyperlink_line(line)
     physical_rows = math.ceil(max(hline.width(), 1) / max(wrap_width, 1))
     if physical_rows > 1:
-        writer.write("<save>")
+        writer.write("\x1b[s")
         for _ in range(1, physical_rows):
-            writer.write("<down><col0><clear-eol>")
-        writer.write("<restore>")
+            writer.write("\x1b[B\x1b[1G\x1b[K")
+        writer.write("\x1b[u")
     writer.write(_ansi_color(hline.line.style.fg, True))
     writer.write(_ansi_color(hline.line.style.bg, False))
-    writer.write("<clear-eol>")
+    writer.write("\x1b[K")
     merged = [Span(span.content, span.style.patch(hline.line.style)) for span in hline.line.spans]
     if hline.hyperlinks:
         plain = "".join(span.content for span in merged)
@@ -347,7 +347,7 @@ def insert_history_hyperlink_lines_with_mode_and_wrap_policy(
         wrapped.extend(line_wrapped)
 
     if mode == InsertHistoryMode.ZELLIJ_RAW:
-        terminal.write("<clear-after-viewport><move-viewport-top>")
+        terminal.write(f"\x1b[{max(terminal.viewport_y + 1, 1)};1H\x1b[J")
     else:
         terminal.write(SetScrollRegion(range(1, max(terminal.viewport_y, 1))).write_ansi())
     for line in wrapped:

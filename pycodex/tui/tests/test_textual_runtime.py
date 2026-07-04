@@ -6,6 +6,7 @@ import io
 import json
 import re
 import time
+from threading import Event
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -14,11 +15,22 @@ from types import SimpleNamespace
 from typing import Any
 
 import pycodex.tui as tui_module
+import pycodex.tui.textual_windows_vt_driver as vt_driver_module
 from pycodex.app_server_protocol.account import GetAccountRateLimitsResponse, RateLimitSnapshot, RateLimitWindow
 from pycodex.core.agents_md import DEFAULT_AGENTS_MD_FILENAME
 from pycodex.core.config.edit import read_toml_mapping
 from pycodex.features import Feature, FeatureConfigSource, Features, FeaturesToml
-from pycodex.protocol import AskForApproval, ModeKind, ReviewTarget
+from pycodex.protocol import (
+    AltScreenMode,
+    BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS,
+    ApprovalsReviewer,
+    AskForApproval,
+    ModeKind,
+    ReviewDecision,
+    ReviewTarget,
+)
+from pycodex.exec.local_runtime import LocalHttpShellInvocation
+from pycodex.exec.session import ExecSessionConfig
 from pycodex.tui.app.runtime import CoreExecActiveThreadRuntime, QueueActiveThreadEventStream, TuiAppRuntime
 from pycodex.tui.app_command import AppCommand
 from pycodex.tui.bottom_pane.chat_composer import LARGE_PASTE_CHAR_THRESHOLD
@@ -28,6 +40,8 @@ from pycodex.tui.chatwidget.permission_popups import PermissionProfile as TuiPer
 from pycodex.tui.chatwidget.protocol import ServerNotification
 from pycodex.tui.chatwidget.status_surfaces import DEFAULT_STATUS_LINE_ITEMS, terminal_title_spinner_frame_at
 from pycodex.tui.get_git_diff import FakeRunner, null_device, response
+from pycodex.tui.app.resize_reflow import HistoryLineWrapPolicy as ResizeReflowHistoryLineWrapPolicy
+from pycodex.tui.insert_history import TerminalModel, insert_history_lines
 from pycodex.tui.status.rate_limits import RateLimitSnapshotDisplay, RateLimitWindowDisplay
 from pycodex.tui.status.account import StatusAccountDisplay
 from pycodex.tui.resume_picker import PickerState, Row as ResumePickerRow
@@ -36,13 +50,15 @@ from pycodex.tui.textual_runtime import (
     CodexComposerTextArea,
     _PermissionFeatureSet,
     _RetryStatus,
+    _TranscriptBlock,
     PyCodexTextualApp,
     configure_app_runtime_thread_identity,
+    determine_alt_screen_mode,
     run_textual_tui,
     should_use_textual_tui,
     _runtime_status_line_item_ids,
 )
-from pycodex.tui.textual_windows_vt_driver import _VtInputDecoder
+from pycodex.tui.textual_windows_vt_driver import _VtInputDecoder, _alt_screen_active, _use_alt_screen
 from pycodex.tui.token_usage import TokenUsage, TokenUsageInfo
 
 
@@ -299,6 +315,71 @@ def test_textual_product_entry_prints_rust_exit_summary(monkeypatch, tmp_path: P
     assert output.index("Token usage: total=3 input=1 output=2") < output.index("To continue this session")
 
 
+def test_textual_product_entry_uses_scrollback_runtime_for_real_tty(monkeypatch) -> None:
+    # Rust-derived contract:
+    # - codex-tui keeps finalized history in terminal scrollback and only keeps
+    #   the bottom pane as live UI.
+    # - Python's product TTY entry must therefore leave the retained Textual
+    #   transcript path and delegate to the scrollback-first runtime.
+    runtime = _FakeActiveThreadRuntime([])
+    stdout = _Tty()
+    observed: dict[str, object] = {}
+
+    def fake_run_scrollback_tui(**kwargs: object) -> int:
+        observed.update(kwargs)
+        return 23
+
+    monkeypatch.delenv("PYCODEX_TUI_FORCE_TEXTUAL", raising=False)
+    monkeypatch.setattr(
+        "pycodex.tui.scrollback_runtime.run_scrollback_tui",
+        fake_run_scrollback_tui,
+    )
+
+    assert run_textual_tui(active_thread_runtime=runtime, stdout=stdout) == 23
+    assert observed["active_thread_runtime"] is runtime
+    assert observed["stdout"] is stdout
+
+
+def test_textual_product_entry_forwards_no_alt_screen_to_app(monkeypatch) -> None:
+    # Rust-derived contract:
+    # - codex-cli keeps --no-alt-screen as a terminal-mode setting for the TUI.
+    # - Python's Textual product entry must pass that setting to the app/driver
+    #   boundary instead of swallowing it before insert_history can use the
+    #   terminal scrollback path.
+    runtime = _FakeActiveThreadRuntime([])
+    stdout = io.StringIO()
+    observed: dict[str, bool] = {}
+
+    def fake_run(self: PyCodexTextualApp) -> int:
+        observed["alt_screen_enabled"] = self._pycodex_alt_screen_enabled
+        observed["alt_screen_active"] = self._pycodex_alt_screen_active
+        return 0
+
+    monkeypatch.setattr(PyCodexTextualApp, "run", fake_run)
+
+    assert run_textual_tui(active_thread_runtime=runtime, stdout=stdout, use_alt_screen=False) == 0
+    assert observed["alt_screen_enabled"] is False
+    assert observed["alt_screen_active"] is False
+
+
+def test_textual_transcript_hides_internal_scrollbar() -> None:
+    # Rust-derived contract:
+    # - codex-tui normal chat uses terminal scrollback/window scrolling rather
+    #   than drawing an application-owned transcript scrollbar.
+    # - Python's Textual transcript may remain the visible compatibility
+    #   surface, but it must not render an extra internal scrollbar.
+    runtime = _FakeActiveThreadRuntime([])
+    app = PyCodexTextualApp(TuiAppRuntime(runtime))
+
+    async def scenario() -> None:
+        async with app.run_test(size=(100, 32)):
+            transcript = app.query_one("#transcript")
+            assert transcript.styles.scrollbar_size_vertical == 0
+            assert transcript.styles.scrollbar_size_horizontal == 0
+
+    asyncio.run(scenario())
+
+
 def test_textual_product_entry_exit_resume_hint_uses_thread_name(monkeypatch, tmp_path: Path) -> None:
     # Rust-derived contract:
     # - codex-tui returns the active thread name in AppExitInfo.
@@ -442,15 +523,16 @@ def test_textual_logout_dispatches_logout_and_shutdown_without_user_turn() -> No
     assert app_runtime.event_dispatch_plans[-1].action == "logout_account_then_shutdown"
 
 
+
 def test_textual_startup_surface_uses_rust_session_header_footer_and_notices() -> None:
     # Rust-derived contract:
     # - codex-tui::chatwidget::constructor installs
     #   placeholder_session_header_cell with DEFAULT_MODEL_DISPLAY_NAME
     #   "loading" before SessionConfigured replaces it.
+    # - codex-tui::history_cell::session::SessionHeaderHistoryCell is a
+    #   transcript/history cell, not a fixed top widget.
     # - codex-tui::bottom_pane::footer shows the idle status/footer surface
     #   rather than a Python-only "status: Ready" line.
-    # - history_cell::session::new_session_info suppresses tooltip cells for
-    #   the first event; startup warnings still project through the app surface.
     runtime = _FakeActiveThreadRuntime([])
     cwd = Path("C:/repo")
     runtime.cwd = cwd
@@ -468,15 +550,17 @@ def test_textual_startup_surface_uses_rust_session_header_footer_and_notices() -
     )
     app = PyCodexTextualApp(TuiAppRuntime(runtime))
     startup_footer = app._startup_status_line_text()
-    assert " · " in startup_footer
-    assert " 路 " not in startup_footer
-    assert " �� " not in startup_footer
+    assert "\u00b7" in startup_footer
+    assert "\ufffd" not in startup_footer
 
     async def scenario() -> None:
         async with app.run_test(size=(120, 32)) as pilot:
             await pilot.pause(0.05)
-            header = str(app.query_one("#session-header", Static).renderable)
-            footer = str(app.query_one("#status-line", Static).renderable)
+            assert not list(app.query("#session-header"))
+            assert app._blocks[0].label == "session_header"
+            header = app._blocks[0].text
+            footer_renderable = app.query_one("#status-line", Static).renderable
+            footer = getattr(footer_renderable, "plain", str(footer_renderable))
             prompt = str(app.query_one("#composer-prompt", Static).renderable)
             assert ">_ OpenAI Codex" in header
             assert "model:" in header
@@ -485,9 +569,10 @@ def test_textual_startup_surface_uses_rust_session_header_footer_and_notices() -
             assert "/model to change" in header
             assert "directory:" in header
             assert "permissions:" not in header
-            assert prompt.startswith("› ")
-            assert prompt.removeprefix("› ") in PLACEHOLDERS
-            assert "gpt-startup high fast" in footer
+            assert prompt.startswith("\u203a ")
+            assert prompt.removeprefix("\u203a ") in PLACEHOLDERS
+            assert "gpt-startup high" in footer
+            assert "\ufffd" not in footer
             assert "codex-python" in footer
             assert "Context 100% left" not in footer
             assert "status: Ready" not in footer
@@ -496,12 +581,18 @@ def test_textual_startup_surface_uses_rust_session_header_footer_and_notices() -
             )
             app._mark_session_header_configured()
             app._append_startup_notices()
-            configured_header = str(app.query_one("#session-header", Static).renderable)
-            assert configured_header.startswith("╭")
-            assert "│ >_ OpenAI Codex" in configured_header
+            configured_header = app._blocks[0].text
+            assert len([block for block in app._blocks if block.label == "session_header"]) == 1
+            assert configured_header.startswith("\u256d")
+            assert "\u2502 >_ OpenAI Codex" in configured_header
             assert "gpt-startup high" in configured_header
             assert "fast" in configured_header
             assert "loading" not in configured_header
+            configured_footer_renderable = app.query_one("#status-line", Static).renderable
+            configured_footer = getattr(configured_footer_renderable, "plain", str(configured_footer_renderable))
+            assert "gpt-startup high" in configured_footer
+            assert "loading" not in configured_footer
+            assert "\ufffd" not in configured_footer
 
     asyncio.run(scenario())
 
@@ -511,14 +602,13 @@ def test_textual_startup_surface_uses_rust_session_header_footer_and_notices() -
     assert "MCP startup incomplete (failed: codex_apps)" in notices
 
 
+
 def test_textual_startup_header_indicates_yolo_permissions_like_rust() -> None:
     # Rust-derived contract:
     # - codex-tui::chatwidget::placeholder_session_header_cell uses
     #   DEFAULT_MODEL_DISPLAY_NAME "loading" while preserving yolo mode.
     # - codex-tui::history_cell::session::SessionHeaderHistoryCell renders
     #   "permissions: YOLO mode" when has_yolo_permissions is true.
-    # - Rust tests: session_header_indicates_yolo_mode and
-    #   yolo_mode_includes_managed_full_access_profiles.
     runtime = _FakeActiveThreadRuntime([])
     cwd = Path("C:/repo")
     runtime.cwd = cwd
@@ -533,16 +623,18 @@ def test_textual_startup_header_indicates_yolo_permissions_like_rust() -> None:
 
     async def scenario() -> None:
         async with app.run_test(size=(120, 32)):
-            header = str(app.query_one("#session-header", Static).renderable)
+            assert app._blocks[0].label == "session_header"
+            header = app._blocks[0].text
             assert "model:       loading" in header
             assert "directory:   " in header
             assert "permissions: YOLO mode" in header
             app._mark_session_header_configured()
-            configured_header = str(app.query_one("#session-header", Static).renderable)
+            configured_header = app._blocks[0].text
             assert "model:       gpt-yolo high" in configured_header
             assert "permissions: YOLO mode" in configured_header
 
     asyncio.run(scenario())
+
 
 
 def test_textual_session_header_renders_model_literals_like_rust() -> None:
@@ -563,7 +655,7 @@ def test_textual_session_header_renders_model_literals_like_rust() -> None:
     async def scenario() -> None:
         async with app.run_test(size=(120, 32)):
             app._mark_session_header_configured()
-            configured_header = str(app.query_one("#session-header", Static).renderable)
+            configured_header = app._blocks[0].text
             assert "gpt-[literal] high" in configured_header
 
     asyncio.run(scenario())
@@ -637,10 +729,27 @@ def test_textual_startup_prompt_uses_runtime_chatwidget_placeholder() -> None:
         async with app.run_test(size=(100, 32)) as pilot:
             await pilot.pause(0.05)
             prompt = str(app.query_one("#composer-prompt", Static).renderable)
-            assert prompt == "› Explain this codebase"
-            assert "鈥?" not in prompt
+            assert prompt == "\u203a Explain this codebase"
+            assert "\ufffd" not in prompt
 
     asyncio.run(scenario())
+
+
+def test_textual_transcript_blocks_use_rust_message_prefixes() -> None:
+    # Rust-derived contract:
+    # - codex-tui::history_cell::session::SessionHeaderHistoryCell is rendered
+    #   as a normal history cell, so it is terminal-copyable transcript text.
+    # - codex-tui::history_cell::messages prefixes user messages with `›` and
+    #   assistant/status-style cells with `•`, with wrapped lines indented.
+    header = "\u256d\u2500\u256e\n\u2502 >_ OpenAI Codex \u2502\n\u2570\u2500\u256f"
+    assert _TranscriptBlock("session_header", header).render().plain == header
+    assert _TranscriptBlock("session_header", header).terminal_history_lines() == header.splitlines()
+    assert _TranscriptBlock("you", "hello\nagain").render().plain == "\u203a hello\n  again"
+    assert _TranscriptBlock("codex", "hi").render().plain == "\u2022 hi"
+    assert _TranscriptBlock("status", "Permissions updated").terminal_history_lines() == [
+        "\u2022 Permissions updated"
+    ]
+    assert _TranscriptBlock("error", "Conversation interrupted").render().plain == "\u25a0 Conversation interrupted"
 
 
 def test_textual_product_loop_drains_startup_app_server_mcp_events() -> None:
@@ -955,10 +1064,13 @@ def test_textual_runtime_submits_prompt_and_streams_transcript() -> None:
         ServerNotification("TurnCompleted", {"turn": {"id": "t1", "status": "Completed"}}),
     ]
     runtime = _FakeActiveThreadRuntime(events)
-    app = PyCodexTextualApp(TuiAppRuntime(runtime))
+    app_runtime = TuiAppRuntime(runtime)
+    app = PyCodexTextualApp(app_runtime)
+    writes: list[str] = []
 
     async def scenario() -> None:
         async with app.run_test(size=(100, 32)) as pilot:
+            setattr(app._driver, "write", lambda data: writes.append(str(data)))
             composer = app.query_one("#composer", CodexComposerTextArea)
             composer.text = "hello?"
             await pilot.press("enter")
@@ -966,6 +1078,11 @@ def test_textual_runtime_submits_prompt_and_streams_transcript() -> None:
                 await pilot.pause(0.02)
                 if not app._busy:
                     break
+            transcript = app.query_one("#transcript")
+            visible_height = max(int(getattr(getattr(transcript, "size", object()), "height", 1) or 1), 1)
+            visible_text = "\n".join(transcript.render_line(row).text for row in range(visible_height))
+            assert "hello?" in visible_text
+            assert "hello world" in visible_text
             status = app.query_one("#status-line", Static).renderable
             assert "gpt-test high" in str(status)
 
@@ -981,6 +1098,240 @@ def test_textual_runtime_submits_prompt_and_streams_transcript() -> None:
     assert all("**Inspecting**" not in text for text in reasoning_blocks)
     assert ("codex", "hello world") in blocks
     assert blocks.count(("codex", "hello world")) == 1
+    assert app_runtime.event_dispatch_plans[-1].action == "insert_history_cell"
+    assert app._last_insert_history_reflow_plan.action == "insert_history_lines"
+    assert app._last_insert_history_reflow_plan.wrap_policy is ResizeReflowHistoryLineWrapPolicy.PreWrap
+    # Rust keeps source-backed transcript cells while inserting rendered rows
+    # into terminal scrollback.
+    assert ("you", "hello?") in blocks
+    assert ("codex", "hello world") in blocks
+    assert any("\x1b[" in item and "hello world" in item for item in writes)
+    assert "\u203a hello?" in app._last_history_projection_ansi
+    assert "hello?" in app._last_history_projection_ansi
+    assert "\u2022 hello world" in app._last_history_projection_ansi
+    assert "hello world" in app._last_history_projection_ansi
+    assert "\x1b[" in app._last_history_projection_ansi
+    assert app._terminal_scrollback_projected_until == 0
+
+
+def test_textual_insert_history_projection_writes_terminal_while_alt_screen_enabled_but_inactive() -> None:
+    # Rust-derived contract:
+    # - codex-tui::insert_history writes finalized cells into terminal
+    #   scrollback.
+    # - codex-tui distinguishes alt-screen capability from active overlay
+    #   state: normal chat writes inline scrollback even when overlays may
+    #   later enter alt-screen.
+    events = [
+        ServerNotification("TurnStarted", {"turn": {"id": "t1"}}),
+        ServerNotification("AgentMessageDelta", {"delta": "inline answer"}),
+        ServerNotification("TurnCompleted", {"turn": {"id": "t1", "status": "Completed"}}),
+    ]
+    runtime = _FakeActiveThreadRuntime(events)
+    app = PyCodexTextualApp(TuiAppRuntime(runtime), use_alt_screen=True)
+    writes: list[str] = []
+
+    async def scenario() -> None:
+        async with app.run_test(size=(100, 32)) as pilot:
+            setattr(app._driver, "write", lambda data: writes.append(str(data)))
+            composer = app.query_one("#composer", CodexComposerTextArea)
+            composer.text = "hello?"
+            await pilot.press("enter")
+            for _ in range(50):
+                await pilot.pause(0.02)
+                if not app._busy:
+                    break
+
+    asyncio.run(scenario())
+
+    assert any("\x1b[" in item and "inline answer" in item for item in writes)
+    assert "inline answer" in app._last_history_projection_ansi
+    assert ("codex", "inline answer") in [(block.label, block.text) for block in app._blocks]
+    assert app._terminal_scrollback_projected_until == 0
+
+
+def test_textual_insert_history_projection_writes_terminal_without_alt_screen_enabled() -> None:
+    # Rust-derived contract:
+    # - --no-alt-screen disables overlay alt-screen entry but keeps the same
+    #   inline insert-history path for finalized chat history.
+    events = [
+        ServerNotification("TurnStarted", {"turn": {"id": "t1"}}),
+        ServerNotification("AgentMessageDelta", {"delta": "alt answer"}),
+        ServerNotification("TurnCompleted", {"turn": {"id": "t1", "status": "Completed"}}),
+    ]
+    runtime = _FakeActiveThreadRuntime(events)
+    app = PyCodexTextualApp(TuiAppRuntime(runtime), use_alt_screen=False)
+    writes: list[str] = []
+
+    async def scenario() -> None:
+        async with app.run_test(size=(100, 32)) as pilot:
+            setattr(app._driver, "write", lambda data: writes.append(str(data)))
+            composer = app.query_one("#composer", CodexComposerTextArea)
+            composer.text = "hello?"
+            await pilot.press("enter")
+            for _ in range(50):
+                await pilot.pause(0.02)
+                if not app._busy:
+                    break
+
+    asyncio.run(scenario())
+
+    assert any("\x1b[" in item and "alt answer" in item for item in writes)
+    assert "alt answer" in app._last_history_projection_ansi
+
+
+def test_textual_insert_history_projection_does_not_write_terminal_while_alt_screen_active() -> None:
+    # Rust-derived contract:
+    # - codex-tui::tui::enter_alt_screen is used by overlays. While alt-screen
+    #   is active, finalized cells stay in the active UI instead of mutating the
+    #   inline terminal scrollback.
+    events = [
+        ServerNotification("TurnStarted", {"turn": {"id": "t1"}}),
+        ServerNotification("AgentMessageDelta", {"delta": "overlay answer"}),
+        ServerNotification("TurnCompleted", {"turn": {"id": "t1", "status": "Completed"}}),
+    ]
+    runtime = _FakeActiveThreadRuntime(events)
+    app = PyCodexTextualApp(TuiAppRuntime(runtime), use_alt_screen=True)
+    app._pycodex_alt_screen_active = True
+    writes: list[str] = []
+
+    async def scenario() -> None:
+        async with app.run_test(size=(100, 32)) as pilot:
+            setattr(app._driver, "write", lambda data: writes.append(str(data)))
+            composer = app.query_one("#composer", CodexComposerTextArea)
+            composer.text = "hello?"
+            await pilot.press("enter")
+            for _ in range(50):
+                await pilot.pause(0.02)
+                if not app._busy:
+                    break
+            transcript = app.query_one("#transcript")
+            visible_height = max(int(getattr(getattr(transcript, "size", object()), "height", 1) or 1), 1)
+            visible_text = "\n".join(transcript.render_line(row).text for row in range(visible_height))
+            assert "overlay answer" in visible_text
+
+    asyncio.run(scenario())
+
+    assert writes == []
+    assert "overlay answer" in app._last_history_projection_ansi
+
+
+def test_textual_windows_driver_alt_screen_enabled_is_not_active_by_default() -> None:
+    # Rust-derived contract: codex-tui::Tui stores alt_screen_enabled and
+    # alt_screen_active separately. Startup enables overlay support but does
+    # not enter alternate screen until an overlay requests it.
+    assert _use_alt_screen(SimpleNamespace()) is True
+    assert _use_alt_screen(SimpleNamespace(_pycodex_alt_screen_enabled=True)) is True
+    assert _use_alt_screen(SimpleNamespace(_pycodex_alt_screen_enabled=False)) is False
+    assert _alt_screen_active(SimpleNamespace()) is False
+    assert _alt_screen_active(SimpleNamespace(_pycodex_alt_screen_active=True)) is True
+
+
+def test_textual_windows_driver_start_does_not_enable_raw_mouse_capture(monkeypatch) -> None:
+    # Rust-derived contract:
+    # - codex-tui/src/tui/event_stream.rs explicitly skips mouse events.
+    # - codex-tui/src/tui.rs only enables alternate scroll for alt-screen
+    #   overlays; it does not enable raw mouse reporting for normal chat.
+    # Raw mouse reporting prevents Windows Terminal from handling drag-select
+    # and copy, so the Python VT driver must not emit those sequences.
+    writes: list[str] = []
+
+    class FakeWriterThread:
+        def __init__(self, _file: Any) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+    class FakeInputMonitor:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        def start(self) -> None:
+            pass
+
+    monkeypatch.setattr(vt_driver_module._win32, "enable_application_mode", lambda: object())
+    monkeypatch.setattr(vt_driver_module, "WriterThread", FakeWriterThread)
+    monkeypatch.setattr(vt_driver_module, "_WindowsVtInputMonitor", FakeInputMonitor)
+
+    driver = object.__new__(vt_driver_module.PyCodexWindowsVtDriver)
+    driver._app = SimpleNamespace(_pycodex_alt_screen_active=False)
+    driver._file = io.StringIO()
+    driver._debug = False
+    driver.exit_event = Event()
+    driver.process_event = lambda _event: None
+    driver.write = lambda data: writes.append(str(data))
+    driver._enable_bracketed_paste = lambda: writes.append("<bracketed-paste-on>")
+
+    driver.start_application_mode()
+
+    output = "".join(writes)
+    assert "\x1b[?1000h" not in output
+    assert "\x1b[?1002h" not in output
+    assert "\x1b[?1003h" not in output
+    assert "\x1b[?1006h" not in output
+
+
+def test_textual_determine_alt_screen_mode_matches_rust() -> None:
+    # Rust source: codex-rs/tui/src/lib.rs::determine_alt_screen_mode.
+    # --no-alt-screen wins; otherwise only AltScreenMode::Never disables the
+    # alternate screen. Auto and Always both enter it.
+    assert determine_alt_screen_mode(True, AltScreenMode.ALWAYS) is False
+    assert determine_alt_screen_mode(False, AltScreenMode.NEVER) is False
+    assert determine_alt_screen_mode(False, AltScreenMode.AUTO) is True
+    assert determine_alt_screen_mode(False, AltScreenMode.ALWAYS) is True
+    assert determine_alt_screen_mode(False, "never") is False
+
+
+def test_textual_completed_history_projection_uses_real_insert_history_ansi() -> None:
+    # Rust-derived contract:
+    # - codex-tui::insert_history writes finalized chat history into terminal
+    #   scrollback with ANSI scroll-region/control sequences.
+    # - The terminal projection must not be a semantic placeholder stream.
+    terminal = TerminalModel(width=40, height=20, viewport_y=12, viewport_height=8)
+    insert_history_lines(terminal, ["you", "  hello", "codex", "  hi"])
+    output = terminal.output.getvalue()
+
+    assert "\x1b[1;12r" in output
+    assert "\x1b[r" in output
+    assert "\x1b[K" in output
+    assert "you" in output
+    assert "codex" in output
+    assert "<clear-eol>" not in output
+    assert "<save>" not in output
+
+
+def test_textual_completed_history_projection_uses_resize_reflow_terminal_policy_in_raw_mode() -> None:
+    # Rust-derived contract:
+    # - codex-tui::app::resize_reflow::history_line_wrap_policy selects
+    #   Terminal wrapping when raw output mode is active.
+    # - Textual's InsertHistoryCell projection must consume that app-owned
+    #   wrap policy instead of selecting its own terminal/pre-wrap path.
+    events = [
+        ServerNotification("TurnStarted", {"turn": {"id": "t1"}}),
+        ServerNotification("AgentMessageDelta", {"delta": "raw answer"}),
+        ServerNotification("TurnCompleted", {"turn": {"id": "t1", "status": "Completed"}}),
+    ]
+    runtime = _FakeActiveThreadRuntime(events)
+    app_runtime = TuiAppRuntime(runtime)
+    app_runtime.apply_raw_output_mode(True)
+    app = PyCodexTextualApp(app_runtime)
+
+    async def scenario() -> None:
+        async with app.run_test(size=(90, 28)) as pilot:
+            composer = app.query_one("#composer", CodexComposerTextArea)
+            composer.text = "raw?"
+            await pilot.press("enter")
+            for _ in range(50):
+                await pilot.pause(0.02)
+                if not app._busy:
+                    break
+
+    asyncio.run(scenario())
+
+    assert app_runtime.event_dispatch_plans[-1].action == "insert_history_cell"
+    assert app._last_insert_history_reflow_plan.action == "insert_history_lines"
+    assert app._last_insert_history_reflow_plan.wrap_policy is ResizeReflowHistoryLineWrapPolicy.Terminal
+    assert "raw answer" in app._last_history_projection_ansi
 
 
 def test_textual_runtime_retry_stream_error_updates_live_status_without_history_cell() -> None:
@@ -1062,6 +1413,135 @@ def test_textual_runtime_retry_stream_error_updates_live_status_without_history_
     asyncio.run(scenario())
 
     assert not any("Reconnecting... 2/5" in block.text for block in app._blocks)
+
+
+def test_textual_runtime_exec_approval_request_submits_decision_without_new_turn() -> None:
+    # Rust-derived contract:
+    # - codex-tui::chatwidget::tool_requests::handle_exec_approval_now opens an
+    #   approval request surface for EventMsg::ExecApprovalRequest.
+    # - Accepting it sends AppCommand::ExecApproval back to the active thread,
+    #   resolving the pending shell command inside the same turn rather than
+    #   appending an ordinary chat/status message.
+    runtime = _FakeActiveThreadRuntime([])
+    app_runtime = TuiAppRuntime(runtime)
+    app = PyCodexTextualApp(app_runtime)
+
+    async def scenario() -> None:
+        async with app.run_test(size=(110, 32)):
+            app._busy = True
+            app._handle_server_notification(
+                ServerNotification(
+                    "ExecApprovalRequested",
+                    {
+                        "id": "call-gcc",
+                        "turn_id": "turn-1",
+                        "thread_id": "primary",
+                        "command": "Get-Command gcc -ErrorAction SilentlyContinue",
+                        "reason": "check whether gcc is available outside the sandbox",
+                    },
+                )
+            )
+            assert app._active_selection is not None
+            assert app._active_selection.kind == "approval"
+            popup = str(app.query_one("#slash-popup", Static).renderable)
+            assert "Would you like to run the following command?" in popup
+            assert "Get-Command gcc" in popup
+            assert "Reason:" in popup
+            assert app.handle_selection_key("enter") is True
+
+    asyncio.run(scenario())
+
+    assert len(runtime.submitted) == 1
+    thread_id, op = runtime.submitted[0]
+    assert thread_id == "primary"
+    assert op.kind == "ExecApproval"
+    assert op.payload["id"] == "call-gcc"
+    assert ReviewDecision.from_mapping(op.payload["decision"]).type == "approved"
+    assert not any(block.label == "status" and "Get-Command gcc" in block.text for block in app._blocks)
+
+
+def test_textual_core_exec_approval_decision_unblocks_same_turn() -> None:
+    # Rust-derived contract:
+    # - codex-core::tools::handlers::shell creates an exec approval requirement
+    #   from the active TurnContext and waits for the TUI decision before the
+    #   shell runtime continues.
+    # - codex-tui::chatwidget::tests::approval_requests verifies accepting the
+    #   approval sends AppCommand::ExecApproval, not a new user turn.
+    # - Together, the same active turn must resume and produce the final answer
+    #   after the approval is accepted.
+    class _ApprovalRuntime(CoreExecActiveThreadRuntime):
+        def __init__(self) -> None:
+            super().__init__(
+                session_config=ExecSessionConfig(
+                    model="gpt-test",
+                    model_provider_id="openai",
+                    cwd=Path("C:/work/project"),
+                    approval_policy=AskForApproval.ON_REQUEST,
+                    approvals_reviewer=ApprovalsReviewer.USER,
+                ),
+                model_client=SimpleNamespace(),
+                provider=SimpleNamespace(),
+                model_info=SimpleNamespace(),
+            )
+            self.decisions: list[ReviewDecision] = []
+
+        async def _run_op(
+            self,
+            op: AppCommand,
+            *,
+            session_event_observer: Any = None,
+            model_session: Any = None,
+            cancellation_token: Any = None,
+        ) -> Any:
+            callback = getattr(self.session_config, "exec_approval_callback", None)
+            assert callable(callback)
+            decision = callback(
+                LocalHttpShellInvocation(
+                    "Get-Command gcc -ErrorAction SilentlyContinue",
+                    workdir=Path("C:/work/project"),
+                ),
+                self.session_config,
+                SimpleNamespace(reason="check whether gcc is available outside the sandbox"),
+                {"call_id": "call-gcc"},
+            )
+            self.decisions.append(ReviewDecision.from_mapping(decision))
+            return SimpleNamespace(
+                response_items=(),
+                tool_response_items=(),
+                request_plans=(),
+                last_agent_message="approval continued",
+                turn_status="completed",
+            )
+
+    runtime = _ApprovalRuntime()
+    app = PyCodexTextualApp(TuiAppRuntime(runtime))
+
+    async def scenario() -> None:
+        async with app.run_test(size=(110, 34)) as pilot:
+            composer = app.query_one("#composer", CodexComposerTextArea)
+            composer.text = "compile with gcc"
+            await pilot.press("enter")
+            for _ in range(40):
+                if app._active_selection is not None and app._active_selection.kind == "approval":
+                    break
+                await pilot.pause(0.05)
+            assert app._active_selection is not None
+            assert app._active_selection.kind == "approval"
+            popup = str(app.query_one("#slash-popup", Static).renderable)
+            assert "Would you like to run the following command?" in popup
+            assert "Get-Command gcc" in popup
+
+            await pilot.press("enter")
+            for _ in range(40):
+                if any(block.label == "codex" and "approval continued" in block.text for block in app._blocks):
+                    break
+                await pilot.pause(0.05)
+
+    asyncio.run(scenario())
+
+    assert runtime.decisions == [ReviewDecision.approved()]
+    assert any(block.label == "codex" and "approval continued" in block.text for block in app._blocks)
+    assert not any(block.label == "you" and "Get-Command gcc" in block.text for block in app._blocks)
 
 
 def test_textual_runtime_permanent_stream_failure_reports_error_after_retry_status() -> None:
@@ -2791,7 +3271,8 @@ def test_textual_copy_shortcut_uses_default_ctrl_o_without_user_turn() -> None:
         ServerNotification("TurnCompleted", {"turn": {"id": "t1", "status": "Completed"}}),
     ]
     runtime = _FakeActiveThreadRuntime(events)
-    app = PyCodexTextualApp(TuiAppRuntime(runtime))
+    app_runtime = TuiAppRuntime(runtime)
+    app = PyCodexTextualApp(app_runtime)
     copied: list[str] = []
     app.copy_to_clipboard = lambda text: copied.append(text) or "test-clipboard"
 
@@ -3571,7 +4052,7 @@ def test_textual_status_command_derives_product_fields_from_runtime_sources() ->
 
     async def scenario() -> None:
         async with app.run_test(size=(120, 32)) as pilot:
-            header = str(app.query_one("#session-header", Static).renderable)
+            header = app._blocks[0].text
             assert "loading" not in header
             assert "gpt-5.4" in header
             composer = app.query_one("#composer", CodexComposerTextArea)
@@ -4068,6 +4549,79 @@ def test_textual_composer_small_paste_normalizes_crlf() -> None:
             await composer._on_paste(events.Paste("a\r\nb\rc"))
             assert composer.text == "a\nb\nc"
             assert composer.pending_pastes == []
+
+    asyncio.run(scenario())
+
+
+def test_textual_composer_ctrl_v_reads_text_clipboard_when_paste_event_is_absent() -> None:
+    # Rust-derived contract:
+    # - codex-tui::tui::event_stream maps bracketed terminal paste to TuiEvent::Paste.
+    # - codex-tui::app normalizes CR to LF before chat_widget.handle_paste.
+    #
+    # Textual/Windows may surface Ctrl+V as a key event instead of a bracketed
+    # Paste event, so the Python Textual shell falls back to the system text
+    # clipboard while preserving the same ChatComposer paste boundary.
+    runtime = _FakeActiveThreadRuntime([])
+    app = PyCodexTextualApp(TuiAppRuntime(runtime))
+    app.read_clipboard_text = lambda: "alpha\r\nbeta"
+
+    class _Event:
+        key = "ctrl+v"
+        character = None
+
+        def __init__(self) -> None:
+            self.stopped = False
+            self.prevented = False
+
+        def stop(self) -> None:
+            self.stopped = True
+
+        def prevent_default(self) -> None:
+            self.prevented = True
+
+    async def scenario() -> None:
+        async with app.run_test(size=(100, 32)):
+            composer = app.query_one("#composer", CodexComposerTextArea)
+            event = _Event()
+            await composer._on_key(event)
+            assert event.stopped is True
+            assert event.prevented is True
+            assert composer.text == "alpha\nbeta"
+            assert composer.pending_pastes == []
+
+    asyncio.run(scenario())
+
+
+def test_textual_composer_ctrl_v_without_text_does_not_consume_event() -> None:
+    # Rust-derived contract: Ctrl/Alt-V image paste remains a separate
+    # chatwidget key path; the Textual text clipboard fallback only consumes
+    # Ctrl+V when text is actually available.
+    runtime = _FakeActiveThreadRuntime([])
+    app = PyCodexTextualApp(TuiAppRuntime(runtime))
+    app.read_clipboard_text = lambda: ""
+
+    class _Event:
+        key = "ctrl+v"
+        character = None
+
+        def __init__(self) -> None:
+            self.stopped = False
+            self.prevented = False
+
+        def stop(self) -> None:
+            self.stopped = True
+
+        def prevent_default(self) -> None:
+            self.prevented = True
+
+    async def scenario() -> None:
+        async with app.run_test(size=(100, 32)):
+            composer = app.query_one("#composer", CodexComposerTextArea)
+            event = _Event()
+            await composer._on_key(event)
+            assert event.stopped is False
+            assert event.prevented is False
+            assert composer.text == ""
 
     asyncio.run(scenario())
 
@@ -4734,7 +5288,7 @@ def test_textual_model_command_opens_picker_and_selects_without_user_turn() -> N
         async with app.run_test(size=(100, 32)) as pilot:
             composer = app.query_one("#composer", CodexComposerTextArea)
             popup = app.query_one("#slash-popup", Static)
-            header = app.query_one("#session-header", Static)
+            header = app._blocks[0]
             composer.text = "/model"
             await pilot.press("enter")
             await pilot.pause(0.05)
@@ -4764,7 +5318,7 @@ def test_textual_model_command_opens_picker_and_selects_without_user_turn() -> N
             await pilot.pause(0.05)
             assert app._active_selection is None
             assert str(popup.renderable) == ""
-            assert "codex-auto-fast" in str(header.renderable)
+            assert "codex-auto-fast" in header.text
             composer.text = "hello"
             await pilot.press("enter")
             await pilot.pause(0.05)
@@ -4867,13 +5421,13 @@ def test_textual_model_command_without_runtime_catalog_uses_bundled_model_catalo
     runtime.session_config.model = "gpt-5.5"
     runtime.session_config.model_reasoning_effort = "medium"
     runtime.session_config.available_models = []
+    runtime.session_header_configured_at_startup = True
     app = PyCodexTextualApp(TuiAppRuntime(runtime))
 
     async def scenario() -> None:
         async with app.run_test(size=(100, 32)) as pilot:
             composer = app.query_one("#composer", CodexComposerTextArea)
             popup = app.query_one("#slash-popup", Static)
-            header = app.query_one("#session-header", Static)
             composer.text = "/model"
             await pilot.press("enter")
             await pilot.pause(0.05)
@@ -4885,8 +5439,8 @@ def test_textual_model_command_without_runtime_catalog_uses_bundled_model_catalo
             assert "2. gpt-5.4" in rendered
             assert "3. gpt-5.4-mini" in rendered
             assert "Press enter to confirm or esc to go back" in rendered
-            assert "gpt-5.5" in str(header.renderable)
-            assert "loading" not in str(header.renderable)
+            assert "gpt-5.5" in app._blocks[0].text
+            assert "loading" not in app._blocks[0].text
 
             await pilot.press("enter")
             await pilot.pause(0.05)
@@ -4986,13 +5540,13 @@ def test_textual_model_reasoning_keyboard_selection_updates_footer_state() -> No
     runtime.session_config.model = "gpt-5.5"
     runtime.session_config.model_reasoning_effort = "medium"
     runtime.session_config.available_models = []
+    runtime.session_header_configured_at_startup = True
     app = PyCodexTextualApp(TuiAppRuntime(runtime))
 
     async def scenario() -> None:
         async with app.run_test(size=(100, 32)) as pilot:
             composer = app.query_one("#composer", CodexComposerTextArea)
             popup = app.query_one("#slash-popup", Static)
-            header = app.query_one("#session-header", Static)
             composer.text = "/model"
             await pilot.press("enter")
             await pilot.pause(0.05)
@@ -5008,7 +5562,7 @@ def test_textual_model_reasoning_keyboard_selection_updates_footer_state() -> No
             await pilot.pause(0.05)
             assert app._active_selection is None
             assert str(popup.renderable) == ""
-            assert "gpt-5.5 high" in str(header.renderable)
+            assert "gpt-5.5 high" in app._blocks[0].text
 
     asyncio.run(scenario())
 
@@ -5463,6 +6017,8 @@ def test_textual_permissions_command_opens_picker_and_applies_agent_mode_without
     # - Selecting a permission preset sends OverrideTurnContext plus local
     #   approval/profile/reviewer update events; it is not a UserTurn prompt.
     runtime = _FakeActiveThreadRuntime([])
+    runtime.features = {"GuardianApproval": True}
+    runtime.session_config.features = runtime.features
     app = PyCodexTextualApp(TuiAppRuntime(runtime))
 
     async def scenario() -> None:
@@ -5478,8 +6034,12 @@ def test_textual_permissions_command_opens_picker_and_applies_agent_mode_without
             rendered = str(popup.renderable)
             assert "Update Model Permissions" in rendered
             assert "Read Only" in rendered
-            assert "> Default" in rendered
+            assert "> 1. Default" in rendered
+            assert "Can read files, edit files, and run commands in the workspace." in rendered
             assert "Full Access" in rendered
+            assert "  2. Auto-review" in rendered
+            assert "\n                  are routed through the auto-reviewer subagent." in rendered
+            assert "Press enter to confirm or esc to go back" in rendered
 
             await pilot.press("enter")
             await pilot.pause(0.05)
@@ -5491,6 +6051,7 @@ def test_textual_permissions_command_opens_picker_and_applies_agent_mode_without
     assert runtime.submitted
     assert runtime.submitted[0][1].kind == "OverrideTurnContext"
     assert runtime.submitted[0][1].payload["approval_policy"].value == "on-request"
+    assert runtime.submitted[0][1].payload["permission_profile"] is not None
     assert runtime.submitted[0][1].payload["active_permission_profile"].id == ":workspace"
     notices = [block.text for block in app._blocks if block.label == "status"]
     assert any("Permissions updated to Default" in notice for notice in notices)
@@ -5517,7 +6078,8 @@ def test_textual_permissions_full_access_uses_confirmation_before_override() -> 
             assert app._active_selection is not None
             rendered = str(popup.renderable)
             assert "Enable full access?" in rendered
-            assert "> Yes, continue anyway" in rendered
+            assert "> 1. Yes, continue anyway" in rendered
+            assert "Apply full access for this session" in rendered
             assert runtime.submitted == []
 
             await pilot.press("enter")
@@ -5530,7 +6092,53 @@ def test_textual_permissions_full_access_uses_confirmation_before_override() -> 
     op = runtime.submitted[0][1]
     assert op.kind == "OverrideTurnContext"
     assert op.payload["approval_policy"].value == "never"
-    assert op.payload["permission_profile"].has_full_disk_write_access()
+    assert op.payload["approvals_reviewer"] is ApprovalsReviewer.USER
+    assert op.payload["permission_profile"].type == "disabled"
+    assert op.payload["active_permission_profile"].id == BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS
+
+
+def test_textual_permissions_selection_updates_next_user_turn_context() -> None:
+    # Rust-derived contract:
+    # - codex-tui::app applies permission profile selections to local runtime
+    #   config before submitting AppCommand::OverrideTurnContext.
+    # - The next AppCommand::UserTurn is built from that updated turn context,
+    #   matching codex-core shell.rs use of TurnContext permission_profile.
+    runtime = _FakeActiveThreadRuntime(
+        [
+            ServerNotification("TurnStarted", {"turn": {"id": "turn-1"}}),
+            ServerNotification("TurnCompleted", {"turn": {"id": "turn-1", "status": "Completed"}}),
+        ]
+    )
+    app = PyCodexTextualApp(TuiAppRuntime(runtime))
+
+    async def scenario() -> None:
+        async with app.run_test(size=(100, 32)) as pilot:
+            composer = app.query_one("#composer", CodexComposerTextArea)
+            composer.text = "/permissions"
+            await pilot.press("enter")
+            await pilot.pause(0.05)
+            await pilot.press("down")
+            await pilot.press("enter")
+            await pilot.pause(0.05)
+            await pilot.press("enter")
+            await pilot.pause(0.05)
+
+            assert getattr(runtime.session_config.permission_profile, "type", None) == "disabled"
+            assert getattr(runtime.session_config.active_permission_profile, "id", None) == BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS
+
+            composer.text = "write a file"
+            await pilot.press("enter")
+            await pilot.pause(0.15)
+
+    asyncio.run(scenario())
+
+    assert len(runtime.submitted) >= 2
+    override = runtime.submitted[0][1]
+    user_turn = runtime.submitted[1][1]
+    assert override.kind == "OverrideTurnContext"
+    assert user_turn.kind == "UserTurn"
+    assert user_turn.payload["approval_policy"] is AskForApproval.NEVER
+    assert user_turn.payload["active_permission_profile"].id == BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS
 
 
 def test_textual_settings_command_opens_realtime_audio_popup_without_user_turn() -> None:

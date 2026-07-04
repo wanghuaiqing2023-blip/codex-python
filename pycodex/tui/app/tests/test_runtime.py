@@ -7,16 +7,24 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 from pycodex.app_server_protocol.account import GetAccountRateLimitsResponse, RateLimitSnapshot, RateLimitWindow
 from pycodex.core.session.turn.runtime import UserTurnSamplingResult
+from pycodex.core.tools.sandboxing import ExecApprovalRequirement
+from pycodex.exec.local_runtime import LocalHttpShellInvocation
+from pycodex.exec.session import ExecSessionConfig
 from pycodex.protocol import (
+    ActivePermissionProfile,
     AgentMessageContent,
     AgentMessageItem,
+    AskForApproval,
     CommandExecutionItem,
     ContentItem,
     FunctionCallOutputPayload,
+    PermissionProfile,
     ResponseItem,
+    ReviewDecision,
     ReviewTarget,
     TurnItem,
 )
@@ -51,6 +59,267 @@ def _jwt_with_claims(claims: dict[str, object]) -> str:
         return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
     return f"{encode_json({'alg': 'none', 'typ': 'JWT'})}.{encode_json(claims)}.sig"
+
+
+def test_core_active_thread_applies_override_turn_context_without_user_turn() -> None:
+    # Rust-derived contract:
+    # - codex-tui::app::config_persistence::apply_permission_profile_selection
+    #   sends AppCommand::OverrideTurnContext after updating local config.
+    # - codex-core receives this as a settings update for the active thread, not
+    #   as a UserTurn/Review operation. The next turn must see the updated
+    #   PermissionProfile.
+    session_config = SimpleNamespace(
+        cwd=Path("C:/repo"),
+        approval_policy=AskForApproval.ON_REQUEST,
+        permission_profile=PermissionProfile.read_only(),
+    )
+    runtime = CoreExecActiveThreadRuntime(
+        session_config=session_config,
+        model_client=SimpleNamespace(),
+        provider=SimpleNamespace(),
+        model_info=SimpleNamespace(slug="gpt-test"),
+    )
+    active = ActivePermissionProfile.new(":danger-full-access")
+    op = AppCommand.override_turn_context(
+        approval_policy=AskForApproval.NEVER,
+        permission_profile=PermissionProfile.disabled(),
+        active_permission_profile=active,
+    )
+
+    stream = runtime.submit_thread_op("primary", op)
+
+    assert stream.next_event(0) is None
+    assert runtime.approval_policy is AskForApproval.NEVER
+    assert runtime.permission_profile.type == "disabled"
+    assert runtime.active_permission_profile == active
+    assert session_config.approval_policy is AskForApproval.NEVER
+    assert session_config.permission_profile.type == "disabled"
+    assert session_config.active_permission_profile == active
+
+
+def test_core_active_thread_applies_override_to_frozen_exec_session_config() -> None:
+    # Rust-derived contract:
+    # - codex-tui::app applies permission profile selections to the active
+    #   thread config before the next turn.
+    # - The Python product runtime uses frozen ExecSessionConfig snapshots, so
+    #   OverrideTurnContext must replace that snapshot instead of relying on
+    #   in-place mutation.
+    session_config = ExecSessionConfig(
+        model="gpt-test",
+        model_provider_id="openai",
+        cwd=Path("C:/repo"),
+        approval_policy=AskForApproval.ON_REQUEST,
+        permission_profile=PermissionProfile.read_only(),
+    )
+    runtime = CoreExecActiveThreadRuntime(
+        session_config=session_config,
+        model_client=SimpleNamespace(),
+        provider=SimpleNamespace(),
+        model_info=SimpleNamespace(slug="gpt-test"),
+    )
+    active = ActivePermissionProfile.new(":danger-full-access")
+
+    stream = runtime.submit_thread_op(
+        "primary",
+        AppCommand.override_turn_context(
+            approval_policy=AskForApproval.NEVER,
+            permission_profile=PermissionProfile.disabled(),
+            active_permission_profile=active,
+        ),
+    )
+
+    assert stream.next_event(0) is None
+    assert runtime.session_config is not session_config
+    assert runtime.session_config.approval_policy is AskForApproval.NEVER
+    assert runtime.session_config.permission_profile.type == "disabled"
+    assert runtime.session_config.active_permission_profile == active
+
+
+def test_core_active_thread_next_turn_uses_overridden_frozen_permissions(monkeypatch) -> None:
+    # Rust-derived contract:
+    # - codex-tui::app::config_persistence::apply_permission_profile_selection
+    #   sends OverrideTurnContext, and the next UserTurn is built from the
+    #   updated active-thread config.
+    # - This covers the product regression where Textual showed Full Access
+    #   but the next model request still received read-only sandbox context.
+    seen_permission_profiles: list[str] = []
+
+    async def fake_core_sampling(session_config, plan, model_client, provider, model_info, **kwargs):
+        seen_permission_profiles.append(session_config.permission_profile.type)
+        return UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(ResponseItem.message("assistant", (ContentItem.output_text("ok"),)),),
+            turn_status="completed",
+        )
+
+    monkeypatch.setattr("pycodex.tui.app.runtime.run_exec_user_turn_core_sampling_websocket_preferred", fake_core_sampling)
+    session_config = ExecSessionConfig(
+        model="gpt-test",
+        model_provider_id="openai",
+        cwd=Path("C:/repo"),
+        approval_policy=AskForApproval.ON_REQUEST,
+        permission_profile=PermissionProfile.read_only(),
+    )
+    runtime = CoreExecActiveThreadRuntime(
+        session_config=session_config,
+        model_client=SimpleNamespace(),
+        provider=SimpleNamespace(),
+        model_info=SimpleNamespace(slug="gpt-test"),
+    )
+
+    runtime.submit_thread_op(
+        "primary",
+        AppCommand.override_turn_context(
+            approval_policy=AskForApproval.NEVER,
+            permission_profile=PermissionProfile.disabled(),
+            active_permission_profile=ActivePermissionProfile.new(":danger-full-access"),
+        ),
+    )
+    stream = runtime.submit_thread_op("primary", app_command_for_prompt("write a file", cwd=Path("C:/repo")))
+
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        event = stream.next_event(0.1)
+        if event is not None and event.kind == "TurnCompleted":
+            break
+
+    assert seen_permission_profiles == ["disabled"]
+
+
+def test_core_active_thread_carries_model_history_between_user_turns(monkeypatch) -> None:
+    # Rust-derived contract:
+    # - codex-core::session::Session::record_user_prompt_and_emit_turn_item
+    #   records the user message into conversation history.
+    # - codex-core::session::turn samples the next request from
+    #   sess.clone_history().await.for_prompt(...), so later turns in the same
+    #   session can see earlier user and assistant messages.
+    # - The Python Textual product runtime creates a fresh in-memory core
+    #   session per turn, so it must carry prompt-visible history across those
+    #   per-turn sessions at the active-thread boundary.
+    captured_history: list[tuple[ResponseItem, ...]] = []
+
+    async def fake_core_sampling(session_config, plan, model_client, provider, model_info, **kwargs):
+        captured_history.append(tuple(kwargs.get("history_items") or ()))
+        if len(captured_history) == 1:
+            message = "你好，strongswan！很高兴见到你。"
+        else:
+            message = "你刚才告诉我你是 strongswan。"
+        return UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(ResponseItem.message("assistant", (ContentItem.output_text(message),)),),
+            turn_status="completed",
+        )
+
+    monkeypatch.setattr("pycodex.tui.app.runtime.run_exec_user_turn_core_sampling_websocket_preferred", fake_core_sampling)
+    runtime = CoreExecActiveThreadRuntime(
+        session_config=ExecSessionConfig(
+            model="gpt-test",
+            model_provider_id="openai",
+            cwd=Path("C:/repo"),
+            approval_policy=AskForApproval.NEVER,
+            permission_profile=PermissionProfile.read_only(),
+        ),
+        model_client=SimpleNamespace(),
+        provider=SimpleNamespace(),
+        model_info=SimpleNamespace(slug="gpt-test"),
+    )
+
+    _drain_turn(runtime.submit_thread_op("primary", app_command_for_prompt("你好，我是strongswan", cwd=Path("C:/repo"))))
+    _drain_turn(runtime.submit_thread_op("primary", app_command_for_prompt("你知道我是谁吗？", cwd=Path("C:/repo"))))
+
+    assert captured_history[0] == ()
+    second_turn_history_text = "\n".join(_response_item_text(item) for item in captured_history[1])
+    assert "你好，我是strongswan" in second_turn_history_text
+    assert "你好，strongswan" in second_turn_history_text
+
+
+def test_core_active_thread_exec_approval_callback_waits_for_app_command(monkeypatch) -> None:
+    # Rust-derived contract:
+    # - codex-core::tools::orchestrator requests approval and waits before
+    #   executing a NeedsApproval shell tool.
+    # - codex-tui routes the user's choice back as AppCommand::ExecApproval,
+    #   resolving the pending request in the same active turn.
+    decisions: list[str] = []
+
+    async def fake_core_sampling(session_config, plan, model_client, provider, model_info, **kwargs):
+        decision = session_config.exec_approval_callback(
+            LocalHttpShellInvocation(command="Get-Command gcc -ErrorAction SilentlyContinue"),
+            session_config,
+            ExecApprovalRequirement.needs_approval(reason="check gcc"),
+            {"call_id": "call-gcc", "granted_permissions": None},
+        )
+        decisions.append(ReviewDecision.from_mapping(decision).type)
+        return UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(ResponseItem.message("assistant", (ContentItem.output_text("approved"),)),),
+            turn_status="completed",
+        )
+
+    monkeypatch.setattr("pycodex.tui.app.runtime.run_exec_user_turn_core_sampling_websocket_preferred", fake_core_sampling)
+    runtime = CoreExecActiveThreadRuntime(
+        session_config=ExecSessionConfig(
+            model="gpt-test",
+            model_provider_id="openai",
+            cwd=Path("C:/repo"),
+            approval_policy=AskForApproval.ON_REQUEST,
+            permission_profile=PermissionProfile.workspace_write((Path("C:/repo"),)),
+        ),
+        model_client=SimpleNamespace(),
+        provider=SimpleNamespace(),
+        model_info=SimpleNamespace(slug="gpt-test"),
+    )
+
+    stream = runtime.submit_thread_op("primary", app_command_for_prompt("check gcc", cwd=Path("C:/repo")))
+
+    approval_event = None
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        event = stream.next_event(0.1)
+        if event is not None and event.kind == "ExecApprovalRequested":
+            approval_event = event
+            break
+
+    assert approval_event is not None
+    assert approval_event.payload["id"] == "call-gcc"
+    assert "Get-Command gcc" in approval_event.payload["command"]
+
+    runtime.submit_thread_op(
+        "primary",
+        AppCommand.exec_approval("call-gcc", "terminal-turn", ReviewDecision.approved()),
+    )
+
+    completed = False
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        event = stream.next_event(0.1)
+        if event is not None and event.kind == "TurnCompleted":
+            completed = True
+            break
+
+    assert decisions == ["approved"]
+    assert completed is True
+
+
+def _drain_turn(stream, timeout: float = 2.0) -> list[Any]:
+    events: list[Any] = []
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        event = stream.next_event(0.1)
+        if event is None:
+            continue
+        events.append(event)
+        if event.kind == "TurnCompleted":
+            return events
+    raise AssertionError(f"turn did not complete; saw {[event.kind for event in events]}")
+
+
+def _response_item_text(item: ResponseItem) -> str:
+    parts: list[str] = []
+    for content in tuple(getattr(item, "content", ()) or ()):
+        text = getattr(content, "text", None)
+        if isinstance(text, str):
+            parts.append(text)
+    return "".join(parts)
 
 
 def test_models_auth_manager_normalizes_dict_token_snapshot(tmp_path) -> None:

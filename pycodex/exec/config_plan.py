@@ -38,7 +38,7 @@ from pycodex.git_utils import get_git_repo_root
 from pycodex.core.otel_init import OtelProvider
 from pycodex.core.otel_init import build_provider as build_otel_provider
 from pycodex.utils.home_dir import find_codex_home
-from pycodex.protocol import AskForApproval, GranularApprovalConfig, PermissionProfile, SandboxMode
+from pycodex.protocol import AltScreenMode, AskForApproval, GranularApprovalConfig, PermissionProfile, SandboxMode
 
 from .cli import ExecCli
 from .event_processor import (
@@ -159,6 +159,7 @@ class ExecConfigBootstrapPlan:
     tui_status_line_use_colors: bool = True
     tui_terminal_title: tuple[str, ...] | None = None
     tui_keymap: Mapping[str, JsonValue] | None = None
+    tui_alternate_screen: AltScreenMode = AltScreenMode.AUTO
     chatgpt_base_url: str | None = None
     upstream_source: str = UPSTREAM_EXEC_RUN_MAIN
 
@@ -174,6 +175,8 @@ class ExecConfigBootstrapPlan:
             object.__setattr__(self, "tui_terminal_title", tuple(str(item) for item in self.tui_terminal_title))
         keymap = self.tui_keymap if isinstance(self.tui_keymap, Mapping) else None
         object.__setattr__(self, "tui_keymap", copy.deepcopy(dict(keymap)) if keymap is not None else None)
+        if not isinstance(self.tui_alternate_screen, AltScreenMode):
+            object.__setattr__(self, "tui_alternate_screen", AltScreenMode.parse(str(self.tui_alternate_screen)))
         servers = self.mcp_servers if isinstance(self.mcp_servers, Mapping) else {}
         object.__setattr__(self, "mcp_servers", copy.deepcopy(dict(servers)))
         if self.features is None:
@@ -200,6 +203,7 @@ class ExecConfigBootstrapPlan:
             "tuiStatusLineUseColors": self.tui_status_line_use_colors,
             "tuiTerminalTitle": list(self.tui_terminal_title) if self.tui_terminal_title is not None else None,
             "tuiKeymap": copy.deepcopy(dict(self.tui_keymap)) if self.tui_keymap is not None else None,
+            "tuiAlternateScreen": self.tui_alternate_screen.value,
         }
 
 
@@ -1458,6 +1462,7 @@ def build_exec_config_bootstrap_plan(
         tui_status_line_use_colors=_tui_config_bool(effective_config, "status_line_use_colors", True),
         tui_terminal_title=_tui_config_str_tuple(effective_config, "terminal_title"),
         tui_keymap=_tui_config_keymap(effective_config),
+        tui_alternate_screen=_tui_config_alt_screen_mode(effective_config),
         chatgpt_base_url=_optional_config_str(effective_config, "chatgpt_base_url"),
     )
 
@@ -1491,6 +1496,7 @@ def exec_session_config_from_bootstrap_plan(plan: ExecConfigBootstrapPlan) -> Ex
         tui_status_line_use_colors=plan.tui_status_line_use_colors,
         tui_terminal_title=plan.tui_terminal_title,
         tui_keymap=plan.tui_keymap,
+        tui_alternate_screen=plan.tui_alternate_screen,
         chatgpt_base_url=plan.chatgpt_base_url,
         allow_login_shell=plan.allow_login_shell,
         features=plan.features,
@@ -1542,6 +1548,13 @@ def _tui_config_keymap(config_toml: Mapping[str, JsonValue]) -> Mapping[str, Jso
     if isinstance(value, Mapping):
         return copy.deepcopy(dict(value))
     return None
+
+
+def _tui_config_alt_screen_mode(config_toml: Mapping[str, JsonValue]) -> AltScreenMode:
+    value = _tui_config_mapping(config_toml).get("alternate_screen")
+    if value is None:
+        return AltScreenMode.AUTO
+    return AltScreenMode.parse(str(value))
 
 
 def _allow_login_shell_from_config(config_toml: Mapping[str, JsonValue]) -> bool:
@@ -1854,6 +1867,7 @@ def _exec_session_config_to_mapping(config: ExecSessionConfig) -> dict[str, Json
         "serviceTier": config.service_tier,
         "hideAgentReasoning": config.hide_agent_reasoning,
         "showRawAgentReasoning": config.show_raw_agent_reasoning,
+        "tuiAlternateScreen": config.tui_alternate_screen.value,
         "tuiStatusLine": list(config.tui_status_line) if config.tui_status_line is not None else None,
         "tuiStatusLineUseColors": config.tui_status_line_use_colors,
         "tuiTerminalTitle": list(config.tui_terminal_title) if config.tui_terminal_title is not None else None,

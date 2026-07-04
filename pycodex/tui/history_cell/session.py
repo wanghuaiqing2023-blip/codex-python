@@ -65,12 +65,12 @@ def with_border_internal(lines: list[Line], forced_inner_width: int | None) -> l
     max_line_width = max((_line_width(line) for line in lines), default=0)
     content_width = max(max_line_width, forced_inner_width or 0)
     border_inner_width = content_width + 2
-    out = [Line.from_text("╭" + "─" * border_inner_width + "╮", style="dim")]
+    out = [Line.from_text("\u256d" + "\u2500" * border_inner_width + "\u256e", style="dim")]
     for line in lines:
         used = _line_width(line)
         padding = " " * max(0, content_width - used)
-        out.append(Line.from_spans([Span("│ ", "dim"), *line.spans, Span(padding + " │", "dim")]))
-    out.append(Line.from_text("╰" + "─" * border_inner_width + "╯", style="dim"))
+        out.append(Line.from_spans([Span("\u2502 ", "dim"), *line.spans, Span(padding + " \u2502", "dim")]))
+    out.append(Line.from_text("\u2570" + "\u2500" * border_inner_width + "\u256f", style="dim"))
     return out
 
 

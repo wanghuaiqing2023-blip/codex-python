@@ -54,6 +54,7 @@ from pycodex.core.context_manager.history import (
     process_history_items as _context_manager_process_history_items,
 )
 from pycodex.core.state.session import SessionState
+from pycodex.core.state.additional_context import AdditionalContextStore
 from pycodex.core.state.turn import PendingRequestPermissions
 from pycodex.core.session.turn.prompt import is_guardian_reviewer_source
 from pycodex.core.unified_exec import UnifiedExecProcessManager
@@ -85,6 +86,7 @@ from pycodex.protocol import (
     ModelRerouteReason,
     ModelVerificationEvent,
     RateLimitSnapshot,
+    RolloutItem,
     SandboxEnforcement,
     SandboxPolicy,
     SERVICE_TIER_DEFAULT_REQUEST_VALUE,
@@ -395,6 +397,7 @@ class InMemoryCodexSession:
     history: list[ResponseItem] = field(default_factory=list)
     context_updates_recorded: int = 0
     recorded_batches: list[tuple[ResponseItem, ...]] = field(default_factory=list)
+    persisted_rollout_items: list[RolloutItem] = field(default_factory=list)
     request_permissions_callback: Any = None
     request_permissions_event_roundtrip_enabled: bool = False
     shell: Any = None
@@ -427,6 +430,7 @@ class InMemoryCodexSession:
     _reference_context_item: TurnContextItem | None = None
     _previous_turn_settings: Any = None
     _next_turn_is_first: bool = True
+    _additional_context_store: AdditionalContextStore = field(default_factory=AdditionalContextStore)
     _pending_turn_environments: Any = None
     strict_auto_review_enabled: bool = False
     flush_rollout_count: int = 0
@@ -782,7 +786,9 @@ class InMemoryCodexSession:
             )
         if items:
             await self.record_conversation_items(turn_context, tuple(items))
-        self._reference_context_item = _turn_context_item_from_turn_context(turn_context)
+        turn_context_item = _turn_context_item_from_turn_context(turn_context)
+        await self.persist_rollout_items((RolloutItem.turn_context(turn_context_item),))
+        self._reference_context_item = turn_context_item
         self._previous_turn_settings = SimpleNamespace(
             model=_model_slug(turn_context.model_info),
             realtime_active=turn_context.realtime_active,
@@ -848,6 +854,11 @@ class InMemoryCodexSession:
     async def flush_rollout(self) -> None:
         self.flush_rollout_count += 1
 
+    async def persist_rollout_items(self, items: list[RolloutItem] | tuple[RolloutItem, ...]) -> None:
+        if isinstance(items, (str, bytes)) or not isinstance(items, (list, tuple)):
+            raise TypeError("items must be a list or tuple of RolloutItem")
+        self.persisted_rollout_items.extend(RolloutItem.from_mapping(item) for item in items)
+
     async def replace_history(
         self,
         items: list[ResponseItem | dict[str, Any]] | tuple[ResponseItem | dict[str, Any], ...],
@@ -876,6 +887,17 @@ class InMemoryCodexSession:
         batch = tuple(items)
         self.recorded_batches.append(batch)
         self.history.extend(_process_history_items(batch, _turn_truncation_policy_from_context(turn_context)))
+
+    def merge_additional_context(self, additional_context: Any) -> tuple[ResponseItem, ...]:
+        """Merge app-provided additional context using Rust's session store semantics.
+
+        Rust source: ``codex-rs/core/src/state/additional_context.rs`` and
+        ``codex-rs/core/src/session/handlers.rs::user_input_or_turn_inner``.
+        """
+
+        values = {} if additional_context is None else additional_context
+        input_items = self._additional_context_store.merge(values)
+        return tuple(ResponseItem.from_response_input_item(item) for item in input_items)
 
     async def emit_turn_item_started(self, turn_context: InMemoryTurnContext, item: TurnItem) -> None:
         if not isinstance(item, TurnItem):

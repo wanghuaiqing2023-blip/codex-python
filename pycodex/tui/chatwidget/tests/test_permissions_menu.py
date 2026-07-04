@@ -25,6 +25,9 @@ def test_permission_profiles_popup_orders_builtin_items_and_strips_default_suffi
     assert selection.approval_policy == "on-request"
     assert selection.approvals_reviewer == "user"
     assert selection.display_label == "Default"
+    full_access = result.view.items[1].actions[0].selection
+    assert full_access.profile_id == ":danger-no-sandbox"
+    assert full_access.approval_policy == "never"
 
 
 def test_permission_profiles_popup_includes_auto_review_when_guardian_enabled() -> None:

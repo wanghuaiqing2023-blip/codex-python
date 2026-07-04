@@ -1119,7 +1119,13 @@ async def _merge_additional_context(sess: Any, additional_context: Any) -> tuple
     context_store = getattr(state, "additional_context", None)
     merge = getattr(context_store, "merge", None)
     if callable(merge):
-        return tuple(await _maybe_await(merge(additional_context)))
+        merged = tuple(await _maybe_await(merge({} if additional_context is None else additional_context)))
+        return tuple(
+            ResponseItem.from_response_input_item(item)
+            if isinstance(item, ResponseInputItem)
+            else item
+            for item in merged
+        )
     if additional_context is None:
         return ()
     if isinstance(additional_context, dict):

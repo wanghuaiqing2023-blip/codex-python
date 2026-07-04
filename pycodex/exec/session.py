@@ -23,6 +23,7 @@ from urllib.parse import urlparse
 from pycodex.protocol import (
     ActivePermissionProfile,
     AdditionalPermissionProfile,
+    AltScreenMode,
     ApprovalsReviewer,
     AskForApproval,
     EventMsg,
@@ -351,8 +352,10 @@ class ExecSessionConfig:
     tui_status_line_use_colors: bool = True
     tui_terminal_title: tuple[str, ...] | None = None
     tui_keymap: Mapping[str, JsonValue] | None = None
+    tui_alternate_screen: AltScreenMode = AltScreenMode.AUTO
     chatgpt_base_url: str | None = None
     request_permissions_callback: Any = None
+    exec_approval_callback: Any = None
     granted_session_permissions: AdditionalPermissionProfile | None = None
     exec_policy_rules: tuple[Any, ...] = ()
     allow_login_shell: bool = True
@@ -376,8 +379,12 @@ class ExecSessionConfig:
             raise TypeError("tui_status_line_use_colors must be a bool")
         keymap = self.tui_keymap if isinstance(self.tui_keymap, Mapping) else None
         object.__setattr__(self, "tui_keymap", dict(keymap) if keymap is not None else None)
+        if not isinstance(self.tui_alternate_screen, AltScreenMode):
+            object.__setattr__(self, "tui_alternate_screen", AltScreenMode.parse(str(self.tui_alternate_screen)))
         if self.request_permissions_callback is not None and not callable(self.request_permissions_callback):
             raise TypeError("request_permissions_callback must be callable or None")
+        if self.exec_approval_callback is not None and not callable(self.exec_approval_callback):
+            raise TypeError("exec_approval_callback must be callable or None")
         if self.granted_session_permissions is not None and not isinstance(
             self.granted_session_permissions,
             AdditionalPermissionProfile,
@@ -1065,6 +1072,7 @@ def exec_session_config_mapping(config: ExecSessionConfig) -> dict[str, JsonValu
             "serviceTier": config.service_tier,
             "hideAgentReasoning": config.hide_agent_reasoning,
             "showRawAgentReasoning": config.show_raw_agent_reasoning,
+            "tuiAlternateScreen": config.tui_alternate_screen.value,
             "tuiStatusLine": list(config.tui_status_line) if config.tui_status_line is not None else None,
             "tuiStatusLineUseColors": config.tui_status_line_use_colors,
             "tuiTerminalTitle": list(config.tui_terminal_title) if config.tui_terminal_title is not None else None,

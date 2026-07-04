@@ -221,10 +221,9 @@ class PyCodexWindowsVtDriver(WindowsDriver):
         self._writer_thread = WriterThread(self._file)
         self._writer_thread.start()
 
-        self.write("\x1b[?1049h")
-        self._enable_mouse_support()
+        if _alt_screen_active(self._app):
+            self.write("\x1b[?1049h")
         self.write("\x1b[?25l")
-        self.write("\033[?1003h\n")
         self._enable_bracketed_paste()
 
         self._event_thread = _WindowsVtInputMonitor(
@@ -235,10 +234,17 @@ class PyCodexWindowsVtDriver(WindowsDriver):
         )
         self._event_thread.start()
 
+    def stop_application_mode(self) -> None:
+        self._disable_bracketed_paste()
+        self.disable_input()
+        if _alt_screen_active(self._app):
+            self.write("\x1b[?1049l")
+        self.write("\x1b[?25h")
+        self.flush()
+
     def disable_input(self) -> None:
         try:
             if not self.exit_event.is_set():
-                self._disable_mouse_support()
                 self.exit_event.set()
                 if self._event_thread is not None:
                     self._event_thread.join(timeout=0.2)
@@ -246,3 +252,11 @@ class PyCodexWindowsVtDriver(WindowsDriver):
                 self.exit_event.clear()
         except Exception:
             pass
+
+
+def _use_alt_screen(app: Any) -> bool:
+    return bool(getattr(app, "_pycodex_alt_screen_enabled", getattr(app, "_pycodex_use_alt_screen", True)))
+
+
+def _alt_screen_active(app: Any) -> bool:
+    return bool(getattr(app, "_pycodex_alt_screen_active", False))

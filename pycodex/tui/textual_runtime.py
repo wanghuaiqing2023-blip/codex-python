@@ -20,6 +20,7 @@ import os
 import shutil
 import subprocess
 import sys
+import textwrap
 import threading
 import time
 from collections.abc import Iterable, Mapping
@@ -40,10 +41,29 @@ from pycodex.core.agents_md import DEFAULT_AGENTS_MD_FILENAME
 from pycodex.core.util import normalize_thread_name
 from pycodex.git_utils import current_branch_name, local_git_branches, recent_commits
 from pycodex.login.token_data import IdTokenInfoError, TokenData, parse_chatgpt_jwt_claims
-from pycodex.protocol import CollaborationMode, ReviewTarget, Settings
+from pycodex.protocol import (
+    AltScreenMode,
+    BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS,
+    BUILT_IN_PERMISSION_PROFILE_READ_ONLY,
+    BUILT_IN_PERMISSION_PROFILE_WORKSPACE,
+    ActivePermissionProfile as ProtocolActivePermissionProfile,
+    ApprovalsReviewer as ProtocolApprovalsReviewer,
+    AskForApproval as ProtocolAskForApproval,
+    CollaborationMode,
+    PermissionProfile as ProtocolPermissionProfile,
+    ReviewDecision,
+    ReviewTarget,
+    Settings,
+)
 
 from .app.event_dispatch import SHUTDOWN_FIRST_EXIT_TIMEOUT
 from .app_event import AppEvent, KeymapEditIntent, RateLimitRefreshOrigin
+from .app.resize_reflow import (
+    HistoryCell as ResizeReflowHistoryCell,
+    HistoryLineWrapPolicy as ResizeReflowHistoryLineWrapPolicy,
+    ResizeReflowState,
+    insert_history_cell_lines_plan,
+)
 from .app.agent_navigation import AgentNavigationDirection, format_agent_picker_item_name
 from .app.runtime import ActiveThreadRuntime, TuiAppRuntime
 from .app.runtime import _run_coro_blocking as _runtime_run_coro_blocking
@@ -132,8 +152,14 @@ from .chatwidget.permission_popups import (
     ApprovalsReviewer,
     AskForApproval,
     PermissionProfile,
+    builtin_approval_presets as popup_builtin_approval_presets,
     open_full_access_confirmation,
     open_permissions_popup,
+)
+from .chatwidget.permissions_menu import (
+    CustomPermissionProfileSummary,
+    PermissionMenuConfig,
+    open_permission_profiles_popup as open_permission_profiles_menu,
 )
 from .chatwidget.review_popups import (
     ReviewPopupAction,
@@ -159,6 +185,7 @@ from .chatwidget.status_surfaces import (
     terminal_title_spinner_frame_at,
     truncate_terminal_title_part,
 )
+from .bottom_pane.popup_consts import standard_popup_hint_line
 from .resume_picker import (
     BackgroundEvent,
     PickerPage,
@@ -175,6 +202,12 @@ from .get_git_diff import get_git_diff
 from .history_cell.exec import UnifiedExecProcessDetails, new_unified_exec_processes_output
 from .history_cell.messages import new_reasoning_summary_block
 from .history_cell.session import SessionHeaderHistoryCell, has_yolo_permissions
+from .insert_history import (
+    HistoryLineWrapPolicy as InsertHistoryLineWrapPolicy,
+    TerminalModel as InsertHistoryTerminalModel,
+    insert_history_lines,
+    insert_history_lines_with_wrap_policy,
+)
 from .exec_cell.model import CommandOutput as ExecCellCommandOutput
 from .exec_cell.model import ExecCall as ExecCellCall
 from .exec_cell.model import ExecCell
@@ -300,8 +333,18 @@ def should_use_textual_tui(
     return _is_tty(stdout) and _is_tty(stdin)
 
 
-def run_textual_tui(*, active_thread_runtime: ActiveThreadRuntime | TuiAppRuntime, stdout: Any | None = None) -> int:
+def run_textual_tui(
+    *,
+    active_thread_runtime: ActiveThreadRuntime | TuiAppRuntime,
+    stdout: Any | None = None,
+    use_alt_screen: bool = True,
+) -> int:
     """Run the Textual-backed interactive TUI product shell."""
+
+    if _should_use_scrollback_product_path(stdout):
+        from .scrollback_runtime import run_scrollback_tui
+
+        return run_scrollback_tui(active_thread_runtime=active_thread_runtime, stdout=stdout)
 
     verify_textual_runtime()
     if isinstance(active_thread_runtime, TuiAppRuntime):
@@ -310,12 +353,47 @@ def run_textual_tui(*, active_thread_runtime: ActiveThreadRuntime | TuiAppRuntim
     else:
         app_runtime = TuiAppRuntime(active_thread_runtime=active_thread_runtime)
         configure_app_runtime_thread_identity(app_runtime, active_thread_runtime)
-    app = PyCodexTextualApp(app_runtime)
+    app = PyCodexTextualApp(app_runtime, use_alt_screen=use_alt_screen)
     result = app.run()
     code = int(result or app.exit_code)
 
     _write_exit_summary(sys.stdout if stdout is None else stdout, app_runtime)
     return code
+
+
+def _should_use_scrollback_product_path(stdout: Any | None) -> bool:
+    """Return whether real terminal sessions should use native scrollback history.
+
+    Rust ``codex-tui`` writes finalized history into terminal scrollback and
+    keeps only the bottom pane live.  Python's retained Textual transcript is
+    still valuable for component tests and overlay migration, but a real TTY
+    product session must not put transcript history behind a Textual widget
+    because that prevents native terminal scroll/copy parity.
+    """
+
+    flag = os.environ.get("PYCODEX_TUI_FORCE_TEXTUAL", "").strip().lower()
+    if flag in {"1", "true", "yes", "on"}:
+        return False
+    if stdout is None:
+        return True
+    isatty = getattr(stdout, "isatty", None)
+    if callable(isatty):
+        try:
+            return bool(isatty())
+        except Exception:
+            return False
+    return False
+
+
+def determine_alt_screen_mode(no_alt_screen: bool, tui_alternate_screen: Any) -> bool:
+    """Mirror Rust ``codex-tui::determine_alt_screen_mode``."""
+
+    if no_alt_screen:
+        return False
+    mode = tui_alternate_screen
+    if not isinstance(mode, AltScreenMode):
+        mode = AltScreenMode.parse(str(mode))
+    return mode is not AltScreenMode.NEVER
 
 
 def _write_exit_summary(writer: Any, app_runtime: TuiAppRuntime) -> None:
@@ -423,6 +501,54 @@ def _copy_to_system_clipboard(text: str) -> Any:
     raise RuntimeError("clipboard command not found")
 
 
+def _read_system_clipboard_text() -> str | None:
+    if sys.platform == "win32":
+        powershell = shutil.which("powershell") or shutil.which("pwsh")
+        if powershell is None:
+            return None
+        try:
+            result = subprocess.run(
+                [powershell, "-NoProfile", "-Command", "Get-Clipboard -Raw"],
+                text=True,
+                capture_output=True,
+                timeout=1.5,
+                check=False,
+            )
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+        return result.stdout or None
+    if sys.platform == "darwin":
+        pbpaste = shutil.which("pbpaste")
+        if pbpaste is None:
+            return None
+        try:
+            result = subprocess.run([pbpaste], text=True, capture_output=True, timeout=1.5, check=False)
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+        return result.stdout or None
+    for command in (("wl-paste", "-n"), ("xclip", "-selection", "clipboard", "-out"), ("xsel", "--clipboard", "--output")):
+        executable = shutil.which(command[0])
+        if executable is None:
+            continue
+        try:
+            result = subprocess.run(
+                [executable, *command[1:]],
+                text=True,
+                capture_output=True,
+                timeout=1.5,
+                check=False,
+            )
+        except Exception:
+            continue
+        if result.returncode == 0:
+            return result.stdout or None
+    return None
+
+
 class CodexTranscriptLog(RichLog):
     """Scrollable transcript pane that mirrors Rust pager offset redraws."""
 
@@ -449,18 +575,13 @@ class PyCodexTextualApp(App[int]):
         color: white;
     }
 
-    #session-header {
-        height: auto;
-        padding: 1 2;
-        color: white;
-    }
-
     #transcript {
         height: 1fr;
         margin: 0 1;
         padding: 0 1;
         background: black;
         color: white;
+        scrollbar-size: 0 0;
     }
 
     #status-line {
@@ -500,9 +621,14 @@ class PyCodexTextualApp(App[int]):
             return PyCodexWindowsVtDriver
         return super().get_driver_class()
 
-    def __init__(self, app_runtime: TuiAppRuntime) -> None:
+    def __init__(self, app_runtime: TuiAppRuntime, *, use_alt_screen: bool = True) -> None:
         super().__init__()
         self.app_runtime = app_runtime
+        self._pycodex_alt_screen_enabled = bool(use_alt_screen)
+        self._pycodex_alt_screen_active = False
+        # Back-compat for older tests/helpers. Rust keeps "enabled" separate
+        # from "active": normal chat starts inline and only overlays enter alt.
+        self._pycodex_use_alt_screen = self._pycodex_alt_screen_enabled
         self.exit_code = 0
         self._blocks: list[_TranscriptBlock] = []
         self._active_codex_block: _TranscriptBlock | None = None
@@ -531,6 +657,7 @@ class PyCodexTextualApp(App[int]):
         self._invalid_terminal_title_warned = False
         self._notices_ready = False
         self._session_header_configured = _runtime_session_header_configured_at_startup(app_runtime)
+        self._session_header_block_index: int | None = None
         self._shutdown_requested = False
         self.copy_to_clipboard = _copy_to_system_clipboard
         self._post_submit_composer_text: str | None = None
@@ -539,10 +666,15 @@ class PyCodexTextualApp(App[int]):
         self._shortcut_overlay_mode = FooterMode.COMPOSER_EMPTY
         self._external_editor_thread: threading.Thread | None = None
         self._active_retry_status: _RetryStatus | None = None
+        self.read_clipboard_text = _read_system_clipboard_text
+        self._history_projection_next_index = 0
+        self._terminal_scrollback_projected_until = 0
+        self._last_history_projection_ansi = ""
+        self._resize_reflow_state = ResizeReflowState(raw_output_mode=_raw_output_mode(app_runtime))
+        self._last_insert_history_reflow_plan: Any = None
 
     def compose(self) -> ComposeResult:
         yield Vertical(
-            Static(_plain_status_text(self._session_header_text()), id="session-header"),
             CodexTranscriptLog(id="transcript", wrap=True, highlight=False, markup=False, auto_scroll=True),
             Static(_plain_status_text(self._startup_status_line_text()), id="status-line"),
             Static("", id="slash-popup"),
@@ -554,7 +686,9 @@ class PyCodexTextualApp(App[int]):
         self._sync_composer_history_metadata_from_runtime()
         self._refresh_terminal_title(active_progress=False)
         self._notices_ready = True
+        self._ensure_session_header_block()
         self._append_startup_notices()
+        self._history_projection_next_index = len(self._blocks)
         self._set_status("Ready")
         self._composer().focus()
         self._pump_app_server_events()
@@ -861,6 +995,9 @@ class PyCodexTextualApp(App[int]):
             return True
         if self._active_selection.kind in {"resume", "fork"} and isinstance(self._active_selection.context, PickerState):
             return self._handle_resume_picker_key(self._active_selection, key)
+        if self._active_selection.kind == "approval" and key in {"y", "p"}:
+            self._accept_exec_approval_shortcut(self._active_selection, key)
+            return True
         if key == "up":
             self._active_selection_index = max(self._active_selection_index - 1, 0)
             self._render_active_selection()
@@ -1407,6 +1544,76 @@ class PyCodexTextualApp(App[int]):
         self._render_active_selection()
         self._set_status("Update Permissions: up/down move; Enter select; Esc/q cancel")
 
+    def _open_exec_approval_picker(self, event: ServerNotification) -> None:
+        payload = event.payload if isinstance(event.payload, Mapping) else {}
+        command = str(payload.get("command", "") or "")
+        reason = str(payload.get("reason", "") or "")
+        approval_id = str(payload.get("id", "") or "")
+        turn_id = payload.get("turn_id")
+        amendment = payload.get("proposed_execpolicy_amendment")
+        items = [
+            SelectionItem(
+                name="Yes, proceed",
+                description="Run this command once.",
+                actions=[ReviewDecision.approved()],
+                dismiss_on_select=True,
+            )
+        ]
+        if amendment is not None:
+            items.append(
+                SelectionItem(
+                    name="Yes, and don't ask again for this kind of command",
+                    description="Approve this command and apply the proposed exec policy amendment.",
+                    actions=[
+                        {
+                            "approved_execpolicy_amendment": {
+                                "proposed_execpolicy_amendment": amendment,
+                            }
+                        }
+                    ],
+                    dismiss_on_select=True,
+                )
+            )
+        else:
+            items.append(
+                SelectionItem(
+                    name="Yes, and don't ask again this session",
+                    description="Approve this command for the current session.",
+                    actions=[ReviewDecision.approved_for_session()],
+                    dismiss_on_select=True,
+                )
+            )
+        items.append(
+            SelectionItem(
+                name="No, and tell Codex what to do differently",
+                description="Reject this command and return control to the model.",
+                actions=[ReviewDecision.denied()],
+                dismiss_on_select=True,
+            )
+        )
+        subtitle_parts = []
+        if reason:
+            subtitle_parts.append(f"Reason: {reason}")
+        if command:
+            subtitle_parts.append(f"$ {command}")
+        view = SelectionViewParams(
+            title="Would you like to run the following command?",
+            subtitle="\n".join(subtitle_parts) if subtitle_parts else None,
+            footer_hint="Press enter to confirm or esc to go back",
+            items=items,
+        )
+        self._active_selection = _TextualSelection(
+            kind="approval",
+            view=view,
+            context={
+                "id": approval_id,
+                "turn_id": None if turn_id is None else str(turn_id),
+            },
+        )
+        self._active_selection_index = 0
+        self._render_active_selection()
+        self._set_status("Command approval: up/down move; Enter select; Esc/q cancel")
+
     def _render_active_selection(self) -> None:
         selection = self._active_selection
         if selection is None:
@@ -1434,6 +1641,9 @@ class PyCodexTextualApp(App[int]):
 
     def _cancel_active_selection(self) -> None:
         selection = self._active_selection
+        if selection is not None and selection.kind == "approval":
+            self._resolve_exec_approval_selection(selection, ReviewDecision.abort())
+            return
         if selection is not None and selection.parent_views:
             selection.view = selection.parent_views.pop()
             selection.search_query = ""
@@ -1460,6 +1670,9 @@ class PyCodexTextualApp(App[int]):
             return
         if selection.kind == "permissions":
             self._accept_permissions_selection(selection)
+            return
+        if selection.kind == "approval":
+            self._accept_exec_approval_selection(selection)
             return
         if selection.kind == "review":
             self._accept_review_selection(selection)
@@ -1496,6 +1709,41 @@ class PyCodexTextualApp(App[int]):
         self._mark_session_header_configured()
         self._set_status("Ready")
         self._composer().focus()
+
+    def _accept_exec_approval_shortcut(self, selection: "_TextualSelection", key: str) -> None:
+        items = _selection_active_items(selection)
+        if not items:
+            self._resolve_exec_approval_selection(selection, ReviewDecision.abort())
+            return
+        if key == "y":
+            self._resolve_exec_approval_selection(selection, ReviewDecision.approved())
+            return
+        if key == "p":
+            index = 1 if len(items) > 1 else 0
+            action = (getattr(items[index], "actions", None) or [ReviewDecision.approved_for_session()])[0]
+            self._resolve_exec_approval_selection(selection, action)
+
+    def _accept_exec_approval_selection(self, selection: "_TextualSelection") -> None:
+        items = _selection_active_items(selection)
+        if not items:
+            self._resolve_exec_approval_selection(selection, ReviewDecision.abort())
+            return
+        item = items[min(max(self._active_selection_index, 0), len(items) - 1)]
+        action = (getattr(item, "actions", None) or [ReviewDecision.denied()])[0]
+        self._resolve_exec_approval_selection(selection, action)
+
+    def _resolve_exec_approval_selection(self, selection: "_TextualSelection", decision: Any) -> None:
+        context = selection.context if isinstance(selection.context, Mapping) else {}
+        approval_id = str(context.get("id", "") or "")
+        turn_id = context.get("turn_id")
+        self._active_selection = None
+        self.clear_command_popup()
+        self._composer().focus()
+        if not approval_id:
+            self._append_system_notice("Approval request is missing an id.")
+            return
+        self.app_runtime.submit_op(AppCommand.exec_approval(approval_id, None if turn_id is None else str(turn_id), decision))
+        self._set_status("Working" if self._busy else "Ready")
 
     def _accept_agent_selection(self, selection: "_TextualSelection") -> None:
         items = _selection_active_items(selection)
@@ -1594,6 +1842,25 @@ class PyCodexTextualApp(App[int]):
     def _apply_permission_popup_event(self, selection: "_TextualSelection", event: object) -> object | None:
         kind = str(getattr(event, "kind", "") or "")
         payload = getattr(event, "payload", {}) or {}
+        if kind == "select_permission_profile":
+            profile_selection = getattr(event, "selection", None)
+            profile_id = str(getattr(profile_selection, "profile_id", "") or "")
+            config = _permission_config_for_runtime(self.app_runtime)
+            if (
+                profile_id == ":danger-no-sandbox"
+                and not bool(getattr(config.notices, "hide_full_access_warning", False))
+            ):
+                widget = selection.context or _PermissionPopupWidget(self.app_runtime)
+                preset = _popup_approval_preset_for_profile_id(self.app_runtime, profile_id)
+                if preset is not None:
+                    return open_full_access_confirmation(
+                        widget,
+                        preset,
+                        True,
+                        profile_selection,
+                    )
+            self._apply_permission_profile_selection(profile_selection)
+            return None
         if kind == "OpenFullAccessConfirmation":
             widget = selection.context or _PermissionPopupWidget(self.app_runtime)
             return open_full_access_confirmation(
@@ -1618,8 +1885,9 @@ class PyCodexTextualApp(App[int]):
             self._set_approvals_reviewer(payload.get("approvals_reviewer", payload.get("reviewer")))
             return None
         if kind == "InsertHistoryCell":
-            message = payload.get("message") or payload.get("cell") or "Permissions updated"
-            self._append_system_notice(str(message))
+            event = AppEvent.of(kind, **dict(payload))
+            plan = self.app_runtime.handle_app_event(event)
+            self._handle_insert_history_cell_dispatch_plan(plan)
             return None
         if kind == "UpdateFullAccessWarningAcknowledged":
             self._set_full_access_warning_acknowledged(bool(payload.get("acknowledged", True)))
@@ -1692,15 +1960,44 @@ class PyCodexTextualApp(App[int]):
     def _apply_permission_profile_selection(self, selection: object) -> None:
         if selection is None:
             return
+        ui_profile = getattr(selection, "profile", None)
+        active_profile = getattr(selection, "active_profile", None)
         profile_id = getattr(selection, "profile_id", None)
-        approval_policy = getattr(selection, "approval_policy", None)
-        approvals_reviewer = getattr(selection, "approvals_reviewer", None)
-        display_label = getattr(selection, "display_label", None) or profile_id
+        if profile_id is None and active_profile is not None:
+            profile_id = getattr(active_profile, "id", None)
+        approval_policy = _coerce_approval_policy(getattr(selection, "approval_policy", None))
+        approvals_reviewer = _coerce_approvals_reviewer(getattr(selection, "approvals_reviewer", None))
+        display_label = (
+            getattr(selection, "display_label", None)
+            or getattr(active_profile, "name", None)
+            or profile_id
+        )
+        ui_active_permission_profile = active_profile or SimpleNamespace(id=profile_id, name=display_label)
+        core_active_permission_profile = _core_active_permission_profile_for_profile_id(profile_id)
+        core_permission_profile = _core_permission_profile_for_active_profile_id(profile_id)
+        if ui_profile is None:
+            ui_profile = _permission_profile_for_active_profile_id(self.app_runtime, profile_id)
         if approval_policy is not None:
             self._set_permission_approval_policy(approval_policy)
         if approvals_reviewer is not None:
             self._set_approvals_reviewer(approvals_reviewer)
-        self._set_active_permission_profile(SimpleNamespace(id=profile_id, name=display_label))
+        self._set_active_permission_profile(core_active_permission_profile or ui_active_permission_profile)
+        config = _permission_config_for_runtime(self.app_runtime)
+        if ui_profile is not None:
+            config.permissions.permission_profile = ui_profile
+        if core_permission_profile is not None:
+            _set_runtime_attr(self.app_runtime.active_thread_runtime, "permission_profile", core_permission_profile)
+            _set_runtime_attr(getattr(self.app_runtime.active_thread_runtime, "session_config", None), "permission_profile", core_permission_profile)
+        op = AppCommand.override_turn_context(
+            approval_policy=approval_policy,
+            approvals_reviewer=approvals_reviewer,
+            permission_profile=core_permission_profile,
+            active_permission_profile=core_active_permission_profile,
+        )
+        try:
+            self.app_runtime.submit_op(op)
+        except Exception as exc:
+            self._append_system_notice(f"Permission override failed: {exc}")
         self._append_system_notice(f"Permissions updated to {display_label}")
 
     def _open_review_picker(self) -> None:
@@ -2690,14 +2987,18 @@ class PyCodexTextualApp(App[int]):
     def _handle_new_command(self) -> None:
         self.app_runtime.handle_app_event(AppEvent.new_session())
         self._blocks.clear()
+        self._history_projection_next_index = 0
+        self._reset_insert_history_reflow_state()
         self._active_codex_block = None
         self._active_reasoning_block = None
         self._reasoning_buffer = ""
         self._reasoning_full_buffer = ""
         self._session_header_configured = False
-        self._refresh_session_header()
+        self._session_header_block_index = None
+        self._ensure_session_header_block()
         self._refresh_transcript()
         self._append_startup_notices()
+        self._history_projection_next_index = len(self._blocks)
         self._set_status("Ready")
 
     def _handle_init_command(self) -> None:
@@ -2848,12 +3149,15 @@ class PyCodexTextualApp(App[int]):
     def _handle_clear_command(self) -> None:
         self.app_runtime.handle_app_event(AppEvent.clear_ui())
         self._blocks.clear()
+        self._history_projection_next_index = 0
+        self._reset_insert_history_reflow_state()
         self._active_codex_block = None
         self._active_reasoning_block = None
         self._reasoning_buffer = ""
         self._reasoning_full_buffer = ""
-        self._session_header_configured = False
-        self._refresh_session_header()
+        self._session_header_configured = _runtime_session_header_configured_at_startup(self.app_runtime)
+        self._session_header_block_index = None
+        self._ensure_session_header_block()
         self._refresh_transcript()
         self._set_status("Ready")
 
@@ -2968,9 +3272,12 @@ class PyCodexTextualApp(App[int]):
                 return
 
     def _handle_server_notification(self, event: ServerNotification) -> None:
+        kind = str(event.kind)
+        if kind == "ExecApprovalRequested":
+            self._open_exec_approval_picker(event)
+            return
         self.app_runtime.handle_notification(event)
         self._drain_runtime_notices()
-        kind = str(event.kind)
         if kind == "TurnStarted":
             self._active_turn_id = _notification_turn_id(event)
             self._active_retry_status = None
@@ -3081,6 +3388,7 @@ class PyCodexTextualApp(App[int]):
             configure_app_runtime_thread_identity(self.app_runtime, self.app_runtime.active_thread_runtime)
         composer = self._composer()
         composer.focus()
+        self._dispatch_completed_history_to_insert_history_cell()
         self._set_status("Ready")
         self._submit_next_queued_prompt()
 
@@ -3432,20 +3740,127 @@ class PyCodexTextualApp(App[int]):
     def _refresh_transcript(self) -> None:
         log = self._transcript_log()
         log.clear()
-        for block in self._blocks:
+        for index, block in enumerate(self._blocks):
+            if index < self._terminal_scrollback_projected_until and _block_is_terminal_scrollback_history_cell(block):
+                continue
             log.write(block.render(), expand=True, shrink=True)
         log.refresh(layout=True)
         self.refresh(layout=True)
 
-    def _refresh_session_header(self) -> None:
-        try:
-            self.query_one("#session-header", Static).update(_plain_status_text(self._session_header_text()))
-        except Exception:
+    def _dispatch_completed_history_to_insert_history_cell(self) -> None:
+        if self._history_projection_next_index >= len(self._blocks):
             return
+        blocks = self._blocks[self._history_projection_next_index :]
+        self._history_projection_next_index = len(self._blocks)
+        lines: list[str] = []
+        for block in blocks:
+            if not _block_is_terminal_scrollback_history_cell(block):
+                continue
+            lines.extend(block.terminal_history_lines())
+            lines.append("")
+        while lines and not lines[-1]:
+            lines.pop()
+        if not lines:
+            return
+        plan = self.app_runtime.handle_app_event(
+            AppEvent.insert_history_cell(
+                {
+                    "kind": "completed_turn",
+                    "lines": tuple(lines),
+                }
+            )
+        )
+        self._handle_insert_history_cell_dispatch_plan(plan)
+        # Rust writes finalized cells into terminal scrollback because ratatui
+        # owns only the live viewport. Textual's RichLog is still the product
+        # transcript surface here, so hiding successfully projected blocks makes
+        # Windows Terminal appear blank after the scroll-region ANSI sequence is
+        # emitted. Keep the source-backed blocks visible while still exercising
+        # the Rust insert_history projection boundary for parity tests.
+        self._refresh_transcript()
+
+    def _handle_insert_history_cell_dispatch_plan(self, plan: Any) -> bool:
+        if getattr(plan, "action", None) != "insert_history_cell":
+            return False
+        payload = None
+        updates = getattr(plan, "updates", ()) or ()
+        for name, value in updates:
+            if name == "insert_history_cell":
+                payload = value
+                break
+        return self._insert_history_cell_payload_to_terminal_scrollback(payload)
+
+    def _insert_history_cell_payload_to_terminal_scrollback(self, payload: Any) -> bool:
+        lines = _insert_history_cell_payload_lines(payload)
+        if not lines:
+            return False
+        width = self._exec_cell_render_width()
+        state = self._resize_reflow_state
+        state.raw_output_mode = _raw_output_mode(self.app_runtime)
+        cell = ResizeReflowHistoryCell(lines=list(lines))
+        state.transcript_cells.append(cell)
+        reflow_plan = insert_history_cell_lines_plan(state, cell, width)
+        self._last_insert_history_reflow_plan = reflow_plan
+        if reflow_plan.action != "insert_history_lines":
+            return False
+        height = max(int(getattr(getattr(self, "size", object()), "height", 24) or 24), 1)
+        viewport_height = max(1, min(8, height))
+        terminal = InsertHistoryTerminalModel(
+            width=width,
+            height=height,
+            viewport_y=max(height - viewport_height, 1),
+            viewport_height=viewport_height,
+        )
+        if _insert_history_wrap_policy_from_resize_reflow(reflow_plan.wrap_policy) is InsertHistoryLineWrapPolicy.TERMINAL:
+            insert_history_lines_with_wrap_policy(terminal, [line.text for line in reflow_plan.lines], InsertHistoryLineWrapPolicy.TERMINAL)
+        else:
+            insert_history_lines(terminal, [line.text for line in reflow_plan.lines])
+        ansi = terminal.output.getvalue()
+        self._last_history_projection_ansi = ansi
+        # Rust distinguishes "alt screen is allowed" from "alt screen is
+        # currently active". Normal chat runs inline even when overlays may
+        # later enter alt-screen, so completed history should be written to the
+        # terminal scrollback whenever an overlay is not active.
+        if not self._pycodex_alt_screen_active:
+            writer = getattr(getattr(self, "_driver", None), "write", None)
+            if callable(writer):
+                try:
+                    writer(ansi)
+                    return True
+                except Exception:
+                    pass
+        return False
+
+    def _reset_insert_history_reflow_state(self) -> None:
+        self._resize_reflow_state = ResizeReflowState(raw_output_mode=_raw_output_mode(self.app_runtime))
+        self._last_insert_history_reflow_plan = None
+
+    def _refresh_session_header(self) -> None:
+        self._ensure_session_header_block()
+        self._refresh_transcript()
+
+    def _ensure_session_header_block(self) -> None:
+        text = self._session_header_text()
+        index = self._session_header_block_index
+        if index is not None and 0 <= index < len(self._blocks) and self._blocks[index].label == "session_header":
+            self._blocks[index] = _TranscriptBlock("session_header", text)
+            return
+
+        # Rust keeps the placeholder SessionHeaderHistoryCell active until the
+        # configured SessionInfoCell arrives, then merges rather than rendering
+        # a duplicate box. Python mirrors that by reserving the first transcript
+        # block for the session header and replacing it in place.
+        self._blocks = [block for block in self._blocks if block.label != "session_header"]
+        self._blocks.insert(0, _TranscriptBlock("session_header", text))
+        self._session_header_block_index = 0
+        if self._history_projection_next_index > 0:
+            self._history_projection_next_index += 1
 
     def _mark_session_header_configured(self) -> None:
         self._session_header_configured = True
         self._refresh_session_header()
+        if not self._busy:
+            self._set_status("Ready")
 
     def _set_status(self, text: str) -> None:
         if text == "Ready":
@@ -3600,7 +4015,7 @@ class PyCodexTextualApp(App[int]):
             from .chatwidget.constructor import PLACEHOLDERS
 
             placeholder_text = PLACEHOLDERS[6]
-        return f"› {placeholder_text}"
+        return f"\u203a {placeholder_text}"
 
 
 @dataclass
@@ -3621,6 +4036,8 @@ def _selection_display_name(kind: str) -> str:
         return "Subagents"
     if kind == "permissions":
         return "Permissions"
+    if kind == "approval":
+        return "Approval"
     if kind == "settings":
         return "Settings"
     if kind in {"keymap", "keymap-action-menu", "keymap-replace-binding", "keymap-capture", "keymap-debug"}:
@@ -3641,6 +4058,8 @@ def _selection_status_text(kind: str) -> str:
         return "Enable Subagents: up/down move; Enter select; Esc/q cancel"
     if kind == "permissions":
         return "Update Permissions: up/down move; Enter select; Esc/q cancel"
+    if kind == "approval":
+        return "Command approval: up/down move; Enter select; Esc/q cancel"
     if kind == "settings":
         return "Settings: up/down move; Enter select; Esc/q cancel"
     if kind == "keymap":
@@ -3762,7 +4181,23 @@ class _PermissionPopupWidget:
         self.review = SimpleNamespace(recent_auto_review_denials=())
 
     def open_permission_profiles_popup(self) -> Any:
-        return None
+        active_profile = _active_permission_profile(self.app_runtime)
+        active_profile_id = _ui_permission_profile_id(getattr(active_profile, "id", None))
+        result = open_permission_profiles_menu(
+            PermissionMenuConfig(
+                active_profile_id=active_profile_id,
+                approval_policy=_approval_policy_value(getattr(self.config.permissions, "approval_policy", None)),
+                approvals_reviewer=_approvals_reviewer_value(getattr(self.config, "approvals_reviewer", None)),
+                guardian_approval_enabled=bool(self.config.features.enabled("GuardianApproval")),
+                custom_permission_profiles=tuple(_custom_permission_profiles(self.app_runtime)),
+                disabled_reasons=dict(getattr(self.config.permissions, "disabled_reasons", {}) or {}),
+            )
+        )
+        for error in result.errors:
+            self.add_error_message(error)
+        if result.view is not None:
+            self.bottom_pane.show_selection_view(result.view)
+        return result.view
 
     def add_info_message(self, message: str, hint: str | None = None) -> None:
         self.app_runtime.chat_widget.add_info_message(message, hint)
@@ -4009,15 +4444,39 @@ class _TranscriptBlock:
     def render(self) -> Text:
         if self.rich_lines is not None:
             return _rich_lines_to_text(self.rich_lines)
+        if self.label == "session_header":
+            return Text(str(self.text))
         rendered = Text()
-        rendered.append(self.label, style=self.style)
-        rendered.append("\n")
         lines = str(self.text).splitlines() or [""]
+        prefix, continuation, prefix_style, body_style = _transcript_block_prefix(self.label)
         for index, line in enumerate(lines):
-            rendered.append(f"  {line}")
+            rendered.append(prefix if index == 0 else continuation, style=prefix_style)
+            rendered.append(line, style=body_style)
             if index < len(lines) - 1:
                 rendered.append("\n")
         return rendered
+
+    def terminal_history_lines(self) -> list[str]:
+        if self.rich_lines is not None:
+            text = "\n".join(_line_text(line) for line in self.rich_lines).strip()
+            return text.splitlines() or [""]
+        if self.label == "session_header":
+            return str(self.text).splitlines() or [""]
+        body = str(self.text).splitlines() or [""]
+        prefix, continuation, _prefix_style, _body_style = _transcript_block_prefix(self.label)
+        return [f"{prefix if index == 0 else continuation}{line}" for index, line in enumerate(body)]
+
+
+def _block_is_terminal_scrollback_history_cell(block: _TranscriptBlock) -> bool:
+    return block.label in {"session_header", "you", "codex", "reasoning", "exec", "status", "error"}
+
+
+def _transcript_block_prefix(label: str) -> tuple[str, str, str, str]:
+    if label == "you":
+        return "› ", "  ", "dim", "white"
+    if label == "error":
+        return "■ ", "  ", "bold red", "bold red"
+    return "• ", "  ", "dim", "dim" if label == "reasoning" else "white"
 
 
 @dataclass(frozen=True)
@@ -4070,6 +4529,8 @@ class CodexComposerTextArea(TextArea):
         app = getattr(self, "app", None)
         active_selection = getattr(app, "_active_selection", None)
         if getattr(active_selection, "kind", None) in {"keymap-debug", "keymap-capture"}:
+            return
+        if self._handle_clipboard_text_paste_key(event):
             return
         if self._handle_shortcut_overlay_key(event):
             return
@@ -4132,6 +4593,8 @@ class CodexComposerTextArea(TextArea):
         app = getattr(self, "app", None)
         active_selection = getattr(app, "_active_selection", None)
         if getattr(active_selection, "kind", None) in {"keymap-debug", "keymap-capture"}:
+            return
+        if self._handle_clipboard_text_paste_key(event):
             return
         if self._handle_shortcut_overlay_key(event):
             return
@@ -4282,6 +4745,27 @@ class CodexComposerTextArea(TextArea):
         event.stop()
         event.prevent_default()
         self.handle_paste_text(str(getattr(event, "text", "") or ""))
+
+    def _handle_clipboard_text_paste_key(self, event: Any) -> bool:
+        key = str(getattr(event, "key", "") or "")
+        character = getattr(event, "character", None)
+        if not _textual_key_is_ctrl_v(key, character):
+            return False
+        app = getattr(self, "app", None)
+        reader = getattr(app, "read_clipboard_text", None)
+        if not callable(reader):
+            return False
+        try:
+            pasted = reader()
+        except Exception:
+            return False
+        if not pasted:
+            return False
+        if not self.handle_paste_text(str(pasted)):
+            return False
+        event.stop()
+        event.prevent_default()
+        return True
 
     def handle_paste_text(self, pasted: str) -> bool:
         composer = self._composer_model()
@@ -4657,7 +5141,11 @@ def _permission_config_for_runtime(app_runtime: TuiAppRuntime) -> Any:
     elif not hasattr(config.notices, "hide_full_access_warning"):
         config.notices.hide_full_access_warning = False
     if not hasattr(config, "explicit_permission_profile_mode"):
-        config.explicit_permission_profile_mode = False
+        config.explicit_permission_profile_mode = _runtime_permission_value(
+            app_runtime,
+            "explicit_permission_profile_mode",
+            True,
+        )
     if not hasattr(config, "windows_sandbox_level"):
         config.windows_sandbox_level = None
     return config
@@ -4726,6 +5214,149 @@ def _active_permission_profile(app_runtime: TuiAppRuntime) -> Any:
         if value is not None:
             return value
     return None
+
+
+def _approval_policy_value(value: Any) -> str:
+    value = _coerce_approval_policy(value) or ProtocolAskForApproval.ON_REQUEST
+    return str(getattr(value, "value", value))
+
+
+def _approvals_reviewer_value(value: Any) -> str:
+    value = _coerce_approvals_reviewer(value) or ProtocolApprovalsReviewer.USER
+    if value is ProtocolApprovalsReviewer.AUTO_REVIEW:
+        return "auto-review"
+    return "user"
+
+
+def _coerce_approval_policy(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, ProtocolAskForApproval):
+        return value
+    raw = getattr(value, "value", value)
+    text = str(raw).strip()
+    if "." in text:
+        text = text.rsplit(".", 1)[-1]
+    key = text.lower().replace("_", "-")
+    aliases = {
+        "never": ProtocolAskForApproval.NEVER,
+        "on-request": ProtocolAskForApproval.ON_REQUEST,
+        "onrequest": ProtocolAskForApproval.ON_REQUEST,
+        "on-failure": ProtocolAskForApproval.ON_FAILURE,
+        "onfailure": ProtocolAskForApproval.ON_FAILURE,
+        "unless-trusted": ProtocolAskForApproval.UNLESS_TRUSTED,
+        "unlesstrusted": ProtocolAskForApproval.UNLESS_TRUSTED,
+    }
+    return aliases.get(key, value)
+
+
+def _coerce_approvals_reviewer(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, ProtocolApprovalsReviewer):
+        return value
+    raw = getattr(value, "value", value)
+    text = str(raw).strip()
+    if "." in text:
+        text = text.rsplit(".", 1)[-1]
+    key = text.lower().replace("_", "-")
+    aliases = {
+        "user": ProtocolApprovalsReviewer.USER,
+        "auto": ProtocolApprovalsReviewer.AUTO_REVIEW,
+        "auto-review": ProtocolApprovalsReviewer.AUTO_REVIEW,
+        "autoreview": ProtocolApprovalsReviewer.AUTO_REVIEW,
+        "guardian-subagent": ProtocolApprovalsReviewer.AUTO_REVIEW,
+    }
+    return aliases.get(key, value)
+
+
+def _permission_profile_for_active_profile_id(app_runtime: TuiAppRuntime, profile_id: Any) -> PermissionProfile | None:
+    cwd = str(getattr(app_runtime, "cwd", ".") or ".")
+    text = str(profile_id or "").strip()
+    if text == ":read-only":
+        return PermissionProfile.read_only(network_access=False)
+    if text == ":workspace":
+        return PermissionProfile.auto(cwd, network_access=False)
+    if text == ":danger-no-sandbox":
+        return PermissionProfile.disabled()
+    return None
+
+
+def _ui_permission_profile_id(profile_id: Any) -> str | None:
+    text = str(profile_id or "").strip()
+    if not text:
+        return None
+    if text == BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS:
+        return ":danger-no-sandbox"
+    return text
+
+
+def _core_permission_profile_id(profile_id: Any) -> str | None:
+    text = str(profile_id or "").strip()
+    if not text:
+        return None
+    if text == ":danger-no-sandbox":
+        return BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS
+    return text
+
+
+def _core_active_permission_profile_for_profile_id(profile_id: Any) -> ProtocolActivePermissionProfile | None:
+    core_id = _core_permission_profile_id(profile_id)
+    if core_id in {
+        BUILT_IN_PERMISSION_PROFILE_READ_ONLY,
+        BUILT_IN_PERMISSION_PROFILE_WORKSPACE,
+        BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS,
+    }:
+        return ProtocolActivePermissionProfile.new(core_id)
+    return None
+
+
+def _core_permission_profile_for_active_profile_id(profile_id: Any) -> ProtocolPermissionProfile | None:
+    core_id = _core_permission_profile_id(profile_id)
+    if core_id == BUILT_IN_PERMISSION_PROFILE_READ_ONLY:
+        return ProtocolPermissionProfile.read_only()
+    if core_id == BUILT_IN_PERMISSION_PROFILE_WORKSPACE:
+        return ProtocolPermissionProfile.workspace_write()
+    if core_id == BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS:
+        return ProtocolPermissionProfile.disabled()
+    return None
+
+
+def _popup_approval_preset_for_profile_id(app_runtime: TuiAppRuntime, profile_id: Any) -> Any:
+    cwd = str(getattr(app_runtime, "cwd", ".") or ".")
+    target = str(profile_id or "").strip()
+    preset_id = {
+        ":read-only": "read-only",
+        ":workspace": "auto",
+        ":danger-no-sandbox": "full-access",
+    }.get(target)
+    if preset_id is None:
+        return None
+    for preset in popup_builtin_approval_presets(cwd):
+        if preset.id == preset_id:
+            return preset
+    return None
+
+
+def _custom_permission_profiles(app_runtime: TuiAppRuntime) -> list[CustomPermissionProfileSummary]:
+    raw = _runtime_permission_value(app_runtime, "custom_permission_profiles", ())
+    profiles: list[CustomPermissionProfileSummary] = []
+    for item in list(raw or ()):
+        profile_id = getattr(item, "id", None)
+        if profile_id is None and isinstance(item, Mapping):
+            profile_id = item.get("id")
+        if profile_id is None:
+            continue
+        description = getattr(item, "description", None)
+        if description is None and isinstance(item, Mapping):
+            description = item.get("description")
+        profiles.append(
+            CustomPermissionProfileSummary(
+                id=str(profile_id),
+                description=None if description is None else str(description),
+            )
+        )
+    return profiles
 
 
 def _runtime_plan_mask(app_runtime: TuiAppRuntime) -> Any:
@@ -4836,10 +5467,14 @@ def _runtime_display_model(app_runtime: TuiAppRuntime) -> str:
 def _runtime_model_with_reasoning(app_runtime: TuiAppRuntime) -> str:
     model = _runtime_display_model(app_runtime)
     effort = _runtime_header_reasoning_effort(app_runtime)
-    if effort is None:
-        return model
-    label = str(getattr(effort, "value", effort)).replace("_", "-").lower()
-    return f"{model} {label}" if label and label != "default" else model
+    parts = [model]
+    if effort is not None:
+        label = str(getattr(effort, "value", effort)).replace("_", "-").lower()
+        if label and label != "default":
+            parts.append(label)
+    if _runtime_show_fast_status(app_runtime):
+        parts.append("fast")
+    return " ".join(parts)
 
 
 def _runtime_header_reasoning_effort(app_runtime: TuiAppRuntime) -> str | None:
@@ -5652,6 +6287,17 @@ def _key_event_candidates(key: str, character: Any = None) -> tuple[str, ...]:
     return tuple(dict.fromkeys(candidates))
 
 
+def _textual_key_is_ctrl_v(key: str, character: Any = None) -> bool:
+    for candidate in _key_event_candidates(key, character):
+        try:
+            code, modifiers = _textual_key_to_key_parts(candidate)
+        except Exception:
+            continue
+        if str(code).lower() == "v" and any(str(item).lower() == "control" for item in modifiers):
+            return True
+    return False
+
+
 def _control_character_key_spec(character: str) -> str | None:
     if len(character) != 1:
         return None
@@ -5690,8 +6336,58 @@ def _plain_line(line: Any) -> str:
     if spans is None:
         if hasattr(line, "text"):
             return str(getattr(line, "text"))
-        return str(line)
+        text = str(line)
+        if text in {"standard-popup-hint", "standard_popup_hint_line"}:
+            return standard_popup_hint_line()
+        return text
     return "".join(str(getattr(span, "content", getattr(span, "text", span))) for span in spans)
+
+
+def _insert_history_cell_payload_lines(payload: Any) -> list[str]:
+    cell = payload
+    if isinstance(payload, Mapping) and "cell" in payload:
+        cell = payload.get("cell")
+
+    display_lines = getattr(cell, "display_lines", None)
+    if callable(display_lines):
+        try:
+            return [_plain_line(line) for line in display_lines(100)]
+        except TypeError:
+            return [_plain_line(line) for line in display_lines()]
+        except Exception:
+            return []
+
+    if isinstance(cell, Mapping):
+        raw_lines = cell.get("lines")
+        if raw_lines is not None:
+            return [str(line) for line in raw_lines]
+        parts: list[str] = []
+        for key in ("title", "message", "hint"):
+            value = cell.get(key)
+            if value:
+                parts.extend(str(value).splitlines())
+        return parts
+
+    if isinstance(payload, Mapping):
+        parts = []
+        for key in ("title", "message", "hint"):
+            value = payload.get(key)
+            if value:
+                parts.extend(str(value).splitlines())
+        return parts
+
+    if isinstance(cell, str):
+        return cell.splitlines()
+    return []
+
+
+def _insert_history_wrap_policy_from_resize_reflow(value: Any) -> InsertHistoryLineWrapPolicy:
+    if value is ResizeReflowHistoryLineWrapPolicy.Terminal:
+        return InsertHistoryLineWrapPolicy.TERMINAL
+    raw = str(getattr(value, "value", value) or "").lower().replace("-", "_")
+    if raw in {"terminal", "historylinewrappolicy.terminal"}:
+        return InsertHistoryLineWrapPolicy.TERMINAL
+    return InsertHistoryLineWrapPolicy.PRE_WRAP
 
 
 def _plain_markdown_text(value: str) -> str:
@@ -6093,8 +6789,8 @@ def _render_selection_view_text(selection: _TextualSelection, selected_idx: int)
     items = _selection_active_items(selection)
     if not items:
         rendered.append("  no matches\n", style="dim")
-    if selection.kind == "model":
-        _append_model_selection_rows(rendered, items[:12], selected_idx)
+    if selection.kind in {"model", "permissions"}:
+        _append_rust_selection_rows(rendered, items[:12], selected_idx)
     else:
         for index, item in enumerate(items[:12]):
             marker = ">" if index == selected_idx else " "
@@ -6116,7 +6812,7 @@ def _render_selection_view_text(selection: _TextualSelection, selected_idx: int)
     return rendered
 
 
-def _append_model_selection_rows(rendered: Text, items: list[Any], selected_idx: int) -> None:
+def _append_rust_selection_rows(rendered: Text, items: list[Any], selected_idx: int) -> None:
     enabled_items = [item for item in items if not getattr(item, "is_disabled", False) and getattr(item, "disabled_reason", None) is None]
     number_width = len(str(max(len(enabled_items), 1)))
     names: list[str] = []
@@ -6139,12 +6835,25 @@ def _append_model_selection_rows(rendered: Text, items: list[Any], selected_idx:
             else getattr(item, "description", None)
         )
     desc_col = max((len(name) for name in names), default=0) + 2
+    term_width = shutil.get_terminal_size((100, 24)).columns
+    content_width = max(min(term_width, 100), desc_col + 20)
+    desc_width = max(content_width - desc_col, 20)
     for index, (name, description) in enumerate(zip(names, descriptions)):
         style = "bold cyan" if index == selected_idx else "dim"
         if description:
+            desc_lines = textwrap.wrap(
+                str(description),
+                width=desc_width,
+                break_long_words=False,
+                break_on_hyphens=False,
+            ) or [""]
             rendered.append(name.ljust(desc_col), style=style)
-            rendered.append(str(description), style=style if index == selected_idx else "dim")
+            rendered.append(desc_lines[0], style=style if index == selected_idx else "dim")
             rendered.append("\n")
+            for continuation in desc_lines[1:]:
+                rendered.append(" " * desc_col, style=style)
+                rendered.append(continuation, style=style if index == selected_idx else "dim")
+                rendered.append("\n")
         else:
             rendered.append(f"{name}\n", style=style)
 

@@ -59,7 +59,7 @@ from pycodex.rollout import (
 )
 from pycodex.exec import app_server_control_socket_path
 from pycodex.core.session.turn.runtime import UserTurnSamplingResult
-from pycodex.protocol import AskForApproval, ContentItem, ProfileV2Name, ResponseItem, SandboxMode
+from pycodex.protocol import AltScreenMode, AskForApproval, ContentItem, ProfileV2Name, ResponseItem, SandboxMode
 from pycodex.tui.app.runtime import ExecFunctionActiveThreadRuntime, TuiAppRuntime
 
 
@@ -12005,7 +12005,40 @@ class TopLevelCliParserTests(unittest.TestCase):
                     )
 
         self.assertEqual(code, 0)
-        run_textual.assert_called_once_with(active_thread_runtime=runtime, stdout=stdout)
+        run_textual.assert_called_once_with(active_thread_runtime=runtime, stdout=stdout, use_alt_screen=False)
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_main_without_subcommand_tty_respects_tui_alternate_screen_config(self):
+        # Rust source contract:
+        # - codex-rs/tui/src/lib.rs::determine_alt_screen_mode disables the
+        #   alternate screen when Config.tui.alternate_screen is Never, even
+        #   without the CLI --no-alt-screen flag.
+        class TtyInput(io.StringIO):
+            def isatty(self):
+                return True
+
+        class TtyOutput(io.StringIO):
+            def isatty(self):
+                return True
+
+        stdout = TtyOutput()
+        stderr = io.StringIO()
+        runtime = ExecFunctionActiveThreadRuntime(lambda _prompt: (0, "unused"))
+        runtime.session_config = SimpleNamespace(tui_alternate_screen=AltScreenMode.NEVER)
+
+        with patch.dict(os.environ, {"TERM": "xterm-256color"}):
+            with patch("pycodex.cli.parser._build_tui_core_active_thread_runtime", return_value=runtime):
+                with patch("pycodex.tui.textual_runtime.run_textual_tui", return_value=0) as run_textual:
+                    code = main(
+                        [],
+                        stdout=stdout,
+                        stderr=stderr,
+                        stdin=TtyInput("/quit\n"),
+                        stdin_is_terminal=True,
+                    )
+
+        self.assertEqual(code, 0)
+        run_textual.assert_called_once_with(active_thread_runtime=runtime, stdout=stdout, use_alt_screen=False)
         self.assertEqual(stderr.getvalue(), "")
 
     def test_tui_core_runtime_reads_reasoning_summary_from_config_toml(self):
@@ -12833,7 +12866,13 @@ class TopLevelCliParserTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertIn("resume request parsed with session_id=None, last=True, all=False, include_non_interactive=False.", stderr.getvalue())
-        run_textual.assert_called_once_with(active_thread_runtime=runtime, stdout=stdout)
+        called_runtime = run_textual.call_args.kwargs["active_thread_runtime"]
+        self.assertIsInstance(called_runtime, TuiAppRuntime)
+        self.assertIs(called_runtime.active_thread_runtime, runtime)
+        self.assertEqual(called_runtime.startup_session_action, "resume")
+        self.assertTrue(called_runtime.startup_session_last)
+        self.assertTrue(run_textual.call_args.kwargs["use_alt_screen"])
+        self.assertIs(run_textual.call_args.kwargs["stdout"], stdout)
 
     def test_main_resume_with_exec_fallback_uses_noninteractive_resume_exec(self):
         stdout = io.StringIO()
@@ -12902,6 +12941,7 @@ class TopLevelCliParserTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         called_runtime = run_textual.call_args.kwargs["active_thread_runtime"]
+        self.assertTrue(run_textual.call_args.kwargs["use_alt_screen"])
         self.assertIsInstance(called_runtime, TuiAppRuntime)
         self.assertIs(called_runtime.active_thread_runtime, runtime)
         self.assertEqual(called_runtime.startup_session_action, "fork")
