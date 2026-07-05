@@ -609,6 +609,14 @@ def ensure_virtual_terminal_processing() -> None:
     return None
 
 
+def run_terminal_tui(*args: Any, **kwargs: Any) -> int:
+    """Run the Rust ``tui``-aligned terminal product path."""
+
+    from .terminal_runtime import run_terminal_tui as _run_terminal_tui
+
+    return _run_terminal_tui(*args, **kwargs)
+
+
 def enable_for_handle(*args: Any, **kwargs: Any) -> None:
     return None
 
@@ -676,6 +684,7 @@ __all__ = [
     "restore_common",
     "restore_keep_raw",
     "running_in_vscode_terminal",
+    "run_terminal_tui",
     "set_modes",
     "set_panic_hook",
     "should_emit_notification",

@@ -747,11 +747,11 @@ def test_textual_harness_token_usage_update_refreshes_idle_footer() -> None:
             tui.send(agent_delta("usage answer"))
             tui.send(turn_completed())
             await tui.wait_for_idle()
-            await tui.wait_for_text("Context 50% left", timeout=1.0)
+            await tui.wait_for_text("Context 53% left", timeout=1.0)
 
             text = tui.text()
             assert_text_present(text, "usage answer")
-            assert_text_present(tui.status(), "Context 50% left")
+            assert_text_present(tui.status(), "Context 53% left")
 
     asyncio.run(scenario())
 

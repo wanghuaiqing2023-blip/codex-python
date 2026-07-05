@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+
+import pycodex.tui.custom_terminal as custom_terminal
 from pycodex.tui.custom_terminal import (
     BEL,
     ESC,
@@ -9,12 +12,15 @@ from pycodex.tui.custom_terminal import (
     Rect,
     Size,
     Terminal,
+    clear_inline_status_line,
+    clear_scrollback_and_visible_screen_ansi,
     diff_buffers,
     diff_buffers_clear_to_end_starts_after_wide_char,
     diff_buffers_does_not_emit_clear_to_end_for_full_width_row,
     display_width,
     reset_cursor_style_emits_default_user_shape,
     terminal_draw_applies_requested_cursor_style,
+    write_inline_status_line,
 )
 
 
@@ -58,6 +64,39 @@ def test_clear_scrollback_and_visible_screen_ansi_resets_state() -> None:
     assert "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H" in terminal.backend().output()
     assert terminal.visible_history_rows() == 0
     assert terminal.last_known_cursor_pos == Position(0, 0)
+
+
+def test_clear_scrollback_and_visible_screen_ansi_writer_helper_matches_rust_sequence() -> None:
+    # Rust owner: codex-tui::custom_terminal::Terminal::clear_scrollback_and_visible_screen_ansi.
+    # The lightweight terminal product path uses the writer helper directly
+    # when applying `/clear`.
+    backend = CaptureBackend.new(10, 5)
+
+    clear_scrollback_and_visible_screen_ansi(backend)
+
+    assert backend.output() == "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H"
+
+
+def test_inline_status_line_helpers_overwrite_current_line_without_scrollback() -> None:
+    backend = CaptureBackend.new(10, 5)
+
+    write_inline_status_line(backend, "\u2022 Working")
+    clear_inline_status_line(backend)
+
+    assert backend.output() == "\r\x1b[2K\u2022 Working\r\x1b[2K"
+
+
+def test_terminal_size_uses_product_path_default(monkeypatch) -> None:
+    calls: list[tuple[int, int]] = []
+
+    def fake_get_terminal_size(default: tuple[int, int]) -> os.terminal_size:
+        calls.append(default)
+        return os.terminal_size((101, 31))
+
+    monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", fake_get_terminal_size)
+
+    assert custom_terminal.terminal_size() == os.terminal_size((101, 31))
+    assert calls == [(80, 24)]
 
 
 def test_clear_empty_viewport_is_noop() -> None:

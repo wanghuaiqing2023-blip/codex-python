@@ -17,8 +17,10 @@ from enum import Enum
 import json
 import os
 from pathlib import Path
+import queue
+import threading
 import time
-from typing import Any, Callable, Deque, Iterable, List, Optional, Protocol, Tuple
+from typing import Any, Callable, Deque, Iterable, List, Optional, Protocol, TextIO, Tuple
 
 from .._porting import RustTuiModule
 
@@ -60,6 +62,322 @@ class TuiEvent:
     @classmethod
     def paste(cls, text: str) -> "TuiEvent":
         return cls(TuiEventKind.PASTE, text)
+
+
+@dataclass(frozen=True)
+class TerminalInputEvent:
+    """Small Rust-shaped terminal event for the terminal product path."""
+
+    kind: str
+    text: str = ""
+
+
+@dataclass(frozen=True)
+class TerminalTurnEventPoll:
+    """One app-server turn event poll result for the terminal product path."""
+
+    kind: str
+    event: Any = None
+
+
+class TerminalInputSource:
+    def poll(self, timeout: float) -> TerminalInputEvent | None:
+        raise NotImplementedError
+
+
+class StringTerminalInputSource(TerminalInputSource):
+    """Deterministic char event source for fake TTY tests."""
+
+    def __init__(self, stdin: TextIO) -> None:
+        self.stdin = stdin
+
+    def poll(self, timeout: float) -> TerminalInputEvent | None:
+        char = self.stdin.read(1)
+        if char == "":
+            return TerminalInputEvent("eof")
+        return terminal_event_from_char(char)
+
+
+class LineTerminalInputSource(TerminalInputSource):
+    """Degraded cooked-line fallback for hosts without key-event support.
+
+    Rust receives key and resize events from crossterm in one event stream.
+    The normal Python Windows TTY path mirrors that with
+    ``WindowsConsoleInputSource``. This adapter is retained only for
+    compatibility when a key-event source cannot be initialized.
+    """
+
+    def __init__(self, stdin: TextIO) -> None:
+        self.stdin = stdin
+        self._queue: queue.Queue[TerminalInputEvent] = queue.Queue()
+        self._thread = threading.Thread(target=self._read_lines, daemon=True)
+        self._thread.start()
+
+    def _read_lines(self) -> None:
+        while True:
+            line = self.stdin.readline()
+            if line == "":
+                self._queue.put(TerminalInputEvent("eof"))
+                return
+            self._queue.put(TerminalInputEvent("line", line))
+
+    def poll(self, timeout: float) -> TerminalInputEvent | None:
+        try:
+            return self._queue.get(timeout=max(0.0, timeout))
+        except queue.Empty:
+            return None
+
+
+class WindowsConsoleInputSource(TerminalInputSource):
+    """Windows terminal input adapter backed by the Rust-like console source."""
+
+    def __init__(
+        self,
+        msvcrt_module: Any | None = None,
+        *,
+        console_handle: int | None = None,
+        console_record_reader: Callable[[], Any | None] | None = None,
+        event_source: Any | None = None,
+    ) -> None:
+        if msvcrt_module is None:
+            import msvcrt
+
+            msvcrt_module = msvcrt
+        self._source = event_source or WindowsConsoleEventSource(
+            msvcrt_module,
+            console_handle=console_handle,
+            console_record_reader=console_record_reader,
+        )
+
+    def poll(self, timeout: float) -> TerminalInputEvent | None:
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            event = self._source.poll_next()
+            mapped = terminal_input_event_from_event_result(event)
+            if mapped is not None:
+                return mapped
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(min(0.02, max(0.0, deadline - time.monotonic())))
+
+
+class SelectTerminalInputSource(TerminalInputSource):
+    """Best-effort non-Windows TTY adapter, used only outside Windows."""
+
+    def __init__(self, stdin: TextIO) -> None:
+        self.stdin = stdin
+
+    def poll(self, timeout: float) -> TerminalInputEvent | None:
+        import select
+
+        ready, _, _ = select.select([self.stdin], [], [], timeout)
+        if not ready:
+            return None
+        char = self.stdin.read(1)
+        if char == "":
+            return TerminalInputEvent("eof")
+        return terminal_event_from_char(char)
+
+
+def make_terminal_input_source(stdin: TextIO) -> TerminalInputSource | None:
+    """Create the terminal product-path input source for ``stdin``.
+
+    Rust ``tui::event_stream`` owns the runtime boundary that turns terminal
+    input into app events.  The Python scrollback product path keeps the same
+    boundary by centralizing StringIO tests, Windows console key input, and
+    best-effort select-based TTY polling here instead of in the runner.
+    """
+
+    if isinstance(stdin, str):
+        return None
+    if hasattr(stdin, "getvalue"):
+        return StringTerminalInputSource(stdin)
+    if os.name == "nt":
+        try:
+            return WindowsConsoleInputSource(console_handle=_windows_console_handle_from_stdin(stdin))
+        except Exception:
+            return LineTerminalInputSource(stdin)
+    try:
+        stdin.fileno()
+    except Exception:
+        return None
+    return SelectTerminalInputSource(stdin)
+
+
+def _windows_console_handle_from_stdin(stdin: TextIO) -> int | None:
+    try:
+        import msvcrt
+
+        return int(msvcrt.get_osfhandle(stdin.fileno()))
+    except Exception:
+        return None
+
+
+def get_or_make_terminal_input_source(
+    existing: TerminalInputSource | None,
+    stdin: TextIO,
+) -> TerminalInputSource | None:
+    """Return the active terminal input source, creating it when absent.
+
+    Rust ``EventBrokerState::active_event_source_mut`` owns the reuse/create
+    boundary for the shared crossterm input source.  The terminal runner stores
+    the current source slot, but this module owns the policy for reusing it.
+    """
+
+    if existing is not None:
+        return existing
+    return make_terminal_input_source(stdin)
+
+
+@dataclass
+class TerminalInputSourceProvider:
+    """Lazy terminal input-source cache for the terminal product path.
+
+    Rust ``EventBrokerState`` owns the active event-source slot.  Python's
+    scrollback runner only needs a small provider object so the create/reuse
+    policy stays inside ``tui::event_stream``.
+    """
+
+    stdin: TextIO
+    source: TerminalInputSource | None = None
+
+    def get(self) -> TerminalInputSource | None:
+        self.source = get_or_make_terminal_input_source(self.source, self.stdin)
+        return self.source
+
+
+def poll_terminal_turn_event(event_stream: Any, *, timeout: float) -> TerminalTurnEventPoll:
+    """Poll a turn event stream and classify event/idle/closed states.
+
+    Rust ``tui::event_stream`` owns the event-source boundary.  The Python
+    terminal product path receives an app-runtime stream with a small set of
+    compatibility shapes, so this helper keeps those stream-state checks out
+    of the terminal runner.
+    """
+
+    event = event_stream.next_event(timeout=timeout)
+    if event is not None:
+        return TerminalTurnEventPoll("event", event)
+    if terminal_turn_event_stream_closed(event_stream):
+        return TerminalTurnEventPoll("closed")
+    return TerminalTurnEventPoll("idle")
+
+
+def terminal_turn_event_stream_closed(event_stream: Any) -> bool:
+    """Return whether a terminal turn event stream has finished."""
+
+    closed = getattr(event_stream, "closed", None)
+    if callable(closed):
+        try:
+            return bool(closed())
+        except Exception:
+            return False
+    if closed is not None:
+        return bool(closed)
+    return bool(getattr(event_stream, "is_closed", False))
+
+
+def run_terminal_turn_event_loop(
+    event_stream: Any,
+    *,
+    timeout: float,
+    on_event: Callable[[Any], Any],
+    on_closed: Callable[[], Any],
+    on_idle: Callable[[], Any],
+    before_event: Callable[[], Any],
+) -> Any | None:
+    """Consume one submitted turn stream through terminal event callbacks."""
+
+    while True:
+        polled = poll_terminal_turn_event(event_stream, timeout=timeout)
+        if polled.kind != "event":
+            if polled.kind == "closed":
+                on_closed()
+                return None
+            on_idle()
+            continue
+        event = polled.event
+        before_event()
+        on_event(event)
+        if str(getattr(event, "kind", "")) == "TurnCompleted":
+            return event
+
+
+def run_terminal_turn_idle_tick(
+    *,
+    check_resize: Callable[[], Any],
+    refresh_turn_status: Callable[[], Any],
+) -> None:
+    """Run terminal idle-time maintenance for a submitted turn stream.
+
+    Rust ``tui::event_stream`` owns idle/event/closed dispatch.  The Python
+    terminal product path keeps the app-specific side effects as callbacks, but
+    the event-stream boundary owns that resize handling happens before status
+    refresh on idle polls.
+    """
+
+    check_resize()
+    refresh_turn_status()
+
+
+def terminal_event_from_char(char: str) -> TerminalInputEvent:
+    if char in {"\r", "\n"}:
+        return TerminalInputEvent("enter")
+    if char == "\t":
+        return TerminalInputEvent("tab")
+    if char == "\x1b":
+        return TerminalInputEvent("escape")
+    if char in {"\b", "\x7f"}:
+        return TerminalInputEvent("backspace")
+    if char == "\x03":
+        return TerminalInputEvent("interrupt")
+    if char == "\x1a":
+        return TerminalInputEvent("eof")
+    return TerminalInputEvent("text", char)
+
+
+def terminal_input_event_from_key_payload(payload: Any) -> TerminalInputEvent | None:
+    text = str(payload)
+    normalized = _terminal_key_payload_name(text)
+    if normalized in {"up", "down", "left", "right", "home", "end", "page_up", "page_down", "delete"}:
+        return TerminalInputEvent(normalized)
+    ansi = _ansi_escape_key(text)
+    if ansi is not None:
+        return TerminalInputEvent(ansi)
+    if text == "enter":
+        return TerminalInputEvent("enter")
+    if text == "tab":
+        return TerminalInputEvent("tab")
+    if text == "escape":
+        return TerminalInputEvent("escape")
+    if len(text) == 1:
+        return terminal_event_from_char(text)
+    return None
+
+
+def terminal_input_event_from_event_result(event: Any) -> TerminalInputEvent | None:
+    if event is None:
+        return None
+    if isinstance(event, TerminalInputEvent):
+        return event
+    if isinstance(event, TuiEvent):
+        if event.kind is TuiEventKind.KEY:
+            return terminal_input_event_from_key_payload(event.payload)
+        if event.kind is TuiEventKind.RESIZE:
+            return TerminalInputEvent("resize")
+        if event.kind is TuiEventKind.PASTE:
+            return TerminalInputEvent("text", str(event.payload))
+        return None
+    if isinstance(event, tuple) and event:
+        kind = event[0]
+        payload = event[1] if len(event) > 1 else None
+        if kind == "key":
+            return terminal_input_event_from_key_payload(payload)
+        if kind == "resize":
+            return TerminalInputEvent("resize")
+        if kind == "paste":
+            return TerminalInputEvent("text", str(payload or ""))
+    return None
 
 
 class EventSource(Protocol):
@@ -164,6 +482,13 @@ class WindowsConsoleEventSource:
                 ch = self.msvcrt_module.getwch()
                 _trace_input_event("windows_console.getwch_alt", {"ch": _describe_key(ch)})
                 self._pending_alt_prefix = False
+                if ch in ("[", "O"):
+                    ansi_event = self._poll_ansi_escape_key(ch)
+                    if ansi_event is not None:
+                        _trace_input_event("windows_console.return", {"event": _describe_event(ansi_event)})
+                        return ansi_event
+                    _trace_input_event("windows_console.return", {"event": _describe_event(("key", "\x1b"))})
+                    return ("key", "\x1b")
                 if len(ch) == 1 and ch >= " ":
                     event = ("key", f"alt-{ch.lower()}")
                     _trace_input_event("windows_console.return", {"event": _describe_event(event)})
@@ -213,6 +538,21 @@ class WindowsConsoleEventSource:
         )
         return event
 
+    def _poll_ansi_escape_key(self, introducer: str) -> Optional[EventResult]:
+        sequence = "\x1b" + introducer
+        while self.msvcrt_module.kbhit():
+            ch = self.msvcrt_module.getwch()
+            _trace_input_event("windows_console.getwch_ansi", {"ch": _describe_key(ch)})
+            sequence += ch
+            mapped = _ansi_escape_key(sequence)
+            if mapped is not None:
+                return ("key", mapped)
+            if ch.isalpha() or ch == "~":
+                break
+        for ch in sequence[2:]:
+            self._pending_events.append(("key", ch))
+        return None
+
 
 def _windows_console_special_key(ch: str) -> str | None:
     return {
@@ -249,12 +589,65 @@ def _windows_console_record_to_event(record: Any) -> Optional[EventResult]:
         return None
     char = _record_field(record, "char", "")
     virtual_key = _record_field(record, "virtual_key", None)
-    if char:
+    if char and str(char) != "\x00":
         return ("key", str(char))
     mapped = _windows_console_virtual_key(int(virtual_key)) if virtual_key is not None else None
     if mapped is None:
         return None
     return ("key", mapped)
+
+
+def _terminal_key_payload_name(payload: str) -> str:
+    text = payload.strip().lower().replace("-", "_")
+    aliases = {
+        "arrowup": "up",
+        "arrow_up": "up",
+        "up_arrow": "up",
+        "arrowdown": "down",
+        "arrow_down": "down",
+        "down_arrow": "down",
+        "arrowleft": "left",
+        "arrow_left": "left",
+        "left_arrow": "left",
+        "arrowright": "right",
+        "arrow_right": "right",
+        "right_arrow": "right",
+        "pgup": "page_up",
+        "pageup": "page_up",
+        "page_up": "page_up",
+        "pgdn": "page_down",
+        "pagedown": "page_down",
+        "page_down": "page_down",
+        "del": "delete",
+        "delete": "delete",
+    }
+    return aliases.get(text, text)
+
+
+def _ansi_escape_key(payload: str) -> str | None:
+    if not payload.startswith("\x1b"):
+        return None
+    return {
+        "\x1b[A": "up",
+        "\x1b[B": "down",
+        "\x1b[C": "right",
+        "\x1b[D": "left",
+        "\x1b[H": "home",
+        "\x1b[F": "end",
+        "\x1bOA": "up",
+        "\x1bOB": "down",
+        "\x1bOC": "right",
+        "\x1bOD": "left",
+        "\x1bOH": "home",
+        "\x1bOF": "end",
+        "\x1b[1~": "home",
+        "\x1b[3~": "delete",
+        "\x1b[4~": "end",
+        "\x1b[5~": "page_up",
+        "\x1b[6~": "page_down",
+        "\x1b[7~": "home",
+        "\x1b[8~": "end",
+    }.get(payload)
 
 
 def _windows_console_virtual_key(code: int) -> str | None:
@@ -668,20 +1061,37 @@ __all__ = [
     "Item",
     "RUST_MODULE",
     "SetupState",
+    "LineTerminalInputSource",
+    "SelectTerminalInputSource",
+    "StringTerminalInputSource",
+    "TerminalInputEvent",
+    "TerminalInputSource",
+    "TerminalInputSourceProvider",
+    "TerminalTurnEventPoll",
     "TuiEvent",
     "TuiEventKind",
     "TuiEventStream",
     "WindowsConsoleEventSource",
+    "WindowsConsoleInputSource",
     "default",
     "draw_and_key_events_yield_both",
     "error_or_eof_ends_stream",
+    "get_or_make_terminal_input_source",
     "key_event_skips_unmapped",
     "lagged_draw_maps_to_draw",
+    "make_terminal_input_source",
     "make_stream",
     "poll_next",
+    "poll_terminal_turn_event",
     "resize_event_maps_to_resize",
     "resume_wakes_paused_stream",
     "resume_wakes_pending_stream",
+    "run_terminal_turn_idle_tick",
+    "run_terminal_turn_event_loop",
     "setup",
+    "terminal_event_from_char",
+    "terminal_input_event_from_event_result",
+    "terminal_input_event_from_key_payload",
+    "terminal_turn_event_stream_closed",
 ]
 

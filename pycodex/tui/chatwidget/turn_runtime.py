@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, List, Optional, Set, Tuple
+from typing import Any, Callable, List, Optional, Set, Tuple
 
 from .._porting import RustTuiModule
 from .mcp_startup import MCP_STARTUP_MULTI_HEADER_PREFIX, MCP_STARTUP_SINGLE_HEADER_PREFIX
@@ -660,6 +660,64 @@ def interrupted_turn_message(reason: TurnAbortReason) -> str:
     )
 
 
+def run_terminal_turn_start(
+    prompt: str,
+    *,
+    started_at: Any,
+    append_history: Any = None,
+    apply_started_at: Callable[[Any], Any],
+    reset_assistant_stream: Callable[[], Any],
+    clear_turn_status: Callable[[], Any],
+    render_turn_status: Callable[[], Any],
+) -> Any:
+    """Run terminal turn-start state setup through chatwidget turn runtime."""
+
+    if callable(append_history):
+        append_history(prompt)
+    apply_started_at(started_at)
+    reset_assistant_stream()
+    clear_turn_status()
+    render_turn_status()
+    return started_at
+
+
+def run_terminal_turn_submission(
+    prompt: str,
+    *,
+    started_at: Any,
+    append_history: Any = None,
+    apply_started_at: Callable[[Any], Any],
+    reset_assistant_stream: Callable[[], Any],
+    clear_turn_status: Callable[[], Any],
+    render_turn_status: Callable[[], Any],
+    submit_user_turn: Callable[[str], Any],
+    consume_events: Callable[[Any], Any],
+    close_turn: Callable[[], Any],
+    write_error: Callable[[str], Any],
+    set_exit_code: Callable[[int], Any],
+) -> bool:
+    """Submit one terminal user turn and apply terminal failure effects."""
+
+    run_terminal_turn_start(
+        prompt,
+        started_at=started_at,
+        append_history=append_history,
+        apply_started_at=apply_started_at,
+        reset_assistant_stream=reset_assistant_stream,
+        clear_turn_status=clear_turn_status,
+        render_turn_status=render_turn_status,
+    )
+    try:
+        event_stream = submit_user_turn(prompt)
+        consume_events(event_stream)
+    except BaseException as exc:
+        close_turn()
+        write_error(f"\u25a0 {exc}")
+        set_exit_code(1)
+        return False
+    return True
+
+
 def format_tokens_compact(tokens: int) -> str:
     if tokens >= 1_000_000:
         value = tokens / 1_000_000
@@ -737,5 +795,7 @@ __all__ = [
     "on_task_complete",
     "on_task_started",
     "on_warning",
+    "run_terminal_turn_submission",
+    "run_terminal_turn_start",
     "update_task_running_state",
 ]

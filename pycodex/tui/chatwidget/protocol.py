@@ -12,12 +12,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from types import SimpleNamespace
-from typing import Any, Dict, Mapping, Optional, Protocol, Union
+from typing import Any, Callable, Dict, Mapping, Optional, Protocol, Union
 
 from .._porting import RustTuiModule
+from ..exec_cell.render import terminal_command_status_text
 from ..token_usage import TokenUsage, TokenUsageInfo
 from .replay import AgentMessageItem, ThreadItemRenderSource, handle_thread_item as replay_handle_thread_item
-from .command_lifecycle import CommandLifecycleState
+from .command_lifecycle import CommandLifecycleState, command_text_from_notification
 from .constructor import PLACEHOLDERS, SIDE_PLACEHOLDERS
 from .goal_status import GoalStatusState
 from .mcp_startup import McpServerStatusUpdatedNotification, McpStartupModel
@@ -45,13 +46,25 @@ __all__ = [
     "ReplayKind",
     "RUST_MODULE",
     "ServerNotification",
+    "TerminalNotificationAction",
+    "TerminalNotificationEffectPlan",
+    "TerminalProtocolEventDispatcher",
     "ChatWidgetProtocolRuntime",
     "TurnCompletedNotification",
     "TurnStatus",
+    "agent_message_delta_from_notification",
     "handle_item_completed_notification",
     "handle_item_started_notification",
     "handle_server_notification",
     "handle_turn_completed_notification",
+    "retry_error_status_from_notification",
+    "run_terminal_app_notification",
+    "run_terminal_notification",
+    "run_terminal_notification_action",
+    "run_terminal_notification_effect_plan",
+    "terminal_notification_action",
+    "terminal_notification_effect_plan",
+    "terminal_turn_close_effect_plan",
     "token_usage_info_from_app_server",
 ]
 
@@ -89,6 +102,87 @@ class ItemStartedNotification:
 class ItemCompletedNotification:
     item: Any
     turn_id: str
+
+
+@dataclass(frozen=True)
+class TerminalNotificationAction:
+    kind: str
+    text: str = ""
+    details: Optional[str] = None
+    suppress_turn_status: bool = False
+    hide_live_status: bool = False
+    clear_live_status: bool = False
+    finalize_active_stream: bool = False
+    clear_turn_status: bool = False
+
+
+@dataclass(frozen=True)
+class TerminalNotificationEffectPlan:
+    suppress_turn_status: bool = False
+    clear_turn_status: bool = False
+    hide_live_status: bool = False
+    clear_live_status: bool = False
+    finalize_active_stream: bool = False
+
+
+class TerminalProtocolEventDispatcher:
+    """Stateful terminal adapter for protocol-owned notification effects."""
+
+    def __init__(
+        self,
+        *,
+        handle_notification: Callable[[Any], Any],
+        assistant_stream_active: Callable[[], bool],
+        assistant_delta: Callable[[str], Any],
+        command_started: Callable[[str], Any],
+        command_completed: Callable[[str], Any],
+        retry_error: Callable[[str, str | None], Any],
+        suppress_turn_status: Callable[[], Any],
+        clear_turn_status: Callable[[], Any],
+        hide_live_status: Callable[[], Any],
+        clear_live_status: Callable[[], Any],
+        finalize_active_stream: Callable[[], Any],
+    ) -> None:
+        self.handle_notification_callback = handle_notification
+        self.assistant_stream_active = assistant_stream_active
+        self.assistant_delta = assistant_delta
+        self.command_started = command_started
+        self.command_completed = command_completed
+        self.retry_error = retry_error
+        self.suppress_turn_status = suppress_turn_status
+        self.clear_turn_status = clear_turn_status
+        self.hide_live_status = hide_live_status
+        self.clear_live_status = clear_live_status
+        self.finalize_active_stream = finalize_active_stream
+
+    def handle_event(self, notification: Any) -> TerminalNotificationAction:
+        return run_terminal_app_notification(
+            notification,
+            handle_notification=self.handle_notification_callback,
+            assistant_stream_active=self.assistant_stream_active(),
+            apply_effect_plan=self.apply_effect_plan,
+            assistant_delta=self.assistant_delta,
+            command_started=self.command_started,
+            command_completed=self.command_completed,
+            retry_error=self.retry_error,
+        )
+
+    def close_turn(self) -> None:
+        self.apply_effect_plan(
+            terminal_turn_close_effect_plan(
+                assistant_stream_active=self.assistant_stream_active()
+            )
+        )
+
+    def apply_effect_plan(self, plan: TerminalNotificationEffectPlan) -> None:
+        run_terminal_notification_effect_plan(
+            plan,
+            suppress_turn_status=self.suppress_turn_status,
+            clear_turn_status=self.clear_turn_status,
+            hide_live_status=self.hide_live_status,
+            clear_live_status=self.clear_live_status,
+            finalize_active_stream=self.finalize_active_stream,
+        )
 
 
 class ChatWidgetProtocolRuntime:
@@ -478,7 +572,7 @@ def handle_server_notification(
     elif kind == "ItemCompleted":
         handle_item_completed_notification(widget, payload, replay_kind)
     elif kind == "AgentMessageDelta":
-        _call(widget, "on_agent_message_delta", _get(payload, "delta"))
+        _call(widget, "on_agent_message_delta", agent_message_delta_from_notification(payload))
     elif kind == "ResponseStarted":
         _call_optional(widget, "request_redraw")
     elif kind == "PlanDelta":
@@ -632,6 +726,228 @@ def _handle_error_notification(widget: Any, notification: Any, from_replay: bool
     else:
         widget.last_non_retry_error = (_get(notification, "turn_id", None), _get(error, "message"))
         _call(widget, "handle_non_retry_error", _get(error, "message"), _get(error, "codex_error_info", None))
+
+
+def agent_message_delta_from_notification(notification: Any) -> str:
+    """Extract an AgentMessageDelta string from dict/object notifications."""
+
+    payload = _get(notification, "payload", notification)
+    return str(_get(payload, "delta", "") or "")
+
+
+def retry_error_status_from_notification(notification: Any) -> tuple[str, str | None] | None:
+    """Extract transient retry status text from an Error notification."""
+
+    payload = _get(notification, "payload", notification)
+    if not bool(_get(payload, "will_retry", False)):
+        return None
+    error = _get(payload, "error", {})
+    message = str(_get(error, "message", "") or "Request failed")
+    details = _get(error, "additional_details", None)
+    return message, None if details is None else str(details)
+
+
+def terminal_notification_action(notification: Any) -> TerminalNotificationAction:
+    """Plan the terminal scrollback product action for a server notification."""
+
+    kind = str(_get(notification, "kind", ""))
+    if kind == "AgentMessageDelta":
+        delta = agent_message_delta_from_notification(notification)
+        return (
+            TerminalNotificationAction(
+                "assistant_delta",
+                delta,
+                suppress_turn_status=True,
+                hide_live_status=True,
+            )
+            if delta
+            else TerminalNotificationAction("noop")
+        )
+    if kind == "ItemStarted":
+        command = command_text_from_notification(notification)
+        return (
+            TerminalNotificationAction(
+                "command_started",
+                terminal_command_status_text(command, active=True),
+                suppress_turn_status=True,
+                clear_live_status=True,
+                finalize_active_stream=True,
+            )
+            if command
+            else TerminalNotificationAction("noop")
+        )
+    if kind == "ItemCompleted":
+        command = command_text_from_notification(notification)
+        return (
+            TerminalNotificationAction(
+                "command_completed",
+                terminal_command_status_text(command, active=False),
+                suppress_turn_status=True,
+                clear_live_status=True,
+                finalize_active_stream=True,
+            )
+            if command
+            else TerminalNotificationAction("noop")
+        )
+    if kind == "Error":
+        retry_status = retry_error_status_from_notification(notification)
+        if retry_status is None:
+            return TerminalNotificationAction("noop")
+        message, details = retry_status
+        return TerminalNotificationAction(
+            "retry_error",
+            message,
+            details,
+            suppress_turn_status=True,
+        )
+    if kind == "TurnCompleted":
+        return TerminalNotificationAction(
+            "turn_completed",
+            clear_turn_status=True,
+            clear_live_status=True,
+            finalize_active_stream=True,
+        )
+    return TerminalNotificationAction("noop")
+
+
+def run_terminal_notification_action(
+    action: TerminalNotificationAction,
+    *,
+    assistant_delta: Callable[[str], Any],
+    command_started: Callable[[str], Any],
+    command_completed: Callable[[str], Any],
+    retry_error: Callable[[str, str | None], Any],
+    turn_completed: Callable[[], Any] | None = None,
+) -> None:
+    """Dispatch a terminal scrollback product action through runner callbacks."""
+
+    if action.kind == "assistant_delta":
+        assistant_delta(action.text)
+    elif action.kind == "command_started":
+        command_started(action.text)
+    elif action.kind == "command_completed":
+        command_completed(action.text)
+    elif action.kind == "retry_error":
+        retry_error(action.text, action.details)
+    elif action.kind == "turn_completed" and turn_completed is not None:
+        turn_completed()
+
+
+def terminal_notification_effect_plan(
+    action: TerminalNotificationAction,
+    *,
+    assistant_stream_active: bool,
+) -> TerminalNotificationEffectPlan:
+    """Plan terminal state effects for a scrollback product notification action."""
+
+    hide_live_status = bool(action.hide_live_status)
+    return TerminalNotificationEffectPlan(
+        suppress_turn_status=bool(action.suppress_turn_status),
+        clear_turn_status=bool(action.clear_turn_status),
+        hide_live_status=hide_live_status,
+        clear_live_status=bool(action.clear_live_status) and not hide_live_status,
+        finalize_active_stream=bool(action.finalize_active_stream) and assistant_stream_active,
+    )
+
+
+def terminal_turn_close_effect_plan(*, assistant_stream_active: bool) -> TerminalNotificationEffectPlan:
+    """Plan terminal cleanup effects when a submitted turn stream closes."""
+
+    return TerminalNotificationEffectPlan(
+        clear_turn_status=True,
+        clear_live_status=True,
+        finalize_active_stream=assistant_stream_active,
+    )
+
+
+def run_terminal_notification_effect_plan(
+    plan: TerminalNotificationEffectPlan,
+    *,
+    suppress_turn_status: Callable[[], Any],
+    clear_turn_status: Callable[[], Any],
+    hide_live_status: Callable[[], Any],
+    clear_live_status: Callable[[], Any],
+    finalize_active_stream: Callable[[], Any],
+) -> None:
+    """Apply a terminal notification effect plan through runner callbacks."""
+
+    if plan.suppress_turn_status:
+        suppress_turn_status()
+    if plan.clear_turn_status:
+        clear_turn_status()
+    if plan.hide_live_status:
+        hide_live_status()
+    if plan.clear_live_status:
+        clear_live_status()
+    if plan.finalize_active_stream:
+        finalize_active_stream()
+
+
+def run_terminal_notification(
+    notification: Any,
+    *,
+    assistant_stream_active: bool,
+    apply_effect_plan: Callable[[TerminalNotificationEffectPlan], Any],
+    assistant_delta: Callable[[str], Any],
+    command_started: Callable[[str], Any],
+    command_completed: Callable[[str], Any],
+    retry_error: Callable[[str, str | None], Any],
+    turn_completed: Callable[[], Any] | None = None,
+) -> TerminalNotificationAction:
+    """Dispatch one terminal scrollback notification through protocol-owned steps."""
+
+    action = terminal_notification_action(notification)
+    apply_effect_plan(
+        terminal_notification_effect_plan(
+            action,
+            assistant_stream_active=assistant_stream_active,
+        )
+    )
+    run_terminal_notification_action(
+        action,
+        assistant_delta=assistant_delta,
+        command_started=command_started,
+        command_completed=command_completed,
+        retry_error=retry_error,
+        turn_completed=turn_completed,
+    )
+    return action
+
+
+def run_terminal_app_notification(
+    notification: Any,
+    *,
+    handle_notification: Callable[[Any], Any],
+    assistant_stream_active: bool,
+    apply_effect_plan: Callable[[TerminalNotificationEffectPlan], Any],
+    assistant_delta: Callable[[str], Any],
+    command_started: Callable[[str], Any],
+    command_completed: Callable[[str], Any],
+    retry_error: Callable[[str, str | None], Any],
+    turn_completed: Callable[[], Any] | None = None,
+) -> TerminalNotificationAction:
+    """Synchronize app notification handling before terminal dispatch.
+
+    Rust ``chatwidget::protocol`` owns server-notification routing. The
+    terminal product path supplies an app-runtime synchronization callback plus
+    terminal side effects, while this helper keeps the notification handling
+    order out of ``tui::terminal_runtime``.
+    """
+
+    try:
+        handle_notification(notification)
+    except Exception:
+        pass
+    return run_terminal_notification(
+        notification,
+        assistant_stream_active=assistant_stream_active,
+        apply_effect_plan=apply_effect_plan,
+        assistant_delta=assistant_delta,
+        command_started=command_started,
+        command_completed=command_completed,
+        retry_error=retry_error,
+        turn_completed=turn_completed,
+    )
 
 
 def _handle_realtime_notification(widget: Any, kind: str, payload: Any) -> None:

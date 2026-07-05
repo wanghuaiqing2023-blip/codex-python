@@ -295,6 +295,13 @@ def command_display_lines(cell: ExecCell, width: int) -> list[Line]:
     return lines
 
 
+def terminal_command_status_text(command: str, *, active: bool) -> str:
+    """Return the single-line terminal scrollback summary for a command cell."""
+
+    title = "Running" if active else "Ran"
+    return f"\u2022 {title} {command}"
+
+
 def render_line_text(line: Line) -> str:
     return "".join(span.content for span in line.spans)
 
@@ -447,5 +454,6 @@ __all__ = [
     "raw_lines",
     "render_line_text",
     "summarize_interaction_input",
+    "terminal_command_status_text",
     "transcript_lines",
 ]

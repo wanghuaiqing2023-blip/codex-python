@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple, Union
 from urllib.parse import urlsplit, urlunsplit
 
 from .._porting import RustTuiModule
@@ -73,6 +73,26 @@ class CompositeStatusOutput:
 
     def display_lines(self, width: int) -> Tuple[Line, ...]:
         return (*self.command_lines, *self.card.display_lines(width))
+
+
+@dataclass(frozen=True)
+class TerminalStatusCardData:
+    """Text-only terminal status fields for the scrollback product path.
+
+    Rust ownership: ``codex-tui::status::card`` owns the ``/status`` history
+    surface.  The Python terminal runner still writes plain terminal text, so
+    this data class keeps that temporary rendering shape local to the status
+    module instead of embedding it in the runner main loop.
+    """
+
+    version: str
+    model: str
+    reasoning_effort: Optional[str] = None
+    directory: Union[str, Path] = ""
+    permissions: str = "<unknown>"
+    agents_summary: str = "<none>"
+    session_id: str = "<none>"
+    limits: str = "data not available yet"
 
 
 @dataclass
@@ -360,6 +380,111 @@ def new_status_output_with_rate_limits_handle(**kwargs: Any) -> Tuple[CompositeS
     return CompositeStatusOutput((command,), cell), handle
 
 
+def terminal_status_card_lines(data: TerminalStatusCardData) -> Tuple[str, ...]:
+    """Return the scrollback-terminal ``/status`` text shape.
+
+    This mirrors the lightweight terminal product path while the richer
+    ``StatusHistoryCell`` remains available for ratatui/Textual-style history
+    rendering.
+    """
+
+    model_line = str(data.model)
+    if data.reasoning_effort:
+        model_line = f"{model_line} (reasoning {data.reasoning_effort})"
+    return (
+        "\u2022 /status",
+        f"  >_ OpenAI Codex ({data.version})",
+        f"  Model: {model_line}",
+        f"  Directory: {data.directory}",
+        f"  Permissions: {data.permissions}",
+        f"  Agents.md: {data.agents_summary}",
+        f"  Session: {data.session_id}",
+        f"  Limits: {data.limits}",
+    )
+
+
+def terminal_status_card_text(data: TerminalStatusCardData) -> str:
+    return "\n".join(terminal_status_card_lines(data))
+
+
+def terminal_status_card_data_from_runtime(
+    app_runtime: Any,
+    *,
+    display_version: Callable[[], str],
+    display_model: Callable[[Any], str],
+    reasoning_effort: Callable[[Any], Optional[str]],
+    cwd: Callable[[Any], Any],
+    permissions_label: Callable[[Any], str],
+    agents_summary: Callable[[Any], str],
+) -> TerminalStatusCardData:
+    """Build terminal ``/status`` data from runtime providers."""
+
+    thread_id = getattr(getattr(app_runtime, "active_thread_runtime", None), "thread_id", None) or "<none>"
+    return TerminalStatusCardData(
+        version=display_version(),
+        model=display_model(app_runtime),
+        reasoning_effort=reasoning_effort(app_runtime),
+        directory=cwd(app_runtime),
+        permissions=permissions_label(app_runtime),
+        agents_summary=agents_summary(app_runtime),
+        session_id=str(thread_id),
+    )
+
+
+def run_terminal_status_card_render(
+    app_runtime: Any,
+    *,
+    display_version: Callable[[], str],
+    display_model: Callable[[Any], str],
+    reasoning_effort: Callable[[Any], Optional[str]],
+    cwd: Callable[[Any], Any],
+    permissions_label: Callable[[Any], str],
+    agents_summary: Callable[[Any], str],
+    write_history_cell: Callable[[str], Any],
+) -> TerminalStatusCardData:
+    """Render the terminal ``/status`` card through status::card shaping."""
+
+    data = terminal_status_card_data_from_runtime(
+        app_runtime,
+        display_version=display_version,
+        display_model=display_model,
+        reasoning_effort=reasoning_effort,
+        cwd=cwd,
+        permissions_label=permissions_label,
+        agents_summary=agents_summary,
+    )
+    write_history_cell(terminal_status_card_text(data))
+    return data
+
+
+def run_terminal_status_card_from_runtime(
+    app_runtime: Any,
+    *,
+    write_history_cell: Callable[[str], Any],
+) -> TerminalStatusCardData:
+    """Render the terminal ``/status`` card using canonical runtime providers."""
+
+    from ..textual_runtime import (
+        _display_version,
+        _runtime_agents_summary,
+        _runtime_cwd,
+        _runtime_display_model,
+        _runtime_header_reasoning_effort,
+        _runtime_permissions_label,
+    )
+
+    return run_terminal_status_card_render(
+        app_runtime,
+        display_version=_display_version,
+        display_model=_runtime_display_model,
+        reasoning_effort=_runtime_header_reasoning_effort,
+        cwd=_runtime_cwd,
+        permissions_label=_runtime_permissions_label,
+        agents_summary=_runtime_agents_summary,
+        write_history_cell=write_history_cell,
+    )
+
+
 def status_permission_summary(summary: str, *_args: Any, **_kwargs: Any) -> str:
     text = str(summary)
     if text.startswith("read-only"):
@@ -522,6 +647,7 @@ __all__ = [
     "StatusHistoryHandle",
     "StatusRateLimitState",
     "StatusTokenUsageData",
+    "TerminalStatusCardData",
     "decorate_workspace_sandbox_label",
     "display_hyperlink_lines",
     "display_lines",
@@ -534,6 +660,11 @@ __all__ = [
     "status_approval_label",
     "status_permission_summary",
     "status_permissions_label",
+    "run_terminal_status_card_from_runtime",
+    "run_terminal_status_card_render",
+    "terminal_status_card_lines",
+    "terminal_status_card_data_from_runtime",
+    "terminal_status_card_text",
     "transcript_hyperlink_lines",
     "workspace_root_suffix",
 ]

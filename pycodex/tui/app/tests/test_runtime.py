@@ -48,6 +48,7 @@ from pycodex.login.auth.storage import AuthDotJson
 from pycodex.tui.app.agent_navigation import AgentNavigationDirection
 from pycodex.tui.app_command import AppCommand
 from pycodex.tui.app_event import AppEvent, RateLimitRefreshOrigin
+from pycodex.tui.bottom_pane.footer import run_terminal_idle_footer_text_from_runtime
 from pycodex.tui.chatwidget.protocol import ServerNotification
 from pycodex.tui.status.card import new_status_output_with_rate_limits_handle
 from pycodex.tui.status.rate_limits import RateLimitSnapshotDisplay, RateLimitWindowDisplay
@@ -687,6 +688,68 @@ def test_tui_app_runtime_update_reasoning_effort_event_updates_widget_and_sessio
     assert runtime.chat_widget.config.model_reasoning_effort == "high"
     assert active_runtime.model_reasoning_effort == "high"
     assert active_runtime.session_config.model_reasoning_effort == "high"
+
+
+def test_tui_app_runtime_update_reasoning_effort_refreshes_resolved_model_details() -> None:
+    # Rust source/test contract:
+    # - model/status footer surfaces may receive resolved model details from
+    #   runtime/session configuration.
+    # - When the user changes reasoning through model_popups, that local choice
+    #   must refresh stale resolved details instead of letting an older
+    #   "high" detail override the new live config.
+    active_runtime = SimpleNamespace(
+        model_reasoning_effort="high",
+        model_details=("high", "fast"),
+        status_model_details=("high", "fast"),
+        session_config=SimpleNamespace(
+            model_reasoning_effort="high",
+            model_details=("high", "fast"),
+            status_model_details=("high", "fast"),
+        ),
+    )
+    runtime = TuiAppRuntime(active_thread_runtime=active_runtime)
+
+    runtime.handle_app_event(AppEvent.update_reasoning_effort("low"))
+
+    assert runtime.chat_widget.config.model_reasoning_effort == "low"
+    assert active_runtime.model_reasoning_effort == "low"
+    assert active_runtime.model_details == ("low", "fast")
+    assert active_runtime.status_model_details == ("low", "fast")
+    assert active_runtime.session_config.model_reasoning_effort == "low"
+    assert active_runtime.session_config.model_details == ("low", "fast")
+    assert active_runtime.session_config.status_model_details == ("low", "fast")
+
+
+def test_tui_app_runtime_update_reasoning_effort_creates_live_footer_override_for_readonly_config() -> None:
+    # Rust source/test contract:
+    # - codex-tui::app updates live UI/config state immediately when a model
+    #   popup selection is accepted.
+    # - The Python terminal path may carry an immutable session_config snapshot;
+    #   the footer must still read the newly accepted reasoning effort from the
+    #   shared runtime override instead of continuing to display the old detail.
+    @dataclass(frozen=True)
+    class FrozenSessionConfig:
+        model: str = "gpt-5.4"
+        model_reasoning_effort: str = "low"
+        reasoning_effort: str = "low"
+        model_details: tuple[str, ...] = ("low",)
+        status_model_details: tuple[str, ...] = ("low",)
+        cwd: str = "."
+
+    active_runtime = SimpleNamespace(
+        model="gpt-5.4",
+        session_config=FrozenSessionConfig(),
+    )
+    runtime = TuiAppRuntime(active_thread_runtime=active_runtime)
+
+    runtime.handle_app_event(AppEvent.update_reasoning_effort("medium"))
+
+    assert active_runtime.model_reasoning_effort == "medium"
+    assert active_runtime.model_details == ("medium",)
+    assert runtime.chat_widget.config.model_reasoning_effort == "medium"
+    assert runtime.chat_widget.config.model_details == ("medium",)
+    assert active_runtime.session_config.model_reasoning_effort == "low"
+    assert run_terminal_idle_footer_text_from_runtime(runtime).startswith("gpt-5.4 medium")
 
 
 def test_tui_app_runtime_update_reasoning_effort_ignores_frozen_session_config_snapshot() -> None:

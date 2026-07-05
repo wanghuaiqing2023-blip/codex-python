@@ -444,7 +444,10 @@ class ListSelectionView:
         if not self.item_is_enabled(item):
             return
         for action in item.actions:
-            action(self.app_event_tx)
+            if callable(action):
+                action(self.app_event_tx)
+            elif hasattr(self.app_event_tx, "append"):
+                self.app_event_tx.append(action)
         self.dismiss_after_child_accept_value = item.dismiss_parent_on_child_accept
         if item.dismiss_on_select:
             self.completion_value = "Submitted"

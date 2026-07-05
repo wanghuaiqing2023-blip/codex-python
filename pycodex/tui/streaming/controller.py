@@ -405,7 +405,7 @@ def collect_streamed_lines(deltas: Sequence[str], width: Optional[int] = None) -
     cell, _ = ctrl.finalize()
     if cell is not None:
         out.extend(lines_to_plain_strings(cell.display_lines(65535)))
-    return [line[2:] if line.startswith(("> ", "  ")) else line for line in out]
+    return [line[2:] if line.startswith(("> ", "  ", "\u2022 ")) else line for line in out]
 
 
 def collect_plan_streamed_lines(deltas: Sequence[str], width: Optional[int] = None) -> list[str]:

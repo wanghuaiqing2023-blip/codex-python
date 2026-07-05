@@ -7,10 +7,22 @@ from pycodex.tui.chatwidget.protocol import (
     ChatWidgetProtocolRuntime,
     ReplayKind,
     ServerNotification,
+    TerminalNotificationAction,
+    TerminalNotificationEffectPlan,
+    TerminalProtocolEventDispatcher,
     TurnStatus,
+    agent_message_delta_from_notification,
     handle_item_started_notification,
     handle_server_notification,
     handle_turn_completed_notification,
+    retry_error_status_from_notification,
+    run_terminal_app_notification,
+    run_terminal_notification,
+    run_terminal_notification_action,
+    run_terminal_notification_effect_plan,
+    terminal_notification_action,
+    terminal_notification_effect_plan,
+    terminal_turn_close_effect_plan,
 )
 
 
@@ -188,6 +200,301 @@ def test_reasoning_raw_delta_obeys_config_and_completed_item_uses_replay_source(
         ReplayKind.OTHER,
     )
     assert ("handle_thread_item", {"kind": "Plan"}, "t", True) in widget.events
+
+
+def test_agent_message_delta_from_notification_supports_payload_shapes() -> None:
+    # Rust path: chatwidget::protocol forwards AgentMessageDelta.notification.delta.
+    event = ServerNotification("AgentMessageDelta", {"delta": "hello"})
+    payload = {"delta": "world"}
+    object_payload = type("Payload", (), {"delta": "typed"})()
+    empty = ServerNotification("AgentMessageDelta", {})
+
+    assert agent_message_delta_from_notification(event) == "hello"
+    assert agent_message_delta_from_notification(payload) == "world"
+    assert agent_message_delta_from_notification(object_payload) == "typed"
+    assert agent_message_delta_from_notification(empty) == ""
+
+
+def test_retry_error_status_from_notification_matches_protocol_retry_route() -> None:
+    # Rust path: chatwidget::protocol routes retry Error notifications into
+    # the transient stream-error/status surface.
+    retry = ServerNotification(
+        "Error",
+        {"will_retry": True, "error": {"message": "retrying", "additional_details": "slow"}},
+    )
+    fallback = ServerNotification("Error", {"will_retry": True, "error": {}})
+    non_retry = ServerNotification("Error", {"will_retry": False, "error": {"message": "fatal"}})
+
+    assert retry_error_status_from_notification(retry) == ("retrying", "slow")
+    assert retry_error_status_from_notification(fallback) == ("Request failed", None)
+    assert retry_error_status_from_notification(non_retry) is None
+
+
+def test_terminal_notification_action_plans_scrollback_product_events() -> None:
+    # Rust path: chatwidget::protocol owns server-notification dispatch.
+    assistant = terminal_notification_action(
+        ServerNotification("AgentMessageDelta", {"delta": "hello"})
+    )
+    assert assistant == TerminalNotificationAction(
+        "assistant_delta",
+        "hello",
+        suppress_turn_status=True,
+        hide_live_status=True,
+    )
+
+    started = terminal_notification_action(
+        ServerNotification("ItemStarted", {"item": {"command": ["echo", "hi"]}})
+    )
+    assert started == TerminalNotificationAction(
+        "command_started",
+        "\u2022 Running echo hi",
+        suppress_turn_status=True,
+        clear_live_status=True,
+        finalize_active_stream=True,
+    )
+
+    completed = terminal_notification_action(
+        ServerNotification("ItemCompleted", {"item": {"command": "rg needle"}})
+    )
+    assert completed == TerminalNotificationAction(
+        "command_completed",
+        "\u2022 Ran rg needle",
+        suppress_turn_status=True,
+        clear_live_status=True,
+        finalize_active_stream=True,
+    )
+
+    retry = terminal_notification_action(
+        ServerNotification("Error", {"will_retry": True, "error": {"message": "retry"}})
+    )
+    assert retry == TerminalNotificationAction("retry_error", "retry", None, suppress_turn_status=True)
+
+    turn_completed = terminal_notification_action(ServerNotification("TurnCompleted", {}))
+    assert turn_completed == TerminalNotificationAction(
+        "turn_completed",
+        clear_turn_status=True,
+        clear_live_status=True,
+        finalize_active_stream=True,
+    )
+
+    assert terminal_notification_action(ServerNotification("Warning", {"message": "ignored"})) == TerminalNotificationAction(
+        "noop"
+    )
+
+
+def test_run_terminal_notification_action_dispatches_protocol_actions() -> None:
+    # Rust path: chatwidget::protocol owns terminal notification action
+    # dispatch; the terminal runner provides the side-effect callbacks.
+    calls: list[tuple[str, str, str | None]] = []
+
+    def record(kind: str, text: str = "", details: str | None = None) -> None:
+        calls.append((kind, text, details))
+
+    callbacks = {
+        "assistant_delta": lambda text: record("assistant", text),
+        "command_started": lambda text: record("started", text),
+        "command_completed": lambda text: record("completed", text),
+        "retry_error": lambda text, details: record("retry", text, details),
+        "turn_completed": lambda: record("turn_completed"),
+    }
+
+    run_terminal_notification_action(TerminalNotificationAction("assistant_delta", "hello"), **callbacks)
+    run_terminal_notification_action(TerminalNotificationAction("command_started", "\u2022 Running echo hi"), **callbacks)
+    run_terminal_notification_action(TerminalNotificationAction("command_completed", "\u2022 Ran rg x"), **callbacks)
+    run_terminal_notification_action(TerminalNotificationAction("retry_error", "retry", "slow"), **callbacks)
+    run_terminal_notification_action(TerminalNotificationAction("turn_completed"), **callbacks)
+    run_terminal_notification_action(TerminalNotificationAction("noop"), **callbacks)
+
+    assert calls == [
+        ("assistant", "hello", None),
+        ("started", "\u2022 Running echo hi", None),
+        ("completed", "\u2022 Ran rg x", None),
+        ("retry", "retry", "slow"),
+        ("turn_completed", "", None),
+    ]
+
+
+def test_terminal_notification_effect_plan_resolves_terminal_state_rules() -> None:
+    # Rust path: chatwidget::protocol owns notification dispatch semantics; the
+    # terminal runner only applies the prepared terminal-state effects.
+    action = TerminalNotificationAction(
+        "command_started",
+        suppress_turn_status=True,
+        clear_turn_status=True,
+        hide_live_status=True,
+        clear_live_status=True,
+        finalize_active_stream=True,
+    )
+
+    assert terminal_notification_effect_plan(action, assistant_stream_active=True) == TerminalNotificationEffectPlan(
+        suppress_turn_status=True,
+        clear_turn_status=True,
+        hide_live_status=True,
+        clear_live_status=False,
+        finalize_active_stream=True,
+    )
+    assert terminal_notification_effect_plan(action, assistant_stream_active=False).finalize_active_stream is False
+
+
+def test_terminal_turn_close_effect_plan_matches_terminal_cleanup_boundary() -> None:
+    # Rust path: chatwidget::protocol owns turn lifecycle completion semantics;
+    # the terminal runner applies this cleanup when the app event stream closes
+    # or fails before a TurnCompleted notification is observed.
+    assert terminal_turn_close_effect_plan(assistant_stream_active=True) == TerminalNotificationEffectPlan(
+        clear_turn_status=True,
+        clear_live_status=True,
+        finalize_active_stream=True,
+    )
+    assert terminal_turn_close_effect_plan(assistant_stream_active=False) == TerminalNotificationEffectPlan(
+        clear_turn_status=True,
+        clear_live_status=True,
+        finalize_active_stream=False,
+    )
+
+
+def test_run_terminal_notification_effect_plan_applies_callbacks_in_protocol_order() -> None:
+    # Rust path: chatwidget::protocol owns notification effect sequencing; the
+    # terminal runner provides side-effect callbacks but does not interpret the
+    # effect flags itself.
+    calls: list[str] = []
+
+    run_terminal_notification_effect_plan(
+        TerminalNotificationEffectPlan(
+            suppress_turn_status=True,
+            clear_turn_status=True,
+            hide_live_status=True,
+            clear_live_status=True,
+            finalize_active_stream=True,
+        ),
+        suppress_turn_status=lambda: calls.append("suppress"),
+        clear_turn_status=lambda: calls.append("clear_turn"),
+        hide_live_status=lambda: calls.append("hide_live"),
+        clear_live_status=lambda: calls.append("clear_live"),
+        finalize_active_stream=lambda: calls.append("finalize"),
+    )
+
+    assert calls == ["suppress", "clear_turn", "hide_live", "clear_live", "finalize"]
+
+
+def test_run_terminal_notification_dispatches_effects_before_action() -> None:
+    # Rust path: chatwidget::protocol owns notification dispatch sequencing;
+    # terminal runtime provides side-effect callbacks without interpreting
+    # action/effect planning itself.
+    calls: list[tuple[str, str]] = []
+
+    action = run_terminal_notification(
+        ServerNotification("ItemStarted", {"item": {"command": ["echo", "hi"]}}),
+        assistant_stream_active=True,
+        apply_effect_plan=lambda plan: calls.append(("effect", str(plan.finalize_active_stream))),
+        assistant_delta=lambda text: calls.append(("assistant", text)),
+        command_started=lambda text: calls.append(("started", text)),
+        command_completed=lambda text: calls.append(("completed", text)),
+        retry_error=lambda text, details: calls.append(("retry", text)),
+    )
+
+    assert action == TerminalNotificationAction(
+        "command_started",
+        "\u2022 Running echo hi",
+        suppress_turn_status=True,
+        clear_live_status=True,
+        finalize_active_stream=True,
+    )
+    assert calls == [("effect", "True"), ("started", "\u2022 Running echo hi")]
+
+
+def test_run_terminal_app_notification_syncs_app_before_terminal_dispatch() -> None:
+    # Rust path: chatwidget::protocol owns server-notification handling order.
+    # The terminal runner supplies app synchronization and terminal callbacks.
+    calls: list[tuple[str, str]] = []
+
+    action = run_terminal_app_notification(
+        ServerNotification("AgentMessageDelta", {"delta": "hello"}),
+        handle_notification=lambda event: calls.append(("app", event.kind)),
+        assistant_stream_active=False,
+        apply_effect_plan=lambda plan: calls.append(("effect", str(plan.clear_live_status))),
+        assistant_delta=lambda text: calls.append(("assistant", text)),
+        command_started=lambda text: calls.append(("started", text)),
+        command_completed=lambda text: calls.append(("completed", text)),
+        retry_error=lambda text, details: calls.append(("retry", text)),
+    )
+
+    assert action == TerminalNotificationAction(
+        "assistant_delta",
+        "hello",
+        suppress_turn_status=True,
+        hide_live_status=True,
+    )
+    assert calls == [("app", "AgentMessageDelta"), ("effect", "False"), ("assistant", "hello")]
+
+
+def test_run_terminal_app_notification_continues_when_app_sync_fails() -> None:
+    # Terminal notification rendering must still progress if the app-runtime
+    # compatibility sync rejects a notification shape.
+    calls: list[tuple[str, str]] = []
+
+    def fail_sync(event) -> None:
+        calls.append(("app", "fail"))
+        raise RuntimeError("unsupported")
+
+    action = run_terminal_app_notification(
+        ServerNotification("ItemStarted", {"item": {"command": ["echo", "hi"]}}),
+        handle_notification=fail_sync,
+        assistant_stream_active=True,
+        apply_effect_plan=lambda plan: calls.append(("effect", str(plan.finalize_active_stream))),
+        assistant_delta=lambda text: calls.append(("assistant", text)),
+        command_started=lambda text: calls.append(("started", text)),
+        command_completed=lambda text: calls.append(("completed", text)),
+        retry_error=lambda text, details: calls.append(("retry", text)),
+    )
+
+    assert action.kind == "command_started"
+    assert calls == [("app", "fail"), ("effect", "True"), ("started", "\u2022 Running echo hi")]
+
+
+def test_terminal_protocol_event_dispatcher_owns_effect_callbacks() -> None:
+    # Rust owner: chatwidget/protocol.rs owns notification dispatch and
+    # turn-close cleanup semantics.  Terminal runtime should wire callbacks
+    # into this boundary instead of interpreting effect plans itself.
+    calls: list[tuple[str, str]] = []
+    active = [True]
+
+    dispatcher = TerminalProtocolEventDispatcher(
+        handle_notification=lambda event: calls.append(("app", event.kind)),
+        assistant_stream_active=lambda: active[0],
+        assistant_delta=lambda text: calls.append(("assistant", text)),
+        command_started=lambda text: calls.append(("started", text)),
+        command_completed=lambda text: calls.append(("completed", text)),
+        retry_error=lambda text, details: calls.append(("retry", text)),
+        suppress_turn_status=lambda: calls.append(("effect", "suppress")),
+        clear_turn_status=lambda: calls.append(("effect", "clear_turn")),
+        hide_live_status=lambda: calls.append(("effect", "hide_live")),
+        clear_live_status=lambda: calls.append(("effect", "clear_live")),
+        finalize_active_stream=lambda: calls.append(("effect", "finalize")),
+    )
+
+    action = dispatcher.handle_event(ServerNotification("AgentMessageDelta", {"delta": "hello"}))
+
+    assert action == TerminalNotificationAction(
+        "assistant_delta",
+        "hello",
+        suppress_turn_status=True,
+        hide_live_status=True,
+    )
+    assert calls == [
+        ("app", "AgentMessageDelta"),
+        ("effect", "suppress"),
+        ("effect", "hide_live"),
+        ("assistant", "hello"),
+    ]
+
+    calls.clear()
+    dispatcher.close_turn()
+    assert calls == [("effect", "clear_turn"), ("effect", "clear_live"), ("effect", "finalize")]
+
+    active[0] = False
+    calls.clear()
+    dispatcher.close_turn()
+    assert calls == [("effect", "clear_turn"), ("effect", "clear_live")]
 
 
 def test_protocol_runtime_finalizes_reasoning_summary_on_turn_completed() -> None:

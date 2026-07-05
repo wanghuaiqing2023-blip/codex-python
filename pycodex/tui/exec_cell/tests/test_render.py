@@ -10,6 +10,7 @@ from pycodex.tui.exec_cell.render import (
     output_lines,
     render_line_text,
     summarize_interaction_input,
+    terminal_command_status_text,
 )
 from pycodex.tui.line_truncation import Line, Span
 
@@ -75,6 +76,12 @@ def test_completed_command_display_uses_ran_bullet_and_output_preview_matches_ru
     rendered = [render_line_text(line) for line in command_display_lines(cell, 80)]
 
     assert rendered == ["• Ran echo done", "  ┃done"]
+
+
+def test_terminal_command_status_text_matches_command_display_title_contract() -> None:
+    # Rust source: codex-tui::exec_cell::render::command_display_lines.
+    assert terminal_command_status_text("echo done", active=True) == "\u2022 Running echo done"
+    assert terminal_command_status_text("echo done", active=False) == "\u2022 Ran echo done"
 
 
 def test_failed_command_display_still_uses_ran_title_matches_rust() -> None:
