@@ -10,6 +10,9 @@ from pathlib import Path
 from typing import Any, Callable, List, Optional, Tuple
 
 from .._porting import RustTuiModule
+from ..history_cell.messages import TerminalAssistantStreamState
+from ..history_cell.session import SessionHeaderHistoryCell, line_text
+from ..insert_history import TerminalHistoryState
 from ..ratatui_bridge import Rect
 from ..transcript_reflow import TranscriptReflowState
 
@@ -28,6 +31,16 @@ CODEX_CLI_VERSION = "unknown"
 class SessionHeaderLine:
     text: str
     kind: str = "session_header"
+
+
+@dataclass(frozen=True)
+class TerminalSessionHeaderData:
+    model: str
+    reasoning_effort: Any | None
+    show_fast_status: bool
+    directory: Path
+    version: str
+    yolo_mode: bool = False
 
 
 @dataclass
@@ -153,6 +166,58 @@ class AppHistoryUiState:
         reset_transcript_state_after_clear(self)
 
 
+@dataclass(frozen=True)
+class TerminalClearState:
+    history_has_content: bool = False
+    history_ended_with_blank: bool = False
+    history_projection_cells: Tuple[str, ...] = ()
+    assistant_stream_text: str = ""
+    resize_reflow_pending: bool = False
+
+
+@dataclass(frozen=True)
+class TerminalClearApplicationState:
+    """Concrete terminal scrollback state after applying app clear semantics."""
+
+    history_state: TerminalHistoryState
+    assistant_stream: TerminalAssistantStreamState
+    resize_reflow_pending: bool
+
+
+@dataclass
+class TerminalClearUiExecutor:
+    """Stateful clear-UI adapter for the terminal scrollback product path.
+
+    Rust ``app::history_ui`` owns the reset semantics for ``/clear``.  The
+    terminal runner supplies concrete terminal and state-sink callbacks, while
+    this adapter keeps their ordering with the app/history-ui boundary.
+    """
+
+    deactivate_layout: Callable[[], Any]
+    clear_terminal: Callable[[], Any]
+    flush_terminal: Callable[[], Any]
+    apply_history_state: Callable[[TerminalHistoryState], Any]
+    apply_assistant_stream_state: Callable[[TerminalAssistantStreamState], Any]
+    apply_resize_pending: Callable[[bool], Any]
+    render_header: Callable[[], Any]
+    activate_layout: Callable[[], Any]
+
+    def run(self) -> TerminalClearState:
+        return run_terminal_clear_ui_effects(
+            deactivate_layout=self.deactivate_layout,
+            clear_terminal=self.clear_terminal,
+            flush_terminal=self.flush_terminal,
+            apply_clear_state=lambda state: run_terminal_clear_application_state(
+                state,
+                apply_history_state=self.apply_history_state,
+                apply_assistant_stream_state=self.apply_assistant_stream_state,
+                apply_resize_pending=self.apply_resize_pending,
+            ),
+            render_header=self.render_header,
+            activate_layout=self.activate_layout,
+        )
+
+
 def open_url_in_browser(
     app: AppHistoryUiState,
     url: str,
@@ -174,31 +239,131 @@ def clear_ui_header_lines_with_version(
     width: int,
     version: str,
 ) -> List[SessionHeaderLine]:
-    if int(width) <= 0:
-        return []
-
-    parts = [
-        f"Codex {version}",
-        f"model: {app.chat_widget.current_model()}",
-        f"cwd: {_display_cwd(app.config.cwd)}",
+    model = app.chat_widget.current_model()
+    return [
+        SessionHeaderLine(text)
+        for text in terminal_session_header_lines(
+            TerminalSessionHeaderData(
+                model=model,
+                reasoning_effort=app.chat_widget.current_reasoning_effort(),
+                show_fast_status=app.chat_widget.should_show_fast_status(
+                    model,
+                    app.chat_widget.current_service_tier(),
+                ),
+                directory=app.config.cwd,
+                version=version,
+                yolo_mode=app.config.yolo_mode,
+            ),
+            width,
+        )
     ]
-    effort = app.chat_widget.current_reasoning_effort()
-    if effort is not None:
-        parts.append(f"effort: {effort}")
-    if app.chat_widget.should_show_fast_status(
-        app.chat_widget.current_model(),
-        app.chat_widget.current_service_tier(),
-    ):
-        parts.append("fast")
-    if app.config.yolo_mode:
-        parts.append("yolo")
-
-    line = " | ".join(parts)
-    return [SessionHeaderLine(line[: max(0, int(width))])]
 
 
-def _display_cwd(cwd: Path) -> str:
-    return str(cwd).replace("\\", "/")
+def terminal_session_header_lines(
+    data: TerminalSessionHeaderData,
+    width: int,
+) -> Tuple[str, ...]:
+    """Return the text lines for the scrollback session header.
+
+    Rust ownership: ``codex-tui::app::history_ui`` builds the fresh session
+    header by delegating to ``history_cell::session::SessionHeaderHistoryCell``.
+    """
+
+    if int(width) <= 0:
+        return ()
+    cell = SessionHeaderHistoryCell.new(
+        data.model,
+        data.reasoning_effort,
+        data.show_fast_status,
+        data.directory,
+        data.version,
+    ).with_yolo_mode(data.yolo_mode)
+    return tuple(line_text(line) for line in cell.display_lines(int(width)))
+
+
+def terminal_session_header_text(
+    data: TerminalSessionHeaderData,
+    width: int,
+) -> str:
+    return "\n".join(terminal_session_header_lines(data, width))
+
+
+def terminal_session_header_data_from_runtime(
+    app_runtime: Any,
+    *,
+    display_version: Callable[[], str],
+    display_model: Callable[[Any], str],
+    reasoning_effort: Callable[[Any], Any | None],
+    show_fast_status: Callable[[Any], bool],
+    yolo_mode: Callable[[Any], bool],
+) -> TerminalSessionHeaderData:
+    """Build terminal session header data from the app runtime.
+
+    Rust ownership: ``app::history_ui`` gathers current App/chat-widget state
+    and delegates display to ``history_cell::session::SessionHeaderHistoryCell``.
+    """
+
+    return TerminalSessionHeaderData(
+        model=display_model(app_runtime),
+        reasoning_effort=reasoning_effort(app_runtime),
+        show_fast_status=show_fast_status(app_runtime),
+        directory=getattr(app_runtime, "cwd"),
+        version=display_version(),
+        yolo_mode=yolo_mode(app_runtime),
+    )
+
+
+def run_terminal_session_header_render(
+    app_runtime: Any,
+    *,
+    display_version: Callable[[], str],
+    display_model: Callable[[Any], str],
+    reasoning_effort: Callable[[Any], Any | None],
+    show_fast_status: Callable[[Any], bool],
+    yolo_mode: Callable[[Any], bool],
+    write_history_cell: Callable[[str], Any],
+    width: int,
+) -> TerminalSessionHeaderData:
+    """Render the startup session header into terminal scrollback history."""
+
+    data = terminal_session_header_data_from_runtime(
+        app_runtime,
+        display_version=display_version,
+        display_model=display_model,
+        reasoning_effort=reasoning_effort,
+        show_fast_status=show_fast_status,
+        yolo_mode=yolo_mode,
+    )
+    write_history_cell(terminal_session_header_text(data, width))
+    return data
+
+
+def run_terminal_session_header_from_runtime(
+    app_runtime: Any,
+    *,
+    write_history_cell: Callable[[str], Any],
+    width: int,
+) -> TerminalSessionHeaderData:
+    """Render the session header using the canonical runtime providers."""
+
+    from ..textual_runtime import (
+        _display_version,
+        _runtime_display_model,
+        _runtime_header_reasoning_effort,
+        _runtime_header_yolo_mode,
+        _runtime_show_fast_status,
+    )
+
+    return run_terminal_session_header_render(
+        app_runtime,
+        display_version=_display_version,
+        display_model=_runtime_display_model,
+        reasoning_effort=_runtime_header_reasoning_effort,
+        show_fast_status=_runtime_show_fast_status,
+        yolo_mode=_runtime_header_yolo_mode,
+        write_history_cell=write_history_cell,
+        width=width,
+    )
 
 
 def queue_clear_ui_header(app: AppHistoryUiState, tui: Tui) -> List[SessionHeaderLine]:
@@ -239,6 +404,68 @@ def reset_transcript_state_after_clear(app: AppHistoryUiState) -> None:
     app.initial_history_replay_buffer = None
     app.backtrack = {}
     app.backtrack_render_pending = False
+
+
+def terminal_clear_state_after_clear() -> TerminalClearState:
+    """Return the lightweight terminal runner state after ``/clear``."""
+
+    return TerminalClearState()
+
+
+def terminal_clear_application_state(state: TerminalClearState) -> TerminalClearApplicationState:
+    """Map app clear semantics onto the terminal scrollback product state.
+
+    Rust ``app::history_ui`` owns the transcript/UI reset performed by ``/clear``
+    and Ctrl-L.  The lightweight terminal runner stores Python-specific state
+    objects, but this module owns how the clear contract resets those objects.
+    """
+
+    return TerminalClearApplicationState(
+        history_state=TerminalHistoryState(
+            history_has_content=state.history_has_content,
+            history_ended_with_blank=state.history_ended_with_blank,
+            projection_cells=tuple(state.history_projection_cells),
+        ),
+        assistant_stream=TerminalAssistantStreamState.inactive(state.assistant_stream_text),
+        resize_reflow_pending=state.resize_reflow_pending,
+    )
+
+
+def run_terminal_clear_application_state(
+    state: TerminalClearState,
+    *,
+    apply_history_state: Callable[[TerminalHistoryState], Any],
+    apply_assistant_stream_state: Callable[[TerminalAssistantStreamState], Any],
+    apply_resize_pending: Callable[[bool], Any],
+) -> TerminalClearApplicationState:
+    """Apply terminal scrollback state reset through app-owned clear semantics."""
+
+    applied = terminal_clear_application_state(state)
+    apply_history_state(applied.history_state)
+    apply_assistant_stream_state(applied.assistant_stream)
+    apply_resize_pending(applied.resize_reflow_pending)
+    return applied
+
+
+def run_terminal_clear_ui_effects(
+    *,
+    deactivate_layout: Callable[[], Any],
+    clear_terminal: Callable[[], Any],
+    flush_terminal: Callable[[], Any],
+    apply_clear_state: Callable[[TerminalClearState], Any],
+    render_header: Callable[[], Any],
+    activate_layout: Callable[[], Any],
+) -> TerminalClearState:
+    """Execute the terminal scrollback product path's clear UI sequence."""
+
+    deactivate_layout()
+    clear_terminal()
+    flush_terminal()
+    state = terminal_clear_state_after_clear()
+    apply_clear_state(state)
+    render_header()
+    activate_layout()
+    return state
 
 
 def open_url_success_and_failure_messages() -> bool:
@@ -317,6 +544,10 @@ __all__ = [
     "ScreenSize",
     "SessionHeaderLine",
     "Terminal",
+    "TerminalClearApplicationState",
+    "TerminalClearState",
+    "TerminalClearUiExecutor",
+    "TerminalSessionHeaderData",
     "Tui",
     "clear_terminal_ui",
     "clear_terminal_ui_alt_and_inline_branches",
@@ -326,4 +557,13 @@ __all__ = [
     "queue_clear_ui_header",
     "reset_transcript_state_after_clear",
     "reset_transcript_state_after_clear_resets_owned_state",
+    "run_terminal_clear_application_state",
+    "run_terminal_clear_ui_effects",
+    "run_terminal_session_header_from_runtime",
+    "run_terminal_session_header_render",
+    "terminal_clear_application_state",
+    "terminal_clear_state_after_clear",
+    "terminal_session_header_data_from_runtime",
+    "terminal_session_header_lines",
+    "terminal_session_header_text",
 ]

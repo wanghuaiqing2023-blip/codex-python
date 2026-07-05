@@ -386,6 +386,23 @@ def command_display_from_raw(command: str) -> str:
     return strip_bash_lc_and_escape(split_command_string(command))
 
 
+def command_text_from_notification(event: Any) -> str:
+    """Extract command text from an ItemStarted/ItemCompleted notification."""
+
+    payload = getattr(event, "payload", {}) or {}
+    item = _payload_field(payload, "item", payload)
+    command = _payload_field(item, "command", None)
+    if isinstance(command, (list, tuple)):
+        return " ".join(str(part) for part in command)
+    return "" if command is None else str(command)
+
+
+def _payload_field(payload: Any, key: str, default: Any = None) -> Any:
+    if isinstance(payload, dict):
+        return payload.get(key, default)
+    return getattr(payload, key, default)
+
+
 def normalize_source(source: Any) -> str:
     value = getattr(source, "value", None)
     if value is not None:
@@ -420,6 +437,7 @@ __all__ = [
     "SemanticExecCell",
     "UnifiedExecInteractionCell",
     "command_display_from_raw",
+    "command_text_from_notification",
     "coerce_command_execution_item",
     "normalize_source",
 ]

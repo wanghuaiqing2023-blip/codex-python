@@ -315,7 +315,7 @@ def test_textual_product_entry_prints_rust_exit_summary(monkeypatch, tmp_path: P
     assert output.index("Token usage: total=3 input=1 output=2") < output.index("To continue this session")
 
 
-def test_textual_product_entry_uses_scrollback_runtime_for_real_tty(monkeypatch) -> None:
+def test_textual_product_entry_uses_terminal_runtime_for_real_tty(monkeypatch) -> None:
     # Rust-derived contract:
     # - codex-tui keeps finalized history in terminal scrollback and only keeps
     #   the bottom pane as live UI.
@@ -325,14 +325,14 @@ def test_textual_product_entry_uses_scrollback_runtime_for_real_tty(monkeypatch)
     stdout = _Tty()
     observed: dict[str, object] = {}
 
-    def fake_run_scrollback_tui(**kwargs: object) -> int:
+    def fake_run_terminal_tui(**kwargs: object) -> int:
         observed.update(kwargs)
         return 23
 
     monkeypatch.delenv("PYCODEX_TUI_FORCE_TEXTUAL", raising=False)
     monkeypatch.setattr(
-        "pycodex.tui.scrollback_runtime.run_scrollback_tui",
-        fake_run_scrollback_tui,
+        "pycodex.tui.tui.run_terminal_tui",
+        fake_run_terminal_tui,
     )
 
     assert run_textual_tui(active_thread_runtime=runtime, stdout=stdout) == 23

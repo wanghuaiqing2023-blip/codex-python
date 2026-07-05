@@ -2510,11 +2510,13 @@ def _run_tui(
             return run_textual_tui(
                 active_thread_runtime=app_runtime,
                 stdout=out,
+                stdin=tui_stdin,
                 use_alt_screen=use_alt_screen,
             )
         return run_textual_tui(
             active_thread_runtime=active_thread_runtime,
             stdout=out,
+            stdin=tui_stdin,
             use_alt_screen=use_alt_screen,
         )
     print("Error: stdin is not a terminal", file=stderr)

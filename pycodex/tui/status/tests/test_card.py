@@ -10,6 +10,7 @@ from pycodex.tui.status.card import (
     StatusHistoryCell,
     StatusRateLimitState,
     StatusTokenUsageData,
+    TerminalStatusCardData,
     decorate_workspace_sandbox_label,
     format_model_provider,
     new_status_output_with_rate_limits_handle,
@@ -17,6 +18,10 @@ from pycodex.tui.status.card import (
     status_approval_label,
     status_permission_summary,
     status_permissions_label,
+    run_terminal_status_card_from_runtime,
+    run_terminal_status_card_render,
+    terminal_status_card_data_from_runtime,
+    terminal_status_card_lines,
     workspace_root_suffix,
 )
 from pycodex.tui.status.rate_limits import RateLimitSnapshotDisplay, RateLimitWindowDisplay, StatusRateLimitData
@@ -40,6 +45,139 @@ def test_status_handle_finish_rate_limit_refresh_updates_shared_state() -> None:
     assert output.card.rate_limit_state.refreshing_rate_limits is False
     assert output.card.rate_limit_state.rate_limits.kind == "available"
     assert [row.label for row in output.card.rate_limit_state.rate_limits.rows] == ["5h limit"]
+
+
+def test_terminal_status_card_lines_keep_scrollback_product_shape() -> None:
+    # Rust crate/module:
+    # - codex-tui::status::card::new_status_output_with_rate_limits_handle
+    # Contract: /status owns the history-facing status surface; the terminal
+    # scrollback path keeps its plain-text rendering shape in this module
+    # rather than in the runner main loop.
+    lines = terminal_status_card_lines(
+        TerminalStatusCardData(
+            version="0.1.0",
+            model="gpt-5.4",
+            reasoning_effort="high",
+            directory="C:/repo",
+            permissions="Read Only (never)",
+            agents_summary="AGENTS.md",
+            session_id="thread-1",
+        )
+    )
+
+    assert lines == (
+        "\u2022 /status",
+        "  >_ OpenAI Codex (0.1.0)",
+        "  Model: gpt-5.4 (reasoning high)",
+        "  Directory: C:/repo",
+        "  Permissions: Read Only (never)",
+        "  Agents.md: AGENTS.md",
+        "  Session: thread-1",
+        "  Limits: data not available yet",
+    )
+
+
+def test_terminal_status_card_data_from_runtime_uses_runtime_providers() -> None:
+    # Rust owner: codex-tui::status::card owns the history-facing /status
+    # surface; terminal runtime should provide runtime callbacks, not assemble
+    # the card fields itself.
+    class Thread:
+        thread_id = "thread-1"
+
+    class Runtime:
+        active_thread_runtime = Thread()
+
+    data = terminal_status_card_data_from_runtime(
+        Runtime(),
+        display_version=lambda: "0.1.0",
+        display_model=lambda runtime: "gpt-5.4",
+        reasoning_effort=lambda runtime: "high",
+        cwd=lambda runtime: "C:/repo",
+        permissions_label=lambda runtime: "Read Only (never)",
+        agents_summary=lambda runtime: "AGENTS.md",
+    )
+
+    assert data == TerminalStatusCardData(
+        version="0.1.0",
+        model="gpt-5.4",
+        reasoning_effort="high",
+        directory="C:/repo",
+        permissions="Read Only (never)",
+        agents_summary="AGENTS.md",
+        session_id="thread-1",
+    )
+
+
+def test_run_terminal_status_card_render_writes_shaped_card() -> None:
+    class Runtime:
+        active_thread_runtime = object()
+
+    written: list[str] = []
+
+    data = run_terminal_status_card_render(
+        Runtime(),
+        display_version=lambda: "0.1.0",
+        display_model=lambda runtime: "gpt-5.4",
+        reasoning_effort=lambda runtime: None,
+        cwd=lambda runtime: "C:/repo",
+        permissions_label=lambda runtime: "Full Access",
+        agents_summary=lambda runtime: "<none>",
+        write_history_cell=written.append,
+    )
+
+    assert data.session_id == "<none>"
+    assert written == [
+        "\n".join(
+            (
+                "\u2022 /status",
+                "  >_ OpenAI Codex (0.1.0)",
+                "  Model: gpt-5.4",
+                "  Directory: C:/repo",
+                "  Permissions: Full Access",
+                "  Agents.md: <none>",
+                "  Session: <none>",
+                "  Limits: data not available yet",
+            )
+        )
+    ]
+
+
+def test_run_terminal_status_card_from_runtime_uses_canonical_providers(monkeypatch) -> None:
+    # Rust owner: status/card.rs owns the history-facing /status surface.  The
+    # terminal runner should call this boundary instead of importing runtime
+    # providers and assembling card fields itself.
+    from pycodex.tui import textual_runtime
+
+    class Thread:
+        thread_id = "thread-runtime"
+
+    class Runtime:
+        active_thread_runtime = Thread()
+
+    monkeypatch.setattr(textual_runtime, "_display_version", lambda: "0.2.0")
+    monkeypatch.setattr(textual_runtime, "_runtime_display_model", lambda runtime: "runtime-model")
+    monkeypatch.setattr(
+        textual_runtime,
+        "_runtime_header_reasoning_effort",
+        lambda runtime: "medium",
+    )
+    monkeypatch.setattr(textual_runtime, "_runtime_cwd", lambda runtime: "C:/workspace/repo")
+    monkeypatch.setattr(textual_runtime, "_runtime_permissions_label", lambda runtime: "Full Access")
+    monkeypatch.setattr(textual_runtime, "_runtime_agents_summary", lambda runtime: "AGENTS.md")
+
+    written: list[str] = []
+    data = run_terminal_status_card_from_runtime(Runtime(), write_history_cell=written.append)
+
+    assert data == TerminalStatusCardData(
+        version="0.2.0",
+        model="runtime-model",
+        reasoning_effort="medium",
+        directory="C:/workspace/repo",
+        permissions="Full Access",
+        agents_summary="AGENTS.md",
+        session_id="thread-runtime",
+    )
+    assert written == ["\n".join(terminal_status_card_lines(data))]
 
 
 def test_token_usage_and_context_window_spans_match_status_card_shape() -> None:

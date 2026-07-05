@@ -15,6 +15,8 @@ from pycodex.tui.chatwidget.turn_runtime import (
     TurnAbortReason,
     UpdatePlanArgs,
     interrupted_turn_message,
+    run_terminal_turn_submission,
+    run_terminal_turn_start,
 )
 
 
@@ -61,6 +63,114 @@ def test_on_task_started_resets_turn_state_and_marks_working() -> None:
     assert runtime.active_cell_revisions == 1
     assert runtime.redraw_requests == 1
     assert runtime.ambient_pet_notifications[-1] == {"kind": "running", "body": None}
+
+
+def test_run_terminal_turn_start_sequences_terminal_callbacks() -> None:
+    # Rust owner: codex-tui::chatwidget::turn_runtime owns turn start state
+    # setup; terminal runtime supplies timestamp and terminal side effects.
+    calls: list[tuple[str, str | float | None]] = []
+
+    started = run_terminal_turn_start(
+        "hello",
+        started_at=12.5,
+        append_history=lambda prompt: calls.append(("append", prompt)),
+        apply_started_at=lambda value: calls.append(("started_at", value)),
+        reset_assistant_stream=lambda: calls.append(("reset_stream", None)),
+        clear_turn_status=lambda: calls.append(("clear_status", None)),
+        render_turn_status=lambda: calls.append(("render_status", None)),
+    )
+
+    assert started == 12.5
+    assert calls == [
+        ("append", "hello"),
+        ("started_at", 12.5),
+        ("reset_stream", None),
+        ("clear_status", None),
+        ("render_status", None),
+    ]
+
+
+def test_run_terminal_turn_start_allows_missing_history_append() -> None:
+    calls: list[str] = []
+
+    run_terminal_turn_start(
+        "hello",
+        started_at="now",
+        append_history="not-callable",
+        apply_started_at=lambda value: calls.append(f"started:{value}"),
+        reset_assistant_stream=lambda: calls.append("reset"),
+        clear_turn_status=lambda: calls.append("clear"),
+        render_turn_status=lambda: calls.append("render"),
+    )
+
+    assert calls == ["started:now", "reset", "clear", "render"]
+
+
+def test_run_terminal_turn_submission_submits_and_consumes_events() -> None:
+    # Rust owner: codex-tui::chatwidget input submission/turn runtime owns
+    # user-turn submission lifecycle; terminal runtime supplies side effects.
+    calls: list[object] = []
+
+    result = run_terminal_turn_submission(
+        "hello",
+        started_at=1.0,
+        append_history=lambda prompt: calls.append(("append", prompt)),
+        apply_started_at=lambda value: calls.append(("started", value)),
+        reset_assistant_stream=lambda: calls.append("reset"),
+        clear_turn_status=lambda: calls.append("clear"),
+        render_turn_status=lambda: calls.append("render"),
+        submit_user_turn=lambda prompt: calls.append(("submit", prompt)) or "events",
+        consume_events=lambda stream: calls.append(("consume", stream)),
+        close_turn=lambda: calls.append("close"),
+        write_error=lambda text: calls.append(("error", text)),
+        set_exit_code=lambda code: calls.append(("exit", code)),
+    )
+
+    assert result is True
+    assert calls == [
+        ("append", "hello"),
+        ("started", 1.0),
+        "reset",
+        "clear",
+        "render",
+        ("submit", "hello"),
+        ("consume", "events"),
+    ]
+
+
+def test_run_terminal_turn_submission_applies_failure_effects() -> None:
+    calls: list[object] = []
+
+    def submit(_: str) -> object:
+        calls.append("submit")
+        raise RuntimeError("boom")
+
+    result = run_terminal_turn_submission(
+        "hello",
+        started_at="now",
+        append_history=None,
+        apply_started_at=lambda value: calls.append(("started", value)),
+        reset_assistant_stream=lambda: calls.append("reset"),
+        clear_turn_status=lambda: calls.append("clear"),
+        render_turn_status=lambda: calls.append("render"),
+        submit_user_turn=submit,
+        consume_events=lambda stream: calls.append(("consume", stream)),
+        close_turn=lambda: calls.append("close"),
+        write_error=lambda text: calls.append(("error", text)),
+        set_exit_code=lambda code: calls.append(("exit", code)),
+    )
+
+    assert result is False
+    assert calls == [
+        ("started", "now"),
+        "reset",
+        "clear",
+        "render",
+        "submit",
+        "close",
+        ("error", "\u25a0 boom"),
+        ("exit", 1),
+    ]
 
 
 def test_collect_runtime_metrics_delta_merges_and_logs_websocket_timing() -> None:

@@ -6,10 +6,11 @@ behavior with lightweight buffer/backend objects rather than ratatui types.
 
 from __future__ import annotations
 
+import shutil
 import unicodedata
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, FrozenSet, Iterable, List, Optional, Tuple, Union
+from typing import Any, Callable, FrozenSet, Iterable, List, Optional, TextIO, Tuple, Union
 
 from ._porting import RustTuiModule
 
@@ -42,6 +43,53 @@ def display_width(s: str) -> int:
         visible.append(text[i])
         i += 1
     return _visible_width("".join(visible))
+
+
+def move_cursor(writer: TextIO, row: int, column: int = 1) -> None:
+    writer.write(f"{ESC}[{row};{column}H")
+
+
+def write_at(writer: TextIO, row: int, column: int, text: str) -> None:
+    move_cursor(writer, row, column)
+    writer.write(text)
+
+
+def clear_line_at(writer: TextIO, row: int) -> None:
+    move_cursor(writer, row, 1)
+    writer.write(f"{ESC}[2K")
+
+
+def write_inline_status_line(writer: TextIO, text: str) -> None:
+    """Overwrite the current terminal line with transient status text."""
+
+    writer.write(f"\r{ESC}[2K{text}")
+
+
+def clear_inline_status_line(writer: TextIO) -> None:
+    """Clear the current transient status line without touching scrollback."""
+
+    writer.write(f"\r{ESC}[2K")
+
+
+def set_scroll_region(writer: TextIO, top: int, bottom: int) -> None:
+    writer.write(f"{ESC}[{top};{bottom}r")
+
+
+def reset_scroll_region(writer: TextIO) -> None:
+    writer.write(f"{ESC}[r")
+
+
+def clear_scrollback_and_visible_screen_ansi(writer: TextIO) -> None:
+    """Clear scrollback and visible screen like Rust ``custom_terminal``."""
+
+    reset_scroll_region(writer)
+    writer.write(f"{ESC}[0m{ESC}[H{ESC}[2J{ESC}[3J{ESC}[H")
+
+
+def terminal_size(default: tuple[int, int] = (80, 24)) -> Any:
+    """Return the current terminal size using the product-path fallback."""
+
+    return shutil.get_terminal_size(default)
 
 
 @dataclass(frozen=True)
@@ -536,14 +584,18 @@ __all__ = [
     "Rect",
     "Size",
     "Terminal",
+    "clear_inline_status_line",
+    "clear_scrollback_and_visible_screen_ansi",
     "diff_buffers",
     "diff_buffers_clear_to_end_starts_after_wide_char",
     "diff_buffers_does_not_emit_clear_to_end_for_full_width_row",
     "display_width",
     "draw",
     "reset_cursor_style_emits_default_user_shape",
+    "terminal_size",
     "terminal_draw_applies_requested_cursor_style",
     "with_options",
     "with_options_and_cursor_position",
     "with_screen_size_and_cursor_position",
+    "write_inline_status_line",
 ]

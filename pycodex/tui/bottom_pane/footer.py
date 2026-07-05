@@ -10,7 +10,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Iterable, List, Optional, Tuple, Union
+from pathlib import Path
+from typing import Any, Callable, Iterable, List, Optional, Tuple, Union
 
 from .._porting import RustTuiModule
 
@@ -141,6 +142,15 @@ class FooterProps:
     status_line_enabled: bool = False
     key_hints: FooterKeyHints = FooterKeyHints.default_bindings()
     active_agent_label: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class TerminalIdleFooterData:
+    """Text-only footer inputs for the real-terminal scrollback product path."""
+
+    model_with_reasoning: str
+    cwd: Union[str, Path, None] = None
+    show_fast_status: bool = False
 
 
 class SummaryHintKind(Enum):
@@ -503,6 +513,78 @@ def passive_footer_status_line(props: FooterProps) -> Optional[str]:
     )
 
 
+def terminal_idle_footer_text(data: TerminalIdleFooterData) -> str:
+    """Return the terminal product path's passive footer text.
+
+    Rust ownership: ``codex-tui::bottom_pane::footer`` formats passive footer
+    status lines from caller-provided state.  The scrollback terminal runner
+    supplies already-resolved model/cwd fields and leaves formatting here.
+    """
+
+    model_part = str(data.model_with_reasoning)
+    if data.show_fast_status and " fast" not in f" {model_part.lower()} ":
+        model_part = f"{model_part} fast"
+    cwd_part = f"~\\{Path(data.cwd).name}" if data.cwd else ""
+    return " · ".join(part for part in (model_part, cwd_part) if part)
+
+
+def terminal_idle_footer_data_from_runtime(
+    app_runtime: Any,
+    *,
+    model_with_reasoning: Callable[[Any], str],
+    cwd: Callable[[Any], str | Path | None],
+    show_fast_status: Callable[[Any], bool],
+) -> TerminalIdleFooterData:
+    """Build terminal idle footer inputs from runtime providers."""
+
+    return TerminalIdleFooterData(
+        model_with_reasoning=model_with_reasoning(app_runtime),
+        cwd=cwd(app_runtime),
+        show_fast_status=show_fast_status(app_runtime),
+    )
+
+
+def run_terminal_idle_footer_text(
+    app_runtime: Any,
+    *,
+    model_with_reasoning: Callable[[Any], str],
+    cwd: Callable[[Any], str | Path | None],
+    show_fast_status: Callable[[Any], bool],
+) -> str:
+    """Return the terminal product path's idle footer text from runtime state.
+
+    Rust ownership: ``bottom_pane::footer`` owns passive footer formatting;
+    the terminal runner supplies provider callbacks rather than assembling
+    footer data itself.
+    """
+
+    return terminal_idle_footer_text(
+        terminal_idle_footer_data_from_runtime(
+            app_runtime,
+            model_with_reasoning=model_with_reasoning,
+            cwd=cwd,
+            show_fast_status=show_fast_status,
+        )
+    )
+
+
+def run_terminal_idle_footer_text_from_runtime(app_runtime: Any) -> str:
+    """Return passive footer text using the canonical TUI runtime providers."""
+
+    from ..textual_runtime import (
+        _runtime_cwd,
+        _runtime_model_with_reasoning,
+        _runtime_show_fast_status,
+    )
+
+    return run_terminal_idle_footer_text(
+        app_runtime,
+        model_with_reasoning=_runtime_model_with_reasoning,
+        cwd=_runtime_cwd,
+        show_fast_status=_runtime_show_fast_status,
+    )
+
+
 def shows_passive_footer_line(props: FooterProps, show_queue_hint: bool = False) -> bool:
     if show_queue_hint:
         return False
@@ -728,6 +810,7 @@ __all__ = [
     "ShortcutsState",
     "SummaryHintKind",
     "SummaryLeft",
+    "TerminalIdleFooterData",
     "alt",
     "build_columns",
     "can_show_left_with_context",
@@ -772,6 +855,10 @@ __all__ = [
     "snapshot_footer_with_mode_indicator",
     "snapshot_footer_with_mode_indicator_and_context",
     "status_line_right_indicator_line",
+    "terminal_idle_footer_data_from_runtime",
+    "terminal_idle_footer_text",
+    "run_terminal_idle_footer_text",
+    "run_terminal_idle_footer_text_from_runtime",
     "toggle_shortcut_mode",
     "uses_passive_footer_status_layout",
 ]

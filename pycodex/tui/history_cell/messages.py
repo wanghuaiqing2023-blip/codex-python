@@ -5,9 +5,10 @@ Upstream source: ``codex/codex-rs/tui/src/history_cell/messages.rs``.
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from .._porting import RustTuiModule
 from ..line_truncation import Line, Span
@@ -33,6 +34,78 @@ SUMMARY_STYLE = "dim italic"
 USER_PROMPT_PREFIX = "› "
 ASSISTANT_PREFIX = "• "
 ASSISTANT_CONTINUATION_PREFIX = "  "
+TERMINAL_ASSISTANT_PREFIX = "\u2022 "
+
+
+@dataclass(frozen=True)
+class TerminalAssistantStreamState:
+    """Text-only assistant stream state for the terminal scrollback path."""
+
+    active: bool = False
+    column: int = 0
+    text: str = ""
+
+    @classmethod
+    def inactive(cls, text: str = "") -> "TerminalAssistantStreamState":
+        return cls(active=False, column=0, text=str(text))
+
+
+@dataclass(frozen=True)
+class TerminalAssistantStreamDeltaPlan:
+    """Prepared assistant-stream state transition for one terminal delta."""
+
+    open_prefix: str | None
+    text: str
+    state: TerminalAssistantStreamState
+
+
+@dataclass
+class TerminalAssistantStreamWriter:
+    """Stateful terminal assistant-stream adapter for history_cell::messages.
+
+    Rust ``history_cell::messages`` owns assistant/streaming history cell text
+    and final projection semantics.  The terminal runner supplies only concrete
+    insert-history and resize-reflow effects.
+    """
+
+    wrap_width: Callable[[], int]
+    open_stream: Callable[[str], Any]
+    write_delta: Callable[[str], Any]
+    finish_projection: Callable[[str | None], Any]
+    finish_stream_reflow: Callable[[], Any]
+    state: TerminalAssistantStreamState = field(default_factory=TerminalAssistantStreamState.inactive)
+    apply_history_state: Callable[[Any], Any] | None = None
+    repaint_active_stream: Callable[[str | None], Any] | None = None
+
+    @property
+    def active(self) -> bool:
+        return self.state.active
+
+    def reset(self) -> None:
+        self.state = TerminalAssistantStreamState.inactive()
+
+    def apply_state(self, state: TerminalAssistantStreamState) -> None:
+        self.state = state
+
+    def handle_delta(self, delta: str) -> None:
+        self.state = run_terminal_assistant_stream_delta_plan(
+            self.state,
+            delta,
+            wrap_width=self.wrap_width(),
+            open_stream=self.open_stream,
+            write_delta=self.write_delta,
+        )
+        if self.repaint_active_stream is not None:
+            self.repaint_active_stream(terminal_assistant_projection_text(self.state.text))
+
+    def finalize(self) -> Any:
+        self.state, history_state = run_terminal_assistant_stream_finalization(
+            self.state,
+            finish_projection=self.finish_projection,
+            apply_history_state=self.apply_history_state,
+            finish_stream_reflow=self.finish_stream_reflow,
+        )
+        return history_state
 
 
 @dataclass(frozen=True)
@@ -358,6 +431,202 @@ def new_user_prompt(
     )
 
 
+def terminal_user_prompt_text(message: str) -> str:
+    """Return the plain scrollback line used for terminal user prompts."""
+
+    return f"\u203a {message}"
+
+
+def run_terminal_user_prompt_output(
+    message: str,
+    *,
+    terminal_active: bool,
+    clear_live_status: Callable[[], Any],
+    write_history_cell: Callable[..., Any],
+    render_bottom_pane: Callable[[], Any],
+) -> None:
+    """Write a terminal user prompt through the message history-cell boundary."""
+
+    clear_live_status()
+    write_history_cell(
+        terminal_user_prompt_text(message),
+        reserve_active_bottom_pane=True,
+    )
+    if terminal_active:
+        render_bottom_pane()
+
+
+def terminal_assistant_stream_prefix() -> str:
+    """Return the plain terminal prefix used when an assistant stream opens."""
+
+    return TERMINAL_ASSISTANT_PREFIX
+
+
+def terminal_assistant_stream_initial_column(
+    prefix: str = TERMINAL_ASSISTANT_PREFIX,
+) -> int:
+    """Return the display column after writing an assistant stream prefix."""
+
+    return _terminal_stream_display_width(prefix)
+
+
+def terminal_assistant_stream_opened(
+    prefix: str = TERMINAL_ASSISTANT_PREFIX,
+) -> TerminalAssistantStreamState:
+    """Return the terminal assistant stream state after writing the prefix."""
+
+    return TerminalAssistantStreamState(
+        active=True,
+        column=terminal_assistant_stream_initial_column(prefix),
+        text="",
+    )
+
+
+def terminal_assistant_projection_text(text: str) -> str | None:
+    """Return the retained scrollback projection for a finalized assistant stream."""
+
+    return f"{TERMINAL_ASSISTANT_PREFIX}{text}" if text else None
+
+
+def terminal_assistant_stream_after_delta(
+    state: TerminalAssistantStreamState,
+    delta: str,
+    *,
+    wrap_width: int,
+) -> tuple[str, TerminalAssistantStreamState]:
+    """Render a delta and return the updated terminal assistant stream state."""
+
+    rendered, column = terminal_assistant_delta_text(
+        delta,
+        current_column=state.column,
+        wrap_width=wrap_width,
+    )
+    return rendered, TerminalAssistantStreamState(
+        active=True,
+        column=column,
+        text=state.text + str(delta),
+    )
+
+
+def terminal_assistant_stream_delta_plan(
+    state: TerminalAssistantStreamState,
+    delta: str,
+    *,
+    wrap_width: int,
+) -> TerminalAssistantStreamDeltaPlan:
+    """Plan opening/writing one assistant stream delta for the terminal path."""
+
+    open_prefix: str | None = None
+    current = state
+    if not current.active:
+        open_prefix = terminal_assistant_stream_prefix()
+        current = terminal_assistant_stream_opened(open_prefix)
+    text, next_state = terminal_assistant_stream_after_delta(
+        current,
+        delta,
+        wrap_width=wrap_width,
+    )
+    return TerminalAssistantStreamDeltaPlan(open_prefix, text, next_state)
+
+
+def run_terminal_assistant_stream_delta_plan(
+    state: TerminalAssistantStreamState,
+    delta: str,
+    *,
+    wrap_width: int,
+    open_stream: Callable[[str], Any],
+    write_delta: Callable[[str], Any],
+) -> TerminalAssistantStreamState:
+    """Execute one terminal assistant-stream delta through caller effects."""
+
+    plan = terminal_assistant_stream_delta_plan(
+        state,
+        delta,
+        wrap_width=wrap_width,
+    )
+    if plan.open_prefix is not None:
+        open_stream(plan.open_prefix)
+    write_delta(plan.text)
+    return plan.state
+
+
+def terminal_assistant_stream_finalized(
+    state: TerminalAssistantStreamState,
+) -> tuple[str | None, TerminalAssistantStreamState]:
+    """Return retained projection text and the inactive stream state."""
+
+    return terminal_assistant_projection_text(state.text), TerminalAssistantStreamState.inactive()
+
+
+def run_terminal_assistant_stream_finalization(
+    state: TerminalAssistantStreamState,
+    *,
+    finish_projection: Callable[[str | None], Any],
+    apply_history_state: Callable[[Any], Any] | None = None,
+    finish_stream_reflow: Callable[[], Any],
+) -> tuple[TerminalAssistantStreamState, Any]:
+    """Finalize an assistant stream and run caller-provided terminal effects."""
+
+    projection, next_state = terminal_assistant_stream_finalized(state)
+    history_state = finish_projection(projection)
+    if apply_history_state is not None:
+        apply_history_state(history_state)
+    finish_stream_reflow()
+    return next_state, history_state
+
+
+def terminal_assistant_delta_text(
+    delta: str,
+    *,
+    current_column: int,
+    wrap_width: int,
+    continuation_prefix: str = ASSISTANT_CONTINUATION_PREFIX,
+) -> tuple[str, int]:
+    """Render an assistant stream delta for the terminal scrollback path."""
+
+    column = int(current_column)
+    width = max(1, int(wrap_width))
+    continuation_width = _terminal_stream_display_width(continuation_prefix)
+    parts: list[str] = []
+    for char in str(delta):
+        if char == "\r":
+            continue
+        if char == "\n":
+            parts.append(f"\r\n{continuation_prefix}")
+            column = continuation_width
+            continue
+        char_width = _terminal_stream_char_display_width(char)
+        if (
+            char_width > 0
+            and column > continuation_width
+            and column + char_width > width
+        ):
+            parts.append(f"\r\n{continuation_prefix}")
+            column = continuation_width
+        parts.append(char)
+        column += char_width
+    return "".join(parts), column
+
+
+def _terminal_stream_display_width(text: str) -> int:
+    return sum(_terminal_stream_char_display_width(char) for char in str(text))
+
+
+def _terminal_stream_char_display_width(char: str) -> int:
+    if char == "\t":
+        return 4
+    if char in {"\r", "\n"}:
+        return 0
+    if unicodedata.combining(char):
+        return 0
+    category = unicodedata.category(char)
+    if category.startswith("C"):
+        return 0
+    if unicodedata.east_asian_width(char) in {"F", "W"}:
+        return 2
+    return 1
+
+
 def new_reasoning_summary_block(
     full_reasoning_buffer: str, cwd: str | Path
 ) -> ReasoningSummaryCell:
@@ -413,6 +682,7 @@ def is_stream_continuation(cell: Any) -> bool:
 __all__ = [
     "ASSISTANT_CONTINUATION_PREFIX",
     "ASSISTANT_PREFIX",
+    "TERMINAL_ASSISTANT_PREFIX",
     "USER_PROMPT_PREFIX",
     "AgentMarkdownCell",
     "AgentMessageCell",
@@ -421,6 +691,9 @@ __all__ = [
     "RUST_MODULE",
     "ReasoningSummaryCell",
     "StreamingAgentTailCell",
+    "TerminalAssistantStreamDeltaPlan",
+    "TerminalAssistantStreamState",
+    "TerminalAssistantStreamWriter",
     "TextElement",
     "UserHistoryCell",
     "build_user_message_lines_with_elements",
@@ -434,6 +707,18 @@ __all__ = [
     "raw_lines",
     "raw_lines_from_source",
     "remote_image_display_line",
+    "run_terminal_assistant_stream_delta_plan",
+    "run_terminal_assistant_stream_finalization",
+    "run_terminal_user_prompt_output",
+    "terminal_assistant_delta_text",
+    "terminal_assistant_projection_text",
+    "terminal_assistant_stream_after_delta",
+    "terminal_assistant_stream_delta_plan",
+    "terminal_assistant_stream_finalized",
+    "terminal_assistant_stream_initial_column",
+    "terminal_assistant_stream_opened",
+    "terminal_assistant_stream_prefix",
+    "terminal_user_prompt_text",
     "transcript_hyperlink_lines",
     "transcript_lines",
     "trim_trailing_blank_lines",

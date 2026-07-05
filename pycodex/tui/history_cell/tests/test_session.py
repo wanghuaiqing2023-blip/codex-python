@@ -14,6 +14,9 @@ from pycodex.tui.history_cell.session import (
     line_text,
     new_session_info,
     padded_emoji,
+    run_terminal_startup_notices_from_runtime,
+    run_terminal_startup_notices_render,
+    terminal_startup_notice_lines,
     with_border,
     with_border_with_inner_width,
 )
@@ -48,6 +51,95 @@ def test_tooltip_history_cell_display_and_raw_lines() -> None:
 
     assert texts(cell.display_lines(80)) == ["  Tip: try /status"]
     assert texts(cell.raw_lines()) == ["Tip: try /status"]
+
+
+def test_terminal_startup_notice_lines_strip_tip_markdown_and_dedupe_warnings() -> None:
+    # Rust crate/module:
+    # - codex-tui::history_cell::session::TooltipHistoryCell
+    # - codex-tui::chatwidget warning history cells
+    # Contract: terminal startup notices own the visible scrollback text shape
+    # outside the runner, preserving tooltip copy and warning de-duplication.
+    assert terminal_startup_notice_lines(
+        "Try **/status** or __/model__.",
+        ["MCP startup incomplete", "MCP startup incomplete", "Another warning"],
+    ) == (
+        "\u2022 Tip: Try /status or /model.",
+        "\u2022 MCP startup incomplete",
+        "\u2022 Another warning",
+    )
+
+
+def test_run_terminal_startup_notices_render_uses_runtime_providers_and_writers() -> None:
+    # Rust owner: history_cell/session.rs owns startup tooltip history cells.
+    # The terminal runner should provide runtime sources and history writers,
+    # while this boundary shapes notices and inserts the separating blank line.
+    class Runtime:
+        tooltip = "Try **/status**."
+        warnings = ["MCP startup incomplete", "MCP startup incomplete"]
+
+    writes: list[str] = []
+    blank_lines: list[str] = []
+
+    notices = run_terminal_startup_notices_render(
+        Runtime(),
+        startup_tooltip=lambda runtime: runtime.tooltip,
+        startup_warnings=lambda runtime: runtime.warnings,
+        write_history_cell=writes.append,
+        write_blank_line=lambda: blank_lines.append("blank"),
+    )
+
+    assert notices == (
+        "\u2022 Tip: Try /status.",
+        "\u2022 MCP startup incomplete",
+    )
+    assert writes == list(notices)
+    assert blank_lines == ["blank"]
+
+
+def test_run_terminal_startup_notices_render_skips_blank_line_without_notices() -> None:
+    writes: list[str] = []
+    blank_lines: list[str] = []
+
+    notices = run_terminal_startup_notices_render(
+        object(),
+        startup_tooltip=lambda _: None,
+        startup_warnings=lambda _: [],
+        write_history_cell=writes.append,
+        write_blank_line=lambda: blank_lines.append("blank"),
+    )
+
+    assert notices == ()
+    assert writes == []
+    assert blank_lines == []
+
+
+def test_run_terminal_startup_notices_from_runtime_uses_canonical_providers(monkeypatch) -> None:
+    # Rust owner: history_cell/session.rs owns startup notice shaping.  The
+    # terminal runner should not import runtime tooltip/warning providers.
+    from pycodex.tui import textual_runtime
+
+    class Runtime:
+        pass
+
+    monkeypatch.setattr(textual_runtime, "_runtime_startup_tooltip", lambda runtime: "Try **/model**.")
+    monkeypatch.setattr(
+        textual_runtime,
+        "_runtime_startup_warnings",
+        lambda runtime: ("warning one", "warning one"),
+    )
+
+    writes: list[str] = []
+    blanks: list[str] = []
+
+    notices = run_terminal_startup_notices_from_runtime(
+        Runtime(),
+        write_history_cell=writes.append,
+        write_blank_line=lambda: blanks.append("blank"),
+    )
+
+    assert notices == ("\u2022 Tip: Try /model.", "\u2022 warning one")
+    assert writes == list(notices)
+    assert blanks == ["blank"]
 
 
 def test_session_header_raw_lines_include_reasoning_and_yolo() -> None:

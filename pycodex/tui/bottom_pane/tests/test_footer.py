@@ -7,6 +7,7 @@ from pycodex.tui.bottom_pane.footer import (
     ShortcutId,
     ShortcutsState,
     SummaryLeft,
+    TerminalIdleFooterData,
     context_window_line,
     ctrl,
     esc_hint_line,
@@ -25,6 +26,10 @@ from pycodex.tui.bottom_pane.footer import (
     single_line_footer_layout,
     goal_status_indicator_line,
     status_line_right_indicator_line,
+    run_terminal_idle_footer_text,
+    run_terminal_idle_footer_text_from_runtime,
+    terminal_idle_footer_data_from_runtime,
+    terminal_idle_footer_text,
     toggle_shortcut_mode,
     uses_passive_footer_status_layout,
 )
@@ -158,6 +163,96 @@ def test_passive_status_line_combines_agent_and_yields_to_queue_hint():
 
     assert shows_passive_footer_line(props, show_queue_hint=True) is False
     assert uses_passive_footer_status_layout(props, show_queue_hint=True) is False
+
+
+def test_terminal_idle_footer_text_formats_model_fast_and_cwd():
+    # Rust crate/module:
+    # - codex-tui::bottom_pane::footer
+    # Contract: the real-terminal scrollback path keeps passive footer
+    # formatting in the footer module, with caller-provided model/cwd state.
+    assert (
+        terminal_idle_footer_text(
+            TerminalIdleFooterData(
+                model_with_reasoning="gpt-test high",
+                cwd="C:/repo",
+                show_fast_status=True,
+            )
+        )
+        == "gpt-test high fast · ~\\repo"
+    )
+    assert (
+        terminal_idle_footer_text(
+            TerminalIdleFooterData(
+                model_with_reasoning="gpt-test high fast",
+                cwd="C:/repo",
+                show_fast_status=True,
+            )
+        )
+        == "gpt-test high fast · ~\\repo"
+    )
+    assert terminal_idle_footer_text(TerminalIdleFooterData("gpt-test high", None, False)) == "gpt-test high"
+
+
+def test_terminal_idle_footer_data_from_runtime_uses_runtime_providers():
+    # Rust owner: bottom_pane/footer.rs owns passive footer inputs and display
+    # shape; the terminal runner should only supply runtime provider callbacks.
+    class Runtime:
+        model = "gpt-provider"
+        cwd = "C:/workspace/repo"
+        fast = True
+
+    runtime = Runtime()
+
+    data = terminal_idle_footer_data_from_runtime(
+        runtime,
+        model_with_reasoning=lambda value: f"{value.model} high",
+        cwd=lambda value: value.cwd,
+        show_fast_status=lambda value: value.fast,
+    )
+
+    assert data == TerminalIdleFooterData(
+        model_with_reasoning="gpt-provider high",
+        cwd="C:/workspace/repo",
+        show_fast_status=True,
+    )
+
+
+def test_run_terminal_idle_footer_text_formats_provider_values():
+    class Runtime:
+        model = "gpt-provider high"
+        cwd = "C:/workspace/repo"
+        fast = True
+
+    text = run_terminal_idle_footer_text(
+        Runtime(),
+        model_with_reasoning=lambda value: value.model,
+        cwd=lambda value: value.cwd,
+        show_fast_status=lambda value: value.fast,
+    )
+    assert text == terminal_idle_footer_text(
+        TerminalIdleFooterData("gpt-provider high", "C:/workspace/repo", True)
+    )
+
+
+def test_run_terminal_idle_footer_text_from_runtime_uses_canonical_providers(monkeypatch):
+    # Rust owner: bottom_pane/footer.rs owns passive footer text.  The terminal
+    # runner should ask this module for provider-backed footer formatting.
+    from pycodex.tui import textual_runtime
+
+    class Runtime:
+        pass
+
+    monkeypatch.setattr(
+        textual_runtime,
+        "_runtime_model_with_reasoning",
+        lambda runtime: "runtime-model high",
+    )
+    monkeypatch.setattr(textual_runtime, "_runtime_cwd", lambda runtime: "C:/workspace/repo")
+    monkeypatch.setattr(textual_runtime, "_runtime_show_fast_status", lambda runtime: True)
+
+    assert run_terminal_idle_footer_text_from_runtime(Runtime()) == terminal_idle_footer_text(
+        TerminalIdleFooterData("runtime-model high", "C:/workspace/repo", True)
+    )
 
 
 def test_goal_status_indicator_line_matches_rust_footer_labels():

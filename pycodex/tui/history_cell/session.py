@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from .._porting import RustTuiModule
 from ..line_truncation import Line, Span, _display_width
@@ -94,6 +94,84 @@ class TooltipHistoryCell:
 
     def raw_lines(self) -> list[Line]:
         return [Line.from_text(f"Tip: {self.tip}")]
+
+
+def terminal_startup_notice_lines(
+    tooltip: str | None,
+    warnings: Iterable[Any],
+) -> tuple[str, ...]:
+    """Return startup notices for the real-terminal scrollback product path.
+
+    Rust ownership is split across ``history_cell::session`` for startup
+    tooltips/session info and chatwidget warning history for warnings.  The
+    terminal runner supplies the raw startup values; this helper owns the
+    scrollback text shape and duplicate warning filtering for the lightweight
+    terminal product path.
+    """
+
+    lines: list[str] = []
+    if tooltip:
+        tip = _plain_startup_notice_text(tooltip)
+        if tip:
+            lines.append(f"\u2022 Tip: {tip}")
+
+    seen: set[str] = set()
+    for warning in warnings:
+        text = str(warning)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        lines.append(f"\u2022 {text}")
+    return tuple(lines)
+
+
+def run_terminal_startup_notices_render(
+    app_runtime: Any,
+    *,
+    startup_tooltip: Callable[[Any], str | None],
+    startup_warnings: Callable[[Any], Iterable[Any]],
+    write_history_cell: Callable[[str], Any],
+    write_blank_line: Callable[[], Any],
+) -> tuple[str, ...]:
+    """Render startup notices into terminal scrollback history.
+
+    Rust ownership is anchored in ``history_cell::session`` for startup
+    tooltip cells; the terminal runner supplies runtime providers and writer
+    callbacks, while this boundary owns notice shaping and write sequencing.
+    """
+
+    notices = terminal_startup_notice_lines(
+        startup_tooltip(app_runtime),
+        startup_warnings(app_runtime),
+    )
+    for notice in notices:
+        write_history_cell(notice)
+    if notices:
+        write_blank_line()
+    return notices
+
+
+def run_terminal_startup_notices_from_runtime(
+    app_runtime: Any,
+    *,
+    write_history_cell: Callable[[str], Any],
+    write_blank_line: Callable[[], Any],
+) -> tuple[str, ...]:
+    """Render startup notices using the canonical TUI runtime providers."""
+
+    from ..textual_runtime import _runtime_startup_tooltip, _runtime_startup_warnings
+
+    return run_terminal_startup_notices_render(
+        app_runtime,
+        startup_tooltip=_runtime_startup_tooltip,
+        startup_warnings=_runtime_startup_warnings,
+        write_history_cell=write_history_cell,
+        write_blank_line=write_blank_line,
+    )
+
+
+def _plain_startup_notice_text(value: Any) -> str:
+    return str(value).replace("**", "").replace("__", "")
 
 
 @dataclass
@@ -369,6 +447,9 @@ __all__ = [
     "new_session_info",
     "padded_emoji",
     "raw_lines",
+    "run_terminal_startup_notices_from_runtime",
+    "run_terminal_startup_notices_render",
+    "terminal_startup_notice_lines",
     "transcript_lines",
     "with_border",
     "with_border_internal",

@@ -11,9 +11,23 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Iterable, List, Optional, Sequence, TextIO, Tuple
 
 from .._porting import RustTuiModule
+from ..custom_terminal import (
+    clear_line_at,
+    clear_scrollback_and_visible_screen_ansi,
+    display_width,
+    reset_scroll_region,
+    write_at,
+)
+from ..bottom_pane.terminal_surface import (
+    TerminalBottomPaneFootprint,
+    TerminalLiveStatusSurface,
+    bottom_pane_footprint_transition,
+    bottom_pane_footprint_transition_for_footprints,
+)
+from ..insert_history import TerminalHistoryState, terminal_history_cell_lines
 from ..transcript_reflow import TranscriptReflowState
 
 
@@ -239,6 +253,225 @@ class ResizeReflowPlan:
     schedule_frame_in: Optional[str] = None
 
 
+@dataclass(frozen=True, eq=True)
+class TerminalResizeReflowPlan:
+    action: str
+    pending: bool = False
+
+
+@dataclass(frozen=True, eq=True)
+class TerminalSizeChangeReflowPlan:
+    """Plan terminal-size driven resize reflow for the scrollback product path."""
+
+    reflow: TerminalResizeReflowPlan
+    last_terminal_size: Any
+    changed: bool = False
+    initialized: bool = False
+
+
+@dataclass(frozen=True, eq=True)
+class TerminalResizeRuntimeState:
+    """Track terminal resize state for the scrollback product path.
+
+    Rust keeps draw-size state on ``App`` while resize decisions live in
+    ``app::resize_reflow``.  The Python terminal runner has no ratatui frame, so
+    this small value object keeps the same app-owned boundary while leaving the
+    runner responsible only for observing terminal size and executing plans.
+    """
+
+    last_terminal_size: Any = None
+    handling_resize: bool = False
+
+    @classmethod
+    def inactive(cls) -> "TerminalResizeRuntimeState":
+        return cls()
+
+    def activated(self, size: Any) -> "TerminalResizeRuntimeState":
+        return TerminalResizeRuntimeState(last_terminal_size=size)
+
+    def deactivated(self) -> "TerminalResizeRuntimeState":
+        return TerminalResizeRuntimeState()
+
+    def begin_handling(self) -> "TerminalResizeRuntimeState":
+        return TerminalResizeRuntimeState(
+            last_terminal_size=self.last_terminal_size,
+            handling_resize=True,
+        )
+
+    def end_handling(self) -> "TerminalResizeRuntimeState":
+        return TerminalResizeRuntimeState(
+            last_terminal_size=self.last_terminal_size,
+            handling_resize=False,
+        )
+
+    def after_size_plan(
+        self,
+        plan: TerminalSizeChangeReflowPlan,
+    ) -> "TerminalResizeRuntimeState":
+        return TerminalResizeRuntimeState(
+            last_terminal_size=plan.last_terminal_size,
+            handling_resize=self.handling_resize,
+        )
+
+
+@dataclass
+class TerminalResizeCoordinator:
+    """Stateful resize/layout adapter for the terminal product path.
+
+    Rust ``app::resize_reflow`` owns resize-state transitions and replay
+    planning.  The terminal runner supplies the observed terminal environment
+    and concrete repaint/replay callbacks.
+    """
+
+    terminal_active: Callable[[], bool]
+    current_size: Callable[[], Any]
+    active_stream: Callable[[], bool]
+    reset_terminal_scroll_region: Callable[[], None]
+    render_bottom_pane: Callable[[], None]
+    repaint_history_viewport: Callable[[], None]
+    replay_history_scrollback: Callable[[], None]
+    layout_active: bool = False
+    state: TerminalResizeRuntimeState = field(default_factory=TerminalResizeRuntimeState.inactive)
+    pending: bool = False
+
+    @property
+    def terminal_layout_active(self) -> bool:
+        return self.terminal_active() and self.layout_active
+
+    def activate_layout(self) -> None:
+        self.layout_active, self.state = run_terminal_layout_activation(
+            terminal_active=self.terminal_active(),
+            state=self.state,
+            current_size=self.current_size(),
+            render_bottom_pane=self.render_bottom_pane,
+        )
+
+    def deactivate_layout(self) -> None:
+        self.layout_active, self.state = run_terminal_layout_deactivation(
+            terminal_active=self.terminal_active(),
+            state=self.state,
+            reset_terminal_scroll_region=self.reset_terminal_scroll_region,
+        )
+
+    def check_size_change(self) -> None:
+        self.state, self.pending = run_terminal_size_change_reflow(
+            terminal_active=self.terminal_layout_active,
+            state=self.state,
+            current_size=self.current_size(),
+            active_stream=self.active_stream(),
+            pending=self.pending,
+            reset_terminal_scroll_region=self.reset_terminal_scroll_region,
+            run_reflow_plan=self.run_reflow_plan,
+            enter_resize_handling=self._apply_resize_state,
+            exit_resize_handling=self._apply_resize_state,
+        )
+
+    def run_reflow_plan(self, plan: TerminalResizeReflowPlan) -> bool:
+        self.pending = plan.pending
+        return run_terminal_resize_reflow_plan(
+            plan,
+            repaint_history_viewport=self.repaint_history_viewport,
+            replay_history_scrollback=self.replay_history_scrollback,
+        )
+
+    def run_bottom_pane_footprint_reflow(
+        self,
+        *,
+        previous: TerminalLiveStatusSurface,
+        current: TerminalLiveStatusSurface,
+        previous_popup_height: int = 0,
+        current_popup_height: int = 0,
+    ) -> bool:
+        return run_terminal_bottom_pane_footprint_reflow(
+            terminal_active=self.terminal_layout_active,
+            terminal_size=self.current_size(),
+            previous=previous,
+            current=current,
+            previous_popup_height=previous_popup_height,
+            current_popup_height=current_popup_height,
+            previous_footprint=None,
+            current_footprint=None,
+            active_stream=self.active_stream(),
+            pending=self.pending,
+            run_reflow_plan=self.run_reflow_plan,
+        )
+
+    def run_bottom_pane_frame_footprint_reflow(
+        self,
+        previous: TerminalBottomPaneFootprint,
+        current: TerminalBottomPaneFootprint,
+    ) -> bool:
+        return run_terminal_bottom_pane_footprint_reflow(
+            terminal_active=self.terminal_layout_active,
+            terminal_size=self.current_size(),
+            previous=TerminalLiveStatusSurface.inactive(),
+            current=TerminalLiveStatusSurface.inactive(),
+            previous_footprint=previous,
+            current_footprint=current,
+            active_stream=self.active_stream(),
+            pending=self.pending,
+            run_reflow_plan=self.run_reflow_plan,
+        )
+
+    def run_stream_finish_reflow(self) -> bool:
+        return self.run_reflow_plan(plan_terminal_stream_finish_reflow(pending=self.pending))
+
+    def apply_pending(self, pending: bool) -> None:
+        self.pending = bool(pending)
+
+    def _apply_resize_state(self, state: TerminalResizeRuntimeState) -> None:
+        self.state = state
+
+
+@dataclass
+class TerminalResizeHistoryReplayer:
+    """Stateful retained-history repaint/replay adapter for terminal resize.
+
+    Rust ``app::resize_reflow`` owns the clear/rebuild ordering while ``tui.rs``
+    supplies terminal effects.  This adapter keeps the Python runner from
+    spelling out history-state and bottom-pane wiring for each resize action.
+    """
+
+    writer: TextIO
+    history_state: Callable[[], TerminalHistoryState]
+    history_wrap_width: Callable[[], int]
+    terminal_active: Callable[[], bool]
+    live_status_footprint_active: Callable[[], bool]
+    history_bottom_row: Callable[[], int]
+    terminal_columns: Callable[[], int]
+    insert_replayed_history_lines: Callable[[list[str], bool], None]
+    apply_history_state: Callable[[TerminalHistoryState], None]
+    render_bottom_pane: Callable[[], None]
+
+    def repaint_viewport(self, extra_projection_cell: str | None = None) -> bool:
+        state = self.history_state()
+        has_extra_projection = bool(extra_projection_cell)
+        if has_extra_projection:
+            state = state.with_projection_cell(extra_projection_cell)
+        painted = run_terminal_history_state_viewport_repaint_for_width(
+            self.writer,
+            state,
+            self.history_wrap_width(),
+            terminal_active=self.terminal_active(),
+            history_bottom_row=self.history_bottom_row,
+            terminal_columns=self.terminal_columns,
+        )
+        if painted and has_extra_projection:
+            self.render_bottom_pane()
+        return painted
+
+    def replay_scrollback(self) -> bool:
+        return run_terminal_history_state_scrollback_replay_insert_for_resize_width(
+            self.writer,
+            self.history_state(),
+            self.history_wrap_width(),
+            live_status_footprint_active=self.live_status_footprint_active(),
+            insert_replayed_history_lines=self.insert_replayed_history_lines,
+            apply_history_state=self.apply_history_state,
+            render_bottom_pane=self.render_bottom_pane,
+        )
+
+
 def insert_history_cell_lines_plan(state: ResizeReflowState, cell: HistoryCell, width: int, overlay_active: bool = False) -> ResizeReflowPlan:
     display = display_lines_for_history_insert(state, cell, width)
     if not display:
@@ -362,6 +595,571 @@ def reflow_transcript_now(state: ResizeReflowState, terminal_width: int) -> Resi
     return ResizeReflowPlan(action="reflow_transcript_now", width=terminal_width, lines=tuple(result.lines), wrap_policy=state.history_line_wrap_policy() if result.lines else None, updates=(("clear_pending_history_lines", True), ("clear_terminal_for_resize_replay", True), ("deferred_history_lines.clear", True)))
 
 
+def clear_terminal_for_resize_replay(writer: TextIO) -> None:
+    """Clear visible screen and scrollback before replaying retained history."""
+
+    clear_scrollback_and_visible_screen_ansi(writer)
+
+
+def plan_terminal_resize_reflow(
+    *,
+    trigger: str,
+    changed: bool,
+    active_stream: bool,
+    pending: bool = False,
+) -> TerminalResizeReflowPlan:
+    """Plan real-terminal resize/footprint reflow for the scrollback path."""
+
+    if not changed:
+        return TerminalResizeReflowPlan("none", pending=pending)
+    if active_stream:
+        return TerminalResizeReflowPlan("defer_until_stream_finish", pending=True)
+    if trigger == "bottom_pane_footprint":
+        return TerminalResizeReflowPlan("repaint_history_viewport", pending=False)
+    if trigger == "terminal_resize":
+        return TerminalResizeReflowPlan("replay_history_scrollback", pending=False)
+    return TerminalResizeReflowPlan("none", pending=pending)
+
+
+def plan_terminal_bottom_pane_footprint_reflow(
+    *,
+    terminal_size: Any,
+    previous: TerminalLiveStatusSurface,
+    current: TerminalLiveStatusSurface,
+    active_stream: bool,
+    pending: bool = False,
+    previous_popup_height: int = 0,
+    current_popup_height: int = 0,
+    previous_footprint: TerminalBottomPaneFootprint | None = None,
+    current_footprint: TerminalBottomPaneFootprint | None = None,
+) -> TerminalResizeReflowPlan:
+    """Plan resize repair after bottom-pane live-status footprint changes."""
+
+    if previous_footprint is not None and current_footprint is not None:
+        transition = bottom_pane_footprint_transition_for_footprints(
+            terminal_size,
+            previous_footprint,
+            current_footprint,
+        )
+    else:
+        transition = bottom_pane_footprint_transition(
+            terminal_size,
+            previous,
+            current,
+            previous_popup_height=previous_popup_height,
+            current_popup_height=current_popup_height,
+        )
+    return plan_terminal_resize_reflow(
+        trigger="bottom_pane_footprint",
+        changed=transition.changed,
+        active_stream=active_stream,
+        pending=pending,
+    )
+
+
+def run_terminal_bottom_pane_footprint_reflow(
+    *,
+    terminal_active: bool,
+    terminal_size: Any,
+    previous: TerminalLiveStatusSurface,
+    current: TerminalLiveStatusSurface,
+    active_stream: bool,
+    pending: bool,
+    run_reflow_plan: Callable[[TerminalResizeReflowPlan], None],
+    previous_popup_height: int = 0,
+    current_popup_height: int = 0,
+    previous_footprint: TerminalBottomPaneFootprint | None = None,
+    current_footprint: TerminalBottomPaneFootprint | None = None,
+) -> bool:
+    """Plan and dispatch bottom-pane footprint resize repair."""
+
+    if not terminal_active:
+        return False
+    plan = plan_terminal_bottom_pane_footprint_reflow(
+        terminal_size=terminal_size,
+        previous=previous,
+        current=current,
+        active_stream=active_stream,
+        pending=pending,
+        previous_popup_height=previous_popup_height,
+        current_popup_height=current_popup_height,
+        previous_footprint=previous_footprint,
+        current_footprint=current_footprint,
+    )
+    run_reflow_plan(plan)
+    return True
+
+
+def plan_terminal_size_change_reflow(
+    *,
+    previous_size: Any,
+    current_size: Any,
+    active_stream: bool,
+    pending: bool = False,
+) -> TerminalSizeChangeReflowPlan:
+    """Port the size-change gate from Rust ``App::handle_draw_size_change``.
+
+    The real-terminal scrollback path has no ratatui ``Frame`` to own this
+    decision, so the runner reports observed sizes and app::resize_reflow
+    decides whether this is initialization, no-op, immediate replay, or a
+    stream-time deferred replay.
+    """
+
+    if previous_size is None:
+        return TerminalSizeChangeReflowPlan(
+            TerminalResizeReflowPlan("none", pending=pending),
+            current_size,
+            initialized=True,
+        )
+    if previous_size == current_size:
+        return TerminalSizeChangeReflowPlan(
+            TerminalResizeReflowPlan("none", pending=pending),
+            previous_size,
+        )
+    return TerminalSizeChangeReflowPlan(
+        plan_terminal_resize_reflow(
+            trigger="terminal_resize",
+            changed=True,
+            active_stream=active_stream,
+            pending=pending,
+        ),
+        current_size,
+        changed=True,
+    )
+
+
+def plan_terminal_stream_finish_reflow(*, pending: bool) -> TerminalResizeReflowPlan:
+    """Plan stream-finalization repair for the real-terminal history surface.
+
+    The assistant stream writes incrementally while the bottom pane owns the
+    live rows below history.  When the stream finishes, repaint the current
+    history viewport from retained projection cells so the finalized user prompt
+    and assistant answer are visible together even when no resize was deferred.
+    """
+
+    if pending:
+        return TerminalResizeReflowPlan("replay_history_scrollback", pending=False)
+    return TerminalResizeReflowPlan("repaint_history_viewport", pending=False)
+
+
+def run_terminal_resize_reflow_plan(
+    plan: TerminalResizeReflowPlan,
+    *,
+    repaint_history_viewport: Callable[[], None],
+    replay_history_scrollback: Callable[[], None],
+) -> bool:
+    """Execute the terminal resize/reflow action chosen by app planning."""
+
+    if plan.action == "repaint_history_viewport":
+        repaint_history_viewport()
+        return True
+    if plan.action == "replay_history_scrollback":
+        replay_history_scrollback()
+        return True
+    return False
+
+
+def run_terminal_layout_activation(
+    *,
+    terminal_active: bool,
+    state: TerminalResizeRuntimeState,
+    current_size: Any,
+    render_bottom_pane: Callable[[], None],
+) -> tuple[bool, TerminalResizeRuntimeState]:
+    """Activate the terminal layout surface for the scrollback product path."""
+
+    if not terminal_active:
+        return False, state
+    next_state = state.activated(current_size)
+    render_bottom_pane()
+    return True, next_state
+
+
+def run_terminal_layout_deactivation(
+    *,
+    terminal_active: bool,
+    state: TerminalResizeRuntimeState,
+    reset_terminal_scroll_region: Callable[[], None],
+) -> tuple[bool, TerminalResizeRuntimeState]:
+    """Deactivate the terminal layout surface and reset terminal scroll state."""
+
+    if not terminal_active:
+        return False, state
+    next_state = state.deactivated()
+    reset_terminal_scroll_region()
+    return False, next_state
+
+
+def run_terminal_size_change_reflow(
+    *,
+    terminal_active: bool,
+    state: TerminalResizeRuntimeState,
+    current_size: Any,
+    active_stream: bool,
+    pending: bool,
+    reset_terminal_scroll_region: Callable[[], None],
+    run_reflow_plan: Callable[[TerminalResizeReflowPlan], None],
+    enter_resize_handling: Callable[[TerminalResizeRuntimeState], None] | None = None,
+    exit_resize_handling: Callable[[TerminalResizeRuntimeState], None] | None = None,
+) -> tuple[TerminalResizeRuntimeState, bool]:
+    """Execute the terminal-size resize path for the scrollback product route."""
+
+    if not terminal_active or state.handling_resize:
+        return state, pending
+
+    size_plan = plan_terminal_size_change_reflow(
+        previous_size=state.last_terminal_size,
+        current_size=current_size,
+        active_stream=active_stream,
+        pending=pending,
+    )
+    next_state = state.after_size_plan(size_plan)
+    if not size_plan.changed:
+        return next_state, pending
+
+    plan = size_plan.reflow
+    if plan.action == "defer_until_stream_finish":
+        run_reflow_plan(plan)
+        return next_state, plan.pending
+
+    handling_state = next_state.begin_handling()
+    if enter_resize_handling is not None:
+        enter_resize_handling(handling_state)
+    try:
+        reset_terminal_scroll_region()
+        run_reflow_plan(plan)
+    finally:
+        handling_state = handling_state.end_handling()
+        if exit_resize_handling is not None:
+            exit_resize_handling(handling_state)
+    return handling_state, plan.pending
+
+
+def render_history_projection_lines(
+    history_projection_cells: Iterable[str],
+    wrap_cell: Callable[[str], Iterable[str]],
+) -> list[str]:
+    """Render retained source-backed terminal history cells for resize replay."""
+
+    lines: list[str] = []
+    for cell in history_projection_cells:
+        if lines and lines[-1] != "":
+            lines.append("")
+        lines.extend(str(line) for line in wrap_cell(cell))
+    return lines
+
+
+def replay_terminal_history_projection(
+    lines: Sequence[str],
+    insert_lines: Callable[[list[str]], None],
+) -> bool:
+    """Replay retained terminal history lines, returning whether anything drew."""
+
+    materialized = list(lines)
+    if not materialized:
+        return False
+    insert_lines(materialized)
+    return True
+
+
+def replay_terminal_history_projection_cells(
+    history_projection_cells: Iterable[str],
+    wrap_cell: Callable[[str], Iterable[str]],
+    insert_lines: Callable[[list[str]], None],
+) -> bool:
+    """Replay retained terminal history cells into ordinary scrollback."""
+
+    return replay_terminal_history_projection(
+        render_history_projection_lines(history_projection_cells, wrap_cell),
+        insert_lines,
+    )
+
+
+def replay_terminal_history_projection_cells_for_width(
+    history_projection_cells: Iterable[str],
+    wrap_width: int,
+    insert_lines: Callable[[list[str]], None],
+) -> bool:
+    """Replay retained terminal history cells using insert_history wrapping."""
+
+    return replay_terminal_history_projection_cells(
+        history_projection_cells,
+        lambda cell: terminal_history_cell_lines(cell, wrap_width),
+        insert_lines,
+    )
+
+
+def repaint_terminal_history_viewport(
+    writer: TextIO,
+    lines: Sequence[str],
+    *,
+    bottom_row: int,
+    columns: int,
+) -> bool:
+    """Repaint retained transcript tail above the live bottom pane."""
+
+    if bottom_row < 1:
+        return False
+    reset_scroll_region(writer)
+    for row in range(1, bottom_row + 1):
+        clear_line_at(writer, row)
+    visible_lines = list(lines)[-bottom_row:]
+    start_row = max(1, bottom_row - len(visible_lines) + 1)
+    width = max(1, columns - 1)
+    for offset, line in enumerate(visible_lines):
+        write_at(writer, start_row + offset, 1, _truncate_display_width(line, width))
+    return True
+
+
+def repaint_terminal_history_projection_viewport(
+    writer: TextIO,
+    history_projection_cells: Iterable[str],
+    wrap_cell: Callable[[str], Iterable[str]],
+    *,
+    bottom_row: int,
+    columns: int,
+) -> bool:
+    """Repaint retained terminal history cells above the live bottom pane."""
+
+    return repaint_terminal_history_viewport(
+        writer,
+        render_history_projection_lines(history_projection_cells, wrap_cell),
+        bottom_row=bottom_row,
+        columns=columns,
+    )
+
+
+def repaint_terminal_history_projection_viewport_and_flush(
+    writer: TextIO,
+    history_projection_cells: Iterable[str],
+    wrap_cell: Callable[[str], Iterable[str]],
+    *,
+    bottom_row: int,
+    columns: int,
+) -> bool:
+    """Repaint retained terminal history cells and flush the terminal writer."""
+
+    painted = repaint_terminal_history_projection_viewport(
+        writer,
+        history_projection_cells,
+        wrap_cell,
+        bottom_row=bottom_row,
+        columns=columns,
+    )
+    flush = getattr(writer, "flush", None)
+    if callable(flush):
+        flush()
+    return painted
+
+
+def repaint_terminal_history_projection_viewport_for_width_and_flush(
+    writer: TextIO,
+    history_projection_cells: Iterable[str],
+    wrap_width: int,
+    *,
+    bottom_row: int,
+    columns: int,
+) -> bool:
+    """Repaint retained terminal history cells using insert_history wrapping."""
+
+    return repaint_terminal_history_projection_viewport_and_flush(
+        writer,
+        history_projection_cells,
+        lambda cell: terminal_history_cell_lines(cell, wrap_width),
+        bottom_row=bottom_row,
+        columns=columns,
+    )
+
+
+def terminal_history_state_for_resize_replay(
+    history_state: TerminalHistoryState,
+) -> TerminalHistoryState:
+    """Reset terminal history write markers before resize scrollback replay.
+
+    The retained projection cells remain the source of truth, but the ordinary
+    terminal scrollback is about to be cleared and rebuilt.  Resetting the
+    insert-history write markers before replay avoids preserving stale gap or
+    blank-line state from the pre-resize terminal surface.
+    """
+
+    return history_state.with_write_markers(
+        history_has_content=False,
+        history_ended_with_blank=False,
+    )
+
+
+def repaint_terminal_history_state_viewport_for_width_and_flush(
+    writer: TextIO,
+    history_state: TerminalHistoryState,
+    wrap_width: int,
+    *,
+    bottom_row: int,
+    columns: int,
+) -> bool:
+    """Repaint retained terminal history state above the live bottom pane."""
+
+    return repaint_terminal_history_projection_viewport_for_width_and_flush(
+        writer,
+        history_state.projection_cells,
+        wrap_width,
+        bottom_row=bottom_row,
+        columns=columns,
+    )
+
+
+def run_terminal_history_state_viewport_repaint_for_width(
+    writer: TextIO,
+    history_state: TerminalHistoryState,
+    wrap_width: int,
+    *,
+    terminal_active: bool,
+    history_bottom_row: Callable[[], int],
+    terminal_columns: Callable[[], int],
+) -> bool:
+    """Repaint retained history viewport when the terminal layout is active."""
+
+    if not terminal_active:
+        return False
+    return repaint_terminal_history_state_viewport_for_width_and_flush(
+        writer,
+        history_state,
+        wrap_width,
+        bottom_row=history_bottom_row(),
+        columns=terminal_columns(),
+    )
+
+
+def replay_terminal_history_scrollback_for_resize(
+    writer: TextIO,
+    history_projection_cells: Iterable[str],
+    wrap_cell: Callable[[str], Iterable[str]],
+    insert_lines: Callable[[list[str]], None],
+    *,
+    render_bottom_pane: Callable[[], None] | None = None,
+) -> bool:
+    """Clear and rebuild terminal scrollback from retained projection cells."""
+
+    clear_terminal_for_resize_replay(writer)
+    flush = getattr(writer, "flush", None)
+    if callable(flush):
+        flush()
+    replayed = replay_terminal_history_projection_cells(
+        history_projection_cells,
+        wrap_cell,
+        insert_lines,
+    )
+    if render_bottom_pane is not None:
+        render_bottom_pane()
+    return replayed
+
+
+def replay_terminal_history_scrollback_for_resize_width(
+    writer: TextIO,
+    history_projection_cells: Iterable[str],
+    wrap_width: int,
+    insert_lines: Callable[[list[str]], None],
+    *,
+    render_bottom_pane: Callable[[], None] | None = None,
+) -> bool:
+    """Clear and rebuild terminal scrollback using insert_history wrapping."""
+
+    clear_terminal_for_resize_replay(writer)
+    flush = getattr(writer, "flush", None)
+    if callable(flush):
+        flush()
+    replayed = replay_terminal_history_projection_cells_for_width(
+        history_projection_cells,
+        wrap_width,
+        insert_lines,
+    )
+    if render_bottom_pane is not None:
+        render_bottom_pane()
+    return replayed
+
+
+def replay_terminal_history_state_scrollback_for_resize_width(
+    writer: TextIO,
+    history_state: TerminalHistoryState,
+    wrap_width: int,
+    insert_lines: Callable[[list[str]], None],
+    *,
+    render_bottom_pane: Callable[[], None] | None = None,
+) -> bool:
+    """Clear and rebuild terminal scrollback from retained history state."""
+
+    return replay_terminal_history_scrollback_for_resize_width(
+        writer,
+        history_state.projection_cells,
+        wrap_width,
+        insert_lines,
+        render_bottom_pane=render_bottom_pane,
+    )
+
+
+def run_terminal_history_state_scrollback_replay_for_resize_width(
+    writer: TextIO,
+    history_state: TerminalHistoryState,
+    wrap_width: int,
+    insert_lines: Callable[[list[str]], None],
+    *,
+    apply_history_state: Callable[[TerminalHistoryState], None],
+    render_bottom_pane: Callable[[], None] | None = None,
+) -> bool:
+    """Reset history markers, clear scrollback, and replay retained history."""
+
+    replay_state = terminal_history_state_for_resize_replay(history_state)
+    apply_history_state(replay_state)
+    return replay_terminal_history_state_scrollback_for_resize_width(
+        writer,
+        replay_state,
+        wrap_width,
+        insert_lines,
+        render_bottom_pane=render_bottom_pane,
+    )
+
+
+def run_terminal_history_state_scrollback_replay_insert_for_resize_width(
+    writer: TextIO,
+    history_state: TerminalHistoryState,
+    wrap_width: int,
+    *,
+    live_status_footprint_active: bool,
+    apply_history_state: Callable[[TerminalHistoryState], None],
+    insert_replayed_history_lines: Callable[[list[str], bool], None],
+    render_bottom_pane: Callable[[], None] | None = None,
+) -> bool:
+    """Replay retained history through insert-history after resize.
+
+    Rust ``app::resize_reflow`` owns the clear/rebuild ordering for resize
+    replay. The terminal runner supplies the insert-history callback, while
+    this boundary decides that replayed rows should not clear or render the
+    bottom pane mid-batch and should reserve the active live-status footprint.
+    """
+
+    return run_terminal_history_state_scrollback_replay_for_resize_width(
+        writer,
+        history_state,
+        wrap_width,
+        lambda lines: insert_replayed_history_lines(lines, live_status_footprint_active),
+        apply_history_state=apply_history_state,
+        render_bottom_pane=render_bottom_pane,
+    )
+
+
+def _truncate_display_width(text: str, width: int) -> str:
+    if width <= 0:
+        return ""
+    current = 0
+    out: list[str] = []
+    for char in str(text):
+        char_width = display_width(char)
+        if current + char_width > width:
+            break
+        out.append(char)
+        current += char_width
+    return "".join(out)
+
+
 __all__ = [
     "HistoryCell",
     "HistoryLineWrapPolicy",
@@ -372,9 +1170,15 @@ __all__ = [
     "ReflowCellDisplay",
     "ReflowRenderResult",
     "ResizeReflowState",
+    "TerminalResizeReflowPlan",
+    "TerminalResizeRuntimeState",
+    "TerminalResizeCoordinator",
+    "TerminalResizeHistoryReplayer",
+    "TerminalSizeChangeReflowPlan",
     "begin_initial_history_replay_buffer_plan",
     "begin_thread_switch_history_replay_buffer_plan",
     "buffer_initial_history_replay_display_lines",
+    "clear_terminal_for_resize_replay",
     "display_lines_for_history_insert",
     "finish_initial_history_replay_buffer_plan",
     "handle_draw_size_change_plan",
@@ -382,9 +1186,34 @@ __all__ = [
     "history_line_wrap_policy",
     "maybe_run_resize_reflow",
     "maybe_finish_stream_reflow_plan",
+    "plan_terminal_bottom_pane_footprint_reflow",
+    "plan_terminal_resize_reflow",
+    "plan_terminal_size_change_reflow",
+    "plan_terminal_stream_finish_reflow",
+    "repaint_terminal_history_viewport",
+    "repaint_terminal_history_projection_viewport",
+    "repaint_terminal_history_projection_viewport_and_flush",
+    "repaint_terminal_history_projection_viewport_for_width_and_flush",
+    "repaint_terminal_history_state_viewport_for_width_and_flush",
     "reflow_transcript_now",
+    "render_history_projection_lines",
     "render_transcript_lines_for_reflow",
+    "replay_terminal_history_projection",
+    "replay_terminal_history_projection_cells",
+    "replay_terminal_history_projection_cells_for_width",
+    "replay_terminal_history_scrollback_for_resize",
+    "replay_terminal_history_scrollback_for_resize_width",
+    "replay_terminal_history_state_scrollback_for_resize_width",
     "reset_history_emission_state",
+    "run_terminal_layout_activation",
+    "run_terminal_layout_deactivation",
+    "run_terminal_bottom_pane_footprint_reflow",
+    "run_terminal_history_state_viewport_repaint_for_width",
+    "run_terminal_history_state_scrollback_replay_for_resize_width",
+    "run_terminal_history_state_scrollback_replay_insert_for_resize_width",
+    "run_terminal_resize_reflow_plan",
+    "run_terminal_size_change_reflow",
     "should_mark_reflow_as_stream_time",
+    "terminal_history_state_for_resize_replay",
     "trailing_run_start",
 ]

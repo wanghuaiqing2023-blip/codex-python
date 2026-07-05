@@ -1,3 +1,5 @@
+import pytest
+
 from pycodex.tui.bottom_pane.chat_composer import (
     FOOTER_SPACING_HEIGHT,
     LARGE_PASTE_CHAR_THRESHOLD,
@@ -9,8 +11,22 @@ from pycodex.tui.bottom_pane.chat_composer import (
     InputResult,
     KeyEvent,
     QueuedInputAction,
+    TERMINAL_COMPOSER_INPUT_CONTINUE,
+    TerminalComposerInputAction,
     expand_pending_pastes,
     plan_mode_nudge_line,
+    run_terminal_composer_blocking_line_prompt,
+    run_terminal_composer_eof,
+    run_terminal_composer_input_action,
+    run_terminal_composer_interrupt,
+    run_terminal_composer_prompt_loop,
+    run_terminal_composer_read_prompt,
+    run_terminal_composer_submit,
+    terminal_composer_draft_after_backspace,
+    terminal_composer_draft_after_text,
+    terminal_composer_draft_cleared,
+    terminal_composer_input_action,
+    terminal_composer_submitted_line,
     user_input_too_large_message,
 )
 
@@ -62,6 +78,389 @@ def test_composer_draft_snapshot_preserves_attachment_and_pending_fields():
     )
     assert snapshot.text == "hello"
     assert snapshot.pending_pastes == [("[Pasted]", "data")]
+
+
+def test_terminal_composer_draft_helpers_match_text_only_product_path():
+    # Rust owner: codex-tui::bottom_pane::chat_composer owns text draft
+    # mutation before render. The real-terminal path uses this text-only slice.
+    draft = terminal_composer_draft_cleared()
+
+    draft, changed = terminal_composer_draft_after_text(draft, "hello\r\nthere")
+    assert changed is True
+    assert draft == "hello\nthere"
+
+    draft, changed = terminal_composer_draft_after_text(draft, "")
+    assert changed is False
+    assert draft == "hello\nthere"
+
+    assert terminal_composer_draft_after_backspace(draft) == "hello\nther"
+    assert terminal_composer_draft_after_backspace("") == ""
+    assert terminal_composer_submitted_line("hello") == "hello\n"
+
+
+def test_terminal_composer_input_action_plans_text_only_terminal_events():
+    # Rust owner: codex-tui::bottom_pane::chat_composer handles key input by
+    # mutating draft state or returning a submitted input result. The Python
+    # terminal path keeps that decision here while tui::tui executes repaint.
+    assert terminal_composer_input_action("", "text", "hello\r\n") == TerminalComposerInputAction(
+        "render",
+        "hello\n",
+    )
+    assert terminal_composer_input_action("hello", "text", "") == TerminalComposerInputAction(
+        "continue",
+        "hello",
+    )
+    assert terminal_composer_input_action("hello", "backspace") == TerminalComposerInputAction(
+        "render",
+        "hell",
+    )
+    assert terminal_composer_input_action("hello", "enter") == TerminalComposerInputAction(
+        "submit",
+        "",
+        "hello\n",
+    )
+    assert terminal_composer_input_action("stale", "line", "/model\n") == TerminalComposerInputAction(
+        "submit",
+        "",
+        "/model\n",
+    )
+    assert terminal_composer_input_action("hello", "eof") == TerminalComposerInputAction("eof", "")
+    assert terminal_composer_input_action("hello", "interrupt") == TerminalComposerInputAction(
+        "interrupt",
+        "hello",
+    )
+    assert terminal_composer_input_action("hello", "resize") == TerminalComposerInputAction(
+        "continue",
+        "hello",
+    )
+
+
+def test_run_terminal_composer_input_action_dispatches_terminal_effects():
+    # Rust owner: codex-tui::bottom_pane::chat_composer interprets composer
+    # input outcomes. The terminal runner supplies concrete effects.
+    calls: list[tuple[str, str | None]] = []
+
+    def render() -> None:
+        calls.append(("render", None))
+
+    def submit(line: str) -> str:
+        calls.append(("submit", line))
+        return f"submitted:{line}"
+
+    def interrupt() -> None:
+        calls.append(("interrupt", None))
+        raise KeyboardInterrupt
+
+    def eof() -> None:
+        calls.append(("eof", None))
+        return None
+
+    callbacks = {
+        "render": render,
+        "submit": submit,
+        "interrupt": interrupt,
+        "eof": eof,
+    }
+
+    assert (
+        run_terminal_composer_input_action(TerminalComposerInputAction("render", "hello"), **callbacks)
+        is TERMINAL_COMPOSER_INPUT_CONTINUE
+    )
+    assert (
+        run_terminal_composer_input_action(TerminalComposerInputAction("continue", "hello"), **callbacks)
+        is TERMINAL_COMPOSER_INPUT_CONTINUE
+    )
+    assert (
+        run_terminal_composer_input_action(TerminalComposerInputAction("submit", "", "hello\n"), **callbacks)
+        == "submitted:hello\n"
+    )
+    assert run_terminal_composer_input_action(TerminalComposerInputAction("eof", ""), **callbacks) is None
+    with pytest.raises(KeyboardInterrupt):
+        run_terminal_composer_input_action(TerminalComposerInputAction("interrupt", "hello"), **callbacks)
+
+    assert calls == [
+        ("render", None),
+        ("submit", "hello\n"),
+        ("eof", None),
+        ("interrupt", None),
+    ]
+
+
+def test_terminal_composer_submit_eof_and_interrupt_effect_helpers():
+    # Rust owner: codex-tui::bottom_pane::chat_composer owns composer submit,
+    # EOF, and interrupt outcomes. The terminal runner supplies concrete
+    # live-pane clearing but should not own these result semantics.
+    calls: list[str] = []
+
+    assert run_terminal_composer_submit(
+        "hello\n",
+        clear_bottom_pane=lambda: calls.append("clear-submit"),
+    ) == "hello\n"
+    assert run_terminal_composer_eof(
+        clear_bottom_pane=lambda: calls.append("clear-eof"),
+    ) is None
+    with pytest.raises(KeyboardInterrupt):
+        run_terminal_composer_interrupt()
+
+    assert calls == ["clear-submit", "clear-eof"]
+
+
+def test_run_terminal_composer_prompt_loop_polls_and_submits_with_rendered_draft():
+    # Rust owner: codex-tui::bottom_pane::chat_composer owns the prompt input
+    # loop's draft/render/submit sequencing; tui::tui supplies the event source.
+    class Source:
+        def __init__(self) -> None:
+            self.events = [
+                None,
+                type("Event", (), {"kind": "text", "text": "h"})(),
+                type("Event", (), {"kind": "text", "text": "i"})(),
+                type("Event", (), {"kind": "enter", "text": ""})(),
+            ]
+
+        def poll(self, timeout: float):
+            assert timeout == 0.1
+            return self.events.pop(0)
+
+    drafts: list[str] = []
+    renders: list[str] = []
+    resizes = 0
+    submissions: list[str] = []
+
+    def apply_draft(draft: str) -> None:
+        drafts.append(draft)
+
+    def check_resize() -> None:
+        nonlocal resizes
+        resizes += 1
+
+    def render() -> None:
+        renders.append(drafts[-1])
+
+    def submit(line: str) -> str:
+        submissions.append(line)
+        return line
+
+    result = run_terminal_composer_prompt_loop(
+        Source(),
+        poll_timeout=0.1,
+        apply_draft=apply_draft,
+        check_resize=check_resize,
+        render=render,
+        submit=submit,
+        interrupt=lambda: (_ for _ in ()).throw(KeyboardInterrupt),
+        eof=lambda: None,
+    )
+
+    assert result == "hi\n"
+    assert submissions == ["hi\n"]
+    assert drafts == ["", "h", "hi", ""]
+    assert renders == ["", "h", "hi"]
+    assert resizes == 4
+
+
+def test_run_terminal_composer_prompt_loop_skips_resize_events_before_input():
+    # Rust owner: codex-tui::tui emits resize events while the composer remains
+    # active; bottom_pane::chat_composer keeps waiting for input afterward.
+    class Source:
+        def __init__(self) -> None:
+            self.events = [
+                type("Event", (), {"kind": "resize", "text": ""})(),
+                type("Event", (), {"kind": "line", "text": "/model\n"})(),
+            ]
+
+        def poll(self, timeout: float):
+            return self.events.pop(0)
+
+    drafts: list[str] = []
+    resizes = 0
+
+    def check_resize() -> None:
+        nonlocal resizes
+        resizes += 1
+
+    result = run_terminal_composer_prompt_loop(
+        Source(),
+        poll_timeout=0.25,
+        apply_draft=drafts.append,
+        check_resize=check_resize,
+        render=lambda: None,
+        submit=lambda line: f"submitted:{line}",
+        interrupt=lambda: (_ for _ in ()).throw(KeyboardInterrupt),
+        eof=lambda: None,
+    )
+
+    assert result == "submitted:/model\n"
+    assert drafts == ["", ""]
+    assert resizes == 3
+
+
+def test_run_terminal_composer_prompt_loop_routes_popup_keys_before_text_actions():
+    # Rust owner: ChatComposer::handle_key_event routes key input to the active
+    # popup before falling back to handle_key_event_without_popup.
+    class Source:
+        def __init__(self) -> None:
+            self.events = [
+                type("Event", (), {"kind": "text", "text": "/"})(),
+                type("Event", (), {"kind": "text", "text": "m"})(),
+                type("Event", (), {"kind": "down", "text": ""})(),
+                type("Event", (), {"kind": "tab", "text": ""})(),
+                type("Event", (), {"kind": "enter", "text": ""})(),
+            ]
+
+        def poll(self, timeout: float):
+            return self.events.pop(0)
+
+    drafts: list[str] = []
+    renders: list[str] = []
+    handled: list[tuple[str, str]] = []
+
+    def apply_draft(draft: str) -> None:
+        drafts.append(draft)
+
+    def handle_key(draft: str, kind: str, text: str) -> str | None:
+        handled.append((kind, draft))
+        if kind == "down":
+            return draft
+        if kind == "tab":
+            return "/memories "
+        return None
+
+    result = run_terminal_composer_prompt_loop(
+        Source(),
+        poll_timeout=0.1,
+        apply_draft=apply_draft,
+        check_resize=lambda: None,
+        render=lambda: renders.append(drafts[-1]),
+        submit=lambda line: line,
+        interrupt=lambda: (_ for _ in ()).throw(KeyboardInterrupt),
+        eof=lambda: None,
+        handle_key=handle_key,
+    )
+
+    assert result == "/memories \n"
+    assert handled == [
+        ("text", ""),
+        ("text", "/"),
+        ("down", "/m"),
+        ("tab", "/m"),
+        ("enter", "/memories "),
+    ]
+    assert renders == ["", "/", "/m", "/m", "/memories "]
+    assert drafts == ["", "/", "/m", "/memories ", ""]
+
+
+def test_run_terminal_composer_blocking_line_prompt_preserves_fallback_sequence():
+    # Rust owner: codex-tui::bottom_pane::chat_composer owns composer prompt
+    # lifecycle; tui::tui supplies blocking stdin fallback and terminal effects.
+    calls: list[tuple[str, str | None]] = []
+
+    line = run_terminal_composer_blocking_line_prompt(
+        read_line=lambda: "hello\n",
+        apply_draft=lambda draft: calls.append(("draft", draft)),
+        render=lambda: calls.append(("render", None)),
+        check_resize=lambda: calls.append(("resize", None)),
+        clear_bottom_pane=lambda: calls.append(("clear", None)),
+    )
+
+    assert line == "hello\n"
+    assert calls == [
+        ("draft", ""),
+        ("render", None),
+        ("resize", None),
+        ("clear", None),
+    ]
+
+
+def test_run_terminal_composer_blocking_line_prompt_maps_eof_to_none():
+    calls: list[str] = []
+
+    line = run_terminal_composer_blocking_line_prompt(
+        read_line=lambda: "",
+        apply_draft=lambda draft: calls.append(f"draft:{draft}"),
+        render=lambda: calls.append("render"),
+        check_resize=lambda: calls.append("resize"),
+        clear_bottom_pane=lambda: calls.append("clear"),
+    )
+
+    assert line is None
+    assert calls == ["draft:", "render", "resize", "clear"]
+
+
+def test_run_terminal_composer_read_prompt_uses_nonterminal_line_prompt():
+    # Rust owner: codex-tui::bottom_pane::chat_composer owns prompt input
+    # lifecycle; tui::tui supplies non-terminal stdin/stdout effects.
+    calls: list[str] = []
+
+    result = run_terminal_composer_read_prompt(
+        terminal_active=False,
+        get_input_source=lambda: (_ for _ in ()).throw(AssertionError("unused source")),
+        read_line=lambda: "hello\n",
+        write_nonterminal_prompt=lambda: calls.append("prompt"),
+        apply_draft=lambda draft: calls.append(f"draft:{draft}"),
+        check_resize=lambda: calls.append("resize"),
+        render=lambda: calls.append("render"),
+        clear_bottom_pane=lambda: calls.append("clear"),
+        submit=lambda line: line,
+        interrupt=lambda: None,
+        eof=lambda: None,
+    )
+
+    assert result == "hello\n"
+    assert calls == ["prompt"]
+
+
+def test_run_terminal_composer_read_prompt_uses_blocking_fallback_without_input_source():
+    calls: list[str] = []
+
+    result = run_terminal_composer_read_prompt(
+        terminal_active=True,
+        get_input_source=lambda: None,
+        read_line=lambda: "fallback\n",
+        write_nonterminal_prompt=lambda: calls.append("prompt"),
+        apply_draft=lambda draft: calls.append(f"draft:{draft}"),
+        check_resize=lambda: calls.append("resize"),
+        render=lambda: calls.append("render"),
+        clear_bottom_pane=lambda: calls.append("clear"),
+        submit=lambda line: f"submitted:{line}",
+        interrupt=lambda: None,
+        eof=lambda: None,
+    )
+
+    assert result == "fallback\n"
+    assert calls == ["draft:", "render", "resize", "clear"]
+
+
+def test_run_terminal_composer_read_prompt_uses_event_source_when_available():
+    class Source:
+        def __init__(self) -> None:
+            self.events = [
+                type("Event", (), {"kind": "text", "text": "o"})(),
+                type("Event", (), {"kind": "enter", "text": ""})(),
+            ]
+
+        def poll(self, timeout: float):
+            assert timeout == 0.2
+            return self.events.pop(0)
+
+    calls: list[str] = []
+
+    result = run_terminal_composer_read_prompt(
+        terminal_active=True,
+        get_input_source=Source,
+        read_line=lambda: (_ for _ in ()).throw(AssertionError("unused line reader")),
+        write_nonterminal_prompt=lambda: calls.append("prompt"),
+        apply_draft=lambda draft: calls.append(f"draft:{draft}"),
+        check_resize=lambda: calls.append("resize"),
+        render=lambda: calls.append("render"),
+        clear_bottom_pane=lambda: calls.append("clear"),
+        submit=lambda line: f"submitted:{line}",
+        interrupt=lambda: None,
+        eof=lambda: None,
+        poll_timeout=0.2,
+    )
+
+    assert result == "submitted:o\n"
+    assert calls == ["draft:", "render", "resize", "draft:o", "render", "resize", "draft:"]
 
 
 def test_plan_mode_nudge_line_keeps_visible_actions():

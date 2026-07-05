@@ -135,6 +135,272 @@ class ComposerDraftSnapshot:
 
 
 @dataclass(frozen=True)
+class TerminalComposerInputAction:
+    """Text-only composer action for the terminal scrollback product path."""
+
+    kind: str
+    draft: str = ""
+    line: str | None = None
+
+
+TERMINAL_COMPOSER_INPUT_CONTINUE = object()
+
+
+def run_terminal_composer_input_action(
+    action: TerminalComposerInputAction,
+    *,
+    render: Callable[[], Any],
+    submit: Callable[[str], Any],
+    interrupt: Callable[[], Any],
+    eof: Callable[[], Any],
+) -> Any:
+    """Dispatch a terminal composer action to product-path effects.
+
+    Rust ``bottom_pane::chat_composer`` owns the interpretation of composer
+    input outcomes. The terminal runner supplies the concrete repaint,
+    submission, and shutdown effects without branching on composer action
+    variants itself.
+    """
+
+    if action.kind == "render":
+        render()
+        return TERMINAL_COMPOSER_INPUT_CONTINUE
+    if action.kind == "submit":
+        return submit(action.line if action.line is not None else "")
+    if action.kind == "interrupt":
+        return interrupt()
+    if action.kind == "eof":
+        return eof()
+    return TERMINAL_COMPOSER_INPUT_CONTINUE
+
+
+def run_terminal_composer_submit(
+    line: str,
+    *,
+    clear_bottom_pane: Callable[[], Any],
+) -> str:
+    """Apply terminal product-path submit effects for a completed line."""
+
+    clear_bottom_pane()
+    return line
+
+
+def run_terminal_composer_eof(
+    *,
+    clear_bottom_pane: Callable[[], Any],
+) -> None:
+    """Apply terminal product-path EOF effects for composer shutdown."""
+
+    clear_bottom_pane()
+    return None
+
+
+def run_terminal_composer_interrupt() -> None:
+    """Apply terminal product-path interrupt semantics."""
+
+    raise KeyboardInterrupt
+
+
+def run_terminal_composer_prompt_loop(
+    source: Any,
+    *,
+    poll_timeout: float,
+    apply_draft: Callable[[str], Any],
+    check_resize: Callable[[], Any],
+    render: Callable[[], Any],
+    submit: Callable[[str], Any],
+    interrupt: Callable[[], Any],
+    eof: Callable[[], Any],
+    handle_key: Callable[[str, str, str], str | None] | None = None,
+) -> Any:
+    """Run the terminal product-path composer input loop.
+
+    Rust ``bottom_pane::chat_composer`` owns composer draft mutation and submit
+    outcomes. The terminal runner supplies the event source and concrete
+    terminal effects while this helper keeps the draft/render/submit sequence
+    together with the composer boundary.
+    """
+
+    draft = terminal_composer_draft_cleared()
+    apply_draft(draft)
+    render()
+    while True:
+        event = source.poll(poll_timeout)
+        check_resize()
+        if event is None:
+            continue
+        event_kind = getattr(event, "kind", "")
+        if event_kind == "resize":
+            check_resize()
+            continue
+        event_text = str(getattr(event, "text", ""))
+        if handle_key is not None:
+            handled_draft = handle_key(draft, event_kind, event_text)
+            if handled_draft is not None:
+                previous_draft = draft
+                draft = handled_draft
+                if draft != previous_draft:
+                    apply_draft(draft)
+                render()
+                continue
+        action = terminal_composer_input_action(draft, event_kind, event_text)
+        draft = action.draft
+        apply_draft(draft)
+        result = run_terminal_composer_input_action(
+            action,
+            render=render,
+            submit=submit,
+            interrupt=interrupt,
+            eof=eof,
+        )
+        if result is TERMINAL_COMPOSER_INPUT_CONTINUE:
+            continue
+        return result
+
+
+def run_terminal_composer_blocking_line_prompt(
+    *,
+    read_line: Callable[[], str],
+    apply_draft: Callable[[str], Any],
+    check_resize: Callable[[], Any],
+    render: Callable[[], Any],
+    clear_bottom_pane: Callable[[], Any],
+) -> str | None:
+    """Run the blocking-line fallback for terminal composer input.
+
+    This preserves the same terminal product-path sequence as the polled
+    composer loop: clear the draft, render the bottom pane, read one input
+    line, process a resize tick, and clear the live pane before returning.
+    """
+
+    apply_draft(terminal_composer_draft_cleared())
+    render()
+    line = read_line()
+    check_resize()
+    clear_bottom_pane()
+    if line == "":
+        return None
+    return line
+
+
+def run_terminal_composer_read_prompt(
+    *,
+    terminal_active: bool,
+    get_input_source: Callable[[], Any],
+    read_line: Callable[[], str],
+    write_nonterminal_prompt: Callable[[], Any],
+    apply_draft: Callable[[str], Any],
+    check_resize: Callable[[], Any],
+    render: Callable[[], Any],
+    clear_bottom_pane: Callable[[], Any],
+    submit: Callable[[str], Any],
+    interrupt: Callable[[], Any],
+    eof: Callable[[], Any],
+    poll_timeout: float = 0.1,
+    handle_key: Callable[[str, str, str], str | None] | None = None,
+) -> Any:
+    """Read one terminal product-path composer prompt.
+
+    Rust ``bottom_pane::chat_composer`` owns the prompt input lifecycle and
+    submit/EOF/interrupt outcomes. ``tui::tui`` supplies terminal IO callbacks
+    and the event source.
+    """
+
+    if terminal_active:
+        source = get_input_source()
+        if source is None:
+            return run_terminal_composer_blocking_line_prompt(
+                read_line=read_line,
+                apply_draft=apply_draft,
+                check_resize=check_resize,
+                render=render,
+                clear_bottom_pane=clear_bottom_pane,
+            )
+        return run_terminal_composer_prompt_loop(
+            source,
+            poll_timeout=poll_timeout,
+            apply_draft=apply_draft,
+            check_resize=check_resize,
+            render=render,
+            submit=submit,
+            interrupt=interrupt,
+            eof=eof,
+            handle_key=handle_key,
+        )
+
+    write_nonterminal_prompt()
+    line = read_line()
+    if line == "":
+        return None
+    return line
+
+
+def terminal_composer_draft_cleared() -> str:
+    """Return the empty terminal product-path composer draft."""
+
+    return ""
+
+
+def terminal_composer_draft_after_text(draft: str, text: str) -> tuple[str, bool]:
+    """Append terminal text input to a composer draft.
+
+    Rust ``bottom_pane::chat_composer`` owns draft mutation before render.  The
+    scrollback terminal product path only needs the text-only subset: normalize
+    CRLF/CR and append non-empty input.
+    """
+
+    normalized = str(text).replace("\r\n", "\n").replace("\r", "\n")
+    if not normalized:
+        return str(draft), False
+    return str(draft) + normalized, True
+
+
+def terminal_composer_draft_after_backspace(draft: str) -> str:
+    """Remove the final character from a terminal composer draft."""
+
+    source = str(draft)
+    return source[:-1] if source else source
+
+
+def terminal_composer_submitted_line(draft: str) -> str:
+    """Return the line submitted by pressing Enter in the terminal composer."""
+
+    return str(draft) + "\n"
+
+
+def terminal_composer_input_action(draft: str, event_kind: str, event_text: str = "") -> TerminalComposerInputAction:
+    """Plan how a terminal input event mutates or submits the composer draft.
+
+    Rust ``bottom_pane::chat_composer`` handles key input by mutating composer
+    state and returning whether the UI should render or submit.  The scrollback
+    terminal product path uses a small text-only subset of that contract while
+    leaving terminal polling and repaint execution in ``tui::event_stream`` and
+    ``tui::tui``.
+    """
+
+    source = str(draft)
+    kind = str(event_kind)
+    if kind == "text":
+        next_draft, changed = terminal_composer_draft_after_text(source, event_text)
+        return TerminalComposerInputAction("render" if changed else "continue", next_draft)
+    if kind == "backspace":
+        return TerminalComposerInputAction("render", terminal_composer_draft_after_backspace(source))
+    if kind == "line":
+        return TerminalComposerInputAction("submit", terminal_composer_draft_cleared(), str(event_text))
+    if kind == "enter":
+        return TerminalComposerInputAction(
+            "submit",
+            terminal_composer_draft_cleared(),
+            terminal_composer_submitted_line(source),
+        )
+    if kind == "eof":
+        return TerminalComposerInputAction("eof", terminal_composer_draft_cleared())
+    if kind == "interrupt":
+        return TerminalComposerInputAction("interrupt", source)
+    return TerminalComposerInputAction("continue", source)
+
+
+@dataclass(frozen=True)
 class ChatComposerRenderSnapshot:
     area: Any = None
     mask_char: str | None = None
@@ -437,7 +703,21 @@ __all__ = [
     "MAX_USER_INPUT_TEXT_CHARS",
     "QueuedInputAction",
     "RUST_MODULE",
+    "TERMINAL_COMPOSER_INPUT_CONTINUE",
+    "TerminalComposerInputAction",
     "expand_pending_pastes",
     "plan_mode_nudge_line",
+    "run_terminal_composer_blocking_line_prompt",
+    "run_terminal_composer_eof",
+    "run_terminal_composer_input_action",
+    "run_terminal_composer_interrupt",
+    "run_terminal_composer_prompt_loop",
+    "run_terminal_composer_read_prompt",
+    "run_terminal_composer_submit",
+    "terminal_composer_draft_after_backspace",
+    "terminal_composer_draft_after_text",
+    "terminal_composer_draft_cleared",
+    "terminal_composer_input_action",
+    "terminal_composer_submitted_line",
     "user_input_too_large_message",
 ]

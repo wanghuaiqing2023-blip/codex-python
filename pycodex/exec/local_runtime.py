@@ -5492,7 +5492,17 @@ def _response_item_mapping(item: ResponseItem) -> Mapping[str, Any] | None:
     if not callable(to_mapping):
         return None
     mapping = to_mapping()
-    return mapping if isinstance(mapping, Mapping) else None
+    if not isinstance(mapping, Mapping):
+        return None
+    if "success" not in mapping and str(mapping.get("type") or "") in {
+        "function_call_output",
+        "custom_tool_call_output",
+    }:
+        output = getattr(item, "output", None)
+        if isinstance(output, FunctionCallOutputPayload) and output.success is not None:
+            mapping = dict(mapping)
+            mapping["success"] = output.success
+    return mapping
 
 
 def _merge_local_http_sampling_result(

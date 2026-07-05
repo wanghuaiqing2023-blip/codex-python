@@ -15,7 +15,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from ._porting import RustTuiModule
-from .app.runtime import ActiveThreadRuntime
+from .app.runtime import ActiveThreadRuntime, TuiAppRuntime
 from pycodex.exec.session import RemoteAppServerEndpoint, app_server_control_socket_path
 
 RUST_MODULE = RustTuiModule(
@@ -249,9 +249,15 @@ def run_tui(*_args: object, stderr: object | None = None, **_kwargs: object) -> 
         stderr = sys.stderr
     active_thread_runtime = _kwargs.get("active_thread_runtime")
     if active_thread_runtime is not None:
+        import sys
+
         from .textual_runtime import run_textual_tui
 
-        return run_textual_tui(active_thread_runtime=active_thread_runtime)
+        return run_textual_tui(
+            active_thread_runtime=active_thread_runtime,
+            stdout=_kwargs.get("stdout", sys.stdout),
+            stdin=_kwargs.get("stdin"),
+        )
     write = getattr(stderr, "write", None)
     if callable(write):
         write("pycodex: interactive TUI requires an active thread runtime.\n")
@@ -279,7 +285,11 @@ async def run_main(*_args: object, **kwargs: object) -> AppExitInfo:
 
     from .textual_runtime import run_textual_tui
 
-    code = run_textual_tui(active_thread_runtime=active_thread_runtime)
+    code = run_textual_tui(
+        active_thread_runtime=active_thread_runtime,
+        stdout=kwargs.get("stdout", sys.stdout),
+        stdin=kwargs.get("stdin"),
+    )
     if code == 0:
         return AppExitInfo(exit_reason=ExitReason.USER_REQUESTED)
     return AppExitInfo(exit_reason=ExitReasonPayload(ExitReason.FATAL, f"TUI exited with status {code}"))
@@ -294,6 +304,8 @@ __all__ = [
     "RemoteAppServerEndpoint",
     "RUST_MODULE",
     "TUI_LOG_FILE_NAME",
+    "ActiveThreadRuntime",
+    "TuiAppRuntime",
     "app_server_target_for_launch",
     "config_cwd_for_app_server_target",
     "latest_session_cwd_filter",

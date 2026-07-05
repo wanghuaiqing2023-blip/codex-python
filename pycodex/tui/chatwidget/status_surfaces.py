@@ -5,13 +5,19 @@ Upstream source: ``codex/codex-rs/tui/src/chatwidget/status_surfaces.rs``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Iterable, TypeVar
+from typing import Any, Callable, Iterable, TextIO, TypeVar
 
 from .._porting import RustTuiModule
 from ..bottom_pane.status_line_setup import StatusLineItem
+from ..bottom_pane.terminal_surface import (
+    TerminalLiveStatusSurface,
+    run_terminal_live_status_hide,
+    run_terminal_live_status_show,
+)
 from ..bottom_pane.title_setup import TerminalTitleItem
 from ..status.rate_limits import RateLimitSnapshotDisplay, RateLimitWindowDisplay
 from .rate_limits import get_limits_duration
@@ -26,6 +32,9 @@ RUST_MODULE = RustTuiModule(
 
 DEFAULT_STATUS_LINE_ITEMS = ("model-with-reasoning", "current-dir")
 DEFAULT_TERMINAL_TITLE_ITEMS = ("activity", "project-name")
+TERMINAL_LIVE_STATUS_PREFIX = "\u2022 "
+TERMINAL_LIVE_STATUS_DETAIL_PREFIX = " \u2514 "
+TERMINAL_TURN_INTERRUPT_HINT = "esc to interrupt"
 
 TERMINAL_TITLE_SPINNER_FRAMES = ("⠁", "⠂", "⠄", "⡀", "⢀", "⠠", "⠐", "⠈", "⠐", "⠠")
 TERMINAL_TITLE_SPINNER_INTERVAL = timedelta(milliseconds=100)
@@ -223,6 +232,287 @@ def run_state_status_text(
     return "Working"
 
 
+def terminal_live_status_text(header: str, details: str | None = None) -> str:
+    """Build the transient terminal status surface text.
+
+    Rust ``chatwidget::status_surfaces`` owns the status text presented by the
+    bottom pane/status indicator; terminal runtime only decides where to write
+    the live surface.
+    """
+
+    text = f"{TERMINAL_LIVE_STATUS_PREFIX}{header}"
+    if details:
+        text = f"{text}{TERMINAL_LIVE_STATUS_DETAIL_PREFIX}{details}"
+    return text
+
+
+def run_terminal_live_status_text_show(
+    writer: TextIO,
+    previous: TerminalLiveStatusSurface,
+    header: str,
+    details: str | None = None,
+    *,
+    stdin_is_terminal: bool,
+    layout_active: bool,
+    check_resize: Callable[[], None],
+    repaint_footprint: Callable[[TerminalLiveStatusSurface], None],
+    render_bottom_pane: Callable[[], None],
+    apply_state: Callable[[TerminalLiveStatusSurface], None] | None = None,
+) -> TerminalLiveStatusSurface:
+    """Build and show a transient live-status surface.
+
+    Rust ``chatwidget::status_surfaces`` owns the status text refresh boundary;
+    ``bottom_pane`` still owns the terminal footprint and repaint effects.
+    """
+
+    return run_terminal_live_status_show(
+        writer,
+        previous,
+        terminal_live_status_text(header, details),
+        stdin_is_terminal=stdin_is_terminal,
+        layout_active=layout_active,
+        check_resize=check_resize,
+        repaint_footprint=repaint_footprint,
+        render_bottom_pane=render_bottom_pane,
+        apply_state=apply_state,
+    )
+
+
+def terminal_turn_status_header(elapsed_seconds: int) -> str:
+    """Return the active-turn status header used by the terminal product path."""
+
+    return f"Working ({max(0, int(elapsed_seconds))}s \u2022 {TERMINAL_TURN_INTERRUPT_HINT})"
+
+
+def terminal_turn_elapsed_seconds(started_at: float, *, now: float | None = None) -> int:
+    """Return monotonic elapsed seconds for the terminal active-turn status."""
+
+    if not started_at:
+        return 0
+    current = time.monotonic() if now is None else float(now)
+    return max(0, int(current - float(started_at)))
+
+
+def should_render_terminal_turn_status(
+    *,
+    active: bool,
+    last_second: int | None,
+    elapsed_seconds: int,
+    suppressed: bool,
+    force: bool = False,
+) -> bool:
+    """Mirror the Rust status tick gate for the scrollback terminal runner."""
+
+    if suppressed:
+        return False
+    if force:
+        return True
+    return not (active and last_second == elapsed_seconds)
+
+
+@dataclass(frozen=True)
+class TerminalTurnStatusState:
+    """State for the terminal product path's active-turn status tick.
+
+    Rust ``chatwidget::status_surfaces`` owns the status surface refresh
+    decision; the terminal runner stores this state and performs the actual
+    terminal write.
+    """
+
+    active: bool = False
+    last_second: int | None = None
+    suppressed: bool = False
+
+    @classmethod
+    def inactive(cls) -> "TerminalTurnStatusState":
+        return cls()
+
+    def should_render(self, elapsed_seconds: int, *, force: bool = False) -> bool:
+        return should_render_terminal_turn_status(
+            active=self.active,
+            last_second=self.last_second,
+            elapsed_seconds=elapsed_seconds,
+            suppressed=self.suppressed,
+            force=force,
+        )
+
+    def after_render(self, elapsed_seconds: int) -> "TerminalTurnStatusState":
+        return TerminalTurnStatusState(active=True, last_second=int(elapsed_seconds), suppressed=self.suppressed)
+
+    def should_refresh(self) -> bool:
+        return self.active and not self.suppressed
+
+    def cleared(self) -> "TerminalTurnStatusState":
+        return TerminalTurnStatusState.inactive()
+
+    def suppress(self) -> "TerminalTurnStatusState":
+        return TerminalTurnStatusState(
+            active=self.active,
+            last_second=self.last_second,
+            suppressed=True,
+        )
+
+
+@dataclass
+class TerminalStatusSurfaceWriter:
+    """Stateful adapter for terminal live-status and active-turn status.
+
+    Rust ``chatwidget::status_surfaces`` owns status text and refresh state,
+    while ``bottom_pane`` owns status-indicator footprint effects.  The
+    terminal runner supplies only environment callbacks for terminal activity,
+    resize, repaint, and bottom-pane rendering.
+    """
+
+    writer: TextIO
+    live_status: TerminalLiveStatusSurface = field(default_factory=TerminalLiveStatusSurface.inactive)
+    turn_status: TerminalTurnStatusState = field(default_factory=TerminalTurnStatusState.inactive)
+    turn_started_at: float = 0.0
+    stdin_is_terminal: Callable[[], bool] = lambda: False
+    layout_active: Callable[[], bool] = lambda: False
+    check_resize: Callable[[], None] = lambda: None
+    repaint_footprint: Callable[[TerminalLiveStatusSurface], None] = lambda _previous: None
+    render_bottom_pane: Callable[[], None] = lambda: None
+
+    def start_turn(self, started_at: float) -> None:
+        self.turn_started_at = float(started_at)
+
+    def show_live_status(self, header: str, details: str | None = None) -> None:
+        self.live_status = run_terminal_live_status_text_show(
+            self.writer,
+            self.live_status,
+            header,
+            details,
+            stdin_is_terminal=self.stdin_is_terminal(),
+            layout_active=self.layout_active(),
+            check_resize=self.check_resize,
+            repaint_footprint=self.repaint_footprint,
+            render_bottom_pane=self.render_bottom_pane,
+            apply_state=self._apply_live_status,
+        )
+
+    def render_turn_status(self, *, force: bool = False, now: float | None = None) -> None:
+        self.turn_status = run_terminal_turn_status_render(
+            self.turn_status,
+            started_at=self.turn_started_at,
+            force=force,
+            now=now,
+            write_live_status=self.show_live_status,
+        )
+
+    def refresh_turn_status_if_due(self, *, now: float | None = None) -> None:
+        self.turn_status = run_terminal_turn_status_refresh(
+            self.turn_status,
+            started_at=self.turn_started_at,
+            now=now,
+            write_live_status=self.show_live_status,
+        )
+
+    def clear_turn_status(self) -> None:
+        self.turn_status = terminal_turn_status_cleared(self.turn_status)
+
+    def suppress_turn_status(self) -> None:
+        self.turn_status = terminal_turn_status_suppressed(self.turn_status)
+
+    def hide_inline_status(self, *, redraw_bottom_pane: bool = True) -> None:
+        self.live_status = run_terminal_live_status_hide(
+            self.writer,
+            self.live_status,
+            stdin_is_terminal=self.stdin_is_terminal(),
+            redraw_bottom_pane=redraw_bottom_pane,
+            repaint_footprint=self.repaint_footprint,
+            render_bottom_pane=self.render_bottom_pane,
+            apply_state=self._apply_live_status,
+        )
+
+    def clear_live_status(self) -> None:
+        self.hide_inline_status(redraw_bottom_pane=True)
+
+    def _apply_live_status(self, state: TerminalLiveStatusSurface) -> None:
+        self.live_status = state
+
+
+@dataclass(frozen=True)
+class TerminalTurnStatusRenderPlan:
+    """Prepared terminal turn-status render result."""
+
+    header: str | None
+    state: TerminalTurnStatusState
+
+
+def terminal_turn_status_render_plan(
+    state: TerminalTurnStatusState,
+    *,
+    started_at: float,
+    force: bool = False,
+    now: float | None = None,
+) -> TerminalTurnStatusRenderPlan:
+    """Prepare the next active-turn status surface and state transition.
+
+    Rust ``chatwidget::status_surfaces`` owns the status text and refresh gate;
+    the terminal runner applies the returned terminal side effect.
+    """
+
+    elapsed = terminal_turn_elapsed_seconds(started_at, now=now)
+    if not state.should_render(elapsed, force=force):
+        return TerminalTurnStatusRenderPlan(header=None, state=state)
+    return TerminalTurnStatusRenderPlan(
+        header=terminal_turn_status_header(elapsed),
+        state=state.after_render(elapsed),
+    )
+
+
+def run_terminal_turn_status_render(
+    state: TerminalTurnStatusState,
+    *,
+    started_at: float,
+    force: bool = False,
+    now: float | None = None,
+    write_live_status: Callable[[str], None],
+) -> TerminalTurnStatusState:
+    """Render active-turn status when needed and return the advanced state."""
+
+    plan = terminal_turn_status_render_plan(
+        state,
+        started_at=started_at,
+        force=force,
+        now=now,
+    )
+    if plan.header is not None:
+        write_live_status(plan.header)
+    return plan.state
+
+
+def run_terminal_turn_status_refresh(
+    state: TerminalTurnStatusState,
+    *,
+    started_at: float,
+    now: float | None = None,
+    write_live_status: Callable[[str], None],
+) -> TerminalTurnStatusState:
+    """Refresh active-turn status when the status surface owns an active tick."""
+
+    if not state.should_refresh():
+        return state
+    return run_terminal_turn_status_render(
+        state,
+        started_at=started_at,
+        now=now,
+        write_live_status=write_live_status,
+    )
+
+
+def terminal_turn_status_cleared(state: TerminalTurnStatusState) -> TerminalTurnStatusState:
+    """Return the cleared active-turn status state."""
+
+    return state.cleared()
+
+
+def terminal_turn_status_suppressed(state: TerminalTurnStatusState) -> TerminalTurnStatusState:
+    """Return the suppressed active-turn status state."""
+
+    return state.suppress()
+
+
 def parse_items_with_invalids(
     ids: Iterable[Any],
     parser: Any | None = None,
@@ -411,6 +701,12 @@ __all__ = [
     "TERMINAL_TITLE_ACTION_REQUIRED_PREFIX_HIDDEN",
     "TERMINAL_TITLE_SPINNER_FRAMES",
     "TERMINAL_TITLE_SPINNER_INTERVAL",
+    "TERMINAL_LIVE_STATUS_DETAIL_PREFIX",
+    "TERMINAL_LIVE_STATUS_PREFIX",
+    "TERMINAL_TURN_INTERRUPT_HINT",
+    "TerminalTurnStatusRenderPlan",
+    "TerminalTurnStatusState",
+    "TerminalStatusSurfaceWriter",
     "action_required_terminal_title_prefix_at",
     "approval_mode_display",
     "find_codex_window",
@@ -424,8 +720,18 @@ __all__ = [
     "parse_terminal_title_items_with_invalids",
     "permissions_display",
     "run_state_status_text",
+    "run_terminal_live_status_text_show",
+    "run_terminal_turn_status_refresh",
+    "run_terminal_turn_status_render",
     "secondary_window_with_label_when_weekly_is_available",
+    "should_render_terminal_turn_status",
     "status_surface_selections",
+    "terminal_turn_status_cleared",
+    "terminal_turn_status_suppressed",
+    "terminal_live_status_text",
+    "terminal_turn_elapsed_seconds",
+    "terminal_turn_status_header",
+    "terminal_turn_status_render_plan",
     "terminal_title_spinner_frame_at",
     "truncate_terminal_title_part",
     "weekly_status_window",

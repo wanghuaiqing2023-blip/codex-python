@@ -2098,11 +2098,14 @@ class TuiAppRuntime:
         else:
             setattr(self.chat_widget.config, "model_reasoning_effort", effort_text)
         for target in (
+            self.chat_widget,
+            getattr(self.chat_widget, "config", None),
             self.active_thread_runtime,
             getattr(self.active_thread_runtime, "session_config", None),
             getattr(self.active_thread_runtime, "model_client", None),
         ):
             _set_runtime_reasoning_effort_value(target, effort_text)
+            _set_runtime_model_details_reasoning_value(target, effort_text)
 
     def persist_model_selection(self, model: Any, effort: Any = None) -> bool:
         """Persist a model selection using Rust ``config_update`` semantics."""
@@ -2534,13 +2537,47 @@ def _set_runtime_reasoning_effort_value(target: Any, effort: str | None) -> None
         target["model_reasoning_effort"] = effort
         target["reasoning_effort"] = effort
         return
+    wrote = False
     for name in ("model_reasoning_effort", "reasoning_effort"):
-        if not hasattr(target, name):
-            continue
         try:
             setattr(target, name, effort)
+            wrote = True
         except (AttributeError, TypeError):
             pass
+    if wrote:
+        return
+
+
+def _set_runtime_model_details_reasoning_value(target: Any, effort: str | None) -> None:
+    if target is None:
+        return
+    for name in ("model_details", "status_model_details"):
+        current = target.get(name) if isinstance(target, dict) else getattr(target, name, None)
+        updated = _model_details_with_reasoning_effort((), effort) if current is None else _model_details_with_reasoning_effort(current, effort)
+        try:
+            if isinstance(target, dict):
+                target[name] = updated
+            else:
+                setattr(target, name, updated)
+        except (AttributeError, TypeError):
+            pass
+
+
+def _model_details_with_reasoning_effort(details: Any, effort: str | None) -> tuple[str, ...]:
+    retained: list[str] = []
+    for detail in details if isinstance(details, (list, tuple)) else (details,):
+        text = str(detail).strip()
+        if not text:
+            continue
+        normalized = text.lower().replace("-", "_")
+        if normalized.startswith("reasoning "):
+            normalized = normalized.removeprefix("reasoning ").strip()
+        if normalized in {"none", "none_", "minimal", "low", "medium", "high", "xhigh", "x_high", "extra_high", "extra high"}:
+            continue
+        retained.append(text)
+    if effort:
+        return (effort, *retained)
+    return tuple(retained)
 
 
 def exec_run_plan_for_app_command(op: AppCommand) -> ExecRunPlan:

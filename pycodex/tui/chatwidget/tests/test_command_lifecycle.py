@@ -4,11 +4,40 @@ from __future__ import annotations
 # Behavior contract: unified-exec process tracking, footer sync data, recent
 # output chunk retention, process end removal, and terminal wait streak flushing.
 
-from pycodex.tui.chatwidget.command_lifecycle import CommandExecutionItem, CommandLifecycleState, SemanticExecCell, UnifiedExecInteractionCell, command_display_from_raw
+from pycodex.tui.chatwidget.command_lifecycle import (
+    CommandExecutionItem,
+    CommandLifecycleState,
+    SemanticExecCell,
+    UnifiedExecInteractionCell,
+    command_display_from_raw,
+    command_text_from_notification,
+)
 
 
 def test_command_display_from_raw_strips_bash_lc_wrapper():
     assert command_display_from_raw("bash -lc 'echo hi'") == "echo hi"
+
+
+def test_command_text_from_notification_extracts_command_execution_payloads():
+    # Rust path: chatwidget::protocol routes ItemStarted/ItemCompleted into
+    # chatwidget::command_lifecycle command execution handlers.
+    event = type(
+        "Event",
+        (),
+        {"payload": {"item": {"command": ["echo", "hello world"]}}},
+    )()
+
+    assert command_text_from_notification(event) == "echo hello world"
+
+
+def test_command_text_from_notification_supports_object_payload_and_missing_command():
+    # Rust path: chatwidget::protocol handles typed notification payloads.
+    item = type("Item", (), {"command": "rg needle"})()
+    event = type("Event", (), {"payload": type("Payload", (), {"item": item})()})()
+    missing = type("Event", (), {"payload": {"item": {"kind": "FileChange"}}})()
+
+    assert command_text_from_notification(event) == "rg needle"
+    assert command_text_from_notification(missing) == ""
 
 
 def test_track_unified_exec_process_begin_adds_and_updates_existing_process():

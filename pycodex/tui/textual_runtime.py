@@ -173,7 +173,7 @@ from .chatwidget.settings_popups import (
     open_realtime_audio_popup,
     open_realtime_audio_restart_prompt,
 )
-from .chatwidget.protocol import ServerNotification
+from .chatwidget.protocol import ServerNotification, token_usage_info_from_app_server
 from .chatwidget.interaction import copy_last_agent_markdown_with
 from .chatwidget.keymap_picker import KeymapPickerWidgetState, KeymapView
 from .chatwidget.slash_dispatch import GOAL_USAGE, GOAL_USAGE_HINT, RAW_USAGE
@@ -244,7 +244,17 @@ from .status_indicator_widget import (
     StatusIndicatorWidget,
 )
 from .text_formatting import proper_join
-from .textual_compat import App, ComposeResult, RichLog, Static, Text, TextArea, Vertical, verify_textual_runtime
+from .textual_compat import (
+    App,
+    ComposeResult,
+    NoMatches,
+    RichLog,
+    Static,
+    Text,
+    TextArea,
+    Vertical,
+    verify_textual_runtime,
+)
 from .tooltips import APP_TOOLTIP
 from .workspace_command import AppServerWorkspaceCommandRunner
 
@@ -337,14 +347,15 @@ def run_textual_tui(
     *,
     active_thread_runtime: ActiveThreadRuntime | TuiAppRuntime,
     stdout: Any | None = None,
+    stdin: Any | None = None,
     use_alt_screen: bool = True,
 ) -> int:
     """Run the Textual-backed interactive TUI product shell."""
 
     if _should_use_scrollback_product_path(stdout):
-        from .scrollback_runtime import run_scrollback_tui
+        from .tui import run_terminal_tui
 
-        return run_scrollback_tui(active_thread_runtime=active_thread_runtime, stdout=stdout)
+        return run_terminal_tui(active_thread_runtime=active_thread_runtime, stdout=stdout, stdin=stdin)
 
     verify_textual_runtime()
     if isinstance(active_thread_runtime, TuiAppRuntime):
@@ -3317,6 +3328,9 @@ class PyCodexTextualApp(App[int]):
         elif kind == "McpServerStatusUpdated":
             self._append_mcp_status()
         elif kind == "ThreadTokenUsageUpdated":
+            self.app_runtime.chat_widget.set_token_info(
+                token_usage_info_from_app_server(_payload_field(event.payload, "token_usage", None))
+            )
             if not self._busy:
                 self._set_status("Ready")
         elif kind == "Error":
@@ -3445,10 +3459,21 @@ class PyCodexTextualApp(App[int]):
     def _set_ready_after_startup_if_idle(self) -> None:
         if self._last_mcp_status_header:
             return
+        if self._shutdown_requested or self._busy or self._active_retry_status is not None:
+            return
+        try:
+            current_status = str(self.query_one("#status-line", Static).renderable)
+        except NoMatches:
+            return
+        if "Shutting down" in current_status or "Raw output mode" in current_status:
+            return
         self._set_status("Ready")
 
     def _consume_composer_control_shortcuts(self) -> bool:
-        composer = self._composer()
+        try:
+            composer = self._composer()
+        except NoMatches:
+            return False
         text = str(getattr(composer, "text", "") or "")
         if "\x14" not in text:
             return False
@@ -3843,7 +3868,8 @@ class PyCodexTextualApp(App[int]):
         text = self._session_header_text()
         index = self._session_header_block_index
         if index is not None and 0 <= index < len(self._blocks) and self._blocks[index].label == "session_header":
-            self._blocks[index] = _TranscriptBlock("session_header", text)
+            self._blocks[index].text = text
+            self._blocks[index].rich_lines = None
             return
 
         # Rust keeps the placeholder SessionHeaderHistoryCell active until the
@@ -3865,7 +3891,11 @@ class PyCodexTextualApp(App[int]):
     def _set_status(self, text: str) -> None:
         if text == "Ready":
             self._refresh_terminal_title(active_progress=False)
-            self.query_one("#status-line", Static).update(_plain_status_text(self._idle_status_line_text()))
+            try:
+                status_line = self.query_one("#status-line", Static)
+            except NoMatches:
+                return
+            status_line.update(_plain_status_text(self._idle_status_line_text()))
             self.refresh(layout=True)
             return
         if self._active_retry_status is not None:
@@ -3874,12 +3904,20 @@ class PyCodexTextualApp(App[int]):
             return
         if text == "Working":
             self._refresh_terminal_title(active_progress=True)
-            self.query_one("#status-line", Static).update(_plain_status_text(_active_status_line_text(self.app_runtime)))
+            try:
+                status_line = self.query_one("#status-line", Static)
+            except NoMatches:
+                return
+            status_line.update(_plain_status_text(_active_status_line_text(self.app_runtime)))
             self.refresh(layout=True)
             return
         if text == "Thinking":
             self._refresh_terminal_title(active_progress=True)
-        self.query_one("#status-line", Static).update(_plain_status_text(f"status: {text}"))
+        try:
+            status_line = self.query_one("#status-line", Static)
+        except NoMatches:
+            return
+        status_line.update(_plain_status_text(f"status: {text}"))
         self.refresh(layout=True)
 
     def _set_active_status(self, header: str, *, elapsed_seconds: int | None = None) -> None:
@@ -3942,6 +3980,10 @@ class PyCodexTextualApp(App[int]):
             for item in items
             if (value := _runtime_status_line_value(self.app_runtime, item, "Ready")) is not None
         ]
+        usage = _runtime_status_token_usage(self.app_runtime)
+        context_left = _runtime_context_remaining_text(self.app_runtime)
+        if usage.total > 0 and context_left and context_left not in parts:
+            parts.append(context_left)
         status_line = " · ".join(part for part in parts if part)
         chat_widget = getattr(self.app_runtime, "chat_widget", None)
         agent_label = getattr(chat_widget, "active_agent_label", None)
@@ -4760,7 +4802,7 @@ class CodexComposerTextArea(TextArea):
         except Exception:
             return False
         if not pasted:
-            return False
+            return True
         if not self.handle_paste_text(str(pasted)):
             return False
         event.stop()

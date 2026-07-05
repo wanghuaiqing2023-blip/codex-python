@@ -26,6 +26,7 @@ from pycodex.protocol import (
     AgentMessageContent,
     AgentMessageItem,
     ContentItem,
+    FunctionCallOutputPayload,
     InternalSessionSource,
     PlanItem,
     ResponseItem,
@@ -1151,7 +1152,7 @@ def _serialize_request_value(value: Any) -> Any:
     if isinstance(value, Enum):
         return value.value
     if isinstance(value, ResponseItem):
-        return _serialize_request_value(value.to_mapping())
+        return _serialize_request_value(_response_item_request_mapping(value))
     if isinstance(value, Mapping):
         return {
             str(key): _serialize_request_value(item)
@@ -1161,6 +1162,20 @@ def _serialize_request_value(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_serialize_request_value(item) for item in value]
     return value
+
+
+def _response_item_request_mapping(item: ResponseItem) -> dict[str, Any]:
+    mapping = item.to_mapping()
+    if "success" in mapping:
+        return mapping
+    if item.type not in {"function_call_output", "custom_tool_call_output"}:
+        return mapping
+    output = getattr(item, "output", None)
+    if not isinstance(output, FunctionCallOutputPayload) or output.success is None:
+        return mapping
+    mapping = dict(mapping)
+    mapping["success"] = output.success
+    return mapping
 
 
 def response_create_client_metadata(
