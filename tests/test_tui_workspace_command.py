@@ -113,7 +113,7 @@ def test_app_server_runner_saturates_timeout_ms_like_rust() -> None:
 @pytest.mark.asyncio
 async def test_local_workspace_runner_executes_argv_cwd_and_env_like_embedded_app_server(tmp_path) -> None:
     # Rust source: codex-tui/src/workspace_command.rs::WorkspaceCommandExecutor.
-    # Product adaptation: Python's embedded Textual runtime has no app-server
+    # Product adaptation: Python's embedded terminal runtime has no app-server
     # request handle, so LocalWorkspaceCommandRunner preserves the same
     # argv/cwd/env/timeout/output-cap contract for TUI-owned probes.
     script = (

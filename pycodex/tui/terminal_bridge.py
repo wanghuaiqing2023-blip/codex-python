@@ -1,8 +1,8 @@
 """Bridge-backed terminal projection helpers for Rust-shaped TUI tests.
 
 Rust ``codex-tui`` renders user-facing cells through Ratatui widgets into a
-terminal backend.  Python's product TTY surface is Textual-backed now, but a
-few porting tests still need a small semantic projection boundary for
+terminal backend.  Python's product TTY surface is terminal-runtime backed, and
+some porting tests still need a small semantic projection boundary for
 cell-addressable rows before bytes reach a ``TextIO`` stream.
 """
 

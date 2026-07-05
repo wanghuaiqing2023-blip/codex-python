@@ -7,9 +7,7 @@ Rust ownership:
 
 This runtime is intentionally small: it restores the product-critical terminal
 contract that finalized transcript text is ordinary terminal output, so native
-terminal scroll, selection, and copy work like the Rust TUI.  The richer Textual
-runtime remains available for module-level overlay work, but it no longer has
-to own the main transcript surface.
+terminal scroll, selection, and copy work like the Rust TUI.
 """
 
 from __future__ import annotations
@@ -19,7 +17,6 @@ import time
 from typing import Any, TextIO
 
 from ..app.runtime import ActiveThreadRuntime, TuiAppRuntime
-from ..app_event import AppEvent
 from ..app.history_ui import (
     TerminalClearUiExecutor,
     run_terminal_session_header_from_runtime,
@@ -28,7 +25,7 @@ from ..app.resize_reflow import (
     TerminalResizeCoordinator,
     TerminalResizeHistoryReplayer,
 )
-from ..bottom_pane.terminal_surface import (
+from ..bottom_pane.terminal_controller import (
     TerminalBottomPaneSurfaceWriter,
 )
 from ..bottom_pane.chat_composer import (
@@ -42,12 +39,11 @@ from ..chatwidget.model_popups import (
     ModelPopupContext,
     ModelPopupEvent,
     ModelPreset,
-    ReasoningEffortConfig,
-    ReasoningEffortPreset,
-    open_all_models_popup,
     open_model_popup,
-    open_plan_reasoning_scope_prompt,
-    open_reasoning_popup,
+    terminal_apply_model_popup_event,
+    terminal_apply_model_popup_events,
+    terminal_model_popup_context_from_runtime,
+    terminal_model_presets_from_runtime,
 )
 from ..chatwidget.protocol import (
     TerminalProtocolEventDispatcher,
@@ -86,7 +82,7 @@ def run_terminal_tui(
 ) -> int:
     """Run the Rust-style scrollback-first TUI product path."""
 
-    from ..textual_runtime import configure_app_runtime_thread_identity
+    from ..runtime_projection import configure_app_runtime_thread_identity
 
     if isinstance(active_thread_runtime, TuiAppRuntime):
         app_runtime = active_thread_runtime
@@ -125,6 +121,7 @@ class TerminalTuiRunner:
                 previous,
                 current,
             ),
+            cursor_visible=lambda: not self._status.turn_active,
         )
         self._status = TerminalStatusSurfaceWriter(
             stdout,
@@ -152,7 +149,7 @@ class TerminalTuiRunner:
                 render_bottom_pane=False,
             ),
             apply_history_state=lambda state: setattr(self._history, "state", state),
-            render_bottom_pane=lambda: self._bottom_pane.render(check_resize=False),
+            render_bottom_pane=lambda: self._bottom_pane.render_after_history_repaint(check_resize=False),
         )
         self._resize = TerminalResizeCoordinator(
             terminal_active=lambda: self._stdin_is_terminal,
@@ -160,8 +157,8 @@ class TerminalTuiRunner:
             active_stream=lambda: self._assistant_stream.active,
             reset_terminal_scroll_region=lambda: reset_scroll_region(self.stdout),
             render_bottom_pane=lambda: self._bottom_pane.render(check_resize=False),
-            repaint_history_viewport=self._resize_history.repaint_viewport,
-            replay_history_scrollback=self._resize_history.replay_scrollback,
+            repaint_history_viewport=self._repaint_history_viewport_preserving_bottom_pane,
+            replay_history_scrollback=self._replay_history_scrollback_resetting_bottom_pane,
         )
         self._history = TerminalHistoryWriter(
             stdout,
@@ -179,7 +176,7 @@ class TerminalTuiRunner:
             finish_projection=self._history.finish_stream_projection,
             apply_history_state=lambda state: setattr(self._history, "state", state),
             finish_stream_reflow=self._resize.run_stream_finish_reflow,
-            repaint_active_stream=self._resize_history.repaint_viewport,
+            repaint_active_stream=self._repaint_history_viewport_preserving_bottom_pane,
         )
         self._protocol = TerminalProtocolEventDispatcher(
             handle_notification=self.app_runtime.handle_notification,
@@ -278,58 +275,39 @@ class TerminalTuiRunner:
         )
 
     def _open_model_popup_view(self) -> Any:
-        current = _terminal_current_model(self.app_runtime)
-        self._model_popup_context = ModelPopupContext(
-            current_model=current,
-            effective_reasoning_effort=_terminal_current_reasoning_effort(self.app_runtime),
+        self._model_popup_context = terminal_model_popup_context_from_runtime(self.app_runtime)
+        self._model_popup_presets = terminal_model_presets_from_runtime(
+            self.app_runtime,
+            self._model_popup_context.current_model,
         )
-        self._model_popup_presets = _terminal_model_presets(self.app_runtime, current)
         result = open_model_popup(self._model_popup_context, self._model_popup_presets)
         for event in result.events:
             self._apply_model_popup_event(event)
         return result.view
 
     def _handle_model_popup_events(self, events: tuple[Any, ...]) -> Any:
-        next_view = None
-        for event in events:
-            if isinstance(event, ModelPopupEvent):
-                candidate = self._apply_model_popup_event(event)
-                if candidate is not None:
-                    next_view = candidate
-        return next_view
+        return terminal_apply_model_popup_events(
+            events,
+            context=self._model_popup_context,
+            presets=self._model_popup_presets,
+            dispatch_app_event=self.app_runtime.handle_app_event,
+        )
 
     def _apply_model_popup_event(self, event: ModelPopupEvent) -> Any:
-        context = self._model_popup_context
-        if context is None:
-            return None
-        if event.kind == "update_model" and event.model is not None:
-            self.app_runtime.handle_app_event(AppEvent.update_model(event.model))
-            context.current_model = event.model
-            return None
-        if event.kind == "update_reasoning_effort":
-            self.app_runtime.handle_app_event(AppEvent.update_reasoning_effort(event.effort))
-            context.effective_reasoning_effort = event.effort
-            return None
-        if event.kind == "persist_model_selection" and event.model is not None:
-            self.app_runtime.handle_app_event(AppEvent.persist_model_selection(event.model, event.effort))
-            return None
-        if event.kind == "open_all_models_popup":
-            return open_all_models_popup(context, event.models).view
-        if event.kind == "open_reasoning_popup" and event.model is not None:
-            preset = next((candidate for candidate in self._model_popup_presets if candidate.model == event.model), None)
-            if preset is None:
-                return None
-            result = open_reasoning_popup(context, preset)
-            if result.view is not None:
-                return result.view
-            for followup in result.events:
-                candidate = self._apply_model_popup_event(followup)
-                if candidate is not None:
-                    return candidate
-            return None
-        if event.kind == "open_plan_reasoning_scope_prompt" and event.model is not None:
-            return open_plan_reasoning_scope_prompt(context, event.model, event.effort).view
-        return None
+        return terminal_apply_model_popup_event(
+            event,
+            context=self._model_popup_context,
+            presets=self._model_popup_presets,
+            dispatch_app_event=self.app_runtime.handle_app_event,
+        )
+
+    def _repaint_history_viewport_preserving_bottom_pane(self, *args: Any, **kwargs: Any) -> None:
+        self._resize_history.repaint_viewport(*args, **kwargs)
+
+    def _replay_history_scrollback_resetting_bottom_pane(self, *args: Any, **kwargs: Any) -> None:
+        self._bottom_pane.reset_buffer_state()
+        self._resize_history.replay_scrollback(*args, **kwargs)
+        self._bottom_pane.reset_buffer_state()
 
     def _run_turn(self, prompt: str) -> None:
         run_terminal_turn_submission(
@@ -361,201 +339,11 @@ class TerminalTuiRunner:
         )
 
     def _shutdown(self) -> None:
+        self._bottom_pane.restore_cursor()
         self._resize.deactivate_layout()
         try:
             self.app_runtime.shutdown_current_thread(timeout_seconds=1.0)
         except Exception:
             pass
 
-
-
 __all__ = ["TerminalTuiRunner", "run_terminal_tui"]
-
-
-def _terminal_current_model(app_runtime: TuiAppRuntime) -> str:
-    runtime = getattr(app_runtime, "active_thread_runtime", None)
-    session_config = getattr(runtime, "session_config", None)
-    value = (
-        _terminal_runtime_value(session_config, "model")
-        or _terminal_runtime_value(runtime, "model")
-        or _terminal_runtime_value(app_runtime, "model")
-    )
-    return str(value or "gpt-5.5")
-
-
-def _terminal_current_reasoning_effort(app_runtime: TuiAppRuntime) -> ReasoningEffortConfig | None:
-    runtime = getattr(app_runtime, "active_thread_runtime", None)
-    session_config = getattr(runtime, "session_config", None)
-    return _terminal_coerce_reasoning_effort(
-        _terminal_runtime_value(session_config, "model_reasoning_effort")
-        or _terminal_runtime_value(session_config, "reasoning_effort")
-        or _terminal_runtime_value(runtime, "model_reasoning_effort")
-    )
-
-
-def _terminal_model_presets(app_runtime: TuiAppRuntime, current: str) -> tuple[ModelPreset, ...]:
-    runtime = getattr(app_runtime, "active_thread_runtime", None)
-    session_config = getattr(runtime, "session_config", None)
-    raw = _terminal_first_value(
-        runtime,
-        session_config,
-        names=("available_models", "model_presets", "models"),
-    )
-    presets = tuple(_terminal_model_preset_from_runtime(item, current) for item in (raw or ()))
-    visible = tuple(preset for preset in presets if preset.model)
-    if visible:
-        return visible
-
-    managed = _terminal_model_manager_presets(app_runtime, current)
-    if managed:
-        return managed
-
-    bundled = _terminal_bundled_model_popup_presets(current)
-    if bundled:
-        return bundled
-    return (_terminal_fallback_current_model_preset(current),)
-
-
-def _terminal_model_manager_presets(app_runtime: TuiAppRuntime, current: str) -> tuple[ModelPreset, ...]:
-    runtime = getattr(app_runtime, "active_thread_runtime", None)
-    session_config = getattr(runtime, "session_config", None)
-    services = getattr(session_config, "services", None)
-    for source in (
-        runtime,
-        getattr(services, "models_manager", None),
-        getattr(session_config, "models_manager", None),
-        getattr(app_runtime, "models_manager", None),
-    ):
-        if source is None:
-            continue
-        for method_name in ("list_models", "try_list_models"):
-            method = getattr(source, method_name, None)
-            if not callable(method):
-                continue
-            try:
-                result = method("online_if_uncached") if method_name == "list_models" else method()
-            except TypeError:
-                try:
-                    result = method()
-                except Exception:
-                    continue
-            except Exception:
-                continue
-            presets = tuple(_terminal_model_preset_from_runtime(item, current) for item in (result or ()))
-            visible = tuple(preset for preset in presets if preset.model)
-            if visible:
-                return visible
-    return ()
-
-
-def _terminal_bundled_model_popup_presets(current: str) -> tuple[ModelPreset, ...]:
-    try:
-        from pycodex.models_manager import bundled_models_response, model_presets_from_models
-        from pycodex.protocol import ModelsResponse
-    except Exception:
-        return ()
-    try:
-        response = ModelsResponse.from_mapping(bundled_models_response())
-        raw = model_presets_from_models(response.models)
-    except Exception:
-        return ()
-    presets = tuple(_terminal_model_preset_from_runtime(item, current) for item in raw)
-    return tuple(preset for preset in presets if preset.model)
-
-
-def _terminal_fallback_current_model_preset(current: str) -> ModelPreset:
-    effort = ReasoningEffortConfig.Medium
-    return ModelPreset(
-        model=current,
-        default_reasoning_effort=effort,
-        supported_reasoning_efforts=(ReasoningEffortPreset(effort, "Balanced reasoning for everyday tasks"),),
-        is_default=True,
-    )
-
-
-def _terminal_model_preset_from_runtime(value: object, current_model: str) -> ModelPreset:
-    if isinstance(value, str):
-        effort = ReasoningEffortConfig.Medium
-        return ModelPreset(
-            model=value,
-            default_reasoning_effort=effort,
-            supported_reasoning_efforts=(ReasoningEffortPreset(effort),),
-            is_default=value == current_model,
-        )
-    model = (
-        _terminal_runtime_value(value, "model")
-        or _terminal_runtime_value(value, "id")
-        or _terminal_runtime_value(value, "name")
-    )
-    if model is None:
-        return ModelPreset(model="")
-    effort = _terminal_coerce_reasoning_effort(
-        _terminal_runtime_value(value, "default_reasoning_effort")
-        or _terminal_runtime_value(value, "reasoning_effort")
-        or _terminal_runtime_value(value, "effort")
-    ) or ReasoningEffortConfig.Medium
-    supported = _terminal_coerce_supported_reasoning_efforts(
-        _terminal_runtime_value(value, "supported_reasoning_efforts")
-        or _terminal_runtime_value(value, "supported_efforts")
-        or _terminal_runtime_value(value, "reasoning_efforts")
-    )
-    if not supported:
-        supported = (ReasoningEffortPreset(effort),)
-    return ModelPreset(
-        model=str(model),
-        description=str(_terminal_runtime_value(value, "description") or ""),
-        default_reasoning_effort=effort,
-        supported_reasoning_efforts=supported,
-        is_default=bool(_terminal_runtime_value(value, "is_default")) or str(model) == current_model,
-        show_in_picker=bool(_terminal_runtime_value(value, "show_in_picker", True)),
-    )
-
-
-def _terminal_first_value(*sources: object, names: tuple[str, ...]) -> object | None:
-    for source in sources:
-        if source is None:
-            continue
-        for name in names:
-            value = _terminal_runtime_value(source, name, None)
-            if value is not None:
-                return value
-    return None
-
-
-def _terminal_runtime_value(source: object, name: str, default: object | None = None) -> object | None:
-    if source is None:
-        return default
-    if isinstance(source, dict):
-        return source.get(name, default)
-    value = getattr(source, name, default)
-    return value() if callable(value) else value
-
-
-def _terminal_coerce_reasoning_effort(value: object | None) -> ReasoningEffortConfig | None:
-    if value is None:
-        return None
-    if isinstance(value, ReasoningEffortConfig):
-        return value
-    enum_value = getattr(value, "value", None)
-    if enum_value is not None:
-        value = enum_value
-    normalized = str(value).strip().lower().replace("-", "_")
-    if normalized == "none":
-        return ReasoningEffortConfig.None_
-    for effort in ReasoningEffortConfig:
-        if effort.value == normalized:
-            return effort
-    return None
-
-
-def _terminal_coerce_supported_reasoning_efforts(value: object | None) -> tuple[ReasoningEffortPreset, ...]:
-    if not value:
-        return ()
-    out: list[ReasoningEffortPreset] = []
-    for item in value if isinstance(value, (list, tuple)) else (value,):
-        effort = _terminal_coerce_reasoning_effort(_terminal_runtime_value(item, "effort", item))
-        if effort is None:
-            continue
-        description = str(_terminal_runtime_value(item, "description") or "")
-        out.append(ReasoningEffortPreset(effort, description))
-    return tuple(out)

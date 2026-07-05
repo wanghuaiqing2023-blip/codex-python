@@ -180,6 +180,32 @@ def test_build_rows_marks_selection_current_default_and_disabled():
     assert rows[1].disabled_reason == "blocked"
 
 
+def test_terminal_lines_project_header_rows_and_selected_item_style():
+    # Rust owner: codex-tui::bottom_pane::list_selection_view owns active
+    # header and selected-row projection before terminal_surface adapts rows to
+    # the live viewport.
+    view = _view(
+        [
+            SelectionItem(name="current", is_current=True, description="desc"),
+            SelectionItem(name="other", description="other desc"),
+        ],
+        header=("Select Model and Effort", "Access legacy models"),
+    )
+
+    lines = view.terminal_lines(width=80)
+    view.move_down()
+    moved = view.terminal_lines(width=80)
+
+    assert lines[0].text == "Select Model and Effort"
+    assert lines[1].text == "Access legacy models"
+    assert lines[2].text.startswith("> 1. * current")
+    assert lines[2].selected is True
+    assert lines[3].selected is False
+    assert moved[2].selected is False
+    assert moved[3].text.startswith("> 2.   other")
+    assert moved[3].selected is True
+
+
 def test_key_dispatch_and_semantic_render_helpers_cover_runtime_boundaries():
     view = _view([SelectionItem(name="zero"), SelectionItem(name="one")])
     handle_key_event(view, "down")

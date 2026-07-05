@@ -9,6 +9,7 @@ keeps render-style code easy to exercise in tests.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import unicodedata
 from typing import Iterable, List, Optional, Tuple
 
 from .layout import Rect
@@ -20,6 +21,7 @@ from .text import Line, Span, Text
 class Cell:
     symbol: str = " "
     style: Style = Style()
+    skip: bool = False
 
     @classmethod
     def blank(cls) -> "Cell":
@@ -30,7 +32,7 @@ class Cell:
         return Cell(text[:1] if text else " ", self.style)
 
     def with_style(self, style: Style) -> "Cell":
-        return Cell(self.symbol, style)
+        return Cell(self.symbol, style, self.skip)
 
 
 class Buffer:
@@ -101,10 +103,17 @@ class Buffer:
 
     def set_span(self, x: int, y: int, span: Span, max_width: Optional[int] = None) -> int:
         written = 0
-        limit = len(span.content) if max_width is None else max(max_width, 0)
-        for offset, char in enumerate(span.content[:limit]):
-            self.set_cell(x + offset, y, Cell(char, span.style))
-            written += 1
+        remaining = None if max_width is None else max(max_width, 0)
+        cursor = x
+        for char in span.content:
+            char_width = max(_cell_display_width(char), 1)
+            if remaining is not None and written + char_width > remaining:
+                break
+            self.set_cell(cursor, y, Cell(char, span.style))
+            for skip_x in range(cursor + 1, cursor + char_width):
+                self.set_cell(skip_x, y, Cell(" ", span.style, skip=True))
+            cursor += char_width
+            written += char_width
         return written
 
     def set_line(self, x: int, y: int, line: Line, max_width: Optional[int] = None) -> int:
@@ -128,7 +137,12 @@ class Buffer:
         return written
 
     def row_plain(self, y: int) -> str:
-        return "".join(self.cell(self.area.x + x, y).symbol for x in range(self.area.width))
+        return "".join(
+            cell.symbol
+            for x in range(self.area.width)
+            for cell in (self.cell(self.area.x + x, y),)
+            if not cell.skip
+        )
 
     def plain_lines(self) -> List[str]:
         return [self.row_plain(self.area.y + y) for y in range(self.area.height)]
@@ -136,15 +150,40 @@ class Buffer:
     def plain(self) -> str:
         return "\n".join(self.plain_lines())
 
+    def clone(self) -> "Buffer":
+        return Buffer(self.area, list(self._cells))
+
+    def reset(self) -> None:
+        self._cells = [Cell.blank() for _ in self._cells]
+
+    def resize(self, area: Rect) -> None:
+        self.area = area
+        self._cells = [Cell.blank() for _ in range(max(area.width, 0) * max(area.height, 0))]
+
+    def cells(self) -> Tuple[Cell, ...]:
+        return tuple(self._cells)
+
     def to_rich_text(self, area: Optional[Rect] = None, trim_end: bool = False):
-        from .textual_adapter import buffer_to_rich_text
+        from .rich_adapter import buffer_to_rich_text
 
         return buffer_to_rich_text(self, area=area, trim_end=trim_end)
 
     def to_plain_text(self, area: Optional[Rect] = None, trim_end: bool = False) -> str:
-        from .textual_adapter import buffer_to_plain_text
+        from .rich_adapter import buffer_to_plain_text
 
         return buffer_to_plain_text(self, area=area, trim_end=trim_end)
+
+
+def _cell_display_width(symbol: str) -> int:
+    text = str(symbol)
+    if not text:
+        return 0
+    width = 0
+    for character in text:
+        if unicodedata.combining(character):
+            continue
+        width += 2 if unicodedata.east_asian_width(character) in {"F", "W"} else 1
+    return width
 
 
 __all__ = ["Buffer", "Cell"]

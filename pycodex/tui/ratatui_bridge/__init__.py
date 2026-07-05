@@ -3,14 +3,29 @@
 from __future__ import annotations
 
 from .._porting import RustTuiModule
-from .backend import Backend, CrosstermBackend, Frame, Terminal, TestBackend, WindowSize
+from .backend import (
+    AnsiBackend,
+    Backend,
+    CrosstermBackend,
+    DrawCommand,
+    Frame,
+    FrameBufferState,
+    Terminal,
+    TestBackend,
+    WindowSize,
+    ansi_style_sequence,
+    draw_buffer_to_ansi,
+    diff_buffers,
+    full_redraw_commands,
+    requires_full_redraw,
+)
 from .buffer import Buffer, Cell
 from .crossterm import Attribute, ClearType, SetAttribute, SetBackgroundColor, SetForegroundColor
 from .layout import Alignment, Constraint, Direction, Layout, Margin, Offset, Position, Rect, Size
 from .renderable import Renderable
 from .style import Color, Modifier, Rgb, Style
 from .text import Line, Span, Text
-from .textual_adapter import (
+from .rich_adapter import (
     buffer_to_plain_text,
     buffer_to_rich_text,
     cell_to_rich_text,
@@ -43,6 +58,7 @@ RUST_MODULE = RustTuiModule(
 
 __all__ = [
     "Alignment",
+    "AnsiBackend",
     "Attribute",
     "Backend",
     "Block",
@@ -56,7 +72,9 @@ __all__ = [
     "Constraint",
     "CrosstermBackend",
     "Direction",
+    "DrawCommand",
     "Frame",
+    "FrameBufferState",
     "Layout",
     "Line",
     "Margin",
@@ -82,14 +100,19 @@ __all__ = [
     "WidgetRef",
     "WindowSize",
     "Wrap",
+    "ansi_style_sequence",
     "buffer_to_plain_text",
     "buffer_to_rich_text",
     "cell_to_rich_text",
+    "draw_buffer_to_ansi",
+    "diff_buffers",
+    "full_redraw_commands",
     "line_to_rich_text",
     "render_ref",
     "render_stateful_ref",
     "render_to_buffer",
     "render_to_rich_text",
+    "requires_full_redraw",
     "span_to_rich_text",
     "text_to_rich_text",
 ]

@@ -11973,14 +11973,13 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertNotIn("\x1b[?1049l", stdout.getvalue())
         self.assertIn("Codex", stdout.getvalue())
 
-    def test_main_without_subcommand_tty_uses_textual_even_with_no_alt_screen(self):
+    def test_main_without_subcommand_tty_uses_terminal_tui_even_with_no_alt_screen(self):
         # Rust/Python product-path contract:
         # - codex-tui/src/tui.rs owns the real interactive terminal loop.
-        # - pycodex.tui.textual_runtime.should_use_textual_tui is the Python
-        #   product-entry guard for real TTY sessions.
-        # Contract: --no-alt-screen does not revive the legacy inline renderer
-        # for real TTY use; it only remains relevant to non-TTY compatibility
-        # harnesses while they are migrated.
+        # - pycodex.tui.tui.terminal_runtime.run_terminal_tui is the Python
+        #   product-entry target for real TTY sessions.
+        # Contract: --no-alt-screen does not switch away from the scrollback
+        # terminal TUI product path.
         class TtyInput(io.StringIO):
             def isatty(self):
                 return True
@@ -11995,7 +11994,7 @@ class TopLevelCliParserTests(unittest.TestCase):
 
         with patch.dict(os.environ, {"TERM": "xterm-256color"}):
             with patch("pycodex.cli.parser._build_tui_core_active_thread_runtime", return_value=runtime):
-                with patch("pycodex.tui.textual_runtime.run_textual_tui", return_value=0) as run_textual:
+                with patch("pycodex.tui.tui.terminal_runtime.run_terminal_tui", return_value=0) as run_terminal:
                     code = main(
                         ["--no-alt-screen"],
                         stdout=stdout,
@@ -12005,14 +12004,16 @@ class TopLevelCliParserTests(unittest.TestCase):
                     )
 
         self.assertEqual(code, 0)
-        run_textual.assert_called_once_with(active_thread_runtime=runtime, stdout=stdout, use_alt_screen=False)
+        run_terminal.assert_called_once()
+        self.assertIs(run_terminal.call_args.kwargs["active_thread_runtime"], runtime)
+        self.assertIs(run_terminal.call_args.kwargs["stdout"], stdout)
         self.assertEqual(stderr.getvalue(), "")
 
-    def test_main_without_subcommand_tty_respects_tui_alternate_screen_config(self):
+    def test_main_without_subcommand_tty_ignores_alt_screen_config_for_terminal_tui(self):
         # Rust source contract:
-        # - codex-rs/tui/src/lib.rs::determine_alt_screen_mode disables the
-        #   alternate screen when Config.tui.alternate_screen is Never, even
-        #   without the CLI --no-alt-screen flag.
+        # - codex-tui/src/tui.rs owns interactive startup.  The Python product
+        #   path keeps ordinary terminal scrollback, so alternate-screen config
+        #   must not switch it back to a removed alternate product path.
         class TtyInput(io.StringIO):
             def isatty(self):
                 return True
@@ -12028,7 +12029,7 @@ class TopLevelCliParserTests(unittest.TestCase):
 
         with patch.dict(os.environ, {"TERM": "xterm-256color"}):
             with patch("pycodex.cli.parser._build_tui_core_active_thread_runtime", return_value=runtime):
-                with patch("pycodex.tui.textual_runtime.run_textual_tui", return_value=0) as run_textual:
+                with patch("pycodex.tui.tui.terminal_runtime.run_terminal_tui", return_value=0) as run_terminal:
                     code = main(
                         [],
                         stdout=stdout,
@@ -12038,7 +12039,9 @@ class TopLevelCliParserTests(unittest.TestCase):
                     )
 
         self.assertEqual(code, 0)
-        run_textual.assert_called_once_with(active_thread_runtime=runtime, stdout=stdout, use_alt_screen=False)
+        run_terminal.assert_called_once()
+        self.assertIs(run_terminal.call_args.kwargs["active_thread_runtime"], runtime)
+        self.assertIs(run_terminal.call_args.kwargs["stdout"], stdout)
         self.assertEqual(stderr.getvalue(), "")
 
     def test_tui_core_runtime_reads_reasoning_summary_from_config_toml(self):
@@ -12047,7 +12050,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         #   from config.toml.
         # - codex-cli/src/main.rs::run_interactive_tui passes loaded Config
         #   into codex_tui::run_main.
-        # Python's Textual TUI must receive the same value through the active
+        # Python's terminal TUI must receive the same value through the active
         # core runtime session config so reasoning summary visibility is
         # controlled by config.toml rather than a local UI default.
         parsed = parse_args([])
@@ -12840,7 +12843,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         reply_call = json.loads([line for line in stdout_reply.getvalue().splitlines() if line.strip()][0])
         self.assertEqual(reply_call["result"]["structuredContent"]["threadId"], thread_id)
 
-    def test_main_resume_without_fallback_uses_textual_tui_path(self):
+    def test_main_resume_without_fallback_uses_terminal_tui_path(self):
         class TtyInput(io.StringIO):
             def isatty(self):
                 return True
@@ -12855,7 +12858,7 @@ class TopLevelCliParserTests(unittest.TestCase):
 
         with patch.dict(os.environ, {"TERM": "xterm-256color"}):
             with patch("pycodex.cli.parser._build_tui_core_active_thread_runtime", return_value=runtime):
-                with patch("pycodex.tui.textual_runtime.run_textual_tui", return_value=0) as run_textual:
+                with patch("pycodex.tui.tui.terminal_runtime.run_terminal_tui", return_value=0) as run_terminal:
                     code = main(
                         ["resume", "--last"],
                         stdout=stdout,
@@ -12866,13 +12869,12 @@ class TopLevelCliParserTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertIn("resume request parsed with session_id=None, last=True, all=False, include_non_interactive=False.", stderr.getvalue())
-        called_runtime = run_textual.call_args.kwargs["active_thread_runtime"]
+        called_runtime = run_terminal.call_args.kwargs["active_thread_runtime"]
         self.assertIsInstance(called_runtime, TuiAppRuntime)
         self.assertIs(called_runtime.active_thread_runtime, runtime)
         self.assertEqual(called_runtime.startup_session_action, "resume")
         self.assertTrue(called_runtime.startup_session_last)
-        self.assertTrue(run_textual.call_args.kwargs["use_alt_screen"])
-        self.assertIs(run_textual.call_args.kwargs["stdout"], stdout)
+        self.assertIs(run_terminal.call_args.kwargs["stdout"], stdout)
 
     def test_main_resume_with_exec_fallback_uses_noninteractive_resume_exec(self):
         stdout = io.StringIO()
@@ -12901,7 +12903,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertEqual(run_noninteractive.call_args.kwargs["stdin"], "continue from stdin\n")
         self.assertFalse(run_noninteractive.call_args.kwargs["stdin_is_terminal"])
 
-    def test_main_fork_routes_to_textual_tui_startup(self):
+    def test_main_fork_routes_to_terminal_tui_startup(self):
         stderr = io.StringIO()
         with patch("pycodex.cli.parser._run_tui", return_value=13) as run_tui:
             code = main(["fork", "abc"], stderr=stderr)
@@ -12911,7 +12913,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertIn("fork request parsed with session_id='abc'", stderr.getvalue())
         self.assertNotIn("non-interactive fallback mode", stderr.getvalue())
 
-    def test_main_fork_without_id_enters_textual_fork_picker_startup(self):
+    def test_main_fork_without_id_enters_terminal_fork_picker_startup(self):
         # Rust source/test contract:
         # - codex-rs/cli/src/main.rs::finalize_fork_interactive sets
         #   fork_picker when `codex fork` has no session id and no --last.
@@ -12930,7 +12932,7 @@ class TopLevelCliParserTests(unittest.TestCase):
 
         with patch.dict(os.environ, {"TERM": "xterm-256color"}):
             with patch("pycodex.cli.parser._build_tui_core_active_thread_runtime", return_value=runtime):
-                with patch("pycodex.tui.textual_runtime.run_textual_tui", return_value=0) as run_textual:
+                with patch("pycodex.tui.tui.terminal_runtime.run_terminal_tui", return_value=0) as run_terminal:
                     code = main(
                         ["fork"],
                         stdout=stdout,
@@ -12940,8 +12942,7 @@ class TopLevelCliParserTests(unittest.TestCase):
                     )
 
         self.assertEqual(code, 0)
-        called_runtime = run_textual.call_args.kwargs["active_thread_runtime"]
-        self.assertTrue(run_textual.call_args.kwargs["use_alt_screen"])
+        called_runtime = run_terminal.call_args.kwargs["active_thread_runtime"]
         self.assertIsInstance(called_runtime, TuiAppRuntime)
         self.assertIs(called_runtime.active_thread_runtime, runtime)
         self.assertEqual(called_runtime.startup_session_action, "fork")

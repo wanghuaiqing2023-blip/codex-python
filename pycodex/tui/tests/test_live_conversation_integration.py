@@ -9,7 +9,7 @@ Rust evidence:
   interactive sessions into ``codex_tui::run_main``.
 
 This file keeps only product-neutral runtime/status assertions that describe
-the Textual-backed TUI boundary.
+the terminal TUI boundary.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ import pytest
 from pycodex.tui.app.runtime import QueueActiveThreadEventStream, TuiAppRuntime
 from pycodex.tui.app_event import AppEvent
 from pycodex.tui.bottom_pane.status_line_setup import StatusLineItem
-from pycodex.tui.textual_runtime import (
+from pycodex.tui.runtime_projection import (
     _runtime_display_model,
     _runtime_model_with_reasoning,
     _runtime_status_line_value,
@@ -168,7 +168,7 @@ def test_terminal_status_footer_uses_updated_model_from_app_event() -> None:
     assert "gpt-old" not in footer
 
 
-def test_cli_tui_uses_text_stdin_for_interactive_textual_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cli_tui_uses_text_stdin_for_interactive_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
     # Rust terminal input is character-event based. Python's interactive TUI
     # must not decode sys.stdin.buffer as UTF-8 on Windows code pages.
     from pycodex.cli import parser as cli_parser
@@ -180,19 +180,15 @@ def test_cli_tui_uses_text_stdin_for_interactive_textual_terminal(monkeypatch: p
     monkeypatch.setattr(sys, "stdin", fake_text_stdin)
     monkeypatch.setattr(cli_parser, "_build_tui_core_active_thread_runtime", lambda parsed, *, stderr: object())
 
-    import pycodex.tui.textual_runtime as textual_runtime
+    import pycodex.tui.tui.terminal_runtime as terminal_runtime
 
-    def fake_run_textual_tui(**kwargs):
+    def fake_run_terminal_tui(**kwargs):
         captured["runtime"] = kwargs["active_thread_runtime"]
         captured["stdout"] = kwargs["stdout"]
+        captured["stdin"] = kwargs["stdin"]
         return 0
 
-    def fake_should_use_textual_tui(**kwargs):
-        captured["stdin"] = kwargs["stdin"]
-        return True
-
-    monkeypatch.setattr(textual_runtime, "run_textual_tui", fake_run_textual_tui)
-    monkeypatch.setattr(textual_runtime, "should_use_textual_tui", fake_should_use_textual_tui)
+    monkeypatch.setattr(terminal_runtime, "run_terminal_tui", fake_run_terminal_tui)
     stdout = _TtyOutput()
 
     code = cli_parser._run_tui(
@@ -212,7 +208,7 @@ def test_live_oauth_tui_conversation_against_real_service() -> None:
     # Python-designed live parity smoke because upstream Rust has live CLI tests
     # and TUI terminal tests, but no combined real OAuth + interactive TUI test.
     # The old stdin-driven smoke was removed with the legacy terminal renderer;
-    # real Textual live smoke should run through the ConPTY/native comparison
+    # real terminal live smoke should run through the ConPTY/native comparison
     # harness rather than reviving a second product path.
     if os.environ.get(_LIVE_ENV) != "1":
         pytest.skip(f"set {_LIVE_ENV}=1 to call the real service")

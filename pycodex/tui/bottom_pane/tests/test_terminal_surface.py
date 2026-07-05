@@ -1,36 +1,45 @@
 import io
 import os
 
-from pycodex.tui.bottom_pane.terminal_surface import (
-    TerminalBottomPaneFrameWrite,
-    TerminalBottomPaneFootprint,
-    TerminalBottomPanePopupLine,
+from pycodex.tui.bottom_pane.terminal_controller import (
     TerminalBottomPaneSurfaceWriter,
-    TerminalBottomPaneState,
-    TerminalLiveStatusSurface,
-    bottom_pane_footprint_transition,
-    bottom_pane_rows_for_size,
-    clear_bottom_pane_and_flush,
-    composer_line_text,
-    history_bottom_row,
-    render_bottom_pane,
-    render_bottom_pane_and_flush,
+    terminal_command_popup_visible_for_draft,
     run_terminal_bottom_pane_action_plan,
     run_terminal_bottom_pane_clear,
     run_terminal_bottom_pane_render,
+)
+from pycodex.tui.bottom_pane.selection_popup_common import TerminalPopupLine as TerminalBottomPanePopupLine
+from pycodex.tui.bottom_pane.terminal_frame import (
+    TerminalBottomPaneFrameWrite,
+    TerminalBottomPaneFootprint,
+    TerminalBottomPaneState,
+    bottom_pane_footprint_transition,
+    bottom_pane_rows_for_size,
+    composer_line_text,
+    history_bottom_row,
+    terminal_bottom_pane_frame,
+    terminal_bottom_pane_frame_buffer,
+    terminal_bottom_pane_clear_plan,
+    terminal_bottom_pane_render_plan,
+)
+from pycodex.tui.bottom_pane.terminal_surface import (
+    clear_bottom_pane_and_flush,
+    render_terminal_bottom_pane_frame,
+)
+from pycodex.tui.chatwidget.status_surfaces import (
+    TerminalLiveStatusSurface,
     run_terminal_live_status_action_plan,
     run_terminal_live_status_hide,
     run_terminal_live_status_show,
-    terminal_bottom_pane_frame,
-    terminal_bottom_pane_clear_plan,
-    terminal_bottom_pane_render_plan,
-    terminal_command_popup_visible_for_draft,
     terminal_live_status_hide_plan,
     terminal_live_status_show_plan,
     terminal_live_status_transition_to_inactive,
     terminal_live_status_transition_to_status,
 )
 from pycodex.tui.bottom_pane.list_selection_view import SelectionItem, SelectionViewParams
+from pycodex.tui.ratatui_bridge import Color as RatatuiColor
+from pycodex.tui.ratatui_bridge import FrameBufferState as RatatuiFrameBufferState
+from pycodex.tui.ratatui_bridge import Rect as RatatuiRect
 
 
 class FlushTrackingStringIO(io.StringIO):
@@ -41,6 +50,37 @@ class FlushTrackingStringIO(io.StringIO):
     def flush(self) -> None:
         self.flush_count += 1
         super().flush()
+
+
+def _render_state_via_surface(
+    writer: io.StringIO,
+    size: os.terminal_size,
+    state: TerminalBottomPaneState,
+    *,
+    move_cursor=None,
+    clear_popup_height: int = 0,
+    clear_live_status_active: bool = False,
+    buffer_state: RatatuiFrameBufferState | None = None,
+    cursor_visible: bool = True,
+):
+    frame = terminal_bottom_pane_frame(
+        size,
+        state,
+        clear_popup_height=clear_popup_height,
+        clear_live_status_active=clear_live_status_active,
+    )
+    buffer = terminal_bottom_pane_frame_buffer(size, frame)
+    render_terminal_bottom_pane_frame(
+        writer,
+        frame,
+        buffer=buffer,
+        previous_buffer=buffer_state.previous if buffer_state is not None else None,
+        move_cursor=move_cursor,
+        cursor_visible=cursor_visible,
+    )
+    if buffer_state is not None:
+        buffer_state.update(buffer)
+    return buffer
 
 
 def test_bottom_pane_rows_reserve_idle_and_status_footprints() -> None:
@@ -481,7 +521,7 @@ def test_render_bottom_pane_paints_status_composer_footer_and_cursor() -> None:
     cursor: list[tuple[int, int]] = []
     size = os.terminal_size((40, 12))
 
-    render_bottom_pane(
+    _render_state_via_surface(
         writer,
         size,
         TerminalBottomPaneState(
@@ -501,6 +541,23 @@ def test_render_bottom_pane_paints_status_composer_footer_and_cursor() -> None:
     assert cursor == [(10, len(composer_line_text("hello")) + 1)]
 
 
+def test_render_bottom_pane_uses_bridge_cursor_lifecycle_by_default() -> None:
+    # Rust owner: codex-tui::custom_terminal applies Frame cursor position
+    # through the backend after drawing the buffer.  The terminal surface
+    # should pass the frame cursor into ratatui_bridge instead of owning cursor
+    # movement as local UI behavior.
+    writer = io.StringIO()
+    size = os.terminal_size((40, 12))
+
+    _render_state_via_surface(
+        writer,
+        size,
+        TerminalBottomPaneState(draft="hello", footer_text="gpt-test high"),
+    )
+
+    assert writer.getvalue().endswith(f"\x1b[10;{len(composer_line_text('hello')) + 1}H")
+
+
 def test_terminal_command_popup_visibility_tracks_slash_command_name() -> None:
     # Rust owner: bottom_pane::chat_composer::sync_command_popup opens the
     # slash-command popup while editing the first-line command name and hides
@@ -517,7 +574,7 @@ def test_render_bottom_pane_paints_slash_popup_below_composer_with_highlight() -
     cursor: list[tuple[int, int]] = []
     size = os.terminal_size((72, 12))
 
-    render_bottom_pane(
+    _render_state_via_surface(
         writer,
         size,
         TerminalBottomPaneState(
@@ -566,11 +623,234 @@ def test_terminal_bottom_pane_frame_models_popup_layout_and_render_policy() -> N
     assert frame.cursor_column == len(composer_line_text("/m")) + 1
 
 
+def test_terminal_bottom_pane_frame_projects_to_ratatui_buffer() -> None:
+    # Rust owner: codex-tui::custom_terminal owns the ratatui Buffer redraw
+    # model.  The Python terminal adapter must expose bottom-pane rows through
+    # that buffer model before ANSI live-viewport rendering happens.
+    size = os.terminal_size((32, 12))
+    frame = terminal_bottom_pane_frame(
+        size,
+        TerminalBottomPaneState(
+            draft="/m",
+            footer_text="gpt-test high",
+            popup_lines=(
+                TerminalBottomPanePopupLine("/model choose", True),
+                TerminalBottomPanePopupLine("/memories configure", False),
+            ),
+        ),
+    )
+
+    buffer = terminal_bottom_pane_frame_buffer(size, frame)
+
+    assert buffer.area == RatatuiRect.new(0, 8, 32, 4)
+    assert buffer.plain_lines() == [
+        "\u203a /m" + " " * 28,
+        "/model choose" + " " * 19,
+        "/memories configure" + " " * 13,
+        "gpt-test high" + " " * 19,
+    ]
+    assert buffer.cell(0, 9).symbol == "/"
+    assert buffer.cell(0, 9).style.fg == RatatuiColor.LightBlue
+    assert buffer.cell(0, 10).style.fg is None
+
+
+def test_terminal_bottom_pane_frame_diff_updates_only_changed_buffer_cells() -> None:
+    # Rust owner: codex-tui::custom_terminal keeps previous/current buffers and
+    # redraws the live frame via buffer diffs rather than repainting the full UI.
+    size = os.terminal_size((32, 12))
+    previous_frame = terminal_bottom_pane_frame(
+        size,
+        TerminalBottomPaneState(draft="hello", footer_text="gpt-test high"),
+    )
+    current_frame = terminal_bottom_pane_frame(
+        size,
+        TerminalBottomPaneState(draft="hello", footer_text="gpt-test"),
+    )
+    previous_buffer = terminal_bottom_pane_frame_buffer(size, previous_frame)
+    current_buffer = terminal_bottom_pane_frame_buffer(size, current_frame)
+    writer = io.StringIO()
+
+    render_terminal_bottom_pane_frame(
+        writer,
+        current_frame,
+        buffer=current_buffer,
+        previous_buffer=previous_buffer,
+        move_cursor=lambda _row, _column: None,
+    )
+
+    output = writer.getvalue()
+    assert "\x1b[10;1H\u203a hello" not in output
+    assert "\x1b[12;1H\x1b[2K" not in output
+    assert "\x1b[12;1Hgpt-test" not in output
+    assert "\x1b[12;9H\x1b[0K" in output
+
+
+def test_terminal_bottom_pane_frame_buffer_state_skips_unchanged_second_render() -> None:
+    # Rust owner: codex-tui::custom_terminal keeps current/previous buffers so
+    # unchanged live-pane frames do not repaint.  The terminal surface consumes
+    # the shared ratatui_bridge FrameBufferState instead of owning that state.
+    writer = io.StringIO()
+    state = RatatuiFrameBufferState()
+    size = os.terminal_size((32, 12))
+    pane = TerminalBottomPaneState(draft="hello", footer_text="gpt-test high")
+
+    _render_state_via_surface(writer, size, pane, buffer_state=state)
+    writer.seek(0)
+    writer.truncate(0)
+    _render_state_via_surface(writer, size, pane, buffer_state=state)
+
+    output = writer.getvalue()
+    assert "\x1b[10;1H\u203a hello" not in output
+    assert "\x1b[12;1Hgpt-test high" not in output
+    assert "\x1b[10;" in output
+
+
+def test_terminal_bottom_pane_frame_clears_external_blank_row_without_footer_repaint() -> None:
+    # Rust owner: codex-tui::custom_terminal owns frame diffing while the hybrid
+    # terminal adapter may need to repair live rows dirtied by ordinary
+    # scrollback writes.  That repair must target blank frame rows instead of
+    # falling back to a full footer repaint.
+    writer = io.StringIO()
+    size = os.terminal_size((32, 12))
+    frame = terminal_bottom_pane_frame(
+        size,
+        TerminalBottomPaneState(draft="hello", footer_text="gpt-test high"),
+    )
+    buffer = terminal_bottom_pane_frame_buffer(size, frame)
+
+    render_terminal_bottom_pane_frame(
+        writer,
+        frame,
+        buffer=buffer,
+        previous_buffer=None,
+        move_cursor=lambda _row, _column: None,
+    )
+    writer.seek(0)
+    writer.truncate(0)
+    render_terminal_bottom_pane_frame(
+        writer,
+        frame,
+        buffer=buffer,
+        previous_buffer=buffer,
+        move_cursor=lambda _row, _column: None,
+        clear_external_blank_rows=True,
+    )
+
+    output = writer.getvalue()
+    assert "\x1b[9;1H\x1b[2K" in output
+    assert "\x1b[11;1H\x1b[2K" in output
+    assert "\x1b[10;1H\u203a hello" not in output
+    assert "\x1b[12;1Hgpt-test high" not in output
+
+
+def test_terminal_bottom_pane_frame_can_suppress_frame_cursor() -> None:
+    # Rust owner: codex-tui::custom_terminal::try_draw hides the cursor when a
+    # frame does not provide cursor_position.  During active turns the terminal
+    # adapter must still draw the bottom pane but not hand off a composer cursor.
+    writer = io.StringIO()
+    state = RatatuiFrameBufferState()
+    size = os.terminal_size((32, 12))
+    pane = TerminalBottomPaneState(draft="hello", footer_text="gpt-test high")
+
+    _render_state_via_surface(writer, size, pane, buffer_state=state)
+    writer.seek(0)
+    writer.truncate(0)
+    _render_state_via_surface(writer, size, pane, buffer_state=state, cursor_visible=False)
+
+    output = writer.getvalue()
+    assert "\x1b[10;1H\u203a hello" not in output
+    assert "\x1b[12;1Hgpt-test high" not in output
+    assert f"\x1b[10;{len(composer_line_text('hello')) + 1}H" not in output
+
+
+def test_terminal_bottom_pane_surface_writer_applies_cursor_visibility_policy() -> None:
+    # Rust owner: codex-tui::custom_terminal owns cursor hide/show lifecycle.
+    # The Python terminal controller maps active turn/view state into that
+    # frame-level cursor policy instead of moving the prompt cursor every tick.
+    writer = FlushTrackingStringIO()
+    visible = [True]
+    surface = TerminalBottomPaneSurfaceWriter(
+        writer,
+        stdin_is_terminal=lambda: True,
+        layout_active=lambda: True,
+        live_status=TerminalLiveStatusSurface.inactive,
+        terminal_size=lambda: os.terminal_size((40, 12)),
+        resize=lambda: None,
+        footer_text=lambda: "gpt-test high",
+        cursor_visible=lambda: visible[0],
+    )
+    surface.apply_draft("hi")
+
+    visible[0] = False
+    assert surface.render(check_resize=False) is True
+    first_output = writer.getvalue()
+    assert "\x1b[?25l" in first_output
+    assert not first_output.endswith(f"\x1b[10;{len(composer_line_text('hi')) + 1}H")
+
+    writer.seek(0)
+    writer.truncate(0)
+    assert surface.render(check_resize=False) is True
+    second_output = writer.getvalue()
+    assert "\x1b[?25l" not in second_output
+    assert f"\x1b[10;{len(composer_line_text('hi')) + 1}H" not in second_output
+
+    visible[0] = True
+    writer.seek(0)
+    writer.truncate(0)
+    assert surface.render(check_resize=False) is True
+    restored_output = writer.getvalue()
+    assert "\x1b[?25h" in restored_output
+    assert f"\x1b[10;{len(composer_line_text('hi')) + 1}H" in restored_output
+
+
+def test_terminal_bottom_pane_surface_writer_hides_cursor_for_active_selection_view() -> None:
+    # Rust owner: codex-tui::bottom_pane::ListSelectionView implements
+    # BottomPaneView without a text cursor.  Active selection views must use the
+    # same frame cursor policy even if the idle composer policy would show one.
+    writer = FlushTrackingStringIO()
+    surface = TerminalBottomPaneSurfaceWriter(
+        writer,
+        stdin_is_terminal=lambda: True,
+        layout_active=lambda: True,
+        live_status=TerminalLiveStatusSurface.inactive,
+        terminal_size=lambda: os.terminal_size((96, 18)),
+        resize=lambda: None,
+        footer_text=lambda: "gpt-test high",
+        cursor_visible=lambda: True,
+    )
+    surface.show_selection_view(
+        SelectionViewParams(
+            header="Select Model and Effort",
+            items=[SelectionItem(name="gpt-5.4", description="Strong model")],
+        )
+    )
+
+    assert surface.render(check_resize=False) is True
+    output = writer.getvalue()
+    assert "\x1b[?25l" in output
+    assert "Select Model and Effort" in output
+
+
+def test_render_bottom_pane_preserves_empty_composer_prompt_space_through_buffer() -> None:
+    # Rust owner: codex-tui::custom_terminal renders the live composer prompt
+    # through a buffer without losing semantic trailing spaces in the viewport.
+    writer = io.StringIO()
+
+    _render_state_via_surface(
+        writer,
+        os.terminal_size((32, 12)),
+        TerminalBottomPaneState(draft="", footer_text="gpt-test high"),
+        move_cursor=lambda _row, _column: None,
+    )
+
+    assert "\x1b[10;1H\u203a " in writer.getvalue()
+
+
 def test_render_bottom_pane_clears_previous_larger_popup_footprint() -> None:
     writer = io.StringIO()
     size = os.terminal_size((72, 12))
 
-    render_bottom_pane(
+    _render_state_via_surface(
         writer,
         size,
         TerminalBottomPaneState(
@@ -815,16 +1095,25 @@ def test_clear_bottom_pane_and_flush_flushes_writer() -> None:
     assert "\x1b[12;1H\x1b[2K" in output
 
 
-def test_render_bottom_pane_and_flush_flushes_writer() -> None:
+def test_render_terminal_bottom_pane_frame_does_not_flush_writer() -> None:
+    # Rust owner: codex-tui::custom_terminal owns frame repaint side effects,
+    # while controller/runtime boundaries decide when to flush product output.
+    # terminal_surface is only the live viewport repaint adapter.
     writer = FlushTrackingStringIO()
-
-    render_bottom_pane_and_flush(
-        writer,
-        os.terminal_size((40, 12)),
+    size = os.terminal_size((40, 12))
+    frame = terminal_bottom_pane_frame(
+        size,
         TerminalBottomPaneState(draft="hi", footer_text="gpt-test high"),
     )
+    buffer = terminal_bottom_pane_frame_buffer(size, frame)
 
-    assert writer.flush_count == 1
+    render_terminal_bottom_pane_frame(
+        writer,
+        frame,
+        buffer=buffer,
+    )
+
+    assert writer.flush_count == 0
     output = writer.getvalue()
     assert "\x1b[10;1H\u203a hi" in output
     assert "\x1b[12;1Hgpt-test high" in output

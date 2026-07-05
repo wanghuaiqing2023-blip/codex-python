@@ -238,9 +238,9 @@ def _environment_manager_is_remote(environment_manager: Any | None) -> bool:
 def run_tui(*_args: object, stderr: object | None = None, **_kwargs: object) -> int:
     """Start the interactive TUI.
 
-    Product interactive sessions are owned by ``textual_runtime``.  This
-    compatibility boundary only accepts an already-constructed active-thread
-    runtime; there is no secondary terminal renderer behind this API.
+    Product interactive sessions are owned by the Rust-aligned terminal TUI
+    path.  This compatibility boundary only accepts an already-constructed
+    active-thread runtime.
     """
 
     if stderr is None:
@@ -251,9 +251,9 @@ def run_tui(*_args: object, stderr: object | None = None, **_kwargs: object) -> 
     if active_thread_runtime is not None:
         import sys
 
-        from .textual_runtime import run_textual_tui
+        from .tui.terminal_runtime import run_terminal_tui
 
-        return run_textual_tui(
+        return run_terminal_tui(
             active_thread_runtime=active_thread_runtime,
             stdout=_kwargs.get("stdout", sys.stdout),
             stdin=_kwargs.get("stdin"),
@@ -283,9 +283,9 @@ async def run_main(*_args: object, **kwargs: object) -> AppExitInfo:
             write("pycodex: codex_tui::run_main requires an active thread runtime in this Python port.\n")
         return AppExitInfo(exit_reason=ExitReasonPayload(ExitReason.FATAL, "missing active thread runtime"))
 
-    from .textual_runtime import run_textual_tui
+    from .tui.terminal_runtime import run_terminal_tui
 
-    code = run_textual_tui(
+    code = run_terminal_tui(
         active_thread_runtime=active_thread_runtime,
         stdout=kwargs.get("stdout", sys.stdout),
         stdin=kwargs.get("stdin"),

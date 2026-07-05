@@ -2,29 +2,22 @@
 
 This file records third-party packages vendored into `pycodex/vendor`.
 
-No third-party package source has been vendored yet.
+## Runtime Rich compatibility stack
 
-## Planned: Textual
-
-- Package: `textual`
-- Purpose: Python TUI framework backend for Codex TUI porting.
-- License: MIT upstream.
-- Source: https://github.com/Textualize/textual
-- Package index: https://pypi.org/project/textual/
-- Status: planned
-- Notes: Textual must be pinned to a specific version before source import.
-  Required runtime dependencies, including Rich and any Textual transitive
-  dependencies, must be recorded here when vendored.
-
-## Candidate pin set: Python 3.7-compatible Textual stack
-
-- Status: candidate, not yet vendored
-- Reason: portability-first Textual stack with explicit Python 3.7 support.
-- Plan: see `pycodex/vendor/VENDORING_PLAN.md`.
+- Status: extracted and wired behind `pycodex.tui.rich_compat`
+- Purpose: provide the conservative Rich subset used by TUI rendering tests and
+  the Rust-like `ratatui_bridge`, without importing Rich from global site
+  packages.
+- Machine-readable manifest: `pycodex/vendor/VENDORED_PACKAGES.json`
+- Target package root: `pycodex/vendor/_packages`
+- Target metadata root: `pycodex/vendor/_dist_info`
+- Target license root: `pycodex/vendor/licenses`
+- Notes: Rich values are exposed through `rich_compat`, Rust `ratatui`
+  semantics stay behind `ratatui_bridge`, and path-integrity checks prevent
+  accidental imports from globally installed packages.
 
 | Package | Candidate pin | Requires-Python evidence |
 |---|---:|---|
-| `textual` | `0.43.2` | `>=3.7,<4.0` |
 | `rich` | `13.8.1` | `>=3.7.0` |
 | `markdown-it-py` | `2.2.0` | `>=3.7` |
 | `mdit-py-plugins` | `0.3.5` | `>=3.7` |
@@ -35,41 +28,6 @@ No third-party package source has been vendored yet.
 | `pygments` | `2.17.2` | `>=3.7` |
 | `uc-micro-py` | `1.0.3` | `>=3.7` |
 | `zipp` | `3.15.0` | `>=3.7` |
-
-
-## Audit result: Textual 0.43.2 candidate stack
-
-- Status: audited, not yet vendored
-- Audit report: `pycodex/vendor/TEXTUAL_0_43_2_AUDIT.md`
-- Download cache: `.tmp/textual_vendor_audit`
-- Result: candidate pin set is internally consistent for Python 3.7 metadata, but must be vendored with transitive runtime dependencies and license files.
-
-## Source import plan: Textual 0.43.2 candidate stack
-
-- Status: planned, not yet vendored
-- Import plan: `pycodex/vendor/VENDOR_IMPORT_PLAN.md`
-- Target package root: `pycodex/vendor/_packages`
-- Target metadata root: `pycodex/vendor/_dist_info`
-- Target license root: `pycodex/vendor/licenses`
-- Notes: The plan keeps vendored Textual behind `textual_compat`, keeps Rust `ratatui` semantics behind `ratatui_bridge`, and requires path-integrity checks to prevent accidental imports from globally installed packages.
-
-
-## Extracted source: Textual 0.43.2 candidate stack
-
-- Status: extracted, not yet wired into TUI runtime
-- Extraction report: `pycodex/vendor/TEXTUAL_0_43_2_EXTRACTED.md`
-- Machine-readable manifest: `pycodex/vendor/VENDORED_PACKAGES.json`
-- Package root: `pycodex/vendor/_packages`
-- Metadata root: `pycodex/vendor/_dist_info`
-- License root: `pycodex/vendor/licenses`
-- Notes: Project code must still use `pycodex.tui.textual_compat`; direct imports from vendored package roots are not the supported TUI boundary.
-
-## Runtime import helper: Textual 0.43.2 candidate stack
-
-- Status: wired behind compatibility boundary
-- Helper: `pycodex/vendor/__init__.py`
-- Compatibility entrypoint: `pycodex/tui/textual_compat/__init__.py`
-- Notes: Added a vendored import helper that prepends `pycodex/vendor/_packages` and verifies imported modules resolve from that tree. `textual_compat` now lazily exposes a conservative Textual/Rich API subset (`App`, `Widget`, `ComposeResult`, containers, events, Rich `Text`/`Style`) without requiring existing TUI modules to change.
 
 ## Runtime WebSocket protocol implementation
 

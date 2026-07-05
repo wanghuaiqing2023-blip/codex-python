@@ -141,7 +141,7 @@ def test_core_active_thread_next_turn_uses_overridden_frozen_permissions(monkeyp
     # - codex-tui::app::config_persistence::apply_permission_profile_selection
     #   sends OverrideTurnContext, and the next UserTurn is built from the
     #   updated active-thread config.
-    # - This covers the product regression where Textual showed Full Access
+    # - This covers the product regression where the UI showed Full Access
     #   but the next model request still received read-only sandbox context.
     seen_permission_profiles: list[str] = []
 
@@ -194,7 +194,7 @@ def test_core_active_thread_carries_model_history_between_user_turns(monkeypatch
     # - codex-core::session::turn samples the next request from
     #   sess.clone_history().await.for_prompt(...), so later turns in the same
     #   session can see earlier user and assistant messages.
-    # - The Python Textual product runtime creates a fresh in-memory core
+    # - The Python terminal product runtime creates a fresh in-memory core
     #   session per turn, so it must carry prompt-visible history across those
     #   per-turn sessions at the active-thread boundary.
     captured_history: list[tuple[ResponseItem, ...]] = []
@@ -1079,7 +1079,7 @@ def test_tui_app_runtime_rate_limit_fetch_can_use_original_auth_snapshot() -> No
     # Rust source contract:
     # - codex-app-server::account_processor obtains CodexAuth from AuthManager,
     #   then BackendClient::from_auth builds bearer/account headers.
-    # The local Textual runtime may carry resolved runtime auth separately from
+    # The local terminal runtime may carry resolved runtime auth separately from
     # the stored AuthDotJson snapshot, so the rate-limit boundary must be able
     # to build backend auth from the stored ChatGPT OAuth tokens.
     original_auth = SimpleNamespace(
@@ -1341,7 +1341,7 @@ def test_core_exec_active_thread_runtime_preserves_reasoning_summary_config(monk
     #
     # TUI composition contract:
     # codex-tui submits AppCommand::UserTurn through the active thread. The
-    # Python Textual product path must not overwrite a config.toml
+    # Python terminal product path must not overwrite a config.toml
     # `model_reasoning_summary = "none"` with a local UI default such as
     # "auto"; otherwise the live session can request visible reasoning
     # summaries even though the user disabled them in config.

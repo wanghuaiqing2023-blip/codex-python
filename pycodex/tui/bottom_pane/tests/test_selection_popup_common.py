@@ -18,6 +18,7 @@ from pycodex.tui.bottom_pane.selection_popup_common import (
     render_menu_surface,
     render_rows,
     render_rows_single_line,
+    render_terminal_popup_lines,
     should_wrap_name_in_column,
     wrap_indent,
     wrap_two_column_row,
@@ -47,6 +48,30 @@ def test_selected_rows_use_the_shared_accent_style_semantics() -> None:
 
     assert rendered
     assert all(span.style == "accent" for span in rendered[0].spans)
+
+
+def test_terminal_popup_lines_preserve_selected_row_semantics() -> None:
+    # Rust owner: codex-tui::bottom_pane::selection_popup_common owns selected
+    # row styling before terminal adapters project rows into the live viewport.
+    rows = [
+        GenericDisplayRow(name="/model", description="choose model"),
+        GenericDisplayRow(name="/memories", description="configure memory"),
+    ]
+    state = ScrollState(selected_idx=1)
+
+    rendered = render_terminal_popup_lines(
+        rows,
+        state,
+        width=80,
+        max_results=4,
+        empty_message="no matches",
+        column_width=ColumnWidthConfig(ColumnWidthMode.AUTO_ALL_ROWS),
+    )
+
+    assert rendered[0].text.startswith("/model")
+    assert rendered[0].selected is False
+    assert rendered[1].text.startswith("/memories")
+    assert rendered[1].selected is True
 
 
 def test_build_full_line_combines_prefix_match_description_disabled_and_category() -> None:

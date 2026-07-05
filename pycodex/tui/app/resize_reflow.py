@@ -21,12 +21,12 @@ from ..custom_terminal import (
     reset_scroll_region,
     write_at,
 )
-from ..bottom_pane.terminal_surface import (
+from ..bottom_pane.terminal_frame import (
     TerminalBottomPaneFootprint,
-    TerminalLiveStatusSurface,
     bottom_pane_footprint_transition,
     bottom_pane_footprint_transition_for_footprints,
 )
+from ..chatwidget.status_surfaces import TerminalLiveStatusSurface
 from ..insert_history import TerminalHistoryState, terminal_history_cell_lines
 from ..transcript_reflow import TranscriptReflowState
 

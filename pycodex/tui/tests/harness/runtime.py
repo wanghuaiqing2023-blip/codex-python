@@ -6,8 +6,8 @@ Rust ownership:
   that active thread.
 
 This test helper models only that runtime boundary.  It is intentionally
-independent from the legacy terminal-projection runner so Textual product tests
-do not import the old renderer harness.
+independent from legacy terminal-projection runners so terminal product tests
+do not import old renderer harnesses.
 """
 
 from __future__ import annotations

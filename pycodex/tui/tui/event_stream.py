@@ -339,6 +339,8 @@ def terminal_event_from_char(char: str) -> TerminalInputEvent:
 def terminal_input_event_from_key_payload(payload: Any) -> TerminalInputEvent | None:
     text = str(payload)
     normalized = _terminal_key_payload_name(text)
+    if normalized == "space":
+        return TerminalInputEvent("text", " ")
     if normalized in {"up", "down", "left", "right", "home", "end", "page_up", "page_down", "delete"}:
         return TerminalInputEvent(normalized)
     ansi = _ansi_escape_key(text)
@@ -352,6 +354,8 @@ def terminal_input_event_from_key_payload(payload: Any) -> TerminalInputEvent | 
         return TerminalInputEvent("escape")
     if len(text) == 1:
         return terminal_event_from_char(text)
+    if _is_committed_text_payload(text):
+        return TerminalInputEvent("text", text)
     return None
 
 
@@ -437,7 +441,7 @@ class CrosstermEventSource:
     """Runtime boundary for real crossterm input.
 
     Python does not read terminal stdin here.  Callers that need real terminal
-    input should provide a Textual/runtime-backed source.
+    input should provide a terminal-runtime-backed source.
     """
 
     def poll_next(self) -> Optional[EventResult]:
@@ -450,8 +454,8 @@ class WindowsConsoleEventSource:
 
     Rust production uses ``crossterm::event::EventStream`` and maps
     ``Event::Key`` through ``TuiEventStream::map_crossterm_event``.  Python's
-    Textual product path uses Textual for terminal ownership, but keeping the
-    Windows console adapter behind an ``EventSource`` preserves the same
+    terminal product path owns terminal I/O through the terminal runtime, but
+    keeping the Windows console adapter behind an ``EventSource`` preserves the same
     module boundary for tests and host-terminal helpers: raw terminal input
     becomes crossterm-shaped key events before the app/composer layer consumes
     it.
@@ -463,6 +467,8 @@ class WindowsConsoleEventSource:
     _pending_special_prefix: bool = False
     _pending_alt_prefix: bool = False
     _pending_events: Deque[EventResult] = field(default_factory=deque)
+    _last_console_key_down_text: str | None = None
+    _last_console_key_down_virtual_key: int | None = None
 
     def poll_next(self) -> Optional[EventResult]:
         while True:
@@ -528,15 +534,38 @@ class WindowsConsoleEventSource:
 
     def _poll_console_input_event(self) -> Optional[EventResult]:
         reader = self.console_record_reader
-        record = reader() if callable(reader) else _read_windows_console_input_record(self.console_handle)
-        if record is None:
-            return None
-        event = _windows_console_record_to_event(record)
-        _trace_input_event(
-            "windows_console.input_record",
-            {"record": _describe_console_record(record), "event": _describe_event(event) if event is not None else None},
-        )
-        return event
+        for _ in range(16):
+            record = reader() if callable(reader) else _read_windows_console_input_record(self.console_handle)
+            if record is None:
+                return None
+            event = _windows_console_record_to_event(
+                record,
+                previous_key_down_text=self._last_console_key_down_text,
+                previous_key_down_virtual_key=self._last_console_key_down_virtual_key,
+            )
+            self._remember_console_key_for_dedupe(record, event)
+            _trace_input_event(
+                "windows_console.input_record",
+                {"record": _describe_console_record(record), "event": _describe_event(event) if event is not None else None},
+            )
+            if event is not None:
+                return event
+        return None
+
+    def _remember_console_key_for_dedupe(self, record: Any, event: EventResult | None) -> None:
+        key_down = bool(_record_field(record, "key_down", True))
+        virtual_key = _record_field(record, "virtual_key", None)
+        if not key_down:
+            self._last_console_key_down_text = None
+            self._last_console_key_down_virtual_key = None
+            return
+        text = _text_char_from_key_event(event)
+        if text is None:
+            self._last_console_key_down_text = None
+            self._last_console_key_down_virtual_key = None
+            return
+        self._last_console_key_down_text = text
+        self._last_console_key_down_virtual_key = int(virtual_key) if virtual_key is not None else None
 
     def _poll_ansi_escape_key(self, introducer: str) -> Optional[EventResult]:
         sequence = "\x1b" + introducer
@@ -580,21 +609,82 @@ def _windows_console_special_key(ch: str) -> str | None:
     }.get(ch)
 
 
-def _windows_console_record_to_event(record: Any) -> Optional[EventResult]:
+def _windows_console_record_to_event(
+    record: Any,
+    *,
+    previous_key_down_text: str | None = None,
+    previous_key_down_virtual_key: int | None = None,
+) -> Optional[EventResult]:
     kind = _record_field(record, "kind")
     if kind not in (None, "key"):
         return None
     key_down = _record_field(record, "key_down", True)
-    if not bool(key_down):
-        return None
     char = _record_field(record, "char", "")
     virtual_key = _record_field(record, "virtual_key", None)
+    if not bool(key_down):
+        key_up_char = _windows_console_key_up_text_char(char, virtual_key)
+        if key_up_char is not None:
+            if _windows_console_is_duplicate_key_up_text(
+                key_up_char,
+                virtual_key,
+                previous_key_down_text,
+                previous_key_down_virtual_key,
+            ):
+                return None
+            return ("key", key_up_char)
+        return None
     if char and str(char) != "\x00":
         return ("key", str(char))
     mapped = _windows_console_virtual_key(int(virtual_key)) if virtual_key is not None else None
     if mapped is None:
         return None
     return ("key", mapped)
+
+
+def _text_char_from_key_event(event: EventResult | None) -> str | None:
+    if not isinstance(event, tuple) or len(event) < 2 or event[0] != "key":
+        return None
+    text = str(event[1])
+    if len(text) == 1 and text >= " ":
+        return text
+    if _is_committed_text_payload(text):
+        return text
+    return None
+
+
+def _windows_console_is_duplicate_key_up_text(
+    text: str,
+    virtual_key: Any,
+    previous_key_down_text: str | None,
+    previous_key_down_virtual_key: int | None,
+) -> bool:
+    if text != previous_key_down_text:
+        return False
+    if virtual_key is None or previous_key_down_virtual_key is None:
+        return True
+    return int(virtual_key) == previous_key_down_virtual_key
+
+
+def _windows_console_key_up_text_char(char: Any, virtual_key: Any) -> str | None:
+    text = str(char or "")
+    if not text or text == "\x00":
+        return None
+    if any(character < " " for character in text):
+        return None
+    key_code = int(virtual_key) if virtual_key is not None else None
+    if key_code in {0xE5, 0xE7}:
+        return text
+    if any(not character.isascii() for character in text):
+        return text
+    return None
+
+
+def _is_committed_text_payload(text: str) -> bool:
+    if not text:
+        return False
+    if any(character < " " for character in text):
+        return False
+    return any(not character.isascii() for character in text)
 
 
 def _terminal_key_payload_name(payload: str) -> str:
@@ -620,6 +710,9 @@ def _terminal_key_payload_name(payload: str) -> str:
         "page_down": "page_down",
         "del": "delete",
         "delete": "delete",
+        "space": "space",
+        "spacebar": "space",
+        "space_bar": "space",
     }
     return aliases.get(text, text)
 
@@ -656,6 +749,7 @@ def _windows_console_virtual_key(code: int) -> str | None:
         0x09: "\t",
         0x0D: "\r",
         0x1B: "\x1b",
+        0x20: " ",
         0x21: "page_up",
         0x22: "page_down",
         0x23: "end",
@@ -679,6 +773,8 @@ def _describe_console_record(record: Any) -> dict[str, Any]:
         "kind": _record_field(record, "kind"),
         "key_down": _record_field(record, "key_down"),
         "virtual_key": _record_field(record, "virtual_key"),
+        "repeat_count": _record_field(record, "repeat_count"),
+        "control_key_state": _record_field(record, "control_key_state"),
         "char": _describe_key(str(_record_field(record, "char", ""))),
     }
 

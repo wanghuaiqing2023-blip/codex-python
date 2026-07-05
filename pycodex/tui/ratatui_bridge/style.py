@@ -121,7 +121,7 @@ class Style:
         return self.add_modifier(Modifier.REVERSED)
 
     def to_rich_style(self):
-        from pycodex.tui.textual_compat import Style as RichStyle
+        from pycodex.tui.rich_compat import Style as RichStyle
 
         kwargs = {
             "color": self.fg.rich_color() if self.fg is not None else None,

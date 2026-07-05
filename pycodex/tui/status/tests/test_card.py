@@ -146,7 +146,7 @@ def test_run_terminal_status_card_from_runtime_uses_canonical_providers(monkeypa
     # Rust owner: status/card.rs owns the history-facing /status surface.  The
     # terminal runner should call this boundary instead of importing runtime
     # providers and assembling card fields itself.
-    from pycodex.tui import textual_runtime
+    from pycodex.tui import runtime_projection
 
     class Thread:
         thread_id = "thread-runtime"
@@ -154,16 +154,16 @@ def test_run_terminal_status_card_from_runtime_uses_canonical_providers(monkeypa
     class Runtime:
         active_thread_runtime = Thread()
 
-    monkeypatch.setattr(textual_runtime, "_display_version", lambda: "0.2.0")
-    monkeypatch.setattr(textual_runtime, "_runtime_display_model", lambda runtime: "runtime-model")
+    monkeypatch.setattr(runtime_projection, "_display_version", lambda: "0.2.0")
+    monkeypatch.setattr(runtime_projection, "_runtime_display_model", lambda runtime: "runtime-model")
     monkeypatch.setattr(
-        textual_runtime,
+        runtime_projection,
         "_runtime_header_reasoning_effort",
         lambda runtime: "medium",
     )
-    monkeypatch.setattr(textual_runtime, "_runtime_cwd", lambda runtime: "C:/workspace/repo")
-    monkeypatch.setattr(textual_runtime, "_runtime_permissions_label", lambda runtime: "Full Access")
-    monkeypatch.setattr(textual_runtime, "_runtime_agents_summary", lambda runtime: "AGENTS.md")
+    monkeypatch.setattr(runtime_projection, "_runtime_cwd", lambda runtime: "C:/workspace/repo")
+    monkeypatch.setattr(runtime_projection, "_runtime_permissions_label", lambda runtime: "Full Access")
+    monkeypatch.setattr(runtime_projection, "_runtime_agents_summary", lambda runtime: "AGENTS.md")
 
     written: list[str] = []
     data = run_terminal_status_card_from_runtime(Runtime(), write_history_cell=written.append)

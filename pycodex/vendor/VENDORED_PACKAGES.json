@@ -7,21 +7,6 @@
     {
       "copied_dist_info_files": 4,
       "copied_license_files": 1,
-      "copied_package_files": 213,
-      "dist_info": "textual-0.43.2.dist-info",
-      "import_roots": [
-        "textual"
-      ],
-      "license_files": [
-        "textual-0.43.2.dist-info/LICENSE"
-      ],
-      "package": "textual",
-      "version": "0.43.2",
-      "wheel": "textual-0.43.2-py3-none-any.whl"
-    },
-    {
-      "copied_dist_info_files": 4,
-      "copied_license_files": 1,
       "copied_package_files": 79,
       "dist_info": "rich-13.8.1.dist-info",
       "import_roots": [

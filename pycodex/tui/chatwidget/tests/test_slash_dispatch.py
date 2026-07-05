@@ -1,3 +1,4 @@
+# Rust owner: codex-tui::chatwidget::slash_dispatch.
 from pycodex.tui.chatwidget.slash_dispatch import (
     ByteRange,
     GOAL_USAGE,

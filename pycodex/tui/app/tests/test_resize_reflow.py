@@ -48,7 +48,8 @@
     terminal_history_state_for_resize_replay,
     trailing_run_start,
 )
-from pycodex.tui.bottom_pane.terminal_surface import TerminalBottomPaneFootprint, TerminalLiveStatusSurface
+from pycodex.tui.bottom_pane.terminal_frame import TerminalBottomPaneFootprint
+from pycodex.tui.chatwidget.status_surfaces import TerminalLiveStatusSurface
 from pycodex.tui.insert_history import TerminalHistoryState
 
 import os

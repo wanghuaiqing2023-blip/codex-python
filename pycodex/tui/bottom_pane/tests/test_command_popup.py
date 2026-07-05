@@ -3,8 +3,16 @@
 Rust source: codex/codex-rs/tui/src/bottom_pane/command_popup.rs
 """
 
+import os
+
 from pycodex.tui.bottom_pane.command_popup import CommandItem, CommandPopup, CommandPopupFlags, from_
 from pycodex.tui.bottom_pane.slash_commands import ServiceTierCommand
+from pycodex.tui.bottom_pane.terminal_frame import (
+    TerminalBottomPaneState,
+    terminal_bottom_pane_frame,
+    terminal_bottom_pane_frame_buffer,
+)
+from pycodex.tui.ratatui_bridge import Color as RatatuiColor
 from pycodex.tui.slash_command import SlashCommand
 
 
@@ -118,6 +126,52 @@ def test_filter_extraction_selection_movement_and_rows():
     assert rows[0].name.startswith("/")
     assert rows[0].match_indices == [1]
     assert isinstance(popup.calculate_required_height(40), int)
+
+
+def test_terminal_lines_project_filtered_rows_and_selection_style():
+    # Rust owner: codex-tui::bottom_pane::command_popup owns slash command
+    # filtering and selected-row projection before terminal_surface adapts rows
+    # to the live viewport.
+    popup = CommandPopup.new(CommandPopupFlags(), [])
+    popup.on_composer_text_change("/m")
+
+    first = popup.terminal_lines(width=80)
+    popup.move_down()
+    second = popup.terminal_lines(width=80)
+
+    assert first[0].text.startswith("/model")
+    assert first[0].selected is True
+    assert first[1].text.startswith("/memories")
+    assert first[1].selected is False
+    assert second[0].selected is False
+    assert second[1].selected is True
+
+
+def test_command_popup_projects_through_terminal_frame_buffer():
+    # Rust owners: bottom_pane::command_popup owns slash command rows,
+    # chatwidget::rendering owns the bottom-pane frame, and custom_terminal
+    # consumes the frame Buffer.  terminal_runtime/surface must not hand-render
+    # slash popup rows.
+    popup = CommandPopup.new(CommandPopupFlags(), [])
+    popup.on_composer_text_change("/m")
+
+    frame = terminal_bottom_pane_frame(
+        os.terminal_size((100, 16)),
+        TerminalBottomPaneState(
+            draft="/m",
+            footer_text="gpt-test high",
+            popup_lines=tuple(popup.terminal_lines(width=99)),
+        ),
+    )
+    buffer = terminal_bottom_pane_frame_buffer(os.terminal_size((100, 16)), frame)
+
+    selected_writes = [write for write in frame.writes if write.selected]
+    assert selected_writes
+    assert selected_writes[0].text.startswith("/model")
+    assert "\u203a /m" in buffer.plain()
+    assert "/model" in buffer.plain()
+    assert "/memories" in buffer.plain()
+    assert buffer.cell(0, selected_writes[0].row - 1).style.fg == RatatuiColor.LightBlue
 
 
 def test_filter_extraction_uses_first_line_and_trims_after_slash():

@@ -219,6 +219,141 @@ def test_windows_console_source_maps_virtual_arrow_with_nul_unicode_char() -> No
     assert source.poll(0.0) is None
 
 
+def test_windows_console_source_maps_virtual_space_with_nul_unicode_char_to_text() -> None:
+    # Rust source/product contract:
+    # - codex-tui::tui::event_stream treats Space as an ordinary text key when
+    #   it is not a popup/navigation binding.
+    # - Windows Terminal/IME can deliver VK_SPACE with an empty UnicodeChar
+    #   while committing or continuing Chinese input; it must not be dropped
+    #   before bottom_pane::chat_composer mutates the draft.
+    class FakeMsvcrt:
+        def kbhit(self) -> bool:
+            return False
+
+        def getwch(self) -> str:
+            raise AssertionError("console record path should be used before msvcrt fallback")
+
+    records = [
+        {"kind": "key", "key_down": True, "virtual_key": 0x20, "char": "\x00"},
+    ]
+
+    source = WindowsConsoleInputSource(
+        FakeMsvcrt(),
+        console_record_reader=lambda: records.pop(0) if records else None,
+    )
+
+    assert source.poll(0.0) == event_stream.TerminalInputEvent("text", " ")
+    assert source.poll(0.0) is None
+
+
+def test_windows_console_source_preserves_ime_committed_char_on_key_up_record() -> None:
+    # Rust source/product contract:
+    # - crossterm surfaces committed IME characters as text key events before
+    #   bottom_pane::chat_composer mutates the draft.
+    # - Windows console records can carry a committed non-ASCII IME character
+    #   on a key-up/VK_PACKET or VK_PROCESSKEY record; dropping every key-up
+    #   record makes later Chinese characters disappear from the composer.
+    class FakeMsvcrt:
+        def kbhit(self) -> bool:
+            return False
+
+        def getwch(self) -> str:
+            raise AssertionError("console record path should be used before msvcrt fallback")
+
+    records = [
+        {"kind": "key", "key_down": True, "virtual_key": 0xE7, "char": "你"},
+        {"kind": "key", "key_down": False, "virtual_key": 0xE7, "char": "好"},
+    ]
+
+    source = WindowsConsoleInputSource(
+        FakeMsvcrt(),
+        console_record_reader=lambda: records.pop(0) if records else None,
+    )
+
+    assert source.poll(0.0) == event_stream.TerminalInputEvent("text", "你")
+    assert source.poll(0.0) == event_stream.TerminalInputEvent("text", "好")
+    assert source.poll(0.0) is None
+
+
+def test_windows_console_source_deduplicates_ime_committed_char_key_up_echo() -> None:
+    # Rust source/product contract:
+    # - crossterm yields one text key event for one committed IME character.
+    # - Some Windows console hosts expose both key-down and key-up records with
+    #   the same committed UnicodeChar. The event stream must not forward both
+    #   records to chat_composer, or typing "你好" appears as "你你好好".
+    class FakeMsvcrt:
+        def kbhit(self) -> bool:
+            return False
+
+        def getwch(self) -> str:
+            raise AssertionError("console record path should be used before msvcrt fallback")
+
+    records = [
+        {"kind": "key", "key_down": True, "virtual_key": 0xE7, "char": "你"},
+        {"kind": "key", "key_down": False, "virtual_key": 0xE7, "char": "你"},
+        {"kind": "key", "key_down": True, "virtual_key": 0xE7, "char": "好"},
+        {"kind": "key", "key_down": False, "virtual_key": 0xE7, "char": "好"},
+    ]
+
+    source = WindowsConsoleInputSource(
+        FakeMsvcrt(),
+        console_record_reader=lambda: records.pop(0) if records else None,
+    )
+
+    assert source.poll(0.0) == event_stream.TerminalInputEvent("text", "你")
+    assert source.poll(0.0) == event_stream.TerminalInputEvent("text", "好")
+    assert source.poll(0.0) is None
+
+
+def test_windows_console_source_deduplicates_ime_multichar_key_up_echo() -> None:
+    # Rust source/product contract:
+    # - one committed IME string should become one text event. Some Windows
+    #   hosts surface the committed string on both key-down and key-up records.
+    class FakeMsvcrt:
+        def kbhit(self) -> bool:
+            return False
+
+        def getwch(self) -> str:
+            raise AssertionError("console record path should be used before msvcrt fallback")
+
+    records = [
+        {"kind": "key", "key_down": True, "virtual_key": 0xE7, "char": "你好"},
+        {"kind": "key", "key_down": False, "virtual_key": 0xE7, "char": "你好"},
+    ]
+
+    source = WindowsConsoleInputSource(
+        FakeMsvcrt(),
+        console_record_reader=lambda: records.pop(0) if records else None,
+    )
+
+    assert source.poll(0.0) == event_stream.TerminalInputEvent("text", "你好")
+    assert source.poll(0.0) is None
+
+
+def test_windows_console_source_ignores_ascii_key_up_char_to_avoid_double_input() -> None:
+    # Rust source/product contract:
+    # - tui::event_stream should not turn ordinary key release records into
+    #   duplicate typed characters. The key-up escape hatch exists only for
+    #   IME/non-ASCII committed text that would otherwise be lost.
+    class FakeMsvcrt:
+        def kbhit(self) -> bool:
+            return False
+
+        def getwch(self) -> str:
+            raise AssertionError("console record path should be used before msvcrt fallback")
+
+    records = [
+        {"kind": "key", "key_down": False, "virtual_key": ord("a"), "char": "a"},
+    ]
+
+    source = WindowsConsoleInputSource(
+        FakeMsvcrt(),
+        console_record_reader=lambda: records.pop(0) if records else None,
+    )
+
+    assert source.poll(0.0) is None
+
+
 def test_windows_console_source_maps_ansi_arrow_sequence_to_navigation_event() -> None:
     # Rust source/product contract:
     # - terminal escape sequences are normalized at tui::event_stream before
@@ -364,9 +499,14 @@ def test_terminal_input_event_from_key_payload_maps_text_and_control_keys() -> N
     #   chars, Enter, Tab, and navigation keys all reach chat_composer.
     assert event_stream.terminal_input_event_from_key_payload("你") == event_stream.TerminalInputEvent("text", "你")
     assert event_stream.terminal_input_event_from_key_payload("好") == event_stream.TerminalInputEvent("text", "好")
+    assert event_stream.terminal_input_event_from_key_payload("你好") == event_stream.TerminalInputEvent("text", "你好")
+    assert event_stream.terminal_input_event_from_key_payload("好 ") == event_stream.TerminalInputEvent("text", "好 ")
+    assert event_stream.terminal_input_event_from_key_payload(" ") == event_stream.TerminalInputEvent("text", " ")
+    assert event_stream.terminal_input_event_from_key_payload("space") == event_stream.TerminalInputEvent("text", " ")
     assert event_stream.terminal_input_event_from_key_payload("\r") == event_stream.TerminalInputEvent("enter")
     assert event_stream.terminal_input_event_from_key_payload("down") == event_stream.TerminalInputEvent("down")
     assert event_stream.terminal_input_event_from_key_payload("\t") == event_stream.TerminalInputEvent("tab")
+    assert event_stream.terminal_input_event_from_key_payload("alt-r") is None
 
 
 def test_terminal_input_event_from_event_result_maps_rust_like_events() -> None:
@@ -417,6 +557,29 @@ def test_windows_console_input_source_maps_event_source_payloads_to_terminal_inp
     assert source.poll(0.0) == event_stream.TerminalInputEvent("enter")
     assert source.poll(0.0) == event_stream.TerminalInputEvent("down")
     assert source.poll(0.0) == event_stream.TerminalInputEvent("tab")
+
+
+def test_windows_console_input_source_maps_ime_multichar_key_payload_to_text() -> None:
+    # Rust source/product contract:
+    # - tui::event_stream forwards committed IME text as text key events even
+    #   when the terminal host reports a whole committed string in one payload.
+    class FakeEventSource:
+        def __init__(self) -> None:
+            self.events = [
+                ("key", "你好"),
+                ("key", "好 "),
+            ]
+
+        def poll_next(self) -> object | None:
+            if not self.events:
+                return None
+            return self.events.pop(0)
+
+    source = WindowsConsoleInputSource(msvcrt_module=object(), event_source=FakeEventSource())
+
+    assert source.poll(0.0) == event_stream.TerminalInputEvent("text", "你好")
+    assert source.poll(0.0) == event_stream.TerminalInputEvent("text", "好 ")
+    assert source.poll(0.0) is None
 
 
 def test_windows_console_input_source_maps_special_keys_and_tab() -> None:

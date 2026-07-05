@@ -2,12 +2,12 @@ from datetime import datetime, timedelta, timezone
 import io
 from types import SimpleNamespace
 
-from pycodex.tui.bottom_pane.terminal_surface import TerminalLiveStatusSurface
 from pycodex.tui.bottom_pane.status_line_setup import StatusLineItem
 from pycodex.tui.bottom_pane.title_setup import TerminalTitleItem
 from pycodex.tui.chatwidget.status_surfaces import (
     TERMINAL_TITLE_ACTION_REQUIRED_PREFIX,
     TERMINAL_TITLE_ACTION_REQUIRED_PREFIX_HIDDEN,
+    TerminalLiveStatusSurface,
     TerminalStatusSurfaceWriter,
     TerminalTurnStatusState,
     action_required_terminal_title_prefix_at,
@@ -21,6 +21,7 @@ from pycodex.tui.chatwidget.status_surfaces import (
     run_terminal_turn_status_render,
     should_render_terminal_turn_status,
     status_surface_selections,
+    terminal_live_status_projection,
     terminal_live_status_text,
     terminal_turn_elapsed_seconds,
     terminal_turn_status_cleared,
@@ -161,6 +162,14 @@ def test_terminal_live_turn_status_text_and_tick_gate() -> None:
         elapsed_seconds=4,
         suppressed=True,
     )
+
+
+def test_terminal_live_status_projection_clips_for_bottom_pane_row() -> None:
+    # Rust owner: codex-tui::chatwidget::status_surfaces owns live status text
+    # projection; terminal_surface only places the projected row in the pane.
+    assert terminal_live_status_projection("\u2022 Working", columns=10).line == "\u2022 Working"
+    assert terminal_live_status_projection("\u2022 Working", columns=6).line == "\u2022 Wor"
+    assert terminal_live_status_projection(None, columns=10).line is None
 
 
 def test_run_terminal_live_status_text_show_builds_text_and_delegates_surface_effects() -> None:
