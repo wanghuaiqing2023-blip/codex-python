@@ -51,6 +51,12 @@ class Line:
         return sum(span.width for span in self.spans)
 
 
+@dataclass(frozen=True)
+class TerminalPopupLine:
+    text: str
+    selected: bool = False
+
+
 @dataclass
 class GenericDisplayRow:
     name: str = ""
@@ -329,6 +335,41 @@ def render_rows_with_col_width_mode(
     return _render_rows_inner(area, buf, rows_all, state, max_results, empty_message, column_width, wrap=True)
 
 
+def render_terminal_popup_lines(
+    rows_all: List[GenericDisplayRow],
+    state: ScrollState,
+    *,
+    width: int,
+    max_results: int,
+    empty_message: str,
+    column_width: ColumnWidthConfig,
+) -> List[TerminalPopupLine]:
+    """Render selection-popup rows into terminal live-pane DTOs.
+
+    Rust owner: ``codex-tui::bottom_pane::selection_popup_common`` owns row
+    windowing, wrapping, and selected-row styling.  Terminal adapters should
+    consume these DTOs instead of reimplementing popup row rendering.
+    """
+
+    buffer: list[Line] = []
+    render_rows_with_col_width_mode(
+        Rect(0, 0, max(1, width), max(1, max_results)),
+        buffer,
+        rows_all,
+        state,
+        max_results,
+        empty_message,
+        column_width,
+    )
+    return [
+        TerminalPopupLine(
+            line.text,
+            _line_has_accent_style(line),
+        )
+        for line in buffer
+    ]
+
+
 def render_rows_single_line(
     area: Rect,
     buf: MutableSequence[Line],
@@ -415,6 +456,15 @@ def _truncate_line(line: Line, width: int) -> Line:
     return Line.from_text(line.text[: max(width - 1, 0)] + "…")
 
 
+def _line_has_accent_style(line: Any) -> bool:
+    spans = getattr(line, "spans", ())
+    for span in spans:
+        style = str(getattr(span, "style", ""))
+        if "accent" in style:
+            return True
+    return False
+
+
 def _row_name_width(row: GenericDisplayRow) -> int:
     width = sum(span.width for span in row.name_prefix_spans) + _cell_width(row.name)
     if row.disabled_reason is not None:
@@ -476,6 +526,7 @@ __all__ = [
     "RUST_MODULE",
     "Rect",
     "Span",
+    "TerminalPopupLine",
     "adjust_start_for_wrapped_selection_visibility",
     "apply_row_state_style",
     "build_full_line",
@@ -491,6 +542,7 @@ __all__ = [
     "render_rows",
     "render_rows_single_line",
     "render_rows_single_line_with_col_width_mode",
+    "render_terminal_popup_lines",
     "render_rows_with_col_width_mode",
     "should_wrap_name_in_column",
     "wrap_indent",

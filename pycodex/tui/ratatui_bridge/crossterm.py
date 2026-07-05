@@ -1,8 +1,8 @@
 ﻿"""No-side-effect crossterm compatibility values for ratatui bridge.
 
-Textual owns real terminal mode, cursor, and screen I/O. These values only keep
-Rust-facing API boundaries explicit for ports that mention ratatui/crossterm
-commands.
+The terminal runtime and custom-terminal backend own real terminal mode,
+cursor, and screen I/O. These values only keep Rust-facing API boundaries
+explicit for ports that mention ratatui/crossterm commands.
 """
 
 from __future__ import annotations
@@ -52,15 +52,15 @@ class SetBackgroundColor:
 
 
 def enable_raw_mode() -> None:
-    raise NotImplementedError("raw mode is owned by Textual in the Python TUI runtime")
+    raise NotImplementedError("raw mode is owned by the Python terminal runtime")
 
 
 def disable_raw_mode() -> None:
-    raise NotImplementedError("raw mode is owned by Textual in the Python TUI runtime")
+    raise NotImplementedError("raw mode is owned by the Python terminal runtime")
 
 
 def execute(*commands: object) -> Tuple[object, ...]:
-    raise NotImplementedError("terminal command execution is owned by Textual in the Python TUI runtime")
+    raise NotImplementedError("terminal command execution is owned by the Python terminal runtime")
 
 
 __all__ = [

@@ -35,8 +35,6 @@ from .native_compare import normalize_tui_text
 from .native_compare import run_piped_tui_command
 from .native_compare import run_windows_conpty_tui_command
 from .runtime import ManualActiveThreadRuntime
-from .textual_scenarios import TextualScenario
-from .textual_scenarios import start_textual_scenario
 from .terminal import TerminalCapture
 from .terminal import TtyInput
 from .terminal import strip_ansi
@@ -51,7 +49,6 @@ __all__ = [
     "InteractiveTuiComparisonCapability",
     "NativeComparisonLayer",
     "TerminalCapture",
-    "TextualScenario",
     "TuiComparisonCommand",
     "TuiProcessTranscript",
     "TtyInput",
@@ -75,7 +72,6 @@ __all__ = [
     "reasoning_summary_part_added",
     "run_piped_tui_command",
     "run_windows_conpty_tui_command",
-    "start_textual_scenario",
     "strip_ansi",
     "thread_closed",
     "thread_token_usage_updated",

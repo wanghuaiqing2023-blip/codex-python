@@ -1555,7 +1555,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         # Product boundary:
         # - codex-tui uses the same core exec in-memory session path for
         #   interactive user turns, so `model_reasoning_summary = "none"` must
-        #   suppress server summary requests before Textual decides what to
+        #   suppress server summary requests before the terminal UI decides what to
         #   render.
         cwd = Path.cwd()
         config = ExecSessionConfig(

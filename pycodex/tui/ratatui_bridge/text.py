@@ -26,7 +26,7 @@ class Span:
         return len(self.content)
 
     def to_rich_text(self):
-        from pycodex.tui.textual_compat import Text as RichText
+        from pycodex.tui.rich_compat import Text as RichText
 
         return RichText(self.content, style=self.style.to_rich_style())
 
@@ -52,7 +52,7 @@ class Line:
         return sum(span.width for span in self.spans)
 
     def to_rich_text(self):
-        from pycodex.tui.textual_compat import Text as RichText
+        from pycodex.tui.rich_compat import Text as RichText
 
         rich = RichText()
         for span in self.spans:
@@ -77,7 +77,7 @@ class Text:
         return "\n".join(line.plain for line in self.lines)
 
     def to_rich_text(self):
-        from pycodex.tui.textual_compat import Text as RichText
+        from pycodex.tui.rich_compat import Text as RichText
 
         rich = RichText()
         for index, line in enumerate(self.lines):

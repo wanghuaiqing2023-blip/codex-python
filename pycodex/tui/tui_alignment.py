@@ -44,6 +44,47 @@ TUI_ALIGNMENT_ENTRIES: tuple[TuiAlignmentEntry, ...] = (
         notes="Only produces Rust-like terminal events; command semantics belong downstream.",
     ),
     TuiAlignmentEntry(
+        python_module="pycodex/tui/ratatui_bridge/buffer.py",
+        python_tests=("pycodex/tui/ratatui_bridge/tests/test_ratatui_bridge.py",),
+        role="ratatui-core-adapter",
+        notes=(
+            "No Rust file named ratatui_bridge/buffer.rs exists in codex-tui. "
+            "This module models the ratatui Buffer/Cell semantics used by custom_terminal."
+        ),
+        responsibilities=(
+            AdapterResponsibility(
+                name="cell-addressable frame buffer",
+                rust_module="codex-tui::custom_terminal",
+                rust_source="codex/codex-rs/tui/src/custom_terminal.rs",
+                python_tests=("pycodex/tui/ratatui_bridge/tests/test_ratatui_bridge.py",),
+                description="Provides the Buffer/Cell render target needed by the Python custom terminal core.",
+            ),
+        ),
+    ),
+    TuiAlignmentEntry(
+        python_module="pycodex/tui/ratatui_bridge/backend.py",
+        python_tests=("pycodex/tui/ratatui_bridge/tests/test_ratatui_bridge.py",),
+        role="ratatui-core-adapter",
+        notes=(
+            "No Rust file named ratatui_bridge/backend.rs exists in codex-tui. "
+            "This module models the backend/frame/terminal lifecycle used by custom_terminal."
+        ),
+        responsibilities=(
+            AdapterResponsibility(
+                name="frame buffer diff and terminal draw lifecycle",
+                rust_module="codex-tui::custom_terminal",
+                rust_source="codex/codex-rs/tui/src/custom_terminal.rs",
+                python_tests=("pycodex/tui/ratatui_bridge/tests/test_ratatui_bridge.py",),
+                description=(
+                    "Provides current/previous buffer diffing, full-redraw command "
+                    "generation, shared previous-frame buffer state, Terminal.draw "
+                    "semantics, TestBackend, and draw-buffer-to-ANSI helpers for "
+                    "Python adapters."
+                ),
+            ),
+        ),
+    ),
+    TuiAlignmentEntry(
         python_module="pycodex/tui/tui/terminal_runtime.py",
         python_tests=("pycodex/tui/tui/tests/test_terminal_runtime.py",),
         role="terminal-product-adapter",
@@ -128,51 +169,117 @@ TUI_ALIGNMENT_ENTRIES: tuple[TuiAlignmentEntry, ...] = (
         python_tests=("pycodex/tui/bottom_pane/tests/test_selection_popup_common.py",),
     ),
     TuiAlignmentEntry(
-        python_module="pycodex/tui/bottom_pane/terminal_surface.py",
-        python_tests=("pycodex/tui/bottom_pane/tests/test_terminal_surface.py",),
-        role="terminal-render-adapter",
+        python_module="pycodex/tui/chatwidget/status_surfaces.py",
+        rust_modules=("codex-tui::chatwidget::status_surfaces",),
+        rust_sources=("codex/codex-rs/tui/src/chatwidget/status_surfaces.rs",),
+        python_tests=("pycodex/tui/chatwidget/tests/test_status_surfaces.py",),
+    ),
+    TuiAlignmentEntry(
+        python_module="pycodex/tui/bottom_pane/terminal_frame.py",
+        python_tests=(
+            "pycodex/tui/bottom_pane/tests/test_terminal_frame.py",
+            "pycodex/tui/bottom_pane/tests/test_terminal_surface.py",
+        ),
+        role="terminal-frame-adapter",
         notes=(
-            "No Rust file named terminal_surface.rs exists. This adapter exists because "
-            "Python preserves ordinary terminal scrollback while Rust redraws a ratatui "
-            "frame. UI behavior must still be owned by the listed Rust modules."
+            "No Rust file named terminal_frame.rs exists. This adapter models the "
+            "bottom-pane ratatui frame/footprint for Python's hybrid terminal backend."
         ),
         responsibilities=(
             AdapterResponsibility(
-                name="frame layout projection",
+                name="bottom-pane frame layout projection",
                 rust_module="codex-tui::chatwidget::rendering",
                 rust_source="codex/codex-rs/tui/src/chatwidget/rendering.rs",
-                python_tests=("pycodex/tui/bottom_pane/tests/test_terminal_surface.py",),
+                python_tests=(
+                    "pycodex/tui/bottom_pane/tests/test_terminal_frame.py",
+                    "pycodex/tui/bottom_pane/tests/test_terminal_surface.py",
+                ),
                 description=(
-                    "Projects the chatwidget frame model into a terminal live pane; "
-                    "does not own widget state or command behavior."
+                    "Builds the Rust-like bottom-pane frame rows/writes and projects them "
+                    "into a ratatui-like buffer consumed by the terminal repaint adapter; "
+                    "does not perform terminal side effects."
                 ),
             ),
             AdapterResponsibility(
-                name="composer and slash popup placement",
+                name="bottom-pane footprint model",
+                rust_module="codex-tui::app::resize_reflow",
+                rust_source="codex/codex-rs/tui/src/app/resize_reflow.rs",
+                python_tests=(
+                    "pycodex/tui/bottom_pane/tests/test_terminal_frame.py",
+                    "pycodex/tui/app/tests/test_resize_reflow.py",
+                ),
+                description=(
+                    "Computes live-pane row reservations and history bottom rows so "
+                    "resize reflow can replay transcript history without disappearing."
+                ),
+            ),
+            AdapterResponsibility(
+                name="footer projection placement",
+                rust_module="codex-tui::bottom_pane::footer",
+                rust_source="codex/codex-rs/tui/src/bottom_pane/footer.rs",
+                python_tests=(
+                    "pycodex/tui/bottom_pane/tests/test_terminal_frame.py",
+                    "pycodex/tui/bottom_pane/tests/test_footer.py",
+                ),
+                description="Places footer-owned terminal projection in the bottom-pane frame.",
+            ),
+            AdapterResponsibility(
+                name="live status placement",
+                rust_module="codex-tui::chatwidget::status_surfaces",
+                rust_source="codex/codex-rs/tui/src/chatwidget/status_surfaces.rs",
+                python_tests=(
+                    "pycodex/tui/bottom_pane/tests/test_terminal_frame.py",
+                    "pycodex/tui/chatwidget/tests/test_status_surfaces.py",
+                ),
+                description="Places status_surfaces-owned live-status projection in the frame.",
+            ),
+        ),
+    ),
+    TuiAlignmentEntry(
+        python_module="pycodex/tui/bottom_pane/terminal_controller.py",
+        python_tests=(
+            "pycodex/tui/bottom_pane/tests/test_terminal_controller.py",
+            "pycodex/tui/bottom_pane/tests/test_terminal_surface.py",
+            "pycodex/tui/tui/tests/test_terminal_runtime.py",
+        ),
+        role="terminal-bottom-pane-controller-adapter",
+        notes=(
+            "No Rust file named terminal_controller.rs exists. This adapter wires "
+            "Rust-owned bottom-pane command/view state to Python's hybrid terminal backend."
+        ),
+        responsibilities=(
+            AdapterResponsibility(
+                name="composer popup key routing",
                 rust_module="codex-tui::bottom_pane::chat_composer",
                 rust_source="codex/codex-rs/tui/src/bottom_pane/chat_composer.rs",
                 python_tests=(
-                    "pycodex/tui/bottom_pane/tests/test_terminal_surface.py",
+                    "pycodex/tui/bottom_pane/tests/test_terminal_controller.py",
                     "pycodex/tui/bottom_pane/tests/test_chat_composer.py",
                 ),
-                description="Places and forwards input to the composer-owned slash popup state.",
+                description=(
+                    "Tracks terminal-path draft text and routes popup keys according "
+                    "to chat_composer semantics; does not render terminal output."
+                ),
             ),
             AdapterResponsibility(
-                name="active bottom-pane view projection",
+                name="slash command popup navigation",
+                rust_module="codex-tui::bottom_pane::command_popup",
+                rust_source="codex/codex-rs/tui/src/bottom_pane/command_popup.rs",
+                python_tests=(
+                    "pycodex/tui/bottom_pane/tests/test_terminal_controller.py",
+                    "pycodex/tui/bottom_pane/tests/test_command_popup.py",
+                ),
+                description="Delegates slash filtering, selected item state, and terminal rows to CommandPopup.",
+            ),
+            AdapterResponsibility(
+                name="active bottom-pane view stack",
                 rust_module="codex-tui::bottom_pane::bottom_pane_view",
                 rust_source="codex/codex-rs/tui/src/bottom_pane/bottom_pane_view.rs",
                 python_tests=(
-                    "pycodex/tui/bottom_pane/tests/test_terminal_surface.py",
+                    "pycodex/tui/bottom_pane/tests/test_terminal_controller.py",
                     "pycodex/tui/bottom_pane/tests/test_bottom_pane_view.py",
                 ),
-                description="Renders and routes keys to active BottomPaneView instances.",
-            ),
-            AdapterResponsibility(
-                name="terminal side effects",
-                rust_module="codex-tui::custom_terminal",
-                rust_source="codex/codex-rs/tui/src/custom_terminal.rs",
-                python_tests=("pycodex/tui/bottom_pane/tests/test_terminal_surface.py",),
-                description="Owns ANSI clear/repaint/cursor side effects for the live pane only.",
+                description="Owns terminal-path active view stack orchestration while ListSelectionView owns row state.",
             ),
             AdapterResponsibility(
                 name="footprint reflow trigger",
@@ -182,7 +289,62 @@ TUI_ALIGNMENT_ENTRIES: tuple[TuiAlignmentEntry, ...] = (
                     "pycodex/tui/bottom_pane/tests/test_terminal_surface.py",
                     "pycodex/tui/app/tests/test_resize_reflow.py",
                 ),
-                description="Reports live-pane footprint changes so app resize reflow can repaint history.",
+                description="Reports controller-detected live-pane footprint changes so resize reflow can repaint history.",
+            ),
+            AdapterResponsibility(
+                name="live buffer lifecycle invalidation",
+                rust_module="codex-tui::custom_terminal",
+                rust_source="codex/codex-rs/tui/src/custom_terminal.rs",
+                python_tests=(
+                    "pycodex/tui/bottom_pane/tests/test_terminal_controller.py",
+                    "pycodex/tui/tui/tests/test_terminal_runtime.py",
+                ),
+                description=(
+                    "Invalidates the previous live-pane buffer when resize, history replay, "
+                    "or footprint repaint side effects change the visible terminal outside "
+                    "the normal bottom-pane diff render."
+                ),
+            ),
+            AdapterResponsibility(
+                name="terminal bottom-pane action orchestration",
+                rust_module="codex-tui::bottom_pane",
+                rust_source="codex/codex-rs/tui/src/bottom_pane/mod.rs",
+                python_tests=(
+                    "pycodex/tui/bottom_pane/tests/test_terminal_controller.py",
+                    "pycodex/tui/bottom_pane/tests/test_terminal_surface.py",
+                ),
+                description=(
+                    "Executes bottom-pane clear/render plans using terminal product "
+                    "callbacks such as resize, terminal size, and live buffer invalidation; "
+                    "actual live viewport side effects stay in terminal_surface."
+                ),
+            ),
+        ),
+    ),
+    TuiAlignmentEntry(
+        python_module="pycodex/tui/bottom_pane/terminal_surface.py",
+        python_tests=(
+            "pycodex/tui/bottom_pane/tests/test_terminal_surface.py",
+            "pycodex/tui/bottom_pane/tests/test_terminal_frame.py",
+        ),
+        role="terminal-render-adapter",
+        notes=(
+            "No Rust file named terminal_surface.rs exists. This adapter exists because "
+            "Python preserves ordinary terminal scrollback while Rust redraws a ratatui "
+            "frame. UI behavior must still be owned by the listed Rust modules."
+        ),
+        responsibilities=(
+            AdapterResponsibility(
+                name="live viewport buffer draw and terminal side effects",
+                rust_module="codex-tui::custom_terminal",
+                rust_source="codex/codex-rs/tui/src/custom_terminal.rs",
+                python_tests=("pycodex/tui/bottom_pane/tests/test_terminal_surface.py",),
+                description=(
+                    "Consumes current/previous bottom-pane buffers, delegates full repaint "
+                    "and same-area diff drawing to ratatui_bridge's backend helper, delegates "
+                    "row clearing and writer flushing to custom_terminal, and keeps only "
+                    "live-pane clear/render frame and cursor-placement side effects."
+                ),
             ),
         ),
     ),
@@ -209,7 +371,27 @@ TUI_ALIGNMENT_ENTRIES: tuple[TuiAlignmentEntry, ...] = (
 
 
 CRITICAL_TERMINAL_TUI_MODULES: frozenset[str] = frozenset(
-    entry.python_module for entry in TUI_ALIGNMENT_ENTRIES
+    {
+        "pycodex/tui/tui/event_stream.py",
+        "pycodex/tui/ratatui_bridge/buffer.py",
+        "pycodex/tui/ratatui_bridge/backend.py",
+        "pycodex/tui/tui/terminal_runtime.py",
+        "pycodex/tui/bottom_pane/chat_composer.py",
+        "pycodex/tui/bottom_pane/command_popup.py",
+        "pycodex/tui/bottom_pane/slash_commands.py",
+        "pycodex/tui/chatwidget/slash_dispatch.py",
+        "pycodex/tui/chatwidget/model_popups.py",
+        "pycodex/tui/bottom_pane/list_selection_view.py",
+        "pycodex/tui/bottom_pane/bottom_pane_view.py",
+        "pycodex/tui/bottom_pane/selection_popup_common.py",
+        "pycodex/tui/chatwidget/status_surfaces.py",
+        "pycodex/tui/bottom_pane/terminal_frame.py",
+        "pycodex/tui/bottom_pane/terminal_controller.py",
+        "pycodex/tui/bottom_pane/terminal_surface.py",
+        "pycodex/tui/app/resize_reflow.py",
+        "pycodex/tui/custom_terminal.py",
+        "pycodex/tui/insert_history.py",
+    }
 )
 
 

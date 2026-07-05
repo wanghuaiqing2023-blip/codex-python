@@ -346,7 +346,7 @@ def run_terminal_session_header_from_runtime(
 ) -> TerminalSessionHeaderData:
     """Render the session header using the canonical runtime providers."""
 
-    from ..textual_runtime import (
+    from ..runtime_projection import (
         _display_version,
         _runtime_display_model,
         _runtime_header_reasoning_effort,

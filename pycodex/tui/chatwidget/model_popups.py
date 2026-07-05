@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Iterable, List, Optional, Tuple, Union
+from typing import Any, Callable, Iterable, List, Optional, Tuple, Union
 
 from .._porting import RustTuiModule
 from ..bottom_pane.list_selection_view import SelectionItem, SelectionViewParams
@@ -302,6 +302,292 @@ def open_plan_reasoning_scope_prompt(
     )
 
 
+def terminal_model_popup_context_from_runtime(app_runtime: object) -> ModelPopupContext:
+    """Build terminal model-popup context from the active app runtime.
+
+    Rust owner: ``chatwidget::model_popups`` owns model picker input state.  The
+    terminal runtime supplies an app runtime object, but it should not own the
+    model/reasoning resolution rules used to open the popup.
+    """
+
+    return ModelPopupContext(
+        current_model=terminal_current_model_from_runtime(app_runtime),
+        effective_reasoning_effort=terminal_current_reasoning_effort_from_runtime(app_runtime),
+    )
+
+
+def terminal_apply_model_popup_events(
+    events: Tuple[Any, ...],
+    *,
+    context: ModelPopupContext | None,
+    presets: Tuple[ModelPreset, ...],
+    dispatch_app_event: Callable[[Any], Any],
+) -> Any:
+    """Apply terminal model-popup events and return the next view, if any.
+
+    Rust owner: ``chatwidget::model_popups`` wires model popup selection actions
+    to ``AppEvent`` updates and follow-up popup views.  The terminal runtime
+    owns the loop, but it should not own these model-popup action semantics.
+    """
+
+    next_view = None
+    for event in events:
+        if isinstance(event, ModelPopupEvent):
+            candidate = terminal_apply_model_popup_event(
+                event,
+                context=context,
+                presets=presets,
+                dispatch_app_event=dispatch_app_event,
+            )
+            if candidate is not None:
+                next_view = candidate
+    return next_view
+
+
+def terminal_apply_model_popup_event(
+    event: ModelPopupEvent,
+    *,
+    context: ModelPopupContext | None,
+    presets: Tuple[ModelPreset, ...],
+    dispatch_app_event: Callable[[Any], Any],
+) -> Any:
+    """Apply one terminal model-popup event using Rust-owned popup rules."""
+
+    if context is None:
+        return None
+
+    from ..app_event import AppEvent
+
+    if event.kind == "update_model" and event.model is not None:
+        dispatch_app_event(AppEvent.update_model(event.model))
+        context.current_model = event.model
+        return None
+    if event.kind == "update_reasoning_effort":
+        dispatch_app_event(AppEvent.update_reasoning_effort(event.effort))
+        context.effective_reasoning_effort = event.effort
+        return None
+    if event.kind == "persist_model_selection" and event.model is not None:
+        dispatch_app_event(AppEvent.persist_model_selection(event.model, event.effort))
+        return None
+    if event.kind == "open_all_models_popup":
+        return open_all_models_popup(context, event.models).view
+    if event.kind == "open_reasoning_popup" and event.model is not None:
+        preset = next((candidate for candidate in presets if candidate.model == event.model), None)
+        if preset is None:
+            return None
+        result = open_reasoning_popup(context, preset)
+        if result.view is not None:
+            return result.view
+        return terminal_apply_model_popup_events(
+            result.events,
+            context=context,
+            presets=presets,
+            dispatch_app_event=dispatch_app_event,
+        )
+    if event.kind == "open_plan_reasoning_scope_prompt" and event.model is not None:
+        return open_plan_reasoning_scope_prompt(context, event.model, event.effort).view
+    return None
+
+
+def terminal_current_model_from_runtime(app_runtime: object) -> str:
+    runtime = getattr(app_runtime, "active_thread_runtime", None)
+    session_config = getattr(runtime, "session_config", None)
+    value = (
+        _terminal_runtime_value(session_config, "model")
+        or _terminal_runtime_value(runtime, "model")
+        or _terminal_runtime_value(app_runtime, "model")
+    )
+    return str(value or "gpt-5.5")
+
+
+def terminal_current_reasoning_effort_from_runtime(
+    app_runtime: object,
+) -> ReasoningEffortConfig | None:
+    runtime = getattr(app_runtime, "active_thread_runtime", None)
+    session_config = getattr(runtime, "session_config", None)
+    return terminal_coerce_reasoning_effort(
+        _terminal_runtime_value(session_config, "model_reasoning_effort")
+        or _terminal_runtime_value(session_config, "reasoning_effort")
+        or _terminal_runtime_value(runtime, "model_reasoning_effort")
+    )
+
+
+def terminal_model_presets_from_runtime(
+    app_runtime: object,
+    current: str,
+) -> Tuple[ModelPreset, ...]:
+    runtime = getattr(app_runtime, "active_thread_runtime", None)
+    session_config = getattr(runtime, "session_config", None)
+    raw = _terminal_first_value(
+        runtime,
+        session_config,
+        names=("available_models", "model_presets", "models"),
+    )
+    presets = tuple(terminal_model_preset_from_runtime(item, current) for item in (raw or ()))
+    visible = tuple(preset for preset in presets if preset.model)
+    if visible:
+        return visible
+
+    managed = terminal_model_manager_presets_from_runtime(app_runtime, current)
+    if managed:
+        return managed
+
+    bundled = terminal_bundled_model_popup_presets(current)
+    if bundled:
+        return bundled
+    return (terminal_fallback_current_model_preset(current),)
+
+
+def terminal_model_manager_presets_from_runtime(
+    app_runtime: object,
+    current: str,
+) -> Tuple[ModelPreset, ...]:
+    runtime = getattr(app_runtime, "active_thread_runtime", None)
+    session_config = getattr(runtime, "session_config", None)
+    services = getattr(session_config, "services", None)
+    for source in (
+        runtime,
+        getattr(services, "models_manager", None),
+        getattr(session_config, "models_manager", None),
+        getattr(app_runtime, "models_manager", None),
+    ):
+        if source is None:
+            continue
+        for method_name in ("list_models", "try_list_models"):
+            method = getattr(source, method_name, None)
+            if not callable(method):
+                continue
+            try:
+                result = method("online_if_uncached") if method_name == "list_models" else method()
+            except TypeError:
+                try:
+                    result = method()
+                except Exception:
+                    continue
+            except Exception:
+                continue
+            presets = tuple(terminal_model_preset_from_runtime(item, current) for item in (result or ()))
+            visible = tuple(preset for preset in presets if preset.model)
+            if visible:
+                return visible
+    return ()
+
+
+def terminal_bundled_model_popup_presets(current: str) -> Tuple[ModelPreset, ...]:
+    try:
+        from pycodex.models_manager import bundled_models_response, model_presets_from_models
+        from pycodex.protocol import ModelsResponse
+    except Exception:
+        return ()
+    try:
+        response = ModelsResponse.from_mapping(bundled_models_response())
+        raw = model_presets_from_models(response.models)
+    except Exception:
+        return ()
+    presets = tuple(terminal_model_preset_from_runtime(item, current) for item in raw)
+    return tuple(preset for preset in presets if preset.model)
+
+
+def terminal_fallback_current_model_preset(current: str) -> ModelPreset:
+    effort = ReasoningEffortConfig.Medium
+    return ModelPreset(
+        model=current,
+        default_reasoning_effort=effort,
+        supported_reasoning_efforts=(ReasoningEffortPreset(effort, "Balanced reasoning for everyday tasks"),),
+        is_default=True,
+    )
+
+
+def terminal_model_preset_from_runtime(value: object, current_model: str) -> ModelPreset:
+    if isinstance(value, str):
+        effort = ReasoningEffortConfig.Medium
+        return ModelPreset(
+            model=value,
+            default_reasoning_effort=effort,
+            supported_reasoning_efforts=(ReasoningEffortPreset(effort),),
+            is_default=value == current_model,
+        )
+    model = (
+        _terminal_runtime_value(value, "model")
+        or _terminal_runtime_value(value, "id")
+        or _terminal_runtime_value(value, "name")
+    )
+    if model is None:
+        return ModelPreset(model="")
+    effort = terminal_coerce_reasoning_effort(
+        _terminal_runtime_value(value, "default_reasoning_effort")
+        or _terminal_runtime_value(value, "reasoning_effort")
+        or _terminal_runtime_value(value, "effort")
+    ) or ReasoningEffortConfig.Medium
+    supported = terminal_coerce_supported_reasoning_efforts(
+        _terminal_runtime_value(value, "supported_reasoning_efforts")
+        or _terminal_runtime_value(value, "supported_efforts")
+        or _terminal_runtime_value(value, "reasoning_efforts")
+    )
+    if not supported:
+        supported = (ReasoningEffortPreset(effort),)
+    return ModelPreset(
+        model=str(model),
+        description=str(_terminal_runtime_value(value, "description") or ""),
+        default_reasoning_effort=effort,
+        supported_reasoning_efforts=supported,
+        is_default=bool(_terminal_runtime_value(value, "is_default")) or str(model) == current_model,
+        show_in_picker=bool(_terminal_runtime_value(value, "show_in_picker", True)),
+    )
+
+
+def terminal_coerce_reasoning_effort(value: object | None) -> ReasoningEffortConfig | None:
+    if value is None:
+        return None
+    if isinstance(value, ReasoningEffortConfig):
+        return value
+    enum_value = getattr(value, "value", None)
+    if enum_value is not None:
+        value = enum_value
+    normalized = str(value).strip().lower().replace("-", "_")
+    if normalized == "none":
+        return ReasoningEffortConfig.None_
+    for effort in ReasoningEffortConfig:
+        if effort.value == normalized:
+            return effort
+    return None
+
+
+def terminal_coerce_supported_reasoning_efforts(
+    value: object | None,
+) -> Tuple[ReasoningEffortPreset, ...]:
+    if not value:
+        return ()
+    out: list[ReasoningEffortPreset] = []
+    for item in value if isinstance(value, (list, tuple)) else (value,):
+        effort = terminal_coerce_reasoning_effort(_terminal_runtime_value(item, "effort", item))
+        if effort is None:
+            continue
+        description = str(_terminal_runtime_value(item, "description") or "")
+        out.append(ReasoningEffortPreset(effort, description))
+    return tuple(out)
+
+
+def _terminal_first_value(*sources: object, names: Tuple[str, ...]) -> object | None:
+    for source in sources:
+        if source is None:
+            continue
+        for name in names:
+            value = _terminal_runtime_value(source, name, None)
+            if value is not None:
+                return value
+    return None
+
+
+def _terminal_runtime_value(source: object, name: str, default: object | None = None) -> object | None:
+    if source is None:
+        return default
+    if isinstance(source, dict):
+        return source.get(name, default)
+    value = getattr(source, name, default)
+    return value() if callable(value) else value
+
+
 def model_menu_header(
     context: ModelPopupContext,
     title: str,
@@ -453,4 +739,16 @@ __all__ = [
     "open_reasoning_popup",
     "reasoning_effort_label",
     "should_prompt_plan_mode_reasoning_scope",
+    "terminal_apply_model_popup_event",
+    "terminal_apply_model_popup_events",
+    "terminal_bundled_model_popup_presets",
+    "terminal_coerce_reasoning_effort",
+    "terminal_coerce_supported_reasoning_efforts",
+    "terminal_current_model_from_runtime",
+    "terminal_current_reasoning_effort_from_runtime",
+    "terminal_fallback_current_model_preset",
+    "terminal_model_manager_presets_from_runtime",
+    "terminal_model_popup_context_from_runtime",
+    "terminal_model_preset_from_runtime",
+    "terminal_model_presets_from_runtime",
 ]

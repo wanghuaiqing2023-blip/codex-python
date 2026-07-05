@@ -8,17 +8,14 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from datetime import timedelta
+import os
 from pathlib import Path
 from typing import Any, Callable, Iterable, TextIO, TypeVar
 
 from .._porting import RustTuiModule
 from ..bottom_pane.status_line_setup import StatusLineItem
-from ..bottom_pane.terminal_surface import (
-    TerminalLiveStatusSurface,
-    run_terminal_live_status_hide,
-    run_terminal_live_status_show,
-)
 from ..bottom_pane.title_setup import TerminalTitleItem
+from ..custom_terminal import clear_inline_status_line, write_inline_status_line
 from ..status.rate_limits import RateLimitSnapshotDisplay, RateLimitWindowDisplay
 from .rate_limits import get_limits_duration
 from .status_state import TerminalTitleStatusKind
@@ -246,6 +243,238 @@ def terminal_live_status_text(header: str, details: str | None = None) -> str:
     return text
 
 
+@dataclass(frozen=True)
+class TerminalLiveStatusSurface:
+    """Runtime live-status state for the real-terminal bottom pane.
+
+    Rust ``chatwidget::status_surfaces`` owns the status text and refresh
+    state.  The Python terminal adapter may ask this state for bottom-pane
+    footprint rows, but it must not own the live-status transition semantics.
+    """
+
+    active: bool = False
+    text: str | None = None
+
+    @classmethod
+    def inactive(cls) -> "TerminalLiveStatusSurface":
+        return cls(False, None)
+
+    @classmethod
+    def active_status(cls, text: str | None = None) -> "TerminalLiveStatusSurface":
+        return cls(True, text)
+
+    @property
+    def footprint_active(self) -> bool:
+        return bool(self.active and self.text)
+
+    @property
+    def render_text(self) -> str | None:
+        return self.text if self.active else None
+
+    def rows_for_size(self, size: os.terminal_size) -> list[int]:
+        from ..bottom_pane.terminal_frame import bottom_pane_rows_for_size
+
+        return bottom_pane_rows_for_size(size, live_status_active=self.footprint_active)
+
+
+@dataclass(frozen=True)
+class TerminalLiveStatusTransition:
+    previous: TerminalLiveStatusSurface
+    current: TerminalLiveStatusSurface
+
+
+@dataclass(frozen=True)
+class TerminalLiveStatusProjection:
+    """Terminal row projection for a live-status string."""
+
+    line: str | None
+
+
+@dataclass(frozen=True)
+class TerminalLiveStatusActionPlan:
+    """Terminal side-effect plan for live-status surface changes."""
+
+    transition: TerminalLiveStatusTransition
+    check_resize: bool = False
+    repaint_footprint: bool = False
+    render_bottom_pane: bool = False
+    flush_writer: bool = False
+    inline_status_text: str | None = None
+    clear_inline_status: bool = False
+
+    @property
+    def changed(self) -> bool:
+        return self.transition.previous != self.transition.current
+
+
+def terminal_live_status_projection(
+    text: str | None,
+    columns: int,
+) -> TerminalLiveStatusProjection:
+    """Project live status text into the terminal bottom-pane row."""
+
+    if text is None:
+        return TerminalLiveStatusProjection(None)
+    return TerminalLiveStatusProjection(str(text)[: max(0, int(columns) - 1)])
+
+
+def terminal_live_status_transition_to_status(
+    previous: TerminalLiveStatusSurface,
+    text: str | None = None,
+) -> TerminalLiveStatusTransition:
+    """Return the live-status transition for showing status."""
+
+    return TerminalLiveStatusTransition(
+        previous=previous,
+        current=TerminalLiveStatusSurface.active_status(text),
+    )
+
+
+def terminal_live_status_transition_to_inactive(
+    previous: TerminalLiveStatusSurface,
+) -> TerminalLiveStatusTransition:
+    """Return the live-status transition for hiding status."""
+
+    return TerminalLiveStatusTransition(
+        previous=previous,
+        current=TerminalLiveStatusSurface.inactive(),
+    )
+
+
+def terminal_live_status_show_plan(
+    previous: TerminalLiveStatusSurface,
+    text: str,
+    *,
+    stdin_is_terminal: bool,
+    layout_active: bool,
+) -> TerminalLiveStatusActionPlan:
+    """Plan live-status show/update side effects for the terminal product path."""
+
+    transition = terminal_live_status_transition_to_status(previous, text)
+    if stdin_is_terminal:
+        return TerminalLiveStatusActionPlan(
+            transition=transition,
+            check_resize=layout_active,
+            repaint_footprint=True,
+            render_bottom_pane=True,
+        )
+    return TerminalLiveStatusActionPlan(
+        transition=transition,
+        inline_status_text=text,
+        flush_writer=True,
+    )
+
+
+def terminal_live_status_hide_plan(
+    previous: TerminalLiveStatusSurface,
+    *,
+    stdin_is_terminal: bool,
+    redraw_bottom_pane: bool = True,
+) -> TerminalLiveStatusActionPlan:
+    """Plan live-status hide side effects for the terminal product path."""
+
+    transition = terminal_live_status_transition_to_inactive(previous)
+    if not previous.active:
+        return TerminalLiveStatusActionPlan(transition=transition)
+    if stdin_is_terminal:
+        return TerminalLiveStatusActionPlan(
+            transition=transition,
+            repaint_footprint=True,
+            render_bottom_pane=redraw_bottom_pane,
+            flush_writer=not redraw_bottom_pane,
+        )
+    return TerminalLiveStatusActionPlan(
+        transition=transition,
+        clear_inline_status=True,
+        flush_writer=True,
+    )
+
+
+def run_terminal_live_status_action_plan(
+    writer: TextIO,
+    plan: TerminalLiveStatusActionPlan,
+    *,
+    repaint_footprint: Callable[[TerminalLiveStatusSurface], None],
+    render_bottom_pane: Callable[[], None],
+) -> None:
+    """Execute terminal side effects selected by a live-status action plan."""
+
+    if plan.repaint_footprint:
+        repaint_footprint(plan.transition.previous)
+    if plan.render_bottom_pane:
+        render_bottom_pane()
+        return
+    if plan.inline_status_text is not None:
+        write_inline_status_line(writer, plan.inline_status_text)
+    if plan.clear_inline_status:
+        clear_inline_status_line(writer)
+    if plan.flush_writer:
+        _flush_writer(writer)
+
+
+def run_terminal_live_status_show(
+    writer: TextIO,
+    previous: TerminalLiveStatusSurface,
+    text: str,
+    *,
+    stdin_is_terminal: bool,
+    layout_active: bool,
+    check_resize: Callable[[], None],
+    repaint_footprint: Callable[[TerminalLiveStatusSurface], None],
+    render_bottom_pane: Callable[[], None],
+    apply_state: Callable[[TerminalLiveStatusSurface], None] | None = None,
+) -> TerminalLiveStatusSurface:
+    """Show/update live status and return the new bottom-pane surface state."""
+
+    plan = terminal_live_status_show_plan(
+        previous,
+        text,
+        stdin_is_terminal=stdin_is_terminal,
+        layout_active=layout_active,
+    )
+    if plan.check_resize:
+        check_resize()
+    if apply_state is not None:
+        apply_state(plan.transition.current)
+    run_terminal_live_status_action_plan(
+        writer,
+        plan,
+        repaint_footprint=repaint_footprint,
+        render_bottom_pane=render_bottom_pane,
+    )
+    return plan.transition.current
+
+
+def run_terminal_live_status_hide(
+    writer: TextIO,
+    previous: TerminalLiveStatusSurface,
+    *,
+    stdin_is_terminal: bool,
+    redraw_bottom_pane: bool = True,
+    repaint_footprint: Callable[[TerminalLiveStatusSurface], None],
+    render_bottom_pane: Callable[[], None],
+    apply_state: Callable[[TerminalLiveStatusSurface], None] | None = None,
+) -> TerminalLiveStatusSurface:
+    """Hide live status and return the new bottom-pane surface state."""
+
+    plan = terminal_live_status_hide_plan(
+        previous,
+        stdin_is_terminal=stdin_is_terminal,
+        redraw_bottom_pane=redraw_bottom_pane,
+    )
+    if not plan.changed:
+        return plan.transition.current
+    if apply_state is not None:
+        apply_state(plan.transition.current)
+    run_terminal_live_status_action_plan(
+        writer,
+        plan,
+        repaint_footprint=repaint_footprint,
+        render_bottom_pane=render_bottom_pane,
+    )
+    return plan.transition.current
+
+
 def run_terminal_live_status_text_show(
     writer: TextIO,
     previous: TerminalLiveStatusSurface,
@@ -372,6 +601,12 @@ class TerminalStatusSurfaceWriter:
     check_resize: Callable[[], None] = lambda: None
     repaint_footprint: Callable[[TerminalLiveStatusSurface], None] = lambda _previous: None
     render_bottom_pane: Callable[[], None] = lambda: None
+
+    @property
+    def turn_active(self) -> bool:
+        """Return whether an agent turn owns the active bottom-pane status."""
+
+        return self.turn_status.active
 
     def start_turn(self, started_at: float) -> None:
         self.turn_started_at = float(started_at)
@@ -690,6 +925,12 @@ def _terminal_title_status_kind(value: TerminalTitleStatusKind | str) -> Termina
     return TerminalTitleStatusKind.Working
 
 
+def _flush_writer(writer: TextIO) -> None:
+    flush = getattr(writer, "flush", None)
+    if callable(flush):
+        flush()
+
+
 __all__ = [
     "CachedProjectRootName",
     "DEFAULT_STATUS_LINE_ITEMS",
@@ -704,6 +945,10 @@ __all__ = [
     "TERMINAL_LIVE_STATUS_DETAIL_PREFIX",
     "TERMINAL_LIVE_STATUS_PREFIX",
     "TERMINAL_TURN_INTERRUPT_HINT",
+    "TerminalLiveStatusActionPlan",
+    "TerminalLiveStatusProjection",
+    "TerminalLiveStatusSurface",
+    "TerminalLiveStatusTransition",
     "TerminalTurnStatusRenderPlan",
     "TerminalTurnStatusState",
     "TerminalStatusSurfaceWriter",
@@ -720,6 +965,9 @@ __all__ = [
     "parse_terminal_title_items_with_invalids",
     "permissions_display",
     "run_state_status_text",
+    "run_terminal_live_status_action_plan",
+    "run_terminal_live_status_hide",
+    "run_terminal_live_status_show",
     "run_terminal_live_status_text_show",
     "run_terminal_turn_status_refresh",
     "run_terminal_turn_status_render",
@@ -728,7 +976,12 @@ __all__ = [
     "status_surface_selections",
     "terminal_turn_status_cleared",
     "terminal_turn_status_suppressed",
+    "terminal_live_status_hide_plan",
+    "terminal_live_status_projection",
+    "terminal_live_status_show_plan",
     "terminal_live_status_text",
+    "terminal_live_status_transition_to_inactive",
+    "terminal_live_status_transition_to_status",
     "terminal_turn_elapsed_seconds",
     "terminal_turn_status_header",
     "terminal_turn_status_render_plan",

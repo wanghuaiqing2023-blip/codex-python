@@ -159,7 +159,7 @@ def run_terminal_startup_notices_from_runtime(
 ) -> tuple[str, ...]:
     """Render startup notices using the canonical TUI runtime providers."""
 
-    from ..textual_runtime import _runtime_startup_tooltip, _runtime_startup_warnings
+    from ..runtime_projection import _runtime_startup_tooltip, _runtime_startup_warnings
 
     return run_terminal_startup_notices_render(
         app_runtime,

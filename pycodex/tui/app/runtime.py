@@ -1132,7 +1132,7 @@ class CoreExecActiveThreadRuntime:
         return LocalWorkspaceCommandRunner(default_cwd=cwd)
 
     def list_resume_threads(self) -> tuple[Any, ...]:
-        """Return local thread summaries for the Textual `/resume` picker.
+        """Return local thread summaries for the terminal `/resume` picker.
 
         Rust ownership is split here: ``codex-tui::resume_picker`` owns the
         picker UI, while ``codex-thread-store::local::list_threads`` owns the
@@ -1609,7 +1609,7 @@ class CoreExecActiveThreadRuntime:
         """Return the prompt-visible history for the next core session.
 
         Rust ``codex-core::session::turn`` samples from
-        ``sess.clone_history().await.for_prompt(...)``.  The Python Textual
+        ``sess.clone_history().await.for_prompt(...)``.  The Python terminal
         product path creates a fresh in-memory core session per submitted turn,
         so this active-thread runtime carries the Rust-shaped history between
         those per-turn sessions.
@@ -1698,7 +1698,7 @@ class TuiAppRuntime:
         Rust keeps these values on the loaded core ``Config`` and
         ``codex-tui::chatwidget`` reads them directly.  The Python active
         thread runtime carries the same subset on ``session_config``; mirror it
-        into the chatwidget config so Textual rendering follows the configured
+        into the chatwidget config so terminal rendering follows the configured
         reasoning visibility instead of local UI defaults.
         """
 
@@ -1798,7 +1798,7 @@ class TuiAppRuntime:
         ``SessionSelection::Fork(target_session)`` by calling
         ``AppServerSession::fork_thread(config, target_session.thread_id)`` and
         constructing the initial chat widget from the returned started thread.
-        This sync adapter preserves that boundary for the Textual product path:
+        This sync adapter preserves that boundary for the terminal product path:
         it delegates the fork to the active runtime/app-server facade when one
         is available, then switches routing identity to the returned forked
         thread.  It intentionally does not synthesize a local ``UserTurn``.
@@ -1902,7 +1902,7 @@ class TuiAppRuntime:
         Rust ``app::thread_routing::enqueue_primary_thread_session`` installs
         the returned session, then calls
         ``ChatWidget::replay_thread_turns(turns, ReplayKind::ResumeInitialMessages)``.
-        The Textual product shell consumes the semantic history emitted by that
+        The terminal product shell consumes the semantic history emitted by that
         replay instead of reading app-server turns directly.
         """
 

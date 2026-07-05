@@ -31,9 +31,10 @@ def vendor_packages_path() -> Path:
 def ensure_vendor_packages_on_path() -> Path:
     """Prepend the vendored package root to ``sys.path`` if needed.
 
-    Textual and its dependencies use normal top-level imports internally. Once a
-    vendored framework is selected, the vendored root must stay ahead of site
-    packages so lazy imports continue to resolve to the audited copies.
+    Vendored packages and their dependencies use normal top-level imports
+    internally. Once a vendored package is selected, the vendored root must stay
+    ahead of site packages so lazy imports continue to resolve to the audited
+    copies.
     """
 
     path = str(_VENDOR_PACKAGES)

@@ -384,7 +384,7 @@ def terminal_status_card_lines(data: TerminalStatusCardData) -> Tuple[str, ...]:
     """Return the scrollback-terminal ``/status`` text shape.
 
     This mirrors the lightweight terminal product path while the richer
-    ``StatusHistoryCell`` remains available for ratatui/Textual-style history
+    ``StatusHistoryCell`` remains available for ratatui-style history
     rendering.
     """
 
@@ -464,7 +464,7 @@ def run_terminal_status_card_from_runtime(
 ) -> TerminalStatusCardData:
     """Render the terminal ``/status`` card using canonical runtime providers."""
 
-    from ..textual_runtime import (
+    from ..runtime_projection import (
         _display_version,
         _runtime_agents_summary,
         _runtime_cwd,

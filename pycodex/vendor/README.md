@@ -11,11 +11,7 @@ by `pycodex`.
 - Transitive runtime dependencies must be vendored or intentionally routed
   through a documented compatibility boundary.
 - Project code should not import vendored UI packages directly. For TUI code,
-  use `pycodex.tui.textual_compat` and `pycodex.tui.ratatui_bridge`.
+  use `pycodex.tui.rich_compat` for Rich values and
+  `pycodex.tui.ratatui_bridge` for Rust-like TUI semantics.
 - Do not silently fall back to globally installed packages when a vendored
   package is expected; ambiguous imports make porting behavior hard to audit.
-
-## Planned packages
-
-Textual will be vendored here as the Python TUI framework source of truth for
-Codex TUI work, with its required runtime dependencies recorded and pinned.

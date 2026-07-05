@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+import unicodedata
 from typing import Any, Callable, MutableSequence
 
 from ..._porting import RustTuiModule
@@ -141,6 +142,12 @@ class TerminalComposerInputAction:
     kind: str
     draft: str = ""
     line: str | None = None
+
+
+@dataclass(frozen=True)
+class TerminalComposerProjection:
+    line: str
+    cursor_column: int
 
 
 TERMINAL_COMPOSER_INPUT_CONTINUE = object()
@@ -366,6 +373,26 @@ def terminal_composer_submitted_line(draft: str) -> str:
     """Return the line submitted by pressing Enter in the terminal composer."""
 
     return str(draft) + "\n"
+
+
+def terminal_composer_line_text(draft: str) -> str:
+    """Return the single-line terminal rendering of the composer draft."""
+
+    visible_draft = str(draft).replace("\r\n", "\n").replace("\r", "\n").replace("\n", " ")
+    return f"\u203a {visible_draft}"
+
+
+def terminal_composer_projection(draft: str, columns: int) -> TerminalComposerProjection:
+    """Project the terminal composer into a live-pane line and cursor column.
+
+    Rust owner: ``codex-tui::bottom_pane::chat_composer`` owns composer text
+    projection before the terminal surface adapts it into the live viewport.
+    """
+
+    safe_columns = max(1, int(columns))
+    line = _terminal_truncate_display_width(terminal_composer_line_text(draft), max(1, safe_columns - 1))
+    cursor_column = min(safe_columns, max(3, 1 + _terminal_display_width(line)))
+    return TerminalComposerProjection(line=line, cursor_column=cursor_column)
 
 
 def terminal_composer_input_action(draft: str, event_kind: str, event_text: str = "") -> TerminalComposerInputAction:
@@ -660,6 +687,33 @@ def _normalize_pasted_text(value: str) -> str:
     return value.replace("\r\n", "\n").replace("\r", "\n")
 
 
+def _terminal_truncate_display_width(text: str, width: int) -> str:
+    budget = max(1, int(width))
+    current = 0
+    out: list[str] = []
+    for char in str(text):
+        char_width = _terminal_char_display_width(char)
+        if current + char_width > budget:
+            break
+        out.append(char)
+        current += char_width
+    return "".join(out)
+
+
+def _terminal_display_width(text: str) -> int:
+    return sum(_terminal_char_display_width(char) for char in str(text))
+
+
+def _terminal_char_display_width(char: str) -> int:
+    if char == "\t":
+        return 4
+    if not char:
+        return 0
+    if unicodedata.combining(char):
+        return 0
+    return 2 if unicodedata.east_asian_width(char) in {"F", "W"} else 1
+
+
 def _binding_key(item: KeyEvent | dict[str, Any] | str) -> tuple[str, tuple[str, ...], str | None]:
     return _coerce_key_event(item).binding_key()
 
@@ -705,6 +759,7 @@ __all__ = [
     "RUST_MODULE",
     "TERMINAL_COMPOSER_INPUT_CONTINUE",
     "TerminalComposerInputAction",
+    "TerminalComposerProjection",
     "expand_pending_pastes",
     "plan_mode_nudge_line",
     "run_terminal_composer_blocking_line_prompt",
@@ -718,6 +773,8 @@ __all__ = [
     "terminal_composer_draft_after_text",
     "terminal_composer_draft_cleared",
     "terminal_composer_input_action",
+    "terminal_composer_line_text",
+    "terminal_composer_projection",
     "terminal_composer_submitted_line",
     "user_input_too_large_message",
 ]

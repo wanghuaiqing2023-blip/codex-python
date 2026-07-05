@@ -1,9 +1,13 @@
 ﻿from __future__ import annotations
 
-from pycodex.tui import textual_compat
+import io
+
+from pycodex.tui import rich_compat
 from pycodex.tui import ratatui_bridge
 from pycodex.tui.ratatui_bridge import (
     Alignment,
+    AnsiBackend,
+    Backend,
     Block,
     BorderType,
     Borders,
@@ -13,30 +17,75 @@ from pycodex.tui.ratatui_bridge import (
     Color,
     Constraint,
     Direction,
+    DrawCommand,
+    Frame,
     Layout,
     Line,
     Margin,
     Modifier,
     Paragraph,
+    Position,
     Rect,
     Renderable,
+    Size,
     Span,
     Style,
     Terminal,
+    FrameBufferState,
     TestBackend as BridgeTestBackend,
     Text,
+    Widget,
     Wrap,
+    ansi_style_sequence,
     buffer_to_plain_text,
     buffer_to_rich_text,
+    draw_buffer_to_ansi,
+    diff_buffers,
+    full_redraw_commands,
     render_ref,
     render_to_buffer,
     render_to_rich_text,
+    requires_full_redraw,
 )
 
 
 def test_ratatui_bridge_module_marker_is_complete_for_python_semantic_bridge() -> None:
     assert ratatui_bridge.RUST_MODULE.module == "ratatui_bridge"
     assert ratatui_bridge.RUST_MODULE.status == "complete"
+
+
+def test_minimal_ratatui_core_api_is_exported() -> None:
+    # Rust owner: ratatui public concepts used by codex-tui.  The Python
+    # bridge must keep these minimal frame/buffer/backend concepts available
+    # as one shared core for terminal product adapters.
+    expected = {
+        "Backend",
+        "Buffer",
+        "Cell",
+        "Frame",
+        "Rect",
+        "Size",
+        "Style",
+        "Terminal",
+        "TestBackend",
+        "Widget",
+        "diff_buffers",
+        "requires_full_redraw",
+    }
+
+    assert expected <= set(ratatui_bridge.__all__)
+    assert Cell("x").symbol == "x"
+    assert Buffer.empty(Rect.from_size(Size.new(2, 1))).plain() == "  "
+    assert callable(getattr(Widget, "render", None))
+    assert Frame(Rect.new(0, 0, 1, 1), Buffer.empty(Rect.new(0, 0, 1, 1))).size() == Rect.new(0, 0, 1, 1)
+
+
+def test_backend_protocol_exposes_draw_lifecycle() -> None:
+    # Rust owner: ratatui::backend::Backend is the drawing boundary consumed by
+    # ratatui::Terminal::draw.  The Python bridge keeps the same lifecycle
+    # explicit so product adapters do not invent ad-hoc redraw paths.
+    assert callable(getattr(Backend, "draw", None))
+    assert callable(getattr(Backend, "flush", None))
 
 
 def test_style_patch_and_modifiers_preserve_ratatui_like_semantics() -> None:
@@ -66,20 +115,20 @@ def test_rect_inner_saturates_like_ratatui_area_math() -> None:
     assert rect.inner(horizontal=6, vertical=3).is_empty()
 
 
-def test_rich_conversion_methods_exist_and_use_textual_compat_boundary() -> None:
+def test_rich_conversion_methods_exist_and_use_rich_compat_boundary() -> None:
     span = Span.styled("hello", Style().with_fg("red").bold())
     rich_text = span.to_rich_text()
 
     assert str(rich_text) == "hello"
-    assert isinstance(rich_text, textual_compat.Text)
+    assert isinstance(rich_text, rich_compat.Text)
 
 
 def test_line_and_text_conversion_preserve_plain_content_with_vendored_rich_text() -> None:
     line = Line.from_spans([Span.raw("hi"), Span.styled("!", Style().with_fg(Color.rgb(1, 2, 3)).bold())])
     text = Text.from_lines([line, "there"])
 
-    assert isinstance(line.to_rich_text(), textual_compat.Text)
-    assert isinstance(text.to_rich_text(), textual_compat.Text)
+    assert isinstance(line.to_rich_text(), rich_compat.Text)
+    assert isinstance(text.to_rich_text(), rich_compat.Text)
     assert str(line.to_rich_text()) == "hi!"
     assert str(text.to_rich_text()) == "hi!\nthere"
 
@@ -191,13 +240,13 @@ def test_paragraph_wrap_alignment_scroll_and_clear_render_to_buffer() -> None:
     assert buffer.plain_lines() == [".   ..", ".   ..", "......"]
 
 
-def test_textual_adapter_converts_buffer_and_renderables_without_terminal_io() -> None:
+def test_rich_adapter_converts_buffer_and_renderables_without_terminal_io() -> None:
     paragraph = Paragraph(Text.from_lines(["hello", Line.from_spans([Span.styled("ok", Style().bold())])]))
     buffer = render_to_buffer(paragraph, Rect.new(0, 0, 5, 2))
 
     assert buffer_to_plain_text(buffer, trim_end=True) == "hello\nok"
     rich = buffer_to_rich_text(buffer, trim_end=True)
-    assert isinstance(rich, textual_compat.Text)
+    assert isinstance(rich, rich_compat.Text)
     assert str(rich) == "hello\nok"
     assert str(render_to_rich_text(paragraph, Rect.new(0, 0, 5, 2), trim_end=True)) == "hello\nok"
 
@@ -230,6 +279,282 @@ def test_terminal_draw_uses_test_backend_buffer_and_flushes_once() -> None:
     assert terminal.draw(draw) == Rect.new(0, 0, 6, 2)
     assert backend.flush_count == 1
     assert backend.buffer().plain_lines() == ["hello ", "world "]
+
+
+def test_terminal_draw_applies_frame_cursor_position_through_backend() -> None:
+    # Rust owner: codex-tui::custom_terminal::Terminal::try_draw takes the
+    # cursor position from the completed Frame and applies it through the
+    # backend after drawing the frame buffer.
+    backend = BridgeTestBackend.new(6, 2)
+    terminal = Terminal.new(backend)
+
+    terminal.draw(lambda frame: frame.set_cursor_position((3, 1)))
+
+    assert terminal.last_cursor_position == Position.new(3, 1)
+    assert backend.cursor_position == Position.new(3, 1)
+    assert backend.flush_count == 1
+
+
+def test_terminal_draw_requires_backend_draw_boundary() -> None:
+    # Rust owner: ratatui::Terminal draws through ratatui::backend::Backend.
+    # Python must not preserve an adapter-local fallback that mutates a backend
+    # buffer directly and bypasses the shared draw lifecycle.
+    class BufferOnlyBackend:
+        def __init__(self) -> None:
+            self._buffer = Buffer.empty(Rect.new(0, 0, 2, 1))
+
+        def size(self) -> Size:
+            return Size.new(2, 1)
+
+        def window_size(self):
+            return None
+
+        def buffer(self) -> Buffer:
+            return self._buffer
+
+        def flush(self) -> None:
+            pass
+
+    terminal = Terminal.new(BufferOnlyBackend())  # type: ignore[arg-type]
+
+    try:
+        terminal.draw(lambda frame: frame.render_widget(Paragraph.raw("x"), frame.area))
+    except AttributeError as exc:
+        assert "draw" in str(exc)
+    else:
+        raise AssertionError("Terminal.draw must require backend.draw")
+
+
+def test_bridge_buffer_clone_reset_and_resize_support_terminal_lifecycle() -> None:
+    buffer = Buffer.empty(Rect.new(0, 0, 4, 1))
+    buffer.set_line(0, 0, Line.raw("old"), max_width=4)
+
+    cloned = buffer.clone()
+    buffer.reset()
+    buffer.resize(Rect.new(0, 0, 2, 2))
+
+    assert cloned.plain() == "old "
+    assert buffer.plain_lines() == ["  ", "  "]
+
+
+def test_bridge_diff_buffers_emits_changed_cells_and_row_clear() -> None:
+    previous = Buffer.empty(Rect.new(0, 0, 6, 1))
+    current = Buffer.empty(Rect.new(0, 0, 6, 1))
+    previous.set_line(0, 0, Line.raw("abcdef"), max_width=6)
+    current.set_line(0, 0, Line.raw("ab"), max_width=6)
+
+    commands = diff_buffers(previous, current)
+
+    assert any(command.kind == "clear_to_end" and command.x == 2 and command.y == 0 for command in commands)
+    assert not any(command.kind == "put" and command.x == 0 for command in commands)
+
+
+def test_bridge_full_redraw_commands_preserve_minimum_row_widths() -> None:
+    # Rust owner: codex-tui::custom_terminal owns full frame redraw when the
+    # viewport changes.  Python's hybrid terminal adapter passes row-width
+    # hints for visible prompt spacing, but command generation remains here.
+    buffer = Buffer.empty(Rect.new(0, 0, 6, 2))
+    buffer.set_line(0, 0, Line.raw("› "), max_width=6)
+    buffer.set_line(0, 1, Line.raw("x"), max_width=6)
+
+    commands = full_redraw_commands(buffer, minimum_row_widths={0: 2})
+
+    assert DrawCommand.put(0, 0, Cell("›")) in commands
+    assert DrawCommand.put(1, 0, Cell(" ")) in commands
+    assert DrawCommand.clear_to_end(2, 0) in commands
+    assert DrawCommand.put(0, 1, Cell("x")) in commands
+    assert DrawCommand.clear_to_end(1, 1) in commands
+
+
+def test_bridge_buffer_places_wide_chars_in_terminal_cells() -> None:
+    # Rust owner: ratatui::buffer::Buffer stores wide symbols in terminal cell
+    # coordinates and marks trailing cells as skipped. The Python bridge must
+    # do the same or later CJK characters are skipped by ANSI diff rendering.
+    buffer = Buffer.empty(Rect.new(0, 0, 8, 1))
+    buffer.set_line(0, 0, Line.raw("你好"), max_width=8)
+
+    assert buffer.cell(0, 0) == Cell("你")
+    assert buffer.cell(1, 0).skip is True
+    assert buffer.cell(2, 0) == Cell("好")
+    assert buffer.cell(3, 0).skip is True
+    assert buffer.to_plain_text(trim_end=True) == "你好"
+
+    commands = full_redraw_commands(buffer)
+    assert DrawCommand.put(0, 0, Cell("你")) in commands
+    assert DrawCommand.put(2, 0, Cell("好")) in commands
+    assert not any(command.kind == "put" and command.x in {1, 3} for command in commands)
+    assert DrawCommand.clear_to_end(4, 0) in commands
+
+
+def test_draw_buffer_to_ansi_positions_wide_chars_by_terminal_columns() -> None:
+    # Rust owner: codex-tui::custom_terminal delegates ratatui cell positions to
+    # the backend. Wide chars must be emitted at their terminal columns, not at
+    # Python string indexes.
+    buffer = Buffer.empty(Rect.new(0, 0, 8, 1))
+    buffer.set_line(0, 0, Line.raw("你好"), max_width=8)
+    writer = io.StringIO()
+
+    draw_buffer_to_ansi(writer, buffer)
+
+    assert "\x1b[1;1H你" in writer.getvalue()
+    assert "\x1b[1;3H好" in writer.getvalue()
+
+
+def test_frame_buffer_state_clones_and_invalidates_previous_buffer() -> None:
+    # Rust owner: codex-tui::custom_terminal::Terminal stores a previous
+    # buffer and resets it after external clears so the next draw is full.
+    state = FrameBufferState()
+    buffer = Buffer.empty(Rect.new(0, 0, 4, 1))
+    buffer.set_line(0, 0, Line.raw("old"), max_width=4)
+
+    state.update(buffer)
+    buffer.set_line(0, 0, Line.raw("new"), max_width=4)
+
+    assert state.previous is not None
+    assert state.previous.plain() == "old "
+
+    state.reset()
+
+    assert state.previous is None
+
+
+def test_requires_full_redraw_centralizes_previous_buffer_compatibility() -> None:
+    # Rust owner: codex-tui::custom_terminal owns the previous/current buffer
+    # compatibility check that decides whether a draw may use a diff.
+    current = Buffer.empty(Rect.new(0, 0, 4, 1))
+    same_area_previous = Buffer.empty(Rect.new(0, 0, 4, 1))
+    resized_previous = Buffer.empty(Rect.new(0, 0, 5, 1))
+
+    assert requires_full_redraw(None, current) is True
+    assert requires_full_redraw(resized_previous, current) is True
+    assert requires_full_redraw(same_area_previous, current) is False
+
+
+def test_draw_buffer_to_ansi_uses_full_redraw_then_same_area_diff() -> None:
+    # Rust owner: codex-tui::custom_terminal selects full redraw when no
+    # previous buffer exists and same-area diffs when a previous frame exists.
+    previous = Buffer.empty(Rect.new(0, 0, 6, 1))
+    previous.set_line(0, 0, Line.raw("abcdef"), max_width=6)
+    current = Buffer.empty(Rect.new(0, 0, 6, 1))
+    current.set_line(0, 0, Line.raw("ab"), max_width=6)
+
+    full_writer = io.StringIO()
+    draw_buffer_to_ansi(full_writer, current, minimum_row_widths={0: 3})
+
+    diff_writer = io.StringIO()
+    draw_buffer_to_ansi(diff_writer, current, previous=previous)
+
+    assert "\x1b[1;1Hab " in full_writer.getvalue()
+    assert "\x1b[1;4H\x1b[0K" in full_writer.getvalue()
+    assert "\x1b[1;1Ha" not in diff_writer.getvalue()
+    assert diff_writer.getvalue() == "\x1b[1;3H\x1b[0K"
+
+
+def test_draw_buffer_to_ansi_can_handoff_cursor_position() -> None:
+    # Rust owner: codex-tui::custom_terminal moves the backend cursor from the
+    # completed frame after drawing the buffer.  Python hybrid adapters pass
+    # that cursor through this bridge helper instead of moving it locally.
+    current = Buffer.empty(Rect.new(0, 0, 6, 2))
+    current.set_line(0, 0, Line.raw("hi"), max_width=6)
+    writer = io.StringIO()
+
+    draw_buffer_to_ansi(writer, current, cursor_position=Position.new(3, 1))
+
+    assert writer.getvalue().endswith("\x1b[2;4H")
+
+
+def test_bridge_terminal_draw_uses_previous_current_buffer_diff() -> None:
+    backend = BridgeTestBackend.new(8, 1)
+    terminal = Terminal.new(backend)
+
+    terminal.draw(lambda frame: frame.render_widget(Paragraph.raw("hello"), frame.area))
+    first_draw_count = len(backend.drawn_commands)
+    terminal.draw(lambda frame: frame.render_widget(Paragraph.raw("hello"), frame.area))
+    second_draw_count = len(backend.drawn_commands)
+    terminal.draw(lambda frame: frame.render_widget(Paragraph.raw("hi"), frame.area))
+
+    assert first_draw_count > 0
+    assert second_draw_count == first_draw_count
+    assert len(backend.drawn_commands) > second_draw_count
+    assert backend.buffer().plain() == "hi      "
+
+
+def test_bridge_terminal_resize_rebuilds_viewport_and_backend_buffer() -> None:
+    backend = BridgeTestBackend.new(4, 1)
+    terminal = Terminal.new(backend)
+
+    terminal.draw(lambda frame: frame.render_widget(Paragraph.raw("abcd"), frame.area))
+    backend.resize(3, 2)
+    terminal.draw(lambda frame: frame.render_widget(Paragraph.raw("xy\nz"), frame.area))
+
+    assert terminal.viewport_area == Rect.new(0, 0, 3, 2)
+    assert backend.buffer().plain_lines() == ["xy ", "z  "]
+
+
+def test_ansi_backend_draw_writes_diff_commands_and_updates_semantic_buffer() -> None:
+    # Rust owner: codex-tui::custom_terminal owns backend draw side effects from
+    # current/previous buffer diffs.  The Python bridge keeps this as a tiny
+    # ANSI primitive so product adapters can share the same draw lifecycle.
+    writer = io.StringIO()
+    backend = AnsiBackend.new(writer, 6, 2)
+    selected = Style.default().with_fg(Color.LightBlue).bold()
+
+    backend.draw(
+        (
+            DrawCommand.put(1, 0, Cell("A", selected)),
+            DrawCommand.clear_to_end(2, 0),
+        )
+    )
+    backend.flush()
+
+    assert writer.getvalue() == "\x1b[1;2H\x1b[94;1mA\x1b[0m\x1b[1;3H\x1b[0K"
+    assert backend.buffer().row_plain(0) == " A    "
+    assert backend.flush_count == 1
+
+
+def test_terminal_draw_can_target_ansi_backend_through_bridge_lifecycle() -> None:
+    # Rust owner: codex-tui::custom_terminal Terminal::draw drives a frame,
+    # computes a diff, draws it through the backend, and flushes once.
+    writer = io.StringIO()
+    backend = AnsiBackend.new(writer, 5, 1)
+    terminal = Terminal.new(backend)
+
+    terminal.draw(lambda frame: frame.render_widget(Paragraph.raw("hi"), frame.area))
+
+    output = writer.getvalue()
+    assert "\x1b[1;1Hhi" in output
+    assert "\x1b[1;2Hi" not in output
+    assert "\x1b[1;3H\x1b[0K" in output
+    assert backend.buffer().plain() == "hi   "
+    assert backend.flush_count == 1
+
+
+def test_terminal_draw_writes_ansi_cursor_position_after_frame_draw() -> None:
+    # Rust owner: codex-tui::custom_terminal::Terminal::try_draw draws the
+    # frame, then moves the backend cursor using the cursor selected by Frame.
+    writer = io.StringIO()
+    backend = AnsiBackend.new(writer, 5, 2)
+    terminal = Terminal.new(backend)
+
+    def draw(frame: Frame) -> None:
+        frame.render_widget(Paragraph.raw("hi"), Rect.new(0, 0, 5, 1))
+        frame.set_cursor_position(Position.new(2, 1))
+
+    terminal.draw(draw)
+
+    output = writer.getvalue()
+    assert "\x1b[1;1Hhi" in output
+    assert output.endswith("\x1b[2;3H")
+    assert backend.cursor_position == Position.new(2, 1)
+    assert backend.flush_count == 1
+
+
+def test_ansi_style_sequence_maps_bridge_style_to_sgr_codes() -> None:
+    # Rust owner: codex-tui::custom_terminal applies cell style while drawing
+    # the buffer into a terminal backend.
+    style = Style.default().with_fg(Color.rgb(1, 2, 3)).with_bg(Color.Indexed(4)).underlined()
+
+    assert ansi_style_sequence(style) == "\x1b[38;2;1;2;3;48;5;4;4m"
 
 
 def test_layout_clips_when_fixed_constraints_exceed_available_space() -> None:
@@ -343,13 +668,13 @@ def test_crossterm_terminal_side_effects_are_explicitly_not_implemented() -> Non
         try:
             action()
         except NotImplementedError as exc:
-            assert "Textual" in str(exc)
+            assert "terminal runtime" in str(exc)
         else:  # pragma: no cover - defensive assertion
             raise AssertionError("raw terminal side effect unexpectedly implemented")
 
     try:
         execute("clear")
     except NotImplementedError as exc:
-        assert "Textual" in str(exc)
+        assert "terminal runtime" in str(exc)
     else:  # pragma: no cover - defensive assertion
         raise AssertionError("terminal execute side effect unexpectedly implemented")

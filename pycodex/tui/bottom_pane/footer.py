@@ -153,6 +153,11 @@ class TerminalIdleFooterData:
     show_fast_status: bool = False
 
 
+@dataclass(frozen=True)
+class TerminalFooterProjection:
+    line: str
+
+
 class SummaryHintKind(Enum):
     NONE = "None"
     SHORTCUTS = "Shortcuts"
@@ -528,6 +533,16 @@ def terminal_idle_footer_text(data: TerminalIdleFooterData) -> str:
     return " · ".join(part for part in (model_part, cwd_part) if part)
 
 
+def terminal_footer_projection(text: str, columns: int) -> TerminalFooterProjection:
+    """Project passive footer text for the terminal live pane.
+
+    Rust ownership: ``codex-tui::bottom_pane::footer`` owns passive footer
+    display text before terminal_surface places it in the live viewport.
+    """
+
+    return TerminalFooterProjection(str(text)[: max(0, int(columns) - 1)])
+
+
 def terminal_idle_footer_data_from_runtime(
     app_runtime: Any,
     *,
@@ -571,7 +586,7 @@ def run_terminal_idle_footer_text(
 def run_terminal_idle_footer_text_from_runtime(app_runtime: Any) -> str:
     """Return passive footer text using the canonical TUI runtime providers."""
 
-    from ..textual_runtime import (
+    from ..runtime_projection import (
         _runtime_cwd,
         _runtime_model_with_reasoning,
         _runtime_show_fast_status,
@@ -810,6 +825,7 @@ __all__ = [
     "ShortcutsState",
     "SummaryHintKind",
     "SummaryLeft",
+    "TerminalFooterProjection",
     "TerminalIdleFooterData",
     "alt",
     "build_columns",
@@ -856,6 +872,7 @@ __all__ = [
     "snapshot_footer_with_mode_indicator_and_context",
     "status_line_right_indicator_line",
     "terminal_idle_footer_data_from_runtime",
+    "terminal_footer_projection",
     "terminal_idle_footer_text",
     "run_terminal_idle_footer_text",
     "run_terminal_idle_footer_text_from_runtime",

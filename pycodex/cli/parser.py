@@ -103,7 +103,7 @@ from pycodex.exec.core_runtime import (
     run_core_exec_command,
     resolve_core_exec_resume_target,
 )
-from pycodex.protocol import AltScreenMode, AskForApproval, ProfileV2Name, ProfileV2NameParseError, SandboxMode
+from pycodex.protocol import AskForApproval, ProfileV2Name, ProfileV2NameParseError, SandboxMode
 from pycodex.protocol.config_types import ConfigTypeParseError
 from pycodex.responses_api_proxy import (
     ResponsesApiProxyError,
@@ -2208,9 +2208,11 @@ def main(
         parsed.config_overrides_with_feature_toggles()
         if parsed.strict_config:
             _reject_unsupported_strict_config_command(parsed.command, parsed.command_args)
-        if parsed.command == "exec" and (
-            parsed.remote is not None or parsed.remote_auth_token_env is not None
-        ) and local_http_exec_enabled(os.environ):
+        if (
+            parsed.command == "exec"
+            and (parsed.remote is not None or parsed.remote_auth_token_env is not None)
+            and not _explicit_remote_exec_compat_enabled(os.environ)
+        ):
             reject_remote_mode_for_subcommand(
                 parsed.remote,
                 parsed.remote_auth_token_env,
@@ -2492,35 +2494,23 @@ def _run_tui(
         app_runtime = TuiAppRuntime(active_thread_runtime, **startup_session_kwargs)
         active_thread_runtime = app_runtime.active_thread_runtime
     tui_stdin = sys.stdin if stdin_is_terminal and stdin is getattr(sys.stdin, "buffer", None) else stdin
-    from pycodex.tui.textual_runtime import determine_alt_screen_mode, run_textual_tui, should_use_textual_tui
+    tui_stdin_is_terminal = bool(stdin_is_terminal) if stdin_is_terminal is not None else _stream_is_terminal(tui_stdin)
+    if not tui_stdin_is_terminal:
+        print("Error: stdin is not a terminal", file=stderr)
+        return 1
+    from pycodex.tui.tui.terminal_runtime import run_terminal_tui
 
-    use_alt_screen = determine_alt_screen_mode(
-        bool(parsed.root_options.get("no_alt_screen", False)),
-        getattr(getattr(active_thread_runtime, "session_config", None), "tui_alternate_screen", AltScreenMode.AUTO),
-    )
-
-    if should_use_textual_tui(
-        stdout=out,
-        stdin=tui_stdin,
-        active_thread_runtime=active_thread_runtime,
-        use_alt_screen=use_alt_screen,
-    ):
-
-        if startup_session_kwargs:
-            return run_textual_tui(
-                active_thread_runtime=app_runtime,
-                stdout=out,
-                stdin=tui_stdin,
-                use_alt_screen=use_alt_screen,
-            )
-        return run_textual_tui(
-            active_thread_runtime=active_thread_runtime,
+    if startup_session_kwargs:
+        return run_terminal_tui(
+            active_thread_runtime=app_runtime,
             stdout=out,
             stdin=tui_stdin,
-            use_alt_screen=use_alt_screen,
         )
-    print("Error: stdin is not a terminal", file=stderr)
-    return 1
+    return run_terminal_tui(
+        active_thread_runtime=active_thread_runtime,
+        stdout=out,
+        stdin=tui_stdin,
+    )
 
 
 def _interactive_tui_terminal_guard_message(stdin_is_terminal: bool | None, stderr: TextIO) -> str | None:
@@ -2552,6 +2542,16 @@ def _stream_is_terminal(stream: object) -> bool:
         return bool(isatty()) if callable(isatty) else False
     except OSError:
         return False
+
+
+def _explicit_remote_exec_compat_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """Return true for the legacy remote exec path used when exec runtimes are off."""
+
+    source = os.environ if env is None else env
+    disabled = {"0", "false", "no", "off", "disable", "disabled"}
+    local_http_state = str(source.get("PYCODEX_EXEC_LOCAL_HTTP", "")).strip().lower()
+    core_state = str(source.get("PYCODEX_EXEC_CORE", "")).strip().lower()
+    return local_http_state in disabled and core_state in disabled
 
 
 def _normalize_tui_prompt(prompt: str) -> str:

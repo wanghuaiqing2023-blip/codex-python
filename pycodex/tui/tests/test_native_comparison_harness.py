@@ -1760,7 +1760,7 @@ def test_windows_conpty_native_and_python_seeded_message_history_ctrl_r_recall_w
         pytest.xfail(
             "source-built Rust ConPTY no-alt-screen readiness/key delivery does "
             "not reliably open seeded persistent history search; the Rust "
-            "module tests, Textual product tests, and same-session native recall "
+            "module tests, terminal product tests, and same-session native recall "
             "cover common behavior while this remains native-oracle debt"
         )
 
@@ -2449,7 +2449,7 @@ def test_windows_conpty_native_and_python_local_sse_reasoning_raw_hidden_by_defa
         output = transcript.normalized_stdout()
         assert final_answer in output
         # The live step above already waits for the summary marker. Final
-        # retained Ratatui/Textual screens may clear the transient reasoning
+        # retained Ratatui/terminal screens may clear the transient reasoning
         # status, but raw reasoning must not appear anywhere in the captured
         # terminal stream.
         assert raw_marker not in transcript.stdout
@@ -2826,7 +2826,7 @@ def test_windows_conpty_native_and_python_local_sse_exec_command_output_when_ena
         output = transcript.normalized_stdout()
         assert "OpenAI Codex" in output
         # Live exec visibility is enforced by the ConPTY ready_text_sequence
-        # above. The final retained Textual/Ratatui screen may clear completed
+        # above. The final retained terminal/Ratatui screen may clear completed
         # tool rows once assistant text is streaming.
         assert final_answer in output
 
@@ -3036,7 +3036,7 @@ def test_windows_conpty_python_local_sse_codepage_chinese_submission_when_enable
     # - codex-tui::tui::event_stream consumes crossterm KeyEvents, so IME text
     #   and Enter reach bottom_pane::chat_composer as decoded input events.
     #
-    # Python's Textual Windows VT driver reads bytes from ConPTY. Windows
+    # Python's Windows console event source reads bytes from ConPTY. Windows
     # delivers Chinese input as console-codepage bytes on this host, so this
     # product-chain regression proves those bytes still become a UserTurn.
     if os.environ.get(RUN_EXPERIMENTAL_CONPTY_ENV) != "1":
@@ -3447,8 +3447,8 @@ def test_windows_conpty_native_and_python_long_transcript_overlay_page_up_screen
     #
     # This product comparison uses the current-screen VT projection after
     # opening a long transcript at the bottom and pressing Ctrl+B once. The
-    # exact visible rows differ between Ratatui and Textual because Textual
-    # keeps the product shell/footer mounted, but both must leave the 100%
+    # exact visible rows differ between Ratatui and Python's terminal runtime
+    # because Python keeps the product shell/footer mounted, but both must leave the 100%
     # bottom-pinned page and land on an intermediate page rather than only
     # nudging by a few rows.
     if os.environ.get(RUN_NATIVE_COMPARISON_ENV) != "1":
@@ -3584,8 +3584,8 @@ def test_windows_conpty_native_and_python_long_transcript_overlay_page_down_roun
     #   to the bottom page.
     # - Rust test: transcript_overlay_paging_is_continuous_and_round_trips.
     #
-    # The current-screen percent is intentionally tolerant because Textual
-    # keeps the product shell/footer mounted while Ratatui's TranscriptOverlay
+    # The current-screen percent is intentionally tolerant because Python's
+    # terminal runtime keeps the product shell/footer mounted while Ratatui's TranscriptOverlay
     # owns the full screen. Both implementations must still return to the
     # bottom-near page after Ctrl+B then Ctrl+F.
     if os.environ.get(RUN_NATIVE_COMPARISON_ENV) != "1":
@@ -3853,7 +3853,7 @@ def test_windows_conpty_native_and_python_long_transcript_overlay_remapped_top_p
                 "jump_top plus Space/PageDown; depending on readiness/frame "
                 "timing the current-screen oracle may remain at 0% or bottom "
                 "100%. Pager top-edge behavior remains native current-screen "
-                "oracle debt while module/Textual tests prove the Rust "
+                "oracle debt while module/terminal tests prove the Rust "
                 "PagerView contract"
             )
         assert any(10 <= percent < 60 for percent in percent_matches), detail
@@ -5582,7 +5582,7 @@ def test_windows_conpty_native_and_python_copy_shortcut_no_response_when_enabled
     #   report "No agent response to copy" when no assistant response exists.
     #
     # This product comparison drives the real Rust and Python TUI entrypoints
-    # through Windows ConPTY so the Textual key dispatch cannot drift back into
+    # through Windows ConPTY so the terminal key dispatch cannot drift back into
     # submitting Ctrl-O as composer text or ignoring the shortcut.
     if os.environ.get(RUN_NATIVE_COMPARISON_ENV) != "1":
         pytest.skip(f"set {RUN_NATIVE_COMPARISON_ENV}=1 to run native ConPTY comparison")
@@ -5670,7 +5670,7 @@ def test_windows_conpty_native_and_python_copy_slash_no_response_when_enabled() 
     #   contract at the Rust chatwidget boundary.
     #
     # This product comparison proves the same behavior through source-built
-    # Rust Codex and Python PyCodex TUI entrypoints, so the Textual slash path
+    # Rust Codex and Python PyCodex TUI entrypoints, so the terminal slash path
     # cannot drift into submitting /copy as a model turn.
     if os.environ.get(RUN_NATIVE_COMPARISON_ENV) != "1":
         pytest.skip(f"set {RUN_NATIVE_COMPARISON_ENV}=1 to run native ConPTY comparison")
@@ -6004,7 +6004,7 @@ def test_windows_conpty_native_and_python_active_turn_model_slash_disabled_when_
                             ready_timeout=15.0,
                             # Keep the slash command write atomic enough for
                             # ConPTY.  A delayed per-character write can race
-                            # Rust/Textual redraws and leave the final "l" as
+                            # Rust/Python redraws and leave the final "l" as
                             # ordinary composer text, which then creates a
                             # second model request when the cleanup `/quit` is
                             # typed.  The contract under test is that `/model`

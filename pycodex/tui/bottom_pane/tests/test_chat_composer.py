@@ -26,6 +26,8 @@ from pycodex.tui.bottom_pane.chat_composer import (
     terminal_composer_draft_after_text,
     terminal_composer_draft_cleared,
     terminal_composer_input_action,
+    terminal_composer_line_text,
+    terminal_composer_projection,
     terminal_composer_submitted_line,
     user_input_too_large_message,
 )
@@ -98,6 +100,23 @@ def test_terminal_composer_draft_helpers_match_text_only_product_path():
     assert terminal_composer_submitted_line("hello") == "hello\n"
 
 
+def test_terminal_composer_projection_owns_live_prompt_text_and_cursor_width() -> None:
+    # Rust owner: codex-tui::bottom_pane::chat_composer owns composer text
+    # projection before terminal_surface adapts it into the live viewport.
+    assert terminal_composer_line_text("hello\nthere") == "\u203a hello there"
+
+    wide = terminal_composer_projection("你好", columns=20)
+    clipped = terminal_composer_projection("你好", columns=5)
+    empty = terminal_composer_projection("", columns=20)
+
+    assert wide.line == "\u203a 你好"
+    assert wide.cursor_column == 7
+    assert clipped.line == "\u203a 你"
+    assert clipped.cursor_column == 5
+    assert empty.line == "\u203a "
+    assert empty.cursor_column == 3
+
+
 def test_terminal_composer_input_action_plans_text_only_terminal_events():
     # Rust owner: codex-tui::bottom_pane::chat_composer handles key input by
     # mutating draft state or returning a submitted input result. The Python
@@ -109,6 +128,10 @@ def test_terminal_composer_input_action_plans_text_only_terminal_events():
     assert terminal_composer_input_action("hello", "text", "") == TerminalComposerInputAction(
         "continue",
         "hello",
+    )
+    assert terminal_composer_input_action("好", "text", " ") == TerminalComposerInputAction(
+        "render",
+        "好 ",
     )
     assert terminal_composer_input_action("hello", "backspace") == TerminalComposerInputAction(
         "render",

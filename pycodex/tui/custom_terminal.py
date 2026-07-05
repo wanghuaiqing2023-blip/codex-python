@@ -49,6 +49,18 @@ def move_cursor(writer: TextIO, row: int, column: int = 1) -> None:
     writer.write(f"{ESC}[{row};{column}H")
 
 
+def hide_cursor_ansi(writer: TextIO) -> None:
+    """Hide the visible terminal cursor through the ANSI backend primitive."""
+
+    writer.write(f"{ESC}[?25l")
+
+
+def show_cursor_ansi(writer: TextIO) -> None:
+    """Show the visible terminal cursor through the ANSI backend primitive."""
+
+    writer.write(f"{ESC}[?25h")
+
+
 def write_at(writer: TextIO, row: int, column: int, text: str) -> None:
     move_cursor(writer, row, column)
     writer.write(text)
@@ -57,6 +69,42 @@ def write_at(writer: TextIO, row: int, column: int, text: str) -> None:
 def clear_line_at(writer: TextIO, row: int) -> None:
     move_cursor(writer, row, 1)
     writer.write(f"{ESC}[2K")
+
+
+def clear_lines_at(writer: TextIO, rows: Iterable[int], *, reset_region: bool = True) -> None:
+    """Clear terminal rows after resetting the scroll region.
+
+    Rust owner: ``codex-tui::custom_terminal`` owns viewport clearing and
+    invalidation side effects.  Python's hybrid bottom pane passes the chosen
+    live rows here instead of spelling out terminal row-clearing loops.
+    """
+
+    if reset_region:
+        reset_scroll_region(writer)
+    for row in rows:
+        clear_line_at(writer, int(row))
+
+
+def prepare_live_viewport_redraw(writer: TextIO, rows: Iterable[int], *, full_redraw: bool) -> None:
+    """Prepare a hybrid live viewport before drawing a ratatui-like buffer.
+
+    Rust owner: ``codex-tui::custom_terminal`` owns scroll-region reset and
+    live viewport clearing side effects.  Product-path adapters decide which
+    rows belong to the live viewport, but they should not duplicate this
+    reset/clear ordering.
+    """
+
+    reset_scroll_region(writer)
+    if full_redraw:
+        clear_lines_at(writer, rows, reset_region=False)
+
+
+def flush_writer(writer: TextIO) -> None:
+    """Flush a terminal writer when it exposes a flush method."""
+
+    flush = getattr(writer, "flush", None)
+    if callable(flush):
+        flush()
 
 
 def write_inline_status_line(writer: TextIO, text: str) -> None:
@@ -580,20 +628,25 @@ __all__ = [
     "Frame",
     "ModifierDiff",
     "Position",
+    "prepare_live_viewport_redraw",
     "RUST_MODULE",
     "Rect",
     "Size",
     "Terminal",
     "clear_inline_status_line",
+    "clear_lines_at",
     "clear_scrollback_and_visible_screen_ansi",
     "diff_buffers",
     "diff_buffers_clear_to_end_starts_after_wide_char",
     "diff_buffers_does_not_emit_clear_to_end_for_full_width_row",
     "display_width",
     "draw",
+    "flush_writer",
+    "hide_cursor_ansi",
     "reset_cursor_style_emits_default_user_shape",
     "terminal_size",
     "terminal_draw_applies_requested_cursor_style",
+    "show_cursor_ansi",
     "with_options",
     "with_options_and_cursor_position",
     "with_screen_size_and_cursor_position",

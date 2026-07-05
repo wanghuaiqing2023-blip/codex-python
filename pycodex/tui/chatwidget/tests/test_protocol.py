@@ -62,7 +62,7 @@ def test_protocol_runtime_exposes_constructor_placeholder_fields() -> None:
     # - codex-tui::chatwidget::constructor initializes
     #   normal_placeholder_text/side_placeholder_text from the Rust placeholder
     #   constant sets.
-    # - Textual product startup reads these ChatWidget fields instead of
+    # - Terminal product startup reads these ChatWidget fields instead of
     #   hard-coding a separate composer prompt.
     runtime = ChatWidgetProtocolRuntime()
 

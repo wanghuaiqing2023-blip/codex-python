@@ -43,12 +43,13 @@ The scan output was grouped by ratatui area and then compared against the curren
 | `ratatui::widgets::Widget` | render trait | `pycodex.tui.ratatui_bridge.widgets.Widget` / `renderable.Renderable` | partial | Python protocols capture the render contract. Rust trait method names should be adapted per module as needed. |
 | `ratatui::widgets::WidgetRef` | by-reference widget render trait | `pycodex.tui.ratatui_bridge.widgets.WidgetRef` | partial | Protocol plus `render_ref` helper covers by-reference render dispatch. |
 | `ratatui::widgets::StatefulWidgetRef` | stateful by-reference widget render trait | `pycodex.tui.ratatui_bridge.widgets.StatefulWidgetRef` | partial | Protocol plus `render_stateful_ref` helper covers stateful render dispatch. |
-| `ratatui::backend::Backend` | backend trait, `flush`, drawing surface | `pycodex.tui.ratatui_bridge.backend.Backend` | partial | Protocol covers semantic buffer-backed backend shape. Real terminal side effects stay outside the bridge. |
+| `ratatui::backend::Backend` | backend trait, `flush`, drawing surface | `pycodex.tui.ratatui_bridge.backend.Backend` | complete_slice | Protocol covers semantic buffer-backed backend shape plus draw/flush/cursor-position lifecycle, diff/full-redraw command generation, previous-buffer compatibility checks, and previous-buffer invalidation state for product-path adapters. The bridge includes a minimal ANSI draw primitive for hybrid terminal adapters, not a full terminal backend clone. |
 | `ratatui::backend::CrosstermBackend` | real terminal backend | `pycodex.tui.ratatui_bridge.backend.CrosstermBackend` | backend/test-only | Placeholder preserves type boundary and explicitly raises for runtime-specific side effects. |
-| `ratatui::backend::TestBackend` | test buffer backend | `pycodex.tui.ratatui_bridge.backend.TestBackend` | partial | Buffer-backed semantic backend for parity-style rendering. |
+| `ratatui::backend::TestBackend` | test buffer backend | `pycodex.tui.ratatui_bridge.backend.TestBackend` | complete_slice | Buffer-backed semantic backend for parity-style rendering; applies diff draw commands and records flush/draw counts. |
+| Python hybrid ANSI draw primitive | product-path adapter output for buffer diffs | `pycodex.tui.ratatui_bridge.backend.AnsiBackend` / `draw_buffer_to_ansi` | complete_slice | Writes cursor/style/clear ANSI for `DrawCommand` values, chooses full redraw vs same-area diff for live buffers, and keeps a semantic buffer for tests. This is narrower than Rust `CrosstermBackend` and exists to let Python runtime adapters consume the same frame/diff lifecycle. |
 | `ratatui::backend::WindowSize` | terminal pixel/cell size data | `pycodex.tui.ratatui_bridge.backend.WindowSize` | partial | Stores cell size and optional pixel size. |
-| `ratatui::Terminal` | terminal wrapper, `Terminal::new` | `pycodex.tui.ratatui_bridge.backend.Terminal` | partial | Semantic wrapper over bridge backend with `draw`, `size`, `window_size`, and backend accessors. |
-| `ratatui::crossterm::*` | raw mode, execute, terminal/style commands | `pycodex.tui.ratatui_bridge.crossterm` | backend/test-only | Clear/attribute/color command values are modeled. Raw mode and command execution explicitly raise because Textual owns real terminal side effects. |
+| `ratatui::Terminal` | terminal wrapper, `Terminal::new` | `pycodex.tui.ratatui_bridge.backend.Terminal` | complete_slice | Semantic wrapper over bridge backend with current/previous buffers, `draw`, diff flushing, resize handling, frame cursor-position handoff, and backend accessors. |
+| `ratatui::crossterm::*` | raw mode, execute, terminal/style commands | `pycodex.tui.ratatui_bridge.crossterm` | backend/test-only | Clear/attribute/color command values are modeled. Raw mode and command execution explicitly raise because the terminal runtime owns real terminal side effects. |
 | `ratatui::prelude::*` | broad re-export use sites | resolved per module | n/a | `prelude::*` is not an implementation target. Each imported symbol must map to one of the concrete APIs above. |
 
 ## Current bridge target
@@ -58,7 +59,7 @@ The bridge should cover only the APIs needed by selected `codex-rs/tui` modules.
 1. Tighten `Layout` solver behavior against selected Rust module tests as needed.
 2. Add side-specific `Borders` flags only when codex-tui modules require them.
 3. Add widget adapter helpers around `WidgetRef` / `StatefulWidgetRef` only when selected modules need Rust trait-shape parity.
-4. Keep real crossterm/raw-terminal side effects deferred to runtime/Textual integration; the bridge only owns semantic/test backend behavior.
+4. Keep real crossterm/raw-terminal side effects deferred to terminal runtime/custom-terminal integration; the bridge only owns semantic/test backend behavior.
 
 ## Rule for future bridge work
 
@@ -71,11 +72,11 @@ Do not implement ratatui APIs just because upstream ratatui has them. Implement 
 
 
 
-## Textual/Rich handoff
+## Rich handoff
 
 Status: complete_slice
 
-`pycodex.tui.ratatui_bridge.textual_adapter` is the official handoff from portable ratatui semantics to vendored Textual/Rich renderables. It converts `Span`, `Line`, `Text`, `Cell`, and `Buffer` into Rich `Text`, provides plain buffer snapshots, and supports rendering bridge-style objects into a fresh `Buffer` before conversion. This keeps real terminal I/O owned by Textual while preserving ratatui-style layout/render behavior in Python.
+`pycodex.tui.ratatui_bridge.rich_adapter` is the official handoff from portable ratatui semantics to vendored Rich renderables. It converts `Span`, `Line`, `Text`, `Cell`, and `Buffer` into Rich `Text`, provides plain buffer snapshots, and supports rendering bridge-style objects into a fresh `Buffer` before conversion. Real terminal I/O remains owned by the terminal runtime/custom-terminal boundary while preserving ratatui-style layout/render behavior in Python.
 
 ## Surface completion note
 

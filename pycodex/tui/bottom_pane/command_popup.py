@@ -20,6 +20,8 @@ from .selection_popup_common import (
     GenericDisplayRow,
     measure_rows_height_with_col_width_mode,
     render_rows_with_col_width_mode,
+    render_terminal_popup_lines,
+    TerminalPopupLine,
 )
 from .slash_commands import (
     BuiltinCommandFlags,
@@ -218,6 +220,22 @@ class CommandPopup:
             MAX_POPUP_ROWS,
             "no matches",
             COMMAND_COLUMN_WIDTH,
+        )
+
+    def terminal_lines(self, *, width: int) -> List[TerminalPopupLine]:
+        """Render this command popup for the terminal live-pane adapter.
+
+        Rust owner: ``codex-tui::bottom_pane::command_popup`` owns command
+        filtering, selection state, and conversion to common selection rows.
+        """
+
+        return render_terminal_popup_lines(
+            self.rows_from_matches(self.filtered()),
+            self.state,
+            width=max(1, width),
+            max_results=MAX_POPUP_ROWS,
+            empty_message="no matches",
+            column_width=COMMAND_COLUMN_WIDTH,
         )
 
 

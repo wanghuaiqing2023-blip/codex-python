@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from pycodex.cli import parser
 from pycodex.tui import TuiAppRuntime
 from pycodex.tui.bottom_pane.status_line_setup import StatusLineItem
-from pycodex.tui.textual_runtime import _runtime_status_line_item_ids, _runtime_status_line_value
+from pycodex.tui.runtime_projection import _runtime_status_line_item_ids, _runtime_status_line_value
 
 
 def test_tui_root_config_overrides_reach_runtime_status_line(monkeypatch, tmp_path: Path) -> None:

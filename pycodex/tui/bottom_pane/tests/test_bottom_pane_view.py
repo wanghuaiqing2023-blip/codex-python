@@ -1,5 +1,10 @@
 ﻿from __future__ import annotations
 
+"""Parity tests for Rust ``codex-tui::bottom_pane::bottom_pane_view``.
+
+Rust source: codex/codex-rs/tui/src/bottom_pane/bottom_pane_view.rs
+"""
+
 from pycodex.tui.bottom_pane.bottom_pane_view import (
     BottomPaneView,
     BottomPaneViewDefaults,

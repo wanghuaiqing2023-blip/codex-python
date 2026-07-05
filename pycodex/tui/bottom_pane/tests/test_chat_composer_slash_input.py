@@ -3,6 +3,7 @@
 Rust source: codex/codex-rs/tui/src/bottom_pane/chat_composer/slash_input.rs
 """
 
+# Rust owner: codex-tui::bottom_pane::chat_composer::slash_input.
 from pycodex.protocol.user_input import ByteRange, TextElement
 from pycodex.tui.bottom_pane.chat_composer.slash_input import (
     QueuedInputAction,

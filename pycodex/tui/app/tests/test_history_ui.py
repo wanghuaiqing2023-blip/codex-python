@@ -291,21 +291,21 @@ def test_run_terminal_session_header_render_writes_history_cell() -> None:
 def test_run_terminal_session_header_from_runtime_uses_canonical_providers(monkeypatch) -> None:
     # Rust owner: app/history_ui.rs owns session-header state collection before
     # delegating to history_cell/session.rs.  The terminal runner should call
-    # this boundary instead of importing textual runtime providers directly.
-    from pycodex.tui import textual_runtime
+    # this boundary instead of importing runtime providers directly.
+    from pycodex.tui import runtime_projection
 
     class Runtime:
         cwd = Path("/workspace/project")
 
-    monkeypatch.setattr(textual_runtime, "_display_version", lambda: "runtime-version")
-    monkeypatch.setattr(textual_runtime, "_runtime_display_model", lambda runtime: "runtime-model")
+    monkeypatch.setattr(runtime_projection, "_display_version", lambda: "runtime-version")
+    monkeypatch.setattr(runtime_projection, "_runtime_display_model", lambda runtime: "runtime-model")
     monkeypatch.setattr(
-        textual_runtime,
+        runtime_projection,
         "_runtime_header_reasoning_effort",
         lambda runtime: "high",
     )
-    monkeypatch.setattr(textual_runtime, "_runtime_show_fast_status", lambda runtime: True)
-    monkeypatch.setattr(textual_runtime, "_runtime_header_yolo_mode", lambda runtime: True)
+    monkeypatch.setattr(runtime_projection, "_runtime_show_fast_status", lambda runtime: True)
+    monkeypatch.setattr(runtime_projection, "_runtime_header_yolo_mode", lambda runtime: True)
 
     written: list[str] = []
     data = run_terminal_session_header_from_runtime(

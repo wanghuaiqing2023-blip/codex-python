@@ -116,14 +116,14 @@ def test_run_terminal_startup_notices_render_skips_blank_line_without_notices() 
 def test_run_terminal_startup_notices_from_runtime_uses_canonical_providers(monkeypatch) -> None:
     # Rust owner: history_cell/session.rs owns startup notice shaping.  The
     # terminal runner should not import runtime tooltip/warning providers.
-    from pycodex.tui import textual_runtime
+    from pycodex.tui import runtime_projection
 
     class Runtime:
         pass
 
-    monkeypatch.setattr(textual_runtime, "_runtime_startup_tooltip", lambda runtime: "Try **/model**.")
+    monkeypatch.setattr(runtime_projection, "_runtime_startup_tooltip", lambda runtime: "Try **/model**.")
     monkeypatch.setattr(
-        textual_runtime,
+        runtime_projection,
         "_runtime_startup_warnings",
         lambda runtime: ("warning one", "warning one"),
     )

@@ -16,7 +16,13 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from .._porting import RustTuiModule
 from .popup_consts import MAX_POPUP_ROWS
 from .scroll_state import ScrollState
-from .selection_popup_common import ColumnWidthConfig, ColumnWidthMode, GenericDisplayRow
+from .selection_popup_common import (
+    ColumnWidthConfig,
+    ColumnWidthMode,
+    GenericDisplayRow,
+    TerminalPopupLine,
+    render_terminal_popup_lines,
+)
 from .selection_tabs import SelectionTab
 
 RUST_MODULE = RustTuiModule(
@@ -464,6 +470,29 @@ class ListSelectionView:
     def rows_width(self) -> ColumnWidthConfig:
         return ColumnWidthConfig(self.col_width_mode, self.name_column_width)
 
+    def terminal_lines(self, *, width: int) -> List[TerminalPopupLine]:
+        """Render this active selection view for the terminal live-pane adapter.
+
+        Rust owner: ``codex-tui::bottom_pane::list_selection_view`` owns active
+        header, row construction, visible windowing, and selected-row styling.
+        """
+
+        lines: list[TerminalPopupLine] = [
+            TerminalPopupLine(header_line, False)
+            for header_line in _selection_header_lines(self.active_header())
+        ]
+        lines.extend(
+            render_terminal_popup_lines(
+                self.build_rows(),
+                self.state,
+                width=max(1, width),
+                max_results=self.max_visible_rows(self.visible_len()),
+                empty_message="no matches",
+                column_width=self.rows_width(),
+            )
+        )
+        return lines
+
     def stacked_side_content(self) -> Any:
         return self.stacked_side_content_value if self.stacked_side_content_value is not None else self.side_content
 
@@ -700,6 +729,16 @@ def _area_width(area: Any) -> int:
 
 def _renderable_marker(value: Any) -> str:
     return str(getattr(value, "marker", "") or "")
+
+
+def _selection_header_lines(header: Any) -> list[str]:
+    if header is None:
+        return []
+    if isinstance(header, tuple):
+        return [str(part) for part in header if part]
+    if isinstance(header, list):
+        return [str(part) for part in header if part]
+    return [str(header)]
 
 
 def _truthy_helper(*args: Any, **kwargs: Any) -> bool:

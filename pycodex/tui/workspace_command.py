@@ -153,7 +153,7 @@ class LocalWorkspaceCommandRunner:
     """Embedded non-interactive runner for the local Python TUI product path.
 
     Rust `codex-tui::workspace_command` defines an argv/cwd/env/timeout/output
-    contract and forwards it to the active app-server.  The Python Textual TUI
+    contract and forwards it to the active app-server.  The Python terminal TUI
     common path currently embeds the active core runtime instead of a full
     app-server session, so this runner preserves the same workspace-command
     boundary locally without teaching callers about subprocess details.

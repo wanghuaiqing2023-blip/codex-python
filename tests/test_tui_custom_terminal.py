@@ -13,15 +13,26 @@ from pycodex.tui.custom_terminal import (
     Size,
     Terminal,
     clear_inline_status_line,
+    clear_lines_at,
     clear_scrollback_and_visible_screen_ansi,
     diff_buffers,
     diff_buffers_clear_to_end_starts_after_wide_char,
     diff_buffers_does_not_emit_clear_to_end_for_full_width_row,
     display_width,
+    flush_writer,
+    prepare_live_viewport_redraw,
     reset_cursor_style_emits_default_user_shape,
     terminal_draw_applies_requested_cursor_style,
     write_inline_status_line,
 )
+
+
+class _StringWriter:
+    def __init__(self) -> None:
+        self.value = ""
+
+    def write(self, text: str) -> None:
+        self.value += text
 
 
 def test_display_width_ignores_osc_sequences() -> None:
@@ -86,6 +97,33 @@ def test_inline_status_line_helpers_overwrite_current_line_without_scrollback() 
     assert backend.output() == "\r\x1b[2K\u2022 Working\r\x1b[2K"
 
 
+def test_clear_lines_at_resets_scroll_region_and_clears_each_row() -> None:
+    # Rust owner: codex-tui::custom_terminal owns viewport clear side effects.
+    # Python's hybrid live pane delegates row-clearing loops here.
+    backend = CaptureBackend.new(10, 5)
+
+    clear_lines_at(backend, (2, 5))
+
+    assert backend.output() == "\x1b[r\x1b[2;1H\x1b[2K\x1b[5;1H\x1b[2K"
+
+
+def test_flush_writer_calls_terminal_writer_flush_when_available() -> None:
+    # Rust owner: codex-tui::custom_terminal owns backend writer flushing.
+    class Flushable:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def flush(self) -> None:
+            self.calls += 1
+
+    writer = Flushable()
+
+    flush_writer(writer)  # type: ignore[arg-type]
+    flush_writer(object())  # type: ignore[arg-type]
+
+    assert writer.calls == 1
+
+
 def test_terminal_size_uses_product_path_default(monkeypatch) -> None:
     calls: list[tuple[int, int]] = []
 
@@ -106,6 +144,19 @@ def test_clear_empty_viewport_is_noop() -> None:
 
     assert terminal.backend().output() == ""
     assert terminal.backend().cursor == Position(0, 0)
+
+
+def test_prepare_live_viewport_redraw_resets_region_and_clears_only_full_redraw() -> None:
+    # Rust owner: codex-tui::custom_terminal owns scroll-region reset and
+    # live viewport clearing before frame redraw.
+    writer = _StringWriter()
+
+    prepare_live_viewport_redraw(writer, [3, 4], full_redraw=False)
+    assert writer.value == "\x1b[r"
+
+    writer.value = ""
+    prepare_live_viewport_redraw(writer, [3, 4], full_redraw=True)
+    assert writer.value == "\x1b[r\x1b[3;1H\x1b[2K\x1b[4;1H\x1b[2K"
 
 
 def test_diff_buffers_skips_clear_to_end_when_row_nonblank_extends_to_end() -> None:

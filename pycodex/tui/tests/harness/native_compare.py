@@ -95,7 +95,7 @@ class TuiProcessTranscript:
 
         This is intentionally a small VT subset for native comparison tests,
         not a full terminal emulator. It covers the CSI operations emitted by
-        the Rust Ratatui and Python Textual no-alt-screen paths in current
+        the Rust Ratatui and Python terminal no-alt-screen paths in current
         harness traces: cursor positioning/movement, line/screen clearing,
         character erasure, SGR/color sequences, and repeated blanks.
         """

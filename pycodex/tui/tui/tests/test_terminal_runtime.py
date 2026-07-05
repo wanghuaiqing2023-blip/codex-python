@@ -1,6 +1,8 @@
-from __future__ import annotations
+from __future__ import annotations
 
-import io
+# Rust owners: codex-tui::tui, tui::event_stream, bottom_pane,
+# chatwidget::model_popups, app::resize_reflow, and custom_terminal.
+import io
 import os
 import re
 from dataclasses import dataclass
@@ -689,7 +691,7 @@ def test_terminal_runtime_writes_transcript_to_terminal_output() -> None:
     #   surface.
     # - The product path must therefore write header, user input, and model
     #   output as ordinary terminal text instead of only rendering a retained
-    #   Textual transcript widget.
+    #   terminal transcript widget.
     runtime = _FakeActiveThreadRuntime(
         [
             ServerNotification("TurnStarted", {}),
@@ -878,7 +880,7 @@ def test_terminal_runtime_terminal_footer_includes_fast_model_detail(monkeypatch
     assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=stdin) == 0
 
     output = stdout.getvalue()
-    assert "\x1b[24;1Hgpt-test high fast · ~" in output
+    assert "\x1b[24;1Hgpt-test high fast · ~" in output
     assert "gpt-test high fast fast" not in output
 
 
@@ -1111,14 +1113,49 @@ def test_terminal_runtime_terminal_event_loop_submits_chinese_text_once(monkeypa
     assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=stdin) == 0
 
     output = stdout.getvalue()
-    assert "\x1b[22;1H\u203a 你好" in output
-    assert output.count(_history_insert_at(18, "\u203a 你好")) == 1
+    assert "\x1b[22;1H\u203a \u4f60" in output
+    assert "\x1b[22;5H\u597d" in output
+    assert output.count(_history_insert_at(18, "\u203a 你好")) == 1
     assert "\x1b[24;1Hgpt-test high" in output
     assert runtime.submitted
 
 
     submitted_items = runtime.submitted[0][1].payload.get("items") or []
     assert submitted_items[0].payload.get("text") == "你好"
+
+
+def test_terminal_runtime_key_stream_submits_chinese_text_followed_by_space(monkeypatch) -> None:
+    # Rust-derived contract:
+    # - codex-tui::tui::event_stream treats Space as ordinary text when it is
+    #   not consumed by a popup/view key binding.
+    # - Windows IME can surface candidate confirmation/continuation as a
+    #   virtual Space key, so bottom_pane::chat_composer must still see a text
+    #   space and preserve it in the submitted user turn.
+    monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((80, 24)))
+    runtime = _FakeActiveThreadRuntime(
+        [
+            ServerNotification("TurnStarted", {}),
+            ServerNotification("AgentMessageDelta", {"delta": "ok"}),
+            ServerNotification("TurnCompleted", {}),
+        ]
+    )
+    stdout = io.StringIO()
+    source = _FakeTerminalInputSource(
+        [
+            TerminalInputEvent("text", "\u4f60\u597d"),
+            TerminalInputEvent("text", " "),
+            TerminalInputEvent("enter"),
+            TerminalInputEvent("text", "/quit"),
+            TerminalInputEvent("enter"),
+        ]
+    )
+    _patch_terminal_input_source(monkeypatch, source)
+
+    assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=_TtyStringIO("")) == 0
+
+    submitted_items = runtime.submitted[0][1].payload.get("items") or []
+    assert submitted_items[0].payload.get("text") == "\u4f60\u597d "
+    assert _history_insert_at(18, "\u203a \u4f60\u597d ") in stdout.getvalue()
 
 
 def test_terminal_runtime_wraps_prefixed_history_cells_with_continuation_indent(monkeypatch) -> None:
@@ -1137,13 +1174,13 @@ def test_terminal_runtime_wraps_prefixed_history_cells_with_continuation_indent(
         ]
     )
     stdout = io.StringIO()
-    stdin = _TtyStringIO("你好世界中文换行\n/quit\n")
+    stdin = _TtyStringIO("你好世界中文换行\n/quit\n")
 
     assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=stdin) == 0
 
     output = stdout.getvalue()
     assert _history_insert_at(18, "\u203a \u4f60\u597d\u4e16\u754c\u4e2d\u6587") in output
-    assert "\r\n  换行" in output
+    assert "\r\n  换行" in output
     assert "\u2022 uvwxyzABCDEFG\r\n  HI" in output
 
 
@@ -1188,10 +1225,51 @@ def test_terminal_runtime_terminal_streaming_answer_preserves_footer(monkeypatch
 
     output = stdout.getvalue()
     assert "\u2022 streaming answer continues" in output
-    assert output.rfind("\x1b[24;1Hgpt-test high") > output.find("\u2022 streaming answer")
-
-
-def test_terminal_runtime_stream_resize_replays_after_turn_complete(monkeypatch) -> None:
+    assert output.rfind("\x1b[24;1Hgpt-test high") > output.find("\u2022 streaming answer")
+
+
+def test_terminal_runtime_streaming_deltas_do_not_repaint_unchanged_footer(monkeypatch) -> None:
+    # Rust-derived contract:
+    # - codex-tui::custom_terminal keeps previous/current frame buffers and
+    #   only writes changed cells while the active answer stream redraws.
+    # - The scrollback product path must preserve that frame diff contract, so
+    #   later assistant deltas do not clear or repaint an unchanged footer row.
+    monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((80, 24)))
+
+    stdout = io.StringIO()
+    snapshots: dict[int, str] = {}
+
+    def capture_before_event(index: int) -> None:
+        if index in {2, 3, 4}:
+            snapshots[index] = stdout.getvalue()
+
+    runtime = _ObservingSubmitRuntime(
+        [
+            ServerNotification("TurnStarted", {}),
+            ServerNotification("AgentMessageDelta", {"delta": "one"}),
+            ServerNotification("AgentMessageDelta", {"delta": " two"}),
+            ServerNotification("AgentMessageDelta", {"delta": " three"}),
+            ServerNotification("TurnCompleted", {}),
+        ],
+        capture_before_event,
+    )
+    stdin = _TtyStringIO("hello?\n/quit\n")
+
+    assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=stdin) == 0
+
+    assert {2, 3, 4}.issubset(snapshots)
+    first_delta_output = snapshots[2]
+    second_delta_output = snapshots[3][len(first_delta_output):]
+    third_delta_output = snapshots[4][len(snapshots[3]):]
+
+    assert "\x1b[24;1Hgpt-test high" in first_delta_output
+    assert "\x1b[24;1Hgpt-test high" not in second_delta_output
+    assert "\x1b[24;1H\x1b[2K" not in second_delta_output
+    assert "\x1b[24;1Hgpt-test high" not in third_delta_output
+    assert "\x1b[24;1H\x1b[2K" not in third_delta_output
+
+
+def test_terminal_runtime_stream_resize_replays_after_turn_complete(monkeypatch) -> None:
     # Rust-derived contract:
     # - codex-tui::app::resize_reflow avoids corrupting in-flight rendering and
     #   replays source-backed transcript cells once the frame can be redrawn.
@@ -1428,3 +1506,4 @@ def test_terminal_runtime_terminal_retry_status_stays_in_bottom_pane(monkeypatch
     assert "\x1b[24;1Hgpt-test high" in output
     assert "\n\u2022 Reconnecting... 2/5" not in output
     assert "\u2022 recovered" in output
+

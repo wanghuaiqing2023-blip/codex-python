@@ -1,5 +1,6 @@
 """Parity tests for Rust ``codex-tui::bottom_pane::slash_commands``."""
 
+# Rust owner: codex-tui::bottom_pane::slash_commands.
 from dataclasses import replace
 
 from pycodex.tui.bottom_pane.slash_commands import (
