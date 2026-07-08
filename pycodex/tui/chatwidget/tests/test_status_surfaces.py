@@ -1,7 +1,9 @@
 from datetime import datetime, timedelta, timezone
 import io
+import os
 from types import SimpleNamespace
 
+from pycodex.tui.app.resize_reflow import bottom_pane_footprint_transition
 from pycodex.tui.bottom_pane.status_line_setup import StatusLineItem
 from pycodex.tui.bottom_pane.title_setup import TerminalTitleItem
 from pycodex.tui.chatwidget.status_surfaces import (
@@ -32,11 +34,30 @@ from pycodex.tui.chatwidget.status_surfaces import (
     truncate_terminal_title_part,
     weekly_status_window,
 )
+from pycodex.tui.chatwidget.status_surfaces import (
+    run_terminal_live_status_action_plan,
+    run_terminal_live_status_hide,
+    run_terminal_live_status_show,
+    terminal_live_status_hide_plan,
+    terminal_live_status_show_plan,
+    terminal_live_status_transition_to_inactive,
+    terminal_live_status_transition_to_status,
+)
 from pycodex.tui.chatwidget.status_state import TerminalTitleStatusKind
 from pycodex.tui.status.rate_limits import RateLimitSnapshotDisplay, RateLimitWindowDisplay
 
 
 NOW = datetime(2026, 6, 12, tzinfo=timezone.utc)
+
+
+class FlushTrackingStringIO(io.StringIO):
+    def __init__(self) -> None:
+        super().__init__()
+        self.flush_count = 0
+
+    def flush(self) -> None:
+        self.flush_count += 1
+        super().flush()
 
 
 def _window(minutes: int) -> RateLimitWindowDisplay:
@@ -166,7 +187,7 @@ def test_terminal_live_turn_status_text_and_tick_gate() -> None:
 
 def test_terminal_live_status_projection_clips_for_bottom_pane_row() -> None:
     # Rust owner: codex-tui::chatwidget::status_surfaces owns live status text
-    # projection; terminal_surface only places the projected row in the pane.
+    # projection; terminal adapters only place the projected row in the pane.
     assert terminal_live_status_projection("\u2022 Working", columns=10).line == "\u2022 Working"
     assert terminal_live_status_projection("\u2022 Working", columns=6).line == "\u2022 Wor"
     assert terminal_live_status_projection(None, columns=10).line is None
@@ -224,6 +245,9 @@ def test_terminal_status_surface_writer_updates_state_before_repaint() -> None:
 
 
 def test_terminal_status_surface_writer_owns_turn_status_refresh_state() -> None:
+    # Rust owner: chatwidget::status_surfaces owns the force-render callback
+    # used when a turn starts; terminal_runtime should pass this method instead
+    # of spelling out render_turn_status(force=True).
     writer = io.StringIO()
     calls: list[str] = []
     status = TerminalStatusSurfaceWriter(
@@ -234,6 +258,12 @@ def test_terminal_status_surface_writer_owns_turn_status_refresh_state() -> None
         repaint_footprint=lambda _previous: calls.append("repaint"),
         render_bottom_pane=lambda: calls.append("render"),
     )
+
+    status.start_turn(10.0)
+    status.turn_started_at = -1.0
+    status.render_turn_status_force()
+    assert status.turn_status.active is True
+    assert status.live_status.text is not None
 
     status.start_turn(10.0)
     status.render_turn_status(force=True, now=12.4)
@@ -253,19 +283,32 @@ def test_terminal_status_surface_writer_owns_turn_status_refresh_state() -> None
 
 
 def test_terminal_status_surface_writer_hides_live_status_surface() -> None:
+    # Rust owner: codex-tui::chatwidget::status_surfaces owns protocol-facing
+    # live-status hide/clear transitions. terminal_runtime should bind these
+    # methods directly instead of spelling out redraw_bottom_pane policy.
     writer = io.StringIO()
+    calls: list[str] = []
     status = TerminalStatusSurfaceWriter(
         writer,
         stdin_is_terminal=lambda: True,
         layout_active=lambda: True,
+        repaint_footprint=lambda _previous: calls.append("repaint"),
+        render_bottom_pane=lambda: calls.append("render"),
     )
 
     status.show_live_status("Working")
     assert status.live_status.footprint_active is True
 
-    status.hide_inline_status(redraw_bottom_pane=True)
+    status.hide_live_status()
 
     assert status.live_status == TerminalLiveStatusSurface.inactive()
+    assert calls[-2:] == ["repaint", "render"]
+
+    status.show_live_status("Working")
+    calls.clear()
+    status.clear_live_status()
+    assert status.live_status == TerminalLiveStatusSurface.inactive()
+    assert calls[-2:] == ["repaint", "render"]
 
 
 def test_terminal_turn_status_state_owns_tick_gate_state() -> None:
@@ -286,6 +329,34 @@ def test_terminal_turn_status_state_owns_tick_gate_state() -> None:
     assert not suppressed.should_refresh()
     assert not suppressed.should_render(2)
     assert suppressed.cleared() == TerminalTurnStatusState.inactive()
+
+
+def test_terminal_status_surface_writer_owns_composer_cursor_visibility() -> None:
+    # Rust owner: codex-tui::chatwidget::status_surfaces owns active-turn
+    # status state for the terminal product path. terminal_runtime should ask
+    # this owner whether the composer cursor is visible instead of inspecting
+    # turn state in a local lambda.
+    status = TerminalStatusSurfaceWriter(io.StringIO())
+
+    assert status.composer_cursor_visible() is True
+    status.turn_status = TerminalTurnStatusState.inactive().after_render(0)
+    assert status.composer_cursor_visible() is False
+    status.clear_turn_status()
+    assert status.composer_cursor_visible() is True
+
+
+def test_terminal_status_surface_writer_binds_bottom_pane_render_callback() -> None:
+    # Rust owner: codex-tui::chatwidget::status_surfaces owns the
+    # protocol-facing status writer callbacks. The terminal runtime may wire
+    # bottom-pane rendering after component construction, but the binding
+    # method lives with the status owner.
+    calls: list[str] = []
+    status = TerminalStatusSurfaceWriter(io.StringIO())
+
+    status.bind_render_bottom_pane(lambda: calls.append("render"))
+    status.render_bottom_pane()
+
+    assert calls == ["render"]
 
 
 def test_terminal_turn_status_render_plan_owns_elapsed_header_and_state_transition() -> None:
@@ -415,3 +486,252 @@ def test_approval_mode_display_matches_auto_review_special_case() -> None:
 
     config = SimpleNamespace(permissions=permissions, approvals_reviewer="human")
     assert approval_mode_display(config) == "on-request"
+
+
+def test_live_status_surface_controls_bottom_pane_footprint() -> None:
+    # Rust owner: codex-tui::bottom_pane owns whether status indicator state
+    # expands the live bottom pane; the terminal runner only applies the plan.
+    size = os.terminal_size((80, 24))
+    inactive = TerminalLiveStatusSurface.inactive()
+    non_tty_active = TerminalLiveStatusSurface.active_status()
+    active = TerminalLiveStatusSurface.active_status("\u2022 Working")
+
+    assert not inactive.active
+    assert inactive.render_text is None
+    assert not inactive.footprint_active
+    assert non_tty_active.active
+    assert non_tty_active.render_text is None
+    assert not non_tty_active.footprint_active
+    assert active.render_text == "\u2022 Working"
+    assert active.footprint_active
+    assert active.rows_for_size(size) == [19, 20, 21, 22, 23, 24]
+
+    grow = bottom_pane_footprint_transition(size, inactive, active)
+    same = bottom_pane_footprint_transition(size, active, TerminalLiveStatusSurface.active_status("\u2022 Thinking"))
+    shrink = bottom_pane_footprint_transition(size, active, inactive)
+
+    assert grow.old_rows == (21, 22, 23, 24)
+    assert grow.new_rows == (19, 20, 21, 22, 23, 24)
+    assert grow.changed
+    assert not same.changed
+    assert shrink.changed
+
+
+def test_live_status_transition_helpers_preserve_previous_and_current_state() -> None:
+    # Rust owner: codex-tui::bottom_pane owns status indicator surface state.
+    # The terminal runner applies terminal side effects after receiving these
+    # previous/current states.
+    inactive = TerminalLiveStatusSurface.inactive()
+
+    shown = terminal_live_status_transition_to_status(inactive, "\u2022 Working")
+    assert shown.previous is inactive
+    assert shown.current == TerminalLiveStatusSurface.active_status("\u2022 Working")
+    assert shown.current.footprint_active
+
+    non_tty = terminal_live_status_transition_to_status(shown.current)
+    assert non_tty.previous == shown.current
+    assert non_tty.current.active
+    assert non_tty.current.render_text is None
+    assert not non_tty.current.footprint_active
+
+    hidden = terminal_live_status_transition_to_inactive(shown.current)
+    assert hidden.previous == shown.current
+    assert hidden.current == TerminalLiveStatusSurface.inactive()
+
+
+def test_live_status_show_plan_routes_terminal_and_inline_side_effects() -> None:
+    # Rust owner: codex-tui::bottom_pane::BottomPane::ensure_status_indicator
+    # owns status-indicator visibility and redraw requests; the terminal runner
+    # should only execute the planned terminal side effects.
+    inactive = TerminalLiveStatusSurface.inactive()
+
+    tty = terminal_live_status_show_plan(
+        inactive,
+        "\u2022 Working",
+        stdin_is_terminal=True,
+        layout_active=True,
+    )
+    inline = terminal_live_status_show_plan(
+        inactive,
+        "\u2022 Working",
+        stdin_is_terminal=False,
+        layout_active=False,
+    )
+
+    assert tty.transition.current == TerminalLiveStatusSurface.active_status("\u2022 Working")
+    assert tty.check_resize is True
+    assert tty.repaint_footprint is True
+    assert tty.render_bottom_pane is True
+    assert tty.inline_status_text is None
+    assert inline.transition.current == TerminalLiveStatusSurface.active_status("\u2022 Working")
+    assert inline.inline_status_text == "\u2022 Working"
+    assert inline.flush_writer is True
+    assert inline.render_bottom_pane is False
+
+
+def test_live_status_hide_plan_routes_terminal_and_inline_side_effects() -> None:
+    # Rust owner: codex-tui::bottom_pane::BottomPane::hide_status_indicator.
+    active = TerminalLiveStatusSurface.active_status("\u2022 Working")
+
+    redraw = terminal_live_status_hide_plan(
+        active,
+        stdin_is_terminal=True,
+        redraw_bottom_pane=True,
+    )
+    flush_only = terminal_live_status_hide_plan(
+        active,
+        stdin_is_terminal=True,
+        redraw_bottom_pane=False,
+    )
+    inline = terminal_live_status_hide_plan(
+        active,
+        stdin_is_terminal=False,
+    )
+    inactive = terminal_live_status_hide_plan(
+        TerminalLiveStatusSurface.inactive(),
+        stdin_is_terminal=True,
+    )
+
+    assert redraw.transition.current == TerminalLiveStatusSurface.inactive()
+    assert redraw.repaint_footprint is True
+    assert redraw.render_bottom_pane is True
+    assert redraw.flush_writer is False
+    assert flush_only.repaint_footprint is True
+    assert flush_only.render_bottom_pane is False
+    assert flush_only.flush_writer is True
+    assert inline.clear_inline_status is True
+    assert inline.flush_writer is True
+    assert inactive.changed is False
+    assert inactive.repaint_footprint is False
+
+
+def test_run_live_status_action_plan_executes_terminal_callbacks() -> None:
+    active = TerminalLiveStatusSurface.active_status("\u2022 Working")
+    plan = terminal_live_status_hide_plan(
+        active,
+        stdin_is_terminal=True,
+        redraw_bottom_pane=True,
+    )
+    calls: list[object] = []
+
+    run_terminal_live_status_action_plan(
+        io.StringIO(),
+        plan,
+        repaint_footprint=lambda previous: calls.append(previous),
+        render_bottom_pane=lambda: calls.append("render"),
+    )
+
+    assert calls == [active, "render"]
+
+
+def test_run_live_status_action_plan_executes_inline_writer_effects() -> None:
+    writer = FlushTrackingStringIO()
+    shown = terminal_live_status_show_plan(
+        TerminalLiveStatusSurface.inactive(),
+        "\u2022 Working",
+        stdin_is_terminal=False,
+        layout_active=False,
+    )
+    hidden = terminal_live_status_hide_plan(
+        TerminalLiveStatusSurface.active_status("\u2022 Working"),
+        stdin_is_terminal=False,
+    )
+
+    run_terminal_live_status_action_plan(
+        writer,
+        shown,
+        repaint_footprint=lambda previous: None,
+        render_bottom_pane=lambda: None,
+    )
+    run_terminal_live_status_action_plan(
+        writer,
+        hidden,
+        repaint_footprint=lambda previous: None,
+        render_bottom_pane=lambda: None,
+    )
+
+    output = writer.getvalue()
+    assert "\u2022 Working" in output
+    assert "\r\x1b[2K" in output
+    assert writer.flush_count == 2
+
+
+def test_run_live_status_show_and_hide_return_surface_state_and_execute_effects() -> None:
+    # Rust owner: codex-tui::bottom_pane::BottomPane owns status-indicator
+    # visibility transitions; terminal runtime supplies the side-effect hooks.
+    writer = FlushTrackingStringIO()
+    calls: list[object] = []
+    initial = TerminalLiveStatusSurface.inactive()
+
+    shown = run_terminal_live_status_show(
+        writer,
+        initial,
+        "\u2022 Working",
+        stdin_is_terminal=True,
+        layout_active=True,
+        check_resize=lambda: calls.append("resize"),
+        repaint_footprint=lambda previous: calls.append(previous),
+        render_bottom_pane=lambda: calls.append("render"),
+    )
+    hidden = run_terminal_live_status_hide(
+        writer,
+        shown,
+        stdin_is_terminal=True,
+        redraw_bottom_pane=False,
+        repaint_footprint=lambda previous: calls.append(previous),
+        render_bottom_pane=lambda: calls.append("render"),
+    )
+
+    assert shown == TerminalLiveStatusSurface.active_status("\u2022 Working")
+    assert hidden == TerminalLiveStatusSurface.inactive()
+    assert calls == ["resize", initial, "render", shown]
+    assert writer.flush_count == 1
+
+
+def test_run_live_status_show_applies_state_before_repaint() -> None:
+    applied: list[TerminalLiveStatusSurface] = []
+    observed_during_repaint: list[TerminalLiveStatusSurface] = []
+
+    shown = run_terminal_live_status_show(
+        io.StringIO(),
+        TerminalLiveStatusSurface.inactive(),
+        "\u2022 Working",
+        stdin_is_terminal=True,
+        layout_active=False,
+        check_resize=lambda: None,
+        apply_state=applied.append,
+        repaint_footprint=lambda previous: observed_during_repaint.extend(applied),
+        render_bottom_pane=lambda: None,
+    )
+
+    assert shown == TerminalLiveStatusSurface.active_status("\u2022 Working")
+    assert applied == [shown]
+    assert observed_during_repaint == [shown]
+
+
+def test_run_live_status_show_and_hide_handle_inline_surface() -> None:
+    writer = FlushTrackingStringIO()
+
+    shown = run_terminal_live_status_show(
+        writer,
+        TerminalLiveStatusSurface.inactive(),
+        "\u2022 Working",
+        stdin_is_terminal=False,
+        layout_active=False,
+        check_resize=lambda: writer.write("<resize>"),
+        repaint_footprint=lambda previous: writer.write("<repaint>"),
+        render_bottom_pane=lambda: writer.write("<render>"),
+    )
+    hidden = run_terminal_live_status_hide(
+        writer,
+        shown,
+        stdin_is_terminal=False,
+        repaint_footprint=lambda previous: writer.write("<repaint>"),
+        render_bottom_pane=lambda: writer.write("<render>"),
+    )
+
+    assert shown.active
+    assert hidden == TerminalLiveStatusSurface.inactive()
+    assert "\u2022 Working" in writer.getvalue()
+    assert "\r\x1b[2K" in writer.getvalue()
+    assert writer.flush_count == 2

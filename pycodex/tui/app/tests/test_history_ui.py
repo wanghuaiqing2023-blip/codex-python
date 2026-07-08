@@ -1,3 +1,4 @@
+import io
 from pathlib import Path
 
 from pycodex.tui.app.history_ui import (
@@ -10,6 +11,7 @@ from pycodex.tui.app.history_ui import (
     TerminalClearState,
     TerminalClearUiExecutor,
     TerminalSessionHeaderData,
+    TerminalSessionHeaderWriter,
     Tui,
     clear_terminal_ui_alt_and_inline_branches,
     open_url_success_and_failure_messages,
@@ -236,6 +238,51 @@ def test_terminal_clear_ui_executor_applies_state_and_sequences_callbacks() -> N
     assert resize_pending == [False]
 
 
+def test_terminal_clear_ui_executor_factory_owns_terminal_runtime_callbacks(monkeypatch) -> None:
+    # Rust owner: app/history_ui.rs owns /clear terminal reset and header
+    # repaint sequencing. terminal_runtime should ask this owner for the
+    # bound executor instead of constructing clear/header lambdas locally.
+    from pycodex.tui import runtime_projection
+
+    class Runtime:
+        cwd = Path("C:/workspace/repo")
+
+    monkeypatch.setattr(runtime_projection, "_display_version", lambda: "0.2.0")
+    monkeypatch.setattr(runtime_projection, "_runtime_display_model", lambda runtime: "gpt-test")
+    monkeypatch.setattr(runtime_projection, "_runtime_header_reasoning_effort", lambda runtime: "medium")
+    monkeypatch.setattr(runtime_projection, "_runtime_header_yolo_mode", lambda runtime: False)
+    monkeypatch.setattr(runtime_projection, "_runtime_show_fast_status", lambda runtime: False)
+
+    writer = io.StringIO()
+    calls: list[str] = []
+    header_cells: list[str] = []
+
+    executor = TerminalClearUiExecutor.for_terminal_runtime(
+        app_runtime=Runtime(),
+        writer=writer,
+        deactivate_layout=lambda: calls.append("deactivate"),
+        apply_history_state=lambda state: calls.append(f"history:{state.history_has_content}"),
+        apply_assistant_stream_state=lambda state: calls.append(f"assistant:{state.active}"),
+        apply_resize_pending=lambda pending: calls.append(f"resize:{pending}"),
+        write_history_cell=lambda cell: (calls.append("header"), header_cells.append(cell)),
+        activate_layout=lambda: calls.append("activate"),
+    )
+
+    returned = executor.run()
+
+    assert "\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H" in writer.getvalue()
+    assert calls == [
+        "deactivate",
+        "history:False",
+        "assistant:False",
+        "resize:False",
+        "header",
+        "activate",
+    ]
+    assert returned == terminal_clear_state_after_clear()
+    assert "gpt-test medium" in header_cells[0]
+
+
 def test_terminal_session_header_data_from_runtime_uses_runtime_providers() -> None:
     # Rust owner: app/history_ui.rs reads App/chat-widget state before building
     # SessionHeaderHistoryCell.  The terminal runner should pass providers, not
@@ -320,6 +367,42 @@ def test_run_terminal_session_header_from_runtime_uses_canonical_providers(monke
         show_fast_status=True,
         directory=Path("/workspace/project"),
         version="runtime-version",
+        yolo_mode=True,
+    )
+    assert written == [terminal_session_header_text(data, 100)]
+
+
+def test_terminal_session_header_writer_binds_runtime_callbacks(monkeypatch) -> None:
+    # Rust owner: codex-tui::app::history_ui owns session-header state
+    # collection and repaint binding, while history_cell::session owns display.
+    # terminal_runtime should consume this bound writer instead of rebuilding
+    # session-header callbacks at startup or /clear repaint sites.
+    from pycodex.tui import runtime_projection
+
+    class Runtime:
+        cwd = Path("/workspace/project")
+
+    monkeypatch.setattr(runtime_projection, "_display_version", lambda: "writer-version")
+    monkeypatch.setattr(runtime_projection, "_runtime_display_model", lambda runtime: "writer-model")
+    monkeypatch.setattr(runtime_projection, "_runtime_header_reasoning_effort", lambda runtime: "medium")
+    monkeypatch.setattr(runtime_projection, "_runtime_show_fast_status", lambda runtime: False)
+    monkeypatch.setattr(runtime_projection, "_runtime_header_yolo_mode", lambda runtime: True)
+
+    written: list[str] = []
+    writer = TerminalSessionHeaderWriter(
+        Runtime(),
+        write_history_cell=written.append,
+        width=100,
+    )
+
+    data = writer.write()
+
+    assert data == TerminalSessionHeaderData(
+        model="writer-model",
+        reasoning_effort="medium",
+        show_fast_status=False,
+        directory=Path("/workspace/project"),
+        version="writer-version",
         yolo_mode=True,
     )
     assert written == [terminal_session_header_text(data, 100)]

@@ -10,6 +10,7 @@ from pycodex.tui.bottom_pane.selection_popup_common import (
     Line,
     Rect,
     Span,
+    TerminalPopupLine,
     build_full_line,
     compute_desc_col,
     measure_rows_height,
@@ -20,9 +21,13 @@ from pycodex.tui.bottom_pane.selection_popup_common import (
     render_rows_single_line,
     render_terminal_popup_lines,
     should_wrap_name_in_column,
+    terminal_popup_line_for_width,
+    terminal_popup_lines_for_width,
+    terminal_popup_line_style,
     wrap_indent,
     wrap_two_column_row,
 )
+from pycodex.tui.ratatui_bridge import Color as RatatuiColor
 
 
 def test_menu_surface_inset_and_padding_match_rust_constants() -> None:
@@ -72,6 +77,40 @@ def test_terminal_popup_lines_preserve_selected_row_semantics() -> None:
     assert rendered[0].selected is False
     assert rendered[1].text.startswith("/memories")
     assert rendered[1].selected is True
+
+
+def test_terminal_popup_line_style_maps_selected_semantics_to_terminal_style() -> None:
+    # Rust owner: codex-tui::bottom_pane::selection_popup_common owns selected
+    # row style before the terminal frame projects rows into ratatui cells.
+    assert terminal_popup_line_style(selected=True).fg == RatatuiColor.LightBlue
+    assert terminal_popup_line_style(selected=False).fg is None
+
+
+def test_terminal_popup_line_for_width_clips_by_terminal_cell_width() -> None:
+    # Rust owner: codex-tui::bottom_pane::selection_popup_common owns popup row
+    # width handling. The terminal frame should consume clipped popup rows
+    # instead of applying its own terminal truncation.
+    line = TerminalPopupLine("你好abc", selected=True)
+
+    clipped = terminal_popup_line_for_width(line, 5)
+
+    assert clipped == TerminalPopupLine("你好a", selected=True)
+
+
+def test_terminal_popup_lines_for_width_clips_rows_and_preserves_selection() -> None:
+    # Rust owner: codex-tui::bottom_pane::selection_popup_common owns terminal
+    # popup row width handling for all rows before chatwidget.rendering places them.
+    lines = [
+        TerminalPopupLine("你好abc", selected=True),
+        TerminalPopupLine("plain-text", selected=False),
+    ]
+
+    clipped = terminal_popup_lines_for_width(lines, 5)
+
+    assert clipped == [
+        TerminalPopupLine("你好a", selected=True),
+        TerminalPopupLine("plain", selected=False),
+    ]
 
 
 def test_build_full_line_combines_prefix_match_description_disabled_and_category() -> None:

@@ -1,17 +1,26 @@
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 
+from pycodex.tui.bottom_pane.chat_composer import terminal_composer_line_text
+from pycodex.tui.bottom_pane.selection_popup_common import TerminalPopupLine
+from pycodex.tui.bottom_pane.terminal_action import TerminalBottomPaneState
 from pycodex.tui.chatwidget.rendering import (
     BottomPaneComposerReserveRenderable,
     Rect,
     RenderLog,
+    TerminalBottomPaneFrame,
+    TerminalBottomPaneFrameWrite,
     TranscriptAreaRenderable,
     cursor_pos,
     cursor_style,
     desired_height,
     render,
+    terminal_bottom_pane_frame,
+    terminal_bottom_pane_frame_buffer,
 )
+from pycodex.tui.ratatui_bridge import Color as RatatuiColor
 
 
 class Cell:
@@ -61,6 +70,8 @@ class Widget:
 
 
 def test_transcript_area_child_area_saturates_width_height_and_adds_top() -> None:
+    # Rust owner: codex-tui::chatwidget::rendering owns transcript-area
+    # composition and bottom-pane reservation behavior for chatwidget render.
     renderable = TranscriptAreaRenderable(Cell(), top=1, right=4)
 
     assert renderable.child_area(Rect(2, 3, 10, 5)) == Rect(2, 4, 6, 4)
@@ -92,6 +103,105 @@ def test_bottom_pane_composer_reserve_delegates_render_height_cursor_and_style()
     assert bottom.calls[-1] == ("height", 20, 3)
     assert renderable.cursor_pos(area) == (4, 2)
     assert renderable.cursor_style(area) == "bar"
+
+
+def test_terminal_bottom_pane_frame_buffer_projects_frame_writes_into_cells() -> None:
+    # Rust owner: codex-tui::chatwidget::rendering owns rendering content into
+    # the ratatui buffer; custom_terminal consumes the resulting live viewport.
+    frame = TerminalBottomPaneFrame(
+        clear_rows=(9, 10),
+        writes=(
+            TerminalBottomPaneFrameWrite(9, 1, "> prompt"),
+            TerminalBottomPaneFrameWrite(10, 1, "/model choose", True),
+        ),
+        cursor_row=9,
+        cursor_column=9,
+    )
+
+    buffer = terminal_bottom_pane_frame_buffer(os.terminal_size((32, 12)), frame)
+
+    assert buffer.area == Rect(0, 8, 32, 2)
+    assert buffer.row_plain(8) == "> prompt" + " " * 24
+    assert buffer.row_plain(9) == "/model choose" + " " * 19
+    assert buffer.cell(0, 9).style.fg == RatatuiColor.LightBlue
+
+
+def test_terminal_bottom_pane_frame_composes_owner_projections() -> None:
+    # Rust owner: codex-tui::chatwidget::rendering composes bottom-pane
+    # renderable content before custom_terminal projects it into terminal
+    # side effects; the terminal adapter must not rebuild slash-popup rows.
+    size = os.terminal_size((72, 12))
+
+    frame = terminal_bottom_pane_frame(
+        size,
+        TerminalBottomPaneState(
+            draft="/m",
+            footer_text="gpt-test high",
+            popup_lines=(
+                TerminalPopupLine("/model choose", True),
+                TerminalPopupLine("/memories configure", False),
+            ),
+        ),
+    )
+
+    assert frame.clear_rows == (9, 10, 11, 12)
+    assert frame.writes == (
+        TerminalBottomPaneFrameWrite(9, 1, "\u203a /m"),
+        TerminalBottomPaneFrameWrite(10, 1, "/model choose", True),
+        TerminalBottomPaneFrameWrite(11, 1, "/memories configure", False),
+        TerminalBottomPaneFrameWrite(12, 1, "gpt-test high"),
+    )
+    assert frame.cursor_row == 9
+    assert frame.cursor_column == len(terminal_composer_line_text("/m")) + 1
+
+
+def test_terminal_bottom_pane_frame_projects_popup_rows_to_buffer() -> None:
+    # Rust owner: codex-tui::chatwidget::rendering owns the side-effect-free
+    # bottom-pane frame and buffer content projection. Terminal adapters should
+    # never be the test owner for popup layout or selected-row styling.
+    size = os.terminal_size((32, 12))
+    frame = terminal_bottom_pane_frame(
+        size,
+        TerminalBottomPaneState(
+            draft="/m",
+            footer_text="gpt-test high",
+            popup_lines=(
+                TerminalPopupLine("/model choose", True),
+                TerminalPopupLine("/memories configure", False),
+            ),
+        ),
+    )
+
+    buffer = terminal_bottom_pane_frame_buffer(size, frame)
+
+    assert buffer.area == Rect(0, 8, 32, 4)
+    assert buffer.plain_lines() == [
+        "\u203a /m" + " " * 28,
+        "/model choose" + " " * 19,
+        "/memories configure" + " " * 13,
+        "gpt-test high" + " " * 19,
+    ]
+    assert buffer.cell(0, 9).symbol == "/"
+    assert buffer.cell(0, 9).style.fg == RatatuiColor.LightBlue
+    assert buffer.cell(0, 10).style.fg is None
+
+
+def test_terminal_bottom_pane_frame_clear_rows_cover_previous_larger_popup_footprint() -> None:
+    # Rust owner: codex-tui::chatwidget::rendering composes the frame rows that
+    # custom_terminal later clears/draws. The surface adapter should not own
+    # popup footprint shrink/grow semantics.
+    frame = terminal_bottom_pane_frame(
+        os.terminal_size((72, 12)),
+        TerminalBottomPaneState(
+            draft="/m",
+            footer_text="gpt-test high",
+            popup_lines=(TerminalPopupLine("/model choose", True),),
+        ),
+        clear_popup_height=3,
+    )
+
+    assert frame.clear_rows == (8, 9, 10, 11, 12)
+    assert TerminalBottomPaneFrameWrite(10, 1, "/model choose", True) in frame.writes
 
 
 def test_chatwidget_render_composes_active_hook_and_bottom_and_records_width() -> None:

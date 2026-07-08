@@ -537,7 +537,7 @@ def terminal_footer_projection(text: str, columns: int) -> TerminalFooterProject
     """Project passive footer text for the terminal live pane.
 
     Rust ownership: ``codex-tui::bottom_pane::footer`` owns passive footer
-    display text before terminal_surface places it in the live viewport.
+    display text before terminal adapters place it in the live viewport.
     """
 
     return TerminalFooterProjection(str(text)[: max(0, int(columns) - 1)])
@@ -598,6 +598,16 @@ def run_terminal_idle_footer_text_from_runtime(app_runtime: Any) -> str:
         cwd=_runtime_cwd,
         show_fast_status=_runtime_show_fast_status,
     )
+
+
+@dataclass(frozen=True)
+class TerminalIdleFooterTextProvider:
+    """Runtime-bound passive footer text callback for the terminal path."""
+
+    app_runtime: Any
+
+    def text(self) -> str:
+        return run_terminal_idle_footer_text_from_runtime(self.app_runtime)
 
 
 def shows_passive_footer_line(props: FooterProps, show_queue_hint: bool = False) -> bool:
@@ -827,6 +837,7 @@ __all__ = [
     "SummaryLeft",
     "TerminalFooterProjection",
     "TerminalIdleFooterData",
+    "TerminalIdleFooterTextProvider",
     "alt",
     "build_columns",
     "can_show_left_with_context",

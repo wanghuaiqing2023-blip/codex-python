@@ -8,6 +8,7 @@ from pycodex.tui.chatwidget.permission_popups import PermissionProfile
 from pycodex.tui.history_cell.session import (
     SESSION_HEADER_MAX_INNER_WIDTH,
     SessionHeaderHistoryCell,
+    TerminalStartupNoticesWriter,
     TooltipHistoryCell,
     card_inner_width,
     has_yolo_permissions,
@@ -138,6 +139,34 @@ def test_run_terminal_startup_notices_from_runtime_uses_canonical_providers(monk
     )
 
     assert notices == ("\u2022 Tip: Try /model.", "\u2022 warning one")
+    assert writes == list(notices)
+    assert blanks == ["blank"]
+
+
+def test_terminal_startup_notices_writer_binds_runtime_callbacks(monkeypatch) -> None:
+    # Rust owner: codex-tui::history_cell::session owns startup notice shaping.
+    # terminal_runtime should consume a bound writer instead of rebuilding the
+    # startup tooltip/warning callback package at the run site.
+    from pycodex.tui import runtime_projection
+
+    class Runtime:
+        pass
+
+    runtime = Runtime()
+    monkeypatch.setattr(runtime_projection, "_runtime_startup_tooltip", lambda value: "Try **/status**.")
+    monkeypatch.setattr(runtime_projection, "_runtime_startup_warnings", lambda value: ("warning",))
+
+    writes: list[str] = []
+    blanks: list[str] = []
+    writer = TerminalStartupNoticesWriter(
+        runtime,
+        write_history_cell=writes.append,
+        write_blank_line=lambda: blanks.append("blank"),
+    )
+
+    notices = writer.write()
+
+    assert notices == ("\u2022 Tip: Try /status.", "\u2022 warning")
     assert writes == list(notices)
     assert blanks == ["blank"]
 

@@ -8,6 +8,7 @@ from pycodex.tui.bottom_pane.footer import (
     ShortcutsState,
     SummaryLeft,
     TerminalIdleFooterData,
+    TerminalIdleFooterTextProvider,
     context_window_line,
     ctrl,
     esc_hint_line,
@@ -237,7 +238,7 @@ def test_run_terminal_idle_footer_text_formats_provider_values():
 
 def test_terminal_footer_projection_owns_live_pane_line_clipping():
     # Rust owner: codex-tui::bottom_pane::footer owns passive footer display
-    # text before terminal_surface places it in the live viewport.
+    # text before terminal adapters place it in the live viewport.
     projected = terminal_footer_projection("gpt-test high · ~\\codex-python", columns=14)
 
     assert projected.line == "gpt-test high"
@@ -261,6 +262,30 @@ def test_run_terminal_idle_footer_text_from_runtime_uses_canonical_providers(mon
 
     assert run_terminal_idle_footer_text_from_runtime(Runtime()) == terminal_idle_footer_text(
         TerminalIdleFooterData("runtime-model high", "C:/workspace/repo", True)
+    )
+
+
+def test_terminal_idle_footer_text_provider_binds_runtime_callback(monkeypatch):
+    # Rust owner: codex-tui::bottom_pane::footer owns passive footer text.
+    # terminal_runtime should pass the provider's bound text callback instead
+    # of rebuilding provider-backed footer lambdas locally.
+    from pycodex.tui import runtime_projection
+
+    class Runtime:
+        pass
+
+    monkeypatch.setattr(
+        runtime_projection,
+        "_runtime_model_with_reasoning",
+        lambda runtime: "runtime-model medium",
+    )
+    monkeypatch.setattr(runtime_projection, "_runtime_cwd", lambda runtime: "C:/workspace/repo")
+    monkeypatch.setattr(runtime_projection, "_runtime_show_fast_status", lambda runtime: False)
+
+    provider = TerminalIdleFooterTextProvider(Runtime())
+
+    assert provider.text() == terminal_idle_footer_text(
+        TerminalIdleFooterData("runtime-model medium", "C:/workspace/repo", False)
     )
 
 

@@ -80,6 +80,14 @@ class TerminalTurnEventPoll:
     event: Any = None
 
 
+class TerminalTurnEventStreamProtocol(Protocol):
+    """Submitted-turn event stream consumed by the terminal product path."""
+
+    closed: Any
+
+    def next_event(self, timeout: float | None = None) -> Any | None: ...
+
+
 class TerminalInputSource:
     def poll(self, timeout: float) -> TerminalInputEvent | None:
         raise NotImplementedError
@@ -204,6 +212,24 @@ def make_terminal_input_source(stdin: TextIO) -> TerminalInputSource | None:
     return SelectTerminalInputSource(stdin)
 
 
+def terminal_stdin_is_terminal(stdin: TextIO) -> bool:
+    """Return whether ``stdin`` should use the terminal event-stream path.
+
+    Rust ``codex-tui::tui::event_stream`` owns the crossterm input-source
+    boundary.  Python keeps the concrete ``isatty`` probe here so
+    ``terminal_runtime`` consumes an event-stream decision instead of owning
+    host-stdin inspection.
+    """
+
+    isatty = getattr(stdin, "isatty", None)
+    if not callable(isatty):
+        return False
+    try:
+        return bool(isatty())
+    except Exception:
+        return False
+
+
 def _windows_console_handle_from_stdin(stdin: TextIO) -> int | None:
     try:
         import msvcrt
@@ -246,7 +272,11 @@ class TerminalInputSourceProvider:
         return self.source
 
 
-def poll_terminal_turn_event(event_stream: Any, *, timeout: float) -> TerminalTurnEventPoll:
+def poll_terminal_turn_event(
+    event_stream: TerminalTurnEventStreamProtocol,
+    *,
+    timeout: float,
+) -> TerminalTurnEventPoll:
     """Poll a turn event stream and classify event/idle/closed states.
 
     Rust ``tui::event_stream`` owns the event-source boundary.  The Python
@@ -263,7 +293,7 @@ def poll_terminal_turn_event(event_stream: Any, *, timeout: float) -> TerminalTu
     return TerminalTurnEventPoll("idle")
 
 
-def terminal_turn_event_stream_closed(event_stream: Any) -> bool:
+def terminal_turn_event_stream_closed(event_stream: TerminalTurnEventStreamProtocol) -> bool:
     """Return whether a terminal turn event stream has finished."""
 
     closed = getattr(event_stream, "closed", None)
@@ -277,8 +307,43 @@ def terminal_turn_event_stream_closed(event_stream: Any) -> bool:
     return bool(getattr(event_stream, "is_closed", False))
 
 
+@dataclass(frozen=True)
+class TerminalTurnIdleTicker:
+    """Runtime-bound idle maintenance for submitted terminal turn streams."""
+
+    check_resize: Callable[[], Any]
+    refresh_turn_status: Callable[[], Any]
+
+    def tick(self) -> None:
+        run_terminal_turn_idle_tick(
+            check_resize=self.check_resize,
+            refresh_turn_status=self.refresh_turn_status,
+        )
+
+
+@dataclass(frozen=True)
+class TerminalTurnEventLoopRunner:
+    """Runtime-bound submitted-turn event loop callback package."""
+
+    on_event: Callable[[Any], Any]
+    on_closed: Callable[[], Any]
+    on_idle: Callable[[], Any]
+    before_event: Callable[[], Any]
+    timeout: float = 0.1
+
+    def consume(self, event_stream: TerminalTurnEventStreamProtocol) -> Any | None:
+        return run_terminal_turn_event_loop(
+            event_stream,
+            timeout=self.timeout,
+            on_event=self.on_event,
+            on_closed=self.on_closed,
+            on_idle=self.on_idle,
+            before_event=self.before_event,
+        )
+
+
 def run_terminal_turn_event_loop(
-    event_stream: Any,
+    event_stream: TerminalTurnEventStreamProtocol,
     *,
     timeout: float,
     on_event: Callable[[Any], Any],
@@ -1163,7 +1228,10 @@ __all__ = [
     "TerminalInputEvent",
     "TerminalInputSource",
     "TerminalInputSourceProvider",
+    "TerminalTurnEventLoopRunner",
+    "TerminalTurnIdleTicker",
     "TerminalTurnEventPoll",
+    "TerminalTurnEventStreamProtocol",
     "TuiEvent",
     "TuiEventKind",
     "TuiEventStream",
@@ -1188,6 +1256,7 @@ __all__ = [
     "terminal_event_from_char",
     "terminal_input_event_from_event_result",
     "terminal_input_event_from_key_payload",
+    "terminal_stdin_is_terminal",
     "terminal_turn_event_stream_closed",
 ]
 

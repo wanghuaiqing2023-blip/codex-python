@@ -288,6 +288,30 @@ def command_popup_filter_text(first_line: str, cursor: int) -> Optional[str]:
     return f"/{name}"
 
 
+def terminal_command_popup_visible_for_draft(draft: str) -> bool:
+    """Return whether terminal draft text is editing a first-line slash name.
+
+    Rust owner: ``codex-tui::bottom_pane::chat_composer::slash_input`` defines
+    when slash text is still a command-name edit rather than inline arguments.
+    """
+
+    first_line = _draft_first_line(draft)
+    if not first_line.startswith("/"):
+        return False
+    command_text = first_line[1:].lstrip()
+    return not any(char.isspace() for char in command_text)
+
+
+def draft_command_name(draft: str) -> str:
+    """Extract the first-line slash command name from terminal draft text."""
+
+    first_line = _draft_first_line(draft)
+    if not first_line.startswith("/"):
+        return ""
+    token = first_line[1:].lstrip()
+    return token.split()[0] if token.split() else ""
+
+
 def command_under_cursor(first_line: str, cursor: int) -> Optional[Tuple[str, str]]:
     if not first_line.startswith("/"):
         return None
@@ -311,6 +335,10 @@ def command_under_cursor(first_line: str, cursor: int) -> Optional[Tuple[str, st
     name = _byte_slice(first_line, name_start, effective_cursor)
     rest = _byte_slice(first_line, effective_cursor, first_line_len)
     return name, rest
+
+
+def _draft_first_line(draft: str) -> str:
+    return str(draft).replace("\r\n", "\n").replace("\r", "\n").split("\n", 1)[0]
 
 
 def complete_selected_slash_command_preserving_existing_draft_tail_as_inline_args(
@@ -490,9 +518,11 @@ __all__ = [
     "command_popup_filter_text",
     "command_under_cursor",
     "complete_selected_slash_command_preserving_existing_draft_tail_as_inline_args",
+    "draft_command_name",
     "prepared_args",
     "queued_input_action",
     "selected_command_completion",
     "selected_command_dispatches_immediately_on_tab",
     "sync_slash_command_elements",
+    "terminal_command_popup_visible_for_draft",
 ]

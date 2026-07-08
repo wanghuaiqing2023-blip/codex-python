@@ -349,6 +349,35 @@ def test_bridge_diff_buffers_emits_changed_cells_and_row_clear() -> None:
     assert not any(command.kind == "put" and command.x == 0 for command in commands)
 
 
+def test_bridge_diff_buffers_does_not_clear_full_width_nonblank_row() -> None:
+    # Rust owner: codex-tui::custom_terminal::Terminal::flush computes frame
+    # diffs through ratatui Buffer cells. The Python bridge owns this core so
+    # custom_terminal adapters do not keep their own buffer-diff test model.
+    previous = Buffer.empty(Rect.new(0, 0, 2, 1))
+    current = Buffer.empty(Rect.new(0, 0, 2, 1))
+    current.set_line(0, 0, Line.raw("AB"), max_width=2)
+
+    commands = diff_buffers(previous, current)
+
+    assert DrawCommand.put(0, 0, Cell("A")) in commands
+    assert DrawCommand.put(1, 0, Cell("B")) in commands
+    assert not any(command.kind == "clear_to_end" for command in commands)
+
+
+def test_bridge_diff_buffers_clear_to_end_starts_after_wide_char() -> None:
+    # Rust owner: codex-tui::custom_terminal::Terminal::flush. Wide symbols
+    # occupy ratatui cell columns, so clearing after shortened CJK text must
+    # start after the remaining wide cell.
+    previous = Buffer.empty(Rect.new(0, 0, 10, 1))
+    current = Buffer.empty(Rect.new(0, 0, 10, 1))
+    previous.set_line(0, 0, Line.raw("\u4e2d\u6587"), max_width=10)
+    current.set_line(0, 0, Line.raw("\u4e2d"), max_width=10)
+
+    commands = diff_buffers(previous, current)
+
+    assert any(command.kind == "clear_to_end" and command.x == 2 and command.y == 0 for command in commands)
+
+
 def test_bridge_full_redraw_commands_preserve_minimum_row_widths() -> None:
     # Rust owner: codex-tui::custom_terminal owns full frame redraw when the
     # viewport changes.  Python's hybrid terminal adapter passes row-width

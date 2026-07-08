@@ -11,6 +11,7 @@ from pycodex.tui.chatwidget.turn_runtime import (
     RateLimitReachedType,
     RuntimeMetricsSummary,
     StepStatus,
+    TerminalTurnSubmissionRunner,
     TokenUsageInfo,
     TurnAbortReason,
     UpdatePlanArgs,
@@ -91,12 +92,16 @@ def test_run_terminal_turn_start_sequences_terminal_callbacks() -> None:
 
 
 def test_run_terminal_turn_start_allows_missing_history_append() -> None:
+    # Rust owner: codex-tui::chatwidget::turn_runtime owns turn-start
+    # sequencing; terminal runtime may omit the optional history append
+    # callback, but should not pass arbitrary adapter objects through this
+    # boundary.
     calls: list[str] = []
 
     run_terminal_turn_start(
         "hello",
         started_at="now",
-        append_history="not-callable",
+        append_history=None,
         apply_started_at=lambda value: calls.append(f"started:{value}"),
         reset_assistant_stream=lambda: calls.append("reset"),
         clear_turn_status=lambda: calls.append("clear"),
@@ -170,6 +175,38 @@ def test_run_terminal_turn_submission_applies_failure_effects() -> None:
         "close",
         ("error", "\u25a0 boom"),
         ("exit", 1),
+    ]
+
+
+def test_terminal_turn_submission_runner_binds_runtime_callbacks() -> None:
+    # Rust owner: codex-tui::chatwidget::turn_runtime owns terminal turn
+    # submission lifecycle. terminal_runtime should consume a bound runner
+    # rather than rebuilding started-at and submission callbacks at the call
+    # site.
+    calls: list[object] = []
+    runner = TerminalTurnSubmissionRunner(
+        started_at=lambda: "clock",
+        append_history=lambda prompt: calls.append(("append", prompt)),
+        apply_started_at=lambda value: calls.append(("started", value)),
+        reset_assistant_stream=lambda: calls.append("reset"),
+        clear_turn_status=lambda: calls.append("clear"),
+        render_turn_status=lambda: calls.append("render"),
+        submit_user_turn=lambda prompt: calls.append(("submit", prompt)) or "events",
+        consume_events=lambda stream: calls.append(("consume", stream)),
+        close_turn=lambda: calls.append("close"),
+        write_error=lambda text: calls.append(("error", text)),
+        set_exit_code=lambda code: calls.append(("exit", code)),
+    )
+
+    assert runner.submit("hello") is True
+    assert calls == [
+        ("append", "hello"),
+        ("started", "clock"),
+        "reset",
+        "clear",
+        "render",
+        ("submit", "hello"),
+        ("consume", "events"),
     ]
 
 

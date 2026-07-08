@@ -1,5 +1,7 @@
 ﻿"""Parity tests for Rust ``codex-tui::bottom_pane::chat_composer::footer_state``."""
 
+# Rust owner: codex-tui::bottom_pane::chat_composer::footer_state.
+# Rust source: codex/codex-rs/tui/src/bottom_pane/chat_composer/footer_state.rs
 from dataclasses import dataclass
 
 from pycodex.tui.bottom_pane.chat_composer.footer_state import FooterState, Line, Span

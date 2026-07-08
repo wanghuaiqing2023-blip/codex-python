@@ -9,6 +9,7 @@ behavior can be tested without constructing the full TUI widget tree.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, List, Optional, Set, Tuple
@@ -664,7 +665,7 @@ def run_terminal_turn_start(
     prompt: str,
     *,
     started_at: Any,
-    append_history: Any = None,
+    append_history: Callable[[str], Any] | None = None,
     apply_started_at: Callable[[Any], Any],
     reset_assistant_stream: Callable[[], Any],
     clear_turn_status: Callable[[], Any],
@@ -672,7 +673,7 @@ def run_terminal_turn_start(
 ) -> Any:
     """Run terminal turn-start state setup through chatwidget turn runtime."""
 
-    if callable(append_history):
+    if append_history is not None:
         append_history(prompt)
     apply_started_at(started_at)
     reset_assistant_stream()
@@ -685,7 +686,7 @@ def run_terminal_turn_submission(
     prompt: str,
     *,
     started_at: Any,
-    append_history: Any = None,
+    append_history: Callable[[str], Any] | None = None,
     apply_started_at: Callable[[Any], Any],
     reset_assistant_stream: Callable[[], Any],
     clear_turn_status: Callable[[], Any],
@@ -716,6 +717,39 @@ def run_terminal_turn_submission(
         set_exit_code(1)
         return False
     return True
+
+
+@dataclass(frozen=True)
+class TerminalTurnSubmissionRunner:
+    """Runtime-bound terminal turn submission runner."""
+
+    append_history: Callable[[str], Any] | None
+    apply_started_at: Callable[[Any], Any]
+    reset_assistant_stream: Callable[[], Any]
+    clear_turn_status: Callable[[], Any]
+    render_turn_status: Callable[[], Any]
+    submit_user_turn: Callable[[str], Any]
+    consume_events: Callable[[Any], Any]
+    close_turn: Callable[[], Any]
+    write_error: Callable[[str], Any]
+    set_exit_code: Callable[[int], Any]
+    started_at: Callable[[], Any] = field(default_factory=lambda: time.monotonic)
+
+    def submit(self, prompt: str) -> bool:
+        return run_terminal_turn_submission(
+            prompt,
+            started_at=self.started_at(),
+            append_history=self.append_history,
+            apply_started_at=self.apply_started_at,
+            reset_assistant_stream=self.reset_assistant_stream,
+            clear_turn_status=self.clear_turn_status,
+            render_turn_status=self.render_turn_status,
+            submit_user_turn=self.submit_user_turn,
+            consume_events=self.consume_events,
+            close_turn=self.close_turn,
+            write_error=self.write_error,
+            set_exit_code=self.set_exit_code,
+        )
 
 
 def format_tokens_compact(tokens: int) -> str:
@@ -779,6 +813,7 @@ __all__ = [
     "StepStatus",
     "TRUSTED_ACCESS_FOR_CYBER_VERIFICATION_WARNING",
     "TerminalTitleStatusKind",
+    "TerminalTurnSubmissionRunner",
     "TokenUsageInfo",
     "TranscriptState",
     "TurnAbortReason",

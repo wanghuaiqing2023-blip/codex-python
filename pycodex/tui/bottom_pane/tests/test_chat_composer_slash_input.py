@@ -13,11 +13,13 @@ from pycodex.tui.bottom_pane.chat_composer.slash_input import (
     command_popup_filter_text,
     command_under_cursor,
     complete_selected_slash_command_preserving_existing_draft_tail_as_inline_args,
+    draft_command_name,
     prepared_args,
     queued_input_action,
     selected_command_completion,
     selected_command_dispatches_immediately_on_tab,
     sync_slash_command_elements,
+    terminal_command_popup_visible_for_draft,
 )
 from pycodex.tui.bottom_pane.slash_commands import BuiltinCommandFlags, SlashCommandItem
 from pycodex.tui.slash_command import SlashCommand
@@ -31,6 +33,18 @@ def _slash_input(**kwargs):
         command_flags=flags,
         service_tier_commands=kwargs.pop("service_tier_commands", ()),
     )
+
+
+def test_terminal_draft_visibility_and_command_name_follow_slash_input_boundary() -> None:
+    # Rust owner: codex-tui::bottom_pane::chat_composer::slash_input owns
+    # command-name editing detection before command_popup rendering.
+    assert terminal_command_popup_visible_for_draft("/") is True
+    assert terminal_command_popup_visible_for_draft("/m") is True
+    assert terminal_command_popup_visible_for_draft("/model") is True
+    assert terminal_command_popup_visible_for_draft("/model ") is False
+    assert terminal_command_popup_visible_for_draft("hello /m") is False
+    assert draft_command_name("/model high") == "model"
+    assert draft_command_name("hello /model") == ""
 
 
 def test_validate_submission_and_command_modes():

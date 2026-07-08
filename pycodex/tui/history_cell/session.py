@@ -170,6 +170,22 @@ def run_terminal_startup_notices_from_runtime(
     )
 
 
+@dataclass(frozen=True)
+class TerminalStartupNoticesWriter:
+    """Runtime-bound startup notice writer for the terminal product path."""
+
+    app_runtime: Any
+    write_history_cell: Callable[[str], Any]
+    write_blank_line: Callable[[], Any]
+
+    def write(self) -> tuple[str, ...]:
+        return run_terminal_startup_notices_from_runtime(
+            self.app_runtime,
+            write_history_cell=self.write_history_cell,
+            write_blank_line=self.write_blank_line,
+        )
+
+
 def _plain_startup_notice_text(value: Any) -> str:
     return str(value).replace("**", "").replace("__", "")
 
@@ -437,6 +453,7 @@ __all__ = [
     "SESSION_HEADER_MAX_INNER_WIDTH",
     "SessionHeaderHistoryCell",
     "SessionInfoCell",
+    "TerminalStartupNoticesWriter",
     "TooltipHistoryCell",
     "card_inner_width",
     "desired_height",

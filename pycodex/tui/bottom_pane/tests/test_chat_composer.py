@@ -1,3 +1,5 @@
+import io
+
 import pytest
 
 from pycodex.tui.bottom_pane.chat_composer import (
@@ -12,7 +14,10 @@ from pycodex.tui.bottom_pane.chat_composer import (
     KeyEvent,
     QueuedInputAction,
     TERMINAL_COMPOSER_INPUT_CONTINUE,
+    TerminalComposerEffectRunner,
     TerminalComposerInputAction,
+    TerminalComposerPromptReader,
+    TerminalCommandPopupState,
     expand_pending_pastes,
     plan_mode_nudge_line,
     run_terminal_composer_blocking_line_prompt,
@@ -22,6 +27,9 @@ from pycodex.tui.bottom_pane.chat_composer import (
     run_terminal_composer_prompt_loop,
     run_terminal_composer_read_prompt,
     run_terminal_composer_submit,
+    run_terminal_composer_write_nonterminal_prompt,
+    run_terminal_command_popup_input_action,
+    terminal_command_popup_input_action,
     terminal_composer_draft_after_backspace,
     terminal_composer_draft_after_text,
     terminal_composer_draft_cleared,
@@ -29,6 +37,7 @@ from pycodex.tui.bottom_pane.chat_composer import (
     terminal_composer_line_text,
     terminal_composer_projection,
     terminal_composer_submitted_line,
+    terminal_popup_key,
     user_input_too_large_message,
 )
 
@@ -82,6 +91,123 @@ def test_composer_draft_snapshot_preserves_attachment_and_pending_fields():
     assert snapshot.pending_pastes == [("[Pasted]", "data")]
 
 
+def test_terminal_popup_key_maps_rust_like_payloads() -> None:
+    # Rust owner: codex-tui::bottom_pane::chat_composer handles popup key
+    # routing after tui::event_stream has normalized key payloads.
+    assert terminal_popup_key("down") == "down"
+    assert terminal_popup_key("key", "up") == "up"
+    assert terminal_popup_key("text", "\t") == "tab"
+    assert terminal_popup_key("text", "\r") == "enter"
+    assert terminal_popup_key("text", "你") == ""
+
+
+def test_terminal_command_popup_input_action_plans_navigation_completion_and_command_view() -> None:
+    # Rust owner: codex-tui::bottom_pane::chat_composer routes popup keys to
+    # command_popup selection, completion, or view-opening command actions.
+    class SelectedCommand:
+        def __init__(self, name: str) -> None:
+            self._name = name
+
+        def command(self) -> str:
+            return self._name
+
+    assert terminal_command_popup_input_action("/m", "up").kind == "move_up"
+    assert terminal_command_popup_input_action("/m", "down").kind == "move_down"
+
+    completion = terminal_command_popup_input_action("/m", "tab", selected_command=SelectedCommand("memories"))
+    assert completion.kind == "complete"
+    assert completion.draft == "/memories "
+
+    no_selection = terminal_command_popup_input_action("/m", "tab")
+    assert no_selection.kind == "handled"
+    assert no_selection.draft == "/m"
+
+    open_command_view = terminal_command_popup_input_action(
+        "/model",
+        "enter",
+        selected_command=SelectedCommand("model"),
+    )
+    assert open_command_view.kind == "open_command_view"
+    assert open_command_view.draft == ""
+    assert open_command_view.command == "model"
+
+    local_command = terminal_command_popup_input_action("/clear", "enter", selected_command=SelectedCommand("clear"))
+    assert local_command.kind == "open_command_view"
+    assert local_command.command == "clear"
+
+
+def test_terminal_command_popup_state_syncs_draft_and_hides_for_active_view() -> None:
+    # Rust owner: codex-tui::bottom_pane::chat_composer::sync_popups owns the
+    # command-popup lifecycle; command_popup owns filtering/selection internals.
+    state = TerminalCommandPopupState.new()
+
+    assert state.sync_draft("/m") is True
+    assert state.visible is True
+    assert state.selected_item().command() == "model"
+    assert state.terminal_lines(width=80)[0].text.startswith("/model")
+
+    state.move_down()
+    assert state.selected_item().command() == "memories"
+
+    assert state.sync_draft("hello") is False
+    assert state.visible is False
+    assert state.terminal_lines(width=80) == []
+
+    assert state.sync_draft("/m", active_view_present=True) is False
+    assert state.visible is False
+
+
+def test_terminal_command_popup_runner_applies_navigation_completion_and_model_view() -> None:
+    # Rust owner: codex-tui::bottom_pane::chat_composer routes popup keys and
+    # applies slash-popup outcomes before normal composer input. The terminal
+    # adapter only supplies callbacks for concrete view creation/presentation.
+    state = TerminalCommandPopupState.new()
+    shown: list[object] = []
+    params = object()
+
+    assert state.sync_draft("/m") is True
+    assert run_terminal_command_popup_input_action(state, "/m", "down") == "/m"
+    assert state.selected_item().command() == "memories"
+    assert run_terminal_command_popup_input_action(state, "/m", "tab") == "/memories "
+
+    assert state.sync_draft("/model") is True
+    assert (
+        run_terminal_command_popup_input_action(
+            state,
+            "/model",
+            "enter",
+            open_command_view=lambda command: params if command == "model" else None,
+            show_selection_view=shown.append,
+        )
+        == ""
+    )
+    assert shown == [params]
+
+    assert state.sync_draft("/clear") is True
+    assert run_terminal_command_popup_input_action(state, "/clear", "enter") is None
+    assert (
+        run_terminal_command_popup_input_action(
+            state,
+            "/clear",
+            "enter",
+            open_command_view=lambda command: None,
+            show_selection_view=shown.append,
+        )
+        is None
+    )
+    assert shown == [params]
+
+
+def test_terminal_command_popup_runner_ignores_keys_when_popup_hidden() -> None:
+    # Rust owner: codex-tui::bottom_pane::chat_composer::sync_popups owns
+    # whether the command popup is active; terminal adapters should delegate
+    # hidden-popup fallthrough to the composer owner instead of branching.
+    state = TerminalCommandPopupState.new()
+
+    assert state.visible is False
+    assert run_terminal_command_popup_input_action(state, "/m", "down") is None
+
+
 def test_terminal_composer_draft_helpers_match_text_only_product_path():
     # Rust owner: codex-tui::bottom_pane::chat_composer owns text draft
     # mutation before render. The real-terminal path uses this text-only slice.
@@ -102,7 +228,7 @@ def test_terminal_composer_draft_helpers_match_text_only_product_path():
 
 def test_terminal_composer_projection_owns_live_prompt_text_and_cursor_width() -> None:
     # Rust owner: codex-tui::bottom_pane::chat_composer owns composer text
-    # projection before terminal_surface adapts it into the live viewport.
+    # projection before terminal adapters adapt it into the live viewport.
     assert terminal_composer_line_text("hello\nthere") == "\u203a hello there"
 
     wide = terminal_composer_projection("你好", columns=20)
@@ -226,6 +352,36 @@ def test_terminal_composer_submit_eof_and_interrupt_effect_helpers():
         run_terminal_composer_interrupt()
 
     assert calls == ["clear-submit", "clear-eof"]
+
+
+def test_terminal_composer_effect_runner_binds_prompt_submit_and_eof_callbacks() -> None:
+    # Rust owner: codex-tui::bottom_pane::chat_composer owns prompt
+    # presentation plus submit/EOF effect semantics. terminal_runtime should
+    # pass the bound runner methods instead of building prompt/submit/eof
+    # wrappers locally.
+    calls: list[str] = []
+    writer = io.StringIO()
+    runner = TerminalComposerEffectRunner(
+        writer=writer,
+        clear_bottom_pane=lambda: calls.append("clear"),
+    )
+
+    runner.write_nonterminal_prompt()
+    assert runner.submit("hello\n") == "hello\n"
+    assert runner.eof() is None
+    assert writer.getvalue() == "\n\u203a "
+    assert calls == ["clear", "clear"]
+
+
+def test_terminal_composer_write_nonterminal_prompt_owns_fallback_prompt_text() -> None:
+    # Rust owner: codex-tui::bottom_pane::chat_composer owns the composer
+    # fallback prompt presentation. terminal_runtime should delegate this
+    # non-TTY prompt write instead of carrying the literal prompt string.
+    writer = io.StringIO()
+
+    run_terminal_composer_write_nonterminal_prompt(writer)
+
+    assert writer.getvalue() == "\n\u203a "
 
 
 def test_run_terminal_composer_prompt_loop_polls_and_submits_with_rendered_draft():
@@ -484,6 +640,51 @@ def test_run_terminal_composer_read_prompt_uses_event_source_when_available():
 
     assert result == "submitted:o\n"
     assert calls == ["draft:", "render", "resize", "draft:o", "render", "resize", "draft:"]
+
+
+def test_terminal_composer_prompt_reader_binds_runtime_callbacks() -> None:
+    # Rust owner: codex-tui::bottom_pane::chat_composer owns the terminal
+    # prompt input lifecycle. terminal_runtime should consume a bound reader
+    # instead of assembling read-prompt callbacks at the call site.
+    class Source:
+        def __init__(self) -> None:
+            self.events = [
+                type("Event", (), {"kind": "text", "text": "o"})(),
+                type("Event", (), {"kind": "enter", "text": ""})(),
+            ]
+
+        def poll(self, timeout: float):
+            calls.append(f"poll:{timeout}")
+            return self.events.pop(0)
+
+    calls: list[str] = []
+    reader = TerminalComposerPromptReader(
+        terminal_active=lambda: True,
+        get_input_source=Source,
+        read_line=lambda: (_ for _ in ()).throw(AssertionError("unused line reader")),
+        write_nonterminal_prompt=lambda: calls.append("prompt"),
+        apply_draft=lambda draft: calls.append(f"draft:{draft}"),
+        check_resize=lambda: calls.append("resize"),
+        render=lambda: calls.append("render"),
+        clear_bottom_pane=lambda: calls.append("clear"),
+        submit=lambda line: f"submitted:{line}",
+        interrupt=lambda: calls.append("interrupt"),
+        eof=lambda: calls.append("eof"),
+        poll_timeout=0.2,
+    )
+
+    assert reader.read() == "submitted:o\n"
+    assert calls == [
+        "draft:",
+        "render",
+        "poll:0.2",
+        "resize",
+        "draft:o",
+        "render",
+        "poll:0.2",
+        "resize",
+        "draft:",
+    ]
 
 
 def test_plan_mode_nudge_line_keeps_visible_actions():

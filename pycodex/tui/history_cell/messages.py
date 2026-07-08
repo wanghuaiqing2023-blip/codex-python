@@ -456,6 +456,25 @@ def run_terminal_user_prompt_output(
         render_bottom_pane()
 
 
+@dataclass(frozen=True)
+class TerminalUserPromptOutputWriter:
+    """Runtime-bound terminal user-prompt output writer."""
+
+    terminal_active: Callable[[], bool]
+    clear_live_status: Callable[[], Any]
+    write_history_cell: Callable[..., Any]
+    render_bottom_pane: Callable[[], Any]
+
+    def write(self, message: str) -> None:
+        run_terminal_user_prompt_output(
+            message,
+            terminal_active=self.terminal_active(),
+            clear_live_status=self.clear_live_status,
+            write_history_cell=self.write_history_cell,
+            render_bottom_pane=self.render_bottom_pane,
+        )
+
+
 def terminal_assistant_stream_prefix() -> str:
     """Return the plain terminal prefix used when an assistant stream opens."""
 
@@ -694,6 +713,7 @@ __all__ = [
     "TerminalAssistantStreamDeltaPlan",
     "TerminalAssistantStreamState",
     "TerminalAssistantStreamWriter",
+    "TerminalUserPromptOutputWriter",
     "TextElement",
     "UserHistoryCell",
     "build_user_message_lines_with_elements",

@@ -1,5 +1,7 @@
 ﻿"""Parity tests for Rust ``codex-tui::bottom_pane::chat_composer::attachment_state``."""
 
+# Rust owner: codex-tui::bottom_pane::chat_composer::attachment_state.
+# Rust source: codex/codex-rs/tui/src/bottom_pane/chat_composer/attachment_state.rs
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple

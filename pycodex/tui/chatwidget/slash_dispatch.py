@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from enum import Enum
-from typing import Any, Iterable, List, Optional, Set, Union
+from typing import Any, Iterable, List, Mapping, Optional, Protocol, Set, Union
 
 from .._porting import RustTuiModule
 from ..slash_command import SlashCommand
@@ -80,6 +80,121 @@ class PreparedUserMessage:
     mention_bindings: tuple[Any, ...]
 
 
+TERMINAL_LOCAL_HELP_MESSAGE = "\u2022 Commands: /clear, /status, /quit"
+
+
+@dataclass(frozen=True)
+class TerminalLocalCommandPlan:
+    """Terminal-local slash command plan owned by chatwidget::slash_dispatch."""
+
+    action: str
+    message: str | None = None
+
+
+@dataclass(frozen=True)
+class TerminalPromptDispatchResult:
+    """Terminal prompt dispatch result owned by chatwidget::slash_dispatch."""
+
+    action: str
+    prompt: str = ""
+
+
+@dataclass
+class TerminalLocalCommandDispatcher:
+    """Dispatch the terminal-local slash-command subset through runtime callbacks."""
+
+    clear: Any
+    help_: Any
+    status: Any
+
+    def run(self, prompt: str) -> bool | str:
+        return run_terminal_local_command(
+            prompt,
+            clear=self.clear,
+            help_=self.help_,
+            status=self.status,
+        )
+
+
+@dataclass(frozen=True)
+class TerminalPromptDispatcher:
+    """Runtime-bound completed prompt dispatcher for the terminal path."""
+
+    run_local_command: Any
+
+    def dispatch(self, prompt: str) -> TerminalPromptDispatchResult:
+        return run_terminal_prompt_dispatch(
+            prompt,
+            run_local_command=self.run_local_command,
+        )
+
+
+class TerminalSlashCommandViewHandler(Protocol):
+    """Terminal view-opening command handler owned by a chatwidget submodule."""
+
+    def open_view(self) -> Any:
+        ...
+
+    def handle_events(self, events: tuple[object, ...]) -> Any:
+        ...
+
+
+class TerminalSlashCommandViewDispatcher:
+    """Dispatch terminal view-opening slash commands to chatwidget owners.
+
+    Rust owner: ``chatwidget::slash_dispatch`` receives
+    ``InputResult::Command(cmd)`` from ``bottom_pane::chat_composer`` and then
+    decides which command-specific ChatWidget owner handles the effect. The
+    terminal product path uses the same split: the bottom pane passes a command
+    name here, and this dispatcher delegates concrete view creation to the
+    registered command owner.
+    """
+
+    def __init__(self, handlers: Mapping[SlashCommand, TerminalSlashCommandViewHandler]) -> None:
+        self._handlers = dict(handlers)
+        self._active_handler: TerminalSlashCommandViewHandler | None = None
+
+    @classmethod
+    def for_model_popup(
+        cls,
+        model_popup: TerminalSlashCommandViewHandler,
+    ) -> "TerminalSlashCommandViewDispatcher":
+        """Build the currently implemented terminal view-command dispatcher."""
+
+        return cls({SlashCommand.MODEL: model_popup})
+
+    @classmethod
+    def for_runtime(cls, app_runtime: Any) -> "TerminalSlashCommandViewDispatcher":
+        """Build terminal view-command handlers from the app runtime.
+
+        Rust owner: ``chatwidget::slash_dispatch`` owns the command-to-view
+        dispatch point.  The concrete ``/model`` popup remains owned by
+        ``chatwidget::model_popups``, but ``codex-tui::tui`` should only wire
+        the dispatcher into the event loop.
+        """
+
+        from .model_popups import TerminalModelPopupController
+
+        return cls.for_model_popup(TerminalModelPopupController(app_runtime))
+
+    def open_command_view(self, command: str) -> Any:
+        cmd = terminal_slash_command_from_name(command)
+        if cmd is None:
+            return None
+        handler = self._handlers.get(cmd)
+        if handler is None:
+            return None
+        view = handler.open_view()
+        if view is not None:
+            self._active_handler = handler
+        return view
+
+    def handle_selection_events(self, events: tuple[object, ...]) -> Any:
+        if self._active_handler is None:
+            return None
+        return self._active_handler.handle_events(events)
+
+
 _QUEUED_CONTINUE_COMMANDS: Set[SlashCommand] = {
     SlashCommand.IDE,
     SlashCommand.STATUS,
@@ -137,6 +252,110 @@ def queued_command_drain_result(
     if user_turn_pending_or_running or not no_modal_or_popup_active:
         return QueueDrain.STOP
     return QueueDrain.CONTINUE if cmd in _QUEUED_CONTINUE_COMMANDS else QueueDrain.STOP
+
+
+def terminal_slash_command_from_name(command: str) -> SlashCommand | None:
+    """Parse a terminal slash command name for dispatch, returning ``None`` on miss."""
+
+    try:
+        return SlashCommand.parse(command)
+    except ValueError:
+        return None
+
+
+_EXIT_ALIASES = {":q", "q", "quit", "exit"}
+
+
+def plan_terminal_local_command(prompt: str) -> TerminalLocalCommandPlan:
+    """Plan the terminal-local command subset before user-turn submission.
+
+    Rust owner: ``chatwidget::slash_dispatch`` owns slash command effect
+    routing after command parsing.  The real-terminal product path still
+    executes a small local subset through runner callbacks, but the decision of
+    which prompts are local commands belongs with the slash-dispatch owner, not
+    ``codex-tui::tui``.
+    """
+
+    stripped = prompt.strip()
+    lowered = stripped.lower()
+    if lowered in _EXIT_ALIASES:
+        return TerminalLocalCommandPlan("exit")
+    if lowered == "/?":
+        return TerminalLocalCommandPlan("help", TERMINAL_LOCAL_HELP_MESSAGE)
+    command = terminal_slash_command_from_name(lowered)
+    if command in {SlashCommand.QUIT, SlashCommand.EXIT}:
+        return TerminalLocalCommandPlan("exit")
+    if command is SlashCommand.CLEAR:
+        return TerminalLocalCommandPlan("clear")
+    if command is SlashCommand.STATUS:
+        return TerminalLocalCommandPlan("status")
+    if lowered == "/help":
+        return TerminalLocalCommandPlan("help", TERMINAL_LOCAL_HELP_MESSAGE)
+    return TerminalLocalCommandPlan("none")
+
+
+def run_terminal_local_command_plan(
+    plan: TerminalLocalCommandPlan,
+    *,
+    clear: Any,
+    help_: Any,
+    status: Any,
+) -> bool | str:
+    """Dispatch a terminal-local command plan through runner callbacks."""
+
+    if plan.action == "exit":
+        return "exit"
+    if plan.action == "clear":
+        clear()
+        return True
+    if plan.action == "help":
+        help_(plan.message or "")
+        return True
+    if plan.action == "status":
+        status()
+        return True
+    return False
+
+
+def run_terminal_local_command(
+    prompt: str,
+    *,
+    clear: Any,
+    help_: Any,
+    status: Any,
+) -> bool | str:
+    """Plan and dispatch the terminal-local command subset."""
+
+    return run_terminal_local_command_plan(
+        plan_terminal_local_command(prompt),
+        clear=clear,
+        help_=help_,
+        status=status,
+    )
+
+
+def run_terminal_prompt_dispatch(
+    prompt: str,
+    *,
+    run_local_command: Any,
+) -> TerminalPromptDispatchResult:
+    """Classify a completed terminal prompt before user-turn submission.
+
+    Rust owner: ``chatwidget::slash_dispatch`` owns the boundary where completed
+    composer input is interpreted as a local slash command or normal user text.
+    ``codex-tui::tui`` should only run the event loop and submit prompts that
+    this owner classifies as user turns.
+    """
+
+    prompt = prompt.rstrip("\n")
+    if not prompt.strip():
+        return TerminalPromptDispatchResult("skip", prompt)
+    command_result = run_local_command(prompt)
+    if command_result == "exit":
+        return TerminalPromptDispatchResult("exit", prompt)
+    if command_result:
+        return TerminalPromptDispatchResult("handled", prompt)
+    return TerminalPromptDispatchResult("submit", prompt)
 
 
 def slash_command_args_elements(
@@ -251,6 +470,13 @@ __all__ = [
     "SIDE_SLASH_COMMAND_UNAVAILABLE_HINT",
     "SIDE_STARTING_CONTEXT_LABEL",
     "SlashCommandDispatchSource",
+    "TERMINAL_LOCAL_HELP_MESSAGE",
+    "TerminalLocalCommandDispatcher",
+    "TerminalLocalCommandPlan",
+    "TerminalPromptDispatcher",
+    "TerminalPromptDispatchResult",
+    "TerminalSlashCommandViewDispatcher",
+    "TerminalSlashCommandViewHandler",
     "TextElement",
     "before_session_unavailable_message",
     "ensure_side_command_allowed_outside_review",
@@ -264,4 +490,9 @@ __all__ = [
     "review_side_unavailable_message",
     "side_unavailable_message",
     "slash_command_args_elements",
+    "plan_terminal_local_command",
+    "run_terminal_local_command",
+    "run_terminal_local_command_plan",
+    "run_terminal_prompt_dispatch",
+    "terminal_slash_command_from_name",
 ]

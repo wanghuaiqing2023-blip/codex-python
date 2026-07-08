@@ -485,6 +485,25 @@ def run_terminal_status_card_from_runtime(
     )
 
 
+@dataclass(frozen=True)
+class TerminalStatusCardWriter:
+    """Runtime-bound terminal ``/status`` card callback.
+
+    Rust ``status::card`` owns the history-facing status-card surface. The
+    terminal runtime supplies the runtime object and history writer, then wires
+    this method into slash-dispatch local command handling.
+    """
+
+    app_runtime: Any
+    write_history_cell: Callable[[str], Any]
+
+    def run(self) -> TerminalStatusCardData:
+        return run_terminal_status_card_from_runtime(
+            self.app_runtime,
+            write_history_cell=self.write_history_cell,
+        )
+
+
 def status_permission_summary(summary: str, *_args: Any, **_kwargs: Any) -> str:
     text = str(summary)
     if text.startswith("read-only"):
@@ -648,6 +667,7 @@ __all__ = [
     "StatusRateLimitState",
     "StatusTokenUsageData",
     "TerminalStatusCardData",
+    "TerminalStatusCardWriter",
     "decorate_workspace_sandbox_label",
     "display_hyperlink_lines",
     "display_lines",

@@ -434,6 +434,9 @@ class TerminalHistoryWriter:
     def wrap_width(self) -> int:
         return terminal_history_wrap_width(self.terminal_columns())
 
+    def apply_state(self, state: TerminalHistoryState) -> None:
+        self.state = state
+
     def write(
         self,
         text: str = "",
@@ -490,6 +493,27 @@ class TerminalHistoryWriter:
             history_bottom_row=lambda: self._history_bottom_row(reserve_active_bottom_pane),
             clear_bottom_pane=self.clear_bottom_pane if clear_bottom_pane else None,
             render_bottom_pane=self.render_bottom_pane if render_bottom_pane else None,
+        )
+
+    def insert_replayed_lines(
+        self,
+        lines: Sequence[str],
+        reserve_active_bottom_pane: bool,
+    ) -> None:
+        """Insert resize-replayed history rows without live-pane side effects.
+
+        Rust ``insert_history`` owns the actual scrollback insertion sequence,
+        while ``app::resize_reflow`` decides when replay happens and whether
+        the active bottom-pane footprint must be reserved.  The terminal
+        runtime should pass this method as a callback instead of rebuilding the
+        insert-history flag combination itself.
+        """
+
+        self.insert_lines(
+            lines,
+            clear_bottom_pane=False,
+            reserve_active_bottom_pane=reserve_active_bottom_pane,
+            render_bottom_pane=False,
         )
 
     def open_stream(

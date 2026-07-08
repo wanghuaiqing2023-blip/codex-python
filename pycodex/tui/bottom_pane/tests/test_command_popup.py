@@ -7,11 +7,8 @@ import os
 
 from pycodex.tui.bottom_pane.command_popup import CommandItem, CommandPopup, CommandPopupFlags, from_
 from pycodex.tui.bottom_pane.slash_commands import ServiceTierCommand
-from pycodex.tui.bottom_pane.terminal_frame import (
-    TerminalBottomPaneState,
-    terminal_bottom_pane_frame,
-    terminal_bottom_pane_frame_buffer,
-)
+from pycodex.tui.bottom_pane.terminal_action import TerminalBottomPaneState
+from pycodex.tui.chatwidget.rendering import terminal_bottom_pane_frame, terminal_bottom_pane_frame_buffer
 from pycodex.tui.ratatui_bridge import Color as RatatuiColor
 from pycodex.tui.slash_command import SlashCommand
 
@@ -130,7 +127,7 @@ def test_filter_extraction_selection_movement_and_rows():
 
 def test_terminal_lines_project_filtered_rows_and_selection_style():
     # Rust owner: codex-tui::bottom_pane::command_popup owns slash command
-    # filtering and selected-row projection before terminal_surface adapts rows
+    # filtering and selected-row projection before terminal adapters adapt rows
     # to the live viewport.
     popup = CommandPopup.new(CommandPopupFlags(), [])
     popup.on_composer_text_change("/m")
@@ -147,7 +144,7 @@ def test_terminal_lines_project_filtered_rows_and_selection_style():
     assert second[1].selected is True
 
 
-def test_command_popup_projects_through_terminal_frame_buffer():
+def test_command_popup_projects_through_chatwidget_rendering_buffer():
     # Rust owners: bottom_pane::command_popup owns slash command rows,
     # chatwidget::rendering owns the bottom-pane frame, and custom_terminal
     # consumes the frame Buffer.  terminal_runtime/surface must not hand-render

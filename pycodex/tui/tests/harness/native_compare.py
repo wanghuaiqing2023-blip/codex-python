@@ -354,6 +354,31 @@ def interactive_tui_comparison_capability(
     )
 
 
+def _spawnable_python_executable(python_executable: str | None = None) -> str:
+    """Return a Python executable path suitable for child-process harness runs.
+
+    Windows Store Python can expose ``sys.executable`` as a WindowsApps alias
+    path.  That path is good enough for the parent process, but child-process
+    creation with redirected stdio can fail with an access error.  The native
+    comparison harness needs the real packaged interpreter path so the
+    Rust/Python startup-guard contract is tested instead of the app-execution
+    alias.
+    """
+
+    executable = python_executable or sys.executable
+    if os.name != "nt":
+        return executable
+
+    normalized = executable.replace("/", "\\")
+    if "\\WindowsApps\\" not in normalized or "PythonSoftwareFoundation.Python" not in normalized:
+        return executable
+
+    base_candidate = Path(sys.base_prefix) / "python.exe"
+    if base_candidate.exists():
+        return str(base_candidate)
+    return executable
+
+
 def build_inline_tui_command(
     kind: str,
     *,
@@ -369,7 +394,7 @@ def build_inline_tui_command(
         exe = native_exe or native_codex_exe_from_env()
         return TuiComparisonCommand(kind="rust", argv=(str(exe), *common), cwd=repo_root)
     if kind == "python":
-        py = python_executable or sys.executable
+        py = _spawnable_python_executable(python_executable)
         return TuiComparisonCommand(kind="python", argv=(py, "-m", "pycodex", *common), cwd=repo_root)
     raise ValueError(f"unknown TUI comparison command kind: {kind!r}")
 
@@ -383,8 +408,12 @@ def run_piped_tui_command(
 ) -> TuiProcessTranscript:
     """Run an inline TUI command with piped stdin and capture text output."""
 
+    argv = list(command.argv)
+    if command.kind == "python" and argv:
+        argv[0] = _spawnable_python_executable(argv[0])
+
     completed = subprocess.run(
-        list(command.argv),
+        argv,
         input=input_text,
         text=True,
         capture_output=True,
