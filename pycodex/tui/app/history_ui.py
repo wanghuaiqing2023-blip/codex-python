@@ -7,9 +7,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, TextIO, Tuple
 
 from .._porting import RustTuiModule
+from ..custom_terminal import clear_scrollback_and_visible_screen_ansi
 from ..history_cell.messages import TerminalAssistantStreamState
 from ..history_cell.session import SessionHeaderHistoryCell, line_text
 from ..insert_history import TerminalHistoryState
@@ -41,6 +42,22 @@ class TerminalSessionHeaderData:
     directory: Path
     version: str
     yolo_mode: bool = False
+
+
+@dataclass(frozen=True)
+class TerminalSessionHeaderWriter:
+    """Runtime-bound session-header writer for the terminal product path."""
+
+    app_runtime: Any
+    write_history_cell: Callable[[str], Any]
+    width: int = 100
+
+    def write(self) -> TerminalSessionHeaderData:
+        return run_terminal_session_header_from_runtime(
+            self.app_runtime,
+            write_history_cell=self.write_history_cell,
+            width=self.width,
+        )
 
 
 @dataclass
@@ -201,6 +218,38 @@ class TerminalClearUiExecutor:
     apply_resize_pending: Callable[[bool], Any]
     render_header: Callable[[], Any]
     activate_layout: Callable[[], Any]
+
+    @classmethod
+    def for_terminal_runtime(
+        cls,
+        *,
+        app_runtime: Any,
+        writer: TextIO,
+        deactivate_layout: Callable[[], Any],
+        apply_history_state: Callable[[TerminalHistoryState], Any],
+        apply_assistant_stream_state: Callable[[TerminalAssistantStreamState], Any],
+        apply_resize_pending: Callable[[bool], Any],
+        write_history_cell: Callable[[str], Any],
+        activate_layout: Callable[[], Any],
+        header_width: int = 100,
+    ) -> "TerminalClearUiExecutor":
+        """Build the terminal runtime clear-UI executor at the history owner."""
+
+        header_writer = TerminalSessionHeaderWriter(
+            app_runtime,
+            write_history_cell=write_history_cell,
+            width=header_width,
+        )
+        return cls(
+            deactivate_layout=deactivate_layout,
+            clear_terminal=lambda: clear_scrollback_and_visible_screen_ansi(writer),
+            flush_terminal=writer.flush,
+            apply_history_state=apply_history_state,
+            apply_assistant_stream_state=apply_assistant_stream_state,
+            apply_resize_pending=apply_resize_pending,
+            render_header=header_writer.write,
+            activate_layout=activate_layout,
+        )
 
     def run(self) -> TerminalClearState:
         return run_terminal_clear_ui_effects(
@@ -548,6 +597,7 @@ __all__ = [
     "TerminalClearState",
     "TerminalClearUiExecutor",
     "TerminalSessionHeaderData",
+    "TerminalSessionHeaderWriter",
     "Tui",
     "clear_terminal_ui",
     "clear_terminal_ui_alt_and_inline_branches",

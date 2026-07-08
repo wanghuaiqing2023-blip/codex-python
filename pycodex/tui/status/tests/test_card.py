@@ -11,6 +11,7 @@ from pycodex.tui.status.card import (
     StatusRateLimitState,
     StatusTokenUsageData,
     TerminalStatusCardData,
+    TerminalStatusCardWriter,
     decorate_workspace_sandbox_label,
     format_model_provider,
     new_status_output_with_rate_limits_handle,
@@ -176,6 +177,42 @@ def test_run_terminal_status_card_from_runtime_uses_canonical_providers(monkeypa
         permissions="Full Access",
         agents_summary="AGENTS.md",
         session_id="thread-runtime",
+    )
+    assert written == ["\n".join(terminal_status_card_lines(data))]
+
+
+def test_terminal_status_card_writer_runs_runtime_bound_status_card(monkeypatch) -> None:
+    # Rust owner: status/card.rs owns the /status history-facing surface and
+    # callback binding. terminal_runtime should wire TerminalStatusCardWriter.run
+    # instead of carrying a local lambda that renders the status card.
+    from pycodex.tui import runtime_projection
+
+    class Thread:
+        thread_id = "thread-writer"
+
+    class Runtime:
+        active_thread_runtime = Thread()
+
+    monkeypatch.setattr(runtime_projection, "_display_version", lambda: "0.3.0")
+    monkeypatch.setattr(runtime_projection, "_runtime_display_model", lambda runtime: "writer-model")
+    monkeypatch.setattr(runtime_projection, "_runtime_header_reasoning_effort", lambda runtime: "low")
+    monkeypatch.setattr(runtime_projection, "_runtime_cwd", lambda runtime: "C:/workspace/writer")
+    monkeypatch.setattr(runtime_projection, "_runtime_permissions_label", lambda runtime: "Read Only")
+    monkeypatch.setattr(runtime_projection, "_runtime_agents_summary", lambda runtime: "<none>")
+
+    written: list[str] = []
+    writer = TerminalStatusCardWriter(Runtime(), write_history_cell=written.append)
+
+    data = writer.run()
+
+    assert data == TerminalStatusCardData(
+        version="0.3.0",
+        model="writer-model",
+        reasoning_effort="low",
+        directory="C:/workspace/writer",
+        permissions="Read Only",
+        agents_summary="<none>",
+        session_id="thread-writer",
     )
     assert written == ["\n".join(terminal_status_card_lines(data))]
 

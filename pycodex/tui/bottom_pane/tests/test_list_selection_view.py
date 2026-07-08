@@ -17,6 +17,7 @@ from pycodex.tui.bottom_pane.list_selection_view import (
     popup_content_width,
     side_by_side_layout_widths,
 )
+from pycodex.tui.bottom_pane.bottom_pane_view import ViewCompletion
 from pycodex.tui.bottom_pane.selection_tabs import SelectionTab
 
 
@@ -129,14 +130,14 @@ def test_toggle_accept_cancel_and_completion_flags():
 
     view.accept()
     assert acted == ["ran"]
-    assert view.completion() == "Submitted"
+    assert view.completion() is ViewCompletion.ACCEPTED
     assert view.dismiss_after_child_accept()
     view.clear_dismiss_after_child_accept()
     assert not view.dismiss_after_child_accept()
 
     empty = _view([], on_cancel=lambda _tx: cancelled.append(True))
     empty.accept()
-    assert empty.completion() == "Cancelled"
+    assert empty.completion() is ViewCompletion.CANCELLED
     assert cancelled == [True]
 
 
@@ -182,7 +183,7 @@ def test_build_rows_marks_selection_current_default_and_disabled():
 
 def test_terminal_lines_project_header_rows_and_selected_item_style():
     # Rust owner: codex-tui::bottom_pane::list_selection_view owns active
-    # header and selected-row projection before terminal_surface adapts rows to
+    # header and selected-row projection before terminal adapters adapt rows to
     # the live viewport.
     view = _view(
         [

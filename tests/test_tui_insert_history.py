@@ -569,7 +569,7 @@ def test_insert_terminal_history_lines_and_flush_flushes_writer() -> None:
     assert writer.flush_count == 1
 
 
-def test_insert_history_lines_output_and_flush_selects_terminal_surface_and_state() -> None:
+def test_insert_history_lines_output_and_flush_selects_terminal_adapter_and_state() -> None:
     writer = FlushTrackingStringIO()
 
     state = insert_history_lines_output_and_flush(
@@ -946,7 +946,30 @@ def test_terminal_history_writer_routes_cell_output_and_keeps_state() -> None:
     assert history.state.history_has_content is True
 
 
+def test_terminal_history_writer_applies_retained_history_state() -> None:
+    # Rust owner: codex-tui::insert_history owns retained transcript
+    # insertion/projection state. Runtime helpers may hand back repaired state,
+    # but storage belongs to the insert_history writer.
+    writer = FlushTrackingStringIO()
+    history = TerminalHistoryWriter(writer, state=TerminalHistoryState.empty())
+    repaired = TerminalHistoryState(
+        history_has_content=True,
+        history_ended_with_blank=False,
+        projection_cells=("alpha", "beta"),
+    )
+
+    history.apply_state(repaired)
+
+    assert history.state is repaired
+    assert writer.getvalue() == ""
+    assert writer.flush_count == 0
+
+
 def test_terminal_history_writer_can_replay_rows_without_bottom_pane_effects() -> None:
+    # Rust owner: codex-tui::insert_history owns the scrollback insertion
+    # sequence for replayed rows; app::resize_reflow owns replay timing and
+    # active-bottom-pane reservation. The terminal runtime should pass the
+    # writer callback instead of spelling out clear/render flag combinations.
     writer = FlushTrackingStringIO()
     calls: list[str] = []
     history = TerminalHistoryWriter(
@@ -959,11 +982,9 @@ def test_terminal_history_writer_can_replay_rows_without_bottom_pane_effects() -
         render_bottom_pane=lambda: calls.append("render"),
     )
 
-    history.insert_lines(
+    history.insert_replayed_lines(
         ["replayed"],
-        clear_bottom_pane=False,
         reserve_active_bottom_pane=True,
-        render_bottom_pane=False,
     )
 
     assert writer.getvalue().startswith("\x1b[1;9r\x1b[9;1H\r\nreplayed\x1b[r")

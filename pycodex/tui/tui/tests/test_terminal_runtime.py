@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pycodex.tui.tui.terminal_runtime as terminal_runtime
+import pycodex.tui.chatwidget.turn_runtime as turn_runtime
 import pycodex.tui.custom_terminal as custom_terminal
 from pycodex.protocol import ReasoningEffort
 from pycodex.tui.app_command import AppCommand
@@ -1316,7 +1317,7 @@ def test_terminal_runtime_terminal_shows_working_before_blocking_submit(monkeypa
     #   "Working (0s \u2022 esc to interrupt)" while waiting for the first event.
     monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((80, 24)))
     now = [100.0]
-    monkeypatch.setattr(terminal_runtime.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(turn_runtime.time, "monotonic", lambda: now[0])
 
     stdout = io.StringIO()
     runtime = _AssertingSubmitRuntime(
@@ -1399,7 +1400,7 @@ def test_terminal_runtime_terminal_refreshes_working_while_event_stream_is_idle(
     #   time changes there while no history cell is inserted.
     monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((80, 24)))
     now = [200.0]
-    monkeypatch.setattr(terminal_runtime.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(turn_runtime.time, "monotonic", lambda: now[0])
 
     def advance_time() -> None:
         now[0] += 1.2
@@ -1432,7 +1433,7 @@ def test_terminal_runtime_terminal_retry_status_is_not_overwritten_by_working(mo
     #   reconnect status until another concrete turn event takes over.
     monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((80, 24)))
     now = [300.0]
-    monkeypatch.setattr(terminal_runtime.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(turn_runtime.time, "monotonic", lambda: now[0])
 
     def advance_time() -> None:
         now[0] += 1.2

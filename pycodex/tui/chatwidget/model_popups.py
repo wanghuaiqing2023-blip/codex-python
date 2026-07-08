@@ -316,8 +316,48 @@ def terminal_model_popup_context_from_runtime(app_runtime: object) -> ModelPopup
     )
 
 
+@dataclass
+class TerminalModelPopupController:
+    """Terminal /model popup session state owned by chatwidget::model_popups."""
+
+    app_runtime: object
+    dispatch_app_event: Optional[Callable[[Any], Any]] = None
+    context: ModelPopupContext | None = None
+    presets: Tuple[ModelPreset, ...] = ()
+
+    def open_view(self) -> Any:
+        self.context = terminal_model_popup_context_from_runtime(self.app_runtime)
+        self.presets = terminal_model_presets_from_runtime(self.app_runtime, self.context.current_model)
+        result = open_model_popup(self.context, self.presets)
+        for event in result.events:
+            self.apply_event(event)
+        return result.view
+
+    def handle_events(self, events: Tuple[object, ...]) -> Any:
+        return terminal_apply_model_popup_events(
+            events,
+            context=self.context,
+            presets=self.presets,
+            dispatch_app_event=self._dispatch_app_event,
+        )
+
+    def apply_event(self, event: ModelPopupEvent) -> Any:
+        return terminal_apply_model_popup_event(
+            event,
+            context=self.context,
+            presets=self.presets,
+            dispatch_app_event=self._dispatch_app_event,
+        )
+
+    def _dispatch_app_event(self, event: Any) -> Any:
+        dispatcher = self.dispatch_app_event or getattr(self.app_runtime, "handle_app_event", None)
+        if not callable(dispatcher):
+            return None
+        return dispatcher(event)
+
+
 def terminal_apply_model_popup_events(
-    events: Tuple[Any, ...],
+    events: Tuple[object, ...],
     *,
     context: ModelPopupContext | None,
     presets: Tuple[ModelPreset, ...],
@@ -724,6 +764,7 @@ __all__ = [
     "RUST_MODULE",
     "ReasoningEffortConfig",
     "ReasoningEffortPreset",
+    "TerminalModelPopupController",
     "apply_model_and_effort",
     "apply_model_and_effort_without_persist",
     "auto_model_order",

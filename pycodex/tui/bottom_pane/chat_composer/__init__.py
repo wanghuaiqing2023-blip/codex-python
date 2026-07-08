@@ -11,9 +11,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 import unicodedata
-from typing import Any, Callable, MutableSequence
+from typing import Any, Callable, MutableSequence, TextIO
 
 from ..._porting import RustTuiModule
+from ..command_popup import CommandPopup, CommandPopupFlags
+from ..selection_popup_common import TerminalPopupLine
+from .slash_input import terminal_command_popup_visible_for_draft
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -145,6 +148,61 @@ class TerminalComposerInputAction:
 
 
 @dataclass(frozen=True)
+class TerminalCommandPopupInputAction:
+    """Terminal slash-popup action planned by the chat composer owner."""
+
+    kind: str
+    draft: str | None = None
+    command: str | None = None
+
+
+@dataclass
+class TerminalCommandPopupState:
+    """Terminal slash-popup state owned by the chat composer boundary."""
+
+    popup: CommandPopup
+    visible: bool = False
+
+    @classmethod
+    def new(cls) -> "TerminalCommandPopupState":
+        return cls(CommandPopup.new(CommandPopupFlags(), []))
+
+    def sync_draft(self, draft: str, *, active_view_present: bool = False) -> bool:
+        """Sync popup visibility and filter from the current composer draft.
+
+        Rust owner: ``codex-tui::bottom_pane::chat_composer::sync_popups``
+        owns the command-popup lifecycle; ``command_popup`` owns filtering and
+        selection internals.
+        """
+
+        if active_view_present:
+            self.visible = False
+            return False
+        visible = terminal_command_popup_visible_for_draft(draft)
+        self.visible = visible
+        if visible:
+            self.popup.on_composer_text_change(draft)
+        return visible
+
+    def hide(self) -> None:
+        self.visible = False
+
+    def selected_item(self) -> Any:
+        return self.popup.selected_item()
+
+    def move_up(self) -> None:
+        self.popup.move_up()
+
+    def move_down(self) -> None:
+        self.popup.move_down()
+
+    def terminal_lines(self, *, width: int) -> list[TerminalPopupLine]:
+        if not self.visible:
+            return []
+        return list(self.popup.terminal_lines(width=width))
+
+
+@dataclass(frozen=True)
 class TerminalComposerProjection:
     line: str
     cursor_column: int
@@ -200,6 +258,31 @@ def run_terminal_composer_eof(
 
     clear_bottom_pane()
     return None
+
+
+@dataclass(frozen=True)
+class TerminalComposerEffectRunner:
+    """Runtime-bound terminal composer prompt/submit/EOF effect callbacks."""
+
+    writer: TextIO
+    clear_bottom_pane: Callable[[], Any]
+
+    def write_nonterminal_prompt(self) -> None:
+        run_terminal_composer_write_nonterminal_prompt(self.writer)
+
+    def submit(self, line: str) -> str:
+        return run_terminal_composer_submit(
+            line,
+            clear_bottom_pane=self.clear_bottom_pane,
+        )
+
+    def interrupt(self) -> None:
+        return run_terminal_composer_interrupt()
+
+    def eof(self) -> None:
+        return run_terminal_composer_eof(
+            clear_bottom_pane=self.clear_bottom_pane,
+        )
 
 
 def run_terminal_composer_interrupt() -> None:
@@ -290,6 +373,13 @@ def run_terminal_composer_blocking_line_prompt(
     return line
 
 
+def run_terminal_composer_write_nonterminal_prompt(writer: TextIO) -> None:
+    """Write the non-TTY fallback prompt owned by the composer boundary."""
+
+    writer.write("\n\u203a ")
+    writer.flush()
+
+
 def run_terminal_composer_read_prompt(
     *,
     terminal_active: bool,
@@ -340,6 +430,42 @@ def run_terminal_composer_read_prompt(
     if line == "":
         return None
     return line
+
+
+@dataclass(frozen=True)
+class TerminalComposerPromptReader:
+    """Runtime-bound terminal composer prompt reader callback package."""
+
+    terminal_active: Callable[[], bool]
+    get_input_source: Callable[[], Any]
+    read_line: Callable[[], str]
+    write_nonterminal_prompt: Callable[[], Any]
+    apply_draft: Callable[[str], Any]
+    check_resize: Callable[[], Any]
+    render: Callable[[], Any]
+    clear_bottom_pane: Callable[[], Any]
+    submit: Callable[[str], Any]
+    interrupt: Callable[[], Any]
+    eof: Callable[[], Any]
+    handle_key: Callable[[str, str, str], str | None] | None = None
+    poll_timeout: float = 0.1
+
+    def read(self) -> Any:
+        return run_terminal_composer_read_prompt(
+            terminal_active=self.terminal_active(),
+            get_input_source=self.get_input_source,
+            read_line=self.read_line,
+            write_nonterminal_prompt=self.write_nonterminal_prompt,
+            apply_draft=self.apply_draft,
+            check_resize=self.check_resize,
+            render=self.render,
+            clear_bottom_pane=self.clear_bottom_pane,
+            submit=self.submit,
+            interrupt=self.interrupt,
+            eof=self.eof,
+            poll_timeout=self.poll_timeout,
+            handle_key=self.handle_key,
+        )
 
 
 def terminal_composer_draft_cleared() -> str:
@@ -425,6 +551,117 @@ def terminal_composer_input_action(draft: str, event_kind: str, event_text: str 
     if kind == "interrupt":
         return TerminalComposerInputAction("interrupt", source)
     return TerminalComposerInputAction("continue", source)
+
+
+def terminal_popup_key(event_kind: str, event_text: str = "") -> str:
+    """Map terminal product-path input events into popup navigation keys.
+
+    Rust owner: ``codex-tui::bottom_pane::chat_composer`` performs popup-first
+    key routing after ``tui::event_stream`` has normalized terminal payloads.
+    """
+
+    kind = str(event_kind).lower()
+    raw_text = str(event_text)
+    text = raw_text.lower()
+    if kind in {"text", "line", "paste"}:
+        if raw_text in {"\r", "\n", "\r\n"} or text in {"enter", "return"}:
+            return "enter"
+        if raw_text == "\t":
+            return "tab"
+        if raw_text == "\x1b" or text in {"escape", "esc"}:
+            return "esc"
+        if kind == "line" and raw_text == "":
+            return "enter"
+        return ""
+    if kind == "key":
+        if text in {"up", "down", "tab", "\t", "enter", "return", "\r", "\n", "escape", "esc", "\x1b"}:
+            if text in {"enter", "return", "\r", "\n"}:
+                return "enter"
+            if text in {"escape", "\x1b"}:
+                return "esc"
+            return "tab" if text == "\t" else text
+        if len(text) == 1:
+            return text
+    if kind in {"up", "down", "tab", "enter", "return", "esc", "escape"}:
+        if kind == "return":
+            return "enter"
+        if kind == "escape":
+            return "esc"
+        return kind
+    return ""
+
+
+def terminal_command_popup_input_action(
+    draft: str,
+    key: str,
+    *,
+    selected_command: Any = None,
+) -> TerminalCommandPopupInputAction:
+    """Plan popup handling for terminal slash command input.
+
+    Rust owner: ``codex-tui::bottom_pane::chat_composer`` routes keys to the
+    active slash popup before normal input.  ``command_popup`` owns selection
+    mutation; this helper owns which action a popup key requests.
+    """
+
+    normalized_key = str(key).lower()
+    if normalized_key == "up":
+        return TerminalCommandPopupInputAction("move_up")
+    if normalized_key == "down":
+        return TerminalCommandPopupInputAction("move_down")
+    if normalized_key == "tab":
+        command = _terminal_selected_command_name(selected_command)
+        if not command:
+            return TerminalCommandPopupInputAction("handled", str(draft))
+        return TerminalCommandPopupInputAction("complete", f"/{command} ", command)
+    if normalized_key == "enter":
+        command = _terminal_selected_command_name(selected_command) or _terminal_draft_command_name(draft)
+        if command:
+            return TerminalCommandPopupInputAction("open_command_view", "", command)
+    return TerminalCommandPopupInputAction("unhandled", str(draft))
+
+
+def run_terminal_command_popup_input_action(
+    state: TerminalCommandPopupState,
+    draft: str,
+    key: str,
+    *,
+    open_command_view: Callable[[str], Any | None] | None = None,
+    show_selection_view: Callable[[Any], Any] | None = None,
+) -> str | None:
+    """Apply a terminal slash-popup key action within the composer owner.
+
+    Rust owner: ``codex-tui::bottom_pane::chat_composer`` decides whether a
+    popup key moves selection, completes the highlighted slash command, opens a
+    command-owned view, or falls through to normal composer input. The terminal
+    controller supplies only concrete view-opening callbacks.
+    """
+
+    if not state.visible:
+        return None
+
+    action = terminal_command_popup_input_action(
+        draft,
+        key,
+        selected_command=state.selected_item(),
+    )
+    if action.kind == "move_up":
+        state.move_up()
+        return draft
+    if action.kind == "move_down":
+        state.move_down()
+        return draft
+    if action.kind == "complete":
+        return action.draft if action.draft is not None else draft
+    if action.kind == "open_command_view":
+        params = open_command_view(action.command or "") if open_command_view is not None else None
+        if params is not None and show_selection_view is not None:
+            show_selection_view(params)
+            return action.draft if action.draft is not None else ""
+        return None
+    if action.kind == "handled":
+        return action.draft if action.draft is not None else draft
+    return None
 
 
 @dataclass(frozen=True)
@@ -714,6 +951,23 @@ def _terminal_char_display_width(char: str) -> int:
     return 2 if unicodedata.east_asian_width(char) in {"F", "W"} else 1
 
 
+def _terminal_selected_command_name(command: Any) -> str:
+    if command is None:
+        return ""
+    command_fn = getattr(command, "command", None)
+    if callable(command_fn):
+        return str(command_fn())
+    return str(command)
+
+
+def _terminal_draft_command_name(draft: str) -> str:
+    first_line = str(draft).replace("\r\n", "\n").replace("\r", "\n").split("\n", 1)[0]
+    if not first_line.startswith("/"):
+        return ""
+    token = first_line[1:].lstrip()
+    return token.split()[0] if token.split() else ""
+
+
 def _binding_key(item: KeyEvent | dict[str, Any] | str) -> tuple[str, tuple[str, ...], str | None]:
     return _coerce_key_event(item).binding_key()
 
@@ -758,7 +1012,11 @@ __all__ = [
     "QueuedInputAction",
     "RUST_MODULE",
     "TERMINAL_COMPOSER_INPUT_CONTINUE",
+    "TerminalCommandPopupInputAction",
+    "TerminalCommandPopupState",
+    "TerminalComposerEffectRunner",
     "TerminalComposerInputAction",
+    "TerminalComposerPromptReader",
     "TerminalComposerProjection",
     "expand_pending_pastes",
     "plan_mode_nudge_line",
@@ -769,11 +1027,15 @@ __all__ = [
     "run_terminal_composer_prompt_loop",
     "run_terminal_composer_read_prompt",
     "run_terminal_composer_submit",
+    "run_terminal_composer_write_nonterminal_prompt",
+    "run_terminal_command_popup_input_action",
     "terminal_composer_draft_after_backspace",
     "terminal_composer_draft_after_text",
     "terminal_composer_draft_cleared",
+    "terminal_command_popup_input_action",
     "terminal_composer_input_action",
     "terminal_composer_line_text",
+    "terminal_popup_key",
     "terminal_composer_projection",
     "terminal_composer_submitted_line",
     "user_input_too_large_message",

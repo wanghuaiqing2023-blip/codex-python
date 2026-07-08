@@ -11,6 +11,7 @@ from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
 from .._porting import RustTuiModule
+from .selection_popup_common import TerminalPopupLine
 
 RUST_MODULE = RustTuiModule(crate="codex-tui", module="bottom_pane::bottom_pane_view", source="codex/codex-rs/tui/src/bottom_pane/bottom_pane_view.rs")
 
@@ -27,6 +28,7 @@ class CancellationEvent(Enum):
 
 @runtime_checkable
 class BottomPaneView(Protocol):
+    def terminal_lines(self, *, width: int) -> list[TerminalPopupLine]: ...
     def handle_key_event(self, key_event: Any) -> None: ...
     def is_complete(self) -> bool: ...
     def completion(self) -> ViewCompletion | None: ...
@@ -50,6 +52,9 @@ class BottomPaneView(Protocol):
 
 class BottomPaneViewDefaults:
     """Mixin implementing Rust ``BottomPaneView`` default methods."""
+
+    def terminal_lines(self, *, width: int) -> list[TerminalPopupLine]:
+        return []
 
     def handle_key_event(self, _key_event: Any) -> None:
         return None
@@ -110,6 +115,10 @@ class BottomPaneViewDefaults:
 
 
 # Free-function helpers mirror calling the Rust trait defaults against a view.
+def terminal_lines(view: BottomPaneView, *, width: int) -> list[TerminalPopupLine]:
+    return list(view.terminal_lines(width=width))
+
+
 def handle_key_event(view: BottomPaneView, key_event: Any) -> None:
     return view.handle_key_event(key_event)
 
@@ -206,6 +215,7 @@ __all__ = [
     "on_ctrl_c",
     "prefer_esc_to_handle_key_event",
     "selected_index",
+    "terminal_lines",
     "terminal_title_requires_action",
     "try_consume_approval_request",
     "try_consume_mcp_server_elicitation_request",

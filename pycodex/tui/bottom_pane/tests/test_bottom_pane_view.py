@@ -24,6 +24,7 @@ from pycodex.tui.bottom_pane.bottom_pane_view import (
     on_ctrl_c,
     prefer_esc_to_handle_key_event,
     selected_index,
+    terminal_lines,
     terminal_title_requires_action,
     try_consume_approval_request,
     try_consume_mcp_server_elicitation_request,
@@ -53,6 +54,7 @@ def test_default_bottom_pane_view_completion_and_identity_methods() -> None:
     assert view_id(view) is None
     assert selected_index(view) is None
     assert active_tab_id(view) is None
+    assert terminal_lines(view, width=80) == []
 
 
 def test_default_bottom_pane_view_input_and_paste_methods_are_noops() -> None:

@@ -16,6 +16,8 @@ from pycodex.tui.tui.event_stream import (
     SelectTerminalInputSource,
     StringTerminalInputSource,
     TerminalInputSourceProvider,
+    TerminalTurnEventLoopRunner,
+    TerminalTurnIdleTicker,
     TuiEvent,
     WindowsConsoleInputSource,
     WindowsConsoleEventSource,
@@ -26,6 +28,7 @@ from pycodex.tui.tui.event_stream import (
     run_terminal_turn_idle_tick,
     run_terminal_turn_event_loop,
     setup,
+    terminal_stdin_is_terminal,
     terminal_turn_event_stream_closed,
 )
 
@@ -437,6 +440,32 @@ def test_make_terminal_input_source_uses_string_source_for_stringio() -> None:
     assert source.poll(0.0) == event_stream.TerminalInputEvent("text", "a")
 
 
+def test_terminal_stdin_is_terminal_owns_runtime_tty_probe() -> None:
+    # Rust source contract:
+    # - codex-tui::tui::event_stream owns the terminal input-source boundary.
+    # - Python's product adapter keeps host-specific stdin probes here so
+    #   terminal_runtime only consumes the event-stream decision.
+    class TtyStdin:
+        def isatty(self) -> bool:
+            return True
+
+    class NonTtyStdin:
+        def isatty(self) -> bool:
+            return False
+
+    class BrokenTtyStdin:
+        def isatty(self) -> bool:
+            raise OSError("detached")
+
+    class MissingIsatty:
+        pass
+
+    assert terminal_stdin_is_terminal(TtyStdin()) is True
+    assert terminal_stdin_is_terminal(NonTtyStdin()) is False
+    assert terminal_stdin_is_terminal(BrokenTtyStdin()) is False
+    assert terminal_stdin_is_terminal(MissingIsatty()) is False
+
+
 def test_get_or_make_terminal_input_source_reuses_existing_source() -> None:
     # Rust source contract:
     # - EventBrokerState::Running reuses the active input source instead of
@@ -720,6 +749,46 @@ def test_run_terminal_turn_event_loop_runs_closed_callback() -> None:
     assert calls == ["closed"]
 
 
+def test_terminal_turn_event_loop_runner_binds_runtime_callbacks() -> None:
+    # Rust owner: codex-tui::tui::event_stream owns submitted-turn event
+    # loop callback dispatch. terminal_runtime should bind these callbacks
+    # once and consume a runner rather than assembling event-loop arguments at
+    # the call site.
+    class Event:
+        def __init__(self, kind: str) -> None:
+            self.kind = kind
+
+    class Stream:
+        closed = False
+
+        def __init__(self) -> None:
+            self.events = [None, Event("TurnCompleted")]
+
+        def next_event(self, timeout: float) -> object | None:
+            calls.append(f"timeout:{timeout}")
+            return self.events.pop(0)
+
+    calls: list[str] = []
+    runner = TerminalTurnEventLoopRunner(
+        timeout=0.25,
+        on_event=lambda event: calls.append(f"event:{event.kind}"),
+        on_closed=lambda: calls.append("closed"),
+        on_idle=lambda: calls.append("idle"),
+        before_event=lambda: calls.append("before_event"),
+    )
+
+    result = runner.consume(Stream())
+
+    assert getattr(result, "kind", None) == "TurnCompleted"
+    assert calls == [
+        "timeout:0.25",
+        "idle",
+        "timeout:0.25",
+        "before_event",
+        "event:TurnCompleted",
+    ]
+
+
 def test_run_terminal_turn_idle_tick_checks_resize_before_status_refresh() -> None:
     # Rust owner: codex-tui::tui::event_stream owns idle dispatch for terminal
     # event streams; the terminal product path supplies resize/status callbacks.
@@ -729,5 +798,20 @@ def test_run_terminal_turn_idle_tick_checks_resize_before_status_refresh() -> No
         check_resize=lambda: calls.append("resize"),
         refresh_turn_status=lambda: calls.append("status"),
     )
+
+    assert calls == ["resize", "status"]
+
+
+def test_terminal_turn_idle_ticker_binds_runtime_idle_callbacks() -> None:
+    # Rust owner: codex-tui::tui::event_stream owns idle dispatch for terminal
+    # event streams. terminal_runtime should pass a bound event-stream owner
+    # callback instead of constructing idle-maintenance lambdas locally.
+    calls: list[str] = []
+    ticker = TerminalTurnIdleTicker(
+        check_resize=lambda: calls.append("resize"),
+        refresh_turn_status=lambda: calls.append("status"),
+    )
+
+    ticker.tick()
 
     assert calls == ["resize", "status"]

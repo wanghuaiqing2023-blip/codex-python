@@ -10,10 +10,12 @@ import textwrap
 import unicodedata
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, List, MutableSequence, Optional, Tuple
+from typing import Any, Iterable, List, MutableSequence, Optional, Tuple
 
 from .._porting import RustTuiModule
+from ..ratatui_bridge import Color as RatatuiColor
 from ..ratatui_bridge import Rect
+from ..ratatui_bridge import Style as RatatuiStyle
 from .scroll_state import ScrollState
 
 RUST_MODULE = RustTuiModule(
@@ -55,6 +57,30 @@ class Line:
 class TerminalPopupLine:
     text: str
     selected: bool = False
+
+
+TERMINAL_POPUP_SELECTED_ROW_STYLE = RatatuiStyle.default().with_fg(RatatuiColor.LightBlue)
+
+
+def terminal_popup_line_style(*, selected: bool) -> RatatuiStyle:
+    """Return the terminal ratatui style for a projected popup line."""
+
+    return TERMINAL_POPUP_SELECTED_ROW_STYLE if selected else RatatuiStyle.default()
+
+
+def terminal_popup_line_for_width(line: TerminalPopupLine, width: int) -> TerminalPopupLine:
+    """Return a popup line clipped to the available terminal cell width."""
+
+    return TerminalPopupLine(
+        _truncate_terminal_popup_text(line.text, max(1, int(width))),
+        line.selected,
+    )
+
+
+def terminal_popup_lines_for_width(lines: Iterable[TerminalPopupLine], width: int) -> List[TerminalPopupLine]:
+    """Return popup lines clipped to the available terminal cell width."""
+
+    return [terminal_popup_line_for_width(line, width) for line in lines]
 
 
 @dataclass
@@ -493,6 +519,19 @@ def _cell_width(text: str) -> int:
     return width
 
 
+def _truncate_terminal_popup_text(text: str, max_width: int) -> str:
+    width = max(1, int(max_width))
+    used = 0
+    out: List[str] = []
+    for ch in str(text):
+        ch_width = _cell_width(ch)
+        if used + ch_width > width:
+            break
+        out.append(ch)
+        used += ch_width
+    return "".join(out)
+
+
 def _truncate_cells(text: str, max_width: int) -> Tuple[str, bool]:
     if max_width >= 10**8:
         return text, False
@@ -526,6 +565,7 @@ __all__ = [
     "RUST_MODULE",
     "Rect",
     "Span",
+    "TERMINAL_POPUP_SELECTED_ROW_STYLE",
     "TerminalPopupLine",
     "adjust_start_for_wrapped_selection_visibility",
     "apply_row_state_style",
@@ -545,6 +585,9 @@ __all__ = [
     "render_terminal_popup_lines",
     "render_rows_with_col_width_mode",
     "should_wrap_name_in_column",
+    "terminal_popup_line_for_width",
+    "terminal_popup_lines_for_width",
+    "terminal_popup_line_style",
     "wrap_indent",
     "wrap_row_lines",
     "wrap_standard_row",

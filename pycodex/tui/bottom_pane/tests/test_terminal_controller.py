@@ -1,87 +1,31 @@
 import io
 import os
 
+from pycodex.tui.bottom_pane.chat_composer import terminal_composer_line_text
 from pycodex.tui.bottom_pane.list_selection_view import SelectionItem, SelectionViewParams
+from pycodex.tui.bottom_pane.terminal_footprint import TerminalBottomPaneFootprint
 from pycodex.tui.bottom_pane.terminal_controller import (
-    TerminalBottomPaneSurfaceWriter,
-    draft_command_name,
-    terminal_command_popup_visible_for_draft,
-    terminal_popup_key,
+    TerminalBottomPaneController,
 )
 from pycodex.tui.chatwidget.status_surfaces import TerminalLiveStatusSurface
 
 
-def _surface(
-    *,
-    open_model_view=None,
-    on_selection_events=None,
-) -> TerminalBottomPaneSurfaceWriter:
-    return TerminalBottomPaneSurfaceWriter(
-        io.StringIO(),
-        stdin_is_terminal=lambda: True,
-        layout_active=lambda: True,
-        live_status=TerminalLiveStatusSurface.inactive,
-        terminal_size=lambda: os.terminal_size((80, 24)),
-        resize=lambda: None,
-        footer_text=lambda: "gpt-test high",
-        open_model_view=open_model_view,
-        on_selection_events=on_selection_events,
-    )
+class FlushTrackingStringIO(io.StringIO):
+    def __init__(self) -> None:
+        super().__init__()
+        self.flush_count = 0
+
+    def flush(self) -> None:
+        self.flush_count += 1
+        super().flush()
 
 
-def test_terminal_controller_maps_rust_like_key_payloads() -> None:
-    # Rust owner: codex-tui::bottom_pane::chat_composer handles popup key
-    # routing after tui::event_stream has normalized key payloads.
-    assert terminal_popup_key("down") == "down"
-    assert terminal_popup_key("key", "up") == "up"
-    assert terminal_popup_key("text", "\t") == "tab"
-    assert terminal_popup_key("text", "\r") == "enter"
-    assert terminal_popup_key("text", "你") == ""
-
-
-def test_terminal_controller_tracks_slash_command_visibility_and_name() -> None:
-    # Rust owner: bottom_pane::chat_composer::sync_command_popup opens the
-    # slash-command popup while editing the first-line command name.
-    assert terminal_command_popup_visible_for_draft("/") is True
-    assert terminal_command_popup_visible_for_draft("/m") is True
-    assert terminal_command_popup_visible_for_draft("/model ") is False
-    assert terminal_command_popup_visible_for_draft("hello /m") is False
-    assert draft_command_name("/model high") == "model"
-
-
-def test_terminal_controller_moves_slash_highlight_and_tabs_selection() -> None:
-    # Rust owner: command_popup owns filtering/selection while chat_composer
-    # owns Tab completion of the highlighted command.
-    surface = _surface()
-
-    assert surface.handle_composer_key("/m", "down") == "/m"
-    assert surface.command_popup.selected_item().command() == "memories"
-    assert surface.handle_composer_key("/m", "tab") == "/memories "
-
-
-def test_terminal_controller_model_command_opens_active_selection_view() -> None:
-    # Rust owner: chatwidget::model_popups creates the view and
-    # bottom_pane::bottom_pane_view owns active view navigation.
-    params = SelectionViewParams(
-        title="Select Model",
-        items=(
-            SelectionItem(name="gpt-5.5", description="frontier"),
-            SelectionItem(name="gpt-5.4", description="strong"),
-        ),
-    )
-    surface = _surface(open_model_view=lambda: params)
-
-    assert surface.handle_composer_key("/model", "enter") == ""
-    assert surface.active_view is not None
-    assert surface.handle_composer_key("", "down") == ""
-    assert surface.active_view.selected_index() == 1
-
-
-def test_terminal_controller_reset_buffer_state_forces_next_live_pane_repaint() -> None:
-    # Rust owner: codex-tui::custom_terminal invalidates previous buffer state
-    # when external resize/history repaint work changes the visible terminal.
+def test_terminal_controller_external_repaint_uses_live_viewport_lifecycle() -> None:
+    # Rust owner: codex-tui::custom_terminal owns buffer invalidation around
+    # external terminal writes; terminal controllers expose only the lifecycle
+    # entrypoint used by tui/resize glue.
     writer = io.StringIO()
-    surface = TerminalBottomPaneSurfaceWriter(
+    controller = TerminalBottomPaneController(
         writer,
         stdin_is_terminal=lambda: True,
         layout_active=lambda: True,
@@ -90,16 +34,185 @@ def test_terminal_controller_reset_buffer_state_forces_next_live_pane_repaint() 
         resize=lambda: None,
         footer_text=lambda: "gpt-test high",
     )
-    surface.apply_draft("hello")
+    controller.sync_draft("hello")
 
-    assert surface.render(check_resize=False) is True
+    assert controller.render(check_resize=False) is True
     writer.seek(0)
     writer.truncate(0)
-    assert surface.render(check_resize=False) is True
+    assert controller.render(check_resize=False) is True
     assert "\x1b[10;1H\u203a hello" not in writer.getvalue()
 
-    surface.reset_buffer_state()
+    calls: list[str] = []
+    result = controller.run_external_repaint(lambda: calls.append("repaint") or "done")
+
     writer.seek(0)
     writer.truncate(0)
-    assert surface.render(check_resize=False) is True
+    assert controller.render(check_resize=False) is True
+    assert result == "done"
+    assert calls == ["repaint"]
     assert "\x1b[10;1H\u203a hello" in writer.getvalue()
+
+
+def test_terminal_bottom_pane_controller_syncs_draft_and_terminal_callbacks() -> None:
+    # Rust owner: codex-tui::bottom_pane owns composer/status/footer surface
+    # rendering.  The terminal runner should supply environment callbacks while
+    # this boundary syncs draft text and computes the live-pane footprint.
+    writer = FlushTrackingStringIO()
+    calls: list[str] = []
+    live = [TerminalLiveStatusSurface.inactive()]
+
+    controller = TerminalBottomPaneController(
+        writer,
+        stdin_is_terminal=lambda: True,
+        layout_active=lambda: True,
+        live_status=lambda: live[0],
+        terminal_size=lambda: calls.append("size") or os.terminal_size((40, 12)),
+        resize=lambda: calls.append("resize"),
+        footer_text=lambda: calls.append("footer") or "gpt-test high",
+    )
+
+    assert controller.history_bottom_row() == 8
+    live[0] = TerminalLiveStatusSurface.active_status("\u2022 Working")
+    assert controller.history_bottom_row() == 6
+    assert controller.history_bottom_row(True) == 6
+
+    controller.sync_draft("hello")
+    assert controller.render(check_resize=True) is True
+    assert calls[-3:] == ["footer", "resize", "size"]
+    output = writer.getvalue()
+    assert "\x1b[7;1H\u2022 Working" in output
+    assert "\x1b[10;1H\u203a hello" in output
+    assert "\x1b[12;1Hgpt-test high" in output
+
+    assert controller.clear(check_resize=False) is True
+    assert calls[-1] == "size"
+
+
+def test_terminal_bottom_pane_controller_exposes_no_resize_callbacks_for_runtime_glue() -> None:
+    # Rust owner: codex-tui::bottom_pane coordinates live-pane clear/render
+    # callbacks while app::resize_reflow owns resize timing. terminal_runtime
+    # should consume these callback boundaries instead of spelling out
+    # check_resize=False lambdas for history/composer/resize collaborators.
+    writer = FlushTrackingStringIO()
+    calls: list[str] = []
+    controller = TerminalBottomPaneController(
+        writer,
+        stdin_is_terminal=lambda: True,
+        layout_active=lambda: True,
+        live_status=TerminalLiveStatusSurface.inactive,
+        terminal_size=lambda: calls.append("size") or os.terminal_size((40, 12)),
+        resize=lambda: calls.append("resize"),
+        footer_text=lambda: "gpt-test high",
+    )
+    controller.sync_draft("hello")
+
+    assert controller.clear_without_resize_check() is True
+    assert "resize" not in calls
+    assert calls[-1] == "size"
+
+    calls.clear()
+    assert controller.render_without_resize_check() is True
+    assert "resize" not in calls
+    assert calls[0] == "size"
+
+
+def test_terminal_bottom_pane_controller_applies_cursor_visibility_policy() -> None:
+    # Rust owner: codex-tui::custom_terminal owns cursor hide/show lifecycle.
+    # The Python terminal controller maps active turn/view state into that
+    # frame-level cursor policy instead of moving the prompt cursor every tick.
+    writer = FlushTrackingStringIO()
+    visible = [True]
+    controller = TerminalBottomPaneController(
+        writer,
+        stdin_is_terminal=lambda: True,
+        layout_active=lambda: True,
+        live_status=TerminalLiveStatusSurface.inactive,
+        terminal_size=lambda: os.terminal_size((40, 12)),
+        resize=lambda: None,
+        footer_text=lambda: "gpt-test high",
+        cursor_visible=lambda: visible[0],
+    )
+    controller.sync_draft("hi")
+
+    visible[0] = False
+    assert controller.render(check_resize=False) is True
+    first_output = writer.getvalue()
+    assert "\x1b[?25l" in first_output
+    assert not first_output.endswith(f"\x1b[10;{len(terminal_composer_line_text('hi')) + 1}H")
+
+    writer.seek(0)
+    writer.truncate(0)
+    assert controller.render(check_resize=False) is True
+    second_output = writer.getvalue()
+    assert "\x1b[?25l" not in second_output
+    assert f"\x1b[10;{len(terminal_composer_line_text('hi')) + 1}H" not in second_output
+
+    visible[0] = True
+    writer.seek(0)
+    writer.truncate(0)
+    assert controller.render(check_resize=False) is True
+    restored_output = writer.getvalue()
+    assert "\x1b[?25h" in restored_output
+    assert f"\x1b[10;{len(terminal_composer_line_text('hi')) + 1}H" in restored_output
+
+
+def test_terminal_bottom_pane_controller_hides_cursor_for_active_selection_view() -> None:
+    # Rust owner: codex-tui::bottom_pane::ListSelectionView implements
+    # BottomPaneView without a text cursor.  Active selection views must use the
+    # same frame cursor policy even if the idle composer policy would show one.
+    writer = FlushTrackingStringIO()
+    controller = TerminalBottomPaneController(
+        writer,
+        stdin_is_terminal=lambda: True,
+        layout_active=lambda: True,
+        live_status=TerminalLiveStatusSurface.inactive,
+        terminal_size=lambda: os.terminal_size((96, 18)),
+        resize=lambda: None,
+        footer_text=lambda: "gpt-test high",
+        open_command_view=lambda command: SelectionViewParams(
+            header="Select Model and Effort",
+            items=[SelectionItem(name="gpt-5.4", description="Strong model")],
+        ),
+        cursor_visible=lambda: True,
+    )
+    assert controller.handle_composer_key("/model", "enter") == ""
+
+    assert controller.render(check_resize=False) is True
+    output = writer.getvalue()
+    assert "\x1b[?25l" in output
+    assert "Select Model and Effort" in output
+
+
+def test_terminal_bottom_pane_controller_reflows_history_when_popup_footprint_grows() -> None:
+    # Rust owner: bottom_pane computes active view height, while
+    # app::resize_reflow repairs the transcript viewport when that bottom-pane
+    # footprint changes. Opening any selection popup must use that shared
+    # footprint path rather than a /model-specific clear.
+    writer = FlushTrackingStringIO()
+    transitions: list[tuple[TerminalBottomPaneFootprint, TerminalBottomPaneFootprint]] = []
+    controller = TerminalBottomPaneController(
+        writer,
+        stdin_is_terminal=lambda: True,
+        layout_active=lambda: True,
+        live_status=TerminalLiveStatusSurface.inactive,
+        terminal_size=lambda: os.terminal_size((96, 18)),
+        resize=lambda: None,
+        footer_text=lambda: "gpt-test high",
+        open_command_view=lambda command: SelectionViewParams(
+            header="Select Model and Effort",
+            items=[
+                SelectionItem(name="gpt-5.5", description="Frontier model", is_current=True),
+                SelectionItem(name="gpt-5.4", description="Strong model"),
+            ],
+        ),
+        repaint_footprint=lambda previous, current: transitions.append((previous, current)),
+    )
+
+    controller.render(check_resize=False)
+    assert controller.handle_composer_key("/model", "enter") == ""
+    controller.render(check_resize=False)
+
+    assert transitions
+    previous, current = transitions[-1]
+    assert previous.popup_height == 0
+    assert current.popup_height > 0

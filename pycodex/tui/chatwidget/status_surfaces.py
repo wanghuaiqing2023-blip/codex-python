@@ -272,7 +272,7 @@ class TerminalLiveStatusSurface:
         return self.text if self.active else None
 
     def rows_for_size(self, size: os.terminal_size) -> list[int]:
-        from ..bottom_pane.terminal_frame import bottom_pane_rows_for_size
+        from ..bottom_pane.terminal_footprint import bottom_pane_rows_for_size
 
         return bottom_pane_rows_for_size(size, live_status_active=self.footprint_active)
 
@@ -608,6 +608,16 @@ class TerminalStatusSurfaceWriter:
 
         return self.turn_status.active
 
+    def composer_cursor_visible(self) -> bool:
+        """Return whether the bottom-pane composer cursor should be visible."""
+
+        return not self.turn_active
+
+    def bind_render_bottom_pane(self, render_bottom_pane: Callable[[], None]) -> None:
+        """Bind the bottom-pane render callback after terminal components are wired."""
+
+        self.render_bottom_pane = render_bottom_pane
+
     def start_turn(self, started_at: float) -> None:
         self.turn_started_at = float(started_at)
 
@@ -634,6 +644,11 @@ class TerminalStatusSurfaceWriter:
             write_live_status=self.show_live_status,
         )
 
+    def render_turn_status_force(self) -> None:
+        """Render active-turn status immediately for turn start."""
+
+        self.render_turn_status(force=True)
+
     def refresh_turn_status_if_due(self, *, now: float | None = None) -> None:
         self.turn_status = run_terminal_turn_status_refresh(
             self.turn_status,
@@ -659,8 +674,13 @@ class TerminalStatusSurfaceWriter:
             apply_state=self._apply_live_status,
         )
 
-    def clear_live_status(self) -> None:
+    def hide_live_status(self) -> None:
+        """Hide protocol-owned live status and redraw the bottom pane."""
+
         self.hide_inline_status(redraw_bottom_pane=True)
+
+    def clear_live_status(self) -> None:
+        self.hide_live_status()
 
     def _apply_live_status(self, state: TerminalLiveStatusSurface) -> None:
         self.live_status = state

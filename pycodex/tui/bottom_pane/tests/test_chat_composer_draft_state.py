@@ -1,5 +1,7 @@
 """Parity tests for Rust ``codex-tui::bottom_pane::chat_composer::draft_state``."""
 
+# Rust owner: codex-tui::bottom_pane::chat_composer::draft_state.
+# Rust source: codex/codex-rs/tui/src/bottom_pane/chat_composer/draft_state.rs
 from pycodex.tui.bottom_pane.chat_composer.draft_state import ComposerMentionBinding, DraftState
 from pycodex.tui.bottom_pane.paste_burst import PasteBurst
 from pycodex.tui.bottom_pane.textarea import TextArea, TextAreaState

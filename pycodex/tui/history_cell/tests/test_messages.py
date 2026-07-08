@@ -6,6 +6,7 @@ from pycodex.tui.history_cell.messages import (
     StreamingAgentTailCell,
     TerminalAssistantStreamState,
     TerminalAssistantStreamWriter,
+    TerminalUserPromptOutputWriter,
     TextElement,
     build_user_message_lines_with_elements,
     line_text,
@@ -129,6 +130,34 @@ def test_run_terminal_user_prompt_output_skips_render_when_terminal_inactive() -
     )
 
     assert calls == [("clear_live", None), ("write", "\u203a offline")]
+
+
+def test_terminal_user_prompt_output_writer_binds_runtime_callbacks() -> None:
+    # Rust owner: codex-tui::history_cell::messages owns terminal user-prompt
+    # scrollback output. terminal_runtime should call the bound writer instead
+    # of passing prompt-output side-effect callbacks at the submit site.
+    active = [True]
+    calls: list[tuple[str, str | bool | None]] = []
+    writer = TerminalUserPromptOutputWriter(
+        terminal_active=lambda: active[0],
+        clear_live_status=lambda: calls.append(("clear_live", None)),
+        write_history_cell=lambda text, reserve_active_bottom_pane=False: calls.append(
+            ("write", f"{text}|reserve={reserve_active_bottom_pane}")
+        ),
+        render_bottom_pane=lambda: calls.append(("render", None)),
+    )
+
+    writer.write("hello?")
+    active[0] = False
+    writer.write("offline")
+
+    assert calls == [
+        ("clear_live", None),
+        ("write", "\u203a hello?|reserve=True"),
+        ("render", None),
+        ("clear_live", None),
+        ("write", "\u203a offline|reserve=True"),
+    ]
 
 
 def test_trim_trailing_blank_lines_removes_blank_only_lines() -> None:

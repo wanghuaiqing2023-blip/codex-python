@@ -1,5 +1,7 @@
 """Parity tests for Rust ``codex-tui::bottom_pane::chat_composer::popup_state``."""
 
+# Rust owner: codex-tui::bottom_pane::chat_composer::popup_state.
+# Rust source: codex/codex-rs/tui/src/bottom_pane/chat_composer/popup_state.rs
 from pycodex.tui.bottom_pane.chat_composer.popup_state import ActivePopup, PopupState
 
 

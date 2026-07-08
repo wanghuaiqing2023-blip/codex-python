@@ -14,6 +14,7 @@ from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from .._porting import RustTuiModule
+from .bottom_pane_view import ViewCompletion
 from .popup_consts import MAX_POPUP_ROWS
 from .scroll_state import ScrollState
 from .selection_popup_common import (
@@ -155,7 +156,7 @@ class ListSelectionView:
     tabs: List[SelectionTab]
     active_tab_idx: Optional[int]
     state: ScrollState
-    completion_value: Optional[str]
+    completion_value: Optional[ViewCompletion]
     dismiss_after_child_accept_value: bool
     app_event_tx: Any
     is_searchable: bool
@@ -444,7 +445,7 @@ class ListSelectionView:
         if actual is None:
             if self.on_cancel is not None:
                 self.on_cancel(self.app_event_tx)
-            self.completion_value = "Cancelled"
+            self.completion_value = ViewCompletion.CANCELLED
             return
         item = self.active_items()[actual]
         if not self.item_is_enabled(item):
@@ -456,7 +457,7 @@ class ListSelectionView:
                 self.app_event_tx.append(action)
         self.dismiss_after_child_accept_value = item.dismiss_parent_on_child_accept
         if item.dismiss_on_select:
-            self.completion_value = "Submitted"
+            self.completion_value = ViewCompletion.ACCEPTED
 
     def set_search_query(self, query: str) -> None:
         self.search_query = query if self.is_searchable else ""
@@ -523,7 +524,7 @@ class ListSelectionView:
     def is_complete(self) -> bool:
         return self.completion_value is not None
 
-    def completion(self) -> str | None:
+    def completion(self) -> ViewCompletion | None:
         return self.completion_value
 
     def dismiss_after_child_accept(self) -> bool:
@@ -531,6 +532,9 @@ class ListSelectionView:
 
     def clear_dismiss_after_child_accept(self) -> None:
         self.dismiss_after_child_accept_value = False
+
+    def handle_key_event(self, key_event: Any) -> None:
+        _handle_key_event(self, key_event)
 
     def view_id(self) -> str | None:
         return self.view_id_value
@@ -556,7 +560,7 @@ class ListSelectionView:
         self.state.ensure_visible(len(self.filtered_indices), self.max_visible_rows(len(self.filtered_indices)))
 
 
-def handle_key_event(view: ListSelectionView, key_event: Any) -> None:
+def _handle_key_event(view: ListSelectionView, key_event: Any) -> None:
     key = _key_name(key_event)
     if key in {"up", "k", "ctrl+p"}:
         view.move_up()
@@ -591,11 +595,15 @@ def handle_key_event(view: ListSelectionView, key_event: Any) -> None:
         view.set_search_query(view.search_query + key)
 
 
+def handle_key_event(view: ListSelectionView, key_event: Any) -> None:
+    return view.handle_key_event(key_event)
+
+
 def is_complete(view: ListSelectionView) -> bool:
     return view.is_complete()
 
 
-def completion(view: ListSelectionView) -> Optional[str]:
+def completion(view: ListSelectionView) -> Optional[ViewCompletion]:
     return view.completion()
 
 
@@ -626,7 +634,7 @@ def prefer_esc_to_handle_key_event(*args: Any, **kwargs: Any) -> bool:
 def on_ctrl_c(view: ListSelectionView) -> None:
     if view.on_cancel is not None:
         view.on_cancel(view.app_event_tx)
-    view.completion_value = "Cancelled"
+    view.completion_value = ViewCompletion.CANCELLED
 
 
 def desired_height(view: ListSelectionView, width: int = 80) -> int:

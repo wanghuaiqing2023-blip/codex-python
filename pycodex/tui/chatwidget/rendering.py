@@ -8,11 +8,22 @@ DTOs and render logs instead of terminal buffers.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import os
 from typing import Any, List, Optional, Tuple
 
 from .._porting import RustTuiModule
+from ..bottom_pane.chat_composer import terminal_composer_projection
+from ..bottom_pane.footer import terminal_footer_projection
+from ..bottom_pane.selection_popup_common import terminal_popup_line_style, terminal_popup_lines_for_width
+from ..bottom_pane.terminal_action import TerminalBottomPaneState
+from ..bottom_pane.terminal_footprint import terminal_bottom_pane_layout_rows
+from ..custom_terminal import live_viewport_buffer_area_for_rows
+from ..ratatui_bridge import Buffer as RatatuiBuffer
+from ..ratatui_bridge import Line as RatatuiLine
 from ..ratatui_bridge import Rect
+from ..ratatui_bridge import Span as RatatuiSpan
 from ..render.renderable import EmptyRenderable, FlexRenderable, InsetRenderable, Insets
+from .status_surfaces import terminal_live_status_projection
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -28,6 +39,111 @@ class RenderLog:
 
     def append(self, kind: str, payload: Any) -> None:
         self.entries.append((kind, payload))
+
+
+@dataclass(frozen=True)
+class TerminalBottomPaneFrameWrite:
+    row: int
+    column: int
+    text: str
+    selected: bool = False
+
+
+@dataclass(frozen=True)
+class TerminalBottomPaneFrame:
+    clear_rows: tuple[int, ...]
+    writes: tuple[TerminalBottomPaneFrameWrite, ...]
+    cursor_row: int
+    cursor_column: int
+
+
+@dataclass(frozen=True)
+class TerminalBottomPaneFrameProjection:
+    """Rendered bottom-pane frame plus its ratatui-like buffer projection."""
+
+    frame: TerminalBottomPaneFrame
+    buffer: RatatuiBuffer
+
+
+def terminal_bottom_pane_frame(
+    size: os.terminal_size,
+    state: TerminalBottomPaneState,
+    *,
+    clear_popup_height: int = 0,
+    clear_live_status_active: bool = False,
+) -> TerminalBottomPaneFrame:
+    """Build the Rust-like bottom-pane frame for the terminal adapter.
+
+    Rust owner: ``codex-tui::chatwidget::rendering`` composes the bottom-pane
+    renderable content before ``custom_terminal`` turns the frame into terminal
+    side effects. This function is side-effect free; Python-only terminal
+    adapters may consume the frame, but they must not own the UI semantics.
+    """
+
+    layout = terminal_bottom_pane_layout_rows(
+        size,
+        live_status_active=state.live_status_active,
+        popup_height=state.popup_height,
+        clear_popup_height=clear_popup_height,
+        clear_live_status_active=clear_live_status_active,
+    )
+
+    columns = size.columns
+    writes: list[TerminalBottomPaneFrameWrite] = []
+    composer_projection = terminal_composer_projection(state.draft, columns)
+    live_status_projection = terminal_live_status_projection(state.live_status_text, columns)
+    if layout.live_status_row is not None and live_status_projection.line:
+        writes.append(TerminalBottomPaneFrameWrite(layout.live_status_row, 1, live_status_projection.line))
+
+    writes.append(
+        TerminalBottomPaneFrameWrite(
+            layout.composer_row,
+            1,
+            composer_projection.line,
+        )
+    )
+    if state.popup_lines:
+        popup_lines = terminal_popup_lines_for_width(state.popup_lines, max(1, columns - 1))
+        for row, line in zip(layout.popup_rows, popup_lines):
+            writes.append(TerminalBottomPaneFrameWrite(row, 1, line.text, line.selected))
+    if state.footer_text:
+        writes.append(
+            TerminalBottomPaneFrameWrite(
+                layout.footer_row,
+                1,
+                terminal_footer_projection(state.footer_text, columns).line,
+            )
+        )
+
+    return TerminalBottomPaneFrame(
+        clear_rows=layout.clear_rows,
+        writes=tuple(writes),
+        cursor_row=layout.composer_row,
+        cursor_column=composer_projection.cursor_column,
+    )
+
+
+def terminal_bottom_pane_frame_buffer(size: os.terminal_size, frame: TerminalBottomPaneFrame) -> RatatuiBuffer:
+    """Project a bottom-pane frame into a ratatui-like buffer.
+
+    Rust owner: ``codex-tui::chatwidget::rendering`` builds the bottom-pane
+    renderable frame, while ``codex-tui::custom_terminal`` consumes the cell
+    buffer for redraw. This projection is intentionally side-effect free.
+    """
+
+    area = live_viewport_buffer_area_for_rows(
+        size,
+        frame.clear_rows,
+        fallback_rows=(write.row for write in frame.writes),
+    )
+    buffer = RatatuiBuffer.empty(area)
+    for write in frame.writes:
+        x = max(0, write.column - 1)
+        y = max(0, write.row - 1)
+        style = terminal_popup_line_style(selected=write.selected)
+        line = RatatuiLine.from_spans((RatatuiSpan.styled(write.text, style),))
+        buffer.set_line(x, y, line, max_width=max(0, size.columns - x))
+    return buffer
 
 
 @dataclass
@@ -158,10 +274,15 @@ __all__ = [
     "RUST_MODULE",
     "Rect",
     "RenderLog",
+    "TerminalBottomPaneFrame",
+    "TerminalBottomPaneFrameProjection",
+    "TerminalBottomPaneFrameWrite",
     "TranscriptAreaRenderable",
     "as_renderable",
     "cursor_pos",
     "cursor_style",
     "desired_height",
     "render",
+    "terminal_bottom_pane_frame",
+    "terminal_bottom_pane_frame_buffer",
 ]

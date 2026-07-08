@@ -2,11 +2,7 @@ import os
 from types import SimpleNamespace
 
 from pycodex.tui.bottom_pane.list_selection_view import ListSelectionView
-from pycodex.tui.bottom_pane.terminal_frame import (
-    TerminalBottomPaneState,
-    terminal_bottom_pane_frame,
-    terminal_bottom_pane_frame_buffer,
-)
+from pycodex.tui.bottom_pane.terminal_action import TerminalBottomPaneState
 from pycodex.tui.chatwidget.model_popups import (
     PLAN_MODE_REASONING_SCOPE_ALL_MODES,
     PLAN_MODE_REASONING_SCOPE_PLAN_ONLY,
@@ -16,6 +12,7 @@ from pycodex.tui.chatwidget.model_popups import (
     ModelPreset,
     ReasoningEffortConfig,
     ReasoningEffortPreset,
+    TerminalModelPopupController,
     auto_model_order,
     custom_openai_base_url,
     open_model_popup,
@@ -31,6 +28,7 @@ from pycodex.tui.chatwidget.model_popups import (
     terminal_model_preset_from_runtime,
     terminal_model_presets_from_runtime,
 )
+from pycodex.tui.chatwidget.rendering import terminal_bottom_pane_frame, terminal_bottom_pane_frame_buffer
 from pycodex.tui.ratatui_bridge import Color as RatatuiColor
 
 
@@ -346,7 +344,51 @@ def test_terminal_apply_model_popup_event_opens_reasoning_view_from_presets() ->
     assert [item.name for item in view.items] == ["Low (default)", "High"]
 
 
-def test_model_picker_view_projects_through_terminal_frame_buffer() -> None:
+def test_terminal_model_popup_controller_owns_runtime_session_state() -> None:
+    # Rust owner: chatwidget::model_popups owns the /model popup session state
+    # and applies selection actions; codex-tui::tui only schedules the view.
+    runtime = SimpleNamespace(
+        session_config=SimpleNamespace(
+            model="gpt-5.4",
+            model_reasoning_effort="low",
+            available_models=(
+                SimpleNamespace(
+                    model="gpt-5.4",
+                    description="Strong model",
+                    default_reasoning_effort="medium",
+                    supported_reasoning_efforts=(
+                        SimpleNamespace(effort="low", description="Fast"),
+                        SimpleNamespace(effort="medium", description="Balanced"),
+                    ),
+                ),
+            ),
+        )
+    )
+    dispatched = []
+    app_runtime = SimpleNamespace(active_thread_runtime=runtime, handle_app_event=dispatched.append)
+    controller = TerminalModelPopupController(app_runtime)
+
+    model_view = controller.open_view()
+    assert model_view is not None
+    assert model_view.header[0] == "Select Model and Effort"
+
+    reasoning_view = controller.handle_events(tuple(model_view.items[0].actions))
+    assert reasoning_view is not None
+    assert reasoning_view.header == "Select Reasoning Level for gpt-5.4"
+
+    controller.handle_events(tuple(reasoning_view.items[1].actions))
+
+    assert [event.kind for event in dispatched] == [
+        "UpdateModel",
+        "UpdateReasoningEffort",
+        "PersistModelSelection",
+    ]
+    assert controller.context is not None
+    assert controller.context.current_model == "gpt-5.4"
+    assert controller.context.effective_reasoning_effort is ReasoningEffortConfig.Medium
+
+
+def test_model_picker_view_projects_through_chatwidget_rendering_buffer() -> None:
     # Rust owners: chatwidget::model_popups builds the /model picker,
     # bottom_pane::list_selection_view owns current-row terminal projection,
     # and chatwidget::rendering/custom_terminal consume the frame Buffer.  The
@@ -394,7 +436,7 @@ def test_model_picker_view_projects_through_terminal_frame_buffer() -> None:
     assert buffer.cell(0, selected_writes[0].row - 1).style.fg == RatatuiColor.LightBlue
 
 
-def test_reasoning_popup_view_projects_through_terminal_frame_buffer() -> None:
+def test_reasoning_popup_view_projects_through_chatwidget_rendering_buffer() -> None:
     # Rust owners: chatwidget::model_popups builds the reasoning picker,
     # bottom_pane::list_selection_view owns selected-row terminal projection,
     # and chatwidget::rendering/custom_terminal consume the frame Buffer.  The
