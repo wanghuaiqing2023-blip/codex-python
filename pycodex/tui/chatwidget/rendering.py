@@ -65,12 +65,37 @@ class TerminalBottomPaneFrameProjection:
     buffer: RatatuiBuffer
 
 
+def active_history_cell_lines(cell: object | None, width: int) -> tuple[str, ...]:
+    """Project a Rust ``ChatWidget::active_cell`` into live-frame rows."""
+
+    if cell is None:
+        return ()
+    display = getattr(cell, "display_lines", None)
+    if not callable(display):
+        return ()
+    rows: list[str] = []
+    for line in display(max(1, int(width))):
+        spans = getattr(line, "spans", None)
+        if spans is None:
+            rows.append(str(line))
+            continue
+        rows.append(
+            "".join(
+                str(getattr(span, "content", getattr(span, "text", span)))
+                for span in spans
+            )
+        )
+    return tuple(rows)
+
+
 def terminal_bottom_pane_frame(
     size: os.terminal_size,
     state: TerminalBottomPaneState,
     *,
     clear_popup_height: int = 0,
     clear_live_status_active: bool = False,
+    clear_active_tail_height: int = 0,
+    clear_composer_height: int = 1,
 ) -> TerminalBottomPaneFrame:
     """Build the Rust-like bottom-pane frame for the terminal adapter.
 
@@ -80,28 +105,30 @@ def terminal_bottom_pane_frame(
     adapters may consume the frame, but they must not own the UI semantics.
     """
 
+    columns = size.columns
+    composer_projection = terminal_composer_projection(state.draft, columns)
     layout = terminal_bottom_pane_layout_rows(
         size,
         live_status_active=state.live_status_active,
         popup_height=state.popup_height,
         clear_popup_height=clear_popup_height,
         clear_live_status_active=clear_live_status_active,
+        active_tail_height=len(state.active_tail_lines),
+        clear_active_tail_height=clear_active_tail_height,
+        composer_height=composer_projection.height,
+        clear_composer_height=clear_composer_height,
     )
 
-    columns = size.columns
     writes: list[TerminalBottomPaneFrameWrite] = []
-    composer_projection = terminal_composer_projection(state.draft, columns)
     live_status_projection = terminal_live_status_projection(state.live_status_text, columns)
+    visible_tail = state.active_tail_lines[-len(layout.active_tail_rows) :]
+    for row, line in zip(layout.active_tail_rows, visible_tail):
+        writes.append(TerminalBottomPaneFrameWrite(row, 1, line))
     if layout.live_status_row is not None and live_status_projection.line:
         writes.append(TerminalBottomPaneFrameWrite(layout.live_status_row, 1, live_status_projection.line))
 
-    writes.append(
-        TerminalBottomPaneFrameWrite(
-            layout.composer_row,
-            1,
-            composer_projection.line,
-        )
-    )
+    for row, line in zip(layout.composer_rows, composer_projection.lines):
+        writes.append(TerminalBottomPaneFrameWrite(row, 1, line))
     if state.popup_lines:
         popup_lines = terminal_popup_lines_for_width(state.popup_lines, max(1, columns - 1))
         for row, line in zip(layout.popup_rows, popup_lines):
@@ -118,7 +145,7 @@ def terminal_bottom_pane_frame(
     return TerminalBottomPaneFrame(
         clear_rows=layout.clear_rows,
         writes=tuple(writes),
-        cursor_row=layout.composer_row,
+        cursor_row=layout.composer_rows[composer_projection.cursor_row_offset],
         cursor_column=composer_projection.cursor_column,
     )
 

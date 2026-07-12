@@ -7,10 +7,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, List, Optional, Union
+from typing import Any, Callable, Iterable, List, Optional, Union
+
+from pycodex.git_utils import current_branch_name, local_git_branches, recent_commits
+from pycodex.protocol import ReviewTarget
 
 from .._porting import RustTuiModule
 from ..bottom_pane.list_selection_view import SelectionItem, SelectionViewParams
+from ..bottom_pane.custom_prompt_view import CustomPromptView
+from ..bottom_pane.view_stack import TerminalSelectionTransition
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -157,10 +162,106 @@ def custom_review_prompt_action(prompt: str) -> Optional[ReviewPopupAction]:
     return ReviewPopupAction(kind="review_custom", instructions=trimmed)
 
 
+class TerminalReviewPopupController:
+    """Terminal product-path controller for Rust ``chatwidget::review_popups``."""
+
+    def __init__(self, app_runtime: Any, submit_review: Callable[[ReviewTarget, str], Any]) -> None:
+        self.app_runtime = app_runtime
+        self.submit_review = submit_review
+        self._events: list[ReviewPopupAction] = []
+
+    def open_view(self) -> SelectionViewParams:
+        return open_review_popup(getattr(self.app_runtime, "cwd", Path.cwd()))
+
+    def handle_command_with_args(self, args: str) -> None:
+        action = custom_review_prompt_action(args)
+        if action is not None:
+            target = _review_target(action)
+            if target is not None:
+                self.submit_review(target, review_target_summary(target))
+
+    def handle_events(self, events: tuple[object, ...]) -> TerminalSelectionTransition | None:
+        pending = [*events, *self._events]
+        self._events.clear()
+        for event in pending:
+            if not isinstance(event, ReviewPopupAction):
+                continue
+            if event.kind == "open_review_branch_picker":
+                try:
+                    return TerminalSelectionTransition(
+                        show_review_branch_picker(
+                            event.cwd or getattr(self.app_runtime, "cwd", Path.cwd()),
+                            local_git_branches,
+                            current_branch_name,
+                        )
+                    )
+                except Exception as exc:
+                    return TerminalSelectionTransition(_review_error_view("Unable to list branches", exc))
+            if event.kind == "open_review_commit_picker":
+                try:
+                    entries = [
+                        CommitLogEntry(entry.sha, entry.subject, getattr(entry, "timestamp", 0))
+                        for entry in recent_commits(event.cwd or getattr(self.app_runtime, "cwd", Path.cwd()), 100)
+                    ]
+                    return TerminalSelectionTransition(show_review_commit_picker_with_entries(entries))
+                except Exception as exc:
+                    return TerminalSelectionTransition(_review_error_view("Unable to list commits", exc))
+            if event.kind == "open_review_custom_prompt":
+                view = CustomPromptView.new(
+                    "Custom review instructions",
+                    "Type instructions and press Enter",
+                    "",
+                    None,
+                    lambda prompt: self._events.append(
+                        ReviewPopupAction(kind="review_custom", instructions=prompt.strip())
+                    ),
+                )
+                return TerminalSelectionTransition(view)
+            target = _review_target(event)
+            if target is not None:
+                return TerminalSelectionTransition(
+                    after_pop=lambda target=target: self.submit_review(target, review_target_summary(target))
+                )
+        return None
+
+
+def _review_target(action: ReviewPopupAction) -> ReviewTarget | None:
+    if action.kind == "review_uncommitted_changes":
+        return ReviewTarget.uncommitted_changes()
+    if action.kind == "review_base_branch" and action.branch:
+        return ReviewTarget.base_branch(action.branch)
+    if action.kind == "review_commit" and action.sha:
+        return ReviewTarget.commit(action.sha, action.title)
+    if action.kind == "review_custom" and action.instructions:
+        return ReviewTarget.custom(action.instructions)
+    return None
+
+
+def review_target_summary(target: ReviewTarget) -> str:
+    kind = str(getattr(target, "type", "")).lower()
+    if kind == "basebranch":
+        return f"Review changes against {target.branch or ''}"
+    if kind == "commit":
+        return f"Review commit {target.sha or ''}"
+    if kind == "custom":
+        return "Review custom instructions"
+    return "Review current changes"
+
+
+def _review_error_view(title: str, error: Exception) -> SelectionViewParams:
+    return SelectionViewParams(
+        title=title,
+        footer_hint="standard-popup-hint",
+        items=[SelectionItem(name=str(error), is_disabled=True, disabled_reason=str(error))],
+    )
+
+
 __all__ = [
     "CommitLogEntry",
     "RUST_MODULE",
     "ReviewPopupAction",
+    "TerminalReviewPopupController",
+    "review_target_summary",
     "custom_review_prompt_action",
     "open_review_popup",
     "show_review_branch_picker",

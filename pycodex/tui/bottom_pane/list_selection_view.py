@@ -24,7 +24,7 @@ from .selection_popup_common import (
     TerminalPopupLine,
     render_terminal_popup_lines,
 )
-from .selection_tabs import SelectionTab
+from .selection_tabs import SelectionTab, StyledSpan
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -117,6 +117,97 @@ class SelectionViewParams:
 
 def default() -> SelectionViewParams:
     return SelectionViewParams()
+
+
+def coerce_selection_view_params(value: Any) -> SelectionViewParams:
+    """Convert a Rust-owner picker DTO into the canonical bottom-pane DTO.
+
+    Neighboring owners such as ``keymap_setup`` construct semantic picker
+    models without depending on this renderer.  The conversion belongs here,
+    at the ``ListSelectionView`` boundary, so terminal adapters never learn
+    command-specific row shapes.
+    """
+
+    if isinstance(value, SelectionViewParams):
+        return value
+
+    def field(name: str, default_value: Any = None) -> Any:
+        if isinstance(value, dict):
+            return value.get(name, default_value)
+        return getattr(value, name, default_value)
+
+    def item(raw: Any) -> SelectionItem:
+        get = raw.get if isinstance(raw, dict) else lambda name, default=None: getattr(raw, name, default)
+        actions = list(get("actions", ()) or ())
+        actions.extend(list(get("action_events", ()) or ()))
+        prefix_spans = []
+        for span in list(get("name_prefix_spans", ()) or ()):
+            if hasattr(span, "width"):
+                prefix_spans.append(span)
+            else:
+                prefix_spans.append(
+                    StyledSpan(str(getattr(span, "text", span)), str(getattr(span, "style", "plain")))
+                )
+        return SelectionItem(
+            name=str(get("name", "")),
+            name_prefix_spans=prefix_spans,
+            description=get("description"),
+            selected_description=get("selected_description"),
+            is_current=bool(get("is_current", False)),
+            is_default=bool(get("is_default", False)),
+            is_disabled=bool(get("is_disabled", False)),
+            actions=actions,
+            dismiss_on_select=bool(get("dismiss_on_select", False)),
+            dismiss_parent_on_child_accept=bool(get("dismiss_parent_on_child_accept", False)),
+            search_value=get("search_value"),
+            disabled_reason=get("disabled_reason"),
+        )
+
+    tabs = []
+    for raw_tab in list(field("tabs", ()) or ()):
+        get = raw_tab.get if isinstance(raw_tab, dict) else lambda name, default=None: getattr(raw_tab, name, default)
+        tabs.append(
+            SelectionTab(
+                id=str(get("id", "")),
+                label=str(get("label", "")),
+                header=get("header"),
+                items=[item(raw) for raw in list(get("items", ()) or ())],
+            )
+        )
+
+    raw_col_width = field("col_width_mode", ColumnWidthMode.AUTO_VISIBLE)
+    if not isinstance(raw_col_width, ColumnWidthMode):
+        normalized = str(raw_col_width).replace("_", "").lower()
+        raw_col_width = next(
+            (candidate for candidate in ColumnWidthMode if candidate.value.replace("_", "").lower() == normalized),
+            ColumnWidthMode.AUTO_VISIBLE,
+        )
+    raw_row_display = field("row_display", SelectionRowDisplay.WRAPPED)
+    if not isinstance(raw_row_display, SelectionRowDisplay):
+        normalized = str(raw_row_display).replace("_", "").lower()
+        raw_row_display = next(
+            (candidate for candidate in SelectionRowDisplay if candidate.value.replace("_", "").lower() == normalized),
+            SelectionRowDisplay.WRAPPED,
+        )
+
+    return SelectionViewParams(
+        view_id=field("view_id"),
+        title=field("title"),
+        subtitle=field("subtitle"),
+        footer_note=field("footer_note"),
+        footer_hint=field("footer_hint"),
+        tab_footer_hints=list(field("tab_footer_hints", ()) or ()),
+        items=[item(raw) for raw in list(field("items", ()) or ())],
+        tabs=tabs,
+        initial_tab_id=field("initial_tab_id"),
+        is_searchable=bool(field("is_searchable", False)),
+        search_placeholder=field("search_placeholder"),
+        col_width_mode=raw_col_width,
+        row_display=raw_row_display,
+        name_column_width=field("name_column_width"),
+        header=field("header"),
+        initial_selected_idx=field("initial_selected_idx"),
+    )
 
 
 def popup_content_width(total_width: int) -> int:
@@ -827,6 +918,7 @@ __all__ = [
     "SelectionToggle",
     "SelectionToggleAction",
     "SelectionViewParams",
+    "coerce_selection_view_params",
     "SideContentWidth",
     "StyledMarkerRenderable",
     "active_tab_id",

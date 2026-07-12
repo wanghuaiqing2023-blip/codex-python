@@ -21,6 +21,7 @@ class TerminalBottomPaneState:
     footer_text: str = ""
     live_status_text: str | None = None
     popup_lines: tuple[TerminalBottomPanePopupLine, ...] = ()
+    active_tail_lines: tuple[str, ...] = ()
 
     @property
     def live_status_active(self) -> bool:
@@ -53,6 +54,8 @@ class TerminalBottomPaneProjectionCleanup:
     clear_popup_height: int = 0
     clear_live_status_active: bool = False
     clear_external_blank_rows: bool = False
+    clear_active_tail_height: int = 0
+    clear_composer_height: int = 1
 
 
 class TerminalBottomPaneRenderContextProtocol(Protocol):
@@ -61,6 +64,8 @@ class TerminalBottomPaneRenderContextProtocol(Protocol):
     draft: str
     popup_lines: tuple[TerminalBottomPanePopupLine, ...]
     cursor_visible: bool
+    active_tail_lines: tuple[str, ...]
+    composer_height: int
 
 
 class TerminalBottomPaneRenderPassProtocol(Protocol):
@@ -69,6 +74,8 @@ class TerminalBottomPaneRenderPassProtocol(Protocol):
     check_resize: bool
     clear_popup_height: int
     clear_live_status_active: bool
+    clear_active_tail_height: int
+    clear_composer_height: int
 
 
 @dataclass(frozen=True)
@@ -110,6 +117,9 @@ class TerminalBottomPaneRenderRequest:
     clear_popup_height: int = 0
     clear_live_status_active: bool = False
     clear_external_blank_rows: bool = False
+    active_tail_lines: tuple[str, ...] = ()
+    clear_active_tail_height: int = 0
+    clear_composer_height: int = 1
 
     def action_plan(self) -> TerminalBottomPaneActionPlan:
         return terminal_bottom_pane_render_plan(
@@ -120,6 +130,7 @@ class TerminalBottomPaneRenderRequest:
             footer_text=self.footer_text,
             popup_lines=self.popup_lines,
             live_status=self.live_status,
+            active_tail_lines=self.active_tail_lines,
         )
 
     def projection_cleanup(self) -> TerminalBottomPaneProjectionCleanup:
@@ -127,6 +138,8 @@ class TerminalBottomPaneRenderRequest:
             clear_popup_height=self.clear_popup_height,
             clear_live_status_active=self.clear_live_status_active,
             clear_external_blank_rows=self.clear_external_blank_rows,
+            clear_active_tail_height=self.clear_active_tail_height,
+            clear_composer_height=self.clear_composer_height,
         )
 
     def projection_cursor_visible(self) -> bool | None:
@@ -164,6 +177,8 @@ def terminal_bottom_pane_render_request(
     clear_popup_height: int = 0,
     clear_live_status_active: bool = False,
     clear_external_blank_rows: bool = False,
+    clear_active_tail_height: int = 0,
+    clear_composer_height: int = 1,
 ) -> TerminalBottomPaneRenderRequest:
     """Build the bottom-pane-owned render request from render context.
 
@@ -179,11 +194,14 @@ def terminal_bottom_pane_render_request(
         draft=str(render_context.draft),
         footer_text=footer_text,
         popup_lines=tuple(render_context.popup_lines),
+        active_tail_lines=tuple(getattr(render_context, "active_tail_lines", ())),
         live_status=live_status,
         cursor_visible=bool(render_context.cursor_visible),
         clear_popup_height=clear_popup_height,
         clear_live_status_active=clear_live_status_active,
         clear_external_blank_rows=clear_external_blank_rows,
+        clear_active_tail_height=clear_active_tail_height,
+        clear_composer_height=clear_composer_height,
     )
 
 
@@ -214,6 +232,8 @@ def terminal_bottom_pane_render_request_for_pass(
         live_status=live_status,
         clear_popup_height=int(render_pass.clear_popup_height),
         clear_live_status_active=bool(render_pass.clear_live_status_active),
+        clear_active_tail_height=int(getattr(render_pass, "clear_active_tail_height", 0)),
+        clear_composer_height=int(getattr(render_pass, "clear_composer_height", 1)),
         clear_external_blank_rows=clear_external_blank_rows,
     )
 
@@ -246,6 +266,7 @@ def terminal_bottom_pane_render_plan(
     footer_text: str,
     popup_lines: tuple[TerminalBottomPanePopupLine, ...] = (),
     live_status: TerminalLiveStatusSurface,
+    active_tail_lines: tuple[str, ...] = (),
 ) -> TerminalBottomPaneActionPlan:
     """Plan rendering the real-terminal bottom pane."""
 
@@ -260,6 +281,7 @@ def terminal_bottom_pane_render_plan(
             footer_text=footer_text,
             live_status_text=live_status.render_text,
             popup_lines=tuple(popup_lines),
+            active_tail_lines=tuple(active_tail_lines),
         ),
     )
 

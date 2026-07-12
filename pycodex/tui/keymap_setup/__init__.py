@@ -14,6 +14,8 @@ from typing import Any, Callable, Iterable, Mapping, MutableMapping, Optional, S
 
 from .._porting import RustTuiModule
 from ..app_event import AppEvent, KeymapEditIntent
+from ..bottom_pane.bottom_pane_view import BottomPaneViewDefaults
+from ..bottom_pane.selection_popup_common import TerminalPopupLine
 from ..keymap import KeyBinding, RuntimeKeymap
 
 RUST_MODULE = RustTuiModule(
@@ -404,7 +406,7 @@ def has_custom_binding(keymap: Any, context: str, action: str) -> bool:
 
 
 @dataclass
-class KeymapCaptureView:
+class KeymapCaptureView(BottomPaneViewDefaults):
     context: str
     action: str
     intent: KeymapEditIntent
@@ -441,6 +443,9 @@ class KeymapCaptureView:
     def render(self, width: int = 80, height: Optional[int] = None) -> list[str]:
         lines = self.lines(width)
         return lines if height is None else lines[:height]
+
+    def terminal_lines(self, *, width: int) -> list[TerminalPopupLine]:
+        return [TerminalPopupLine(line, index == 0) for index, line in enumerate(self.render(width))]
 
     def desired_height(self, width: int = 80) -> int:
         return len(self.lines(width))
@@ -600,8 +605,22 @@ def _normalize_key_parts(code: Any, modifiers: Iterable[str]) -> tuple[str, froz
         "page-up": "PageUp",
         "pageup": "PageUp",
         "Return": "Enter",
+        "enter": "Enter",
         "Escape": "Esc",
+        "escape": "Esc",
+        "esc": "Esc",
+        "tab": "Tab",
+        "backspace": "Backspace",
+        "delete": "Delete",
+        "up": "Up",
+        "down": "Down",
+        "left": "Left",
+        "right": "Right",
+        "home": "Home",
+        "end": "End",
     }
+    if len(code_text) >= 2 and code_text[0].lower() == "f" and code_text[1:].isdigit():
+        code_text = "F" + code_text[1:]
     return aliases.get(code_text, code_text), mods
 
 

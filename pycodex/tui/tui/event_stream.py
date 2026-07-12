@@ -93,6 +93,26 @@ class TerminalInputSource:
         raise NotImplementedError
 
 
+class PrefixedTerminalInputSource(TerminalInputSource):
+    """Replay deferred turn-time input before returning to the live source."""
+
+    def __init__(
+        self,
+        source: TerminalInputSource,
+        prefix: Deque[TerminalInputEvent],
+    ) -> None:
+        self.source = source
+        self.prefix = prefix
+        self.detect_paste_bursts = bool(
+            getattr(source, "detect_paste_bursts", False)
+        )
+
+    def poll(self, timeout: float) -> TerminalInputEvent | None:
+        if self.prefix:
+            return self.prefix.popleft()
+        return self.source.poll(timeout)
+
+
 class StringTerminalInputSource(TerminalInputSource):
     """Deterministic char event source for fake TTY tests."""
 
@@ -139,6 +159,10 @@ class LineTerminalInputSource(TerminalInputSource):
 class WindowsConsoleInputSource(TerminalInputSource):
     """Windows terminal input adapter backed by the Rust-like console source."""
 
+    detect_paste_bursts = True
+    _BRACKETED_PASTE_START = "\x1b[200~"
+    _BRACKETED_PASTE_END = "\x1b[201~"
+
     def __init__(
         self,
         msvcrt_module: Any | None = None,
@@ -156,21 +180,75 @@ class WindowsConsoleInputSource(TerminalInputSource):
             console_handle=console_handle,
             console_record_reader=console_record_reader,
         )
+        self._decoded_events: Deque[TerminalInputEvent] = deque()
+        self._bracket_probe = ""
+        self._bracketed_paste_buffer: str | None = None
 
     def poll(self, timeout: float) -> TerminalInputEvent | None:
         deadline = time.monotonic() + max(0.0, timeout)
         while True:
+            if self._decoded_events:
+                return self._decoded_events.popleft()
             event = self._source.poll_next()
-            mapped = terminal_input_event_from_event_result(event)
-            if mapped is not None:
-                return mapped
+            if event is not None:
+                self._decode_bracketed_paste_event(event)
+                if self._decoded_events:
+                    return self._decoded_events.popleft()
+                continue
             if time.monotonic() >= deadline:
+                self._flush_bracket_probe()
+                if self._decoded_events:
+                    return self._decoded_events.popleft()
                 return None
             time.sleep(min(0.02, max(0.0, deadline - time.monotonic())))
+
+    def _decode_bracketed_paste_event(self, event: Any) -> None:
+        if isinstance(event, tuple) and event and event[0] == "paste":
+            self._decoded_events.append(TerminalInputEvent("paste", str(event[1] if len(event) > 1 else "")))
+            return
+        if not isinstance(event, tuple) or len(event) < 2 or event[0] != "key":
+            mapped = terminal_input_event_from_event_result(event)
+            if mapped is not None:
+                self._decoded_events.append(mapped)
+            return
+
+        payload = str(event[1])
+        if self._bracketed_paste_buffer is None and not self._bracket_probe and payload != "\x1b":
+            mapped = terminal_input_event_from_event_result(event)
+            if mapped is not None:
+                self._decoded_events.append(mapped)
+            return
+
+        for char in payload:
+            if self._bracketed_paste_buffer is not None:
+                self._bracketed_paste_buffer += char
+                if self._bracketed_paste_buffer.endswith(self._BRACKETED_PASTE_END):
+                    pasted = self._bracketed_paste_buffer[: -len(self._BRACKETED_PASTE_END)]
+                    self._bracketed_paste_buffer = None
+                    self._decoded_events.append(TerminalInputEvent("paste", pasted))
+                continue
+
+            self._bracket_probe += char
+            if self._BRACKETED_PASTE_START.startswith(self._bracket_probe):
+                if self._bracket_probe == self._BRACKETED_PASTE_START:
+                    self._bracket_probe = ""
+                    self._bracketed_paste_buffer = ""
+                continue
+            self._flush_bracket_probe()
+
+    def _flush_bracket_probe(self) -> None:
+        if not self._bracket_probe:
+            return
+        pending = self._bracket_probe
+        self._bracket_probe = ""
+        for char in pending:
+            self._decoded_events.append(terminal_event_from_char(char))
 
 
 class SelectTerminalInputSource(TerminalInputSource):
     """Best-effort non-Windows TTY adapter, used only outside Windows."""
+
+    detect_paste_bursts = True
 
     def __init__(self, stdin: TextIO) -> None:
         self.stdin = stdin
@@ -313,10 +391,12 @@ class TerminalTurnIdleTicker:
 
     check_resize: Callable[[], Any]
     refresh_turn_status: Callable[[], Any]
+    commit_stream: Callable[[], Any] = lambda: None
 
     def tick(self) -> None:
         run_terminal_turn_idle_tick(
             check_resize=self.check_resize,
+            commit_stream=self.commit_stream,
             refresh_turn_status=self.refresh_turn_status,
         )
 
@@ -329,6 +409,8 @@ class TerminalTurnEventLoopRunner:
     on_closed: Callable[[], Any]
     on_idle: Callable[[], Any]
     before_event: Callable[[], Any]
+    poll_input: Callable[[float], Any | None] | None = None
+    on_input: Callable[[Any], Any] | None = None
     timeout: float = 0.1
 
     def consume(self, event_stream: TerminalTurnEventStreamProtocol) -> Any | None:
@@ -339,6 +421,8 @@ class TerminalTurnEventLoopRunner:
             on_closed=self.on_closed,
             on_idle=self.on_idle,
             before_event=self.before_event,
+            poll_input=self.poll_input,
+            on_input=self.on_input,
         )
 
 
@@ -350,27 +434,52 @@ def run_terminal_turn_event_loop(
     on_closed: Callable[[], Any],
     on_idle: Callable[[], Any],
     before_event: Callable[[], Any],
+    poll_input: Callable[[float], Any | None] | None = None,
+    on_input: Callable[[Any], Any] | None = None,
 ) -> Any | None:
     """Consume one submitted turn stream through terminal event callbacks."""
 
     while True:
-        polled = poll_terminal_turn_event(event_stream, timeout=timeout)
-        if polled.kind != "event":
+        # Rust's event broker multiplexes app-server and terminal sources. Give
+        # an already-ready server event one fair dispatch slot before reading a
+        # terminal key so an approval request cannot be starved by buffered
+        # keyboard input intended for the view it creates.
+        poll_timeout = 0.0 if poll_input is not None else timeout
+        polled = poll_terminal_turn_event(event_stream, timeout=poll_timeout)
+        if polled.kind == "event":
+            event = polled.event
+            before_event()
+            on_event(event)
+            if str(getattr(event, "kind", "")) == "TurnCompleted":
+                return event
+            continue
+        if polled.kind == "closed":
+            on_closed()
+            return None
+        if poll_input is not None and on_input is not None:
+            input_event = poll_input(0.0)
+            if input_event is not None:
+                on_input(input_event)
+                on_idle()
+                continue
+            polled = poll_terminal_turn_event(event_stream, timeout=timeout)
+            if polled.kind == "event":
+                event = polled.event
+                before_event()
+                on_event(event)
+                if str(getattr(event, "kind", "")) == "TurnCompleted":
+                    return event
+                continue
             if polled.kind == "closed":
                 on_closed()
                 return None
-            on_idle()
-            continue
-        event = polled.event
-        before_event()
-        on_event(event)
-        if str(getattr(event, "kind", "")) == "TurnCompleted":
-            return event
+        on_idle()
 
 
 def run_terminal_turn_idle_tick(
     *,
     check_resize: Callable[[], Any],
+    commit_stream: Callable[[], Any] = lambda: None,
     refresh_turn_status: Callable[[], Any],
 ) -> None:
     """Run terminal idle-time maintenance for a submitted turn stream.
@@ -382,6 +491,7 @@ def run_terminal_turn_idle_tick(
     """
 
     check_resize()
+    commit_stream()
     refresh_turn_status()
 
 
@@ -396,6 +506,16 @@ def terminal_event_from_char(char: str) -> TerminalInputEvent:
         return TerminalInputEvent("backspace")
     if char == "\x03":
         return TerminalInputEvent("interrupt")
+    if char == "\x15":
+        return TerminalInputEvent("ctrl_u")
+    if char == "\x14":
+        return TerminalInputEvent("ctrl_t")
+    if char == "\x02":
+        return TerminalInputEvent("ctrl_b")
+    if char == "\x04":
+        return TerminalInputEvent("ctrl_d")
+    if char == "\x06":
+        return TerminalInputEvent("ctrl_f")
     if char == "\x1a":
         return TerminalInputEvent("eof")
     return TerminalInputEvent("text", char)
@@ -406,7 +526,22 @@ def terminal_input_event_from_key_payload(payload: Any) -> TerminalInputEvent | 
     normalized = _terminal_key_payload_name(text)
     if normalized == "space":
         return TerminalInputEvent("text", " ")
-    if normalized in {"up", "down", "left", "right", "home", "end", "page_up", "page_down", "delete"}:
+    if normalized in {
+        "up",
+        "down",
+        "left",
+        "right",
+        "home",
+        "end",
+        "page_up",
+        "page_down",
+        "delete",
+        "ctrl_b",
+        "ctrl_d",
+        "ctrl_f",
+        "ctrl_t",
+        "ctrl_u",
+    }:
         return TerminalInputEvent(normalized)
     ansi = _ansi_escape_key(text)
     if ansi is not None:
@@ -435,7 +570,7 @@ def terminal_input_event_from_event_result(event: Any) -> TerminalInputEvent | N
         if event.kind is TuiEventKind.RESIZE:
             return TerminalInputEvent("resize")
         if event.kind is TuiEventKind.PASTE:
-            return TerminalInputEvent("text", str(event.payload))
+            return TerminalInputEvent("paste", str(event.payload))
         return None
     if isinstance(event, tuple) and event:
         kind = event[0]
@@ -445,7 +580,7 @@ def terminal_input_event_from_event_result(event: Any) -> TerminalInputEvent | N
         if kind == "resize":
             return TerminalInputEvent("resize")
         if kind == "paste":
-            return TerminalInputEvent("text", str(payload or ""))
+            return TerminalInputEvent("paste", str(payload or ""))
     return None
 
 
@@ -1223,6 +1358,7 @@ __all__ = [
     "RUST_MODULE",
     "SetupState",
     "LineTerminalInputSource",
+    "PrefixedTerminalInputSource",
     "SelectTerminalInputSource",
     "StringTerminalInputSource",
     "TerminalInputEvent",

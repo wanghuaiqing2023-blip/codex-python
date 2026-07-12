@@ -9,9 +9,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional, Tuple, Union
+from typing import Any, Callable, Optional, Tuple, Union
 
 from .._porting import RustTuiModule
+from ..custom_terminal import AlternateScreenRenderer
+from ..diff_render import create_diff_summary
+from ..pager_overlay import PagerView, TextRenderable
+from ..ratatui_bridge import Rect
 
 
 RUST_MODULE = RustTuiModule(
@@ -23,6 +27,112 @@ RUST_MODULE = RustTuiModule(
 
 # Rust: const SHUTDOWN_FIRST_EXIT_TIMEOUT: Duration = Duration::from_secs(2)
 SHUTDOWN_FIRST_EXIT_TIMEOUT = 2.0
+
+
+@dataclass(frozen=True)
+class TerminalFullScreenApprovalController:
+    """Run fixed-Rust ``FullScreenApprovalRequest`` through the shared pager."""
+
+    get_input_source: Callable[[], Any]
+    writer: Any
+    terminal_size: Callable[[], Any]
+    keymap: Callable[[], Any | None]
+    run_external_repaint: Callable[[Callable[[], bool]], bool]
+    poll_timeout: float = 0.1
+
+    def __call__(self, request: Any) -> bool:
+        title, lines = full_screen_approval_projection(request)
+
+        def run() -> bool:
+            return run_terminal_static_overlay(
+                lines=lines,
+                title=title,
+                source=self.get_input_source(),
+                writer=self.writer,
+                terminal_size=self.terminal_size,
+                keymap=self.keymap(),
+                poll_timeout=self.poll_timeout,
+            )
+
+        return bool(self.run_external_repaint(run))
+
+
+def full_screen_approval_projection(request: Any, width: int = 120) -> tuple[str, tuple[str, ...]]:
+    kind = str(_field(request, "kind", ""))
+    if kind == "ApplyPatch":
+        rendered = create_diff_summary(
+            _field(request, "changes", {}) or {},
+            _field(request, "cwd", ".") or ".",
+            width,
+        )
+        return "P A T C H", tuple(_line_text(line) for line in rendered)
+    if kind == "Exec":
+        command = _field(request, "command", ()) or ()
+        return "E X E C", (" ".join(str(part) for part in command),)
+    if kind == "Permissions":
+        from ..bottom_pane.approval_overlay import format_requested_permissions_rule
+
+        lines = []
+        reason = _field(request, "reason")
+        if reason:
+            lines.extend((f"Reason: {reason}", ""))
+        rule = format_requested_permissions_rule(_field(request, "permissions"))
+        if rule:
+            lines.append(f"Permission rule: {rule}")
+        return "P E R M I S S I O N S", tuple(lines)
+    return "E L I C I T A T I O N", (
+        f"Server: {_field(request, 'server_name', '')}",
+        "",
+        str(_field(request, "message", "")),
+    )
+
+
+def run_terminal_static_overlay(
+    *,
+    lines: Tuple[str, ...],
+    title: str,
+    source: Any,
+    writer: Any,
+    terminal_size: Callable[[], Any],
+    keymap: Any | None = None,
+    poll_timeout: float = 0.1,
+) -> bool:
+    if source is None:
+        return False
+    view = PagerView.new([TextRenderable(list(lines))], title, 0, keymap)
+    renderer = AlternateScreenRenderer(writer)
+    renderer.enter()
+    try:
+        while True:
+            size = terminal_size()
+            area = Rect(0, 0, max(0, int(size.columns)), max(0, int(size.lines)))
+            renderer.render_lines(view.render_frame(area), size)
+            event = source.poll(max(0.0, float(poll_timeout)))
+            if event is None:
+                continue
+            kind = str(getattr(event, "kind", "")).lower().replace("-", "_")
+            text = str(getattr(event, "text", ""))
+            if kind in {"eof", "interrupt", "escape", "esc", "ctrl_t"} or (
+                kind == "text" and text.lower() in {"q", "\x1b"}
+            ):
+                return True
+            if kind != "resize":
+                view.handle_input(kind, text, area)
+    finally:
+        renderer.leave()
+
+
+def _field(value: Any, name: str, default: Any = None) -> Any:
+    if isinstance(value, dict):
+        return value.get(name, default)
+    return getattr(value, name, default)
+
+
+def _line_text(line: Any) -> str:
+    spans = getattr(line, "spans", None)
+    if spans is None:
+        return str(line)
+    return "".join(str(getattr(span, "content", span)) for span in spans)
 
 
 class ExitMode(str, Enum):
@@ -398,12 +508,15 @@ __all__ = [
     "AppRunControl",
     "EventDispatchPlan",
     "EventDispatchState",
+    "TerminalFullScreenApprovalController",
     "ExitMode",
     "ExitModePlan",
     "ExitReason",
     "dispatch_event_plan",
+    "full_screen_approval_projection",
     "handle_event",
     "handle_event_plan",
     "handle_exit_mode",
     "handle_exit_mode_plan",
+    "run_terminal_static_overlay",
 ]

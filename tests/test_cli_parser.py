@@ -59,7 +59,7 @@ from pycodex.rollout import (
 )
 from pycodex.exec import app_server_control_socket_path
 from pycodex.core.session.turn.runtime import UserTurnSamplingResult
-from pycodex.protocol import AltScreenMode, AskForApproval, ContentItem, ProfileV2Name, ResponseItem, SandboxMode
+from pycodex.protocol import AltScreenMode, AskForApproval, ContentItem, PermissionProfile, ProfileV2Name, ResponseItem, SandboxMode
 from pycodex.tui.app.runtime import ExecFunctionActiveThreadRuntime, TuiAppRuntime
 
 
@@ -4831,6 +4831,30 @@ class TopLevelCliParserTests(unittest.TestCase):
         parsed = parse_args(["--enable", "web_search_request", "exec", "prompt"])
 
         self.assertEqual(parsed.exec_cli().config_overrides, ("features.web_search_request=true",))
+
+    def test_interactive_permission_features_remain_independent_rust_gates(self):
+        # Fixed Rust source contract (commit 1c7832f):
+        # codex-core/src/tools/spec_plan.rs enables the request_permissions tool
+        # and exec_command.additional_permissions through separate features.
+        parsed = parse_args(
+            [
+                "--enable",
+                "request_permissions_tool",
+                "--enable",
+                "exec_permission_approvals",
+                "--enable",
+                "unified_exec",
+            ]
+        )
+
+        self.assertEqual(
+            parsed.config_overrides_with_feature_toggles(),
+            (
+                "features.request_permissions_tool=true",
+                "features.exec_permission_approvals=true",
+                "features.unified_exec=true",
+            ),
+        )
 
     def test_exec_inherits_root_shared_options_like_upstream_main(self):
         parsed = parse_args(
@@ -12080,6 +12104,38 @@ class TopLevelCliParserTests(unittest.TestCase):
                                     runtime = _build_tui_core_active_thread_runtime(parsed, stderr=io.StringIO())
 
         self.assertEqual(runtime.session_config.model_reasoning_summary, "none")
+
+    def test_tui_core_runtime_uses_interactive_trust_defaults(self):
+        # Fixed Rust commit 1c7832f:
+        # codex-cli::run_interactive_tui loads core config with interactive
+        # trust defaults instead of codex-exec's approval=Never default.
+        parsed = parse_args([])
+        root = Path.cwd().resolve(strict=False)
+        codex_home = Path("C:/Users/test/.codex")
+        config_toml = {"projects": {str(root).lower(): {"trust_level": "trusted"}}}
+
+        with patch("pycodex.cli.parser.find_codex_home", return_value=str(codex_home)):
+            with patch("pycodex.cli.parser.read_toml_mapping", return_value=config_toml):
+                with patch(
+                    "pycodex.cli.parser.maybe_migrate_personality",
+                    return_value=PersonalityMigrationStatus.SKIPPED_MARKER,
+                ):
+                    with patch("pycodex.cli.parser.ensure_exec_trusted_directory"):
+                        with patch("pycodex.cli.parser._execpolicy_rules_for_local_http_exec", return_value=()):
+                            with patch("pycodex.cli.parser.read_auth_json", return_value={}):
+                                with patch(
+                                    "pycodex.cli.parser.build_default_core_exec_runtime",
+                                    return_value=(
+                                        SimpleNamespace(thread_id=None, session_id=None),
+                                        SimpleNamespace(),
+                                        SimpleNamespace(slug="gpt-5.5"),
+                                        None,
+                                    ),
+                                ):
+                                    runtime = _build_tui_core_active_thread_runtime(parsed, stderr=io.StringIO())
+
+        self.assertIs(runtime.session_config.approval_policy, AskForApproval.ON_REQUEST)
+        self.assertEqual(runtime.session_config.permission_profile, PermissionProfile.read_only())
 
     def test_main_without_subcommand_non_tty_refuses_after_runtime_setup(self):
         # Rust source/native contract:

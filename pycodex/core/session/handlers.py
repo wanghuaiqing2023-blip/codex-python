@@ -165,9 +165,19 @@ async def approve_guardian_denied_action(sess: Any, event: GuardianAssessmentEve
     - item: ``approve_guardian_denied_action``
     """
 
-    if event.status != GuardianAssessmentStatus.DENIED:
+    items = guardian_denied_action_approval_items(event)
+    if not items:
         return
+    await _maybe_await(getattr(sess, "inject_no_new_turn")(items, None))
 
+
+def guardian_denied_action_approval_items(
+    event: GuardianAssessmentEvent,
+) -> list[ResponseItem]:
+    """Build the exact developer injection used by Guardian denial retry."""
+
+    if event.status != GuardianAssessmentStatus.DENIED:
+        return []
     approved_action_json = json.dumps(
         {
             "action": _guardian_action_mapping(event.action),
@@ -182,7 +192,7 @@ async def approve_guardian_denied_action(sess: Any, event: GuardianAssessmentEve
         "Approved action:\n"
         f"{approved_action_json}"
     )
-    items = [
+    return [
         ResponseItem.from_response_input_item(
             ResponseInputItem.message(
                 "developer",
@@ -190,7 +200,6 @@ async def approve_guardian_denied_action(sess: Any, event: GuardianAssessmentEve
             )
         )
     ]
-    await _maybe_await(getattr(sess, "inject_no_new_turn")(items, None))
 
 
 async def inter_agent_communication(sess: Any, sub_id: str, communication: InterAgentCommunication) -> None:
@@ -1245,6 +1254,7 @@ async def _maybe_await(value: Any) -> Any:
 
 __all__ = [
     "AUTO_REVIEW_DENIED_ACTION_APPROVAL_DEVELOPER_PREFIX",
+    "guardian_denied_action_approval_items",
     "approve_guardian_denied_action",
     "CompactTask",
     "clean_background_terminals",

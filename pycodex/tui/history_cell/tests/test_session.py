@@ -211,6 +211,17 @@ def test_has_yolo_permissions_matches_approval_and_profile_rules() -> None:
     assert has_yolo_permissions("never", ProtocolPermissionProfile.external(NetworkSandboxPolicy.ENABLED)) is False
 
 
+def test_session_header_permissions_row_follows_fixed_rust_yolo_condition() -> None:
+    # Fixed Rust source: history_cell/session.rs only adds the permissions row
+    # when SessionHeaderHistoryCell::with_yolo_mode(true) is selected. Read-only
+    # and on-request startup intentionally keep the compact four-row card.
+    read_only = SessionHeaderHistoryCell.new("gpt-5", "low", False, Path("/tmp"), "1.2.3")
+    yolo = SessionHeaderHistoryCell.new("gpt-5", "low", False, Path("/tmp"), "1.2.3").with_yolo_mode(True)
+
+    assert "permissions:" not in "\n".join(texts(read_only.display_lines(80)))
+    assert "permissions: YOLO mode" in "\n".join(texts(yolo.raw_lines()))
+
+
 def test_new_session_info_first_event_includes_help_lines() -> None:
     cell = new_session_info(
         {"cwd": ".", "show_tooltips": True},

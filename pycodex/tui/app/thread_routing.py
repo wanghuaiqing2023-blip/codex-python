@@ -12,7 +12,7 @@ tokio tasks, or app-server transport.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from .._porting import RustTuiModule
 
@@ -111,6 +111,143 @@ class ThreadRoutingPlan:
     error_message: Optional[str] = None
     info_message: Optional[str] = None
     schedule_frame: bool = False
+
+
+@dataclass(frozen=True)
+class ThreadInteractiveRequest:
+    """Inactive-thread request projected through its fixed-Rust UI owner."""
+
+    kind: str
+    payload: Any
+
+
+def interactive_request_for_thread_request(
+    thread_id: str,
+    thread_label: str,
+    request: Any,
+    *,
+    fallback_cwd: Any = ".",
+) -> ThreadInteractiveRequest | None:
+    """Port ``App::interactive_request_for_thread_request``.
+
+    The app owner supplies thread identity and label, while canonical protocol
+    converters and chatwidget plans continue to own request payload semantics.
+    """
+
+    from ..bottom_pane.app_link_view import AppLinkViewParams
+    from ..bottom_pane.mcp_server_elicitation import McpServerElicitationFormRequest
+    from ..chatwidget.protocol_requests import (
+        elicitation_params_from_params,
+        exec_approval_request_from_params,
+        patch_approval_request_from_params,
+        request_permissions_from_params,
+    )
+    from ..chatwidget.tool_requests import ApprovalRequestPlan
+
+    kind = str(_get_attr_or_key(request, "kind", _get_attr_or_key(request, "type", "")))
+    request_id = str(
+        _get_attr_or_key(
+            request,
+            "request_id",
+            _get_attr_or_key(request, "id", ""),
+        )
+        or ""
+    )
+    params = _get_attr_or_key(request, "params", None)
+
+    if kind == "CommandExecutionRequestApproval":
+        event = exec_approval_request_from_params(params, fallback_cwd)
+        return ThreadInteractiveRequest(
+            "approval",
+            ApprovalRequestPlan(
+                "exec",
+                {
+                    "thread_id": thread_id,
+                    "thread_label": thread_label,
+                    "id": event.effective_approval_id(),
+                    "command": event.command,
+                    "reason": event.reason,
+                    "available_decisions": event.effective_available_decisions(),
+                    "network_approval_context": event.network_approval_context,
+                    "additional_permissions": event.additional_permissions,
+                },
+            ),
+        )
+    if kind == "FileChangeRequestApproval":
+        event = patch_approval_request_from_params(params)
+        return ThreadInteractiveRequest(
+            "approval",
+            ApprovalRequestPlan(
+                "apply_patch",
+                {
+                    "thread_id": thread_id,
+                    "thread_label": thread_label,
+                    "id": event.call_id,
+                    "reason": event.reason,
+                    "changes": event.changes,
+                    "cwd": fallback_cwd,
+                },
+            ),
+        )
+    if kind == "PermissionsRequestApproval":
+        event = request_permissions_from_params(params)
+        return ThreadInteractiveRequest(
+            "approval",
+            ApprovalRequestPlan(
+                "permissions",
+                {
+                    "thread_id": thread_id,
+                    "thread_label": thread_label,
+                    "call_id": event.call_id,
+                    "reason": event.reason,
+                    "permissions": event.permissions,
+                },
+            ),
+        )
+    if kind == "McpServerElicitationRequest":
+        elicitation = elicitation_params_from_params(params)
+        app_link = AppLinkViewParams.from_url_app_server_request(
+            thread_id,
+            elicitation.server_name,
+            request_id,
+            elicitation.request,
+        )
+        if app_link is not None:
+            return ThreadInteractiveRequest("app_link", app_link)
+        mcp_request = elicitation.request
+        if mcp_request.mode == "form":
+            form = McpServerElicitationFormRequest.from_parts(
+                thread_id=thread_id,
+                server_name=elicitation.server_name,
+                request_id=request_id,
+                message=mcp_request.message,
+                schema=(
+                    None
+                    if mcp_request.requested_schema is None
+                    else mcp_request.requested_schema.to_mapping()
+                ),
+                meta=mcp_request.meta if isinstance(mcp_request.meta, Mapping) else None,
+            )
+            if form is not None:
+                return ThreadInteractiveRequest("mcp_form", form)
+            return ThreadInteractiveRequest(
+                "approval",
+                ApprovalRequestPlan(
+                    "mcp_elicitation",
+                    {
+                        "thread_id": thread_id,
+                        "thread_label": thread_label,
+                        "server_name": elicitation.server_name,
+                        "request_id": request_id,
+                        "message": mcp_request.message,
+                    },
+                ),
+            )
+        return ThreadInteractiveRequest(
+            "decline_elicitation",
+            (thread_id, elicitation.server_name, request_id),
+        )
+    return None
 
 
 def _selection_kind(selection: Any) -> str:
@@ -408,6 +545,7 @@ __all__ = [
     "SessionSelectionKind",
     "ThreadChannelState",
     "ThreadClosedNotification",
+    "ThreadInteractiveRequest",
     "ThreadRoutingPlan",
     "ThreadRoutingState",
     "TurnPermissionsOverride",
@@ -422,6 +560,7 @@ __all__ = [
     "enqueue_primary_thread_notification",
     "enqueue_primary_thread_request",
     "ensure_thread_channel",
+    "interactive_request_for_thread_request",
     "pending_inactive_thread_requests",
     "should_handle_active_thread_events",
     "should_prompt_for_paused_goal_after_startup_resume",

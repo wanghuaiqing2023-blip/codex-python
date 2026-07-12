@@ -5,7 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 import json
-from typing import Any, Iterable, Mapping, MutableSequence, Sequence
+from typing import Any, Callable, Iterable, Mapping, MutableSequence, Sequence
+
+from ..app_event_sender import AppEventSender
+from .bottom_pane_view import BottomPaneViewDefaults
+from .selection_popup_common import TerminalPopupLine
 
 ANSWER_PLACEHOLDER = "Type your answer"
 OPTIONAL_ANSWER_PLACEHOLDER = "Type your answer (optional)"
@@ -189,7 +193,7 @@ class FooterTip:
         return cls(text=text, highlight=True)
 
 
-class McpServerElicitationOverlay:
+class McpServerElicitationOverlay(BottomPaneViewDefaults):
     def __init__(self, request: McpServerElicitationFormRequest, tx_event: Any | None = None, has_input_focus: bool = True, enhanced_keys_supported: bool = False, disable_paste_burst: bool = False) -> None:
         self.request = request
         self.tx_event = tx_event
@@ -216,14 +220,40 @@ class McpServerElicitationOverlay:
     def terminal_title_requires_action(self) -> bool:
         return not self.complete
 
-    def try_consume_mcp_server_elicitation_request(self, request: McpServerElicitationFormRequest) -> bool:
+    def terminal_lines(self, *, width: int) -> list[TerminalPopupLine]:
+        rows = [self.request.message]
+        field = self.current_field()
+        if field is not None:
+            rows.append(field.label or field.id)
+            if field.input.kind == "select":
+                answer = self.current_answer()
+                selected = None if answer is None else answer.selected_idx
+                rows.extend(
+                    f"{'>' if index == selected else ' '} {index + 1}. {option.label}"
+                    for index, option in enumerate(field.input.options)
+                )
+        rows.append("Enter to submit | Esc to cancel")
+        return [
+            TerminalPopupLine(row[: max(1, width)], selected=row.startswith(">"))
+            for row in rows
+        ]
+
+    def handle_key_event(self, key_event: Any) -> None:
+        self.handle_key(str(getattr(key_event, "text", key_event)))
+
+    def try_consume_mcp_server_elicitation_request(
+        self,
+        request: McpServerElicitationFormRequest,
+    ) -> McpServerElicitationFormRequest | None:
         if self.complete:
             self._activate(request)
         else:
             self.pending_requests.append(request)
-        return True
+        return None
 
-    def dismiss_app_server_request(self, server_name: str, request_id: str) -> bool:
+    def dismiss_app_server_request(self, request: Any, request_id: str | None = None) -> bool:
+        server_name = str(request if request_id is not None else getattr(request, "server_name", ""))
+        request_id = str(request_id if request_id is not None else getattr(request, "request_id", ""))
         if self.request.server_name == server_name and self.request.request_id == request_id:
             self._advance_or_complete()
             return True
@@ -340,16 +370,29 @@ class McpServerElicitationOverlay:
     def dispatch_cancel(self) -> dict[str, Any]:
         event = resolve_elicitation_event(self.request, "Cancel", content=None, meta=None)
         self._emit(event)
-        self._advance_or_complete()
         return event
 
     def on_ctrl_c(self) -> str:
+        answer = self.current_answer()
+        if (
+            not self.current_field_is_select()
+            and answer is not None
+            and bool(answer.draft.text_with_pending())
+        ):
+            answer.draft = ComposerDraft()
+            answer.answer_committed = False
+            return "Handled"
         self.dispatch_cancel()
+        self.complete = True
         return "Handled"
 
     def handle_key(self, key: str) -> str:
         normalized = key.lower()
-        if normalized in {"ctrl-c", "esc"}:
+        if normalized == "esc":
+            self.dispatch_cancel()
+            self.complete = True
+            return "Handled"
+        if normalized == "ctrl-c":
             return self.on_ctrl_c()
         if normalized in {"ctrl-l", "right", "tab"}:
             self.move_field(1)
@@ -385,6 +428,16 @@ class McpServerElicitationOverlay:
 
     def _emit(self, event: dict[str, Any]) -> None:
         self.emitted_events.append(event)
+        if isinstance(self.tx_event, AppEventSender):
+            self.tx_event.resolve_elicitation(
+                event.get("thread_id"),
+                str(event.get("server_name") or ""),
+                event.get("request_id"),
+                event.get("decision"),
+                event.get("content"),
+                event.get("meta"),
+            )
+            return
         _send(self.tx_event, event)
 
     def _advance_or_complete(self) -> None:
@@ -398,6 +451,21 @@ class McpServerElicitationOverlay:
         self.current_idx = 0
         self.complete = False
         self.answers = [_initial_answer_state(field) for field in request.fields]
+
+
+@dataclass(frozen=True)
+class McpServerElicitationViewProjector:
+    """Project Rust MCP form requests into the shared bottom-pane stack."""
+
+    app_event_sender: AppEventSender
+    show_view: Callable[[McpServerElicitationOverlay], Any]
+    render: Callable[[], Any]
+
+    def __call__(self, request: McpServerElicitationFormRequest) -> McpServerElicitationOverlay:
+        candidate = McpServerElicitationOverlay.new(request, self.app_event_sender)
+        view = self.show_view(candidate) or candidate
+        self.render()
+        return view
 
 
 def approval_action_field(meta: Mapping[str, Any], *, is_tool_approval: bool = False) -> McpServerElicitationField:
@@ -576,7 +644,10 @@ def resolve_elicitation_event(request: McpServerElicitationFormRequest, decision
     }
 
 
-def try_consume_mcp_server_elicitation_request(overlay: McpServerElicitationOverlay, request: McpServerElicitationFormRequest) -> bool:
+def try_consume_mcp_server_elicitation_request(
+    overlay: McpServerElicitationOverlay,
+    request: McpServerElicitationFormRequest,
+) -> McpServerElicitationFormRequest | None:
     return overlay.try_consume_mcp_server_elicitation_request(request)
 
 

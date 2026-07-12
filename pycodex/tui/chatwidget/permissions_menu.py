@@ -6,11 +6,12 @@ Upstream source: ``codex/codex-rs/tui/src/chatwidget/permissions_menu.rs``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from .._porting import RustTuiModule
 from ..app_event import PermissionProfileSelection
 from ..bottom_pane.list_selection_view import SelectionItem, SelectionViewParams
+from ..bottom_pane.view_stack import TerminalSelectionTransition
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -243,6 +244,88 @@ def permission_mode_actions(
     ]
 
 
+class TerminalPermissionsPopupController:
+    """Terminal controller for Rust permission popup and selection events."""
+
+    def __init__(self, app_runtime: Any) -> None:
+        self.app_runtime = app_runtime
+
+    def open_view(self) -> SelectionViewParams | None:
+        result = open_permission_profiles_popup(self._config())
+        for message in result.errors:
+            self.app_runtime.chat_widget.add_error_message(message)
+        return result.view
+
+    def handle_events(self, events: tuple[object, ...]) -> TerminalSelectionTransition | None:
+        for event in events:
+            if not isinstance(event, PermissionMenuAction):
+                continue
+            if event.kind == "select_permission_profile" and event.selection.profile_id == ":danger-no-sandbox":
+                return TerminalSelectionTransition(_full_access_confirmation(event.selection))
+            if event.kind == "reopen_permissions":
+                return TerminalSelectionTransition(self.open_view())
+
+            def apply(selection: PermissionProfileSelection = event.selection) -> None:
+                try:
+                    self.app_runtime.apply_permission_profile_selection(selection)
+                    if event.kind == "confirm_permission_profile_remember":
+                        self.app_runtime.persist_full_access_warning_acknowledged()
+                except Exception as exc:
+                    self.app_runtime.chat_widget.add_error_message(f"Failed to save permissions: {exc}")
+
+            return TerminalSelectionTransition(after_pop=apply)
+        return None
+
+    def _config(self) -> PermissionMenuConfig:
+        runtime = self.app_runtime.active_thread_runtime
+        session = getattr(runtime, "session_config", None)
+        widget_config = getattr(self.app_runtime.chat_widget, "config", None)
+
+        def first(name: str, default: Any = None) -> Any:
+            for source in (runtime, session, widget_config):
+                value = getattr(source, name, None) if source is not None else None
+                if value is not None:
+                    return value
+            return default
+
+        active_profile = first("active_permission_profile")
+        return PermissionMenuConfig(
+            active_profile_id=getattr(active_profile, "id", active_profile),
+            approval_policy=str(first("approval_policy", "on-request")),
+            approvals_reviewer=str(first("approvals_reviewer", "user")),
+            guardian_approval_enabled=bool(first("guardian_approval_enabled", False)),
+            custom_permission_profiles=tuple(first("custom_permission_profiles", ()) or ()),
+            disabled_reasons=dict(first("permission_disabled_reasons", {}) or {}),
+        )
+
+
+def _full_access_confirmation(selection: PermissionProfileSelection) -> SelectionViewParams:
+    return SelectionViewParams(
+        header="Enable full access?",
+        footer_hint="standard-popup-hint",
+        items=[
+            SelectionItem(
+                name="Yes, continue anyway",
+                description="Apply full access for this session",
+                actions=[PermissionMenuAction("confirm_permission_profile", selection)],
+                dismiss_on_select=True,
+            ),
+            SelectionItem(
+                name="Yes, and don't ask again",
+                description="Enable full access and remember this choice",
+                actions=[PermissionMenuAction("confirm_permission_profile_remember", selection)],
+                dismiss_on_select=True,
+            ),
+            SelectionItem(
+                name="Cancel",
+                description="Go back without enabling full access",
+                actions=[PermissionMenuAction("reopen_permissions", selection)],
+                dismiss_on_select=True,
+            ),
+        ],
+    )
+
+
 def _first_missing_required_preset(by_id: Dict[str, ApprovalPreset]) -> Optional[str]:
     for required in ("read-only", "auto", "full-access"):
         if required not in by_id:
@@ -257,6 +340,7 @@ __all__ = [
     "PermissionMenuAction",
     "PermissionMenuConfig",
     "PermissionMenuResult",
+    "TerminalPermissionsPopupController",
     "RUST_MODULE",
     "builtin_approval_presets",
     "builtin_permission_mode_selection_item",

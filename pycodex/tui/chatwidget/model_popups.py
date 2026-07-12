@@ -33,6 +33,8 @@ class ReasoningEffortConfig(str, Enum):
     Medium = "medium"
     High = "high"
     XHigh = "xhigh"
+    Max = "max"
+    Ultra = "ultra"
 
 
 @dataclass(frozen=True)
@@ -705,6 +707,8 @@ def reasoning_effort_label(effort: ReasoningEffortConfig) -> str:
         ReasoningEffortConfig.Medium: "Medium",
         ReasoningEffortConfig.High: "High",
         ReasoningEffortConfig.XHigh: "Extra high",
+        ReasoningEffortConfig.Max: "Max",
+        ReasoningEffortConfig.Ultra: "Ultra",
     }[effort]
 
 

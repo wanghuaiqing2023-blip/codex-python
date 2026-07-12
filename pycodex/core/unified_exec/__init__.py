@@ -803,7 +803,9 @@ class _ManagedUnifiedExecSession:
         from pycodex.utils.string import approx_token_count
         from pycodex.core.tools.context import ExecCommandToolOutput
 
-        text = raw_output.decode("utf-8", errors="replace")
+        from pycodex.protocol.exec_output import bytes_to_string_smart
+
+        text = bytes_to_string_smart(raw_output)
         return ExecCommandToolOutput(
             event_call_id=event_call_id,
             chunk_id=generate_chunk_id(),
@@ -851,6 +853,17 @@ class ProcessEntry:
         return bool(getattr(self.process, "exited", False))
 
 
+def _command_for_spawn(command: tuple[str, ...], shell_type: Any) -> tuple[str, ...]:
+    """Apply the same last-mile PowerShell UTF-8 wrapper as Rust unified exec."""
+
+    from pycodex.core.shell import ShellType
+    from pycodex.shell_command.powershell import prefix_powershell_script_with_utf8
+
+    if shell_type == ShellType.POWERSHELL:
+        return tuple(prefix_powershell_script_with_utf8(command))
+    return command
+
+
 class UnifiedExecProcessManager:
     """Small stdlib manager for unified exec process ids, sessions, and pruning."""
 
@@ -896,9 +909,15 @@ class UnifiedExecProcessManager:
         max_output_tokens = getattr(request, "max_output_tokens", None)
         yield_time_ms = clamp_yield_time(int(getattr(request, "yield_time_ms", MIN_YIELD_TIME_MS)))
 
+        # Rust core::tools::runtimes::unified_exec forces PowerShell console
+        # output to UTF-8 immediately before spawning the process. Keep the
+        # original request command unchanged for command lifecycle display.
+        shell_type = getattr(request, "shell_type", None)
+        spawn_command = _command_for_spawn(command, shell_type)
+
         try:
             process = subprocess.Popen(
-                command,
+                spawn_command,
                 cwd=str(cwd) if cwd is not None else None,
                 env=env,
                 stdin=subprocess.PIPE if tty else subprocess.DEVNULL,

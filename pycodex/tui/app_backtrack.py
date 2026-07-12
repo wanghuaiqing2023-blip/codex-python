@@ -11,9 +11,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Iterator, MutableSequence
+from typing import Any, Callable, Iterable, Iterator, MutableSequence
 
 from ._porting import RustTuiModule
+from .custom_terminal import AlternateScreenRenderer
+from .pager_overlay import Rect, TranscriptOverlay
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -26,6 +28,73 @@ NO_PREVIOUS_MESSAGE_TO_EDIT = "No previous message to edit."
 USIZE_MAX = (1 << 64) - 1
 U32_MAX = (1 << 32) - 1
 BACKTRACK_ROLLBACK_ALREADY_IN_PROGRESS = "Backtrack rollback already in progress."
+
+
+@dataclass(frozen=True)
+class TerminalTranscriptOverlayController:
+    """Runtime-bound Rust ``App`` transcript-overlay lifecycle owner."""
+
+    cells: Callable[[], Iterable[Any]]
+    get_input_source: Callable[[], Any]
+    writer: Any
+    terminal_size: Callable[[], Any]
+    keymap: Callable[[], Any | None]
+    run_external_repaint: Callable[[Callable[[], bool]], bool]
+    poll_timeout: float = 0.1
+
+    def open(self) -> bool:
+        def run() -> bool:
+            return run_terminal_transcript_overlay(
+                cells=tuple(self.cells()),
+                source=self.get_input_source(),
+                writer=self.writer,
+                terminal_size=self.terminal_size,
+                keymap=self.keymap(),
+                poll_timeout=self.poll_timeout,
+            )
+
+        return bool(self.run_external_repaint(run))
+
+
+def run_terminal_transcript_overlay(
+    *,
+    cells: Iterable[Any],
+    source: Any,
+    writer: Any,
+    terminal_size: Callable[[], Any],
+    keymap: Any | None = None,
+    poll_timeout: float = 0.1,
+) -> bool:
+    """Run Rust's ``App::open_transcript_overlay`` terminal lifecycle.
+
+    ``app_backtrack`` owns opening/closing and event forwarding. Pager content
+    and navigation remain in ``pager_overlay``; alternate-screen buffer/diff
+    side effects remain in ``custom_terminal``.
+    """
+
+    if source is None:
+        return False
+    overlay = TranscriptOverlay.new(tuple(cells), keymap=keymap)
+    renderer = AlternateScreenRenderer(writer)
+    renderer.enter()
+    try:
+        while not overlay.is_done():
+            size = terminal_size()
+            current_size = (max(0, int(size.columns)), max(0, int(size.lines)))
+            area = Rect(0, 0, current_size[0], current_size[1])
+            renderer.render_lines(overlay.render_frame(area), size)
+
+            event = source.poll(max(0.0, float(poll_timeout)))
+            if event is None:
+                continue
+            event_kind = str(getattr(event, "kind", ""))
+            event_text = str(getattr(event, "text", ""))
+            if event_kind == "resize":
+                continue
+            overlay.handle_input(event_kind, event_text, area)
+        return True
+    finally:
+        renderer.leave()
 
 
 @dataclass

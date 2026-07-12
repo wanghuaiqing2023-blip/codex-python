@@ -20,6 +20,7 @@ from ..history_cell.messages import AgentMessageCell
 from ..history_cell.plans import ProposedPlanStreamCell
 from ..line_truncation import Line
 from ..markdown_stream import MarkdownStreamCollector
+from ..markdown import render_markdown_agent_with_links_and_cwd
 from ..terminal_hyperlinks import HyperlinkLine, line_text, plain_hyperlink_lines, visible_lines
 from . import StreamState, test_cwd as _streaming_test_cwd
 from .table_holdback import TableHoldbackScanner, TableHoldbackState, table_holdback_state
@@ -121,10 +122,10 @@ class StreamCore:
 
     def current_tail_lines(self) -> list[HyperlinkLine]:
         start = min(self.enqueued_stable_len, len(self.rendered_lines))
-        return self.rendered_lines[start:]
+        return list(self.rendered_lines[start:])
 
     def has_tail(self) -> bool:
-        return self.enqueued_stable_len < len(self.rendered_lines)
+        return bool(self.current_tail_lines())
 
     def set_width(self, width: Optional[int]) -> None:
         if self.width == width:
@@ -157,7 +158,13 @@ class StreamCore:
     def render_source(self, source: str) -> list[HyperlinkLine]:
         if self.render_mode is HistoryRenderMode.RAW:
             return plain_hyperlink_lines(_raw_source_lines(source))
-        return plain_hyperlink_lines(_semantic_markdown_lines(source))
+        return list(
+            render_markdown_agent_with_links_and_cwd(
+                source,
+                self.width,
+                self.cwd,
+            )
+        )
 
     def recompute_streaming_render(self) -> None:
         self.rendered_lines = self.render_source(self.raw_source)
@@ -423,12 +430,6 @@ def collect_plan_streamed_lines(deltas: Sequence[str], width: Optional[int] = No
     if cell is not None:
         out.extend(lines_to_plain_strings(cell.display_lines(65535)))
     return out
-
-
-def _semantic_markdown_lines(source: str) -> list[Line]:
-    # This intentionally preserves source-line ordering and table-shaped text.
-    # Concrete ratatui Markdown rendering belongs to markdown/history-cell modules.
-    return _raw_source_lines(source)
 
 
 def _raw_source_lines(source: str) -> list[Line]:

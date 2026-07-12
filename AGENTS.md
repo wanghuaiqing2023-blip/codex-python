@@ -195,6 +195,57 @@ Python tests should include source comments when possible, naming the Rust crate
 
 Golden tests are versioned behavior snapshots against a specific Rust Codex reference body. They are useful for stable serializable modules, but they are not the default first step for complex runtime paths.
 
+## TUI slash-command framework discipline
+
+This project no longer maintains a Textual UI path. Slash-command behavior must be implemented through the Rust-aligned terminal TUI framework only.
+
+All slash-command work must be framework-based, not command-specific terminal patches. Do not fix only `/model`, `/permissions`, `/keymap`, or any single command by adding special-case behavior in terminal runtime, terminal surface, or rendering glue.
+
+Bugs may be discovered through one command, but fixes must live at the framework layer and be verified at the category level. If a bug is discovered through one slash command, first identify the framework layer that owns the behavior, then fix that layer so all commands in the same category benefit. Do not leave behavior in one-off command branches, runtime shortcuts, rendering exceptions, or test-only adapters.
+
+The Rust-aligned ownership map is:
+
+- `slash_command` owns command registry, canonical names, aliases, visibility, inline-argument support, and availability rules.
+- `bottom_pane::command_popup` and `bottom_pane::slash_commands` own popup filtering, ordering, selected row state, display flags, and completion candidates.
+- `bottom_pane::chat_composer` owns first-line slash detection, draft mutation, popup routing, and Tab/Enter/Esc/Up/Down semantics.
+- `chatwidget::slash_dispatch` owns command dispatch, local-vs-user-turn decisions, inline argument preparation, guard checks, and queued command behavior.
+- Commands that open interactive UI must route through `BottomPaneView`, `SelectionViewParams`, `ListSelectionView`, or another Rust-aligned active view.
+- Terminal rendering must go through the bottom-pane frame model: state -> frame -> terminal render adapter.
+
+The required terminal TUI path is:
+
+```text
+tui::event_stream
+  -> bottom_pane::chat_composer
+  -> command_popup / slash_dispatch / active BottomPaneView
+  -> bottom-pane frame model
+  -> terminal render adapter
+```
+
+Slash-command fixes must be category-based. When touching slash behavior, verify the affected category and at least one adjacent category:
+
+- Discovery and completion: `/`, filtered input such as `/m`, Up/Down selection, Tab completion, Enter dispatch.
+- Local immediate commands: examples include `/clear`, `/status`, `/quit`, `/exit`, `/raw`, `/diff`, `/copy`, `/mention`.
+- Inline-argument commands: examples include `/review`, `/rename`, `/goal`, `/plan`, `/raw`, `/mcp`, `/keymap`, `/resume`, `/side`.
+- View-opening commands: examples include `/model`, `/permissions`, `/keymap`, `/memories`, `/settings`, `/apps`, `/plugins`, `/skills`, `/hooks`, `/agent`, `/multi-agents`, `/subagents`.
+- Guarded/contextual commands: side-conversation-only, unavailable-during-task, review-only, login/session-dependent, or hidden commands.
+- Alias commands: examples include `/quit` and `/exit`, `/clean`, `/pet`, `/approve`, `/subagents` and `/multi-agents`.
+
+`/model` is only one representative view-opening command. It must not become a special implementation path. The same popup, selection, active-view stack, key handling, and frame rendering rules must apply to every slash-command category.
+
+Any slash-command change must be regression-tested as a framework behavior, not as a single-command fix. At minimum, verify:
+
+- Normal text and IME text still submit as user turns.
+- `/` and filtered slash input show the popup in the expected bottom-pane location.
+- Up/Down moves the highlighted candidate.
+- Tab completes the highlighted slash command without executing it.
+- Enter dispatches the selected or typed command according to Rust behavior.
+- Local commands do not become user turns.
+- Inline-argument commands preserve arguments and text elements.
+- View-opening commands use the active-view stack and bottom-pane frame renderer.
+- Guarded commands respect side conversation, active task, review mode, and visibility rules.
+- The command being changed is tested together with at least one neighboring command category.
+
 ## Porting discipline
 
 When implementing functionality:

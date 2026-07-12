@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import uuid
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from datetime import datetime, timezone as utc_timezone
 from enum import Enum
@@ -58,6 +59,14 @@ from pycodex.core.state.additional_context import AdditionalContextStore
 from pycodex.core.state.turn import PendingRequestPermissions
 from pycodex.core.session.turn.prompt import is_guardian_reviewer_source
 from pycodex.core.unified_exec import UnifiedExecProcessManager
+from pycodex.protocol.approvals import (
+    ExecApprovalRequestEvent,
+    ExecPolicyAmendment,
+    NetworkApprovalContext,
+    NetworkPolicyAmendment,
+    NetworkPolicyRuleAction,
+    ReviewDecision,
+)
 from pycodex.protocol import (
     AdditionalPermissionProfile,
     ApprovalsReviewer,
@@ -97,6 +106,7 @@ from pycodex.protocol import (
     TruncationPolicyConfig,
     TokenUsage,
     TokenUsageInfo,
+    ThreadId,
     TurnContextItem,
     TurnContextNetworkItem,
     TurnEnvironmentSelection,
@@ -180,6 +190,7 @@ class InMemoryHistory:
 @dataclass
 class InMemoryActiveTurnState:
     tool_calls: int = 0
+    pending_approvals: dict[str, Any] = field(default_factory=dict)
     pending_request_permissions: dict[str, PendingRequestPermissions] = field(default_factory=dict)
 
 
@@ -400,6 +411,9 @@ class InMemoryCodexSession:
     persisted_rollout_items: list[RolloutItem] = field(default_factory=list)
     request_permissions_callback: Any = None
     request_permissions_event_roundtrip_enabled: bool = False
+    command_approval_callback: Any = None
+    command_approval_event_roundtrip_enabled: bool = True
+    patch_approval_callback: Any = None
     shell: Any = None
     approval_policy: Any = AskForApproval.ON_REQUEST
     approvals_reviewer: ApprovalsReviewer = ApprovalsReviewer.USER
@@ -450,11 +464,21 @@ class InMemoryCodexSession:
     unified_diff: str | None = None
     loop_tail_calls: list[Any] = field(default_factory=list)
     turn_error_lifecycle: list[Any] = field(default_factory=list)
+    conversation_id: ThreadId | None = None
 
     def __post_init__(self) -> None:
         self.cwd = Path(self.cwd)
         if not isinstance(self.thread_id, str):
             raise TypeError("thread_id must be a string")
+        if self.conversation_id is None:
+            try:
+                self.conversation_id = ThreadId.from_string(self.thread_id)
+            except ValueError:
+                self.conversation_id = ThreadId(
+                    uuid.uuid5(uuid.NAMESPACE_URL, f"pycodex-thread:{self.thread_id}")
+                )
+        elif not isinstance(self.conversation_id, ThreadId):
+            raise TypeError("conversation_id must be a ThreadId or None")
         if not isinstance(self.base_instructions, BaseInstructions):
             self.base_instructions = BaseInstructions(str(self.base_instructions))
         if not isinstance(self.model_provider_id, str):
@@ -478,6 +502,12 @@ class InMemoryCodexSession:
             raise TypeError("request_permissions_callback must be callable or None")
         if not isinstance(self.request_permissions_event_roundtrip_enabled, bool):
             raise TypeError("request_permissions_event_roundtrip_enabled must be a bool")
+        if self.command_approval_callback is not None and not callable(self.command_approval_callback):
+            raise TypeError("command_approval_callback must be callable or None")
+        if not isinstance(self.command_approval_event_roundtrip_enabled, bool):
+            raise TypeError("command_approval_event_roundtrip_enabled must be a bool")
+        if self.patch_approval_callback is not None and not callable(self.patch_approval_callback):
+            raise TypeError("patch_approval_callback must be callable or None")
         if not isinstance(self.approvals_reviewer, ApprovalsReviewer):
             raise TypeError("approvals_reviewer must be ApprovalsReviewer")
         if not isinstance(self.permission_profile, PermissionProfile):
@@ -1153,6 +1183,144 @@ class InMemoryCodexSession:
 
     async def strict_auto_review(self) -> bool:
         return self.strict_auto_review_enabled
+
+    async def request_command_approval(
+        self,
+        turn_context: Any,
+        call_id: str,
+        approval_id: str | None,
+        command: Any,
+        cwd: Path | str,
+        reason: str | None,
+        network_approval_context: NetworkApprovalContext | None,
+        proposed_execpolicy_amendment: ExecPolicyAmendment | None,
+        additional_permissions: AdditionalPermissionProfile | None,
+        available_decisions: Any = None,
+    ) -> ReviewDecision:
+        """Emit and await Rust's typed command-approval request."""
+
+        if not isinstance(call_id, str):
+            raise TypeError("call_id must be a string")
+        if approval_id is not None and not isinstance(approval_id, str):
+            raise TypeError("approval_id must be a string or None")
+        command = tuple(str(part) for part in command)
+        cwd = Path(cwd)
+        if self.command_approval_callback is not None:
+            decision = self.command_approval_callback(
+                turn_context,
+                call_id,
+                approval_id,
+                command,
+                cwd,
+                reason,
+                network_approval_context,
+                proposed_execpolicy_amendment,
+                additional_permissions,
+                available_decisions,
+            )
+            if inspect.isawaitable(decision):
+                decision = await decision
+            return ReviewDecision.abort() if decision is None else ReviewDecision.from_mapping(decision)
+        if not self.command_approval_event_roundtrip_enabled:
+            return ReviewDecision.abort()
+
+        effective_approval_id = approval_id or call_id
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[ReviewDecision] = loop.create_future()
+        previous = self.active_turn.turn_state.pending_approvals.get(effective_approval_id)
+        if isinstance(previous, asyncio.Future) and not previous.done():
+            previous.set_result(ReviewDecision.abort())
+        self.active_turn.turn_state.pending_approvals[effective_approval_id] = future
+
+        proposed_network_policy_amendments = None
+        if network_approval_context is not None:
+            proposed_network_policy_amendments = (
+                NetworkPolicyAmendment(network_approval_context.host, NetworkPolicyRuleAction.ALLOW),
+                NetworkPolicyAmendment(network_approval_context.host, NetworkPolicyRuleAction.DENY),
+            )
+        normalized_available = (
+            None
+            if available_decisions is None
+            else tuple(ReviewDecision.from_mapping(item) for item in available_decisions)
+        )
+        if normalized_available is None:
+            normalized_available = ExecApprovalRequestEvent.default_available_decisions(
+                network_approval_context=network_approval_context,
+                proposed_execpolicy_amendment=proposed_execpolicy_amendment,
+                proposed_network_policy_amendments=proposed_network_policy_amendments,
+                additional_permissions=additional_permissions,
+            )
+
+        await self.send_event(
+            turn_context,
+            EventMsg.with_payload(
+                "exec_approval_request",
+                ExecApprovalRequestEvent(
+                    call_id=call_id,
+                    approval_id=approval_id,
+                    turn_id=getattr(turn_context, "sub_id", None)
+                    or getattr(turn_context, "turn_id", None)
+                    or "",
+                    started_at_ms=int(datetime.now(utc_timezone.utc).timestamp() * 1000),
+                    command=command,
+                    cwd=cwd,
+                    reason=reason,
+                    network_approval_context=network_approval_context,
+                    proposed_execpolicy_amendment=proposed_execpolicy_amendment,
+                    proposed_network_policy_amendments=proposed_network_policy_amendments,
+                    additional_permissions=additional_permissions,
+                    available_decisions=normalized_available,
+                ),
+            ),
+        )
+        try:
+            return await future
+        finally:
+            self.active_turn.turn_state.pending_approvals.pop(effective_approval_id, None)
+
+    async def request_patch_approval(
+        self,
+        turn_context: Any,
+        call_id: str,
+        changes: Mapping[Path, Any],
+        reason: str | None,
+        grant_root: Path | None,
+    ) -> ReviewDecision:
+        """Emit and await Rust's typed apply-patch approval request."""
+
+        if not isinstance(call_id, str):
+            raise TypeError("call_id must be a string")
+        normalized_changes = {Path(path): change for path, change in changes.items()}
+        if self.patch_approval_callback is None:
+            return ReviewDecision.abort()
+        decision = self.patch_approval_callback(
+            call_id,
+            normalized_changes,
+            Path(getattr(turn_context, "cwd", self.cwd)),
+            reason,
+            grant_root,
+        )
+        if inspect.isawaitable(decision):
+            decision = await decision
+        return ReviewDecision.abort() if decision is None else ReviewDecision.from_mapping(decision)
+
+    async def notify_approval(
+        self,
+        approval_id: str,
+        decision: ReviewDecision | Mapping[str, Any],
+    ) -> None:
+        if not isinstance(approval_id, str):
+            raise TypeError("approval_id must be a string")
+        if not isinstance(decision, ReviewDecision):
+            decision = ReviewDecision.from_mapping(decision)
+        pending = self.active_turn.turn_state.pending_approvals.pop(approval_id, None)
+        if isinstance(pending, asyncio.Future):
+            if not pending.done():
+                pending.set_result(decision)
+        elif callable(pending):
+            pending(decision)
+        elif isinstance(pending, dict):
+            pending["value"] = decision
 
     async def request_permissions(
         self,

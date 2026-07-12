@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -19,6 +20,8 @@ from pycodex.tui.chatwidget.protocol_requests import (
     on_shutdown_complete,
     on_turn_diff,
 )
+from pycodex.protocol.approvals import ApplyPatchApprovalRequestEvent, ExecApprovalRequestEvent
+from pycodex.protocol.request_permissions import RequestPermissionsEvent
 
 
 class Widget:
@@ -33,21 +36,126 @@ class Widget:
         return recorder
 
 
+# Rust source: codex/codex-rs/tui/src/chatwidget/protocol_requests.rs
 def test_handle_server_request_routes_approval_permission_elicitation_and_user_input() -> None:
     widget = Widget()
 
     handle_server_request(widget, ServerRequest("CommandExecutionRequestApproval", id="r1", params={"command": "ls"}))
-    handle_server_request(widget, ServerRequest("FileChangeRequestApproval", id="r2", params={"path": "a.py"}))
-    handle_server_request(widget, ServerRequest("McpServerElicitationRequest", request_id="e1", params={"prompt": "p"}))
-    handle_server_request(widget, ServerRequest("PermissionsRequestApproval", id="r3", params={"profile": "auto"}))
-    handle_server_request(widget, ServerRequest("ToolRequestUserInput", id="r4", params={"question": "q"}))
+    handle_server_request(
+        widget,
+        ServerRequest(
+            "FileChangeRequestApproval",
+            id="r2",
+            params={"item_id": "patch-1", "changes": {"a.py": {"type": "add", "content": "x"}}},
+        ),
+    )
+    handle_server_request(
+        widget,
+        ServerRequest(
+            "McpServerElicitationRequest",
+            request_id="e1",
+            params={
+                "thread_id": "thread-1",
+                "turn_id": "turn-1",
+                "server_name": "server-1",
+                "mode": "form",
+                "message": "Approve?",
+                "requested_schema": {"type": "object", "properties": {}},
+            },
+        ),
+    )
+    handle_server_request(
+        widget,
+        ServerRequest(
+            "PermissionsRequestApproval",
+            id="r3",
+            params={"item_id": "perm-1", "permissions": {}},
+        ),
+    )
+    handle_server_request(
+        widget,
+        ServerRequest(
+            "ToolRequestUserInput",
+            id="r4",
+            params={
+                "thread_id": "thread-1",
+                "turn_id": "turn-1",
+                "item_id": "item-1",
+                "questions": [{"id": "q", "header": "Question", "question": "Pick", "options": None}],
+            },
+        ),
+    )
 
-    assert widget.events == [
-        ("on_exec_approval_request", "r1", {"command": "ls", "cwd": "/repo"}),
-        ("on_apply_patch_approval_request", "r2", {"path": "a.py"}),
-        ("on_elicitation_request", "e1", {"prompt": "p"}),
-        ("on_request_permissions", {"profile": "auto"}),
-        ("on_request_user_input", {"question": "q"}),
+    assert widget.events[0][0:2] == ("on_exec_approval_request", "r1")
+    assert isinstance(widget.events[0][2], ExecApprovalRequestEvent)
+    assert widget.events[0][2].command == ("ls",)
+    assert widget.events[0][2].cwd == Path("/repo")
+    assert widget.events[1][0:2] == ("on_apply_patch_approval_request", "r2")
+    assert isinstance(widget.events[1][2], ApplyPatchApprovalRequestEvent)
+    assert widget.events[1][2].call_id == "patch-1"
+    assert widget.events[2][0:2] == ("on_elicitation_request", "e1")
+    assert widget.events[2][2].thread_id == "thread-1"
+    assert widget.events[3][0] == "on_request_permissions"
+    assert isinstance(widget.events[3][1], RequestPermissionsEvent)
+    assert widget.events[3][1].call_id == "perm-1"
+    assert widget.events[4][0] == "on_request_user_input"
+    assert widget.events[4][1].item_id == "item-1"
+
+
+def test_exec_approval_parser_preserves_fixed_rust_decision_payload() -> None:
+    # Fixed Rust commit 1c7832f, approval_events::ExecApprovalRequestEvent:
+    # terminal routing must preserve policy and network amendments rather than
+    # reducing an approval request to command text.
+    widget = Widget()
+
+    handle_server_request(
+        widget,
+        ServerRequest(
+            "CommandExecutionRequestApproval",
+            id="request-1",
+            params={
+                "call_id": "call-1",
+                "approval_id": "approval-1",
+                "turn_id": "turn-1",
+                "started_at_ms": 42,
+                "command": ["curl", "https://example.com"],
+                "cwd": "/repo",
+                "reason": "download fixture",
+                "network_approval_context": {"host": "example.com", "protocol": "https"},
+                "proposed_execpolicy_amendment": {"command": ["curl"]},
+                "proposed_network_policy_amendments": [
+                    {"host": "example.com", "action": "allow"}
+                ],
+                "available_decisions": [
+                    "accept",
+                    "acceptForSession",
+                    {
+                        "applyNetworkPolicyAmendment": {
+                            "networkPolicyAmendment": {
+                                "host": "example.com",
+                                "action": "allow",
+                            }
+                        }
+                    },
+                    "cancel",
+                ],
+            },
+        ),
+    )
+
+    event = widget.events[0][2]
+    assert event.call_id == "call-1"
+    assert event.effective_approval_id() == "approval-1"
+    assert event.turn_id == "turn-1"
+    assert event.started_at_ms == 42
+    assert event.network_approval_context.host == "example.com"
+    assert event.proposed_execpolicy_amendment.command == ("curl",)
+    assert event.proposed_network_policy_amendments[0].host == "example.com"
+    assert [decision.type for decision in event.effective_available_decisions()] == [
+        "approved",
+        "approved_for_session",
+        "network_policy_amendment",
+        "abort",
     ]
 
 
@@ -88,7 +196,12 @@ def test_guardian_review_notification_maps_status_risk_auth_and_completion() -> 
             "rationale": "ok",
         },
         completion=(20, "Agent"),
-        action={"kind": "command"},
+        action={
+            "kind": "Command",
+            "source": "Shell",
+            "command": "echo ok",
+            "cwd": "/tmp",
+        },
     )
 
     assert event.status == GuardianAssessmentStatus.APPROVED

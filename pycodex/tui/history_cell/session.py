@@ -270,6 +270,8 @@ def _reasoning_label(reasoning_effort: Any) -> str | None:
         "high": "high",
         "xhigh": "xhigh",
         "x_high": "xhigh",
+        "max": "max",
+        "ultra": "ultra",
         "none": "none",
     }
     return mapping.get(name, name)

@@ -751,6 +751,30 @@ class TerminalTurnSubmissionRunner:
             set_exit_code=self.set_exit_code,
         )
 
+    def submit_operation(
+        self,
+        display_prompt: str,
+        submit_operation: Callable[[], Any],
+        *,
+        append_history: bool = False,
+    ) -> bool:
+        """Run a non-user operation through the same terminal turn lifecycle."""
+
+        return run_terminal_turn_submission(
+            display_prompt,
+            started_at=self.started_at(),
+            append_history=self.append_history if append_history else None,
+            apply_started_at=self.apply_started_at,
+            reset_assistant_stream=self.reset_assistant_stream,
+            clear_turn_status=self.clear_turn_status,
+            render_turn_status=self.render_turn_status,
+            submit_user_turn=lambda _prompt: submit_operation(),
+            consume_events=self.consume_events,
+            close_turn=self.close_turn,
+            write_error=self.write_error,
+            set_exit_code=self.set_exit_code,
+        )
+
 
 def format_tokens_compact(tokens: int) -> str:
     if tokens >= 1_000_000:

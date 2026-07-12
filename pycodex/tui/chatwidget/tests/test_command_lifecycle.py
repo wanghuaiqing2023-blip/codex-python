@@ -134,7 +134,8 @@ def test_handle_command_execution_started_groups_active_exec_calls_and_suppresse
 
     assert state.status_indicator_visible is True
     assert state.active_exec_cell is not None
-    assert [call.call_id for call in state.active_exec_cell.calls] == ["call-1", "call-2"]
+    assert [call.call_id for call in state.active_exec_cell.calls] == ["call-2"]
+    assert [call.call_id for call in state.history_cells[0].calls] == ["call-1"]
     assert set(state.running_commands) == {"call-1", "call-2"}
 
     state.handle_command_execution_started_now(CommandExecutionItem("wait-1", "bash -lc 'sleep 1'", "unified_exec_interaction"))
@@ -153,7 +154,8 @@ def test_output_delta_updates_recent_chunks_and_active_exec_cell_revision():
 
     assert state.unified_exec_processes[0].recent_chunks == ["first", "second"]
     assert state.active_exec_cell is not None
-    assert state.active_exec_cell.calls[0].output_deltas == ["first\nsecond\n"]
+    assert state.active_exec_cell.calls[0].output is not None
+    assert state.active_exec_cell.calls[0].output.aggregated_output == "first\nsecond\n"
     assert state.active_cell_revision == 2
     assert state.redraw_requested is True
 
@@ -174,7 +176,7 @@ def test_completion_flushes_tracked_active_cell_and_marks_user_shell_work():
     assert cell.calls[0].output is not None
     assert cell.calls[0].output.exit_code == 7
     assert cell.calls[0].output.aggregated_output == "done"
-    assert cell.calls[0].duration_ms == 12
+    assert cell.calls[0].duration == 0.012
     assert state.had_work_activity is True
     assert state.queued_input_sent is True
 
@@ -192,7 +194,6 @@ def test_completion_for_unknown_call_preserves_unrelated_active_exec_as_orphan_h
     assert len(state.history_cells) == 1
     orphan = state.history_cells[0]
     assert isinstance(orphan, SemanticExecCell)
-    assert orphan.inserted_as_orphan is True
     assert orphan.calls[0].call_id == "orphan"
     assert orphan.calls[0].output is not None
     assert orphan.calls[0].output.formatted_output == "done"

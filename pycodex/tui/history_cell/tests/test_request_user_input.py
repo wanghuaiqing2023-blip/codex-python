@@ -14,6 +14,7 @@ def texts(lines):
     return [line_text(line) for line in lines]
 
 
+# Rust source: codex/codex-rs/tui/src/history_cell/request_user_input.rs
 def test_split_answer_separates_options_from_last_user_note() -> None:
     options, note = split_request_user_input_answer(
         ToolRequestUserInputAnswer(("A", "user_note: first", "B", "user_note: final"))

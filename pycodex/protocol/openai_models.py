@@ -519,6 +519,8 @@ def effort_rank(effort: ReasoningEffort) -> int:
         ReasoningEffort.MEDIUM: 3,
         ReasoningEffort.HIGH: 4,
         ReasoningEffort.XHIGH: 5,
+        ReasoningEffort.MAX: 6,
+        ReasoningEffort.ULTRA: 7,
     }[effort]
 
 

@@ -225,6 +225,8 @@ def test_small_helpers_match_rust_literals() -> None:
     assert auto_model_order("codex-auto-thorough") == 2
     assert auto_model_order("codex-auto-weird") == 3
     assert reasoning_effort_label(ReasoningEffortConfig.XHigh) == "Extra high"
+    assert reasoning_effort_label(ReasoningEffortConfig.Max) == "Max"
+    assert reasoning_effort_label(ReasoningEffortConfig.Ultra) == "Ultra"
     assert custom_openai_base_url(ModelPopupContext(current_model="x", custom_base_url=" https://example.test/ ")) == "https://example.test/"
     assert custom_openai_base_url(ModelPopupContext(current_model="x", custom_base_url="https://api.openai.com/v1/")) is None
 
@@ -284,6 +286,8 @@ def test_terminal_model_preset_from_runtime_handles_string_and_reasoning_aliases
     # ModelPreset values before the ListSelectionView is created.
     assert terminal_coerce_reasoning_effort("extra-high") is None
     assert terminal_coerce_reasoning_effort("xhigh") is ReasoningEffortConfig.XHigh
+    assert terminal_coerce_reasoning_effort("max") is ReasoningEffortConfig.Max
+    assert terminal_coerce_reasoning_effort("ultra") is ReasoningEffortConfig.Ultra
 
     preset = terminal_model_preset_from_runtime("gpt-test", "gpt-test")
 
@@ -291,6 +295,67 @@ def test_terminal_model_preset_from_runtime_handles_string_and_reasoning_aliases
     assert preset.default_reasoning_effort is ReasoningEffortConfig.Medium
     assert preset.supported_reasoning_efforts[0].effort is ReasoningEffortConfig.Medium
     assert preset.is_default
+
+
+def test_terminal_model_preset_projects_gpt_5_6_reasoning_catalog() -> None:
+    # Rust owner: chatwidget::model_popups. The picker consumes model-manager
+    # metadata generically; GPT-5.6 must not require a command-specific branch.
+    preset = terminal_model_preset_from_runtime(
+        SimpleNamespace(
+            model="gpt-5.6-sol",
+            default_reasoning_effort="low",
+            supported_reasoning_efforts=(
+                SimpleNamespace(effort="low", description="Fast"),
+                SimpleNamespace(effort="max", description="Maximum reasoning"),
+                SimpleNamespace(effort="ultra", description="Automatic delegation"),
+            ),
+        ),
+        "gpt-5.5",
+    )
+
+    assert preset.model == "gpt-5.6-sol"
+    assert [item.effort for item in preset.supported_reasoning_efforts] == [
+        ReasoningEffortConfig.Low,
+        ReasoningEffortConfig.Max,
+        ReasoningEffortConfig.Ultra,
+    ]
+    result = open_reasoning_popup(ModelPopupContext(current_model="gpt-5.5"), preset)
+    assert result.view is not None
+    assert [item.name for item in result.view.items] == ["Low (default)", "Max", "Ultra"]
+
+
+def test_terminal_model_popup_controller_lists_gpt_5_6_from_models_manager() -> None:
+    # Rust owners: codex-models-manager::manager supplies the refreshed model
+    # catalog and chatwidget::model_popups projects every visible preset into
+    # the shared SelectionView. The /model path must not fall back to bundled
+    # GPT-5.5 merely because newer reasoning values appear in the catalog.
+    runtime = SimpleNamespace(
+        session_config=SimpleNamespace(model="gpt-5.5", model_reasoning_effort="medium"),
+        list_models=lambda _strategy: (
+            SimpleNamespace(
+                model="gpt-5.5",
+                default_reasoning_effort="medium",
+                supported_reasoning_efforts=(SimpleNamespace(effort="medium"),),
+                show_in_picker=True,
+            ),
+            SimpleNamespace(
+                model="gpt-5.6-sol",
+                default_reasoning_effort="low",
+                supported_reasoning_efforts=(
+                    SimpleNamespace(effort="low"),
+                    SimpleNamespace(effort="max"),
+                    SimpleNamespace(effort="ultra"),
+                ),
+                show_in_picker=True,
+            ),
+        ),
+    )
+    app_runtime = SimpleNamespace(active_thread_runtime=runtime, handle_app_event=lambda _event: None)
+
+    view = TerminalModelPopupController(app_runtime).open_view()
+
+    assert view is not None
+    assert [item.name for item in view.items] == ["gpt-5.5", "gpt-5.6-sol"]
 
 
 def test_terminal_apply_model_popup_events_dispatches_model_and_effort_app_events() -> None:

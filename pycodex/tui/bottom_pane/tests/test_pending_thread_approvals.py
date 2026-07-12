@@ -1,5 +1,7 @@
 """Parity tests for Rust ``codex-tui::bottom_pane::pending_thread_approvals``."""
 
+# Rust source: codex/codex-rs/tui/src/bottom_pane/pending_thread_approvals.rs
+
 from pycodex.tui.bottom_pane.pending_thread_approvals import (
     PendingThreadApprovals,
     Rect,

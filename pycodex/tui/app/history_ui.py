@@ -11,7 +11,6 @@ from typing import Any, Callable, List, Optional, TextIO, Tuple
 
 from .._porting import RustTuiModule
 from ..custom_terminal import clear_scrollback_and_visible_screen_ansi
-from ..history_cell.messages import TerminalAssistantStreamState
 from ..history_cell.session import SessionHeaderHistoryCell, line_text
 from ..insert_history import TerminalHistoryState
 from ..ratatui_bridge import Rect
@@ -51,13 +50,22 @@ class TerminalSessionHeaderWriter:
     app_runtime: Any
     write_history_cell: Callable[[str], Any]
     width: int = 100
+    write_source_cell: Callable[[object], Any] | None = None
 
     def write(self) -> TerminalSessionHeaderData:
-        return run_terminal_session_header_from_runtime(
+        data = terminal_session_header_data_from_runtime(
             self.app_runtime,
-            write_history_cell=self.write_history_cell,
-            width=self.width,
+            display_version=_terminal_runtime_display_version,
+            display_model=_terminal_runtime_display_model,
+            reasoning_effort=_terminal_runtime_reasoning_effort,
+            show_fast_status=_terminal_runtime_show_fast_status,
+            yolo_mode=_terminal_runtime_yolo_mode,
         )
+        if self.write_source_cell is not None:
+            self.write_source_cell(terminal_session_header_cell(data))
+        else:
+            self.write_history_cell(terminal_session_header_text(data, self.width))
+        return data
 
 
 @dataclass
@@ -188,7 +196,6 @@ class TerminalClearState:
     history_has_content: bool = False
     history_ended_with_blank: bool = False
     history_projection_cells: Tuple[str, ...] = ()
-    assistant_stream_text: str = ""
     resize_reflow_pending: bool = False
 
 
@@ -197,7 +204,6 @@ class TerminalClearApplicationState:
     """Concrete terminal scrollback state after applying app clear semantics."""
 
     history_state: TerminalHistoryState
-    assistant_stream: TerminalAssistantStreamState
     resize_reflow_pending: bool
 
 
@@ -214,7 +220,7 @@ class TerminalClearUiExecutor:
     clear_terminal: Callable[[], Any]
     flush_terminal: Callable[[], Any]
     apply_history_state: Callable[[TerminalHistoryState], Any]
-    apply_assistant_stream_state: Callable[[TerminalAssistantStreamState], Any]
+    reset_assistant_stream: Callable[[], Any]
     apply_resize_pending: Callable[[bool], Any]
     render_header: Callable[[], Any]
     activate_layout: Callable[[], Any]
@@ -227,7 +233,7 @@ class TerminalClearUiExecutor:
         writer: TextIO,
         deactivate_layout: Callable[[], Any],
         apply_history_state: Callable[[TerminalHistoryState], Any],
-        apply_assistant_stream_state: Callable[[TerminalAssistantStreamState], Any],
+        reset_assistant_stream: Callable[[], Any],
         apply_resize_pending: Callable[[bool], Any],
         write_history_cell: Callable[[str], Any],
         activate_layout: Callable[[], Any],
@@ -245,7 +251,7 @@ class TerminalClearUiExecutor:
             clear_terminal=lambda: clear_scrollback_and_visible_screen_ansi(writer),
             flush_terminal=writer.flush,
             apply_history_state=apply_history_state,
-            apply_assistant_stream_state=apply_assistant_stream_state,
+            reset_assistant_stream=reset_assistant_stream,
             apply_resize_pending=apply_resize_pending,
             render_header=header_writer.write,
             activate_layout=activate_layout,
@@ -259,7 +265,7 @@ class TerminalClearUiExecutor:
             apply_clear_state=lambda state: run_terminal_clear_application_state(
                 state,
                 apply_history_state=self.apply_history_state,
-                apply_assistant_stream_state=self.apply_assistant_stream_state,
+                reset_assistant_stream=self.reset_assistant_stream,
                 apply_resize_pending=self.apply_resize_pending,
             ),
             render_header=self.render_header,
@@ -320,14 +326,48 @@ def terminal_session_header_lines(
 
     if int(width) <= 0:
         return ()
-    cell = SessionHeaderHistoryCell.new(
+    cell = terminal_session_header_cell(data)
+    return tuple(line_text(line) for line in cell.display_lines(int(width)))
+
+
+def terminal_session_header_cell(data: TerminalSessionHeaderData) -> SessionHeaderHistoryCell:
+    return SessionHeaderHistoryCell.new(
         data.model,
         data.reasoning_effort,
         data.show_fast_status,
         data.directory,
         data.version,
     ).with_yolo_mode(data.yolo_mode)
-    return tuple(line_text(line) for line in cell.display_lines(int(width)))
+
+
+def _terminal_runtime_display_version() -> str:
+    from ..runtime_projection import _display_version
+
+    return _display_version()
+
+
+def _terminal_runtime_display_model(app_runtime: Any) -> str:
+    from ..runtime_projection import _runtime_display_model
+
+    return _runtime_display_model(app_runtime)
+
+
+def _terminal_runtime_reasoning_effort(app_runtime: Any) -> Any | None:
+    from ..runtime_projection import _runtime_header_reasoning_effort
+
+    return _runtime_header_reasoning_effort(app_runtime)
+
+
+def _terminal_runtime_show_fast_status(app_runtime: Any) -> bool:
+    from ..runtime_projection import _runtime_show_fast_status
+
+    return _runtime_show_fast_status(app_runtime)
+
+
+def _terminal_runtime_yolo_mode(app_runtime: Any) -> bool:
+    from ..runtime_projection import _runtime_header_yolo_mode
+
+    return _runtime_header_yolo_mode(app_runtime)
 
 
 def terminal_session_header_text(
@@ -475,7 +515,6 @@ def terminal_clear_application_state(state: TerminalClearState) -> TerminalClear
             history_ended_with_blank=state.history_ended_with_blank,
             projection_cells=tuple(state.history_projection_cells),
         ),
-        assistant_stream=TerminalAssistantStreamState.inactive(state.assistant_stream_text),
         resize_reflow_pending=state.resize_reflow_pending,
     )
 
@@ -484,14 +523,14 @@ def run_terminal_clear_application_state(
     state: TerminalClearState,
     *,
     apply_history_state: Callable[[TerminalHistoryState], Any],
-    apply_assistant_stream_state: Callable[[TerminalAssistantStreamState], Any],
+    reset_assistant_stream: Callable[[], Any],
     apply_resize_pending: Callable[[bool], Any],
 ) -> TerminalClearApplicationState:
     """Apply terminal scrollback state reset through app-owned clear semantics."""
 
     applied = terminal_clear_application_state(state)
     apply_history_state(applied.history_state)
-    apply_assistant_stream_state(applied.assistant_stream)
+    reset_assistant_stream()
     apply_resize_pending(applied.resize_reflow_pending)
     return applied
 

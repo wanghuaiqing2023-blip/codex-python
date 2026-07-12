@@ -38,6 +38,7 @@
     replay_terminal_history_projection_cells_for_width,
     replay_terminal_history_scrollback_for_resize,
     replay_terminal_history_scrollback_for_resize_width,
+    render_terminal_typed_transcript_lines,
     replay_terminal_history_state_scrollback_for_resize_width,
     render_transcript_lines_for_reflow,
     reflow_transcript_now,
@@ -65,6 +66,7 @@
 from pycodex.tui.bottom_pane.terminal_footprint import TerminalBottomPaneFootprint
 from pycodex.tui.chatwidget.status_surfaces import TerminalLiveStatusSurface
 from pycodex.tui.insert_history import TerminalHistoryState
+from pycodex.tui.history_cell.messages import AgentMarkdownCell, new_user_prompt
 
 import os
 from io import StringIO
@@ -1037,6 +1039,40 @@ def test_maybe_finish_stream_reflow_disabled_clears_transcript_reflow_state() ->
     assert not state.transcript_reflow.take_stream_finish_reflow_needed()
 
 
+def test_typed_transcript_reflow_rerenders_markdown_source_for_current_width() -> None:
+    # Fixed Rust owner/evidence: app::resize_reflow replays canonical
+    # HistoryCell values; AgentMarkdownCell renders raw source at each width.
+    cell = AgentMarkdownCell.new(
+        "A long agent message that must wrap differently after a resize.\n",
+        ".",
+    )
+
+    wide = render_terminal_typed_transcript_lines([cell], 80)
+    narrow = render_terminal_typed_transcript_lines([cell], 24)
+
+    assert wide[0].startswith("\u2022 ")
+    assert len(narrow) > len(wide)
+    assert "".join(line.strip("\u2022 ") for line in narrow) != ""
+
+
+def test_typed_transcript_keeps_rust_user_to_assistant_spacing() -> None:
+    # Fixed Rust baseline 1c7832f:
+    # - history_cell::messages::UserHistoryCell supplies its trailing blank.
+    # - app::resize_reflow inserts one separator before the next non-stream
+    #   continuation HistoryCell. Together they produce two blank rows.
+    lines = render_terminal_typed_transcript_lines(
+        [
+            new_user_prompt("hello"),
+            AgentMarkdownCell.new("answer", "."),
+        ],
+        80,
+    )
+
+    user_row = lines.index("\u203a hello")
+    assistant_row = lines.index("\u2022 answer")
+    assert lines[user_row + 1 : assistant_row] == ["", ""]
+
+
 def test_repaint_terminal_history_viewport_anchors_retained_tail_above_bottom_pane() -> None:
     # Rust source contract:
     # - app::resize_reflow rebuilds the visible history area from retained
@@ -1570,7 +1606,7 @@ def test_plan_terminal_stream_finish_reflow_repairs_deferred_resize_once() -> No
 
     assert repair.action == "replay_history_scrollback"
     assert repair.pending is False
-    assert idle.action == "repaint_history_viewport"
+    assert idle.action == "replay_history_scrollback"
     assert idle.pending is False
 
 
@@ -1729,12 +1765,14 @@ def test_terminal_resize_coordinator_owns_layout_lifecycle_state() -> None:
     coordinator.activate_layout()
     size["value"] = os.terminal_size((100, 30))
     coordinator.check_size_change()
+    coordinator.transcript_reflow.set_due_for_test()
+    coordinator.check_size_change()
     coordinator.deactivate_layout()
 
     assert coordinator.layout_active is False
     assert coordinator.state == TerminalResizeRuntimeState.inactive()
     assert coordinator.pending is False
-    assert calls == ["render", "reset", "replay", "reset"]
+    assert calls == ["render", "reset", "replay", "render", "reset"]
 
 
 def test_terminal_resize_coordinator_exposes_dynamic_layout_active_provider() -> None:
@@ -1785,7 +1823,7 @@ def test_terminal_resize_coordinator_wraps_replay_in_external_repaint_lifecycle(
     )
 
     assert coordinator.run_reflow_plan(TerminalResizeReflowPlan("replay_history_scrollback")) is True
-    assert calls == ["external:start", "replay", "external:end"]
+    assert calls == ["external:start", "replay", "external:end", "render"]
 
 
 def test_terminal_resize_coordinator_defers_stream_resize_until_finish() -> None:
@@ -1811,7 +1849,71 @@ def test_terminal_resize_coordinator_defers_stream_resize_until_finish() -> None
     assert coordinator.layout_active is True
     assert coordinator.state.last_terminal_size == os.terminal_size((100, 30))
     assert coordinator.pending is False
-    assert calls == ["render", "replay"]
+    assert calls == ["render", "reset", "replay", "render"]
+
+
+def test_terminal_resize_coordinator_coalesces_continuous_resize_until_debounce_due() -> None:
+    # Rust owner/source:
+    # codex-tui::app::resize_reflow::handle_draw_size_change and
+    # codex-tui::transcript_reflow::TranscriptReflowState debounce resize bursts
+    # and rebuild once at the final observed geometry.
+    calls: list[str] = []
+    size = {"value": os.terminal_size((80, 24))}
+    coordinator = TerminalResizeCoordinator(
+        terminal_active=lambda: True,
+        current_size=lambda: size["value"],
+        active_stream=lambda: False,
+        reset_terminal_scroll_region=lambda: calls.append("reset"),
+        render_bottom_pane=lambda: calls.append("render"),
+        repaint_history_viewport=lambda: calls.append("repaint"),
+        replay_history_scrollback=lambda: calls.append("replay"),
+    )
+
+    coordinator.activate_layout()
+    for next_size in ((90, 26), (110, 32), (100, 30)):
+        size["value"] = os.terminal_size(next_size)
+        coordinator.check_size_change()
+
+    assert coordinator.pending is True
+    assert calls == ["render"]
+
+    coordinator.transcript_reflow.set_due_for_test()
+    coordinator.check_size_change()
+
+    assert coordinator.pending is False
+    assert coordinator.state.last_terminal_size == os.terminal_size((100, 30))
+    assert coordinator.transcript_reflow.last_reflow_width == 100
+    assert calls == ["render", "reset", "replay", "render"]
+
+
+def test_terminal_resize_coordinator_required_stream_finish_replays_canonical_scrollback() -> None:
+    # Rust owner/source:
+    # codex-tui::app::agent_message_consolidation consolidates the transient
+    # stream. Because Python retains the stream as one mutable live tail, this
+    # is Rust ConsolidationScrollbackReflow::Required and must source-replay.
+    calls: list[str] = []
+
+    def external(repaint):
+        calls.append("external:start")
+        try:
+            return repaint()
+        finally:
+            calls.append("external:end")
+
+    coordinator = TerminalResizeCoordinator(
+        terminal_active=lambda: True,
+        current_size=lambda: os.terminal_size((80, 24)),
+        active_stream=lambda: False,
+        reset_terminal_scroll_region=lambda: calls.append("reset"),
+        render_bottom_pane=lambda: calls.append("render"),
+        repaint_history_viewport=lambda: calls.append("viewport"),
+        replay_history_scrollback=lambda: calls.append("replay"),
+        run_external_repaint=external,
+        render_after_external_repaint=lambda: calls.append("frame"),
+    )
+
+    assert coordinator.run_stream_finish_reflow() is True
+    assert calls == ["reset", "external:start", "replay", "external:end", "frame"]
 
 
 def test_terminal_resize_coordinator_dispatches_bottom_pane_footprint_reflow() -> None:
@@ -1865,36 +1967,6 @@ def test_terminal_resize_history_replayer_repaints_viewport_from_live_state() ->
     assert "\x1b[1;1Hnew" in writer.getvalue()
 
 
-def test_terminal_resize_history_replayer_repaints_active_stream_projection() -> None:
-    # Rust owner: codex-tui::app::resize_reflow repairs the current viewport
-    # from retained history plus the active assistant stream projection while
-    # bottom_pane restores ownership of live rows.
-    writer = FlushTrackingStringIO()
-    state = {"history": TerminalHistoryState(projection_cells=("\u203a question",))}
-    calls: list[str] = []
-
-    replayer = TerminalResizeHistoryReplayer(
-        writer,
-        history_state=lambda: state["history"],
-        history_wrap_width=lambda: 40,
-        terminal_active=lambda: True,
-        live_status_footprint_active=lambda: False,
-        history_bottom_row=lambda: 4,
-        terminal_columns=lambda: 40,
-        insert_replayed_history_lines=lambda lines, reserve: calls.append("insert"),
-        apply_history_state=lambda next_state: calls.append("apply"),
-        render_bottom_pane=lambda: calls.append("render"),
-    )
-
-    assert replayer.repaint_viewport("\u2022 partial") is True
-
-    output = writer.getvalue()
-    assert "\u203a question" in output
-    assert "\u2022 partial" in output
-    assert state["history"].projection_cells == ("\u203a question",)
-    assert calls == ["render"]
-
-
 def test_terminal_resize_history_replayer_replays_scrollback_with_status_reservation() -> None:
     # Rust owner: codex-tui::app::resize_reflow owns resize replay ordering:
     # reset stale insert-history markers, clear terminal scrollback, replay
@@ -1927,4 +1999,4 @@ def test_terminal_resize_history_replayer_replays_scrollback_with_status_reserva
     assert applied[0].history_has_content is False
     assert applied[0].history_ended_with_blank is False
     assert applied[0].projection_cells == ("old", "new")
-    assert calls == ["apply", ("insert", ["old", "", "new"], True), "render"]
+    assert calls == ["apply", ("insert", ["old", "", "new"], True)]

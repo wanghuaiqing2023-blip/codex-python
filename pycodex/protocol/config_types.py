@@ -70,6 +70,8 @@ class ReasoningEffort(_StringEnum):
     MEDIUM = "medium"
     HIGH = "high"
     XHIGH = "xhigh"
+    MAX = "max"
+    ULTRA = "ultra"
 
     @classmethod
     def default(cls) -> "ReasoningEffort":

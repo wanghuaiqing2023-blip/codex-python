@@ -1,20 +1,19 @@
 """Command lifecycle semantic helpers for ``codex-tui::chatwidget::command_lifecycle``.
 
 The Rust module coordinates ``ChatWidget`` command execution lifecycle state.
-This Python port models the module-owned state transitions with semantic data
-objects instead of concrete ratatui/history-cell widgets: unified exec process
-tracking, terminal wait streak flushing, active exec-cell grouping, output
-deltas, suppressed duplicate unified waits, orphan completion handling, and
-history insertion boundaries.
+This Python port uses the canonical ``exec_cell::ExecCell`` history model for
+active grouping, output deltas, orphan completion handling, and final history
+insertion, alongside unified-exec process and terminal-wait state.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional, Set, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Union
 
 from .._porting import RustTuiModule
 from ..exec_command import split_command_string, strip_bash_lc_and_escape
+from ..exec_cell import CommandOutput, ExecCall, ExecCell, new_active_exec_command
 from .exec_state import (
     RunningCommand,
     UnifiedExecProcessSummary,
@@ -43,78 +42,8 @@ class UnifiedExecInteractionCell:
     stdin: str = ""
 
 
-@dataclass
-class CommandOutput:
-    exit_code: int
-    formatted_output: str
-    aggregated_output: str
-
-
-@dataclass
-class SemanticExecCall:
-    call_id: str
-    command: List[str]
-    parsed_cmd: List[Any]
-    source: str
-    output: Optional[CommandOutput] = None
-    duration_ms: int = 0
-    output_deltas: List[str] = field(default_factory=list)
-
-    @property
-    def is_active(self) -> bool:
-        return self.output is None
-
-
-@dataclass
-class SemanticExecCell:
-    calls: List[SemanticExecCall] = field(default_factory=list)
-    inserted_as_orphan: bool = False
-
-    @classmethod
-    def new(
-        cls,
-        call_id: str,
-        command: List[str],
-        parsed_cmd: List[Any],
-        source: str,
-    ) -> "SemanticExecCell":
-        return cls([SemanticExecCall(call_id, list(command), list(parsed_cmd), source)])
-
-    def contains_call(self, call_id: str) -> bool:
-        return any(call.call_id == call_id for call in self.calls)
-
-    def is_active(self) -> bool:
-        return any(call.is_active for call in self.calls)
-
-    def with_added_call(
-        self,
-        call_id: str,
-        command: List[str],
-        parsed_cmd: List[Any],
-        source: str,
-    ) -> bool:
-        if not self.is_active() or self.contains_call(call_id):
-            return False
-        self.calls.append(SemanticExecCall(call_id, list(command), list(parsed_cmd), source))
-        return True
-
-    def append_output(self, call_id: str, delta: str) -> bool:
-        for call in self.calls:
-            if call.call_id == call_id and call.is_active:
-                call.output_deltas.append(delta)
-                return True
-        return False
-
-    def complete_call(self, call_id: str, output: CommandOutput, duration_ms: int) -> bool:
-        for call in self.calls:
-            if call.call_id == call_id:
-                call.output = output
-                call.duration_ms = max(0, int(duration_ms))
-                return True
-        return False
-
-    def should_flush(self) -> bool:
-        return not self.is_active()
+SemanticExecCall = ExecCall
+SemanticExecCell = ExecCell
 
 
 @dataclass
@@ -139,8 +68,8 @@ class CommandLifecycleState:
     running_commands: Dict[str, RunningCommand] = field(default_factory=dict)
     suppressed_exec_calls: Set[str] = field(default_factory=set)
     last_unified_wait: Optional[UnifiedExecWaitState] = None
-    active_exec_cell: Optional[SemanticExecCell] = None
-    history_cells: List[Union[SemanticExecCell, UnifiedExecInteractionCell]] = field(default_factory=list)
+    active_exec_cell: Optional[ExecCell] = None
+    history_cells: List[Union[ExecCell, UnifiedExecInteractionCell]] = field(default_factory=list)
     status_indicator_visible: bool = False
     interrupt_hint_visible: bool = False
     terminal_title_status_kind: Optional[str] = None
@@ -151,6 +80,21 @@ class CommandLifecycleState:
     answer_stream_flushes: int = 0
     had_work_activity: bool = False
     queued_input_sent: bool = False
+    insert_history_cell: Optional[Callable[[object], Any]] = None
+    set_active_cell: Optional[Callable[[object | None], Any]] = None
+    redraw_sink: Optional[Callable[[], Any]] = None
+
+    def bind_history_projection(
+        self,
+        *,
+        insert_cell: Callable[[object], Any],
+        set_active_cell: Callable[[object | None], Any],
+        request_redraw: Callable[[], Any],
+    ) -> None:
+        self.insert_history_cell = insert_cell
+        self.set_active_cell = set_active_cell
+        self.redraw_sink = request_redraw
+        self._publish_active_cell()
 
     def flush_unified_exec_wait_streak(self) -> Optional[UnifiedExecInteractionCell]:
         wait = self.unified_exec_wait_streak
@@ -260,6 +204,7 @@ class CommandLifecycleState:
             return False
         if self.active_exec_cell.append_output(call_id, delta):
             self.bump_active_cell_revision()
+            self._publish_active_cell()
             self.request_redraw()
             return True
         return False
@@ -300,19 +245,28 @@ class CommandLifecycleState:
             self.suppressed_exec_calls.add(item.id)
             return
 
-        if self.active_exec_cell is not None and self.active_exec_cell.with_added_call(item.id, command, parsed_cmd, source):
+        grouped = (
+            self.active_exec_cell.with_added_call(item.id, command, parsed_cmd, source)
+            if self.active_exec_cell is not None
+            else None
+        )
+        if grouped is not None:
+            self.active_exec_cell = grouped
             self.bump_active_cell_revision()
         else:
             self.flush_active_cell()
-            self.active_exec_cell = SemanticExecCell.new(item.id, command, parsed_cmd, source)
+            self.active_exec_cell = new_active_exec_command(
+                item.id, command, parsed_cmd, source, None, False
+            )
             self.bump_active_cell_revision()
+        self._publish_active_cell()
         self.request_redraw()
 
     def handle_command_execution_completed_now(self, item: Union[CommandExecutionItem, Dict[str, Any]]) -> None:
         item = coerce_command_execution_item(item)
         event_command = split_command_string(item.command)
         event_parsed = list(command_execution_command_and_parsed(item.command, item.command_actions)[1])
-        duration_ms = max(0, int(item.duration_ms or 0))
+        duration = max(0, int(item.duration_ms or 0)) / 1000.0
         exit_code = int(item.exit_code or 0)
         aggregated_output = item.aggregated_output or ""
 
@@ -332,32 +286,37 @@ class CommandLifecycleState:
         is_unified_exec_interaction = source == UNIFIED_EXEC_INTERACTION_SOURCE
         is_user_shell = source == USER_SHELL_SOURCE
         if is_unified_exec_interaction:
-            output = CommandOutput(exit_code, "", "")
+            output = CommandOutput(exit_code=exit_code, formatted_output="", aggregated_output="")
         else:
-            output = CommandOutput(exit_code, aggregated_output, aggregated_output)
+            output = CommandOutput(
+                exit_code=exit_code,
+                formatted_output=aggregated_output,
+                aggregated_output=aggregated_output,
+            )
 
         if self.active_exec_cell is not None and self.active_exec_cell.contains_call(item.id):
-            self.active_exec_cell.complete_call(item.id, output, duration_ms)
+            self.active_exec_cell.complete_call(item.id, output, duration)
             if self.active_exec_cell.should_flush():
                 self.flush_active_cell()
             else:
                 self.bump_active_cell_revision()
+                self._publish_active_cell()
                 self.request_redraw()
         elif self.active_exec_cell is not None and self.active_exec_cell.is_active():
-            orphan = SemanticExecCell.new(item.id, command, parsed, source)
-            orphan.inserted_as_orphan = True
-            orphan.complete_call(item.id, output, duration_ms)
-            self.history_cells.append(orphan)
+            orphan = new_active_exec_command(item.id, command, parsed, source, None, False)
+            orphan.complete_call(item.id, output, duration)
+            self._insert_history_cell(orphan)
             self.request_redraw()
         else:
             self.flush_active_cell()
-            cell = SemanticExecCell.new(item.id, command, parsed, source)
-            cell.complete_call(item.id, output, duration_ms)
+            cell = new_active_exec_command(item.id, command, parsed, source, None, False)
+            cell.complete_call(item.id, output, duration)
             if cell.should_flush():
-                self.history_cells.append(cell)
+                self._insert_history_cell(cell)
             else:
                 self.active_exec_cell = cell
                 self.bump_active_cell_revision()
+                self._publish_active_cell()
                 self.request_redraw()
 
         self.had_work_activity = True
@@ -366,8 +325,10 @@ class CommandLifecycleState:
 
     def flush_active_cell(self) -> None:
         if self.active_exec_cell is not None:
-            self.history_cells.append(self.active_exec_cell)
+            cell = self.active_exec_cell
             self.active_exec_cell = None
+            self._publish_active_cell()
+            self._insert_history_cell(cell)
 
     def ensure_status_indicator(self) -> None:
         self.status_indicator_visible = True
@@ -380,6 +341,18 @@ class CommandLifecycleState:
 
     def request_redraw(self) -> None:
         self.redraw_requested = True
+        if self.redraw_sink is not None:
+            self.redraw_sink()
+
+    def _insert_history_cell(self, cell: object) -> None:
+        if self.insert_history_cell is None:
+            self.history_cells.append(cell)
+            return
+        self.insert_history_cell(cell)
+
+    def _publish_active_cell(self) -> None:
+        if self.set_active_cell is not None:
+            self.set_active_cell(self.active_exec_cell)
 
 
 def command_display_from_raw(command: str) -> str:

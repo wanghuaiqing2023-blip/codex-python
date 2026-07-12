@@ -38,6 +38,7 @@ def request(*questions):
     return {"questions": list(questions)}
 
 
+# Rust source: codex/codex-rs/tui/src/bottom_pane/request_user_input/mod.rs
 def test_constants_and_focus_variants_match_rust_visible_copy():
     assert NOTES_PLACEHOLDER == "Add notes"
     assert ANSWER_PLACEHOLDER == "Type your answer (optional)"

@@ -370,3 +370,4 @@ def test_handle_key_event_backtab_cycles_collaboration_otherwise_composer_handle
     handle_key_event(widget, KeyEvent("enter"))
     assert ("handle_key_event", KeyEvent("enter")) in widget.bottom_pane.events
     assert ("handle_composer_input_result", None, False) in widget.events
+"""Rust source: codex/codex-rs/tui/src/chatwidget/interaction.rs."""

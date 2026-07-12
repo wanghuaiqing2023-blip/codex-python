@@ -23,6 +23,20 @@ def test_render_markdown_text_wraps_plain_text_when_width_provided() -> None:
     assert lines_to_strings(rendered) == ["alpha beta", "gamma"]
 
 
+def test_intraword_underscores_remain_visible_like_pulldown_cmark() -> None:
+    # Rust owner: codex-tui::markdown_render delegates inline parsing to
+    # pulldown-cmark/CommonMark, where intraword underscores are literal.
+    rendered = render_markdown_text("PYCODEX_EXEC_DONE")
+
+    assert lines_to_strings(rendered) == ["PYCODEX_EXEC_DONE"]
+
+
+def test_render_markdown_soft_break_and_heading_marker_match_rust() -> None:
+    # Rust source: codex-tui::markdown_render_tests::{paragraph_soft_break,headings}
+    assert lines_to_strings(render_markdown_text("Hello\nWorld")) == ["Hello", "World"]
+    assert lines_to_strings(render_markdown_text("## Heading")) == ["## Heading"]
+
+
 def test_render_markdown_text_preserves_list_and_blockquote_indents() -> None:
     # Rust source: codex-tui::markdown_render.rs
     # Rust tests: wraps_list_items_preserving_indent, wraps_blockquotes

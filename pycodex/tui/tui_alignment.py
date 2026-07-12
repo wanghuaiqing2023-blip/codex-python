@@ -11,6 +11,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+RUST_CODEX_BASELINE_COMMIT = "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+
+
 @dataclass(frozen=True)
 class AdapterResponsibility:
     """One Rust-owned responsibility implemented by a Python adapter."""
@@ -20,6 +23,7 @@ class AdapterResponsibility:
     rust_source: str
     python_tests: tuple[str, ...]
     description: str
+    rust_commit: str = RUST_CODEX_BASELINE_COMMIT
 
 
 @dataclass(frozen=True)
@@ -33,6 +37,7 @@ class TuiAlignmentEntry:
     role: str = "direct"
     notes: str = ""
     responsibilities: tuple[AdapterResponsibility, ...] = ()
+    rust_commit: str = RUST_CODEX_BASELINE_COMMIT
 
 
 @dataclass(frozen=True)
@@ -52,6 +57,7 @@ class TuiModuleOwner:
     python_tests: tuple[str, ...]
     role: str = "direct"
     notes: str = ""
+    rust_commit: str = RUST_CODEX_BASELINE_COMMIT
 
 
 TUI_ALIGNMENT_ENTRIES: tuple[TuiAlignmentEntry, ...] = (
@@ -515,13 +521,15 @@ TUI_ALIGNMENT_ENTRIES: tuple[TuiAlignmentEntry, ...] = (
                 python_tests=(
                     "pycodex/tui/bottom_pane/tests/test_terminal_controller.py",
                     "pycodex/tui/bottom_pane/tests/test_bottom_pane_view.py",
+                    "pycodex/tui/bottom_pane/tests/test_view_stack.py",
                 ),
                 description=(
                     "Terminal adapter holds the bottom-pane view-state object but "
                     "receives command-view factory and selection-event callbacks "
                     "through bottom_pane.view_stack's owner boundary and delegates "
                     "stack replacement, command-popup suppression, active-view "
-                    "input precedence, and completion semantics to "
+                    "input precedence, completion semantics, approval request "
+                    "consumption, and resolved-request dismissal to "
                     "bottom_pane.view_stack while concrete command view creation "
                     "stays with chatwidget owners and ListSelectionView owns row "
                     "state."
@@ -579,6 +587,28 @@ TUI_ALIGNMENT_ENTRIES: tuple[TuiAlignmentEntry, ...] = (
         notes="Runtime use from tui.rs is a validation path, not a second owner.",
     ),
     TuiAlignmentEntry(
+        python_module="pycodex/tui/app/agent_message_consolidation.py",
+        rust_modules=("codex-tui::app::agent_message_consolidation",),
+        rust_sources=("codex/codex-rs/tui/src/app/agent_message_consolidation.rs",),
+        python_tests=("pycodex/tui/app/tests/test_agent_message_consolidation.py",),
+        notes=(
+            "Owns replacement of trailing streamed AgentMessageCell values with "
+            "one source-backed AgentMarkdownCell and selects the Rust consolidation "
+            "reflow boundary."
+        ),
+    ),
+    TuiAlignmentEntry(
+        python_module="pycodex/tui/chatwidget/streaming.py",
+        rust_modules=("codex-tui::chatwidget::streaming",),
+        rust_sources=("codex/codex-rs/tui/src/chatwidget/streaming.rs",),
+        python_tests=("pycodex/tui/chatwidget/tests/test_streaming.py",),
+        notes=(
+            "Owns the product StreamController lifecycle: AgentMessageDelta, "
+            "commit ticks, stable history cells, mutable frame tail, and completion "
+            "dispatch to app::agent_message_consolidation."
+        ),
+    ),
+    TuiAlignmentEntry(
         python_module="pycodex/tui/custom_terminal.py",
         rust_modules=("codex-tui::custom_terminal",),
         rust_sources=("codex/codex-rs/tui/src/custom_terminal.rs",),
@@ -601,9 +631,10 @@ TUI_ALIGNMENT_ENTRIES: tuple[TuiAlignmentEntry, ...] = (
         rust_sources=("codex/codex-rs/tui/src/history_cell/messages.rs",),
         python_tests=("pycodex/tui/history_cell/tests/test_messages.py",),
         notes=(
-            "Owns terminal user-prompt scrollback text plus assistant stream "
-            "history-cell projection. terminal_runtime binds the owner writer "
-            "instead of assembling prompt output callbacks at the submit site."
+            "Owns source-backed user, stable assistant, streaming-tail, and "
+            "consolidated Markdown history cells. Product streaming state belongs "
+            "to chatwidget::streaming; this module contains no terminal-only "
+            "string delta or finalized projection model."
         ),
     ),
     TuiAlignmentEntry(
@@ -617,10 +648,182 @@ TUI_ALIGNMENT_ENTRIES: tuple[TuiAlignmentEntry, ...] = (
             "product path."
         ),
     ),
+    TuiAlignmentEntry(
+        python_module="pycodex/tui/chatwidget/protocol_requests.py",
+        rust_modules=("codex-tui::chatwidget::protocol_requests",),
+        rust_sources=("codex/codex-rs/tui/src/chatwidget/protocol_requests.rs",),
+        python_tests=("pycodex/tui/chatwidget/tests/test_protocol_requests.py",),
+    ),
+    TuiAlignmentEntry(
+        python_module="pycodex/tui/chatwidget/tool_requests.py",
+        rust_modules=("codex-tui::chatwidget::tool_requests",),
+        rust_sources=("codex/codex-rs/tui/src/chatwidget/tool_requests.rs",),
+        python_tests=("pycodex/tui/chatwidget/tests/test_tool_requests.py",),
+    ),
+    TuiAlignmentEntry(
+        python_module="pycodex/tui/bottom_pane/approval_overlay.py",
+        rust_modules=("codex-tui::bottom_pane::approval_overlay",),
+        rust_sources=("codex/codex-rs/tui/src/bottom_pane/approval_overlay.rs",),
+        python_tests=("pycodex/tui/bottom_pane/tests/test_approval_overlay.py",),
+    ),
+    TuiAlignmentEntry(
+        python_module="pycodex/tui/bottom_pane/request_user_input/__init__.py",
+        rust_modules=("codex-tui::bottom_pane::request_user_input",),
+        rust_sources=("codex/codex-rs/tui/src/bottom_pane/request_user_input/mod.rs",),
+        python_tests=("pycodex/tui/bottom_pane/tests/test_request_user_input_mod.py",),
+    ),
+    TuiAlignmentEntry(
+        python_module="pycodex/tui/bottom_pane/mcp_server_elicitation.py",
+        rust_modules=("codex-tui::bottom_pane::mcp_server_elicitation",),
+        rust_sources=("codex/codex-rs/tui/src/bottom_pane/mcp_server_elicitation.rs",),
+        python_tests=("pycodex/tui/bottom_pane/tests/test_mcp_server_elicitation.py",),
+    ),
+    TuiAlignmentEntry(
+        python_module="pycodex/tui/app/app_server_requests.py",
+        rust_modules=("codex-tui::app::app_server_requests",),
+        rust_sources=("codex/codex-rs/tui/src/app/app_server_requests.rs",),
+        python_tests=("pycodex/tui/app/tests/test_app_server_requests.py",),
+    ),
+    TuiAlignmentEntry(
+        python_module="pycodex/tui/app/pending_interactive_replay.py",
+        rust_modules=("codex-tui::app::pending_interactive_replay",),
+        rust_sources=("codex/codex-rs/tui/src/app/pending_interactive_replay.rs",),
+        python_tests=("pycodex/tui/app/tests/test_pending_interactive_replay.py",),
+    ),
+    TuiAlignmentEntry(
+        python_module="pycodex/tui/history_cell/request_user_input.py",
+        rust_modules=("codex-tui::history_cell::request_user_input",),
+        rust_sources=("codex/codex-rs/tui/src/history_cell/request_user_input.rs",),
+        python_tests=("pycodex/tui/history_cell/tests/test_request_user_input.py",),
+    ),
+    TuiAlignmentEntry(
+        python_module="pycodex/tui/bottom_pane/app_link_view.py",
+        rust_modules=("codex-tui::bottom_pane::app_link_view",),
+        rust_sources=("codex/codex-rs/tui/src/bottom_pane/app_link_view.rs",),
+        python_tests=("pycodex/tui/bottom_pane/tests/test_app_link_view.py",),
+    ),
+    TuiAlignmentEntry(
+        python_module="pycodex/tui/app/app_server_events.py",
+        rust_modules=("codex-tui::app::app_server_events",),
+        rust_sources=("codex/codex-rs/tui/src/app/app_server_events.rs",),
+        python_tests=("pycodex/tui/app/tests/test_app_server_events.py",),
+    ),
+    TuiAlignmentEntry(
+        python_module="pycodex/tui/app/thread_routing.py",
+        rust_modules=("codex-tui::app::thread_routing",),
+        rust_sources=("codex/codex-rs/tui/src/app/thread_routing.rs",),
+        python_tests=("pycodex/tui/app/tests/test_thread_routing.py",),
+        notes=(
+            "Owns inactive-thread request conversion, thread labels, pending "
+            "request routing, and the SelectAgentThread behavior contract."
+        ),
+    ),
+    TuiAlignmentEntry(
+        python_module="pycodex/tui/app/thread_events.py",
+        rust_modules=("codex-tui::app::thread_events",),
+        rust_sources=("codex/codex-rs/tui/src/app/thread_events.rs",),
+        python_tests=("pycodex/tui/app/tests/test_thread_events.py",),
+        notes="Preserves request identity and pending replay state per thread.",
+    ),
+    TuiAlignmentEntry(
+        python_module="pycodex/tui/app/event_dispatch.py",
+        rust_modules=("codex-tui::app::event_dispatch",),
+        rust_sources=("codex/codex-rs/tui/src/app/event_dispatch.rs",),
+        python_tests=("pycodex/tui/app/tests/test_event_dispatch.py",),
+        notes="Owns typed SelectAgentThread and full-screen approval execution.",
+    ),
+    TuiAlignmentEntry(
+        python_module="pycodex/tui/bottom_pane/pending_thread_approvals.py",
+        rust_modules=("codex-tui::bottom_pane::pending_thread_approvals",),
+        rust_sources=(
+            "codex/codex-rs/tui/src/bottom_pane/pending_thread_approvals.rs",
+        ),
+        python_tests=(
+            "pycodex/tui/bottom_pane/tests/test_pending_thread_approvals.py",
+        ),
+    ),
+    TuiAlignmentEntry(
+        python_module="pycodex/tui/app/side.py",
+        rust_modules=("codex-tui::app::side",),
+        rust_sources=("codex/codex-rs/tui/src/app/side.rs",),
+        python_tests=("pycodex/tui/app/tests/test_side.py",),
+    ),
+    TuiAlignmentEntry(
+        python_module="pycodex/tui/app/platform_actions.py",
+        rust_modules=("codex-tui::app::platform_actions",),
+        rust_sources=("codex/codex-rs/tui/src/app/platform_actions.rs",),
+        python_tests=("pycodex/tui/app/tests/test_platform_actions.py",),
+    ),
+    TuiAlignmentEntry(
+        python_module="pycodex/tui/chatwidget/interaction.py",
+        rust_modules=("codex-tui::chatwidget::interaction",),
+        rust_sources=("codex/codex-rs/tui/src/chatwidget/interaction.rs",),
+        python_tests=("pycodex/tui/chatwidget/tests/test_interaction.py",),
+    ),
 )
 
 
 TUI_MODULE_OWNERS: tuple[TuiModuleOwner, ...] = (
+    TuiModuleOwner(
+        python_owner="pycodex/tui/app/app_server_events.py",
+        rust_module="codex-tui::app::app_server_events",
+        rust_source="codex/codex-rs/tui/src/app/app_server_events.rs",
+        implementation_files=("pycodex/tui/app/app_server_events.py",),
+        python_tests=("pycodex/tui/app/tests/test_app_server_events.py",),
+    ),
+    TuiModuleOwner(
+        python_owner="pycodex/tui/app/thread_routing.py",
+        rust_module="codex-tui::app::thread_routing",
+        rust_source="codex/codex-rs/tui/src/app/thread_routing.rs",
+        implementation_files=("pycodex/tui/app/thread_routing.py",),
+        python_tests=("pycodex/tui/app/tests/test_thread_routing.py",),
+    ),
+    TuiModuleOwner(
+        python_owner="pycodex/tui/app/thread_events.py",
+        rust_module="codex-tui::app::thread_events",
+        rust_source="codex/codex-rs/tui/src/app/thread_events.rs",
+        implementation_files=("pycodex/tui/app/thread_events.py",),
+        python_tests=("pycodex/tui/app/tests/test_thread_events.py",),
+    ),
+    TuiModuleOwner(
+        python_owner="pycodex/tui/app/event_dispatch.py",
+        rust_module="codex-tui::app::event_dispatch",
+        rust_source="codex/codex-rs/tui/src/app/event_dispatch.rs",
+        implementation_files=("pycodex/tui/app/event_dispatch.py",),
+        python_tests=("pycodex/tui/app/tests/test_event_dispatch.py",),
+    ),
+    TuiModuleOwner(
+        python_owner="pycodex/tui/bottom_pane/pending_thread_approvals.py",
+        rust_module="codex-tui::bottom_pane::pending_thread_approvals",
+        rust_source="codex/codex-rs/tui/src/bottom_pane/pending_thread_approvals.rs",
+        implementation_files=(
+            "pycodex/tui/bottom_pane/pending_thread_approvals.py",
+        ),
+        python_tests=(
+            "pycodex/tui/bottom_pane/tests/test_pending_thread_approvals.py",
+        ),
+    ),
+    TuiModuleOwner(
+        python_owner="pycodex/tui/app/side.py",
+        rust_module="codex-tui::app::side",
+        rust_source="codex/codex-rs/tui/src/app/side.rs",
+        implementation_files=("pycodex/tui/app/side.py",),
+        python_tests=("pycodex/tui/app/tests/test_side.py",),
+    ),
+    TuiModuleOwner(
+        python_owner="pycodex/tui/app/platform_actions.py",
+        rust_module="codex-tui::app::platform_actions",
+        rust_source="codex/codex-rs/tui/src/app/platform_actions.rs",
+        implementation_files=("pycodex/tui/app/platform_actions.py",),
+        python_tests=("pycodex/tui/app/tests/test_platform_actions.py",),
+    ),
+    TuiModuleOwner(
+        python_owner="pycodex/tui/chatwidget/interaction.py",
+        rust_module="codex-tui::chatwidget::interaction",
+        rust_source="codex/codex-rs/tui/src/chatwidget/interaction.rs",
+        implementation_files=("pycodex/tui/chatwidget/interaction.py",),
+        python_tests=("pycodex/tui/chatwidget/tests/test_interaction.py",),
+    ),
     TuiModuleOwner(
         python_owner="pycodex/tui/tui/event_stream.py",
         rust_module="codex-tui::tui::event_stream",
@@ -683,6 +886,86 @@ TUI_MODULE_OWNERS: tuple[TuiModuleOwner, ...] = (
         ),
     ),
     TuiModuleOwner(
+        python_owner="pycodex/tui/chatwidget/streaming.py",
+        rust_module="codex-tui::chatwidget::streaming",
+        rust_source="codex/codex-rs/tui/src/chatwidget/streaming.rs",
+        implementation_files=("pycodex/tui/chatwidget/streaming.py",),
+        python_tests=("pycodex/tui/chatwidget/tests/test_streaming.py",),
+        notes=(
+            "Owns the real terminal product StreamController, adaptive commit tick, "
+            "stable-cell insertion callback, and mutable live-tail frame projection."
+        ),
+    ),
+    TuiModuleOwner(
+        python_owner="pycodex/tui/chatwidget/protocol.py",
+        rust_module="codex-tui::chatwidget::protocol",
+        rust_source="codex/codex-rs/tui/src/chatwidget/protocol.rs",
+        implementation_files=("pycodex/tui/chatwidget/protocol.py",),
+        python_tests=(
+            "pycodex/tui/chatwidget/tests/test_protocol.py",
+            "pycodex/tui/chatwidget/tests/test_protocol_composition.py",
+        ),
+        notes="Owns notification routing into typed active/final history cells.",
+    ),
+    TuiModuleOwner(
+        python_owner="pycodex/tui/chatwidget/command_lifecycle.py",
+        rust_module="codex-tui::chatwidget::command_lifecycle",
+        rust_source="codex/codex-rs/tui/src/chatwidget/command_lifecycle.rs",
+        implementation_files=("pycodex/tui/chatwidget/command_lifecycle.py",),
+        python_tests=("pycodex/tui/chatwidget/tests/test_command_lifecycle.py",),
+        notes="Owns active ExecCell grouping, output updates, and final insertion.",
+    ),
+    TuiModuleOwner(
+        python_owner="pycodex/tui/exec_cell",
+        rust_module="codex-tui::exec_cell",
+        rust_source="codex/codex-rs/tui/src/exec_cell/mod.rs",
+        implementation_files=(
+            "pycodex/tui/exec_cell/__init__.py",
+            "pycodex/tui/exec_cell/model.py",
+            "pycodex/tui/exec_cell/render.py",
+        ),
+        python_tests=(
+            "pycodex/tui/exec_cell/tests/test_model.py",
+            "pycodex/tui/exec_cell/tests/test_render.py",
+        ),
+        notes="Owns canonical command history-cell model and rendering.",
+    ),
+    TuiModuleOwner(
+        python_owner="pycodex/tui/diff_render.py",
+        rust_module="codex-tui::diff_render",
+        rust_source="codex/codex-rs/tui/src/diff_render.rs",
+        implementation_files=("pycodex/tui/diff_render.py",),
+        python_tests=("pycodex/tui/tests/test_diff_render.py",),
+        notes="Owns line-numbered, styled add/delete/update diff rendering.",
+    ),
+    TuiModuleOwner(
+        python_owner="pycodex/tui/history_cell/patches.py",
+        rust_module="codex-tui::history_cell::patches",
+        rust_source="codex/codex-rs/tui/src/history_cell/patches.rs",
+        implementation_files=("pycodex/tui/history_cell/patches.py",),
+        python_tests=("pycodex/tui/history_cell/tests/test_patches.py",),
+        notes="Owns patch and patch-failure HistoryCell boundaries.",
+    ),
+    TuiModuleOwner(
+        python_owner="pycodex/tui/history_cell/separators.py",
+        rust_module="codex-tui::history_cell::separators",
+        rust_source="codex/codex-rs/tui/src/history_cell/separators.rs",
+        implementation_files=("pycodex/tui/history_cell/separators.py",),
+        python_tests=("pycodex/tui/history_cell/tests/test_separators.py",),
+        notes="Owns final-message separator HistoryCell rendering.",
+    ),
+    TuiModuleOwner(
+        python_owner="pycodex/tui/app/agent_message_consolidation.py",
+        rust_module="codex-tui::app::agent_message_consolidation",
+        rust_source="codex/codex-rs/tui/src/app/agent_message_consolidation.rs",
+        implementation_files=("pycodex/tui/app/agent_message_consolidation.py",),
+        python_tests=("pycodex/tui/app/tests/test_agent_message_consolidation.py",),
+        notes=(
+            "Owns typed terminal transcript consolidation and Required versus "
+            "IfResizeReflowRan completion behavior."
+        ),
+    ),
+    TuiModuleOwner(
         python_owner="pycodex/tui/insert_history.py",
         rust_module="codex-tui::insert_history",
         rust_source="codex/codex-rs/tui/src/insert_history.rs",
@@ -730,6 +1013,69 @@ TUI_MODULE_OWNERS: tuple[TuiModuleOwner, ...] = (
             "dynamic terminal-layout-active provider callbacks consumed by "
             "terminal runtime bindings."
         ),
+    ),
+    TuiModuleOwner(
+        python_owner="pycodex/tui/chatwidget/protocol_requests.py",
+        rust_module="codex-tui::chatwidget::protocol_requests",
+        rust_source="codex/codex-rs/tui/src/chatwidget/protocol_requests.rs",
+        implementation_files=("pycodex/tui/chatwidget/protocol_requests.py",),
+        python_tests=("pycodex/tui/chatwidget/tests/test_protocol_requests.py",),
+    ),
+    TuiModuleOwner(
+        python_owner="pycodex/tui/chatwidget/tool_requests.py",
+        rust_module="codex-tui::chatwidget::tool_requests",
+        rust_source="codex/codex-rs/tui/src/chatwidget/tool_requests.rs",
+        implementation_files=("pycodex/tui/chatwidget/tool_requests.py",),
+        python_tests=("pycodex/tui/chatwidget/tests/test_tool_requests.py",),
+    ),
+    TuiModuleOwner(
+        python_owner="pycodex/tui/bottom_pane/approval_overlay.py",
+        rust_module="codex-tui::bottom_pane::approval_overlay",
+        rust_source="codex/codex-rs/tui/src/bottom_pane/approval_overlay.rs",
+        implementation_files=("pycodex/tui/bottom_pane/approval_overlay.py",),
+        python_tests=("pycodex/tui/bottom_pane/tests/test_approval_overlay.py",),
+    ),
+    TuiModuleOwner(
+        python_owner="pycodex/tui/bottom_pane/request_user_input",
+        rust_module="codex-tui::bottom_pane::request_user_input",
+        rust_source="codex/codex-rs/tui/src/bottom_pane/request_user_input/mod.rs",
+        implementation_files=("pycodex/tui/bottom_pane/request_user_input/__init__.py",),
+        python_tests=("pycodex/tui/bottom_pane/tests/test_request_user_input_mod.py",),
+    ),
+    TuiModuleOwner(
+        python_owner="pycodex/tui/bottom_pane/mcp_server_elicitation.py",
+        rust_module="codex-tui::bottom_pane::mcp_server_elicitation",
+        rust_source="codex/codex-rs/tui/src/bottom_pane/mcp_server_elicitation.rs",
+        implementation_files=("pycodex/tui/bottom_pane/mcp_server_elicitation.py",),
+        python_tests=("pycodex/tui/bottom_pane/tests/test_mcp_server_elicitation.py",),
+    ),
+    TuiModuleOwner(
+        python_owner="pycodex/tui/app/app_server_requests.py",
+        rust_module="codex-tui::app::app_server_requests",
+        rust_source="codex/codex-rs/tui/src/app/app_server_requests.rs",
+        implementation_files=("pycodex/tui/app/app_server_requests.py",),
+        python_tests=("pycodex/tui/app/tests/test_app_server_requests.py",),
+    ),
+    TuiModuleOwner(
+        python_owner="pycodex/tui/app/pending_interactive_replay.py",
+        rust_module="codex-tui::app::pending_interactive_replay",
+        rust_source="codex/codex-rs/tui/src/app/pending_interactive_replay.rs",
+        implementation_files=("pycodex/tui/app/pending_interactive_replay.py",),
+        python_tests=("pycodex/tui/app/tests/test_pending_interactive_replay.py",),
+    ),
+    TuiModuleOwner(
+        python_owner="pycodex/tui/history_cell/request_user_input.py",
+        rust_module="codex-tui::history_cell::request_user_input",
+        rust_source="codex/codex-rs/tui/src/history_cell/request_user_input.rs",
+        implementation_files=("pycodex/tui/history_cell/request_user_input.py",),
+        python_tests=("pycodex/tui/history_cell/tests/test_request_user_input.py",),
+    ),
+    TuiModuleOwner(
+        python_owner="pycodex/tui/bottom_pane/app_link_view.py",
+        rust_module="codex-tui::bottom_pane::app_link_view",
+        rust_source="codex/codex-rs/tui/src/bottom_pane/app_link_view.rs",
+        implementation_files=("pycodex/tui/bottom_pane/app_link_view.py",),
+        python_tests=("pycodex/tui/bottom_pane/tests/test_app_link_view.py",),
     ),
     TuiModuleOwner(
         python_owner="pycodex/tui/bottom_pane",
@@ -867,6 +1213,23 @@ CRITICAL_TERMINAL_TUI_MODULES: frozenset[str] = frozenset(
         "pycodex/tui/insert_history.py",
         "pycodex/tui/history_cell/messages.py",
         "pycodex/tui/history_cell/session.py",
+        "pycodex/tui/chatwidget/protocol_requests.py",
+        "pycodex/tui/chatwidget/tool_requests.py",
+        "pycodex/tui/bottom_pane/approval_overlay.py",
+        "pycodex/tui/bottom_pane/request_user_input/__init__.py",
+        "pycodex/tui/bottom_pane/mcp_server_elicitation.py",
+        "pycodex/tui/app/app_server_requests.py",
+        "pycodex/tui/app/pending_interactive_replay.py",
+        "pycodex/tui/history_cell/request_user_input.py",
+        "pycodex/tui/bottom_pane/app_link_view.py",
+        "pycodex/tui/app/app_server_events.py",
+        "pycodex/tui/app/thread_routing.py",
+        "pycodex/tui/app/thread_events.py",
+        "pycodex/tui/app/event_dispatch.py",
+        "pycodex/tui/bottom_pane/pending_thread_approvals.py",
+        "pycodex/tui/app/side.py",
+        "pycodex/tui/app/platform_actions.py",
+        "pycodex/tui/chatwidget/interaction.py",
     }
 )
 
@@ -880,6 +1243,7 @@ def repository_relative_path(path: str) -> Path:
 __all__ = [
     "AdapterResponsibility",
     "CRITICAL_TERMINAL_TUI_MODULES",
+    "RUST_CODEX_BASELINE_COMMIT",
     "TUI_ALIGNMENT_ENTRIES",
     "TUI_MODULE_OWNERS",
     "TuiAlignmentEntry",

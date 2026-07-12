@@ -13,10 +13,13 @@ from __future__ import annotations
 import textwrap
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from .._porting import RustTuiModule
+from ..app_event_sender import AppEventSender
+from .bottom_pane_view import BottomPaneViewDefaults
+from .selection_popup_common import TerminalPopupLine
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -190,7 +193,7 @@ class DisplayLine:
 
 
 @dataclass
-class AppLinkView:
+class AppLinkView(BottomPaneViewDefaults):
     app_id: str
     title: str
     description: Optional[str]
@@ -495,6 +498,34 @@ class AppLinkView:
         lines.append(DisplayLine(self.hint_line(), "dim"))
         return lines[:height]
 
+    def terminal_lines(self, *, width: int) -> list[TerminalPopupLine]:
+        lines = self.content_lines(width)
+        lines.extend(
+            DisplayLine(row["label"], "selected" if row["selected"] else "plain")
+            for row in self.action_rows()
+        )
+        lines.append(DisplayLine(self.hint_line(), "dim"))
+        selected_labels = {
+            row["label"] for row in self.action_rows() if row["selected"]
+        }
+        return [
+            TerminalPopupLine(line.text[: max(1, width)], line.text in selected_labels)
+            for line in lines
+        ]
+
+
+@dataclass(frozen=True)
+class AppLinkViewProjector:
+    app_event_sender: AppEventSender
+    show_view: Callable[[AppLinkView], Any]
+    render: Callable[[], Any]
+
+    def __call__(self, params: AppLinkViewParams) -> AppLinkView:
+        candidate = AppLinkView.new(params, self.app_event_sender)
+        view = self.show_view(candidate) or candidate
+        self.render()
+        return view
+
 
 def handle_key_event(view: AppLinkView, key_event: Any) -> None:
     view.handle_key_event(key_event)
@@ -563,6 +594,24 @@ def _non_empty_str(value: Any) -> Optional[str]:
 
 def _send(target: Any, event: Dict[str, Any]) -> None:
     if target is None:
+        return
+    if isinstance(target, AppEventSender):
+        kind = str(event.get("type") or "")
+        if kind == "ResolveElicitation":
+            target.resolve_elicitation(
+                event.get("thread_id"),
+                str(event.get("server_name") or ""),
+                event.get("request_id"),
+                event.get("decision"),
+                event.get("content"),
+                event.get("meta"),
+            )
+        elif kind == "OpenUrlInBrowser":
+            target.open_url_in_browser(str(event.get("url") or ""))
+        elif kind == "RefreshConnectors":
+            target.refresh_connectors(bool(event.get("force_refetch")))
+        elif kind == "SetAppEnabled":
+            target.set_app_enabled(str(event.get("id") or ""), bool(event.get("enabled")))
         return
     if hasattr(target, "send"):
         target.send(event)

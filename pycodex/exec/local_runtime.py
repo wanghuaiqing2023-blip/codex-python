@@ -124,6 +124,11 @@ from pycodex.core.unified_exec import (
 )
 from pycodex.core.tools.context import ToolPayload
 from pycodex.core.tools.sandboxing import ExecApprovalRequirement
+from pycodex.core.tools.runtimes import (
+    ApplyPatchApprovalKey,
+    ShellApprovalKey,
+    canonicalize_command_for_approval,
+)
 from pycodex.shell_command import command_might_be_dangerous, is_dangerous_powershell_words
 from pycodex.protocol import (
     AskForApproval,
@@ -1957,6 +1962,8 @@ def _in_memory_exec_session(
         base_instructions=_base_instructions_from_model_info(model_info),
         workspace_roots=config.workspace_roots,
         request_permissions_callback=config.request_permissions_callback,
+        command_approval_callback=config.exec_approval_callback,
+        patch_approval_callback=config.patch_approval_callback,
         approval_policy=config.approval_policy,
         approvals_reviewer=config.approvals_reviewer,
         permission_profile=config.permission_profile,
@@ -3609,25 +3616,32 @@ def shell_tool_outputs_from_local_http_exec_result(
                 config.cwd,
                 granted_permissions,
             ):
-                outputs.append(
-                    {
-                        "type": "custom_tool_call_output" if item_type == "custom_tool_call" else "function_call_output",
-                        "call_id": str(call_id),
-                        "output": (approval_output := local_http_apply_patch_approval_required_output(config)),
-                        "internal_output": (
-                            {
-                                "changes": changes,
-                                "auto_approved": False,
-                                "stdout": "",
-                                "stderr": approval_output,
-                            }
-                            if changes is not None
-                            else None
-                        ),
-                        "success": False,
-                    }
+                patch_decision = local_http_apply_patch_request_approval(
+                    config,
+                    call_id=str(call_id),
+                    changes=changes,
+                    cwd=config.cwd,
                 )
-                continue
+                if not local_http_apply_patch_approval_decision_allows_apply(patch_decision):
+                    outputs.append(
+                        {
+                            "type": "custom_tool_call_output" if item_type == "custom_tool_call" else "function_call_output",
+                            "call_id": str(call_id),
+                            "output": (approval_output := local_http_apply_patch_approval_required_output(config)),
+                            "internal_output": (
+                                {
+                                    "changes": changes,
+                                    "auto_approved": False,
+                                    "stdout": "",
+                                    "stderr": approval_output,
+                                }
+                                if changes is not None
+                                else None
+                            ),
+                            "success": False,
+                        }
+                    )
+                    continue
             output_text, success, changes = _apply_local_http_apply_patch(patch_text, config.cwd)
             outputs.append(
                 {
@@ -3874,25 +3888,32 @@ def shell_tool_outputs_from_local_http_exec_result(
                 invocation.workdir or config.cwd,
                 granted_permissions,
             ):
-                outputs.append(
-                    {
-                        "type": "function_call_output",
-                        "call_id": str(call_id),
-                        "output": (approval_output := local_http_apply_patch_approval_required_output(config)),
-                        "internal_output": (
-                            {
-                                "changes": changes,
-                                "auto_approved": False,
-                                "stdout": "",
-                                "stderr": approval_output,
-                            }
-                            if changes is not None
-                            else None
-                        ),
-                        "success": False,
-                    }
+                patch_decision = local_http_apply_patch_request_approval(
+                    config,
+                    call_id=str(call_id),
+                    changes=changes,
+                    cwd=invocation.workdir or config.cwd,
                 )
-                continue
+                if not local_http_apply_patch_approval_decision_allows_apply(patch_decision):
+                    outputs.append(
+                        {
+                            "type": "function_call_output",
+                            "call_id": str(call_id),
+                            "output": (approval_output := local_http_apply_patch_approval_required_output(config)),
+                            "internal_output": (
+                                {
+                                    "changes": changes,
+                                    "auto_approved": False,
+                                    "stdout": "",
+                                    "stderr": approval_output,
+                                }
+                                if changes is not None
+                                else None
+                            ),
+                            "success": False,
+                        }
+                    )
+                    continue
             try:
                 if apply_patch_command.action is None:
                     raise ValueError("missing apply_patch action")
@@ -4065,6 +4086,42 @@ def local_http_apply_patch_approval_required_output(config: ExecSessionConfig) -
         f"approval_policy: {approval}\n"
         "stderr:\nPatch application requires approval and was not run by the local HTTP helper."
     )
+
+
+def local_http_apply_patch_request_approval(
+    config: ExecSessionConfig,
+    *,
+    call_id: str,
+    changes: Mapping[Path, FileChange] | None,
+    cwd: Path,
+) -> ReviewDecision | None:
+    """Resolve apply-patch approval through the interactive product owner."""
+
+    callback = getattr(config, "patch_approval_callback", None)
+    if not callable(callback) or changes is None:
+        return None
+    decision = callback(str(call_id), dict(changes), Path(cwd), None, None)
+    return None if decision is None else ReviewDecision.from_mapping(decision)
+
+
+def local_http_apply_patch_approval_keys(
+    changes: Mapping[Path, FileChange],
+    cwd: Path,
+) -> tuple[ApplyPatchApprovalKey, ...]:
+    """Build the fixed-Rust local-environment cache keys for a patch request."""
+
+    root = Path(cwd).resolve()
+    paths = []
+    for path in changes:
+        candidate = Path(path)
+        paths.append(candidate.resolve() if candidate.is_absolute() else (root / candidate).resolve())
+    return tuple(ApplyPatchApprovalKey("local", path) for path in paths)
+
+
+def local_http_apply_patch_approval_decision_allows_apply(
+    decision: ReviewDecision | None,
+) -> bool:
+    return decision is not None and decision.type in {"approved", "approved_for_session"}
 
 
 def local_http_write_stdin_approval_required_output(config: ExecSessionConfig) -> str:
@@ -4717,6 +4774,37 @@ def local_http_shell_tool_request_approval(
     if decision is None:
         return None
     return ReviewDecision.from_mapping(decision)
+
+
+def local_http_shell_tool_approval_keys(
+    invocation: LocalHttpShellInvocation,
+    config: ExecSessionConfig,
+    *,
+    granted_permissions: AdditionalPermissionProfile | None = None,
+) -> tuple[ShellApprovalKey, ...]:
+    """Build ``ShellRuntime::approval_keys`` for the local HTTP product path."""
+
+    cwd = Path(invocation.workdir or config.cwd).resolve()
+    sandbox_permissions = SandboxPermissions.USE_DEFAULT
+    if invocation.sandbox_permissions:
+        sandbox_permissions = SandboxPermissions(invocation.sandbox_permissions)
+
+    additional_permissions = None
+    if invocation.additional_permissions is not None:
+        mapping = _local_http_additional_permissions_output_mapping(
+            invocation.additional_permissions,
+            cwd=cwd,
+            granted_permissions=granted_permissions,
+        )
+        additional_permissions = AdditionalPermissionProfile.from_mapping(mapping)
+
+    key = ShellApprovalKey(
+        command=canonicalize_command_for_approval(_local_http_shell_tool_exec_policy_command(invocation)),
+        cwd=cwd,
+        sandbox_permissions=sandbox_permissions,
+        additional_permissions=additional_permissions,
+    )
+    return (key,)
 
 
 def local_http_shell_tool_approval_rejected_output(

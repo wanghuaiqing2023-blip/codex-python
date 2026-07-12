@@ -81,6 +81,27 @@ def test_command_execution_command_and_parsed_splits_command_and_converts_action
     ]
 
 
+def test_command_action_protocol_mappings_convert_into_core_parsed_commands_matches_rust():
+    # Rust owner: app-server-protocol::CommandAction::into_core, consumed by
+    # codex-tui::chatwidget::exec_state.
+    _command, parsed = command_execution_command_and_parsed(
+        "wrapped command",
+        [
+            {"type": "read", "command": "cat a.txt", "name": "a.txt", "path": "C:/repo/a.txt"},
+            {"type": "listFiles", "command": "ls src", "path": "src"},
+            {"type": "search", "command": "rg needle", "query": "needle", "path": "src"},
+            {"type": "unknown", "command": "custom"},
+        ],
+    )
+
+    assert parsed == [
+        ParsedCommand.read("cat a.txt", "a.txt", "C:/repo/a.txt"),
+        ParsedCommand.list_files("ls src", "src"),
+        ParsedCommand.search("rg needle", "needle", "src"),
+        ParsedCommand.unknown("custom"),
+    ]
+
+
 def test_running_command_and_process_summary_are_plain_bookkeeping_state():
     parsed = [ParsedCommand.list_files("ls")]
     running = RunningCommand(command=["ls"], parsed_cmd=parsed, source=CommandExecutionSource.AGENT)

@@ -24,6 +24,7 @@ from pycodex.core.session.turn.runtime import (
 )
 from pycodex.core.turn_timing import TurnTimingState
 from pycodex.core.tools.context import FunctionToolOutput
+from pycodex.apply_patch import ApplyPatchHandler
 from pycodex.core.tools.router import FunctionCallError
 from pycodex.core.tools.registry import ToolRegistry
 from pycodex.core.tools.router import ToolRouter
@@ -4127,6 +4128,83 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("tool managed output", output_text)
         self.assertIn("Process exited with code 0", output_text)
         self.assertEqual(session.services.unified_exec_manager.process_count(), 0)
+        # Rust core emits the completed CommandExecution before sampling the
+        # follow-up assistant response; codex-tui therefore renders Ran/output
+        # before the final answer.
+        started_commands = [
+            event
+            for event in session.emitted_events
+            if event.type == "item_started" and event.payload.item.type == "CommandExecution"
+        ]
+        completed_commands = [
+            event
+            for event in session.emitted_events
+            if event.type == "item_completed" and event.payload.item.type == "CommandExecution"
+        ]
+        self.assertEqual(len(started_commands), 1)
+        self.assertEqual(len(completed_commands), 1)
+        started_item = started_commands[0].payload.item.item
+        command_item = completed_commands[0].payload.item.item
+        self.assertEqual(started_item.command, command_item.command)
+        self.assertNotEqual(command_item.command, exec_args["cmd"])
+        self.assertEqual(command_item.id, "call-exec")
+        self.assertEqual(command_item.status, "completed")
+        self.assertIn("tool managed output", command_item.aggregated_output)
+
+    async def test_run_user_turn_sampling_apply_patch_emits_file_change_lifecycle(self) -> None:
+        # Rust owners: core::tools::handlers::apply_patch and tools::events.
+        # A custom apply_patch call must produce the canonical FileChange pair
+        # consumed by codex-tui::history_cell::patches.
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp)
+            session = InMemoryCodexSession(
+                cwd=cwd,
+                environments=(TurnEnvironmentSelection("local", str(cwd)),),
+            )
+            client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+            provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+            model_info = SimpleNamespace(
+                slug="gpt-test",
+                supports_reasoning_summaries=False,
+                support_verbosity=False,
+                service_tier_for_request=lambda tier: tier,
+            )
+            router = ToolRouter.from_parts(ToolRegistry.from_tools([ApplyPatchHandler()]), ())
+            patch = (
+                "*** Begin Patch\n"
+                "*** Add File: projected.c\n"
+                "+int main(void) { return 0; }\n"
+                "*** End Patch\n"
+            )
+            requests = []
+
+            async def sampler(request):
+                requests.append(request)
+                if len(requests) == 1:
+                    return [ResponseItem.custom_tool_call("apply_patch", patch, "call-patch")]
+                return [ResponseItem.message("assistant", (ContentItem.output_text("patch done"),))]
+
+            result = await run_user_turn_sampling_from_session(
+                session,
+                (UserInput.text_input("create projected.c"),),
+                client,
+                provider,
+                model_info,
+                sampler,
+                built_tools=lambda _sess, _turn: router,
+            )
+
+            self.assertEqual(result.last_agent_message, "patch done")
+            self.assertEqual((cwd / "projected.c").read_text(encoding="utf-8"), "int main(void) { return 0; }\n")
+            file_change_events = [
+                event
+                for event in session.emitted_events
+                if event.type in {"item_started", "item_completed"}
+                and event.payload.item.type == "FileChange"
+            ]
+            self.assertEqual([event.type for event in file_change_events], ["item_started", "item_completed"])
+            self.assertEqual(file_change_events[0].payload.item.item.id, "call-patch")
+            self.assertEqual(file_change_events[1].payload.item.item.status.value, "completed")
 
     async def test_run_user_turn_sampling_default_session_exec_command_then_write_stdin(self) -> None:
         cwd = Path.cwd()

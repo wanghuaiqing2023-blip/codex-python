@@ -2,6 +2,8 @@ import io
 
 import pytest
 
+from pycodex.tui.slash_command import SlashCommand
+
 from pycodex.tui.bottom_pane.chat_composer import (
     FOOTER_SPACING_HEIGHT,
     LARGE_PASTE_CHAR_THRESHOLD,
@@ -31,6 +33,7 @@ from pycodex.tui.bottom_pane.chat_composer import (
     run_terminal_command_popup_input_action,
     terminal_command_popup_input_action,
     terminal_composer_draft_after_backspace,
+    terminal_composer_draft_after_ctrl_u,
     terminal_composer_draft_after_text,
     terminal_composer_draft_cleared,
     terminal_composer_input_action,
@@ -38,6 +41,7 @@ from pycodex.tui.bottom_pane.chat_composer import (
     terminal_composer_projection,
     terminal_composer_submitted_line,
     terminal_popup_key,
+    terminal_input_result_from_line,
     user_input_too_large_message,
 )
 
@@ -71,6 +75,18 @@ def test_input_result_variants_preserve_payload_shapes():
     assert with_args.args == "investigate"
     assert with_args.text_elements == ["rebased"]
     assert InputResult.None_().kind == "None"
+
+
+def test_terminal_completed_line_returns_rust_input_result_variants() -> None:
+    # Rust baseline 1c7832f: ChatComposer returns structured variants before
+    # chatwidget::slash_dispatch.
+    assert terminal_input_result_from_line("hello\n") == InputResult.Submitted("hello")
+    assert terminal_input_result_from_line("/review\n") == InputResult.Command(SlashCommand.REVIEW)
+    assert terminal_input_result_from_line("/review audit dependencies\n") == InputResult.CommandWithArgs(
+        SlashCommand.REVIEW,
+        "audit dependencies",
+    )
+    assert terminal_popup_key("key", "f12") == "f12"
 
 
 def test_chat_composer_config_default_and_plain_text_match_rust_flags():
@@ -223,6 +239,8 @@ def test_terminal_composer_draft_helpers_match_text_only_product_path():
 
     assert terminal_composer_draft_after_backspace(draft) == "hello\nther"
     assert terminal_composer_draft_after_backspace("") == ""
+    assert terminal_composer_draft_after_ctrl_u("hello") == ""
+    assert terminal_composer_draft_after_ctrl_u("first\nsecond") == "first\n"
     assert terminal_composer_submitted_line("hello") == "hello\n"
 
 
@@ -241,6 +259,22 @@ def test_terminal_composer_projection_owns_live_prompt_text_and_cursor_width() -
     assert clipped.cursor_column == 5
     assert empty.line == "\u203a "
     assert empty.cursor_column == 3
+
+
+def test_terminal_composer_projection_wraps_words_and_wide_characters() -> None:
+    # Fixed Rust owner: codex-tui::bottom_pane::chat_composer delegates to
+    # textarea::wrapped_lines and reserves LIVE_PREFIX_COLS on every row.
+    words = terminal_composer_projection("alpha beta gamma", columns=12)
+    wide = terminal_composer_projection("\u4f60\u597d\u4e16\u754c", columns=8)
+
+    assert words.lines == ("\u203a alpha", "  beta", "  gamma")
+    assert words.height == 3
+    assert words.cursor_row_offset == 2
+    assert words.cursor_column == 8
+    assert wide.lines == ("\u203a \u4f60\u597d", "  \u4e16\u754c")
+    assert wide.height == 2
+    assert wide.cursor_row_offset == 1
+    assert wide.cursor_column == 7
 
 
 def test_terminal_composer_input_action_plans_text_only_terminal_events():
@@ -262,6 +296,10 @@ def test_terminal_composer_input_action_plans_text_only_terminal_events():
     assert terminal_composer_input_action("hello", "backspace") == TerminalComposerInputAction(
         "render",
         "hell",
+    )
+    assert terminal_composer_input_action("draft", "ctrl_u") == TerminalComposerInputAction(
+        "render",
+        "",
     )
     assert terminal_composer_input_action("hello", "enter") == TerminalComposerInputAction(
         "submit",
@@ -435,6 +473,112 @@ def test_run_terminal_composer_prompt_loop_polls_and_submits_with_rendered_draft
     assert drafts == ["", "h", "hi", ""]
     assert renders == ["", "h", "hi"]
     assert resizes == 4
+
+
+def test_terminal_composer_paste_burst_keeps_embedded_enters_in_one_submission(monkeypatch):
+    # Fixed Rust baseline 1c7832f: bottom_pane::chat_composer::PasteBurst
+    # treats rapid Enter events as pasted newlines and submits only on the
+    # later explicit Enter after the burst window closes.
+    class Source:
+        detect_paste_bursts = True
+
+        def __init__(self) -> None:
+            self.events = [
+                *(type("Event", (), {"kind": "text", "text": char})() for char in "abc"),
+                type("Event", (), {"kind": "enter", "text": ""})(),
+                *(type("Event", (), {"kind": "text", "text": char})() for char in "def"),
+                None,
+                type("Event", (), {"kind": "enter", "text": ""})(),
+            ]
+
+        def poll(self, timeout: float):
+            return self.events.pop(0)
+
+    ticks = iter((0.000, 0.001, 0.002, 0.003, 0.004, 0.005, 0.006, 0.200, 0.300))
+    monkeypatch.setattr("pycodex.tui.bottom_pane.chat_composer.time.monotonic", lambda: next(ticks))
+    drafts: list[str] = []
+
+    result = run_terminal_composer_prompt_loop(
+        Source(),
+        poll_timeout=0.1,
+        apply_draft=drafts.append,
+        check_resize=lambda: None,
+        render=lambda: None,
+        submit=lambda line: line,
+        interrupt=lambda: None,
+        eof=lambda: None,
+    )
+
+    assert result == "abc\ndef\n"
+    assert drafts[-2:] == ["abc\ndef", ""]
+
+
+def test_terminal_composer_flushes_expired_held_char_before_next_readable_key(monkeypatch):
+    # Fixed Rust commit 1c7832f:
+    # ChatComposer::handle_input_basic_with_time calls
+    # handle_paste_burst_flush(now) before every input. A continuously readable
+    # console source must not replace a held ASCII char when the next key arrives
+    # after PASTE_BURST_CHAR_INTERVAL without an intervening idle tick.
+    class Source:
+        detect_paste_bursts = True
+
+        def __init__(self) -> None:
+            self.events = [
+                *(type("Event", (), {"kind": "text", "text": char})() for char in "slow text"),
+                type("Event", (), {"kind": "enter", "text": ""})(),
+            ]
+
+        def poll(self, _timeout):
+            return self.events.pop(0)
+
+    ticks = iter(index * 0.020 for index in range(32))
+    monkeypatch.setattr("pycodex.tui.bottom_pane.chat_composer.time.monotonic", lambda: next(ticks))
+
+    drafts = []
+    result = run_terminal_composer_prompt_loop(
+        Source(),
+        poll_timeout=0.0,
+        apply_draft=drafts.append,
+        check_resize=lambda: None,
+        render=lambda: None,
+        submit=lambda line: line,
+        interrupt=lambda: None,
+        eof=lambda: None,
+    )
+
+    assert result == "slow text\n"
+    assert "slow text" in drafts
+
+
+def test_terminal_composer_paste_burst_does_not_absorb_slash_command_enter() -> None:
+    """Rust owners: chat_composer and slash_dispatch keep slash control input dispatchable."""
+
+    class Source:
+        detect_paste_bursts = True
+
+        def __init__(self) -> None:
+            self.events = [
+                *(type("Event", (), {"kind": "text", "text": char})() for char in "/quit"),
+                type("Event", (), {"kind": "enter", "text": ""})(),
+            ]
+
+        def poll(self, _timeout: float):
+            return self.events.pop(0)
+
+    submitted: list[str] = []
+    result = run_terminal_composer_prompt_loop(
+        Source(),
+        poll_timeout=0.0,
+        apply_draft=lambda _draft: None,
+        check_resize=lambda: None,
+        render=lambda: None,
+        submit=lambda line: submitted.append(line) or line,
+        interrupt=lambda: None,
+        eof=lambda: None,
+    )
+
+    assert result == "/quit\n"
+    assert submitted == ["/quit\n"]
 
 
 def test_run_terminal_composer_prompt_loop_skips_resize_events_before_input():
@@ -673,7 +817,7 @@ def test_terminal_composer_prompt_reader_binds_runtime_callbacks() -> None:
         poll_timeout=0.2,
     )
 
-    assert reader.read() == "submitted:o\n"
+    assert reader.read() == InputResult.Submitted("submitted:o")
     assert calls == [
         "draft:",
         "render",
@@ -685,6 +829,39 @@ def test_terminal_composer_prompt_reader_binds_runtime_callbacks() -> None:
         "resize",
         "draft:",
     ]
+
+
+def test_terminal_composer_prompt_reader_records_canonical_submission() -> None:
+    # Fixed Rust ChatComposer records the raw submitted draft before dispatch
+    # turns it into Submitted/Command/CommandWithArgs.
+    class Source:
+        def __init__(self) -> None:
+            self.events = [
+                type("Event", (), {"kind": "text", "text": "hello"})(),
+                type("Event", (), {"kind": "enter", "text": ""})(),
+            ]
+
+        def poll(self, timeout: float):
+            return self.events.pop(0)
+
+    recorded: list[str] = []
+    reader = TerminalComposerPromptReader(
+        terminal_active=lambda: True,
+        get_input_source=Source,
+        read_line=lambda: "",
+        write_nonterminal_prompt=lambda: None,
+        apply_draft=lambda draft: None,
+        check_resize=lambda: None,
+        render=lambda: None,
+        clear_bottom_pane=lambda: None,
+        submit=lambda line: line,
+        interrupt=lambda: None,
+        eof=lambda: None,
+        record_submission=recorded.append,
+    )
+
+    assert reader.read() == InputResult.Submitted("hello")
+    assert recorded == ["hello\n"]
 
 
 def test_plan_mode_nudge_line_keeps_visible_actions():

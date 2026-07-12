@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
+from pycodex.protocol import ApprovalsReviewer
+
 from .._porting import RustTuiModule
 
 RUST_MODULE = RustTuiModule(
@@ -34,6 +36,7 @@ __all__ = [
     "RUST_MODULE",
     "SelectionItem",
     "SelectionViewParams",
+    "TerminalAutoReviewDenialsPopupController",
     "approve_recent_auto_review_denial",
     "approval_preset_actions",
     "builtin_approval_presets",
@@ -55,11 +58,6 @@ class AskForApproval(str, Enum):
     ON_REQUEST = "on-request"
     ON_FAILURE = "on-failure"
     UNLESS_TRUSTED = "unless-trusted"
-
-
-class ApprovalsReviewer(str, Enum):
-    USER = "User"
-    AUTO_REVIEW = "AutoReview"
 
 
 class PermissionProfileKind(str, Enum):
@@ -272,7 +270,12 @@ def open_permissions_popup(widget: Any, include_read_only: bool | None = None) -
     return params
 
 
-def open_auto_review_denials_popup(widget: Any) -> Optional[SelectionViewParams]:
+def open_auto_review_denials_popup(
+    widget: Any,
+    *,
+    thread_id: str | None = None,
+    show_view: bool = True,
+) -> Optional[SelectionViewParams]:
     denials = getattr(widget.review, "recent_auto_review_denials", None)
     entries = list(_denial_entries(denials))
     if not entries:
@@ -283,7 +286,7 @@ def open_auto_review_denials_popup(widget: Any) -> Optional[SelectionViewParams]
             "Denials are recorded after auto-review rejects an action.",
         )
         return None
-    thread_id = _call(widget, "thread_id")
+    thread_id = thread_id if thread_id is not None else _call(widget, "thread_id")
     if thread_id is None:
         _call(widget, "add_error_message", "That thread is no longer available.")
         return None
@@ -323,7 +326,8 @@ def open_auto_review_denials_popup(widget: Any) -> Optional[SelectionViewParams]
         is_searchable=True,
         col_width_mode="AutoAllRows",
     )
-    _call(widget.bottom_pane, "show_selection_view", params)
+    if show_view:
+        _call(widget.bottom_pane, "show_selection_view", params)
     _call(widget, "request_redraw")
     return params
 
@@ -333,8 +337,16 @@ def approve_recent_auto_review_denial(widget: Any, thread_id: str, id: str) -> O
     if event is None:
         _call(widget, "add_error_message", "That auto-review denial is no longer available.")
         return None
+    from ..app_command import AppCommand
+
     events = [
-        AppEvent("SubmitThreadOp", {"thread_id": thread_id, "op": ("approve_guardian_denied_action", event)})
+        AppEvent(
+            "SubmitThreadOp",
+            {
+                "thread_id": thread_id,
+                "op": AppCommand.approve_guardian_denied_action(event),
+            },
+        )
     ]
     _send_events(widget, events)
     _call(
@@ -344,6 +356,37 @@ def approve_recent_auto_review_denial(widget: Any, thread_id: str, id: str) -> O
         "The model will see the approval context; the retry still goes through auto-review.",
     )
     return events
+
+
+class TerminalAutoReviewDenialsPopupController:
+    """Terminal product adapter for Rust ``SlashCommand::AutoReview``."""
+
+    def __init__(self, app_runtime: Any) -> None:
+        self.app_runtime = app_runtime
+
+    def open_view(self) -> Optional[SelectionViewParams]:
+        thread_id = str(
+            self.app_runtime.routing_state.active_thread_id
+            or self.app_runtime.thread_id
+        )
+        return open_auto_review_denials_popup(
+            self.app_runtime.chat_widget,
+            thread_id=thread_id,
+            show_view=False,
+        )
+
+    def handle_events(self, events: tuple[object, ...]) -> Any:
+        from ..bottom_pane.list_selection_view import TerminalSelectionTransition
+
+        for event in events:
+            if getattr(event, "kind", None) != "ApproveRecentAutoReviewDenial":
+                continue
+
+            def apply(selected: Any = event) -> None:
+                self.app_runtime.handle_bottom_pane_app_event(selected)
+
+            return TerminalSelectionTransition(after_pop=apply)
+        return None
 
 
 def approval_preset_actions(

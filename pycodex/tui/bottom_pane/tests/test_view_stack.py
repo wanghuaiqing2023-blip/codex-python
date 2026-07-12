@@ -10,11 +10,17 @@ cancelled child only clears that marker on its parent.
 
 from dataclasses import dataclass
 import os
+from pathlib import Path
 
 from pycodex.tui.bottom_pane.bottom_pane_view import ViewCompletion
+from pycodex.tui.bottom_pane.approval_overlay import ApprovalOverlay, ApprovalRequest
 from pycodex.tui.bottom_pane.chat_composer import TerminalCommandPopupState
 from pycodex.tui.bottom_pane.list_selection_view import ListSelectionView, SelectionItem, SelectionViewParams
 from pycodex.tui.bottom_pane.selection_popup_common import TerminalPopupLine
+from pycodex.app_server_protocol.item import ToolRequestUserInputParams, ToolRequestUserInputQuestion
+from pycodex.tui.app.app_server_requests import ResolvedAppServerRequest
+from pycodex.tui.app_event_sender import AppEventSender
+from pycodex.tui.bottom_pane.mcp_server_elicitation import McpServerElicitationFormRequest
 from pycodex.tui.bottom_pane.view_stack import (
     BottomPaneViewStack,
     TerminalBottomPanePopupProjection,
@@ -90,6 +96,75 @@ def test_view_stack_replaces_and_tracks_active_view() -> None:
 
     assert stack.views == [first, second]
     assert stack.active_view() is second
+
+
+def test_bottom_pane_user_input_requests_queue_fifo_and_external_resolution_advances() -> None:
+    # Fixed Rust commit 1c7832f:
+    # bottom_pane::BottomPane::push_user_input_request offers a second request
+    # to RequestUserInputOverlay, which owns FIFO queueing and item-id dismissal.
+    state = TerminalBottomPaneViewState.new()
+    sender = AppEventSender([])
+    first = ToolRequestUserInputParams(
+        "thread",
+        "turn",
+        "item-1",
+        (ToolRequestUserInputQuestion("q1", "One", "First?"),),
+    )
+    second = ToolRequestUserInputParams(
+        "thread",
+        "turn",
+        "item-2",
+        (ToolRequestUserInputQuestion("q2", "Two", "Second?"),),
+    )
+
+    from pycodex.tui.bottom_pane.request_user_input import RequestUserInputOverlay
+
+    view = state.show_view(RequestUserInputOverlay.new(first, sender))
+    queued_view = state.show_view(RequestUserInputOverlay.new(second, sender))
+
+    assert queued_view is view
+    assert len(state.views) == 1
+    assert [request.item_id for request in view.queue] == ["item-2"]
+    assert state.dismiss_app_server_request(ResolvedAppServerRequest.UserInput("item-1"))
+    assert view.request.item_id == "item-2"
+    assert len(state.views) == 1
+
+
+def test_bottom_pane_mcp_form_requests_queue_fifo_and_external_resolution_advances() -> None:
+    # Fixed Rust commit 1c7832f:
+    # BottomPaneView::try_consume_mcp_server_elicitation_request returns None
+    # when the active MCP overlay consumes the request.
+    state = TerminalBottomPaneViewState.new()
+    sender = AppEventSender([])
+    first = McpServerElicitationFormRequest.from_parts(
+        thread_id="thread",
+        server_name="server",
+        request_id="mcp-1",
+        message="First",
+        schema={"type": "object", "properties": {}},
+    )
+    second = McpServerElicitationFormRequest.from_parts(
+        thread_id="thread",
+        server_name="server",
+        request_id="mcp-2",
+        message="Second",
+        schema={"type": "object", "properties": {}},
+    )
+    assert first is not None and second is not None
+
+    from pycodex.tui.bottom_pane.mcp_server_elicitation import McpServerElicitationOverlay
+
+    view = state.show_view(McpServerElicitationOverlay.new(first, sender))
+    queued_view = state.show_view(McpServerElicitationOverlay.new(second, sender))
+
+    assert queued_view is view
+    assert len(state.views) == 1
+    assert [request.request_id for request in view.pending_requests] == ["mcp-2"]
+    assert state.dismiss_app_server_request(
+        ResolvedAppServerRequest.McpElicitation("server", "mcp-1")
+    )
+    assert view.request.request_id == "mcp-2"
+    assert len(state.views) == 1
 
 
 def test_view_stack_projects_active_view_terminal_lines() -> None:
@@ -422,6 +497,160 @@ def test_terminal_bottom_pane_view_state_owns_draft_popup_and_view_stack_semanti
 
     assert state.handle_composer_key("", "down") == ""
     assert state.active_view.selected_index() == 1
+
+
+def test_terminal_bottom_pane_view_state_recalls_local_history_with_up_down() -> None:
+    # Fixed Rust owners: chat_composer records submissions and delegates
+    # boundary navigation to chat_composer_history.
+    state = TerminalBottomPaneViewState.new()
+    state.record_submission("first")
+    state.record_submission("second")
+    state.record_submission("second")
+
+    assert state.handle_composer_key("", "up") == "second"
+    assert state.command_popup_visible is False
+    assert state.handle_composer_key("second", "up") == "first"
+    assert state.handle_composer_key("first", "up") == "first"
+    assert state.handle_composer_key("first", "down") == "second"
+    assert state.handle_composer_key("second", "down") == ""
+
+    # A user-edited, non-recalled draft keeps Up available to normal textarea
+    # movement instead of replacing the text with history.
+    assert state.handle_composer_key("editing", "up") is None
+
+
+def test_terminal_bottom_pane_history_does_not_steal_slash_popup_navigation() -> None:
+    # Fixed Rust chat_composer precedence: an active command popup owns Up/Down
+    # before shell-style history traversal.
+    state = TerminalBottomPaneViewState.new()
+    state.record_submission("older prompt")
+    state.apply_draft("/m")
+
+    assert state.command_popup_visible is True
+    assert state.command_popup.selected_item().command() == "model"
+    assert state.handle_composer_key("/m", "down") == "/m"
+    assert state.command_popup.selected_item().command() == "memories"
+
+
+def test_terminal_bottom_pane_history_combines_persistent_and_local_entries() -> None:
+    # Fixed Rust chat_composer_history uses one offset space: persistent
+    # entries first and current-session entries after them.
+    state = TerminalBottomPaneViewState.new()
+    lookups: list[tuple[int, int]] = []
+
+    def lookup(log_id: int, offset: int) -> str:
+        lookups.append((log_id, offset))
+        return ("persistent older", "persistent newer")[offset]
+
+    state.configure_history("thread", 7, 2, lookup)
+    state.record_submission("local newest")
+
+    assert state.handle_composer_key("", "up") == "local newest"
+    assert state.handle_composer_key("local newest", "up") == "persistent newer"
+    assert state.handle_composer_key("persistent newer", "up") == "persistent older"
+    assert lookups == [(7, 1), (7, 0)]
+
+
+def test_terminal_bottom_pane_view_state_projects_pending_thread_approvals() -> None:
+    # Fixed Rust commit 1c7832f:
+    # bottom_pane::pending_thread_approvals renders inactive-thread approval
+    # labels and yields to active views and command popups.
+    state = TerminalBottomPaneViewState.new()
+    state.apply_pending_thread_approvals(["Robie [explorer]"])
+
+    pending = state.popup_projection_for_size(os.terminal_size((40, 12)))
+
+    assert [line.text for line in pending.lines] == [
+        "  ! Approval needed in Robie [explorer]",
+        "    /agent to switch threads",
+    ]
+    assert pending.is_active_view is False
+
+    state.apply_draft("/m")
+    command = state.popup_projection_for_size(os.terminal_size((40, 12)))
+
+    assert command.lines
+    assert command.lines[0].text.startswith("/")
+    assert all("Approval needed" not in line.text for line in command.lines)
+
+
+def test_terminal_bottom_pane_view_state_queues_approval_on_active_overlay() -> None:
+    # Fixed Rust commit 1c7832f:
+    # bottom_pane::BottomPane offers a new request to
+    # BottomPaneView::try_consume_approval_request before pushing another view.
+    state = TerminalBottomPaneViewState.new()
+    first = ApprovalOverlay.new(
+        ApprovalRequest.Exec("thread", "exec-1", ["echo", "one"], available_decisions=["Accept", "Cancel"])
+    )
+    second = ApprovalOverlay.new(
+        ApprovalRequest.ApplyPatch("thread", "patch-1", Path("C:/repo"), {})
+    )
+
+    state.show_view(first)
+    state.show_view(second)
+
+    assert state.views == [first]
+    assert first.current_request is not None
+    assert first.current_request.id == "exec-1"
+    assert [request.id for request in first.queue] == ["patch-1"]
+
+    first.apply_selection(0)
+
+    assert first.current_request is not None
+    assert first.current_request.id == "patch-1"
+    assert first.done is False
+
+
+def test_terminal_bottom_pane_interrupt_calls_active_view_ctrl_c_contract() -> None:
+    # Fixed Rust bottom_pane::BottomPane::on_ctrl_c gives the active view first
+    # refusal and pops it only after the view reports handled + complete.
+    state = TerminalBottomPaneViewState.new()
+    overlay = ApprovalOverlay.new(
+        ApprovalRequest.Exec(
+            "thread",
+            "exec-1",
+            ["echo", "one"],
+            available_decisions=["Accept", "Cancel"],
+        )
+    )
+    state.show_view(overlay)
+
+    result = state.handle_composer_key("", "interrupt")
+
+    assert result == ""
+    assert overlay.is_complete()
+    assert state.active_view is None
+    assert overlay.emitted_events[-1]["type"] == "ExecApproval"
+    assert overlay.emitted_events[-1]["decision"] == "Cancel"
+
+def test_terminal_bottom_pane_view_state_dismisses_current_and_queued_resolutions() -> None:
+    # Fixed Rust commit 1c7832f:
+    # ServerRequestResolved is correlated by app::app_server_requests and then
+    # offered to BottomPaneView::dismiss_app_server_request.
+    state = TerminalBottomPaneViewState.new()
+    overlay = ApprovalOverlay.new(
+        ApprovalRequest.Exec("thread", "exec-1", ["echo", "one"], available_decisions=["Accept", "Cancel"])
+    )
+    overlay.enqueue_request(
+        ApprovalRequest.ApplyPatch("thread", "patch-drop", Path("C:/repo"), {})
+    )
+    overlay.enqueue_request(
+        ApprovalRequest.Permissions("thread", "perm-next", {})
+    )
+    state.show_view(overlay)
+
+    assert state.dismiss_app_server_request({"kind": "FileChangeApproval", "id": "patch-drop"}) is True
+    assert [request.call_id for request in overlay.queue] == ["perm-next"]
+    assert overlay.current_request is not None
+    assert overlay.current_request.id == "exec-1"
+
+    assert state.dismiss_app_server_request({"kind": "ExecApproval", "id": "exec-1"}) is True
+    assert overlay.current_request is not None
+    assert overlay.current_request.call_id == "perm-next"
+    assert state.active_view is overlay
+
+    assert state.dismiss_app_server_request({"kind": "ExecApproval", "id": "missing"}) is False
+    assert state.active_view is overlay
 
 
 def test_terminal_bottom_pane_view_state_pushes_child_selection_view_from_events() -> None:

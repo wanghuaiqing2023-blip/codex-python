@@ -1,5 +1,7 @@
 """Parity tests for codex-rs/tui/src/history_cell/separators.rs."""
 
+# Rust source: codex/codex-rs/tui/src/history_cell/separators.rs
+
 from pycodex.tui.history_cell.separators import (
     DIVIDER,
     FinalMessageSeparator,

@@ -34,7 +34,7 @@ RUN_EXPERIMENTAL_CONPTY_ENV = "PYCODEX_RUN_EXPERIMENTAL_CONPTY_TUI"
 RUN_VERIFIED_CONPTY_ENV = "PYCODEX_CONPTY_DRIVER_VERIFIED"
 RUN_VERIFIED_CONPTY_TUI_ENV = "PYCODEX_CONPTY_TUI_INPUT_VERIFIED"
 NATIVE_CODEX_EXE_ENV = "PYCODEX_NATIVE_CODEX_EXE"
-DEFAULT_NATIVE_CODEX_EXE = Path(r"C:\Users\27605\AppData\Local\codex-rust-target\codex-rs\debug\codex.exe")
+DEFAULT_NATIVE_CODEX_EXE = Path(r"C:\Users\27605\AppData\Local\codex-rust-target\debug\codex.exe")
 
 _OSC_RE = re.compile(r"\x1b\][^\x07]*(?:\x07|\x1b\\)")
 _ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -80,6 +80,7 @@ class TuiProcessTranscript:
     returncode: int
     stdout: str
     stderr: str
+    observed_ready_sequences: tuple[tuple[str, ...], ...] = ()
 
     def normalized_stdout(self) -> str:
         return normalize_tui_text(self.stdout)
@@ -101,6 +102,34 @@ class TuiProcessTranscript:
         """
 
         return vt_screen_text(self.stdout, rows=rows, cols=cols)
+
+    def write_artifacts(
+        self,
+        directory: str | Path,
+        *,
+        prefix: str,
+        rows: int,
+        cols: int,
+    ) -> tuple[Path, ...]:
+        """Persist raw, normalized, and current-screen session evidence."""
+
+        target = Path(directory)
+        target.mkdir(parents=True, exist_ok=True)
+        artifacts = {
+            f"{prefix}.stdout.raw.txt": self.stdout,
+            f"{prefix}.stderr.raw.txt": self.stderr,
+            f"{prefix}.stdout.normalized.txt": self.normalized_stdout(),
+            f"{prefix}.screen.txt": self.screen_stdout(rows=rows, cols=cols),
+        }
+        paths: list[Path] = []
+        for name, content in artifacts.items():
+            path = target / name
+            # Preserve captured CR/LF and VT bytes exactly. Path.write_text()
+            # applies platform newline translation on Windows, which corrupts
+            # the raw evidence used for Rust/Python session comparisons.
+            path.write_bytes(content.encode("utf-8"))
+            paths.append(path)
+        return tuple(paths)
 
 
 @dataclass(frozen=True)
@@ -168,6 +197,8 @@ def vt_screen_text(value: str, *, rows: int, cols: int) -> str:
     screen = [[" "] * col_count for _ in range(row_count)]
     row = 0
     col = 0
+    scroll_top = 0
+    scroll_bottom = row_count - 1
     stream = _OSC_RE.sub("", value)
     index = 0
     length = len(stream)
@@ -202,6 +233,25 @@ def vt_screen_text(value: str, *, rows: int, cols: int) -> str:
         for c in range(start, end):
             screen[row][c] = " "
 
+    def scroll_up(top: int, bottom: int) -> None:
+        for target in range(top, bottom):
+            screen[target] = list(screen[target + 1])
+        screen[bottom] = [" "] * col_count
+
+    def scroll_down(top: int, bottom: int) -> None:
+        for target in range(bottom, top, -1):
+            screen[target] = list(screen[target - 1])
+        screen[top] = [" "] * col_count
+
+    def line_feed() -> None:
+        nonlocal row
+        if scroll_top <= row <= scroll_bottom and row == scroll_bottom:
+            scroll_up(scroll_top, scroll_bottom)
+        elif row == row_count - 1:
+            scroll_up(0, row_count - 1)
+        else:
+            row += 1
+
     def parse_params(raw: str) -> list[int | None]:
         if not raw:
             return []
@@ -218,6 +268,13 @@ def vt_screen_text(value: str, *, rows: int, cols: int) -> str:
 
     while index < length:
         ch = stream[index]
+        if ch == "\x1b" and index + 1 < length and stream[index + 1] == "M":
+            if scroll_top <= row <= scroll_bottom and row == scroll_top:
+                scroll_down(scroll_top, scroll_bottom)
+            else:
+                row = max(row - 1, 0)
+            index += 2
+            continue
         if ch == "\x1b" and index + 1 < length and stream[index + 1] == "[":
             match = re.match(r"\x1b\[([0-?]*)([ -/]*)([@-~])", stream[index:])
             if not match:
@@ -255,13 +312,18 @@ def vt_screen_text(value: str, *, rows: int, cols: int) -> str:
             elif final == "X":
                 for c in range(col, min(col + count, col_count)):
                     screen[row][c] = " "
+            elif final == "r":
+                top = params[0] if len(params) >= 1 and params[0] is not None else 1
+                bottom = params[1] if len(params) >= 2 and params[1] is not None else row_count
+                scroll_top = min(max(int(top) - 1, 0), row_count - 1)
+                scroll_bottom = min(max(int(bottom) - 1, scroll_top), row_count - 1)
             # SGR/color and mode toggles are intentionally ignored.
             index += len(match.group(0))
             continue
         if ch == "\r":
             col = 0
         elif ch == "\n":
-            row = min(row + 1, row_count - 1)
+            line_feed()
         elif ch == "\b":
             col = max(col - 1, 0)
         elif ch >= " ":
@@ -386,10 +448,21 @@ def build_inline_tui_command(
     native_exe: Path | None = None,
     python_executable: str | None = None,
     extra_args: Sequence[str] = (),
+    sandbox_mode: str = "read-only",
+    approval_policy: str = "never",
 ) -> TuiComparisonCommand:
     """Build equivalent Rust/Python ``--no-alt-screen`` TUI commands."""
 
-    common = ("--no-alt-screen", "-C", str(repo_root), "-s", "read-only", "-a", "never", *map(str, extra_args))
+    common = (
+        "--no-alt-screen",
+        "-C",
+        str(repo_root),
+        "-s",
+        str(sandbox_mode),
+        "-a",
+        str(approval_policy),
+        *map(str, extra_args),
+    )
     if kind == "rust":
         exe = native_exe or native_codex_exe_from_env()
         return TuiComparisonCommand(kind="rust", argv=(str(exe), *common), cwd=repo_root)
@@ -435,16 +508,27 @@ def build_rust_python_inline_pair(
     native_exe: Path | None = None,
     python_executable: str | None = None,
     extra_args: Sequence[str] = (),
+    sandbox_mode: str = "read-only",
+    approval_policy: str = "never",
 ) -> tuple[TuiComparisonCommand, TuiComparisonCommand]:
     """Return Rust then Python commands for the same inline comparison."""
 
     return (
-        build_inline_tui_command("rust", repo_root=repo_root, native_exe=native_exe, extra_args=extra_args),
+        build_inline_tui_command(
+            "rust",
+            repo_root=repo_root,
+            native_exe=native_exe,
+            extra_args=extra_args,
+            sandbox_mode=sandbox_mode,
+            approval_policy=approval_policy,
+        ),
         build_inline_tui_command(
             "python",
             repo_root=repo_root,
             python_executable=python_executable,
             extra_args=extra_args,
+            sandbox_mode=sandbox_mode,
+            approval_policy=approval_policy,
         ),
     )
 
@@ -858,6 +942,7 @@ def run_windows_conpty_tui_command(
     attr_buffer = None
     process_info = _PROCESS_INFORMATION()
     output_chunks: list[bytes] = []
+    observed_ready_sequences: list[tuple[str, ...]] = []
     reader_errors: list[str] = []
     reader: threading.Thread | None = None
 
@@ -982,6 +1067,12 @@ def run_windows_conpty_tui_command(
                     input_error = f"ConPTY ready condition timed out: {expected}"
                     _kernel32.TerminateProcess(process_info.hProcess, 1)
                     break
+                if step.ready_pattern is not None:
+                    observed_ready_sequences.append((step.ready_pattern,))
+                elif step.ready_text_sequence:
+                    observed_ready_sequences.append(tuple(step.ready_text_sequence))
+                else:
+                    observed_ready_sequences.append((step.ready_text or "",))
                 if step.ready_quiet_period > 0 and not _wait_for_windows_conpty_quiet(
                     output_chunks,
                     quiet_period=float(step.ready_quiet_period),
@@ -1045,6 +1136,7 @@ def run_windows_conpty_tui_command(
             returncode=int(exit_code.value),
             stdout=raw_output,
             stderr=stderr,
+            observed_ready_sequences=tuple(observed_ready_sequences),
         )
     finally:
         if attr_buffer is not None and os.name == "nt" and ctypes is not None:

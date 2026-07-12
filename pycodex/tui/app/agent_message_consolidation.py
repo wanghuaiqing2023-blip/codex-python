@@ -7,10 +7,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from .._porting import RustTuiModule
 from ..app_event import ConsolidationScrollbackReflow
+from ..history_cell.messages import AgentMarkdownCell, AgentMessageCell
 
 
 RUST_MODULE = RustTuiModule(
@@ -21,24 +22,17 @@ RUST_MODULE = RustTuiModule(
 )
 
 
-@dataclass(frozen=True)
-class AgentMessageCell:
-    """Semantic stand-in for transient streaming ``AgentMessageCell`` values."""
+@dataclass
+class TerminalTranscriptState:
+    """App-owned canonical transcript cells for the terminal product path."""
 
-    lines: tuple[Any, ...] = ()
-    is_first_line: bool = False
+    cells: list[Any] = field(default_factory=list)
 
+    def append(self, cell: Any) -> None:
+        self.cells.append(cell)
 
-@dataclass(frozen=True)
-class AgentMarkdownCell:
-    """Source-backed canonical transcript cell produced after consolidation."""
-
-    source: str
-    cwd: Path
-
-    @classmethod
-    def new(cls, source: str, cwd: Any) -> "AgentMarkdownCell":
-        return cls(source=source, cwd=Path(cwd))
+    def clear(self) -> None:
+        self.cells.clear()
 
 
 @dataclass
@@ -112,6 +106,55 @@ class AgentMessageConsolidationApp:
             scrollback_reflow,
             deferred_history_cell,
         )
+
+
+@dataclass
+class TerminalAgentMessageConsolidator:
+    """Bind terminal projection retention to the Rust consolidation boundary.
+
+    The Python terminal stream is one mutable live tail rather than Rust's
+    incremental run of ``AgentMessageCell`` values. Finalization therefore
+    retains one source-backed projection here before ``resize_reflow`` performs
+    the Rust ``ConsolidationScrollbackReflow::Required`` rebuild.
+    """
+
+    transcript: TerminalTranscriptState
+    write_transient_cell: Callable[[AgentMessageCell], Any]
+    replace_projection_run: Callable[[int, Any], Any]
+    run_required_reflow: Callable[[], Any]
+    run_conditional_reflow: Callable[[], Any]
+    _projected_transient_cells: int = 0
+
+    def append_transient(self, cell: AgentMessageCell) -> None:
+        self.transcript.append(cell)
+        self.write_transient_cell(cell)
+        self._projected_transient_cells += 1
+
+    def consolidate(
+        self,
+        source: str,
+        cwd: str | Path,
+        scrollback_reflow: ConsolidationScrollbackReflow,
+        deferred_history_cell: AgentMessageCell | None = None,
+    ) -> AgentMarkdownCell:
+        if deferred_history_cell is not None:
+            self.transcript.append(deferred_history_cell)
+        end = len(self.transcript.cells)
+        start = trailing_agent_message_run_start(self.transcript.cells)
+        consolidated = AgentMarkdownCell.new(source, cwd)
+        transcript_replaced = max(0, end - start)
+        if transcript_replaced:
+            self.transcript.cells[start:end] = [consolidated]
+        else:
+            self.transcript.append(consolidated)
+        projected_replaced = self._projected_transient_cells
+        self._projected_transient_cells = 0
+        self.replace_projection_run(projected_replaced, consolidated)
+        if scrollback_reflow is ConsolidationScrollbackReflow.REQUIRED:
+            self.run_required_reflow()
+        else:
+            self.run_conditional_reflow()
+        return consolidated
 
 
 def _is_agent_message_cell(cell: Any) -> bool:
@@ -252,6 +295,8 @@ __all__ = [
     "RUST_MODULE",
     "TranscriptOverlay",
     "Tui",
+    "TerminalAgentMessageConsolidator",
+    "TerminalTranscriptState",
     "consolidates_trailing_agent_message_cells",
     "deferred_history_cell_is_inserted_before_consolidation",
     "handle_consolidate_agent_message",

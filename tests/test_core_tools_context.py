@@ -205,6 +205,22 @@ class CoreToolsContextTests(unittest.TestCase):
         self.assertIn("\nOutput:\n", text)
         self.assertIn("tokens truncated", text)
 
+    def test_exec_command_tool_output_smart_decodes_shell_bytes(self) -> None:
+        # Rust owner: protocol::exec_output::bytes_to_string_smart. Tool
+        # response projection must not bypass the protocol decoder.
+        response = ExecCommandToolOutput(
+            event_call_id="call-legacy",
+            chunk_id="",
+            wall_time_seconds=0.1,
+            raw_output=b"\x93test\x94",
+            truncation_policy=TruncationPolicyConfig.tokens(10_000),
+            exit_code=0,
+        ).to_response_item("call-legacy", ToolPayload.function("{}"))
+
+        assert response.output.body.text is not None
+        self.assertIn("“test”", response.output.body.text)
+        self.assertNotIn("�", response.output.body.text)
+
     def test_function_tool_response_uses_content_items_for_multi_item_body(self) -> None:
         # Rust helper behavior: single text bodies become text payloads; mixed bodies remain content items.
         body = (

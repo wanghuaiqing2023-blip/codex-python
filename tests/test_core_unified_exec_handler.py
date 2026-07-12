@@ -43,6 +43,8 @@ from pycodex.protocol import (
     CODEX_THREAD_ID_ENV_VAR,
     FileSystemPermissions,
     GranularApprovalConfig,
+    PermissionProfile,
+    ReviewDecision,
     SandboxPermissions,
     ShellEnvironmentPolicy,
     ShellEnvironmentPolicyInherit,
@@ -289,6 +291,86 @@ class CoreUnifiedExecHandlerTests(unittest.TestCase):
         self.assertFalse(request.additional_permissions_preapproved)
         self.assertEqual(request.justification, "test escalation")
         self.assertEqual(request.prefix_rule, ("echo",))
+
+    def test_exec_command_handler_awaits_typed_approval_before_manager_execution(self) -> None:
+        # Fixed Rust commit 1c7832f:
+        # core::unified_exec::process_manager::open_session_with_sandbox ->
+        # tools::orchestrator::ToolOrchestrator::run ->
+        # tools::runtimes::unified_exec::UnifiedExecRuntime::start_approval_async.
+        order: list[str] = []
+        approvals: list[tuple[object, ...]] = []
+
+        class Manager:
+            async def allocate_process_id(self) -> int:
+                return 77
+
+            async def exec_command(self, request: ExecCommandRequest) -> ExecCommandToolOutput:
+                order.append("execute")
+                return ExecCommandToolOutput(
+                    event_call_id=request.call_id,
+                    chunk_id="approved",
+                    wall_time_seconds=0.1,
+                    raw_output=b"approved\n",
+                    truncation_policy=request.truncation_policy,
+                    process_id=None,
+                    exit_code=0,
+                    hook_command=request.hook_command,
+                )
+
+        class Session:
+            def __init__(self, manager: Manager) -> None:
+                self.services = SimpleNamespace(unified_exec_manager=manager)
+                self.permission_profile = PermissionProfile.read_only()
+                self.features = SimpleNamespace(enabled=lambda _feature: False)
+
+            def user_shell(self) -> Shell:
+                return Shell(ShellType.SH, shutil.which("sh") or "/bin/sh")
+
+            async def request_command_approval(self, *args: object) -> ReviewDecision:
+                order.append("approval")
+                approvals.append(args)
+                return ReviewDecision.approved()
+
+        manager = Manager()
+        root = Path.cwd()
+        session = Session(manager)
+        turn = SimpleNamespace(
+            approval_policy=AskForApproval.ON_REQUEST,
+            permission_profile=session.permission_profile,
+            file_system_sandbox_policy=session.permission_profile.file_system_sandbox_policy(),
+            environments=(SimpleNamespace(environment_id="local", cwd=root),),
+            truncation_policy=TruncationPolicyConfig.tokens(123),
+        )
+        invocation = ToolInvocation(
+            call_id="call-approval-product",
+            tool_name="exec_command",
+            payload=ToolPayload.function(
+                json.dumps(
+                    {
+                        "cmd": "rm -rf /important/data",
+                        "sandbox_permissions": "require_escalated",
+                        "justification": "fixed-rust approval fixture",
+                    }
+                )
+            ),
+            session=session,
+            turn=turn,
+        )
+
+        output = asyncio.run(ExecCommandHandler().handle(invocation))
+
+        self.assertEqual(order, ["approval", "execute"])
+        self.assertEqual(output.raw_output, b"approved\n")
+        self.assertEqual(len(approvals), 1)
+        approval = approvals[0]
+        self.assertIs(approval[0], turn)
+        self.assertEqual(approval[1], "call-approval-product")
+        self.assertEqual(
+            tuple(approval[3]),
+            get_command(ExecCommandArgs("rm -rf /important/data"), session.user_shell()).command,
+        )
+        self.assertEqual(Path(approval[4]), root)
+        self.assertEqual(approval[5], "fixed-rust approval fixture")
 
     def test_exec_command_handler_emits_implicit_skill_invocation_before_execution(self) -> None:
         # Rust source: codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs

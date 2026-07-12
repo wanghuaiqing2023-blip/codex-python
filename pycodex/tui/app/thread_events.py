@@ -324,16 +324,32 @@ def _coerce_request(request: Union[ServerRequest, Dict[str, Any], Any]) -> Serve
     if isinstance(request, ServerRequest):
         return request
     if isinstance(request, dict):
-        return ServerRequest(str(request.get("kind") or request.get("type")), request.get("request_id"), dict(request.get("params") or {}))
-    return ServerRequest(str(getattr(request, "kind", getattr(request, "type", request.__class__.__name__))), getattr(request, "request_id"), dict(getattr(request, "params", {}) or {}))
+        request_id = request.get("request_id", request.get("requestId", request.get("id")))
+        return ServerRequest(str(request.get("kind") or request.get("type")), request_id, dict(request.get("params") or {}))
+    request_id = getattr(request, "request_id", None)
+    if request_id is None:
+        request_id = getattr(request, "id", None)
+    return ServerRequest(str(getattr(request, "kind", getattr(request, "type", request.__class__.__name__))), request_id, dict(getattr(request, "params", {}) or {}))
 
 
 def _coerce_notification(notification: Union[ServerNotification, Dict[str, Any], Any]) -> ServerNotification:
     if isinstance(notification, ServerNotification):
         return notification
-    if isinstance(notification, dict):
-        return ServerNotification(str(notification.get("kind") or notification.get("type")), notification.get("request_id"), notification.get("turn_id"), notification.get("item"))
-    return ServerNotification(str(getattr(notification, "kind", getattr(notification, "type", notification.__class__.__name__))), getattr(notification, "request_id", None), getattr(notification, "turn_id", None), getattr(notification, "item", None))
+    kind = _value(notification, "kind", _value(notification, "type", notification.__class__.__name__))
+    payload = _value(notification, "payload", notification)
+    request_id = _value(payload, "request_id", _value(payload, "requestId", None))
+    turn_id = _value(payload, "turn_id", _value(payload, "turnId", None))
+    turn = _value(payload, "turn", None)
+    if turn_id is None:
+        turn_id = _value(turn, "id", None)
+    item = _value(payload, "item", None)
+    return ServerNotification(str(kind), request_id, None if turn_id is None else str(turn_id), item)
+
+
+def _value(value: Any, name: str, default: Any = None) -> Any:
+    if isinstance(value, dict):
+        return value.get(name, default)
+    return getattr(value, name, default)
 
 
 def _coerce_turn(turn: Union[Turn, Dict[str, Any], Any]) -> Turn:

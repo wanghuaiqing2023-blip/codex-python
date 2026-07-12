@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# Rust source: codex/codex-rs/tui/src/app/thread_routing.rs
+
 from collections import deque
 from types import SimpleNamespace
 

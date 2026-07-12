@@ -11,6 +11,8 @@ from pycodex.tui.pager_overlay import (
     paragraph_block,
     transcript_overlay,
 )
+from pycodex.tui.line_truncation import Line
+from pycodex.tui.terminal_hyperlinks import HyperlinkLine
 
 
 def test_transcript_overlay_renders_live_tail() -> None:
@@ -208,6 +210,63 @@ def test_static_overlay_wraps_long_lines() -> None:
         "within a narrow pager ov",
         "erlay width",
     ]
+
+
+def test_transcript_overlay_uses_history_cell_full_transcript_projection() -> None:
+    """Rust pager_overlay::CellRenderable uses transcript_hyperlink_lines, not display lines."""
+
+    class TruncatedExecCell:
+        def display_lines(self, _width: int):
+            return [Line.from_text("...+9 lines (ctrl + t to view transcript)")]
+
+        def transcript_hyperlink_lines(self, _width: int):
+            return [HyperlinkLine.new("line one"), HyperlinkLine.new("line two")]
+
+        def is_stream_continuation(self) -> bool:
+            return False
+
+    overlay = TranscriptOverlay.new([TruncatedExecCell()])
+    lines = overlay.render_frame(Rect(0, 0, 48, 12))
+
+    assert any("T R A N S C R I P T" in line for line in lines)
+    assert "line one" in "\n".join(lines)
+    assert "line two" in "\n".join(lines)
+    assert "...+9 lines" not in "\n".join(lines)
+
+
+def test_transcript_overlay_ctrl_t_closes_and_navigation_scrolls() -> None:
+    """Rust pager_overlay handles pager navigation and close_transcript via the shared view."""
+
+    overlay = transcript_overlay([TextRenderable([f"line-{index}"]) for index in range(40)])
+    area = Rect(0, 0, 40, 12)
+    overlay.render_frame(area)
+    before = overlay.view.scroll_offset
+
+    assert overlay.handle_input("up", "", area)
+    overlay.render_frame(area)
+    assert overlay.view.scroll_offset == max(0, before - 1)
+    assert overlay.handle_input("ctrl_t", "", area)
+    assert overlay.is_done()
+
+
+def test_transcript_overlay_normalizes_windows_and_ansi_navigation_payloads() -> None:
+    """Rust event_stream -> PagerKeymap accepts named and ANSI navigation forms."""
+
+    overlay = transcript_overlay([TextRenderable([f"line-{index}"]) for index in range(80)])
+    area = Rect(0, 0, 40, 12)
+    overlay.render_frame(area)
+
+    assert overlay.handle_input("text", "home", area)
+    overlay.render_frame(area)
+    assert overlay.view.scroll_offset == 0
+
+    assert overlay.handle_input("text", "\x1b[6~", area)
+    overlay.render_frame(area)
+    assert overlay.view.scroll_offset == overlay.view.page_height(Rect(0, 0, 40, 9))
+
+    assert overlay.handle_input("PageUp", "", area)
+    overlay.render_frame(area)
+    assert overlay.view.scroll_offset == 0
 
 
 def test_pager_view_content_height_counts_renderables() -> None:

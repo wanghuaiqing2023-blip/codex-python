@@ -186,6 +186,30 @@ def test_terminal_bottom_pane_frame_projects_popup_rows_to_buffer() -> None:
     assert buffer.cell(0, 10).style.fg is None
 
 
+def test_terminal_bottom_pane_frame_renders_wrapped_composer_rows() -> None:
+    # Fixed Rust owner: chatwidget::rendering composes every wrapped textarea
+    # row into the frame before custom_terminal performs its diff.
+    size = os.terminal_size((12, 12))
+
+    frame = terminal_bottom_pane_frame(
+        size,
+        TerminalBottomPaneState(
+            draft="alpha beta gamma",
+            footer_text="footer",
+        ),
+    )
+
+    assert frame.clear_rows == (7, 8, 9, 10, 11, 12)
+    assert frame.writes == (
+        TerminalBottomPaneFrameWrite(8, 1, "\u203a alpha"),
+        TerminalBottomPaneFrameWrite(9, 1, "  beta"),
+        TerminalBottomPaneFrameWrite(10, 1, "  gamma"),
+        TerminalBottomPaneFrameWrite(12, 1, "footer"),
+    )
+    assert frame.cursor_row == 10
+    assert frame.cursor_column == 8
+
+
 def test_terminal_bottom_pane_frame_clear_rows_cover_previous_larger_popup_footprint() -> None:
     # Rust owner: codex-tui::chatwidget::rendering composes the frame rows that
     # custom_terminal later clears/draws. The surface adapter should not own

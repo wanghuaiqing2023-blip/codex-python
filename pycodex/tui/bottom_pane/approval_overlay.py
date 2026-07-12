@@ -5,9 +5,28 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple, Union
+import textwrap
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple, Union
 
 from .._porting import RustTuiModule
+from ..app_event_sender import AppEventSender
+from ..history_cell.approvals import (
+    ApprovalDecisionActor,
+    ApprovalDecisionSubject,
+    ReviewDecision as HistoryReviewDecision,
+    new_approval_decision_cell,
+)
+from ..history_cell.base import PlainHistoryCell
+from ..line_truncation import Line
+from ...protocol.request_permissions import (
+    PermissionGrantScope,
+    RequestPermissionProfile,
+    RequestPermissionsResponse,
+)
+from .bottom_pane_view import BottomPaneViewDefaults, CancellationEvent, ViewCompletion
+from .list_selection_view import ListSelectionView, SelectionItem, SelectionViewParams
+from .selection_popup_common import TerminalPopupLine
+from ..keymap import RuntimeKeymap
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -105,15 +124,17 @@ class ApprovalOption:
 class ApprovalKeymap:
     approve: Tuple[str, ...] = ("y",)
     approve_for_session: Tuple[str, ...] = ("a",)
-    deny: Tuple[str, ...] = ("n",)
+    approve_for_prefix: Tuple[str, ...] = ("p",)
+    deny: Tuple[str, ...] = ("d",)
+    decline: Tuple[str, ...] = ("Esc", "n")
     strict_auto_review: Tuple[str, ...] = ("r",)
-    cancel: Tuple[str, ...] = ("Esc",)
+    cancel: Tuple[str, ...] = ("c",)
     open_fullscreen: Tuple[str, ...] = ("ctrl+shift+a",)
     open_thread: Tuple[str, ...] = ("o",)
 
 
 @dataclass
-class ApprovalOverlay:
+class ApprovalOverlay(BottomPaneViewDefaults):
     current_request: Optional[ApprovalRequest]
     app_event_tx: Any = None
     features: Any = None
@@ -124,6 +145,8 @@ class ApprovalOverlay:
     current_complete: bool = False
     done: bool = False
     emitted_events: List[Dict[str, Any]] = field(default_factory=list)
+    selection_view: Optional[ListSelectionView] = None
+    completion_value: Optional[ViewCompletion] = None
 
     @classmethod
     def new(
@@ -159,7 +182,22 @@ class ApprovalOverlay:
     def set_current(self, request: ApprovalRequest) -> None:
         self.current_complete = False
         self.current_request = request
-        self.options, _params = self.build_options(request, build_header(request), self.features, self.approval_keymap, self.list_keymap)
+        self.options, params = self.build_options(
+            request,
+            build_header(request),
+            self.features,
+            self.approval_keymap,
+            self.list_keymap,
+        )
+        params.items = [
+            SelectionItem(
+                name=option.label,
+                display_shortcut=_binding_label(option.shortcuts[0]) if option.shortcuts else None,
+                actions=[lambda _tx, idx=idx: self.apply_selection(idx)],
+            )
+            for idx, option in enumerate(self.options)
+        ]
+        self.selection_view = ListSelectionView.new(params, self.app_event_tx, self.list_keymap)
 
     @staticmethod
     def build_options(
@@ -168,7 +206,7 @@ class ApprovalOverlay:
         features: Any = None,
         approval_keymap: Optional[ApprovalKeymap] = None,
         list_keymap: Any = None,
-    ) -> Tuple[List[ApprovalOption], Dict[str, Any]]:
+    ) -> Tuple[List[ApprovalOption], SelectionViewParams]:
         del features
         keymap = approval_keymap or ApprovalKeymap()
         if request.kind == "Exec":
@@ -192,7 +230,12 @@ class ApprovalOverlay:
         else:
             options = elicitation_options(keymap)
             title = f"{request.server_name} needs your approval."
-        return options, {"title": title, "header": header, "footer_hint": approval_footer_hint(request, keymap, list_keymap)}
+        return options, SelectionViewParams(
+            view_id="approval-overlay",
+            header=[title, "", *(header or [])],
+            footer_hint=approval_footer_hint(request, keymap, list_keymap),
+            initial_selected_idx=0,
+        )
 
     def apply_selection(self, actual_idx: int) -> None:
         if self.current_complete or self.current_request is None:
@@ -210,10 +253,37 @@ class ApprovalOverlay:
         elif request.kind == "McpElicitation" and option.decision_kind is ApprovalDecision.MCP_ELICITATION:
             self.handle_elicitation_decision(request.server_name or "", request.request_id, option.decision)
         self.current_complete = True
+        self.completion_value = ViewCompletion.ACCEPTED
         self.advance_queue()
 
     def handle_exec_decision(self, id: str, command: List[str], decision: str) -> None:
         request = self.current_request
+        if request is not None and request.thread_label is None:
+            if request.network_approval_context is not None:
+                subject = ApprovalDecisionSubject.network_access(
+                    network_approval_target(request.network_approval_context, command)
+                )
+            else:
+                command_target = network_approval_command_target(command)
+                subject = (
+                    ApprovalDecisionSubject.network_access(command_target)
+                    if command_target is not None
+                    else ApprovalDecisionSubject.command_subject(command)
+                )
+            self._insert_history_cell(
+                new_approval_decision_cell(
+                    subject,
+                    command_decision_to_review_decision(decision),
+                    ApprovalDecisionActor.User,
+                )
+            )
+        if isinstance(self.app_event_tx, AppEventSender):
+            self.app_event_tx.exec_approval(
+                None if request is None else request.thread_id,
+                id,
+                decision,
+            )
+            return
         self._emit(
             "ExecApproval",
             thread_id=None if request is None else request.thread_id,
@@ -227,6 +297,36 @@ class ApprovalOverlay:
         strict_auto_review = decision is PermissionsDecision.GRANT_FOR_TURN_WITH_STRICT_AUTO_REVIEW
         granted = {} if decision is PermissionsDecision.DENY else permissions
         request = self.current_request
+        if request is not None and request.thread_label is None:
+            if decision is PermissionsDecision.DENY:
+                message = "You did not grant additional permissions"
+            elif strict_auto_review:
+                message = "You granted additional permissions with strict auto review"
+            elif decision is PermissionsDecision.GRANT_FOR_SESSION:
+                message = "You granted additional permissions for this session"
+            else:
+                message = "You granted additional permissions"
+            self._insert_history_cell(PlainHistoryCell.new([Line.from_text(message)]))
+        if isinstance(self.app_event_tx, AppEventSender):
+            response_permissions = (
+                RequestPermissionProfile()
+                if decision is PermissionsDecision.DENY
+                else permissions
+            )
+            self.app_event_tx.request_permissions_response(
+                None if request is None else request.thread_id,
+                call_id,
+                RequestPermissionsResponse(
+                    permissions=response_permissions,
+                    scope=(
+                        PermissionGrantScope.SESSION
+                        if decision is PermissionsDecision.GRANT_FOR_SESSION
+                        else PermissionGrantScope.TURN
+                    ),
+                    strict_auto_review=strict_auto_review,
+                ),
+            )
+            return
         self._emit(
             "RequestPermissionsResponse",
             thread_id=None if request is None else request.thread_id,
@@ -238,10 +338,27 @@ class ApprovalOverlay:
 
     def handle_patch_decision(self, id: str, decision: str) -> None:
         request = self.current_request
+        if isinstance(self.app_event_tx, AppEventSender):
+            self.app_event_tx.patch_approval(
+                None if request is None else request.thread_id,
+                id,
+                decision,
+            )
+            return
         self._emit("PatchApproval", thread_id=None if request is None else request.thread_id, id=id, decision=decision)
 
     def handle_elicitation_decision(self, server_name: str, request_id: Any, decision: str) -> None:
         request = self.current_request
+        if isinstance(self.app_event_tx, AppEventSender):
+            self.app_event_tx.resolve_elicitation(
+                None if request is None else request.thread_id,
+                server_name,
+                request_id,
+                decision,
+                None,
+                None,
+            )
+            return
         self._emit(
             "ResolveElicitation",
             thread_id=None if request is None else request.thread_id,
@@ -273,42 +390,93 @@ class ApprovalOverlay:
                 self.handle_elicitation_decision(request.server_name or "", request.request_id, "Cancel")
         self.queue.clear()
         self.done = True
+        self.completion_value = ViewCompletion.CANCELLED
 
     def try_handle_shortcut(self, key_event: Any) -> bool:
         key = _key_name(key_event)
-        if key in self.approval_keymap.open_fullscreen and self.current_request is not None:
-            self._emit("FullScreenApprovalRequest", request=self.current_request)
+        if any(_binding_matches(binding, key) for binding in self.approval_keymap.open_fullscreen) and self.current_request is not None:
+            if isinstance(self.app_event_tx, AppEventSender):
+                self.app_event_tx.full_screen_approval_request(self.current_request)
+            else:
+                self._emit("FullScreenApprovalRequest", request=self.current_request)
             return True
-        if key in self.approval_keymap.open_thread and self.current_request is not None and self.current_request.thread_label:
-            self._emit("OpenThread", thread_id=self.current_request.thread_id)
+        if any(_binding_matches(binding, key) for binding in self.approval_keymap.open_thread) and self.current_request is not None and self.current_request.thread_label:
+            if isinstance(self.app_event_tx, AppEventSender):
+                self.app_event_tx.select_agent_thread(self.current_request.thread_id)
+            else:
+                self._emit("SelectAgentThread", thread_id=self.current_request.thread_id)
             return True
         for idx, option in enumerate(self.options):
-            if key in option.shortcuts:
+            if any(_binding_matches(shortcut, key) for shortcut in option.shortcuts):
                 self.apply_selection(idx)
                 return True
         return False
 
     def handle_key_event(self, key_event: Any) -> None:
         key = _key_name(key_event)
-        if self.current_request is not None and self.current_request.kind == "McpElicitation" and key == "Esc":
+        if self.current_request is not None and self.current_request.kind == "McpElicitation" and key == "esc":
             self.cancel_current_request()
             return
         if self.try_handle_shortcut(key_event):
             return
-        if key in {"Esc", "ctrl+c"}:
+        if key in {"esc", "ctrl+c"}:
             self.cancel_current_request()
-        elif key == "Enter":
-            self.apply_selection(0)
+        elif self.selection_view is not None:
+            self.selection_view.handle_key_event(key)
 
-    def on_ctrl_c(self) -> str:
+    def on_ctrl_c(self) -> CancellationEvent:
         self.cancel_current_request()
-        return "Handled"
+        return CancellationEvent.HANDLED
 
     def is_complete(self) -> bool:
         return self.done
 
-    def try_consume_approval_request(self) -> Optional[ApprovalRequest]:
-        return self.current_request
+    def completion(self) -> ViewCompletion | None:
+        return self.completion_value
+
+    def view_id(self) -> str | None:
+        return "approval-overlay"
+
+    def selected_index(self) -> int | None:
+        return None if self.selection_view is None else self.selection_view.selected_index()
+
+    def terminal_lines(self, *, width: int) -> List[TerminalPopupLine]:
+        if self.selection_view is None:
+            return []
+        width = max(int(width), 1)
+        header = _as_text_lines(self.selection_view.active_header())
+        lines: List[TerminalPopupLine] = [TerminalPopupLine("", False)]
+        for header_line in header:
+            lines.extend(
+                TerminalPopupLine(line, False)
+                for line in _inset_wrap(header_line, width)
+            )
+        lines.append(TerminalPopupLine("", False))
+        selected_idx = self.selection_view.selected_index()
+        for idx, option in enumerate(self.options):
+            selected = idx == selected_idx
+            prefix = "›" if selected else " "
+            shortcut = _first_binding_label(option.shortcuts)
+            text = f"{prefix} {idx + 1}. {option.label}"
+            if shortcut:
+                text += f" ({shortcut})"
+            lines.extend(
+                TerminalPopupLine(line, selected)
+                for line in _wrap_approval_option(text, width)
+            )
+        footer = self.selection_view.active_footer_hint()
+        if footer is not None:
+            lines.append(TerminalPopupLine("", False))
+            for footer_line in _as_text_lines(footer):
+                lines.extend(
+                    TerminalPopupLine(line, False)
+                    for line in _inset_wrap(footer_line, width)
+                )
+        return lines
+
+    def try_consume_approval_request(self, request: ApprovalRequest) -> None:
+        self.enqueue_request(request)
+        return None
 
     def dismiss_app_server_request(self, request: Any) -> bool:
         return self.dismiss_resolved_request(request)
@@ -317,12 +485,12 @@ class ApprovalOverlay:
         return not self.done
 
     def desired_height(self, width: int = 80) -> int:
-        del width
-        return len(render_overlay_lines(self))
+        return len(self.terminal_lines(width=width))
 
     def render(self, area: Any = None, buf: Any = None) -> List[str]:
         del area
-        lines = render_overlay_lines(self)
+        width = 80 if area is None else _area_width(area)
+        lines = [line.text for line in self.terminal_lines(width=max(width, 1))]
         if isinstance(buf, list):
             buf.extend(lines)
         return lines
@@ -335,6 +503,12 @@ class ApprovalOverlay:
         self.emitted_events.append(event)
         if hasattr(self.app_event_tx, "send"):
             self.app_event_tx.send(event)
+
+    def _insert_history_cell(self, cell: Any) -> None:
+        if isinstance(self.app_event_tx, AppEventSender):
+            self.app_event_tx.insert_history_cell(cell)
+            return
+        self._emit("InsertHistoryCell", cell=cell)
 
 
 def handle_key_event(view: ApprovalOverlay, key_event: Any) -> None:
@@ -350,7 +524,7 @@ def is_complete(view: ApprovalOverlay) -> bool:
 
 
 def try_consume_approval_request(view: ApprovalOverlay) -> Optional[ApprovalRequest]:
-    return view.try_consume_approval_request()
+    return view.current_request
 
 
 def dismiss_app_server_request(view: ApprovalOverlay, request: Any) -> bool:
@@ -374,11 +548,22 @@ def cursor_pos(view: ApprovalOverlay) -> None:
 
 
 def approval_footer_hint(request: ApprovalRequest, approval_keymap: Optional[ApprovalKeymap] = None, list_keymap: Any = None) -> str:
-    del list_keymap
     keymap = approval_keymap or ApprovalKeymap()
-    base = f"Press {keymap.approve[0]} to confirm or {keymap.cancel[0]} to cancel"
+    runtime_list = list_keymap or RuntimeKeymap.built_in_defaults().list
+    accept = _first_binding_label(getattr(runtime_list, "accept", ()))
+    cancel = _first_binding_label(getattr(runtime_list, "cancel", ()))
+    if accept and cancel:
+        base = f"Press {accept} to confirm or {cancel} to cancel"
+    elif accept:
+        base = f"Press {accept} to confirm"
+    elif cancel:
+        base = f"Press {cancel} to cancel"
+    else:
+        base = ""
     if request.thread_label:
-        return f"{base}; {keymap.open_thread[0]} to open thread"
+        open_thread = _first_binding_label(keymap.open_thread)
+        if open_thread:
+            return f"{base} or {open_thread} to open thread" if base else f"Press {open_thread} to open thread"
     return base
 
 
@@ -401,32 +586,44 @@ def build_header(request: ApprovalRequest) -> List[str]:
     lines: List[str] = []
     if request.thread_label:
         lines.append(f"Thread: {request.thread_label}")
+        lines.append("")
     if request.reason:
         lines.append(f"Reason: {request.reason}")
+        if request.kind != "ApplyPatch":
+            lines.append("")
     if request.kind == "Exec" and request.network_approval_context is None:
+        if request.additional_permissions is not None:
+            rule = format_additional_permissions_rule(request.additional_permissions)
+            if rule:
+                lines.append(f"Permission rule: {rule}")
+                lines.append("")
         lines.append("$ " + " ".join(request.command))
     elif request.kind == "Permissions":
         rule = format_requested_permissions_rule(request.permissions)
         if rule:
             lines.append(f"Permission rule: {rule}")
-    elif request.kind == "ApplyPatch":
-        lines.extend(str(path) for path in request.changes)
     elif request.kind == "McpElicitation" and request.message:
         lines.append(request.message)
-    if request.additional_permissions is not None:
-        rule = format_additional_permissions_rule(request.additional_permissions)
-        if rule:
-            lines.append(f"Permission rule: {rule}")
     return lines
 
 
-def command_decision_to_review_decision(decision: str) -> str:
-    return {
-        "Accept": "Approved",
-        "AcceptForSession": "ApprovedForSession",
-        "Denied": "Denied",
-        "Cancel": "Denied",
-    }.get(str(decision), str(decision))
+def command_decision_to_review_decision(decision: Any) -> HistoryReviewDecision:
+    name = _command_decision_name(decision)
+    if name == "Accept":
+        return HistoryReviewDecision.approved()
+    if name == "AcceptForSession":
+        return HistoryReviewDecision.approved_for_session()
+    if name == "AcceptWithExecpolicyAmendment":
+        amendment = _get(decision, "proposed_execpolicy_amendment")
+        return HistoryReviewDecision.approved_execpolicy_amendment(amendment)
+    if name == "ApplyNetworkPolicyAmendment":
+        amendment = _get(decision, "network_policy_amendment")
+        return HistoryReviewDecision.network_policy_amendment_decision(amendment)
+    if name in {"Decline", "Denied"}:
+        return HistoryReviewDecision.denied()
+    if name == "Cancel":
+        return HistoryReviewDecision.abort()
+    raise ValueError(f"unsupported command approval decision: {decision!r}")
 
 
 def exec_options(
@@ -435,56 +632,81 @@ def exec_options(
     additional_permissions: Any = None,
     approval_keymap: Optional[ApprovalKeymap] = None,
 ) -> List[ApprovalOption]:
-    del additional_permissions
     keymap = approval_keymap or ApprovalKeymap()
     decisions = list(available_decisions) or ["Accept", "Cancel"]
-    labels = {
-        "Accept": "Yes, allow once",
-        "AcceptForSession": "Yes, and don't ask again this session",
-        "Denied": "No, deny",
-        "Cancel": "No, cancel",
-        "ApplyNetworkPolicyAmendment": "Yes, allow network access",
-    }
     options: List[ApprovalOption] = []
     for decision in decisions:
-        if network_approval_context is not None and decision == "AcceptForSession":
-            continue
-        shortcuts = keymap.approve if decision in {"Accept", "ApplyNetworkPolicyAmendment"} else (
-            keymap.approve_for_session if decision == "AcceptForSession" else keymap.deny
-        )
-        options.append(ApprovalOption(labels.get(str(decision), str(decision)), ApprovalDecision.COMMAND, decision, tuple(shortcuts)))
+        name = _command_decision_name(decision)
+        if name == "Accept":
+            label = "Yes, just this once" if network_approval_context is not None else "Yes, proceed"
+            shortcuts = keymap.approve
+        elif name == "AcceptForSession":
+            if network_approval_context is not None:
+                label = "Yes, and allow this host for this conversation"
+            elif additional_permissions is not None:
+                label = "Yes, and allow these permissions for this session"
+            else:
+                label = "Yes, and don't ask again for this command in this session"
+            shortcuts = keymap.approve_for_session
+        elif name == "AcceptWithExecpolicyAmendment":
+            amendment = _get(decision, "execpolicy_amendment", _get(decision, "proposed_execpolicy_amendment", {}))
+            prefix = " ".join(_get(amendment, "command", ()) or ())
+            if "\n" in prefix or "\r" in prefix:
+                continue
+            label = f"Yes, and don't ask again for commands that start with `{prefix}`"
+            shortcuts = keymap.approve_for_prefix
+        elif name == "ApplyNetworkPolicyAmendment":
+            amendment = _get(decision, "network_policy_amendment", {})
+            action = str(_get(amendment, "action", "Allow")).lower()
+            if action == "deny":
+                label = "No, and block this host in the future"
+                shortcuts = keymap.deny
+            else:
+                label = "Yes, and allow this host in the future"
+                shortcuts = keymap.approve_for_prefix
+        elif name == "Decline":
+            label = "No, continue without running it"
+            shortcuts = keymap.deny
+        elif name == "Cancel":
+            label = "No, and tell Codex what to do differently"
+            shortcuts = keymap.decline
+        else:
+            label = name
+            shortcuts = keymap.deny
+        options.append(ApprovalOption(label, ApprovalDecision.COMMAND, decision, tuple(shortcuts)))
     return options
 
 
 def patch_options(approval_keymap: Optional[ApprovalKeymap] = None) -> List[ApprovalOption]:
     keymap = approval_keymap or ApprovalKeymap()
     return [
-        ApprovalOption("Yes, apply changes", ApprovalDecision.FILE_CHANGE, "Accept", keymap.approve),
-        ApprovalOption("No, cancel", ApprovalDecision.FILE_CHANGE, "Cancel", keymap.deny),
+        ApprovalOption("Yes, proceed", ApprovalDecision.FILE_CHANGE, "Accept", keymap.approve),
+        ApprovalOption("Yes, and don't ask again for these files", ApprovalDecision.FILE_CHANGE, "AcceptForSession", keymap.approve_for_session),
+        ApprovalOption("No, and tell Codex what to do differently", ApprovalDecision.FILE_CHANGE, "Cancel", keymap.decline),
     ]
 
 
 def permissions_options(approval_keymap: Optional[ApprovalKeymap] = None) -> List[ApprovalOption]:
     keymap = approval_keymap or ApprovalKeymap()
     return [
-        ApprovalOption("Allow for this turn", ApprovalDecision.PERMISSIONS, PermissionsDecision.GRANT_FOR_TURN, keymap.approve),
+        ApprovalOption("Yes, grant these permissions for this turn", ApprovalDecision.PERMISSIONS, PermissionsDecision.GRANT_FOR_TURN, keymap.approve),
         ApprovalOption(
-            "Allow for this turn with strict auto review",
+            "Yes, grant for this turn with strict auto review",
             ApprovalDecision.PERMISSIONS,
             PermissionsDecision.GRANT_FOR_TURN_WITH_STRICT_AUTO_REVIEW,
-            keymap.strict_auto_review,
+            ("r",),
         ),
-        ApprovalOption("Allow for this session", ApprovalDecision.PERMISSIONS, PermissionsDecision.GRANT_FOR_SESSION, keymap.approve_for_session),
-        ApprovalOption("Deny", ApprovalDecision.PERMISSIONS, PermissionsDecision.DENY, keymap.deny),
+        ApprovalOption("Yes, grant these permissions for this session", ApprovalDecision.PERMISSIONS, PermissionsDecision.GRANT_FOR_SESSION, keymap.approve_for_session),
+        ApprovalOption("No, continue without permissions", ApprovalDecision.PERMISSIONS, PermissionsDecision.DENY, tuple(binding for binding in keymap.deny if _binding_label(binding).lower() != "esc")),
     ]
 
 
 def elicitation_options(approval_keymap: Optional[ApprovalKeymap] = None) -> List[ApprovalOption]:
     keymap = approval_keymap or ApprovalKeymap()
     return [
-        ApprovalOption("Continue", ApprovalDecision.MCP_ELICITATION, "Continue", keymap.approve),
-        ApprovalOption("Decline", ApprovalDecision.MCP_ELICITATION, "Decline", keymap.deny),
-        ApprovalOption("Cancel", ApprovalDecision.MCP_ELICITATION, "Cancel", keymap.cancel),
+        ApprovalOption("Yes, provide the requested info", ApprovalDecision.MCP_ELICITATION, "Continue", keymap.approve),
+        ApprovalOption("No, but continue without it", ApprovalDecision.MCP_ELICITATION, "Decline", tuple(binding for binding in keymap.decline if _binding_label(binding).lower() != "esc")),
+        ApprovalOption("Cancel this request", ApprovalDecision.MCP_ELICITATION, "Cancel", ("Esc", *tuple(binding for binding in keymap.cancel if _binding_label(binding).lower() != "esc"))),
     ]
 
 
@@ -495,15 +717,31 @@ def format_additional_permissions_rule(additional_permissions: Any) -> Optional[
         parts.append("network")
     file_system = _get(additional_permissions, "file_system", _get(additional_permissions, "filesystem"))
     if file_system:
-        fs_text = format_requested_permissions_rule(file_system)
-        if fs_text:
-            parts.append(fs_text)
+        entries = tuple(_get(file_system, "entries", ()) or ())
+        if entries:
+            for access, label in (("read", "read"), ("write", "write"), ("deny", "deny read")):
+                paths = [
+                    path_label(_get(entry, "path"))
+                    for entry in entries
+                    if _access_name(_get(entry, "access")) == access
+                ]
+                if paths:
+                    parts.append(f"{label} {', '.join(paths)}")
+        else:
+            read = _get(file_system, "read", _get(file_system, "read_roots", [])) or []
+            write = _get(file_system, "write", _get(file_system, "write_roots", [])) or []
+            if read:
+                parts.append("read " + format_file_system_entry_paths(read))
+            if write:
+                parts.append("write " + format_file_system_entry_paths(write))
     return "; ".join(parts) if parts else None
 
 
 def format_requested_permissions_rule(permissions: Any) -> Optional[str]:
     if not permissions:
         return None
+    if _get(permissions, "network") is not None or _get(permissions, "file_system", _get(permissions, "filesystem")) is not None:
+        return format_additional_permissions_rule(permissions)
     read = _get(permissions, "read", _get(permissions, "read_roots", [])) or []
     write = _get(permissions, "write", _get(permissions, "write_roots", [])) or []
     entries = _get(permissions, "entries", []) or []
@@ -522,10 +760,21 @@ def format_file_system_entry_paths(entries: Iterable[Any]) -> str:
 
 
 def special_path_label(path: Any) -> str:
-    value = str(_get(path, "value", path))
-    if value in {"WorkspaceRoots", "workspace_roots", ":workspace_roots"}:
-        return ":workspace_roots"
-    return value
+    value = _get(path, "value", path)
+    kind = str(_get(value, "kind", value)).lower()
+    subpath = _get(value, "subpath")
+    labels = {
+        "root": ":root",
+        "minimal": ":minimal",
+        "project_roots": ":workspace_roots",
+        "workspaceroots": ":workspace_roots",
+        "workspace_roots": ":workspace_roots",
+        ":workspace_roots": ":workspace_roots",
+        "tmpdir": ":tmpdir",
+        "slash_tmp": "/tmp",
+    }
+    base = labels.get(kind, str(_get(value, "path", value)))
+    return f"{base}/{subpath}" if subpath is not None else base
 
 
 def path_label(path: Any) -> str:
@@ -533,10 +782,22 @@ def path_label(path: Any) -> str:
         if "special" in path:
             return special_path_label(path["special"])
         path = path.get("path", path)
-    special = _get(path, "special")
-    if special is not None:
-        return special_path_label(special)
+    path_type = str(_get(path, "type", "")).lower()
+    if path_type == "special":
+        return f"`{special_path_label(_get(path, 'value'))}`"
+    if path_type in {"glob_pattern", "globpattern"}:
+        return f"glob `{_get(path, 'pattern', '')}`"
+    if path_type == "path":
+        path = _get(path, "path")
+    elif not isinstance(path, (str, Path)):
+        special = _get(path, "special")
+        if special is not None and not callable(special):
+            return special_path_label(special)
     return f"`{path}`"
+
+
+def _access_name(access: Any) -> str:
+    return str(getattr(access, "value", access)).lower().replace("none", "deny")
 
 
 def absolute_path(path: Union[str, Path]) -> Path:
@@ -544,15 +805,71 @@ def absolute_path(path: Union[str, Path]) -> Path:
 
 
 def render_overlay_lines(view: ApprovalOverlay, width: int = 120) -> str:
-    del width
-    if view.current_request is None:
-        return ""
-    _options, params = ApprovalOverlay.build_options(view.current_request, build_header(view.current_request), view.features, view.approval_keymap, view.list_keymap)
-    lines = [params["title"], ""]
-    lines.extend(params["header"])
-    lines.extend(option.label for option in view.options)
-    lines.append(params["footer_hint"])
-    return "\n".join(line for line in lines if line is not None)
+    return "\n".join(line.text for line in view.terminal_lines(width=width))
+
+
+@dataclass(frozen=True)
+class ApprovalViewProjector:
+    """Project ChatWidget approval plans into the shared active-view stack."""
+
+    app_event_sender: AppEventSender
+    show_view: Callable[[ApprovalOverlay], Any]
+    render: Callable[[], Any]
+    approval_keymap: Any = None
+    list_keymap: Any = None
+
+    def __call__(self, plan: Any) -> ApprovalOverlay:
+        view = ApprovalOverlay.new(
+            approval_request_from_plan(plan),
+            app_event_tx=self.app_event_sender,
+            approval_keymap=self.approval_keymap,
+            list_keymap=self.list_keymap,
+        )
+        self.show_view(view)
+        self.render()
+        return view
+
+
+def approval_request_from_plan(plan: Any) -> ApprovalRequest:
+    kind = str(_get(plan, "kind", ""))
+    data = dict(_get(plan, "data", {}) or {})
+    if kind == "exec":
+        return ApprovalRequest.Exec(
+            data.get("thread_id"),
+            str(data.get("id") or ""),
+            data.get("command") or (),
+            thread_label=data.get("thread_label"),
+            reason=data.get("reason"),
+            available_decisions=list(data.get("available_decisions") or ()),
+            network_approval_context=data.get("network_approval_context"),
+            additional_permissions=data.get("additional_permissions"),
+        )
+    if kind == "apply_patch":
+        return ApprovalRequest.ApplyPatch(
+            data.get("thread_id"),
+            str(data.get("id") or ""),
+            data.get("cwd") or ".",
+            data.get("changes") or {},
+            thread_label=data.get("thread_label"),
+            reason=data.get("reason"),
+        )
+    if kind == "permissions":
+        return ApprovalRequest.Permissions(
+            data.get("thread_id"),
+            str(data.get("call_id") or ""),
+            data.get("permissions"),
+            thread_label=data.get("thread_label"),
+            reason=data.get("reason"),
+        )
+    if kind == "mcp_elicitation":
+        return ApprovalRequest.McpElicitation(
+            data.get("thread_id"),
+            str(data.get("server_name") or ""),
+            data.get("request_id"),
+            str(data.get("message") or ""),
+            thread_label=data.get("thread_label"),
+        )
+    raise ValueError(f"unsupported approval request plan: {kind!r}")
 
 
 def render_history_cell_lines(cell: Any, width: int = 80) -> List[str]:
@@ -619,10 +936,101 @@ def _get(obj: Any, key: str, default: Any = None) -> Any:
 
 def _key_name(key_event: Any) -> str:
     if isinstance(key_event, str):
-        return key_event
+        return key_event.lower()
     if isinstance(key_event, Mapping):
-        return str(key_event.get("key", key_event.get("code", "")))
-    return str(getattr(key_event, "key", getattr(key_event, "code", key_event)))
+        return str(key_event.get("key", key_event.get("code", ""))).lower()
+    return str(getattr(key_event, "key", getattr(key_event, "code", key_event))).lower()
+
+
+def _command_decision_name(decision: Any) -> str:
+    raw = str(_get(decision, "type", _get(decision, "kind", decision)))
+    return {
+        "approved": "Accept",
+        "accept": "Accept",
+        "approved_for_session": "AcceptForSession",
+        "accept_for_session": "AcceptForSession",
+        "approved_execpolicy_amendment": "AcceptWithExecpolicyAmendment",
+        "accept_with_execpolicy_amendment": "AcceptWithExecpolicyAmendment",
+        "network_policy_amendment": "ApplyNetworkPolicyAmendment",
+        "apply_network_policy_amendment": "ApplyNetworkPolicyAmendment",
+        "denied": "Decline",
+        "decline": "Decline",
+        "abort": "Cancel",
+        "cancel": "Cancel",
+    }.get(raw, raw)
+
+
+def _binding_label(binding: Any) -> str:
+    if binding is None:
+        return ""
+    display = getattr(binding, "display_label", None)
+    if callable(display):
+        return str(display())
+    code = getattr(binding, "code", getattr(binding, "key", None))
+    modifiers = set(getattr(binding, "modifiers", ()) or ())
+    if code is not None:
+        prefix = ""
+        if "CONTROL" in modifiers:
+            prefix += "ctrl+"
+        if "SHIFT" in modifiers:
+            prefix += "shift+"
+        if "ALT" in modifiers:
+            prefix += "alt+"
+        label = {"Enter": "enter", "Esc": "esc", " ": "space"}.get(str(code), str(code).lower())
+        return prefix + label
+    return str(binding).lower()
+
+
+def _first_binding_label(bindings: Any) -> str:
+    values = tuple(bindings or ())
+    return _binding_label(values[0]) if values else ""
+
+
+def _binding_matches(binding: Any, key: str) -> bool:
+    return _binding_label(binding).lower() == str(key).lower()
+
+
+def _as_text_lines(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value]
+    return [str(value)]
+
+
+def _inset_wrap(text: str, width: int) -> List[str]:
+    if not text:
+        return [""]
+    available = max(int(width) - 4, 1)
+    wrapped = textwrap.wrap(
+        str(text),
+        width=available,
+        replace_whitespace=False,
+        drop_whitespace=False,
+        break_long_words=True,
+        break_on_hyphens=False,
+    ) or [""]
+    return [f"  {line.rstrip()}" for line in wrapped]
+
+
+def _wrap_approval_option(text: str, width: int) -> List[str]:
+    available = max(int(width), 1)
+    wrapped = textwrap.wrap(
+        text,
+        width=available,
+        subsequent_indent="    ",
+        break_long_words=True,
+        break_on_hyphens=False,
+    )
+    return wrapped or [""]
+
+
+def _area_width(area: Any) -> int:
+    if isinstance(area, int):
+        return area
+    if isinstance(area, Mapping):
+        return int(area.get("width", 80))
+    return int(getattr(area, "width", 80))
 
 
 __all__ = [
@@ -631,10 +1039,12 @@ __all__ = [
     "ApprovalOption",
     "ApprovalOverlay",
     "ApprovalRequest",
+    "ApprovalViewProjector",
     "PermissionsDecision",
     "RUST_MODULE",
     "absolute_path",
     "approval_footer_hint",
+    "approval_request_from_plan",
     "build_header",
     "command_decision_to_review_decision",
     "cursor_pos",

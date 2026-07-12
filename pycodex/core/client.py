@@ -26,7 +26,6 @@ from pycodex.protocol import (
     AgentMessageContent,
     AgentMessageItem,
     ContentItem,
-    FunctionCallOutputPayload,
     InternalSessionSource,
     PlanItem,
     ResponseItem,
@@ -1112,6 +1111,7 @@ def serialize_responses_request(request: Mapping[str, Any]) -> dict[str, Any]:
         raise TypeError("request must be a mapping")
     serialized = {str(key): _serialize_request_value(value) for key, value in request.items()}
     _strip_skipped_response_item_ids(serialized.get("input"))
+    _strip_internal_response_item_fields(serialized.get("input"))
     if serialized.get("instructions") == "":
         serialized.pop("instructions", None)
     for key in (
@@ -1148,6 +1148,18 @@ def _strip_skipped_response_item_ids(input_value: Any) -> None:
             item.pop("id", None)
 
 
+def _strip_internal_response_item_fields(input_value: Any) -> None:
+    """Match Rust ``ResponseItem`` wire serialization for tool outputs."""
+
+    if not isinstance(input_value, list):
+        return
+    for item in input_value:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") in {"function_call_output", "custom_tool_call_output"}:
+            item.pop("success", None)
+
+
 def _serialize_request_value(value: Any) -> Any:
     if isinstance(value, Enum):
         return value.value
@@ -1165,17 +1177,7 @@ def _serialize_request_value(value: Any) -> Any:
 
 
 def _response_item_request_mapping(item: ResponseItem) -> dict[str, Any]:
-    mapping = item.to_mapping()
-    if "success" in mapping:
-        return mapping
-    if item.type not in {"function_call_output", "custom_tool_call_output"}:
-        return mapping
-    output = getattr(item, "output", None)
-    if not isinstance(output, FunctionCallOutputPayload) or output.success is None:
-        return mapping
-    mapping = dict(mapping)
-    mapping["success"] = output.success
-    return mapping
+    return item.to_mapping()
 
 
 def response_create_client_metadata(

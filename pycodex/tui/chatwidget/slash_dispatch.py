@@ -97,6 +97,9 @@ class TerminalPromptDispatchResult:
 
     action: str
     prompt: str = ""
+    command: SlashCommand | None = None
+    view: Any = None
+    operation: Any = None
 
 
 @dataclass
@@ -121,11 +124,15 @@ class TerminalPromptDispatcher:
     """Runtime-bound completed prompt dispatcher for the terminal path."""
 
     run_local_command: Any
+    open_command_view: Any = None
+    open_command_with_args: Any = None
 
-    def dispatch(self, prompt: str) -> TerminalPromptDispatchResult:
+    def dispatch(self, prompt: Any) -> TerminalPromptDispatchResult:
         return run_terminal_prompt_dispatch(
             prompt,
             run_local_command=self.run_local_command,
+            open_command_view=self.open_command_view,
+            open_command_with_args=self.open_command_with_args,
         )
 
 
@@ -164,7 +171,12 @@ class TerminalSlashCommandViewDispatcher:
         return cls({SlashCommand.MODEL: model_popup})
 
     @classmethod
-    def for_runtime(cls, app_runtime: Any) -> "TerminalSlashCommandViewDispatcher":
+    def for_runtime(
+        cls,
+        app_runtime: Any,
+        *,
+        submit_review: Any = None,
+    ) -> "TerminalSlashCommandViewDispatcher":
         """Build terminal view-command handlers from the app runtime.
 
         Rust owner: ``chatwidget::slash_dispatch`` owns the command-to-view
@@ -174,8 +186,23 @@ class TerminalSlashCommandViewDispatcher:
         """
 
         from .model_popups import TerminalModelPopupController
+        from .keymap_picker import TerminalKeymapPopupController
+        from .permissions_menu import TerminalPermissionsPopupController
+        from .permission_popups import TerminalAutoReviewDenialsPopupController
+        from .review_popups import TerminalReviewPopupController
 
-        return cls.for_model_popup(TerminalModelPopupController(app_runtime))
+        review_submitter = submit_review or (
+            lambda target, _summary: app_runtime.submit_op(_review_app_command(target))
+        )
+        return cls(
+            {
+                SlashCommand.MODEL: TerminalModelPopupController(app_runtime),
+                SlashCommand.REVIEW: TerminalReviewPopupController(app_runtime, review_submitter),
+                SlashCommand.PERMISSIONS: TerminalPermissionsPopupController(app_runtime),
+                SlashCommand.AUTO_REVIEW: TerminalAutoReviewDenialsPopupController(app_runtime),
+                SlashCommand.KEYMAP: TerminalKeymapPopupController(app_runtime),
+            }
+        )
 
     def open_command_view(self, command: str) -> Any:
         cmd = terminal_slash_command_from_name(command)
@@ -193,6 +220,18 @@ class TerminalSlashCommandViewDispatcher:
         if self._active_handler is None:
             return None
         return self._active_handler.handle_events(events)
+
+    def open_command_with_args(self, command: SlashCommand, args: str) -> Any:
+        handler = self._handlers.get(command)
+        if handler is None:
+            return None
+        dispatch = getattr(handler, "handle_command_with_args", None)
+        if not callable(dispatch):
+            return None
+        view = dispatch(args)
+        if view is not None:
+            self._active_handler = handler
+        return view
 
 
 _QUEUED_CONTINUE_COMMANDS: Set[SlashCommand] = {
@@ -261,6 +300,12 @@ def terminal_slash_command_from_name(command: str) -> SlashCommand | None:
         return SlashCommand.parse(command)
     except ValueError:
         return None
+
+
+def _review_app_command(target: Any) -> Any:
+    from ..app_command import AppCommand
+
+    return AppCommand.review(target)
 
 
 _EXIT_ALIASES = {":q", "q", "quit", "exit"}
@@ -335,9 +380,11 @@ def run_terminal_local_command(
 
 
 def run_terminal_prompt_dispatch(
-    prompt: str,
+    prompt: Any,
     *,
     run_local_command: Any,
+    open_command_view: Any = None,
+    open_command_with_args: Any = None,
 ) -> TerminalPromptDispatchResult:
     """Classify a completed terminal prompt before user-turn submission.
 
@@ -347,7 +394,39 @@ def run_terminal_prompt_dispatch(
     this owner classifies as user turns.
     """
 
-    prompt = prompt.rstrip("\n")
+    from ..bottom_pane.chat_composer import InputResult
+
+    if isinstance(prompt, InputResult):
+        if prompt.kind == "None":
+            return TerminalPromptDispatchResult("skip")
+        if prompt.kind == "Submitted":
+            prompt = prompt.text or ""
+        elif prompt.kind in {"Command", "CommandWithArgs"}:
+            command = prompt.command
+            if not isinstance(command, SlashCommand):
+                return TerminalPromptDispatchResult("handled")
+            if prompt.kind == "CommandWithArgs":
+                view = (
+                    open_command_with_args(command, prompt.args or "")
+                    if open_command_with_args is not None
+                    else None
+                )
+                if view is not None:
+                    return TerminalPromptDispatchResult("show_view", command=command, view=view)
+                return TerminalPromptDispatchResult("handled", command=command)
+            command_result = run_local_command(f"/{command.command()}")
+            if command_result == "exit":
+                return TerminalPromptDispatchResult("exit", command=command)
+            if command_result:
+                return TerminalPromptDispatchResult("handled", command=command)
+            view = open_command_view(command.command()) if open_command_view is not None else None
+            if view is not None:
+                return TerminalPromptDispatchResult("show_view", command=command, view=view)
+            # A recognized local command must never become a model prompt just
+            # because the terminal product path has not wired its owner yet.
+            return TerminalPromptDispatchResult("handled", command=command)
+
+    prompt = str(prompt).rstrip("\n")
     if not prompt.strip():
         return TerminalPromptDispatchResult("skip", prompt)
     command_result = run_local_command(prompt)

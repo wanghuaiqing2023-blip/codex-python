@@ -1,5 +1,7 @@
 import asyncio
 
+# Rust source: codex/codex-rs/tui/src/app/event_dispatch.rs
+
 from pycodex.tui.app.event_dispatch import (
     SHUTDOWN_FIRST_EXIT_TIMEOUT,
     AppRunControl,

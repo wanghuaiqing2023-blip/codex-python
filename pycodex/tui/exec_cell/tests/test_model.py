@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+# Rust source: codex/codex-rs/tui/src/exec_cell/model.rs
 from pycodex.tui.exec_cell.model import CommandOutput, ExecCall, ExecCell, UNIFIED_EXEC_INTERACTION, USER_SHELL
 
 

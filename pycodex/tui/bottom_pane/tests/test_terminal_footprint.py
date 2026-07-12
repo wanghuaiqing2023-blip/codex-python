@@ -23,9 +23,11 @@ def test_terminal_footprint_rows_reserve_idle_status_and_popup_space() -> None:
     assert bottom_pane_height(live_status_active=True) == 6
     assert bottom_pane_height(live_status_active=False, popup_height=3) == 5
     assert bottom_pane_height(live_status_active=True, popup_height=3) == 6
+    assert bottom_pane_height(live_status_active=False, composer_height=3) == 6
     assert bottom_pane_rows_for_size(size, live_status_active=False) == [21, 22, 23, 24]
     assert bottom_pane_rows_for_size(size, live_status_active=True) == [19, 20, 21, 22, 23, 24]
     assert bottom_pane_rows_for_size(size, live_status_active=False, popup_height=3) == [20, 21, 22, 23, 24]
+    assert bottom_pane_rows_for_size(size, live_status_active=False, composer_height=3) == [19, 20, 21, 22, 23, 24]
 
 
 def test_terminal_footprint_from_live_status_surface() -> None:
@@ -102,3 +104,26 @@ def test_terminal_footprint_owns_popup_layout_rows() -> None:
     assert clearing_taller_previous_popup.clear_rows == (20, 21, 22, 23, 24)
     assert clearing_taller_previous_popup.composer_row == 21
     assert clearing_taller_previous_popup.popup_rows == (22,)
+
+
+def test_terminal_footprint_assigns_and_clears_wrapped_composer_rows() -> None:
+    # Fixed Rust owners: chat_composer::desired_height and app::resize_reflow.
+    size = os.terminal_size((80, 24))
+
+    wrapped = terminal_bottom_pane_layout_rows(
+        size,
+        live_status_active=False,
+        composer_height=3,
+    )
+    shrinking = terminal_bottom_pane_layout_rows(
+        size,
+        live_status_active=False,
+        composer_height=1,
+        clear_composer_height=3,
+    )
+
+    assert wrapped.clear_rows == (19, 20, 21, 22, 23, 24)
+    assert wrapped.composer_rows == (20, 21, 22)
+    assert wrapped.composer_row == 22
+    assert shrinking.clear_rows == (19, 20, 21, 22, 23, 24)
+    assert shrinking.composer_rows == (22,)

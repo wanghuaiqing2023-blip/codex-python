@@ -14,6 +14,7 @@ import asyncio
 import json
 import os
 import time
+import webbrowser
 from dataclasses import dataclass, field, fields as dataclass_fields, is_dataclass, replace
 from datetime import datetime
 from enum import Enum
@@ -23,35 +24,65 @@ from threading import Event, Lock, Thread
 from types import SimpleNamespace
 from typing import Any, Callable, Mapping, MutableMapping, Protocol
 
-from pycodex.core.config.edit import ConfigEditsBuilder
+from pycodex.core.config.edit import ConfigEdit, ConfigEditsBuilder
 from pycodex.core.event_mapping import parse_turn_item
 from pycodex.exec.local_runtime import (
     _local_http_prompt_visible_rollout_items,
     final_text_from_local_http_exec_result,
+    local_http_apply_patch_approval_keys,
+    local_http_shell_tool_approval_keys,
     persist_core_exec_rollout,
     prewarm_exec_core_websocket_session,
     run_exec_user_turn_core_sampling_websocket_preferred,
 )
+from pycodex.core.tools.sandboxing import ApprovalStore
 from pycodex.exec.run import ExecRunPlan, InitialOperation
-from pycodex.protocol import ResponseInputItem, ResponseItem, ReviewDecision, ReviewRequest, ReviewTarget, ThreadGoal as ProtocolThreadGoal, ThreadGoalStatus as ProtocolThreadGoalStatus, ThreadId, TurnItem, UserInput
+from pycodex.protocol import ActivePermissionProfile, ApprovalsReviewer, AskForApproval, ExecApprovalRequestEvent, NetworkPolicyAmendment, NetworkPolicyRuleAction, PermissionProfile, ResponseInputItem, ResponseItem, ReviewDecision, ReviewRequest, ReviewTarget, ThreadGoal as ProtocolThreadGoal, ThreadGoalStatus as ProtocolThreadGoalStatus, ThreadId, TurnItem, UserInput
+from pycodex.protocol.request_permissions import (
+    RequestPermissionProfile,
+    RequestPermissionsArgs,
+    RequestPermissionsResponse,
+)
+from pycodex.utils.approval_presets import builtin_approval_presets
 
 from ..app_command import AppCommand
 from ..app_event import AppEvent, RateLimitRefreshOrigin
 from ..app_server_session import app_server_rate_limit_snapshots
 from ..chatwidget.input_submission import UserMessage, UserMessageHistoryRecord, submit_user_message_with_history_record
-from ..chatwidget.protocol import ChatWidgetProtocolRuntime, ServerNotification
+from ..chatwidget.protocol import ChatWidgetProtocolRuntime, HistoryProjectionSink, ServerNotification
+from ..chatwidget.protocol_requests import ServerRequest
 from ..chatwidget.replay import ReplayKind as ChatWidgetReplayKind
 from ..chatwidget.replay import replay_thread_turns
 from ..config_update import build_model_selection_edits, write_config_batch
+from ..history_cell.notices import new_info_event
 from ..status.rate_limits import RateLimitSnapshotDisplay, RateLimitWindowDisplay, rate_limit_snapshot_display_for_limit
-from .agent_navigation import AgentNavigationDirection, AgentNavigationState
+from .agent_navigation import (
+    AgentNavigationDirection,
+    AgentNavigationState,
+    format_agent_picker_item_name,
+)
 from .app_server_events import (
     AppServerEventPlan,
     plan_app_server_event,
     refresh_mcp_startup_expected_servers_from_config,
 )
+from .app_server_requests import AppServerRequestResolution, PendingAppServerRequests
 from .event_dispatch import EventDispatchPlan, EventDispatchState, dispatch_event_plan
-from .thread_routing import ThreadRoutingPlan, ThreadRoutingState, active_thread_event_plan, submit_active_thread_op_plan
+from .thread_routing import (
+    ThreadInteractiveRequest,
+    ThreadRoutingPlan,
+    ThreadRoutingState,
+    active_thread_event_plan,
+    interactive_request_for_thread_request,
+    submit_active_thread_op_plan,
+)
+from .thread_events import ThreadBufferedEvent, ThreadEventSnapshot, ThreadEventStore
+from .side import (
+    SideThreadState,
+    SideUiState,
+    active_side_parent_thread_id as side_active_parent_thread_id,
+    side_thread_to_discard_after_switch,
+)
 
 RUST_MODULE_CRATE = "codex-tui"
 RUST_MODULE = "app"
@@ -237,7 +268,16 @@ def _effort_config_value(effort: Any) -> str | None:
     else:
         value = effort
     text = str(value)
-    if "." in text and text.rsplit(".", 1)[-1] in {"Minimal", "Low", "Medium", "High", "XHigh", "None"}:
+    if "." in text and text.rsplit(".", 1)[-1] in {
+        "Minimal",
+        "Low",
+        "Medium",
+        "High",
+        "XHigh",
+        "Max",
+        "Ultra",
+        "None",
+    }:
         text = text.rsplit(".", 1)[-1]
     normalized = text.strip().replace("-", "_").lower()
     aliases = {
@@ -251,6 +291,8 @@ def _effort_config_value(effort: Any) -> str | None:
         "x_high": "xhigh",
         "extra_high": "xhigh",
         "extra high": "xhigh",
+        "max": "max",
+        "ultra": "ultra",
     }
     return aliases.get(normalized, normalized or None)
 
@@ -631,8 +673,10 @@ class _ActiveCoreTurn:
     terminal_sent: bool = False
     cancellation_requested: bool = False
     pending_exec_approvals: dict[str, _PendingExecApproval] = field(default_factory=dict)
+    pending_permission_requests: dict[str, _PendingExecApproval] = field(default_factory=dict)
+    pending_patch_approvals: dict[str, _PendingExecApproval] = field(default_factory=dict)
 
-    def put(self, notification: ServerNotification) -> bool:
+    def put(self, notification: Any) -> bool:
         with self.lock:
             if self.terminal_sent:
                 return False
@@ -652,13 +696,33 @@ class _ActiveCoreTurn:
         with self.lock:
             self.cancellation_requested = True
             self.cancel_event.set()
+            pending_request_ids = (
+                *self.pending_exec_approvals.keys(),
+                *self.pending_permission_requests.keys(),
+                *self.pending_patch_approvals.keys(),
+            )
             for pending in self.pending_exec_approvals.values():
                 pending.decision = ReviewDecision.abort()
                 pending.event.set()
             self.pending_exec_approvals.clear()
+            for pending in self.pending_permission_requests.values():
+                pending.decision = RequestPermissionsResponse(RequestPermissionProfile())
+                pending.event.set()
+            self.pending_permission_requests.clear()
+            for pending in self.pending_patch_approvals.values():
+                pending.decision = ReviewDecision.abort()
+                pending.event.set()
+            self.pending_patch_approvals.clear()
             if self.terminal_sent:
                 return False
             self.terminal_sent = True
+            for request_id in pending_request_ids:
+                self.queue.put(
+                    ServerNotification(
+                        "ServerRequestResolved",
+                        {"request_id": str(request_id)},
+                    )
+                )
             self.queue.put(_turn_interrupted_notification(self.thread_id, self.turn_id))
             self.queue.put(_EOF)
             return True
@@ -671,38 +735,66 @@ class _ActiveCoreTurn:
         return self.cancel_event.is_set()
 
     async def cancelled(self) -> None:
-        if self.cancel_event.is_set():
-            return
-        await asyncio.to_thread(self.cancel_event.wait)
+        # Event.wait() in asyncio.to_thread cannot be interrupted: cancelling
+        # the coroutine leaves its worker thread blocked, and asyncio.run()
+        # then waits for that default-executor thread during shutdown. A short
+        # async poll mirrors Rust's cancellable token without leaking a waiter.
+        while not self.cancel_event.is_set():
+            await asyncio.sleep(0.05)
 
     def request_exec_approval(
         self,
         *,
         approval_id: str,
-        command: str,
+        call_id: str | None = None,
+        command: Any,
         cwd: str | None,
         reason: str | None,
+        network_approval_context: Any = None,
         proposed_execpolicy_amendment: Any = None,
+        additional_permissions: Any = None,
         available_decisions: Any = None,
     ) -> ReviewDecision:
+        effective_call_id = str(call_id or approval_id)
+        command_tokens = (command,) if isinstance(command, str) else tuple(str(part) for part in command)
+        network_amendments = None
+        if network_approval_context is not None:
+            host = str(getattr(network_approval_context, "host", ""))
+            network_amendments = (
+                NetworkPolicyAmendment(host, NetworkPolicyRuleAction.ALLOW),
+                NetworkPolicyAmendment(host, NetworkPolicyRuleAction.DENY),
+            )
+        normalized_decisions = (
+            None
+            if available_decisions is None
+            else tuple(ReviewDecision.from_mapping(item) for item in available_decisions)
+        )
+        request_event = ExecApprovalRequestEvent(
+            call_id=effective_call_id,
+            approval_id=approval_id if approval_id != effective_call_id else None,
+            turn_id=self.turn_id,
+            started_at_ms=int(time.time() * 1000),
+            command=command_tokens,
+            cwd=Path(cwd or "."),
+            reason=reason,
+            network_approval_context=network_approval_context,
+            proposed_execpolicy_amendment=proposed_execpolicy_amendment,
+            proposed_network_policy_amendments=network_amendments,
+            additional_permissions=additional_permissions,
+            available_decisions=normalized_decisions,
+        )
+        request_params = request_event.to_mapping()
+        request_params["approval_id"] = approval_id
         pending = _PendingExecApproval()
         with self.lock:
             if self.terminal_sent or self.cancel_event.is_set():
                 return ReviewDecision.abort()
             self.pending_exec_approvals[approval_id] = pending
             self.queue.put(
-                ServerNotification(
-                    "ExecApprovalRequested",
-                    {
-                        "id": approval_id,
-                        "turn_id": self.turn_id,
-                        "thread_id": self.thread_id,
-                        "command": command,
-                        "cwd": cwd,
-                        "reason": reason,
-                        "proposed_execpolicy_amendment": proposed_execpolicy_amendment,
-                        "available_decisions": available_decisions,
-                    },
+                ServerRequest(
+                    "CommandExecutionRequestApproval",
+                    id=approval_id,
+                    params={"thread_id": self.thread_id, **request_params},
                 )
             )
 
@@ -717,6 +809,99 @@ class _ActiveCoreTurn:
     def resolve_exec_approval(self, approval_id: str, decision: Any) -> bool:
         with self.lock:
             pending = self.pending_exec_approvals.pop(str(approval_id), None)
+            if pending is None:
+                return False
+            pending.decision = decision
+            pending.event.set()
+            return True
+
+    def request_permissions(
+        self,
+        *,
+        call_id: str,
+        args: RequestPermissionsArgs,
+        cwd: Path,
+    ) -> RequestPermissionsResponse:
+        pending = _PendingExecApproval()
+        with self.lock:
+            if self.terminal_sent or self.cancel_event.is_set():
+                return RequestPermissionsResponse(RequestPermissionProfile())
+            self.pending_permission_requests[call_id] = pending
+            self.queue.put(
+                ServerRequest(
+                    "PermissionsRequestApproval",
+                    id=call_id,
+                    params={
+                        "call_id": call_id,
+                        "thread_id": self.thread_id,
+                        "turn_id": self.turn_id,
+                        "started_at_ms": 0,
+                        "reason": args.reason,
+                        "permissions": args.permissions.to_mapping(),
+                        "cwd": str(cwd),
+                    },
+                )
+            )
+        while not pending.event.wait(0.1):
+            if self.cancel_event.is_set():
+                return RequestPermissionsResponse(RequestPermissionProfile())
+        try:
+            if isinstance(pending.decision, RequestPermissionsResponse):
+                return pending.decision
+            return RequestPermissionsResponse.from_mapping(pending.decision)
+        except Exception:
+            return RequestPermissionsResponse(RequestPermissionProfile())
+
+    def resolve_permissions(self, call_id: str, response: Any) -> bool:
+        with self.lock:
+            pending = self.pending_permission_requests.pop(str(call_id), None)
+            if pending is None:
+                return False
+            pending.decision = response
+            pending.event.set()
+            return True
+
+    def request_patch_approval(
+        self,
+        *,
+        call_id: str,
+        changes: Mapping[Path, Any],
+        cwd: Path,
+        reason: str | None = None,
+        grant_root: Path | None = None,
+    ) -> ReviewDecision:
+        pending = _PendingExecApproval()
+        with self.lock:
+            if self.terminal_sent or self.cancel_event.is_set():
+                return ReviewDecision.abort()
+            self.pending_patch_approvals[call_id] = pending
+            self.queue.put(
+                ServerRequest(
+                    "FileChangeRequestApproval",
+                    id=call_id,
+                    params={
+                        "call_id": call_id,
+                        "thread_id": self.thread_id,
+                        "turn_id": self.turn_id,
+                        "started_at_ms": 0,
+                        "changes": dict(changes),
+                        "reason": reason,
+                        "grant_root": None if grant_root is None else str(grant_root),
+                        "cwd": str(cwd),
+                    },
+                )
+            )
+        while not pending.event.wait(0.1):
+            if self.cancel_event.is_set():
+                return ReviewDecision.abort()
+        try:
+            return ReviewDecision.from_mapping(pending.decision)
+        except Exception:
+            return ReviewDecision.abort()
+
+    def resolve_patch_approval(self, call_id: str, decision: Any) -> bool:
+        with self.lock:
+            pending = self.pending_patch_approvals.pop(str(call_id), None)
             if pending is None:
                 return False
             pending.decision = decision
@@ -743,6 +928,8 @@ class ExecFunctionActiveThreadRuntime:
             return _closed_event_stream()
         if op.kind == "OverrideTurnContext":
             _apply_override_turn_context_to_runtime(self, op)
+            return _closed_event_stream()
+        if op.kind == "ApproveGuardianDeniedAction":
             return _closed_event_stream()
         queue: Queue[Any] = Queue()
         turn_id = "terminal-turn"
@@ -845,6 +1032,8 @@ class CoreExecActiveThreadRuntime:
     _startup_prewarm_timeout: float = field(default=0.0, init=False, repr=False)
     _active_turn_lock: Lock = field(default_factory=Lock, init=False, repr=False)
     _active_turn: _ActiveCoreTurn | None = field(default=None, init=False, repr=False)
+    _tool_approvals_lock: Lock = field(default_factory=Lock, init=False, repr=False)
+    _tool_approvals: ApprovalStore = field(default_factory=ApprovalStore, init=False, repr=False)
     _model_history_lock: Lock = field(default_factory=Lock, init=False, repr=False)
     _model_history_items: list[ResponseItem] = field(default_factory=list, init=False, repr=False)
     _rollout_path_ready: Event = field(default_factory=Event, init=False, repr=False)
@@ -861,6 +1050,26 @@ class CoreExecActiveThreadRuntime:
             return
         if self.startup_prewarm_enabled:
             self._schedule_startup_prewarm()
+
+    def _with_cached_tool_approval(
+        self,
+        keys: tuple[Any, ...],
+        fetch: Callable[[], ReviewDecision],
+    ) -> ReviewDecision:
+        """Mirror ``tools::sandboxing::with_cached_approval`` per TUI session."""
+
+        if not keys:
+            return fetch()
+        approved_for_session = ReviewDecision.approved_for_session()
+        with self._tool_approvals_lock:
+            if all(self._tool_approvals.get(key) == approved_for_session for key in keys):
+                return approved_for_session
+        decision = ReviewDecision.from_mapping(fetch())
+        if decision == approved_for_session:
+            with self._tool_approvals_lock:
+                for key in keys:
+                    self._tool_approvals.put(key, approved_for_session)
+        return decision
 
     @property
     def thread_id(self) -> str | None:
@@ -1271,7 +1480,44 @@ class CoreExecActiveThreadRuntime:
             with self._active_turn_lock:
                 active_turn = self._active_turn
             if active_turn is not None and approval_id:
-                active_turn.resolve_exec_approval(approval_id, decision)
+                normalized = ReviewDecision.from_mapping(decision)
+                if normalized == ReviewDecision.abort():
+                    # Fixed Rust session::handlers::exec_approval interrupts
+                    # the active task for Abort instead of resolving the tool
+                    # waiter as an ordinary rejection.
+                    active_turn.interrupt()
+                else:
+                    active_turn.resolve_exec_approval(approval_id, normalized)
+            return _closed_event_stream()
+        if op.kind == "RequestPermissionsResponse":
+            call_id = str(op.payload.get("id", ""))
+            response = op.payload.get("response")
+            with self._active_turn_lock:
+                active_turn = self._active_turn
+            if active_turn is not None and call_id:
+                active_turn.resolve_permissions(call_id, response)
+            return _closed_event_stream()
+        if op.kind == "PatchApproval":
+            call_id = str(op.payload.get("id", ""))
+            decision = op.payload.get("decision")
+            with self._active_turn_lock:
+                active_turn = self._active_turn
+            if active_turn is not None and call_id:
+                normalized = ReviewDecision.from_mapping(decision)
+                if normalized == ReviewDecision.abort():
+                    # Fixed Rust session::handlers::patch_approval shares the
+                    # same turn-interrupt semantics as exec approval Abort.
+                    active_turn.interrupt()
+                else:
+                    active_turn.resolve_patch_approval(call_id, normalized)
+            return _closed_event_stream()
+        if op.kind == "ApproveGuardianDeniedAction":
+            from pycodex.core.session.handlers import guardian_denied_action_approval_items
+
+            items = guardian_denied_action_approval_items(op.payload.get("event"))
+            if items:
+                with self._model_history_lock:
+                    self._model_history_items.extend(items)
             return _closed_event_stream()
         if op.kind == "CleanBackgroundTerminals":
             _clean_background_terminals_for_runtime(self)
@@ -1290,13 +1536,15 @@ class CoreExecActiveThreadRuntime:
 
         def worker() -> None:
             observed_delta = False
+            observed_agent_message = False
             observed_error_message: str | None = None
+            observed_terminal_notification: ServerNotification | None = None
             pending_commands: dict[str, dict[str, Any]] = {}
             completed_commands: set[str] = set()
             observed_live_kinds: set[str] = set()
 
             def observe_session_event(event: Any) -> None:
-                nonlocal observed_delta, observed_error_message
+                nonlocal observed_delta, observed_agent_message, observed_error_message, observed_terminal_notification
                 event_type = _field(event, "type")
                 error_message = _session_event_error_message(event)
                 if error_message:
@@ -1333,16 +1581,56 @@ class CoreExecActiveThreadRuntime:
                 for notification in notifications:
                     if notification.kind == "AgentMessageDelta":
                         observed_delta = True
-                    observed_live_kinds.add(notification.kind)
+                    elif notification.kind == "ItemCompleted":
+                        payload = notification.payload
+                        item = payload.get("item", {}) if isinstance(payload, dict) else {}
+                        if isinstance(item, dict) and item.get("kind") == "AgentMessage":
+                            observed_agent_message = True
                     if notification.kind == "TurnCompleted":
-                        active_turn.finish(notification)
-                    else:
-                        active_turn.put(notification)
+                        # The sampling result still has to be converted into
+                        # completed tool items. Keep the terminal status, then
+                        # close the queue after those items are enqueued.
+                        observed_terminal_notification = notification
+                        observed_live_kinds.add(notification.kind)
+                        continue
+                    observed_live_kinds.add(notification.kind)
+                    active_turn.put(notification)
 
             try:
                 previous_session_config = self.session_config
 
-                def request_exec_approval(invocation: Any, _config: Any, requirement: Any, meta: Mapping[str, Any]) -> ReviewDecision:
+                def request_exec_approval(*args: Any) -> ReviewDecision:
+                    if len(args) == 10:
+                        (
+                            _turn_context,
+                            call_id,
+                            approval_id,
+                            command,
+                            cwd_value,
+                            reason,
+                            network_approval_context,
+                            proposed_execpolicy_amendment,
+                            additional_permissions,
+                            available_decisions,
+                        ) = args
+                        effective_approval_id = str(approval_id or call_id)
+                        return active_turn.request_exec_approval(
+                            approval_id=effective_approval_id,
+                            call_id=str(call_id),
+                            command=command,
+                            cwd=str(cwd_value),
+                            reason=None if reason is None else str(reason),
+                            network_approval_context=network_approval_context,
+                            proposed_execpolicy_amendment=proposed_execpolicy_amendment,
+                            additional_permissions=additional_permissions,
+                            available_decisions=available_decisions,
+                        )
+                    if len(args) != 4:
+                        raise TypeError(
+                            "exec approval callback expects either the legacy 4-argument "
+                            "shell request or the typed 10-argument core request"
+                        )
+                    invocation, _config, requirement, meta = args
                     call_id = str(meta.get("call_id") or "exec-approval")
                     command = str(getattr(invocation, "command", "") or "")
                     cwd_value = getattr(invocation, "workdir", None) or getattr(previous_session_config, "cwd", None)
@@ -1352,21 +1640,67 @@ class CoreExecActiveThreadRuntime:
                     if amendment is not None:
                         to_mapping = getattr(amendment, "to_mapping", None)
                         amendment_mapping = to_mapping() if callable(to_mapping) else amendment
-                    return active_turn.request_exec_approval(
-                        approval_id=call_id,
-                        command=command,
-                        cwd=None if cwd_value is None else str(cwd_value),
-                        reason=None if reason is None else str(reason),
-                        proposed_execpolicy_amendment=amendment_mapping,
-                        available_decisions=None,
+                    keys = local_http_shell_tool_approval_keys(
+                        invocation,
+                        _config,
+                        granted_permissions=meta.get("granted_permissions"),
+                    )
+                    return self._with_cached_tool_approval(
+                        keys,
+                        lambda: active_turn.request_exec_approval(
+                            approval_id=call_id,
+                            call_id=call_id,
+                            command=command,
+                            cwd=None if cwd_value is None else str(cwd_value),
+                            reason=None if reason is None else str(reason),
+                            proposed_execpolicy_amendment=amendment_mapping,
+                            available_decisions=None,
+                        ),
+                    )
+
+                def request_permissions(
+                    _parent_ctx: Any,
+                    call_id: str,
+                    args: RequestPermissionsArgs,
+                    cwd: Path,
+                    _cancel_token: Any,
+                ) -> RequestPermissionsResponse:
+                    return active_turn.request_permissions(
+                        call_id=str(call_id),
+                        args=args,
+                        cwd=Path(cwd),
+                    )
+
+                def request_patch_approval(
+                    call_id: str,
+                    changes: Mapping[Path, Any],
+                    cwd: Path,
+                    reason: str | None,
+                    grant_root: Path | None,
+                ) -> ReviewDecision:
+                    keys = local_http_apply_patch_approval_keys(changes, Path(cwd))
+                    return self._with_cached_tool_approval(
+                        keys,
+                        lambda: active_turn.request_patch_approval(
+                            call_id=str(call_id),
+                            changes=changes,
+                            cwd=Path(cwd),
+                            reason=reason,
+                            grant_root=grant_root,
+                        ),
                     )
 
                 try:
-                    self.session_config = replace(previous_session_config, exec_approval_callback=request_exec_approval)
+                    self.session_config = replace(
+                        previous_session_config,
+                        exec_approval_callback=request_exec_approval,
+                        request_permissions_callback=request_permissions,
+                        patch_approval_callback=request_patch_approval,
+                    )
                 except Exception:
                     self.session_config = previous_session_config
                 model_session = self._take_startup_prewarm_session()
-                result = asyncio.run(
+                result, turn_plan = asyncio.run(
                     self._run_op(
                         op,
                         session_event_observer=observe_session_event,
@@ -1374,8 +1708,23 @@ class CoreExecActiveThreadRuntime:
                         cancellation_token=active_turn,
                     )
                 )
+                granted_session_permissions = getattr(
+                    self.session_config,
+                    "granted_session_permissions",
+                    None,
+                )
+                if granted_session_permissions != getattr(
+                    previous_session_config,
+                    "granted_session_permissions",
+                    None,
+                ):
+                    object.__setattr__(
+                        previous_session_config,
+                        "granted_session_permissions",
+                        granted_session_permissions,
+                    )
                 self.session_config = previous_session_config
-                emitted_delta = observed_delta
+                emitted_delta = observed_delta or observed_agent_message
                 for event in _server_notifications_from_session_events(
                     result,
                     thread_id=thread_id,
@@ -1387,14 +1736,27 @@ class CoreExecActiveThreadRuntime:
                         continue
                     if event.kind == "AgentMessageDelta":
                         emitted_delta = True
+                    elif event.kind == "ItemCompleted":
+                        payload = getattr(event, "payload", {})
+                        item = payload.get("item", {}) if isinstance(payload, dict) else {}
+                        if isinstance(item, dict) and item.get("kind") == "AgentMessage":
+                            emitted_delta = True
                     active_turn.put(event)
-                for notification in _command_completion_notifications_from_result(
+                completion_notifications = _command_completion_notifications_from_result(
                     result,
                     thread_id=thread_id,
                     turn_id=turn_id,
                     pending_commands=pending_commands,
                     completed_commands=completed_commands,
-                ):
+                )
+                _timing_trace(
+                    "tui_command_completion_projection",
+                    pending=tuple(pending_commands),
+                    completed=tuple(completed_commands),
+                    tool_outputs=len(tuple(getattr(result, "tool_response_items", ()) or ())),
+                    projected=len(completion_notifications),
+                )
+                for notification in completion_notifications:
                     active_turn.put(notification)
                 final_text = final_text_from_local_http_exec_result(result)
                 if final_text and not emitted_delta:
@@ -1402,8 +1764,17 @@ class CoreExecActiveThreadRuntime:
                     emitted_delta = True
                 if observed_error_message and not emitted_delta:
                     active_turn.finish(_turn_failed_notification(thread_id, turn_id, observed_error_message, exit_code=1))
+                elif observed_terminal_notification is not None:
+                    active_turn.finish(observed_terminal_notification)
                 else:
                     active_turn.finish(_turn_completed_notification(thread_id, turn_id, result))
+                # Rollout persistence is not part of Rust's visible event
+                # ordering contract. Model-history normalization and rollout
+                # I/O remain in the worker, but never hold command completion
+                # or TurnCompleted behind bookkeeping.
+                if not bool(op.payload.get("hidden_goal_context")):
+                    self._record_model_history_from_turn(turn_plan, result)
+                self._persist_rollout(turn_plan, result)
             except BaseException as exc:
                 self._last_worker_error = exc
                 _timing_trace("core_active_thread_worker_failed", error=str(exc))
@@ -1562,7 +1933,7 @@ class CoreExecActiveThreadRuntime:
         session_event_observer: Any = None,
         model_session: Any = None,
         cancellation_token: Any = None,
-    ) -> Any:
+    ) -> tuple[Any, ExecRunPlan]:
         _timing_trace("core_run_op_started", has_model_session=model_session is not None)
         plan = exec_run_plan_for_app_command(op)
         hidden_goal_context = bool(op.payload.get("hidden_goal_context")) if isinstance(op.payload, Mapping) else False
@@ -1600,10 +1971,7 @@ class CoreExecActiveThreadRuntime:
             request_count=len(getattr(result, "request_plans", ()) or ()),
             last_agent_message=bool(getattr(result, "last_agent_message", None)),
         )
-        if not hidden_goal_context:
-            self._record_model_history_from_turn(plan, result)
-        self._persist_rollout(plan, result)
-        return result
+        return result, plan
 
     def _model_history_snapshot(self) -> tuple[ResponseItem, ...]:
         """Return the prompt-visible history for the next core session.
@@ -1676,10 +2044,23 @@ class TuiAppRuntime:
     chat_widget: ChatWidgetProtocolRuntime = field(default_factory=ChatWidgetProtocolRuntime)
     routing_state: ThreadRoutingState = field(default_factory=lambda: ThreadRoutingState(active_thread_id="primary", primary_thread_id="primary"))
     agent_navigation: AgentNavigationState = field(default_factory=AgentNavigationState)
+    side_ui_state: SideUiState = field(default_factory=SideUiState)
     submitted_ops: list[AppCommand] = field(default_factory=list)
     routing_plans: list[ThreadRoutingPlan] = field(default_factory=list)
     event_dispatch_plans: list[EventDispatchPlan] = field(default_factory=list)
     app_server_event_plans: list[AppServerEventPlan] = field(default_factory=list)
+    history_cell_sink: Callable[[object], Any] | None = None
+    pending_history_cells: list[object] = field(default_factory=list)
+    pending_app_server_requests: PendingAppServerRequests = field(default_factory=PendingAppServerRequests)
+    app_server_request_dismiss_sink: Callable[[object], bool] | None = None
+    full_screen_approval_sink: Callable[[object], Any] | None = None
+    thread_event_stores: dict[str, ThreadEventStore] = field(default_factory=dict)
+    replayed_interactive_request_ids: set[Any] = field(default_factory=set)
+    projected_interactive_request_ids: set[Any] = field(default_factory=set)
+    app_server_request_resolutions: list[AppServerRequestResolution] = field(default_factory=list)
+    opened_urls: list[str] = field(default_factory=list)
+    auxiliary_app_events: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    open_url_sink: Callable[[str], Any] = field(default_factory=lambda: webbrowser.open)
     _status_rate_limit_request_id: int = 0
 
     def __post_init__(self) -> None:
@@ -1689,8 +2070,93 @@ class TuiAppRuntime:
         ) == ("primary", "primary"):
             self.routing_state.active_thread_id = self.thread_id
             self.routing_state.primary_thread_id = self.thread_id
+        self._sync_side_routing_state()
         self.sync_chat_widget_config_from_runtime()
         self.sync_message_history_metadata_from_runtime()
+        self.chat_widget.info_message_sink = self.insert_info_history_message
+        self.chat_widget.bind_history_projection(
+            HistoryProjectionSink(
+                insert_cell=self.insert_history_cell,
+                set_active_cell=lambda _cell: None,
+                request_redraw=lambda: None,
+            )
+        )
+
+    def bind_history_cell_sink(self, sink: Callable[[object], Any]) -> None:
+        """Bind Rust ``AppEvent::InsertHistoryCell`` to the terminal backend."""
+
+        self.history_cell_sink = sink
+        pending = tuple(self.pending_history_cells)
+        self.pending_history_cells.clear()
+        for cell in pending:
+            sink(cell)
+
+    def bind_full_screen_approval_sink(self, sink: Callable[[object], Any]) -> None:
+        self.full_screen_approval_sink = sink
+
+    def bind_app_server_request_dismiss_sink(self, sink: Callable[[object], bool]) -> None:
+        """Bind Rust ``BottomPane::dismiss_app_server_request`` to the app owner."""
+
+        self.app_server_request_dismiss_sink = sink
+
+    def _thread_event_store(self, thread_id: str | None = None) -> ThreadEventStore:
+        target = str(thread_id or self.routing_state.active_thread_id or self.thread_id)
+        store = self.thread_event_stores.get(target)
+        if store is None:
+            store = ThreadEventStore.new(256)
+            self.thread_event_stores[target] = store
+        return store
+
+    def replay_thread_snapshot(
+        self,
+        snapshot: ThreadEventSnapshot,
+        *,
+        resume_restored_queue: bool = True,
+    ) -> None:
+        """Replay one filtered thread snapshot in fixed-Rust app order."""
+
+        del resume_restored_queue
+        session = getattr(snapshot, "session", None)
+        target_thread_id = str(
+            _field(session, "thread_id", None)
+            or self.routing_state.active_thread_id
+            or self.thread_id
+        )
+        turns = list(getattr(snapshot, "turns", ()) or ())
+        restored_store = ThreadEventStore.new_with_session(256, session, turns)
+        for buffered in tuple(getattr(snapshot, "events", ()) or ()):
+            event = buffered if isinstance(buffered, ThreadBufferedEvent) else ThreadBufferedEvent(
+                str(_field(buffered, "kind", "")),
+                _field(buffered, "payload", buffered),
+            )
+            if event.kind == "Request":
+                restored_store.push_request(event.payload)
+            elif event.kind == "Notification":
+                restored_store.push_notification(event.payload)
+        self.thread_event_stores[target_thread_id] = restored_store
+
+        if turns:
+            replay_thread_turns(self.chat_widget, turns, ChatWidgetReplayKind.THREAD_SNAPSHOT)
+
+        for event in restored_store.snapshot().events:
+            if event.kind == "Request":
+                request_id = _field(event.payload, "request_id", _field(event.payload, "id", None))
+                if request_id in self.replayed_interactive_request_ids:
+                    continue
+                self.replayed_interactive_request_ids.add(request_id)
+                self.pending_app_server_requests.note_server_request(event.payload)
+                self.chat_widget.handle_request(event.payload)
+            elif event.kind == "Notification":
+                self.chat_widget.handle(_coerce_server_notification(event.payload))
+
+    def insert_history_cell(self, cell: object) -> None:
+        if self.history_cell_sink is None:
+            self.pending_history_cells.append(cell)
+            return
+        self.history_cell_sink(cell)
+
+    def insert_info_history_message(self, message: str, hint: str | None = None) -> None:
+        self.insert_history_cell(new_info_event(message, hint))
 
     def sync_chat_widget_config_from_runtime(self) -> None:
         """Project Rust ``Config`` fields needed by ``chatwidget``.
@@ -1714,6 +2180,12 @@ class TuiAppRuntime:
         if target is None:
             target = SimpleNamespace()
             self.chat_widget.config = target
+        setattr(
+            target,
+            "cwd",
+            getattr(getattr(self.active_thread_runtime, "session_config", None), "cwd", None)
+            or self.cwd,
+        )
         for name in (
             "hide_agent_reasoning",
             "show_raw_agent_reasoning",
@@ -1770,6 +2242,150 @@ class TuiAppRuntime:
             service_tier=_runtime_turn_context_value(self, "service_tier"),
         )
         return self.submit_op(op)
+
+    def apply_permission_profile_selection(self, selection: Any) -> None:
+        """Apply and persist Rust ``SelectPermissionProfile`` atomically."""
+
+        profile_id = str(_field(selection, "profile_id", "") or "")
+        permission_profile, active_permission_profile = _resolve_permission_profile_selection(
+            profile_id,
+            self.active_thread_runtime,
+        )
+        approval_policy = _coerce_approval_policy(
+            _field(selection, "approval_policy", None)
+        )
+        approvals_reviewer = _coerce_approvals_reviewer(
+            _field(selection, "approvals_reviewer", None)
+        )
+        sources = (
+            self.active_thread_runtime,
+            getattr(self.active_thread_runtime, "session_config", None),
+            getattr(self.chat_widget, "config", None),
+        )
+        snapshot = [
+            (
+                source,
+                _field(source, "active_permission_profile", None),
+                _field(source, "permission_profile", None),
+                _field(source, "approval_policy", None),
+                _field(source, "approvals_reviewer", None),
+            )
+            for source in sources
+            if source is not None
+        ]
+        edits = [ConfigEdit.set_path(("permission_profile",), profile_id)]
+        if approval_policy is not None:
+            edits.append(
+                ConfigEdit.set_path(
+                    ("approval_policy",),
+                    str(getattr(approval_policy, "value", approval_policy)),
+                )
+            )
+        if approvals_reviewer is not None:
+            edits.append(
+                ConfigEdit.set_path(
+                    ("approvals_reviewer",),
+                    approvals_reviewer.value,
+                )
+            )
+        config = _config_from_runtime(self.active_thread_runtime)
+        try:
+            if config is not None and _config_has_write_target(config):
+                ConfigEditsBuilder.for_config(config).with_edits(edits).apply_blocking()
+            for source, _active_profile, _permission_profile, _approval, _reviewer in snapshot:
+                _set_runtime_field(source, "active_permission_profile", active_permission_profile)
+                _set_runtime_field(source, "permission_profile", permission_profile)
+                if approval_policy is not None:
+                    _set_runtime_field(source, "approval_policy", approval_policy)
+                if approvals_reviewer is not None:
+                    _set_runtime_field(source, "approvals_reviewer", approvals_reviewer)
+            config_target = getattr(self.chat_widget, "config", None)
+            permissions = getattr(config_target, "permissions", None) if config_target is not None else None
+            if permissions is not None:
+                _set_runtime_field(permissions, "active_permission_profile", active_permission_profile)
+                _set_runtime_field(permissions, "permission_profile", permission_profile)
+                if approval_policy is not None:
+                    _set_runtime_field(permissions, "approval_policy", approval_policy)
+            self.submit_op(
+                AppCommand.override_turn_context(
+                    approval_policy=approval_policy,
+                    approvals_reviewer=approvals_reviewer,
+                    permission_profile=permission_profile,
+                    active_permission_profile=active_permission_profile,
+                )
+            )
+            self.chat_widget.add_info_message(
+                f"Permissions updated to {_field(selection, 'display_label', profile_id)}",
+                None,
+            )
+        except Exception:
+            for source, old_active_profile, old_permission_profile, old_approval, old_reviewer in snapshot:
+                _set_runtime_field(source, "active_permission_profile", old_active_profile)
+                _set_runtime_field(source, "permission_profile", old_permission_profile)
+                _set_runtime_field(source, "approval_policy", old_approval)
+                _set_runtime_field(source, "approvals_reviewer", old_reviewer)
+            raise
+
+    def persist_keymap_update(
+        self,
+        context: str,
+        action: str,
+        keymap_config: Any,
+        runtime_keymap: Any,
+        bindings: Any,
+    ) -> None:
+        """Persist one Rust keymap edit, then refresh all live keymap caches."""
+
+        config = _config_from_runtime(self.active_thread_runtime)
+        if config is not None and _config_has_write_target(config):
+            edit = ConfigEdit.set_path(("tui", "keymap", str(context), str(action)), list(bindings))
+            ConfigEditsBuilder.for_config(config).with_edits([edit]).apply_blocking()
+        self._apply_live_keymap(keymap_config, runtime_keymap)
+
+    def persist_full_access_warning_acknowledged(self) -> None:
+        """Persist Rust's full-access confirmation acknowledgement."""
+
+        config = _config_from_runtime(self.active_thread_runtime)
+        if config is not None and _config_has_write_target(config):
+            ConfigEditsBuilder.for_config(config).set_hide_full_access_warning(True).apply_blocking()
+        for source in (
+            self.active_thread_runtime,
+            getattr(self.active_thread_runtime, "session_config", None),
+            getattr(self.active_thread_runtime, "config", None),
+            getattr(self.chat_widget, "config", None),
+        ):
+            _set_runtime_field(source, "hide_full_access_warning", True)
+
+    def persist_keymap_clear(
+        self,
+        context: str,
+        action: str,
+        keymap_config: Any,
+        runtime_keymap: Any,
+    ) -> None:
+        """Clear one root keymap override and refresh live key handlers."""
+
+        config = _config_from_runtime(self.active_thread_runtime)
+        if config is not None and _config_has_write_target(config):
+            edit = ConfigEdit.clear_path(("tui", "keymap", str(context), str(action)))
+            ConfigEditsBuilder.for_config(config).with_edits([edit]).apply_blocking()
+        self._apply_live_keymap(keymap_config, runtime_keymap)
+
+    def _apply_live_keymap(self, keymap_config: Any, runtime_keymap: Any) -> None:
+        for source in (
+            self.active_thread_runtime,
+            getattr(self.active_thread_runtime, "session_config", None),
+            getattr(self.active_thread_runtime, "config", None),
+            getattr(self.chat_widget, "config", None),
+        ):
+            _set_runtime_field(source, "tui_keymap", keymap_config)
+            _set_runtime_field(source, "runtime_keymap", runtime_keymap)
+        _set_runtime_field(self, "runtime_keymap", runtime_keymap)
+        _set_runtime_field(self.chat_widget, "runtime_keymap", runtime_keymap)
+        bottom_pane = getattr(self.chat_widget, "bottom_pane", None)
+        setter = getattr(bottom_pane, "set_keymap_bindings", None)
+        if callable(setter):
+            setter(runtime_keymap)
 
     def append_message_history_entry(self, text: str) -> None:
         append = getattr(self.active_thread_runtime, "append_message_history_entry", None)
@@ -1975,6 +2591,7 @@ class TuiAppRuntime:
         plan = plan_app_server_event(
             event,
             primary_thread_id=self.routing_state.primary_thread_id,
+            pending_requests=self.pending_app_server_requests,
         )
         self.app_server_event_plans.append(plan)
         self._apply_app_server_event_plan(plan)
@@ -2220,10 +2837,121 @@ class TuiAppRuntime:
         self.chat_widget.set_active_agent_label(label)
         return label
 
+    def thread_label(self, thread_id: str) -> str:
+        """Port fixed-Rust ``App::thread_label`` for approval surfaces."""
+
+        target = str(thread_id)
+        is_primary = target == self.routing_state.primary_thread_id
+        fallback = (
+            "Main [default]"
+            if is_primary
+            else f"Agent ({target[:8]})"
+        )
+        try:
+            entry = self.agent_navigation.get(target)
+        except (TypeError, ValueError, AttributeError):
+            entry = None
+        if entry is None:
+            return fallback
+        label = format_agent_picker_item_name(
+            entry.agent_nickname,
+            entry.agent_role,
+            is_primary,
+        )
+        return fallback if label == "Agent" else label
+
+    def _sync_side_routing_state(self) -> None:
+        self.side_ui_state.active_thread_id = self.routing_state.active_thread_id
+        self.side_ui_state.primary_thread_id = self.routing_state.primary_thread_id
+
+    def register_side_thread(self, thread_id: str, parent_thread_id: str) -> None:
+        self.side_ui_state.side_threads[str(thread_id)] = SideThreadState.new(
+            str(parent_thread_id)
+        )
+        self._sync_side_routing_state()
+
+    def active_side_parent_thread_id(self) -> str | None:
+        self._sync_side_routing_state()
+        return side_active_parent_thread_id(self.side_ui_state)
+
+    def refresh_pending_thread_approvals(self) -> list[str]:
+        side_parent = self.active_side_parent_thread_id()
+        pending_ids = sorted(
+            thread_id
+            for thread_id, store in self.thread_event_stores.items()
+            if thread_id != self.routing_state.active_thread_id
+            and thread_id != side_parent
+            and store.has_pending_thread_approvals()
+        )
+        labels = [self.thread_label(thread_id) for thread_id in pending_ids]
+        self.chat_widget.set_pending_thread_approvals(labels)
+        return labels
+
+    def _push_thread_interactive_request(
+        self,
+        request: ThreadInteractiveRequest,
+    ) -> None:
+        if request.kind == "approval":
+            self.chat_widget.tool_requests.push_approval_request(request.payload)
+        elif request.kind == "mcp_form":
+            self.chat_widget.tool_requests.push_mcp_server_elicitation_request(
+                request.payload
+            )
+        elif request.kind == "app_link":
+            self.chat_widget.tool_requests.open_app_link_view(request.payload)
+        elif request.kind == "decline_elicitation":
+            thread_id, server_name, request_id = request.payload
+            self.handle_bottom_pane_app_event(
+                AppEvent.of(
+                    "ResolveElicitation",
+                    thread_id=thread_id,
+                    server_name=server_name,
+                    request_id=request_id,
+                    decision="Decline",
+                    content=None,
+                    meta=None,
+                )
+            )
+
+    def _enqueue_server_request(self, thread_id: str, request: ServerRequest) -> None:
+        store = self._thread_event_store(thread_id)
+        store.push_request(request)
+        request_id = _field(request, "request_id", _field(request, "id", None))
+        if thread_id == self.routing_state.active_thread_id:
+            self.chat_widget.handle_request(request)
+            if request_id is not None:
+                self.projected_interactive_request_ids.add(request_id)
+        else:
+            interactive = None
+            if self.active_side_parent_thread_id() is None:
+                interactive = interactive_request_for_thread_request(
+                    thread_id,
+                    self.thread_label(thread_id),
+                    request,
+                    fallback_cwd=self.cwd,
+                )
+            if interactive is not None:
+                self._push_thread_interactive_request(interactive)
+                if request_id is not None:
+                    self.projected_interactive_request_ids.add(request_id)
+        self.refresh_pending_thread_approvals()
+
+    def _surface_unprojected_active_thread_requests(self, thread_id: str) -> None:
+        store = self.thread_event_stores.get(thread_id)
+        if store is None:
+            return
+        for request in store.pending_replay_requests():
+            request_id = _field(request, "request_id", _field(request, "id", None))
+            if request_id is not None and request_id in self.projected_interactive_request_ids:
+                continue
+            self.chat_widget.handle_request(request)
+            if request_id is not None:
+                self.projected_interactive_request_ids.add(request_id)
+
     def select_agent_thread(self, thread_id: str) -> ThreadRoutingPlan:
         target_thread_id = str(thread_id).strip()
         entry = self.agent_navigation.get(target_thread_id)
-        if entry is None:
+        if entry is None and target_thread_id not in self.thread_event_stores:
             error_message = f"Agent thread {target_thread_id} is no longer available."
             self.chat_widget.add_error_message(error_message)
             plan = ThreadRoutingPlan(
@@ -2236,6 +2964,7 @@ class TuiAppRuntime:
 
         if self.routing_state.active_thread_id == target_thread_id:
             label = self.sync_active_agent_label()
+            self.refresh_pending_thread_approvals()
             plan = ThreadRoutingPlan(
                 action="select_agent_thread_current",
                 thread_id=target_thread_id,
@@ -2245,7 +2974,10 @@ class TuiAppRuntime:
             return plan
 
         self.routing_state.active_thread_id = target_thread_id
+        self._sync_side_routing_state()
         label = self.sync_active_agent_label()
+        self._surface_unprojected_active_thread_requests(target_thread_id)
+        self.refresh_pending_thread_approvals()
         plan = ThreadRoutingPlan(
             action="select_agent_thread",
             thread_id=target_thread_id,
@@ -2253,6 +2985,47 @@ class TuiAppRuntime:
         )
         self.routing_plans.append(plan)
         return plan
+
+    def select_agent_thread_and_discard_side(
+        self,
+        thread_id: str,
+    ) -> ThreadRoutingPlan:
+        target_thread_id = str(thread_id).strip()
+        self._sync_side_routing_state()
+        side_thread_id = side_thread_to_discard_after_switch(
+            self.current_displayed_thread_id(),
+            self.side_ui_state.side_threads,
+            target_thread_id,
+        )
+        plan = self.select_agent_thread(target_thread_id)
+        if plan.action not in {"select_agent_thread", "select_agent_thread_current"}:
+            return plan
+        if side_thread_id is not None:
+            try:
+                self.active_thread_runtime.shutdown_thread(side_thread_id)
+            except BaseException as exc:
+                self.chat_widget.add_error_message(
+                    f"Failed to close side conversation {side_thread_id}; "
+                    f"it is still open: {exc}"
+                )
+                return plan
+            self.side_ui_state.side_threads.pop(side_thread_id, None)
+            self.thread_event_stores.pop(side_thread_id, None)
+            try:
+                self.agent_navigation.remove(side_thread_id)
+            except (TypeError, ValueError, AttributeError):
+                pass
+            self._sync_side_routing_state()
+            self.sync_active_agent_label()
+            self.refresh_pending_thread_approvals()
+        return plan
+
+    def maybe_return_from_side(self) -> bool:
+        parent_thread_id = self.active_side_parent_thread_id()
+        if parent_thread_id is None:
+            return False
+        plan = self.select_agent_thread_and_discard_side(parent_thread_id)
+        return plan.action in {"select_agent_thread", "select_agent_thread_current"}
 
     def select_adjacent_agent_thread(self, direction: AgentNavigationDirection) -> ThreadRoutingPlan:
         target_thread_id = self.agent_navigation.adjacent_thread_id(
@@ -2266,6 +3039,21 @@ class TuiAppRuntime:
         return self.select_agent_thread(target_thread_id)
 
     def handle_notification(self, notification: ServerNotification) -> None:
+        notification_thread_id = _notification_thread_id(notification)
+        if notification.kind == "ServerRequestResolved":
+            for store in self.thread_event_stores.values():
+                store.push_notification(notification)
+        else:
+            self._thread_event_store(notification_thread_id).push_notification(notification)
+        if notification.kind == "ServerRequestResolved":
+            payload = notification.payload if isinstance(notification.payload, Mapping) else {}
+            request_id = payload.get("request_id", payload.get("requestId"))
+            self.replayed_interactive_request_ids.discard(request_id)
+            self.projected_interactive_request_ids.discard(request_id)
+            resolved = self.pending_app_server_requests.resolve_notification(request_id)
+            if resolved is not None and self.app_server_request_dismiss_sink is not None:
+                self.app_server_request_dismiss_sink(resolved)
+            self.refresh_pending_thread_approvals()
         if notification.kind == "McpServerStatusUpdated":
             self.refresh_mcp_startup_expected_servers()
         if notification.kind == "ThreadClosed":
@@ -2279,6 +3067,76 @@ class TuiAppRuntime:
                 return
         self.chat_widget.handle(notification)
 
+    def handle_server_request(self, request: ServerRequest) -> None:
+        plan = plan_app_server_event(
+            {"kind": "ServerRequest", "request": request},
+            primary_thread_id=self.routing_state.primary_thread_id,
+            pending_requests=self.pending_app_server_requests,
+        )
+        self.app_server_event_plans.append(plan)
+        self._apply_app_server_event_plan(plan)
+
+    def handle_bottom_pane_app_event(self, event: Any) -> ActiveThreadEventStream | None:
+        """Execute a Rust-like app event emitted by an active bottom-pane view."""
+
+        kind = str(getattr(event, "kind", ""))
+        payload = dict(getattr(event, "payload", {}) or {})
+        if kind == "ApproveRecentAutoReviewDenial":
+            from ..chatwidget.permission_popups import approve_recent_auto_review_denial
+
+            nested = approve_recent_auto_review_denial(
+                self.chat_widget,
+                str(payload.get("thread_id") or self.routing_state.active_thread_id or ""),
+                str(payload.get("id") or ""),
+            )
+            result = None
+            for nested_event in nested or ():
+                result = self.handle_bottom_pane_app_event(nested_event)
+            return result
+        if kind == "InsertHistoryCell":
+            self.insert_history_cell(payload["cell"])
+            return None
+        if kind == "OpenUrlInBrowser":
+            url = str(payload.get("url") or "")
+            self.opened_urls.append(url)
+            if url:
+                self.open_url_sink(url)
+            return None
+        if kind in {"RefreshConnectors", "SetAppEnabled"}:
+            self.auxiliary_app_events.append((kind, payload))
+            return None
+        if kind == "FullScreenApprovalRequest":
+            if self.full_screen_approval_sink is not None:
+                self.full_screen_approval_sink(payload.get("request"))
+            return None
+        if kind == "SelectAgentThread":
+            self.select_agent_thread_and_discard_side(
+                str(payload.get("thread_id") or "")
+            )
+            return None
+        if kind == "CodexOp":
+            op = payload["op"]
+            self._thread_event_store().note_outbound_op(op)
+            self._record_app_server_request_resolution(op)
+            return self.submit_op(op)
+        if kind == "SubmitThreadOp":
+            op = payload["op"]
+            thread_id = str(payload.get("thread_id") or self.routing_state.active_thread_id or "")
+            self._thread_event_store(thread_id).note_outbound_op(op)
+            self._record_app_server_request_resolution(op)
+            self.submitted_ops.append(op)
+            return self.active_thread_runtime.submit_thread_op(thread_id, op)
+        raise ValueError(f"unsupported AppEvent variant: {kind!r}")
+
+    def _record_app_server_request_resolution(self, op: Any) -> None:
+        resolution = self.pending_app_server_requests.take_resolution(op)
+        if resolution is None:
+            return
+        self.replayed_interactive_request_ids.discard(resolution.request_id)
+        self.projected_interactive_request_ids.discard(resolution.request_id)
+        self.app_server_request_resolutions.append(resolution)
+        self.refresh_pending_thread_approvals()
+
     def _apply_app_server_event_plan(self, plan: AppServerEventPlan) -> None:
         if "refresh_mcp_expected_servers" in plan.actions:
             self.refresh_mcp_startup_expected_servers()
@@ -2288,6 +3146,16 @@ class TuiAppRuntime:
             self.handle_notification(_coerce_server_notification(plan.notification))
         if "enqueue_primary_thread_notification" in plan.actions and plan.notification is not None:
             self.handle_notification(_coerce_server_notification(plan.notification))
+        if (
+            {"enqueue_primary_thread_request", "enqueue_thread_request"}
+            & set(plan.actions)
+            and plan.request is not None
+            and plan.thread_id is not None
+        ):
+            self._enqueue_server_request(plan.thread_id, plan.request)
+        if "dismiss_app_server_request" in plan.actions and plan.request is not None:
+            if self.app_server_request_dismiss_sink is not None:
+                self.app_server_request_dismiss_sink(plan.request)
         if "add_error_message" in plan.actions and plan.message:
             self.chat_widget.add_error_message(plan.message)
 
@@ -2331,6 +3199,85 @@ def _runtime_turn_context_value(app_runtime: TuiAppRuntime, name: str, default: 
         if value is not None:
             return value
     return default
+
+
+def _resolve_permission_profile_selection(
+    profile_id: str,
+    runtime: Any,
+) -> tuple[PermissionProfile, ActivePermissionProfile]:
+    """Resolve the menu id like Rust ``rebuild_config_for_permission_profile``."""
+
+    preset_id_by_profile = {
+        ":workspace": "auto",
+        ":read-only": "read-only",
+        ":danger-no-sandbox": "full-access",
+    }
+    preset_id = preset_id_by_profile.get(profile_id)
+    if preset_id is not None:
+        preset = next(
+            (item for item in builtin_approval_presets() if item.id == preset_id),
+            None,
+        )
+        if preset is None:
+            raise ValueError(f"unsupported built-in permission profile `{profile_id}`")
+        return preset.permission_profile, preset.active_permission_profile
+
+    for source in (
+        runtime,
+        getattr(runtime, "session_config", None),
+        getattr(runtime, "config", None),
+    ):
+        if source is None:
+            continue
+        resolver = getattr(source, "resolve_permission_profile", None)
+        if not callable(resolver):
+            continue
+        resolved = resolver(profile_id)
+        permission_profile = _field(resolved, "permission_profile", resolved)
+        active_profile = _field(resolved, "active_permission_profile", None)
+        if isinstance(permission_profile, PermissionProfile):
+            if not isinstance(active_profile, ActivePermissionProfile):
+                active_profile = ActivePermissionProfile.new(profile_id)
+            return permission_profile, active_profile
+    raise ValueError(f"unsupported permission profile `{profile_id}`")
+
+
+def _coerce_approval_policy(value: Any) -> AskForApproval | Any | None:
+    if value is None or isinstance(value, AskForApproval):
+        return value
+    try:
+        return AskForApproval(str(getattr(value, "value", value)))
+    except ValueError:
+        return value
+
+
+def _coerce_approvals_reviewer(value: Any) -> ApprovalsReviewer | None:
+    if value is None or isinstance(value, ApprovalsReviewer):
+        return value
+    raw = str(getattr(value, "value", value)).strip()
+    aliases = {
+        "user": ApprovalsReviewer.USER,
+        "autoreview": ApprovalsReviewer.AUTO_REVIEW,
+        "auto-review": ApprovalsReviewer.AUTO_REVIEW,
+        "auto_review": ApprovalsReviewer.AUTO_REVIEW,
+        "guardian_subagent": ApprovalsReviewer.AUTO_REVIEW,
+    }
+    key = raw.rsplit(".", 1)[-1].lower()
+    if key in aliases:
+        return aliases[key]
+    return ApprovalsReviewer.parse(raw)
+
+
+def _set_runtime_field(target: Any, name: str, value: Any) -> None:
+    if target is None:
+        return
+    if isinstance(target, MutableMapping):
+        target[name] = value
+        return
+    try:
+        setattr(target, name, value)
+    except (AttributeError, TypeError):
+        return
 
 
 def _runtime_active_permission_profile_value(app_runtime: TuiAppRuntime) -> Any:
@@ -2572,7 +3519,20 @@ def _model_details_with_reasoning_effort(details: Any, effort: str | None) -> tu
         normalized = text.lower().replace("-", "_")
         if normalized.startswith("reasoning "):
             normalized = normalized.removeprefix("reasoning ").strip()
-        if normalized in {"none", "none_", "minimal", "low", "medium", "high", "xhigh", "x_high", "extra_high", "extra high"}:
+        if normalized in {
+            "none",
+            "none_",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "x_high",
+            "extra_high",
+            "extra high",
+            "max",
+            "ultra",
+        }:
             continue
         retained.append(text)
     if effort:
@@ -2775,6 +3735,25 @@ def _server_notifications_from_session_event(
                 },
             ),
         )
+    if event_type == "error":
+        message = _field(payload, "message", None)
+        if not isinstance(message, str) or not message:
+            message = "The model request failed."
+        return (
+            ServerNotification(
+                "Error",
+                {
+                    "thread_id": _thread_id_value(_field(payload, "thread_id", thread_id)),
+                    "turn_id": _field(payload, "turn_id", turn_id),
+                    "will_retry": False,
+                    "error": {
+                        "message": message,
+                        "codex_error_info": _field(payload, "codex_error_info", None),
+                        "additional_details": _field(payload, "additional_details", None),
+                    },
+                },
+            ),
+        )
     if event_type in {"task_complete", "turn_complete"}:
         return (_turn_completed_notification(thread_id, turn_id, SimpleNamespace(turn_status="completed")),)
     if event_type in {"task_aborted", "turn_aborted"}:
@@ -2807,22 +3786,12 @@ def _server_notifications_from_session_event(
         )
     if event_type == "response_output_item_done":
         item = _field(payload, "item")
-        command_item = _command_execution_item_from_response_item(item, status="InProgress")
-        if command_item is not None:
-            call_id = command_item["id"]
-            if pending_commands is not None:
-                pending_commands[call_id] = dict(command_item)
-            return (
-                ServerNotification(
-                    "ItemStarted",
-                    {
-                        "thread_id": thread_id,
-                        "turn_id": turn_id,
-                        "started_at_ms": int(time.time() * 1000),
-                        "item": command_item,
-                    },
-                ),
-            )
+        # Rust app-server does not turn the model's function_call response item
+        # into a CommandExecution lifecycle event. Core tool events own the
+        # canonical started/completed pair; projecting here creates two active
+        # cells for the same call id and leaves the first one stuck Running.
+        if _command_execution_item_from_response_item(item, status="InProgress") is not None:
+            return ()
         turn_item = _turn_item_from_response_item(item)
         chat_item = _chatwidget_item_from_turn_item(turn_item)
         if chat_item is not None:
@@ -3091,13 +4060,13 @@ def _tool_output_success(item: Any) -> bool | None:
 
 
 def _session_event_error_message(event: Any) -> str | None:
-    event_type = getattr(event, "type", None)
+    event_type = _field(event, "type", None)
     if event_type not in {"stream_error", "error"}:
         return None
-    payload = getattr(event, "payload", None)
-    message = getattr(payload, "message", None)
+    payload = _field(event, "payload", None)
+    message = _field(payload, "message", None)
     if isinstance(message, str) and message:
-        details = getattr(payload, "additional_details", None)
+        details = _field(payload, "additional_details", None)
         if isinstance(details, str) and details and details != message:
             return f"{message}: {details}"
         return message
@@ -3145,6 +4114,21 @@ def _field(value: Any, name: str, default: Any = None) -> Any:
     if isinstance(value, Mapping):
         return value.get(name, default)
     return getattr(value, name, default)
+
+
+def _request_thread_id(request: Any) -> str | None:
+    params = _field(request, "params", None)
+    value = _field(params, "thread_id", _field(params, "threadId", None))
+    return None if value is None or not str(value) else str(value)
+
+
+def _notification_thread_id(notification: Any) -> str | None:
+    payload = _field(notification, "payload", notification)
+    value = _field(payload, "thread_id", _field(payload, "threadId", None))
+    if value is None:
+        turn = _field(payload, "turn", None)
+        value = _field(turn, "thread_id", _field(turn, "threadId", None))
+    return None if value is None or not str(value) else str(value)
 
 
 def _item_payload_field(value: Any, name: str, default: Any = None) -> Any:

@@ -52,6 +52,7 @@ from pycodex.core.unified_exec import (
     NETWORK_ACCESS_DENIED_MESSAGE,
     ExecServerEnvConfig,
     UnifiedExecRemoteProcessModel,
+    _command_for_spawn,
     _cancellation_token_is_cancelled,
     _token_cancelled,
     exec_server_env_for_request,
@@ -59,10 +60,23 @@ from pycodex.core.unified_exec import (
     network_denial_message_for_session,
     wait_for_late_network_denial,
 )
+from pycodex.core.shell import ShellType
+from pycodex.shell_command.powershell import UTF8_OUTPUT_PREFIX
 from pycodex.protocol import ExecToolCallOutput, StreamOutput, TruncationPolicyConfig
 
 
 class CoreUnifiedExecHeadTailBufferTests(unittest.TestCase):
+    def test_powershell_spawn_command_forces_utf8_without_changing_display_command(self) -> None:
+        # Rust owner: core::tools::runtimes::unified_exec. The UTF-8 prefix is
+        # a last-mile backend transformation, not part of the displayed argv.
+        command = ("powershell.exe", "-NoProfile", "-Command", "Write-Output '你好'")
+
+        spawn_command = _command_for_spawn(command, ShellType.POWERSHELL)
+
+        self.assertEqual(command[-1], "Write-Output '你好'")
+        self.assertTrue(spawn_command[-1].startswith(UTF8_OUTPUT_PREFIX))
+        self.assertTrue(spawn_command[-1].endswith(command[-1]))
+
     def test_keeps_prefix_and_suffix_when_over_budget(self) -> None:
         # Rust source: codex-rs/core/src/unified_exec/head_tail_buffer.rs
         # Rust test: keeps_prefix_and_suffix_when_over_budget.

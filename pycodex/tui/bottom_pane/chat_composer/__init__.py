@@ -10,11 +10,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+import time
 import unicodedata
 from typing import Any, Callable, MutableSequence, TextIO
 
 from ..._porting import RustTuiModule
 from ..command_popup import CommandPopup, CommandPopupFlags
+from ..paste_burst import CharDecision, FlushResultKind, PasteBurst
 from ..selection_popup_common import TerminalPopupLine
 from .slash_input import terminal_command_popup_visible_for_draft
 
@@ -27,6 +29,7 @@ RUST_MODULE = RustTuiModule(
 
 LARGE_PASTE_CHAR_THRESHOLD = 1000
 MAX_USER_INPUT_TEXT_CHARS = 512_000
+TERMINAL_COMPOSER_SHUTDOWN_PLACEHOLDER = "Shutting down..."
 FOOTER_SPACING_HEIGHT = 0
 
 
@@ -111,6 +114,33 @@ class InputResult:
     @classmethod
     def None_(cls) -> "InputResult":
         return cls("None")
+
+
+def terminal_input_result_from_line(line: str) -> InputResult:
+    """Parse one completed terminal line using Rust composer semantics.
+
+    Rust ``ChatComposer`` returns slash commands as structured ``InputResult``
+    variants before ``chatwidget::slash_dispatch`` sees them.  The hybrid
+    terminal reader must preserve that boundary instead of reducing every
+    completed line to a user-turn string.
+    """
+
+    from ...slash_command import SlashCommand
+
+    text = str(line).rstrip("\r\n")
+    if "\n" not in text and text.startswith("/"):
+        command_text, separator, args = text[1:].partition(" ")
+        try:
+            command = SlashCommand.parse(command_text)
+        except ValueError:
+            command = None
+        if command is not None:
+            trimmed_args = args.strip() if separator else ""
+            if trimmed_args and command.supports_inline_args():
+                return InputResult.CommandWithArgs(command, trimmed_args)
+            if not trimmed_args:
+                return InputResult.Command(command)
+    return InputResult.Submitted(text)
 
 
 @dataclass(frozen=True)
@@ -204,8 +234,19 @@ class TerminalCommandPopupState:
 
 @dataclass(frozen=True)
 class TerminalComposerProjection:
-    line: str
+    lines: tuple[str, ...]
+    cursor_row_offset: int
     cursor_column: int
+
+    @property
+    def line(self) -> str:
+        """Return the first row for compatibility with single-line callers."""
+
+        return self.lines[0]
+
+    @property
+    def height(self) -> int:
+        return len(self.lines)
 
 
 TERMINAL_COMPOSER_INPUT_CONTINUE = object()
@@ -302,6 +343,8 @@ def run_terminal_composer_prompt_loop(
     interrupt: Callable[[], Any],
     eof: Callable[[], Any],
     handle_key: Callable[[str, str, str], str | None] | None = None,
+    handle_global_key: Callable[[str, str], bool] | None = None,
+    record_submission: Callable[[str], Any] | None = None,
 ) -> Any:
     """Run the terminal product-path composer input loop.
 
@@ -312,18 +355,148 @@ def run_terminal_composer_prompt_loop(
     """
 
     draft = terminal_composer_draft_cleared()
+    paste_burst = PasteBurst()
+    paste_burst_enabled = bool(getattr(source, "detect_paste_bursts", False))
+
+    def append_to_draft(text: str) -> bool:
+        nonlocal draft
+        draft, changed = terminal_composer_draft_after_text(draft, text)
+        if changed:
+            apply_draft(draft)
+            render()
+        return changed
+
+    def flush_paste_burst(now: float) -> bool:
+        if not paste_burst_enabled:
+            return False
+        flushed = paste_burst.flush_if_due(now)
+        if flushed.kind in {FlushResultKind.PASTE, FlushResultKind.TYPED}:
+            return append_to_draft(str(flushed.value or ""))
+        return False
+
     apply_draft(draft)
     render()
     while True:
         event = source.poll(poll_timeout)
         check_resize()
+        now = time.monotonic()
         if event is None:
+            flush_paste_burst(now)
             continue
+
+        # Fixed Rust commit 1c7832f, ChatComposer::handle_input_basic_with_time:
+        # flush an expired held char or burst before handling every new key.
+        # A console source may remain continuously readable, so relying only
+        # on idle polls would let on_plain_char() replace an expired pending
+        # first character and visibly drop ordinary typed text.
+        flush_paste_burst(now)
         event_kind = getattr(event, "kind", "")
         if event_kind == "resize":
             check_resize()
             continue
         event_text = str(getattr(event, "text", ""))
+
+        # Rust ``app::input`` receives global shortcuts before the composer.
+        # Keep that ordering here so Ctrl+T opens the transcript without
+        # mutating or submitting the current draft.
+        if handle_global_key is not None and handle_global_key(event_kind, event_text):
+            buffered = paste_burst.flush_before_modified_input()
+            if buffered:
+                append_to_draft(buffered)
+            render()
+            continue
+
+        # Fixed Rust baseline 1c7832f, bottom_pane::chat_composer:
+        # explicit bracketed-paste events mutate the draft as one payload, and
+        # the PasteBurst fallback turns rapid key streams (including Enter)
+        # into one multiline paste instead of multiple submitted turns.
+        if event_kind == "paste":
+            buffered = paste_burst.flush_before_modified_input()
+            if buffered:
+                append_to_draft(buffered)
+            paste_burst.clear_after_explicit_paste()
+            append_to_draft(event_text)
+            continue
+
+        # A slash command is control input, not an unbracketed multiline
+        # paste. Windows console records can arrive in one poll burst even
+        # when the user or a ConPTY driver typed them separately; allowing the
+        # fallback detector to absorb Enter would turn ``/quit`` into draft
+        # text. Explicit bracketed paste was handled above and remains atomic.
+        if (
+            paste_burst_enabled
+            and event_kind == "text"
+            and len(event_text) == 1
+            and (draft.startswith("/") or (not draft and event_text == "/"))
+        ):
+            buffered = paste_burst.flush_before_modified_input()
+            if buffered:
+                append_to_draft(buffered)
+            paste_burst.clear_after_explicit_paste()
+            append_to_draft(event_text)
+            continue
+
+        if paste_burst_enabled and event_kind == "text" and len(event_text) == 1 and event_text >= " ":
+            ch = event_text
+            if not ch.isascii():
+                if paste_burst.try_append_char_if_active(ch, now):
+                    continue
+                buffered = paste_burst.flush_before_modified_input()
+                if buffered:
+                    append_to_draft(buffered)
+                decision = paste_burst.on_plain_char_no_hold(now)
+                if decision == CharDecision.BUFFER_APPEND:
+                    paste_burst.append_char_to_buffer(ch, now)
+                    continue
+                if decision is not None and decision.kind == "BeginBuffer":
+                    retro_chars = int(decision.retro_chars or 0)
+                    grab = paste_burst.decide_begin_buffer(now, draft, retro_chars)
+                    if grab is not None:
+                        grabbed_chars = len(grab.grabbed)
+                        if grabbed_chars:
+                            draft = draft[:-grabbed_chars]
+                            apply_draft(draft)
+                        paste_burst.append_char_to_buffer(ch, now)
+                        render()
+                        continue
+                append_to_draft(ch)
+                continue
+
+            decision = paste_burst.on_plain_char(ch, now)
+            if decision == CharDecision.RETAIN_FIRST_CHAR:
+                continue
+            if decision == CharDecision.BEGIN_BUFFER_FROM_PENDING:
+                paste_burst.append_char_to_buffer(ch, now)
+                continue
+            if decision == CharDecision.BUFFER_APPEND:
+                paste_burst.append_char_to_buffer(ch, now)
+                continue
+            if decision.kind == "BeginBuffer":
+                retro_chars = int(decision.retro_chars or 0)
+                grab = paste_burst.decide_begin_buffer(now, draft, retro_chars)
+                if grab is not None:
+                    grabbed_chars = len(grab.grabbed)
+                    if grabbed_chars:
+                        draft = draft[:-grabbed_chars]
+                        apply_draft(draft)
+                    paste_burst.append_char_to_buffer(ch, now)
+                    render()
+                    continue
+            append_to_draft(ch)
+            continue
+
+        if paste_burst_enabled and event_kind == "enter":
+            if paste_burst.append_newline_if_active(now):
+                continue
+            if paste_burst.newline_should_insert_instead_of_submit(now):
+                append_to_draft("\n")
+                paste_burst.extend_window(now)
+                continue
+
+        if paste_burst_enabled and event_kind not in {"text", "enter"}:
+            buffered = paste_burst.flush_before_modified_input()
+            if buffered:
+                append_to_draft(buffered)
         if handle_key is not None:
             handled_draft = handle_key(draft, event_kind, event_text)
             if handled_draft is not None:
@@ -336,6 +509,8 @@ def run_terminal_composer_prompt_loop(
         action = terminal_composer_input_action(draft, event_kind, event_text)
         draft = action.draft
         apply_draft(draft)
+        if action.kind == "submit" and action.line is not None and record_submission is not None:
+            record_submission(action.line)
         result = run_terminal_composer_input_action(
             action,
             render=render,
@@ -355,6 +530,7 @@ def run_terminal_composer_blocking_line_prompt(
     check_resize: Callable[[], Any],
     render: Callable[[], Any],
     clear_bottom_pane: Callable[[], Any],
+    record_submission: Callable[[str], Any] | None = None,
 ) -> str | None:
     """Run the blocking-line fallback for terminal composer input.
 
@@ -370,6 +546,8 @@ def run_terminal_composer_blocking_line_prompt(
     clear_bottom_pane()
     if line == "":
         return None
+    if record_submission is not None:
+        record_submission(line)
     return line
 
 
@@ -395,6 +573,8 @@ def run_terminal_composer_read_prompt(
     eof: Callable[[], Any],
     poll_timeout: float = 0.1,
     handle_key: Callable[[str, str, str], str | None] | None = None,
+    handle_global_key: Callable[[str, str], bool] | None = None,
+    record_submission: Callable[[str], Any] | None = None,
 ) -> Any:
     """Read one terminal product-path composer prompt.
 
@@ -412,6 +592,7 @@ def run_terminal_composer_read_prompt(
                 check_resize=check_resize,
                 render=render,
                 clear_bottom_pane=clear_bottom_pane,
+                record_submission=record_submission,
             )
         return run_terminal_composer_prompt_loop(
             source,
@@ -423,12 +604,16 @@ def run_terminal_composer_read_prompt(
             interrupt=interrupt,
             eof=eof,
             handle_key=handle_key,
+            handle_global_key=handle_global_key,
+            record_submission=record_submission,
         )
 
     write_nonterminal_prompt()
     line = read_line()
     if line == "":
         return None
+    if record_submission is not None:
+        record_submission(line)
     return line
 
 
@@ -448,10 +633,12 @@ class TerminalComposerPromptReader:
     interrupt: Callable[[], Any]
     eof: Callable[[], Any]
     handle_key: Callable[[str, str, str], str | None] | None = None
+    handle_global_key: Callable[[str, str], bool] | None = None
+    record_submission: Callable[[str], Any] | None = None
     poll_timeout: float = 0.1
 
     def read(self) -> Any:
-        return run_terminal_composer_read_prompt(
+        result = run_terminal_composer_read_prompt(
             terminal_active=self.terminal_active(),
             get_input_source=self.get_input_source,
             read_line=self.read_line,
@@ -465,7 +652,12 @@ class TerminalComposerPromptReader:
             eof=self.eof,
             poll_timeout=self.poll_timeout,
             handle_key=self.handle_key,
+            handle_global_key=self.handle_global_key,
+            record_submission=self.record_submission,
         )
+        if isinstance(result, InputResult) or result is None:
+            return result
+        return terminal_input_result_from_line(str(result))
 
 
 def terminal_composer_draft_cleared() -> str:
@@ -495,6 +687,14 @@ def terminal_composer_draft_after_backspace(draft: str) -> str:
     return source[:-1] if source else source
 
 
+def terminal_composer_draft_after_ctrl_u(draft: str) -> str:
+    """Kill from the cursor-at-end to the beginning of the current line."""
+
+    source = str(draft)
+    line_start = source.rfind("\n") + 1
+    return source[:line_start]
+
+
 def terminal_composer_submitted_line(draft: str) -> str:
     """Return the line submitted by pressing Enter in the terminal composer."""
 
@@ -509,16 +709,63 @@ def terminal_composer_line_text(draft: str) -> str:
 
 
 def terminal_composer_projection(draft: str, columns: int) -> TerminalComposerProjection:
-    """Project the terminal composer into a live-pane line and cursor column.
+    """Project the terminal composer into wrapped live-pane rows and cursor.
 
     Rust owner: ``codex-tui::bottom_pane::chat_composer`` owns composer text
     projection before the terminal surface adapts it into the live viewport.
     """
 
     safe_columns = max(1, int(columns))
-    line = _terminal_truncate_display_width(terminal_composer_line_text(draft), max(1, safe_columns - 1))
-    cursor_column = min(safe_columns, max(3, 1 + _terminal_display_width(line)))
-    return TerminalComposerProjection(line=line, cursor_column=cursor_column)
+    prefix = "\u203a "
+    continuation = " " * _terminal_display_width(prefix)
+    content_width = max(1, safe_columns - _terminal_display_width(prefix) - 1)
+    wrapped = _terminal_wrap_display_width(str(draft), content_width)
+    lines = tuple(
+        (prefix if index == 0 else continuation) + row
+        for index, row in enumerate(wrapped)
+    )
+    cursor_row_offset = len(lines) - 1
+    cursor_column = min(
+        safe_columns,
+        max(3, 1 + _terminal_display_width(lines[cursor_row_offset])),
+    )
+    return TerminalComposerProjection(
+        lines=lines,
+        cursor_row_offset=cursor_row_offset,
+        cursor_column=cursor_column,
+    )
+
+
+def _terminal_wrap_display_width(text: str, width: int) -> tuple[str, ...]:
+    """Wrap composer text using terminal-cell width and first-fit word breaks."""
+
+    safe_width = max(1, int(width))
+    rows: list[str] = []
+    logical_lines = str(text).replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    for logical in logical_lines:
+        remaining = logical
+        if not remaining:
+            rows.append("")
+            continue
+        while remaining:
+            consumed = 0
+            used = 0
+            last_space = -1
+            for index, char in enumerate(remaining):
+                char_width = _terminal_char_display_width(char)
+                if used + char_width > safe_width:
+                    break
+                used += char_width
+                consumed = index + 1
+                if char.isspace():
+                    last_space = consumed
+            if consumed >= len(remaining):
+                rows.append(remaining)
+                break
+            split_at = last_space if last_space > 0 else max(1, consumed)
+            rows.append(remaining[:split_at].rstrip())
+            remaining = remaining[split_at:].lstrip()
+    return tuple(rows or ("",))
 
 
 def terminal_composer_input_action(draft: str, event_kind: str, event_text: str = "") -> TerminalComposerInputAction:
@@ -534,10 +781,21 @@ def terminal_composer_input_action(draft: str, event_kind: str, event_text: str 
     source = str(draft)
     kind = str(event_kind)
     if kind == "text":
+        if event_text in {"\r", "\n", "\r\n"}:
+            return TerminalComposerInputAction(
+                "submit",
+                terminal_composer_draft_cleared(),
+                terminal_composer_submitted_line(source),
+            )
+        next_draft, changed = terminal_composer_draft_after_text(source, event_text)
+        return TerminalComposerInputAction("render" if changed else "continue", next_draft)
+    if kind == "paste":
         next_draft, changed = terminal_composer_draft_after_text(source, event_text)
         return TerminalComposerInputAction("render" if changed else "continue", next_draft)
     if kind == "backspace":
         return TerminalComposerInputAction("render", terminal_composer_draft_after_backspace(source))
+    if kind == "ctrl_u":
+        return TerminalComposerInputAction("render", terminal_composer_draft_after_ctrl_u(source))
     if kind == "line":
         return TerminalComposerInputAction("submit", terminal_composer_draft_cleared(), str(event_text))
     if kind == "enter":
@@ -580,7 +838,10 @@ def terminal_popup_key(event_kind: str, event_text: str = "") -> str:
             if text in {"escape", "\x1b"}:
                 return "esc"
             return "tab" if text == "\t" else text
-        if len(text) == 1:
+        if text:
+            # Active key-capture/debug views need the complete normalized key
+            # name (for example ``f12``), while list views safely ignore keys
+            # they do not own.
             return text
     if kind in {"up", "down", "tab", "enter", "return", "esc", "escape"}:
         if kind == "return":
@@ -1012,6 +1273,7 @@ __all__ = [
     "QueuedInputAction",
     "RUST_MODULE",
     "TERMINAL_COMPOSER_INPUT_CONTINUE",
+    "TERMINAL_COMPOSER_SHUTDOWN_PLACEHOLDER",
     "TerminalCommandPopupInputAction",
     "TerminalCommandPopupState",
     "TerminalComposerEffectRunner",
@@ -1030,10 +1292,12 @@ __all__ = [
     "run_terminal_composer_write_nonterminal_prompt",
     "run_terminal_command_popup_input_action",
     "terminal_composer_draft_after_backspace",
+    "terminal_composer_draft_after_ctrl_u",
     "terminal_composer_draft_after_text",
     "terminal_composer_draft_cleared",
     "terminal_command_popup_input_action",
     "terminal_composer_input_action",
+    "terminal_input_result_from_line",
     "terminal_composer_line_text",
     "terminal_popup_key",
     "terminal_composer_projection",

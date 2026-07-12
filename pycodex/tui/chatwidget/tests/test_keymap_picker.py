@@ -11,7 +11,10 @@ from pycodex.tui.chatwidget.keymap_picker import (
     KEYMAP_REPLACE_BINDING_MENU_VIEW_ID,
     KeymapActionFilter,
     KeymapPickerWidgetState,
+    TerminalKeymapPopupController,
 )
+from pycodex.tui.app_event import AppEvent, KeymapEditIntent
+from types import SimpleNamespace
 
 
 def runtime(copy="ctrl+c", edit="ctrl+e"):
@@ -121,3 +124,49 @@ def test_return_to_keymap_picker_fallback_rebuilds_distinct_picker_params() -> N
     assert fallback_params is not replaced_params
     assert fallback_params.selected_action == replaced_params.selected_action == ("chat", "submit")
     assert fallback_params.config == replaced_params.config == {"preset": "default"}
+
+
+def test_terminal_keymap_controller_completes_capture_persist_and_live_refresh() -> None:
+    # Rust baseline 1c7832f: app::event_dispatch::apply_keymap_capture validates,
+    # persists, refreshes RuntimeKeymap, and returns to the edited picker row.
+    persisted = []
+    widget = SimpleNamespace(
+        config=SimpleNamespace(),
+        add_info_message=lambda message, hint: persisted.append(("info", message)),
+        add_error_message=lambda message: persisted.append(("error", message)),
+    )
+    active = SimpleNamespace(session_config=SimpleNamespace(tui_keymap={}))
+    app_runtime = SimpleNamespace(
+        active_thread_runtime=active,
+        chat_widget=widget,
+        persist_keymap_update=lambda context, action, config, runtime, bindings: persisted.append(
+            (context, action, tuple(bindings), config, runtime)
+        ),
+        persist_keymap_clear=lambda *args: persisted.append(("clear", *args)),
+    )
+    controller = TerminalKeymapPopupController(app_runtime)
+
+    root = controller.open_view()
+    assert root.view_id == KEYMAP_PICKER_VIEW_ID
+    action_menu = controller.handle_events(
+        ({"type": "OpenKeymapActionMenu", "context": "composer", "action": "submit"},)
+    )
+    assert action_menu is not None
+    assert action_menu.next_view.view_id == KEYMAP_ACTION_MENU_VIEW_ID
+
+    capture = controller.handle_events(
+        (AppEvent.open_keymap_capture("composer", "submit", KeymapEditIntent.replace_all()),)
+    )
+    assert capture is not None
+    assert capture.next_view.context == "composer"
+
+    result = controller.handle_events(
+        (AppEvent.keymap_captured("composer", "submit", "f12", KeymapEditIntent.replace_all()),)
+    )
+    assert result is not None
+    assert result.next_view.view_id == KEYMAP_PICKER_VIEW_ID
+    assert any(
+        entry[:3] == ("composer", "submit", ("f12",))
+        for entry in persisted
+        if len(entry) >= 3
+    )

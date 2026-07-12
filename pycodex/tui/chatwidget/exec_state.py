@@ -125,6 +125,11 @@ def _coerce_parsed_command(value: Any) -> ParsedCommand:
 
 
 def _command_action_into_core(action: Any) -> ParsedCommand:
+    if isinstance(action, dict) and "command" in action and "cmd" not in action:
+        action = dict(action)
+        action["cmd"] = action.pop("command")
+        if action.get("type") == "listFiles":
+            action["type"] = "list_files"
     return _coerce_parsed_command(action)
 
 

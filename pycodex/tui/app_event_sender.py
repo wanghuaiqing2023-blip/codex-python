@@ -13,6 +13,7 @@ from typing import Any, Callable
 
 from ._porting import RustTuiModule
 from .app_command import AppCommand
+from ..app_server_protocol.mcp import McpServerElicitationAction
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -71,6 +72,24 @@ class AppEventSender:
     def review(self, target: Any) -> None:
         self.send(AppEvent.codex_op(AppCommand.review(target)))
 
+    def insert_history_cell(self, cell: Any) -> None:
+        self.send(AppEvent("InsertHistoryCell", {"cell": cell}))
+
+    def open_url_in_browser(self, url: str) -> None:
+        self.send(AppEvent("OpenUrlInBrowser", {"url": str(url)}))
+
+    def refresh_connectors(self, force_refetch: bool) -> None:
+        self.send(AppEvent("RefreshConnectors", {"force_refetch": bool(force_refetch)}))
+
+    def set_app_enabled(self, id: str, enabled: bool) -> None:
+        self.send(AppEvent("SetAppEnabled", {"id": str(id), "enabled": bool(enabled)}))
+
+    def full_screen_approval_request(self, request: Any) -> None:
+        self.send(AppEvent("FullScreenApprovalRequest", {"request": request}))
+
+    def select_agent_thread(self, thread_id: Any) -> None:
+        self.send(AppEvent("SelectAgentThread", {"thread_id": thread_id}))
+
     def list_skills(self, cwds: list[str | Path], force_reload: bool) -> None:
         self.send(AppEvent.codex_op(AppCommand.list_skills(cwds, force_reload)))
 
@@ -98,10 +117,15 @@ class AppEventSender:
         content: Any | None,
         meta: Any | None,
     ) -> None:
+        normalized_decision = (
+            decision
+            if isinstance(decision, McpServerElicitationAction)
+            else McpServerElicitationAction.parse(str(decision).lower())
+        )
         self.send(
             AppEvent.submit_thread_op(
                 thread_id,
-                AppCommand.resolve_elicitation(server_name, request_id, decision, content, meta),
+                AppCommand.resolve_elicitation(server_name, request_id, normalized_decision, content, meta),
             )
         )
 
