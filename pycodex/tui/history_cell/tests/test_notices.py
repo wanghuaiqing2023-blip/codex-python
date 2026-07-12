@@ -77,6 +77,8 @@ def test_info_and_error_events_are_plain_cells() -> None:
     info = new_info_event("Saved", "hint")
     error = new_error_event("Boom")
 
-    assert texts(info.display_lines(80)) == ["- Saved hint"]
-    assert texts(info.raw_lines()) == ["- Saved hint"]
-    assert texts(error.display_lines(80)) == ["! Boom"]
+    assert texts(info.display_lines(80)) == ["\u2022 Saved hint"]
+    assert texts(info.raw_lines()) == ["\u2022 Saved hint"]
+    # Fixed Rust: history_cell::notices::new_error_event uses a black square
+    # and U+200A HAIR SPACE before the message.
+    assert texts(error.display_lines(80)) == ["\u25a0\u200aBoom"]

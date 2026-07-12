@@ -490,6 +490,16 @@ def _coerce_change(change: Any) -> FileChange:
             return FileChange.Delete(str(change.get("content", "")))
         if kind == "update":
             return FileChange.Update(str(change.get("unified_diff") or change.get("diff") or ""), change.get("move_path"))
+    kind = str(getattr(change, "kind", None) or getattr(change, "type", "")).lower()
+    if kind == "add":
+        return FileChange.Add(str(getattr(change, "content", "") or ""))
+    if kind == "delete":
+        return FileChange.Delete(str(getattr(change, "content", "") or ""))
+    if kind == "update":
+        return FileChange.Update(
+            str(getattr(change, "unified_diff", None) or getattr(change, "diff", "") or ""),
+            getattr(change, "move_path", None),
+        )
     raise TypeError(f"unsupported FileChange value: {change!r}")
 
 
@@ -541,18 +551,52 @@ def display_path_for(path: str | Path, cwd: str | Path = ".") -> str:
             return PurePath(path_obj).as_posix()
 
 
+def _syntax_spans(raw: str, lang: str | None) -> list[Span]:
+    if not lang:
+        return [Span(str(raw))]
+    try:
+        from .render.highlight import highlight_code_to_styled_spans
+
+        highlighted = highlight_code_to_styled_spans(str(raw), lang)
+    except Exception:
+        highlighted = None
+    if not highlighted:
+        return [Span(str(raw))]
+    spans: list[Span] = []
+    for semantic in highlighted[0]:
+        semantic_style = getattr(semantic, "style", None)
+        foreground = getattr(semantic_style, "fg", None)
+        fg: Color | None = None
+        if foreground is not None:
+            kind = str(getattr(foreground, "kind", ""))
+            value = getattr(foreground, "value", None)
+            if kind == "rgb" and value is not None:
+                fg = rgb_color(value)
+            elif kind == "indexed":
+                fg = indexed_color(int(value))
+            elif kind == "named":
+                fg = str(value)
+        style = Style(fg=fg)
+        if bool(getattr(semantic_style, "bold", False)):
+            style = style.add_modifier("bold")
+        if bool(getattr(semantic_style, "italic", False)):
+            style = style.add_modifier("italic")
+        spans.append(Span(str(getattr(semantic, "text", "")), style))
+    return spans or [Span(str(raw))]
+
+
 def render_change(change: Any, out: list[Line] | None = None, width: int = 80, lang: str | None = None) -> list[Line]:
-    del lang
     change = _coerce_change(change)
     lines: list[Line] = []
+    context = current_diff_render_style_context()
     if change.kind == "Add":
         max_no = line_number_width(len(change.content.splitlines()))
         for idx, raw in enumerate(change.content.splitlines(), 1):
-            lines.extend(push_wrapped_diff_line_inner_with_theme_and_color_level(idx, DiffLineType.Insert, raw, width, max_no))
+            lines.extend(push_wrapped_diff_line_with_syntax_and_style_context(idx, DiffLineType.Insert, raw, width, max_no, _syntax_spans(raw, lang), context))
     elif change.kind == "Delete":
         max_no = line_number_width(len(change.content.splitlines()))
         for idx, raw in enumerate(change.content.splitlines(), 1):
-            lines.extend(push_wrapped_diff_line_inner_with_theme_and_color_level(idx, DiffLineType.Delete, raw, width, max_no))
+            lines.extend(push_wrapped_diff_line_with_syntax_and_style_context(idx, DiffLineType.Delete, raw, width, max_no, _syntax_spans(raw, lang), context))
     else:
         old_no = new_no = 0
         for raw in change.unified_diff.splitlines():
@@ -567,15 +611,15 @@ def render_change(change: Any, out: list[Line] | None = None, width: int = 80, l
                 continue
             if raw.startswith("+"):
                 new_no += 1
-                lines.extend(push_wrapped_diff_line_inner_with_theme_and_color_level(new_no, DiffLineType.Insert, raw[1:], width, line_number_width(max(new_no, old_no, 1))))
+                lines.extend(push_wrapped_diff_line_with_syntax_and_style_context(new_no, DiffLineType.Insert, raw[1:], width, line_number_width(max(new_no, old_no, 1)), _syntax_spans(raw[1:], lang), context))
             elif raw.startswith("-"):
                 old_no += 1
-                lines.extend(push_wrapped_diff_line_inner_with_theme_and_color_level(old_no, DiffLineType.Delete, raw[1:], width, line_number_width(max(new_no, old_no, 1))))
+                lines.extend(push_wrapped_diff_line_with_syntax_and_style_context(old_no, DiffLineType.Delete, raw[1:], width, line_number_width(max(new_no, old_no, 1)), _syntax_spans(raw[1:], lang), context))
             else:
                 old_no += 1
                 new_no += 1
                 text = raw[1:] if raw.startswith(" ") else raw
-                lines.extend(push_wrapped_diff_line_inner_with_theme_and_color_level(new_no, DiffLineType.Context, text, width, line_number_width(max(new_no, old_no, 1))))
+                lines.extend(push_wrapped_diff_line_with_syntax_and_style_context(new_no, DiffLineType.Context, text, width, line_number_width(max(new_no, old_no, 1)), _syntax_spans(text, lang), context))
     if out is not None:
         out.extend(lines)
     return lines
@@ -586,13 +630,16 @@ def render_changes_block(rows: Iterable[Row], wrap_cols: int = 80, cwd: str | Pa
     total_added = sum(row.added for row in rows)
     total_removed = sum(row.removed for row in rows)
     noun = "file" if len(rows) == 1 else "files"
+    header_spans: list[Span] = [Span("• ", Style().add_modifier("dim"))]
     if len(rows) == 1:
         row = rows[0]
         verb = "Added" if row.change.kind == "Add" else "Deleted" if row.change.kind == "Delete" else "Edited"
-        header_text = f"- {verb} {display_path_for(row.path, cwd)} (+{row.added} -{row.removed})"
+        header_spans.extend((Span(verb, Style().add_modifier("bold")), Span(" "), Span(display_path_for(row.path, cwd)), Span(" ")))
+        header_spans.extend(render_line_count_summary(row.added, row.removed))
     else:
-        header_text = f"- Edited {len(rows)} {noun} (+{total_added} -{total_removed})"
-    out = [Line.from_text(header_text)]
+        header_spans.extend((Span("Edited", Style().add_modifier("bold")), Span(f" {len(rows)} {noun} ")))
+        header_spans.extend(render_line_count_summary(total_added, total_removed))
+    out = [Line.from_spans(header_spans)]
     for index, row in enumerate(rows):
         if index:
             out.append(Line.from_text(""))
@@ -600,7 +647,9 @@ def render_changes_block(rows: Iterable[Row], wrap_cols: int = 80, cwd: str | Pa
             path_text = display_path_for(row.path, cwd)
             if row.move_path:
                 path_text += f" -> {display_path_for(row.move_path, cwd)}"
-            out.append(Line.from_text(f"  - {path_text} (+{row.added} -{row.removed})"))
+            spans = [Span("  └ ", Style().add_modifier("dim")), Span(path_text), Span(" ")]
+            spans.extend(render_line_count_summary(row.added, row.removed))
+            out.append(Line.from_spans(spans))
         lang = detect_lang_for_path(row.move_path or row.path)
         out.extend(_prefix_lines(render_change(row.change, width=max(1, wrap_cols - 4), lang=lang), "    "))
     return out

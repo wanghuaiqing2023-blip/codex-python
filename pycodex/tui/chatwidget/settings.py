@@ -112,6 +112,8 @@ class ReasoningEffortConfig(str, Enum):
     MEDIUM = "Medium"
     HIGH = "High"
     XHIGH = "XHigh"
+    MAX = "Max"
+    ULTRA = "Ultra"
 
     def label(self) -> str:
         return {
@@ -120,6 +122,8 @@ class ReasoningEffortConfig(str, Enum):
             ReasoningEffortConfig.MEDIUM: "medium",
             ReasoningEffortConfig.HIGH: "high",
             ReasoningEffortConfig.XHIGH: "xhigh",
+            ReasoningEffortConfig.MAX: "max",
+            ReasoningEffortConfig.ULTRA: "ultra",
             ReasoningEffortConfig.NONE: "default",
         }[self]
 

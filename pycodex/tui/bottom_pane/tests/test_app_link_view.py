@@ -23,6 +23,7 @@ def _params(**overrides):
     return AppLinkViewParams(**base)
 
 
+# Rust source: codex/codex-rs/tui/src/bottom_pane/app_link_view.rs
 def test_validate_external_url_and_chatgpt_auth_hosts():
     assert validate_external_url("https://example.test/path") == "https://example.test/path"
     assert validate_external_url("http://example.test/path") is None

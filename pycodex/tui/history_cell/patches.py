@@ -11,6 +11,7 @@ from typing import Any, Mapping
 from urllib.parse import quote
 
 from .._porting import RustTuiModule
+from ..diff_render import create_diff_summary as render_diff_summary
 from ..line_truncation import Line, Span
 from ..exec_cell.render import CommandOutput, OutputLinesParams, TOOL_CALL_MAX_LINES, output_lines
 from .base import PlainHistoryCell, plain_lines
@@ -50,59 +51,10 @@ def _file_url(path: str | Path) -> str:
         return text
 
 
-def _change_kind(change: Any) -> str:
-    if isinstance(change, str):
-        return change
-    if isinstance(change, dict):
-        for key in ("kind", "type", "status", "change_type"):
-            if key in change:
-                return str(change[key])
-    for attr in ("kind", "type", "status", "change_type"):
-        value = getattr(change, attr, None)
-        if value is not None:
-            return str(value)
-    return "modified"
-
-
-def _change_marker(kind: str) -> str:
-    normalized = kind.lower()
-    if "add" in normalized or "create" in normalized or normalized == "a":
-        return "A"
-    if "delete" in normalized or "remove" in normalized or normalized == "d":
-        return "D"
-    if "rename" in normalized or "move" in normalized or normalized == "r":
-        return "R"
-    return "M"
-
-
 def create_diff_summary(
     changes: Mapping[str | Path, Any], cwd: str | Path, wrap_cols: int
 ) -> list[Line]:
-    """Module-local semantic fallback for Rust ``create_diff_summary``.
-
-    The full Rust helper lives in ``diff_render.rs``.  Until that renderer is
-    fully ported, this preserves the history-cell contract that a patch event
-    displays deterministic file-level summary lines.
-    """
-
-    del wrap_cols
-    rows: list[Line] = []
-    for path, change in sorted(changes.items(), key=lambda item: str(item[0])):
-        marker = _change_marker(_change_kind(change))
-        display = _display_path_for(path, cwd)
-        move_path = None
-        if isinstance(change, dict):
-            move_path = change.get("move_path") or change.get("new_path") or change.get("to")
-        else:
-            move_path = (
-                getattr(change, "move_path", None)
-                or getattr(change, "new_path", None)
-                or getattr(change, "to", None)
-            )
-        if move_path:
-            display = f"{display} -> {_display_path_for(move_path, cwd)}"
-        rows.append(Line.from_text(f"{marker} {display}"))
-    return rows
+    return list(render_diff_summary(changes, cwd, int(wrap_cols)))
 
 
 @dataclass

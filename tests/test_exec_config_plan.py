@@ -36,7 +36,7 @@ from pycodex.exec import (
 )
 from pycodex.arg0 import Arg0DispatchPaths
 from pycodex.features import Feature
-from pycodex.protocol import AltScreenMode, AskForApproval, GranularApprovalConfig, SandboxMode
+from pycodex.protocol import AltScreenMode, AskForApproval, GranularApprovalConfig, PermissionProfile, SandboxMode
 
 
 class ExecConfigPlanTests(unittest.TestCase):
@@ -156,6 +156,39 @@ class ExecConfigPlanTests(unittest.TestCase):
 
         self.assertIs(overrides.approval_policy, AskForApproval.ON_REQUEST)
         self.assertEqual(overrides.to_mapping()["approvalPolicy"], "on-request")
+
+    def test_exec_harness_overrides_reads_permission_defaults_from_config(self):
+        # Fixed Rust baseline 1c7832f: ConfigBuilder applies explicit CLI
+        # permission overrides first, then config.toml values.
+        cli = parse_exec_args(["prompt"])
+
+        overrides = exec_harness_overrides_from_cli(
+            cli,
+            config_toml={
+                "approval_policy": "on-request",
+                "sandbox_mode": "workspace-write",
+            },
+        )
+
+        self.assertIs(overrides.approval_policy, AskForApproval.ON_REQUEST)
+        self.assertIs(overrides.sandbox_mode, SandboxMode.WORKSPACE_WRITE)
+
+    def test_exec_harness_overrides_cli_permissions_win_over_config(self):
+        cli = replace(
+            parse_exec_args(["--sandbox", "read-only", "prompt"]),
+            approval_policy=AskForApproval.NEVER,
+        )
+
+        overrides = exec_harness_overrides_from_cli(
+            cli,
+            config_toml={
+                "approval_policy": "on-request",
+                "sandbox_mode": "danger-full-access",
+            },
+        )
+
+        self.assertIs(overrides.approval_policy, AskForApproval.NEVER)
+        self.assertIs(overrides.sandbox_mode, SandboxMode.READ_ONLY)
 
     def test_exec_harness_overrides_serializes_granular_approval_policy(self):
         granular = GranularApprovalConfig(
@@ -348,6 +381,100 @@ class ExecConfigPlanTests(unittest.TestCase):
         self.assertFalse(config.features.enabled(Feature.COLLAB))
         self.assertTrue(config.exec_permission_approvals_enabled)
         self.assertTrue(config.request_permissions_tool_enabled)
+
+    def test_interactive_defaults_follow_fixed_rust_project_trust(self):
+        # Fixed Rust commit 1c7832f:
+        # codex-core/src/config/mod.rs selects OnRequest for trusted projects,
+        # UnlessTrusted for untrusted projects, and AskForApproval::default
+        # otherwise. On Windows with no sandbox backend, permissions remain
+        # read-only even for a known project.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cli = parse_exec_args(["prompt"])
+            with patch("pycodex.exec.config_plan.resolve_root_git_project_for_trust", return_value=root):
+                with patch("pycodex.exec.config_plan.sys.platform", "win32"):
+                    trusted = build_exec_config_bootstrap_plan(
+                        cli,
+                        config_toml={"projects": {str(root).lower(): {"trust_level": "trusted"}}},
+                        current_dir=root,
+                        interactive=True,
+                    )
+                    untrusted = build_exec_config_bootstrap_plan(
+                        cli,
+                        config_toml={"projects": {str(root).lower(): {"trust_level": "untrusted"}}},
+                        current_dir=root,
+                        interactive=True,
+                    )
+                    unknown = build_exec_config_bootstrap_plan(
+                        cli,
+                        config_toml={},
+                        current_dir=root,
+                        interactive=True,
+                    )
+
+        trusted_config = exec_session_config_from_bootstrap_plan(trusted)
+        untrusted_config = exec_session_config_from_bootstrap_plan(untrusted)
+        unknown_config = exec_session_config_from_bootstrap_plan(unknown)
+        self.assertIs(trusted_config.approval_policy, AskForApproval.ON_REQUEST)
+        self.assertIs(untrusted_config.approval_policy, AskForApproval.UNLESS_TRUSTED)
+        self.assertIs(unknown_config.approval_policy, AskForApproval.ON_REQUEST)
+        self.assertEqual(trusted_config.permission_profile, PermissionProfile.read_only())
+        self.assertEqual(untrusted_config.permission_profile, PermissionProfile.read_only())
+        self.assertEqual(unknown_config.permission_profile, PermissionProfile.read_only())
+
+    def test_interactive_known_project_uses_workspace_profile_with_windows_sandbox(self):
+        # Fixed Rust owner: core::config::permissions::
+        # default_builtin_permission_profile_name.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with patch("pycodex.exec.config_plan.resolve_root_git_project_for_trust", return_value=root):
+                with patch("pycodex.exec.config_plan.sys.platform", "win32"):
+                    plan = build_exec_config_bootstrap_plan(
+                        parse_exec_args(["prompt"]),
+                        config_toml={
+                            "projects": {str(root).lower(): {"trust_level": "trusted"}},
+                            "windows": {"sandbox": "elevated"},
+                        },
+                        current_dir=root,
+                        interactive=True,
+                    )
+
+        config = exec_session_config_from_bootstrap_plan(plan)
+        self.assertIs(config.approval_policy, AskForApproval.ON_REQUEST)
+        self.assertEqual(config.permission_profile, PermissionProfile.workspace_write((root,)))
+
+    def test_interactive_explicit_permissions_override_trust_defaults(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with patch("pycodex.exec.config_plan.resolve_root_git_project_for_trust", return_value=root):
+                plan = build_exec_config_bootstrap_plan(
+                    parse_exec_args(["prompt"]),
+                    config_toml={
+                        "approval_policy": "never",
+                        "sandbox_mode": "danger-full-access",
+                        "projects": {str(root): {"trust_level": "trusted"}},
+                    },
+                    current_dir=root,
+                    interactive=True,
+                )
+
+        config = exec_session_config_from_bootstrap_plan(plan)
+        self.assertIs(config.approval_policy, AskForApproval.NEVER)
+        self.assertEqual(config.permission_profile, PermissionProfile.disabled())
+
+    def test_noninteractive_exec_defaults_remain_never_and_read_only(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with patch("pycodex.exec.config_plan.resolve_root_git_project_for_trust", return_value=root):
+                plan = build_exec_config_bootstrap_plan(
+                    parse_exec_args(["prompt"]),
+                    config_toml={"projects": {str(root): {"trust_level": "trusted"}}},
+                    current_dir=root,
+                )
+
+        config = exec_session_config_from_bootstrap_plan(plan)
+        self.assertIs(config.approval_policy, AskForApproval.NEVER)
+        self.assertEqual(config.permission_profile, PermissionProfile.read_only())
 
     def test_exec_session_config_projects_tui_status_surfaces_from_config(self):
         # Rust source/test contract:

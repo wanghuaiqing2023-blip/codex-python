@@ -195,3 +195,4 @@ def test_discard_side_thread_success_and_error_plans():
     unsubscribe = run(discard_side_thread("side", unsubscribe_error="closed"))
     assert unsubscribe.action == "discard_side_thread_unsubscribe_failed"
     assert unsubscribe.messages == ("Failed to close side conversation side; it is still open: closed",)
+"""Rust source: codex/codex-rs/tui/src/app/side.rs."""

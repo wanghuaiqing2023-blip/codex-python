@@ -112,7 +112,13 @@ def _field(value: Any, name: str, default: Any = None) -> Any:
 def _variant_and_payload(value: Any) -> Tuple[Optional[str], Any, Any]:
     variant = _field(value, "type", _field(value, "variant", _field(value, "kind")))
     if variant is not None:
-        return str(variant), _field(value, "params", value), _field(value, "request_id")
+        request_id = _field(value, "request_id")
+        if request_id is None:
+            request_id = _field(value, "id")
+        payload = _field(value, "params", None)
+        if payload is None:
+            payload = _field(value, "payload", value)
+        return str(variant), payload, request_id
     if isinstance(value, dict) and len(value) == 1:
         variant, payload = next(iter(value.items()))
         return str(variant), payload, _field(payload, "request_id")
@@ -121,6 +127,14 @@ def _variant_and_payload(value: Any) -> Tuple[Optional[str], Any, Any]:
 
 def _payload_id(payload: Any, name: str) -> str:
     return str(_field(payload, name))
+
+
+def _payload_id_alias(payload: Any, *names: str) -> str:
+    for name in names:
+        value = _field(payload, name)
+        if value is not None and str(value):
+            return str(value)
+    return ""
 
 
 def _decision_value(decision: Any) -> Any:
@@ -147,14 +161,14 @@ class PendingAppServerRequests:
     def note_server_request(self, request: Any) -> Optional[UnsupportedAppServerRequest]:
         variant, params, request_id = _variant_and_payload(request)
         if variant == "CommandExecutionRequestApproval":
-            approval_id = _field(params, "approval_id") or _payload_id(params, "item_id")
+            approval_id = _payload_id_alias(params, "approval_id", "approvalId", "item_id", "itemId", "call_id", "callId", "id")
             self.exec_approvals[str(approval_id)] = request_id
             return None
         if variant == "FileChangeRequestApproval":
-            self.file_change_approvals[_payload_id(params, "item_id")] = request_id
+            self.file_change_approvals[_payload_id_alias(params, "item_id", "itemId", "call_id", "callId", "id")] = request_id
             return None
         if variant == "PermissionsRequestApproval":
-            self.permissions_approvals[_payload_id(params, "item_id")] = request_id
+            self.permissions_approvals[_payload_id_alias(params, "item_id", "itemId", "call_id", "callId", "id")] = request_id
             return None
         if variant == "ToolRequestUserInput":
             turn_id = _payload_id(params, "turn_id")

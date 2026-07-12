@@ -33,12 +33,26 @@ from pycodex.core.agents_md import (
     AgentsMdConfig,
     AgentsMdManager,
 )
+from pycodex.core.config.permissions import (
+    BUILT_IN_DANGER_FULL_ACCESS_PROFILE,
+    BUILT_IN_READ_ONLY_PROFILE,
+    BUILT_IN_WORKSPACE_PROFILE,
+    ProjectTrust,
+    default_builtin_permission_profile_name,
+)
 from pycodex.features import Feature, FeatureConfigSource, FeatureOverrides, Features, FeaturesToml
-from pycodex.git_utils import get_git_repo_root
+from pycodex.git_utils import get_git_repo_root, resolve_root_git_project_for_trust
 from pycodex.core.otel_init import OtelProvider
 from pycodex.core.otel_init import build_provider as build_otel_provider
 from pycodex.utils.home_dir import find_codex_home
-from pycodex.protocol import AltScreenMode, AskForApproval, GranularApprovalConfig, PermissionProfile, SandboxMode
+from pycodex.protocol import (
+    AltScreenMode,
+    AskForApproval,
+    GranularApprovalConfig,
+    PermissionProfile,
+    SandboxMode,
+    WindowsSandboxLevel,
+)
 
 from .cli import ExecCli
 from .event_processor import (
@@ -1390,14 +1404,29 @@ def exec_model_override(
 def exec_harness_overrides_from_cli(
     cli: ExecCli,
     config_toml: Mapping[str, JsonValue] | None = None,
+    *,
+    interactive: bool = False,
+    active_project: ProjectTrust | None = None,
+    windows_sandbox_level: WindowsSandboxLevel = WindowsSandboxLevel.DISABLED,
 ) -> ExecHarnessOverrides:
     """Build the harness override slice that upstream passes to ``ConfigBuilder``."""
 
     model_provider = exec_model_provider_override(cli, config_toml)
     return ExecHarnessOverrides(
         model=exec_model_override(cli, model_provider, config_toml),
-        approval_policy=cli.approval_policy or AskForApproval.NEVER,
-        sandbox_mode=exec_sandbox_mode_from_cli(cli),
+        approval_policy=_exec_approval_policy_override(
+            cli,
+            config_toml,
+            interactive=interactive,
+            active_project=active_project,
+        ),
+        sandbox_mode=_exec_sandbox_mode_override(
+            cli,
+            config_toml,
+            interactive=interactive,
+            active_project=active_project,
+            windows_sandbox_level=windows_sandbox_level,
+        ),
         cwd=Path(cli.cwd) if cli.cwd is not None else None,
         model_provider=model_provider,
         model_reasoning_effort=_optional_str((config_toml or {}).get("model_reasoning_effort")),
@@ -1409,6 +1438,131 @@ def exec_harness_overrides_from_cli(
         bypass_hook_trust=True if cli.dangerously_bypass_hook_trust else None,
         additional_writable_roots=tuple(Path(path) for path in cli.add_dir),
     )
+
+
+def _exec_approval_policy_override(
+    cli: ExecCli,
+    config_toml: Mapping[str, JsonValue] | None,
+    *,
+    interactive: bool = False,
+    active_project: ProjectTrust | None = None,
+) -> AskForApproval | GranularApprovalConfig:
+    if cli.approval_policy is not None:
+        return cli.approval_policy
+    configured = (config_toml or {}).get("approval_policy")
+    if isinstance(configured, str):
+        try:
+            return AskForApproval(configured)
+        except ValueError:
+            pass
+    if not interactive:
+        return AskForApproval.NEVER
+    project = active_project or ProjectTrust()
+    if project.is_trusted():
+        return AskForApproval.ON_REQUEST
+    if project.is_untrusted():
+        return AskForApproval.UNLESS_TRUSTED
+    return AskForApproval.default()
+
+
+def _exec_sandbox_mode_override(
+    cli: ExecCli,
+    config_toml: Mapping[str, JsonValue] | None,
+    *,
+    interactive: bool = False,
+    active_project: ProjectTrust | None = None,
+    windows_sandbox_level: WindowsSandboxLevel = WindowsSandboxLevel.DISABLED,
+) -> SandboxMode | None:
+    selected = exec_sandbox_mode_from_cli(cli)
+    if selected is not None:
+        return selected
+    configured = (config_toml or {}).get("sandbox_mode")
+    if isinstance(configured, str):
+        try:
+            return SandboxMode(configured)
+        except ValueError:
+            pass
+    if not interactive:
+        return None
+    configured_profile = (config_toml or {}).get("default_permissions")
+    if configured_profile == BUILT_IN_WORKSPACE_PROFILE:
+        return SandboxMode.WORKSPACE_WRITE
+    if configured_profile == BUILT_IN_DANGER_FULL_ACCESS_PROFILE:
+        return SandboxMode.DANGER_FULL_ACCESS
+    if configured_profile == BUILT_IN_READ_ONLY_PROFILE:
+        return SandboxMode.READ_ONLY
+    profile_name = default_builtin_permission_profile_name(
+        active_project or ProjectTrust(),
+        windows_sandbox_level,
+    )
+    if profile_name == BUILT_IN_WORKSPACE_PROFILE:
+        return SandboxMode.WORKSPACE_WRITE
+    return None
+
+
+def _active_project_trust(
+    config_toml: Mapping[str, JsonValue],
+    cwd: Path,
+) -> ProjectTrust:
+    projects = config_toml.get("projects")
+    if not isinstance(projects, Mapping):
+        return ProjectTrust()
+    repo_root = resolve_root_git_project_for_trust(cwd)
+    for candidate in (cwd, repo_root):
+        if candidate is None:
+            continue
+        for lookup_key in _normalized_project_lookup_keys(candidate):
+            project = _project_config_for_lookup_key(projects, lookup_key)
+            if project is None:
+                continue
+            level = project.get("trust_level") if isinstance(project, Mapping) else None
+            return ProjectTrust(trusted=level == "trusted", untrusted=level == "untrusted")
+    return ProjectTrust()
+
+
+def _normalized_project_lookup_keys(path: Path) -> tuple[str, ...]:
+    raw = _normalize_project_lookup_key(str(path))
+    canonical = _normalize_project_lookup_key(str(path.resolve(strict=False)))
+    return (canonical,) if raw == canonical else (canonical, raw)
+
+
+def _normalize_project_lookup_key(value: str) -> str:
+    return value.lower() if sys.platform == "win32" else value
+
+
+def _project_config_for_lookup_key(
+    projects: Mapping[str, JsonValue],
+    lookup_key: str,
+) -> JsonValue | None:
+    direct = projects.get(lookup_key)
+    if direct is not None:
+        return direct
+    matches = sorted(
+        (
+            (str(key), value)
+            for key, value in projects.items()
+            if _normalize_project_lookup_key(str(key)) == lookup_key
+        ),
+        key=lambda item: item[0],
+    )
+    return matches[0][1] if matches else None
+
+
+def _windows_sandbox_level_from_config(
+    config_toml: Mapping[str, JsonValue],
+    features: Features,
+) -> WindowsSandboxLevel:
+    windows = config_toml.get("windows")
+    configured = windows.get("sandbox") if isinstance(windows, Mapping) else None
+    if configured == "elevated":
+        return WindowsSandboxLevel.ELEVATED
+    if configured == "unelevated":
+        return WindowsSandboxLevel.RESTRICTED_TOKEN
+    if features.enabled(Feature.WINDOWS_SANDBOX_ELEVATED):
+        return WindowsSandboxLevel.ELEVATED
+    if features.enabled(Feature.WINDOWS_SANDBOX):
+        return WindowsSandboxLevel.RESTRICTED_TOKEN
+    return WindowsSandboxLevel.DISABLED
 
 
 def resolve_exec_config_cwd(cli: ExecCli, current_dir: str | Path | None = None) -> Path:
@@ -1430,6 +1584,7 @@ def build_exec_config_bootstrap_plan(
     *,
     config_toml: Mapping[str, JsonValue] | None = None,
     current_dir: str | Path | None = None,
+    interactive: bool = False,
 ) -> ExecConfigBootstrapPlan:
     """Plan the config inputs that precede full app-server startup."""
 
@@ -1437,6 +1592,8 @@ def build_exec_config_bootstrap_plan(
     cli_overrides = tuple(cli.cli_config_overrides().parse_overrides())
     effective_config = _exec_config_with_overrides(config_toml, cli_overrides)
     features = _features_from_exec_config(effective_config)
+    active_project = _active_project_trust(effective_config, config_cwd)
+    windows_sandbox_level = _windows_sandbox_level_from_config(effective_config, features)
     warnings: list[str] = []
     user_instructions, instruction_sources = _resolve_exec_user_instructions(
         config_cwd,
@@ -1449,7 +1606,13 @@ def build_exec_config_bootstrap_plan(
         ignore_user_config=cli.ignore_user_config,
         ignore_rules=cli.ignore_rules,
         cli_overrides=cli_overrides,
-        harness_overrides=exec_harness_overrides_from_cli(cli, effective_config),
+        harness_overrides=exec_harness_overrides_from_cli(
+            cli,
+            effective_config,
+            interactive=interactive,
+            active_project=active_project,
+            windows_sandbox_level=windows_sandbox_level,
+        ),
         user_instructions=user_instructions,
         instruction_sources=instruction_sources,
         startup_warnings=tuple(warnings),

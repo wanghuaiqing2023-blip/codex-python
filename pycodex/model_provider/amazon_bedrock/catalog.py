@@ -142,6 +142,8 @@ def reasoning_effort_preset(effort: ReasoningEffort) -> ReasoningEffortPreset:
         ReasoningEffort.MEDIUM: "Balances speed and reasoning depth for everyday tasks",
         ReasoningEffort.HIGH: "Greater reasoning depth for complex problems",
         ReasoningEffort.XHIGH: "Extra high reasoning depth for complex problems",
+        ReasoningEffort.MAX: "Maximum reasoning depth for the hardest problems",
+        ReasoningEffort.ULTRA: "Maximum reasoning with automatic task delegation",
     }
     return ReasoningEffortPreset(effort=effort, description=descriptions[effort])
 

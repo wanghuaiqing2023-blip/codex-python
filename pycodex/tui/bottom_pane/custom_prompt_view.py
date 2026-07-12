@@ -10,7 +10,9 @@ from enum import Enum
 from typing import Any, Callable, List, Optional, Tuple
 
 from .._porting import RustTuiModule
+from .bottom_pane_view import BottomPaneViewDefaults, ViewCompletion
 from .popup_consts import standard_popup_hint_line
+from .selection_popup_common import TerminalPopupLine
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -21,11 +23,6 @@ RUST_MODULE = RustTuiModule(
 
 PromptSubmitted = Callable[[str], None]
 GUTTER = "▎"
-
-
-class ViewCompletion(Enum):
-    ACCEPTED = "Accepted"
-    CANCELLED = "Cancelled"
 
 
 class CancellationEvent(Enum):
@@ -103,7 +100,7 @@ class SimpleTextArea:
 
 
 @dataclass
-class CustomPromptView:
+class CustomPromptView(BottomPaneViewDefaults):
     title: str
     placeholder: str
     context_label: Optional[str]
@@ -153,6 +150,10 @@ class CustomPromptView:
 
     def completion(self) -> Optional[ViewCompletion]:
         return self.completion_value
+
+    def terminal_lines(self, *, width: int) -> list[TerminalPopupLine]:
+        area = {"width": max(1, int(width)), "height": self.desired_height(width)}
+        return [TerminalPopupLine(line.text, line.style in {"title", "selected"}) for line in self.render(area)]
 
     def handle_paste(self, pasted: str) -> bool:
         if pasted == "":

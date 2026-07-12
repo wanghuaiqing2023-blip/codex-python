@@ -22,6 +22,7 @@ from .ratatui_bridge.backend import (
 from .ratatui_bridge.buffer import Buffer as _BridgeBuffer
 from .ratatui_bridge.layout import Position as _BridgePosition
 from .ratatui_bridge.layout import Rect as _BridgeRect
+from .ratatui_bridge.text import Span as _BridgeSpan
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -872,6 +873,85 @@ def reset_scroll_region(writer: TextIO) -> None:
     writer.write(f"{ESC}[r")
 
 
+def enable_bracketed_paste(writer: TextIO) -> None:
+    """Enable Rust/crossterm-style bracketed paste reporting."""
+
+    writer.write(f"{ESC}[?2004h")
+    flush = getattr(writer, "flush", None)
+    if callable(flush):
+        flush()
+
+
+def disable_bracketed_paste(writer: TextIO) -> None:
+    """Restore host-terminal paste handling on TUI shutdown."""
+
+    writer.write(f"{ESC}[?2004l")
+    flush = getattr(writer, "flush", None)
+    if callable(flush):
+        flush()
+
+
+def enter_alternate_screen(writer: TextIO) -> None:
+    """Enter Rust's transcript-overlay terminal mode."""
+
+    reset_scroll_region(writer)
+    writer.write(f"{ESC}[?1049h{ESC}[?1007h{ESC}[2J{ESC}[H{ESC}[?25l")
+    flush_writer(writer)
+
+
+def leave_alternate_screen(writer: TextIO) -> None:
+    """Leave Rust's transcript-overlay terminal mode and restore the cursor."""
+
+    writer.write(f"{ESC}[?1007l{ESC}[?1049l{ESC}[?25h")
+    flush_writer(writer)
+
+
+@dataclass
+class AlternateScreenRenderer:
+    """Full-viewport Frame/Buffer renderer used by pager overlays.
+
+    Rust owner: ``codex-tui::custom_terminal``. The overlay owns content and
+    navigation; this backend owns alternate-screen entry, previous/current
+    buffers, ANSI diff flushing, and terminal restoration.
+    """
+
+    writer: TextIO
+    _buffer_state: _BridgeFrameBufferState = field(default_factory=_BridgeFrameBufferState)
+    active: bool = False
+
+    def enter(self) -> None:
+        if self.active:
+            return
+        enter_alternate_screen(self.writer)
+        self._buffer_state.reset()
+        self.active = True
+
+    def render_lines(self, lines: Iterable[str], size: os.terminal_size) -> None:
+        width = max(0, int(size.columns))
+        height = max(0, int(size.lines))
+        area = _BridgeRect.new(0, 0, width, height)
+        buffer = _BridgeBuffer.empty(area)
+        for y, line in enumerate(tuple(lines)[:height]):
+            buffer.set_span(0, y, _BridgeSpan(str(line)), width)
+        previous = self._buffer_state.previous
+        full_redraw = live_viewport_requires_full_redraw(previous, buffer)
+        if previous is not None and full_redraw:
+            previous = None
+            self.writer.write(f"{ESC}[H{ESC}[2J")
+        _bridge_draw_buffer_to_ansi(self.writer, buffer, previous=previous)
+        self._buffer_state.update(buffer)
+        flush_writer(self.writer)
+
+    def leave(self) -> None:
+        if not self.active:
+            return
+        try:
+            leave_alternate_screen(self.writer)
+        finally:
+            self._buffer_state.reset()
+            self.active = False
+
+
 @dataclass(frozen=True)
 class TerminalScrollRegionResetter:
     """Runtime-bound scroll-region reset callback for terminal lifecycle owners."""
@@ -1138,6 +1218,7 @@ def _cursor_style_sequence(style: str) -> str:
 
 
 __all__ = [
+    "AlternateScreenRenderer",
     "BEL",
     "ESC",
     "LiveViewportBufferState",
@@ -1171,6 +1252,9 @@ __all__ = [
     "create_live_viewport_projection_cycle_runner",
     "create_live_viewport_projection_request_runner",
     "display_width",
+    "disable_bracketed_paste",
+    "enable_bracketed_paste",
+    "enter_alternate_screen",
     "flush_live_viewport",
     "flush_writer",
     "hide_cursor_ansi",
@@ -1180,6 +1264,7 @@ __all__ = [
     "live_viewport_cursor_position",
     "live_viewport_minimum_row_widths_for_writes",
     "live_viewport_requires_full_redraw",
+    "leave_alternate_screen",
     "render_live_viewport_buffer",
     "render_live_viewport_request",
     "reset_cursor_style_ansi",

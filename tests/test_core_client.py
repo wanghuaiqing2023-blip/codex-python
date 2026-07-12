@@ -80,6 +80,7 @@ from pycodex.protocol import (
     AgentMessageContent,
     AgentMessageItem,
     ContentItem,
+    FunctionCallOutputPayload,
     ReasoningEffort,
     ReasoningSummary,
     ResponseItem,
@@ -4202,6 +4203,41 @@ def test_serialize_responses_request_strips_response_item_ids_skipped_by_rust_se
     assert [item["type"] for item in serialized["input"]] == ["reasoning", "message", "function_call"]
     assert all("id" not in item for item in serialized["input"])
     assert serialized["input"][0]["summary"] == []
+
+
+def test_serialize_responses_request_keeps_tool_success_internal_like_rust():
+    # Fixed Rust baseline 1c7832f:
+    # codex-protocol::models::FunctionCallOutputPayload keeps `success` as
+    # internal metadata; ResponseItem serialization emits only call_id/output.
+    request = {
+        "model": "gpt-test",
+        "input": [
+            ResponseItem(
+                type="function_call_output",
+                call_id="call-1",
+                output=FunctionCallOutputPayload.text("ok", success=True),
+            ),
+            {
+                "type": "custom_tool_call_output",
+                "call_id": "call-2",
+                "name": "apply_patch",
+                "output": "done",
+                "success": False,
+            },
+        ],
+    }
+
+    serialized = serialize_responses_request(request)
+
+    assert serialized["input"] == [
+        {"type": "function_call_output", "call_id": "call-1", "output": "ok"},
+        {
+            "type": "custom_tool_call_output",
+            "call_id": "call-2",
+            "name": "apply_patch",
+            "output": "done",
+        },
+    ]
 
 
 def test_serialize_responses_request_preserves_response_item_ids_not_skipped_by_rust_serde():

@@ -86,6 +86,8 @@ def reasoning_effort_label(effort: ReasoningEffort | str | Any) -> str:
         ReasoningEffort.MEDIUM: "Medium",
         ReasoningEffort.HIGH: "High",
         ReasoningEffort.XHIGH: "XHigh",
+        ReasoningEffort.MAX: "Max",
+        ReasoningEffort.ULTRA: "Ultra",
     }[_coerce_effort(effort)]
 
 
@@ -130,6 +132,8 @@ _EFFORT_ORDER = [
     ReasoningEffort.MEDIUM,
     ReasoningEffort.HIGH,
     ReasoningEffort.XHIGH,
+    ReasoningEffort.MAX,
+    ReasoningEffort.ULTRA,
 ]
 _EFFORT_RANK = {effort: index for index, effort in enumerate(_EFFORT_ORDER)}
 

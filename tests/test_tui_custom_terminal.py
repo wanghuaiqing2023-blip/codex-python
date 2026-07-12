@@ -4,6 +4,7 @@ import os
 
 import pycodex.tui.custom_terminal as custom_terminal
 from pycodex.tui.custom_terminal import (
+    AlternateScreenRenderer,
     BEL,
     ESC,
     LiveViewportClearRequest,
@@ -1103,3 +1104,25 @@ def test_live_viewport_renderer_can_render_prepared_request() -> None:
 
     assert "\x1b[3;1Hhi" not in writer.value
     assert writer.value.endswith("\x1b[3;3H")
+
+
+def test_alternate_screen_renderer_fully_redraws_changed_wide_rows(monkeypatch) -> None:
+    """Rust custom_terminal invalidates diff rows containing changed wide cells."""
+
+    writer = _StringWriter()
+    renderer = AlternateScreenRenderer(writer)
+    previous_arguments: list[object] = []
+    original_draw = custom_terminal._bridge_draw_buffer_to_ansi
+
+    def capture_draw(writer, buffer, *, previous=None, **kwargs):
+        previous_arguments.append(previous)
+        return original_draw(writer, buffer, previous=previous, **kwargs)
+
+    monkeypatch.setattr(custom_terminal, "_bridge_draw_buffer_to_ansi", capture_draw)
+    size = os.terminal_size((20, 4))
+    renderer.enter()
+    renderer.render_lines(["中文第一行", "中文第二行"], size)
+    renderer.render_lines(["中文第二行", "中文第三行"], size)
+
+    assert previous_arguments == [None, None]
+    assert writer.value.count("\x1b[2J") >= 2

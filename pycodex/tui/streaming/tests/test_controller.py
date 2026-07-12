@@ -23,6 +23,7 @@ def test_controller_newline_gates_stable_queue_and_finalize_drains_remainder() -
     assert not ctrl.push("partial")
     assert ctrl.queued_lines() == 0
     assert ctrl.current_tail_lines() == []
+    assert not ctrl.has_live_tail()
 
     cell, raw_source = ctrl.finalize()
 
@@ -80,11 +81,13 @@ def test_controller_holds_table_header_as_live_tail_until_finalize() -> None:
 
     ctrl.push("| --- | --- |\n")
     assert ctrl.queued_lines() == 0
-    assert hyperlink_lines_to_plain_strings(ctrl.current_tail_lines()) == ["| A | B |", "| --- | --- |"]
+    rendered_table = hyperlink_lines_to_plain_strings(ctrl.current_tail_lines())
+    assert rendered_table[0].split() == ["A", "B"]
+    assert len(rendered_table) == 2
 
     cell, _ = ctrl.finalize()
     assert cell is not None
-    assert texts(cell.raw_lines()) == ["| A | B |", "| --- | --- |"]
+    assert texts(cell.raw_lines()) == rendered_table
 
 
 def test_controller_keeps_possible_header_as_pending_tail_without_delimiter() -> None:

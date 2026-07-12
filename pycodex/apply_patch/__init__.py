@@ -783,9 +783,13 @@ class ApplyPatchHandler(CoreToolRuntime):
         if verified.type == "body":
             assert verified.body is not None
             rejection = _apply_patch_policy_rejection(invocation, verified.body)
-            if rejection is not None:
+            if rejection is None:
+                return ApplyPatchToolOutput.from_text(apply_patch_action_to_disk(verified.body))
+            if "approval_required" not in rejection:
                 raise FunctionCallError.respond_to_model(rejection)
-            return ApplyPatchToolOutput.from_text(apply_patch_action_to_disk(verified.body))
+            if getattr(invocation, "session", None) is None or not getattr(invocation, "call_id", None):
+                raise FunctionCallError.respond_to_model(rejection)
+            return self._handle_approval_required(invocation, resolved, verified.body)
         if verified.type == "correctness_error":
             raise FunctionCallError.respond_to_model(
                 f"apply_patch verification failed: {verified.error}"
@@ -793,6 +797,48 @@ class ApplyPatchHandler(CoreToolRuntime):
         raise FunctionCallError.respond_to_model(
             "apply_patch handler received invalid patch input"
         )
+
+    async def _handle_approval_required(
+        self,
+        invocation: Any,
+        resolved: ResolvedApplyPatchInvocation,
+        action: ApplyPatchAction,
+    ) -> ApplyPatchToolOutput:
+        from pycodex.core.tools.orchestrator import OrchestratorRunResult, ToolOrchestrator
+        from pycodex.core.tools.runtimes import ApplyPatchRuntime
+        from pycodex.core.tools.sandboxing import ExecApprovalRequirement, ToolCtx, ToolError
+
+        turn = getattr(invocation, "turn", None)
+        session = getattr(invocation, "session", None)
+        file_system_sandbox_policy = _invocation_file_system_sandbox_policy(invocation)
+        if file_system_sandbox_policy is None:
+            raise FunctionCallError.respond_to_model("apply_patch is unavailable without a filesystem policy")
+        request = build_apply_patch_request(
+            turn_environment=resolved.turn_environment,
+            action=action,
+            file_system_sandbox_policy=file_system_sandbox_policy,
+            cwd=resolved.cwd,
+            exec_approval_requirement=ExecApprovalRequirement.needs_approval(),
+        )
+        runtime = ApplyPatchRuntime()
+        result = await ToolOrchestrator.new().run(
+            runtime,
+            request,
+            ToolCtx(
+                session=session,
+                turn=turn,
+                call_id=str(getattr(invocation, "call_id")),
+                tool_name=getattr(invocation, "tool_name"),
+            ),
+            turn,
+            _invocation_approval_policy(invocation),
+        )
+        if isinstance(result, ToolError):
+            message = result.message if result.type == "rejected" else str(result.error)
+            raise FunctionCallError.respond_to_model(message or "apply_patch rejected")
+        if not isinstance(result, OrchestratorRunResult):
+            raise TypeError("apply_patch orchestrator returned an invalid result")
+        return ApplyPatchToolOutput.from_text(result.output.exec_output.aggregated_output.text)
 
 
 @dataclass

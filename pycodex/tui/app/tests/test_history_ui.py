@@ -128,7 +128,6 @@ def test_terminal_clear_state_after_clear_resets_scrollback_product_state() -> N
     assert state.history_has_content is False
     assert state.history_ended_with_blank is False
     assert state.history_projection_cells == ()
-    assert state.assistant_stream_text == ""
     assert state.resize_reflow_pending is False
 
 
@@ -141,7 +140,6 @@ def test_terminal_clear_application_state_maps_to_terminal_product_state() -> No
             history_has_content=True,
             history_ended_with_blank=True,
             history_projection_cells=("old",),
-            assistant_stream_text="partial",
             resize_reflow_pending=True,
         )
     )
@@ -149,8 +147,6 @@ def test_terminal_clear_application_state_maps_to_terminal_product_state() -> No
     assert applied.history_state.history_has_content is True
     assert applied.history_state.history_ended_with_blank is True
     assert applied.history_state.projection_cells == ("old",)
-    assert applied.assistant_stream.active is False
-    assert applied.assistant_stream.text == "partial"
     assert applied.resize_reflow_pending is True
 
 
@@ -160,7 +156,6 @@ def test_run_terminal_clear_application_state_applies_owned_reset_state() -> Non
     # history, assistant-stream, and resize-pending fields itself.
     calls: list[str] = []
     history_states = []
-    assistant_states = []
     resize_pending = []
 
     applied = run_terminal_clear_application_state(
@@ -168,20 +163,15 @@ def test_run_terminal_clear_application_state_applies_owned_reset_state() -> Non
             history_has_content=True,
             history_ended_with_blank=True,
             history_projection_cells=("old",),
-            assistant_stream_text="partial",
             resize_reflow_pending=True,
         ),
         apply_history_state=lambda state: (calls.append("history"), history_states.append(state)),
-        apply_assistant_stream_state=lambda state: (
-            calls.append("assistant"),
-            assistant_states.append(state),
-        ),
+        reset_assistant_stream=lambda: calls.append("assistant"),
         apply_resize_pending=lambda pending: (calls.append("resize"), resize_pending.append(pending)),
     )
 
     assert calls == ["history", "assistant", "resize"]
     assert history_states == [applied.history_state]
-    assert assistant_states == [applied.assistant_stream]
     assert resize_pending == [True]
 
 
@@ -212,7 +202,6 @@ def test_terminal_clear_ui_executor_applies_state_and_sequences_callbacks() -> N
     # composing run_terminal_clear_ui_effects itself.
     calls: list[str] = []
     history_states = []
-    assistant_states = []
     resize_pending = []
 
     executor = TerminalClearUiExecutor(
@@ -220,10 +209,7 @@ def test_terminal_clear_ui_executor_applies_state_and_sequences_callbacks() -> N
         clear_terminal=lambda: calls.append("clear"),
         flush_terminal=lambda: calls.append("flush"),
         apply_history_state=lambda state: (calls.append("history"), history_states.append(state)),
-        apply_assistant_stream_state=lambda state: (
-            calls.append("assistant"),
-            assistant_states.append(state),
-        ),
+        reset_assistant_stream=lambda: calls.append("assistant"),
         apply_resize_pending=lambda pending: (calls.append("resize"), resize_pending.append(pending)),
         render_header=lambda: calls.append("header"),
         activate_layout=lambda: calls.append("activate"),
@@ -234,7 +220,6 @@ def test_terminal_clear_ui_executor_applies_state_and_sequences_callbacks() -> N
     assert calls == ["deactivate", "clear", "flush", "history", "assistant", "resize", "header", "activate"]
     assert returned == terminal_clear_state_after_clear()
     assert history_states[0].projection_cells == ()
-    assert assistant_states[0].active is False
     assert resize_pending == [False]
 
 
@@ -262,7 +247,7 @@ def test_terminal_clear_ui_executor_factory_owns_terminal_runtime_callbacks(monk
         writer=writer,
         deactivate_layout=lambda: calls.append("deactivate"),
         apply_history_state=lambda state: calls.append(f"history:{state.history_has_content}"),
-        apply_assistant_stream_state=lambda state: calls.append(f"assistant:{state.active}"),
+        reset_assistant_stream=lambda: calls.append("assistant"),
         apply_resize_pending=lambda pending: calls.append(f"resize:{pending}"),
         write_history_cell=lambda cell: (calls.append("header"), header_cells.append(cell)),
         activate_layout=lambda: calls.append("activate"),
@@ -274,7 +259,7 @@ def test_terminal_clear_ui_executor_factory_owns_terminal_runtime_callbacks(monk
     assert calls == [
         "deactivate",
         "history:False",
-        "assistant:False",
+        "assistant",
         "resize:False",
         "header",
         "activate",

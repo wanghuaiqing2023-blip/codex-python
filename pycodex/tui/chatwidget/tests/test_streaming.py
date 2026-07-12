@@ -5,8 +5,11 @@ from pycodex.tui.chatwidget.streaming import (
     ModeKind,
     StreamControllerState,
     StreamingWidgetState,
+    TerminalChatWidgetStreamingRuntime,
     extract_first_bold,
 )
+from pycodex.tui.app_event import ConsolidationScrollbackReflow
+from pycodex.tui.terminal_hyperlinks import line_text
 
 
 def test_extract_first_bold_matches_rust_wait_for_closing_behavior() -> None:
@@ -15,6 +18,97 @@ def test_extract_first_bold_matches_rust_wait_for_closing_behavior() -> None:
     assert extract_first_bold("before **   ** after") is None
     assert extract_first_bold("before ** pending") is None
     assert extract_first_bold("no bold here") is None
+
+
+def test_terminal_streaming_runtime_keeps_table_tail_in_frame_until_required_consolidation() -> None:
+    # Fixed Rust baseline 1c7832f:
+    # chatwidget::streaming keeps the mutable tail out of insert_history, then
+    # app::agent_message_consolidation consumes it with Required replay.
+    stable = []
+    tails: list[tuple[str, ...]] = []
+    consolidations = []
+    draws: list[str] = []
+    runtime = TerminalChatWidgetStreamingRuntime(
+        width=lambda: 80,
+        cwd=lambda: ".",
+        insert_stable_cell=stable.append,
+        consolidate_agent_message=lambda source, cwd, mode, deferred: consolidations.append(
+            (source, str(cwd), mode, deferred)
+        ),
+        apply_live_tail=tails.append,
+        render_frame=lambda: draws.append("draw"),
+    )
+
+    runtime.handle_delta("| Key | Value |\n")
+
+    assert stable == []
+    assert runtime.has_live_tail()
+    assert tails[-1] == ("\u2022 | Key | Value |",)
+    assert draws == ["draw"]
+
+    runtime.finalize()
+
+    source, _cwd, mode, deferred = consolidations[-1]
+    assert source == "| Key | Value |\n"
+    assert mode is ConsolidationScrollbackReflow.REQUIRED
+    assert deferred is not None
+    assert tails[-1] == ()
+    assert stable == []
+
+
+def test_terminal_streaming_runtime_commits_stable_cell_once_and_uses_conditional_reflow() -> None:
+    # Fixed Rust baseline 1c7832f:
+    # streaming::commit_tick emits stable AgentMessageCell values through
+    # insert_history once; completion without a live tail uses IfResizeReflowRan.
+    stable = []
+    consolidations = []
+    runtime = TerminalChatWidgetStreamingRuntime(
+        width=lambda: 80,
+        cwd=lambda: ".",
+        insert_stable_cell=stable.append,
+        consolidate_agent_message=lambda source, cwd, mode, deferred: consolidations.append(
+            (source, mode, deferred)
+        ),
+        apply_live_tail=lambda _lines: None,
+        render_frame=lambda: None,
+    )
+
+    runtime.handle_delta("stable line\n")
+    runtime.commit_tick()
+
+    assert len(stable) == 1
+    assert [line_text(line) for line in stable[0].raw_lines()] == ["stable line"]
+
+    runtime.finalize()
+
+    assert len(stable) == 1
+    assert consolidations == [
+        ("stable line\n", ConsolidationScrollbackReflow.IF_RESIZE_REFLOW_RAN, None)
+    ]
+
+
+def test_terminal_streaming_runtime_completed_item_without_deltas_uses_same_consolidation() -> None:
+    # Fixed Rust evidence: chatwidget::streaming::on_agent_message_item_completed
+    # supports models that emit only AgentMessageItems at turn completion.
+    stable = []
+    consolidations = []
+    runtime = TerminalChatWidgetStreamingRuntime(
+        width=lambda: 80,
+        cwd=lambda: ".",
+        insert_stable_cell=stable.append,
+        consolidate_agent_message=lambda source, cwd, mode, deferred: consolidations.append(
+            (source, mode, deferred)
+        ),
+        apply_live_tail=lambda _lines: None,
+        render_frame=lambda: None,
+    )
+
+    runtime.complete_message("done-only answer")
+
+    assert len(stable) == 1
+    assert consolidations == [
+        ("done-only answer\n", ConsolidationScrollbackReflow.IF_RESIZE_REFLOW_RAN, None)
+    ]
 
 
 def test_restore_reasoning_status_header_prefers_bold_header_then_working() -> None:

@@ -64,6 +64,22 @@ def test_capacity_eviction_updates_pending_request_state():
     assert store.has_pending_thread_approvals() is False
 
 
+def test_store_preserves_chatwidget_server_request_id_during_coercion():
+    # Fixed Rust app::thread_events stores the protocol RequestId unchanged so
+    # replay and ServerRequestResolved correlation use the same identity.
+    store = ThreadEventStore.new(8)
+    store.push_request(
+        SimpleNamespace(
+            kind="ToolRequestUserInput",
+            id="rpc-input",
+            request_id=None,
+            params={"turn_id": "turn-1", "item_id": "input-1"},
+        )
+    )
+
+    assert store.pending_replay_requests()[0].request_id == "rpc-input"
+
+
 def test_side_parent_pending_status_prefers_user_input_then_approval():
     store = ThreadEventStore.new(8)
     store.push_request(request_user_input_request("input-1", "turn-1"))
@@ -100,3 +116,6 @@ def test_apply_thread_rollback_resets_buffer_pending_and_active_turn():
     assert store.buffer == []
     assert store.has_pending_thread_approvals() is False
     assert [turn.id for turn in store.turns] == ["turn-old"]
+from types import SimpleNamespace
+
+# Rust source: codex/codex-rs/tui/src/app/thread_events.rs

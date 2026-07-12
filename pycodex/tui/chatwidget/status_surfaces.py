@@ -17,6 +17,7 @@ from ..bottom_pane.status_line_setup import StatusLineItem
 from ..bottom_pane.title_setup import TerminalTitleItem
 from ..custom_terminal import clear_inline_status_line, write_inline_status_line
 from ..status.rate_limits import RateLimitSnapshotDisplay, RateLimitWindowDisplay
+from ..terminal_title import clear_terminal_title, set_terminal_title
 from .rate_limits import get_limits_duration
 from .status_state import TerminalTitleStatusKind
 
@@ -601,6 +602,7 @@ class TerminalStatusSurfaceWriter:
     check_resize: Callable[[], None] = lambda: None
     repaint_footprint: Callable[[TerminalLiveStatusSurface], None] = lambda _previous: None
     render_bottom_pane: Callable[[], None] = lambda: None
+    terminal_title_requires_action: bool = False
 
     @property
     def turn_active(self) -> bool:
@@ -618,6 +620,18 @@ class TerminalStatusSurfaceWriter:
 
         self.render_bottom_pane = render_bottom_pane
 
+    def set_terminal_title_requires_action(self, required: bool) -> None:
+        """Project the active view's Rust action-required title contract."""
+
+        required = bool(required)
+        if required == self.terminal_title_requires_action:
+            return
+        self.terminal_title_requires_action = required
+        if required:
+            set_terminal_title(TERMINAL_TITLE_ACTION_REQUIRED_PREFIX, stdout=self.writer)
+        else:
+            clear_terminal_title(stdout=self.writer)
+
     def start_turn(self, started_at: float) -> None:
         self.turn_started_at = float(started_at)
 
@@ -634,6 +648,26 @@ class TerminalStatusSurfaceWriter:
             render_bottom_pane=self.render_bottom_pane,
             apply_state=self._apply_live_status,
         )
+
+    def show_guardian_status(self, header: str, details: str | None = None) -> None:
+        """Let guardian review temporarily own the active-turn status row."""
+
+        self.suppress_turn_status()
+        self.show_live_status(header, details)
+
+    def restore_turn_status(self, header: str = "Working") -> None:
+        """Release guardian ownership and restore the active turn status tick."""
+
+        was_active = self.turn_status.active
+        self.turn_status = TerminalTurnStatusState(
+            active=was_active,
+            last_second=self.turn_status.last_second,
+            suppressed=False,
+        )
+        if was_active:
+            self.render_turn_status(force=True)
+        else:
+            self.show_live_status(header)
 
     def render_turn_status(self, *, force: bool = False, now: float | None = None) -> None:
         self.turn_status = run_terminal_turn_status_render(

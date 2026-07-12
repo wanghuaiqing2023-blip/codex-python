@@ -7,9 +7,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
+from time import monotonic
 from typing import Any, Callable, List, Optional, Tuple
 
 from .._porting import RustTuiModule
+from ..app_event import ConsolidationScrollbackReflow
+from ..history_cell import HistoryRenderMode
+from ..history_cell.messages import AgentMessageCell, StreamingAgentTailCell
+from ..streaming.chunking import AdaptiveChunkingPolicy
+from ..streaming.commit_tick import CommitTickScope as ControllerCommitTickScope
+from ..streaming.commit_tick import run_commit_tick
+from ..streaming.controller import StreamController
+from ..terminal_hyperlinks import line_text
 from .status_state import StatusIndicatorState, StatusState, TerminalTitleStatusKind
 
 RUST_MODULE = RustTuiModule(
@@ -86,6 +96,139 @@ class StreamControllerState:
         self.queued_lines -= 1
         self.live_tail = bool(self.tail_lines)
         return [("stream_line", line)]
+
+
+@dataclass
+class TerminalChatWidgetStreamingRuntime:
+    """Product-path composition of Rust chatwidget and streaming controllers."""
+
+    width: Callable[[], int]
+    cwd: Callable[[], str | Path]
+    insert_stable_cell: Callable[[AgentMessageCell], Any]
+    consolidate_agent_message: Callable[
+        [str, str | Path, ConsolidationScrollbackReflow, AgentMessageCell | None],
+        Any,
+    ]
+    apply_live_tail: Callable[[tuple[str, ...]], Any]
+    render_frame: Callable[[], Any]
+    controller: StreamController | None = None
+    chunking: AdaptiveChunkingPolicy = field(default_factory=AdaptiveChunkingPolicy)
+    _tail_lines: tuple[str, ...] = ()
+
+    @property
+    def active(self) -> bool:
+        return self.controller is not None
+
+    def has_active_stream(self) -> bool:
+        return self.active
+
+    def has_live_tail(self) -> bool:
+        return bool(self.controller and self.controller.has_live_tail())
+
+    def reset(self) -> None:
+        self.controller = None
+        self.chunking.reset()
+        self._apply_tail(())
+
+    def set_width(self, width: int) -> None:
+        if self.controller is not None:
+            self.controller.set_width(max(1, int(width)))
+            self._sync_live_tail()
+
+    def handle_delta(self, delta: str) -> None:
+        if self.controller is None:
+            self.controller = StreamController.new(
+                self.width(),
+                self.cwd(),
+                HistoryRenderMode.RICH,
+            )
+        queued = self.controller.push(str(delta))
+        if queued:
+            self.commit_tick(monotonic(), scope=ControllerCommitTickScope.CATCH_UP_ONLY)
+        elif self._sync_live_tail():
+            self.render_frame()
+
+    def complete_message(self, source: str) -> Any:
+        """Complete an AgentMessage item through the canonical stream owner.
+
+        Rust models without preambles may emit only a completed AgentMessage
+        item. Feed that source through the same controller/consolidation path
+        used by delta-capable models instead of creating a second history path.
+        """
+
+        if self.controller is None and source:
+            self.handle_delta(source)
+        return self.finalize()
+
+    def commit_tick(
+        self,
+        now: float | None = None,
+        *,
+        scope: ControllerCommitTickScope = ControllerCommitTickScope.ANY_MODE,
+    ) -> bool:
+        if self.controller is None:
+            return False
+        output = run_commit_tick(
+            self.chunking,
+            self.controller,
+            None,
+            scope,
+            monotonic() if now is None else float(now),
+        )
+        for cell in output.cells:
+            self.insert_stable_cell(cell)
+        tail_changed = self._sync_live_tail()
+        if output.cells or tail_changed:
+            self.render_frame()
+        return bool(output.cells or tail_changed)
+
+    def active_tail_projection(self) -> tuple[str, ...]:
+        return self._tail_lines
+
+    def finalize(self) -> Any:
+        controller = self.controller
+        if controller is None:
+            return None
+        had_live_tail = controller.has_live_tail()
+        final_cell, source = controller.finalize()
+        self.controller = None
+        self.chunking.reset()
+        self._apply_tail(())
+        reflow = (
+            ConsolidationScrollbackReflow.REQUIRED
+            if had_live_tail
+            else ConsolidationScrollbackReflow.IF_RESIZE_REFLOW_RAN
+        )
+        deferred = final_cell if had_live_tail else None
+        if final_cell is not None and deferred is None:
+            self.insert_stable_cell(final_cell)
+        result = self.consolidate_agent_message(
+            source,
+            self.cwd(),
+            reflow,
+            deferred,
+        )
+        self.render_frame()
+        return result
+
+    def _sync_live_tail(self) -> bool:
+        controller = self.controller
+        if controller is None or not controller.has_live_tail():
+            return self._apply_tail(())
+        tail = StreamingAgentTailCell.new(
+            controller.current_tail_lines(),
+            controller.tail_starts_stream(),
+        )
+        lines = tuple(line_text(line) for line in tail.display_lines(self.width()))
+        return self._apply_tail(lines)
+
+    def _apply_tail(self, lines: tuple[str, ...]) -> bool:
+        normalized = tuple(str(line) for line in lines)
+        if normalized == self._tail_lines:
+            return False
+        self._tail_lines = normalized
+        self.apply_live_tail(normalized)
+        return True
 
 
 @dataclass
@@ -436,5 +579,6 @@ __all__ = [
     "RUST_MODULE",
     "StreamControllerState",
     "StreamingWidgetState",
+    "TerminalChatWidgetStreamingRuntime",
     "extract_first_bold",
 ]

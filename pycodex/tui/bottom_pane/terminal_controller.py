@@ -12,6 +12,8 @@ from __future__ import annotations
 import os
 from typing import Callable, TextIO, TypeVar
 
+
+from .chat_composer import TERMINAL_COMPOSER_SHUTDOWN_PLACEHOLDER
 from .terminal_footprint import TerminalBottomPaneFootprint
 from .terminal_projection import TerminalBottomPaneRequestRunner
 from .view_stack import (
@@ -48,9 +50,11 @@ class TerminalBottomPaneController:
         on_selection_events: TerminalSelectionEventHandler | None = None,
         repaint_footprint: Callable[[TerminalBottomPaneFootprint, TerminalBottomPaneFootprint], None] | None = None,
         cursor_visible: Callable[[], bool] | None = None,
+        set_terminal_title_requires_action: Callable[[bool], None] | None = None,
     ) -> None:
         self._open_command_view = open_command_view
         self._on_selection_events = on_selection_events
+        self._set_terminal_title_requires_action = set_terminal_title_requires_action or (lambda _required: None)
         composer_cursor_visible = cursor_visible or (lambda: True)
         self._view_state = TerminalBottomPaneViewState.new()
         self._footprint_runner = create_terminal_bottom_pane_footprint_cycle_runner()
@@ -85,19 +89,108 @@ class TerminalBottomPaneController:
                 footer_text=footer_text,
             ),
         )
+        self._synchronize_footprint = self._footprint_runner.synchronize_for_view_state_callback(
+            terminal_size=self._request_runner.terminal_size,
+            live_status=live_status,
+            bottom_pane_state=self._view_state,
+            composer_cursor_visible=composer_cursor_visible,
+        )
 
     def sync_draft(self, draft: str) -> None:
         """Synchronize composer draft into the bottom-pane owner state."""
 
         self._view_state.apply_draft(draft)
 
+    def _record_submission(self, text: str) -> None:
+        """Record a submitted composer entry through its Rust-owned history."""
+
+        self._view_state.record_submission(text)
+
+    def _configure_history(
+        self,
+        thread_id: object,
+        log_id: int,
+        entry_count: int,
+        lookup: Callable[[int, int], object | None] | None,
+    ) -> None:
+        """Bind persistent composer history through the bottom-pane owner."""
+
+        self._view_state.configure_history(thread_id, log_id, entry_count, lookup)
+
+    def sync_active_tail(self, lines: tuple[str, ...]) -> None:
+        """Apply chatwidget-owned mutable stream-tail frame input."""
+
+        self._view_state.apply_active_tail(lines)
+
+    def sync_pending_thread_approvals(self, approvals: list[str]) -> None:
+        """Project Rust pending-thread approval rows through bottom-pane state."""
+
+        self._view_state.apply_pending_thread_approvals(approvals)
+        self.render_without_resize_check()
+
+    def show_shutdown(self) -> None:
+        """Render Rust ChatComposer's disabled shutdown presentation."""
+
+        self._view_state.apply_draft(TERMINAL_COMPOSER_SHUTDOWN_PLACEHOLDER)
+        self.render_without_resize_check()
+
+    def _show_selection_view(self, params: object) -> None:
+        """Show a command-owned selection view through the shared stack."""
+
+        self._view_state.show_selection_view(params)
+        self._sync_terminal_title_requires_action()
+
+    def show_view(self, view: object) -> object:
+        """Push a generic Rust-owned active view through the shared stack."""
+
+        active_view = self._view_state.show_view(view)
+        self._sync_terminal_title_requires_action()
+        return active_view
+
+    def dismiss_app_server_request(self, request: object) -> bool:
+        """Remove an externally resolved request from the active view stack."""
+
+        dismissed = self._view_state.dismiss_app_server_request(request)
+        if dismissed:
+            self._sync_terminal_title_requires_action()
+            self.render_without_resize_check()
+        return dismissed
+
+    def has_active_view(self) -> bool:
+        return self._view_state.active_view is not None
+
+    def handle_active_view_input(self, event: object) -> bool:
+        """Route one task-time terminal event to the active bottom-pane view."""
+
+        if not self.has_active_view():
+            return False
+        kind = str(getattr(event, "kind", ""))
+        text = str(getattr(event, "text", ""))
+        self._view_state.handle_composer_key(
+            self._view_state.draft,
+            kind,
+            text,
+            on_selection_events=self._on_selection_events,
+            open_command_view=self._open_command_view,
+        )
+        self._sync_terminal_title_requires_action()
+        self.render_without_resize_check()
+        return True
+
     def handle_composer_key(self, draft: str, event_kind: str, event_text: str = "") -> str | None:
-        return self._view_state.handle_composer_key(
+        result = self._view_state.handle_composer_key(
             draft,
             event_kind,
             event_text,
             on_selection_events=self._on_selection_events,
             open_command_view=self._open_command_view,
+        )
+        self._sync_terminal_title_requires_action()
+        return result
+
+    def _sync_terminal_title_requires_action(self) -> None:
+        self._set_terminal_title_requires_action(
+            self._view_state.terminal_title_requires_action()
         )
 
     def history_bottom_row(self, reserve_active_bottom_pane: bool = False) -> int:
@@ -124,7 +217,8 @@ class TerminalBottomPaneController:
     def render_after_history_repaint(self, *, check_resize: bool = False) -> bool:
         """Render after external history viewport writes may have dirtied blank live rows."""
 
-        return self.render(check_resize=check_resize, clear_external_blank_rows=True)
+        self._synchronize_footprint()
+        return self.render(check_resize=check_resize, clear_external_blank_rows=False)
 
     def render_without_resize_check(self) -> bool:
         """Render the live pane when the caller already owns resize handling."""

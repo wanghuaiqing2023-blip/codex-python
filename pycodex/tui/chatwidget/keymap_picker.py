@@ -11,6 +11,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, List, Optional, Tuple
 
+from .. import keymap_setup
+from ..keymap import RuntimeKeymap
+from ..keymap_setup import picker as keymap_picker_model
+from ..bottom_pane.list_selection_view import coerce_selection_view_params
+from ..bottom_pane.view_stack import TerminalSelectionTransition
+
 from .._porting import RustTuiModule
 
 RUST_MODULE = RustTuiModule(
@@ -153,6 +159,189 @@ class KeymapPickerWidgetState:
         self.redraws += 1
 
 
+class TerminalKeymapPopupController:
+    """Terminal controller for the complete Rust ``/keymap`` edit flow."""
+
+    def __init__(self, app_runtime: Any) -> None:
+        self.app_runtime = app_runtime
+        self._events: list[Any] = []
+        self.keymap_config = self._current_keymap_config()
+        self.runtime_keymap = RuntimeKeymap.from_config(self.keymap_config)
+
+    def open_view(self) -> Any:
+        self._refresh()
+        params = keymap_picker_model.build_keymap_picker_params_with_filter(
+            self.runtime_keymap,
+            self.keymap_config,
+            keymap_picker_model.KeymapActionFilter(
+                fast_mode_enabled=bool(getattr(self.app_runtime, "fast_mode_enabled", False))
+            ),
+        )
+        return coerce_selection_view_params(params)
+
+    def handle_command_with_args(self, args: str) -> Any:
+        if str(args).strip().lower() == "debug":
+            return keymap_setup.build_keymap_debug_view(self.runtime_keymap, self.keymap_config)
+        return self.open_view()
+
+    def handle_events(self, events: tuple[object, ...]) -> TerminalSelectionTransition | None:
+        pending = [*events, *self._events]
+        self._events.clear()
+        for event in pending:
+            kind, payload = _terminal_keymap_event(event)
+            if kind == "OpenKeymapActionMenu":
+                params = keymap_setup.build_keymap_action_menu_params(
+                    str(payload.get("context", "")),
+                    str(payload.get("action", "")),
+                    self.runtime_keymap,
+                    self.keymap_config,
+                )
+                return TerminalSelectionTransition(coerce_selection_view_params(params))
+            if kind == "OpenKeymapReplaceBindingMenu":
+                params = keymap_setup.build_keymap_replace_binding_menu_params(
+                    str(payload.get("context", "")),
+                    str(payload.get("action", "")),
+                    self.runtime_keymap,
+                )
+                return TerminalSelectionTransition(coerce_selection_view_params(params))
+            if kind == "OpenKeymapCapture":
+                view = keymap_setup.build_keymap_capture_view(
+                    str(payload.get("context", "")),
+                    str(payload.get("action", "")),
+                    payload.get("intent"),
+                    self.runtime_keymap,
+                    self._events,
+                )
+                return TerminalSelectionTransition(view)
+            if kind == "OpenKeymapDebug":
+                return TerminalSelectionTransition(
+                    keymap_setup.build_keymap_debug_view(self.runtime_keymap, self.keymap_config)
+                )
+            if kind == "KeymapCaptured":
+                return self._apply_capture(payload)
+            if kind == "KeymapCleared":
+                return self._apply_clear(payload)
+        return None
+
+    def _apply_capture(self, payload: dict[str, Any]) -> TerminalSelectionTransition:
+        context = str(payload.get("context", ""))
+        action = str(payload.get("action", ""))
+        key = str(payload.get("key", ""))
+        intent = payload.get("intent")
+        try:
+            outcome = keymap_setup.keymap_with_edit(
+                self.keymap_config,
+                self.runtime_keymap,
+                context,
+                action,
+                key,
+                intent,
+            )
+            if outcome.kind == "Unchanged":
+                self.app_runtime.chat_widget.add_info_message(outcome.message, None)
+                return TerminalSelectionTransition(self._picker_for(context, action))
+            candidate_runtime = RuntimeKeymap.from_config(outcome.keymap_config)
+        except Exception as exc:
+            params = keymap_setup.build_keymap_conflict_params(context, action, key, intent, str(exc))
+            return TerminalSelectionTransition(coerce_selection_view_params(params))
+
+        try:
+            self.app_runtime.persist_keymap_update(
+                context,
+                action,
+                outcome.keymap_config,
+                candidate_runtime,
+                outcome.bindings,
+            )
+        except Exception as exc:
+            self.app_runtime.chat_widget.add_error_message(f"Failed to save shortcut: {exc}")
+            return TerminalSelectionTransition(self._picker_for(context, action))
+        self.keymap_config = outcome.keymap_config
+        self.runtime_keymap = candidate_runtime
+        self.app_runtime.chat_widget.add_info_message(outcome.message, None)
+        return TerminalSelectionTransition(
+            self._picker_for(context, action),
+            replace_view_ids=(
+                KEYMAP_PICKER_VIEW_ID,
+                KEYMAP_ACTION_MENU_VIEW_ID,
+                KEYMAP_REPLACE_BINDING_MENU_VIEW_ID,
+            ),
+        )
+
+    def _apply_clear(self, payload: dict[str, Any]) -> TerminalSelectionTransition:
+        context = str(payload.get("context", ""))
+        action = str(payload.get("action", ""))
+        candidate = keymap_setup.keymap_without_custom_binding(self.keymap_config, context, action)
+        candidate_runtime = RuntimeKeymap.from_config(candidate)
+
+        try:
+            self.app_runtime.persist_keymap_clear(context, action, candidate, candidate_runtime)
+        except Exception as exc:
+            self.app_runtime.chat_widget.add_error_message(f"Failed to save shortcut: {exc}")
+            return TerminalSelectionTransition(self._picker_for(context, action))
+        self.keymap_config = candidate
+        self.runtime_keymap = candidate_runtime
+        self.app_runtime.chat_widget.add_info_message(
+            f"Restored default shortcut for {context}.{action}.",
+            None,
+        )
+        return TerminalSelectionTransition(
+            self._picker_for(context, action),
+            replace_view_ids=(
+                KEYMAP_PICKER_VIEW_ID,
+                KEYMAP_ACTION_MENU_VIEW_ID,
+                KEYMAP_REPLACE_BINDING_MENU_VIEW_ID,
+            ),
+        )
+
+    def _picker_for(
+        self,
+        context: str,
+        action: str,
+        config: Any = None,
+        runtime: RuntimeKeymap | None = None,
+    ) -> Any:
+        params = keymap_picker_model.build_keymap_picker_params_for_selected_action_with_filter(
+            runtime or self.runtime_keymap,
+            self.keymap_config if config is None else config,
+            keymap_picker_model.KeymapActionFilter(
+                fast_mode_enabled=bool(getattr(self.app_runtime, "fast_mode_enabled", False))
+            ),
+            context,
+            action,
+        )
+        return coerce_selection_view_params(params)
+
+    def _refresh(self) -> None:
+        self.keymap_config = self._current_keymap_config()
+        self.runtime_keymap = RuntimeKeymap.from_config(self.keymap_config)
+
+    def _current_keymap_config(self) -> Any:
+        runtime = self.app_runtime.active_thread_runtime
+        for source in (
+            getattr(runtime, "session_config", None),
+            getattr(runtime, "config", None),
+            runtime,
+        ):
+            if source is None:
+                continue
+            value = source.get("tui_keymap") if isinstance(source, dict) else getattr(source, "tui_keymap", None)
+            if value is not None:
+                return value
+        return {}
+
+
+def _terminal_keymap_event(event: Any) -> tuple[str, dict[str, Any]]:
+    if isinstance(event, str):
+        return event, {}
+    if isinstance(event, dict):
+        kind = str(event.get("type") or event.get("kind") or event.get("event") or "")
+        return kind, dict(event)
+    kind = str(getattr(event, "kind", ""))
+    payload = getattr(event, "payload", {})
+    return kind, dict(payload) if isinstance(payload, dict) else {}
+
+
 def build_keymap_picker_params_with_filter(runtime_keymap: Any, config: Any, action_filter: KeymapActionFilter) -> KeymapView:
     return KeymapView("picker", KEYMAP_PICKER_VIEW_ID, filter=action_filter, config=config, runtime_keymap=runtime_keymap)
 
@@ -214,6 +403,7 @@ __all__ = [
     "KeymapActionFilter",
     "KeymapPickerWidgetState",
     "KeymapView",
+    "TerminalKeymapPopupController",
     "RUST_MODULE",
     "build_keymap_action_menu_params",
     "build_keymap_capture_view",

@@ -2580,7 +2580,11 @@ def _build_tui_core_active_thread_runtime(parsed: ParsedCli, *, stderr: TextIO) 
     )
     if migration_status == PersonalityMigrationStatus.APPLIED:
         config_toml = read_toml_mapping(codex_home / CONFIG_TOML_FILE)
-    bootstrap_plan = build_exec_config_bootstrap_plan(exec_cli, config_toml=config_toml)
+    bootstrap_plan = build_exec_config_bootstrap_plan(
+        exec_cli,
+        config_toml=config_toml,
+        interactive=True,
+    )
     ensure_exec_trusted_directory(
         exec_trusted_directory_check(exec_cli, bootstrap_plan.config_cwd)
     )

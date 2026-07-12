@@ -3,10 +3,13 @@ from pycodex.tui.chatwidget.permissions_menu import (
     ApprovalPreset,
     CustomPermissionProfileSummary,
     PermissionMenuConfig,
+    TerminalPermissionsPopupController,
     builtin_approval_presets,
     open_permission_profiles_popup,
     permission_profile_selection_item,
 )
+from types import SimpleNamespace
+from pycodex.protocol import ActivePermissionProfile
 
 
 def test_permission_profiles_popup_orders_builtin_items_and_strips_default_suffix() -> None:
@@ -106,3 +109,48 @@ def test_permission_profile_selection_item_uses_id_as_display_label() -> None:
     assert item.name == "Label"
     assert not item.is_current
     assert item.actions[0].selection.display_label == "profile-id"
+
+
+def test_terminal_full_access_selection_opens_confirmation_with_remember_action() -> None:
+    # Rust baseline 1c7832f: permission_popups::open_full_access_confirmation
+    # distinguishes one-session acceptance from persisted acknowledgement.
+    runtime = SimpleNamespace(
+        active_thread_runtime=SimpleNamespace(session_config=SimpleNamespace()),
+        chat_widget=SimpleNamespace(
+            config=SimpleNamespace(),
+            add_error_message=lambda _message: None,
+        ),
+    )
+    controller = TerminalPermissionsPopupController(runtime)
+    root = controller.open_view()
+    assert root is not None
+    full_access = next(item for item in root.items if item.name == "Full Access")
+
+    transition = controller.handle_events(tuple(full_access.actions))
+
+    assert transition is not None
+    assert transition.next_view.header == "Enable full access?"
+    remember = transition.next_view.items[1]
+    assert remember.actions[0].kind == "confirm_permission_profile_remember"
+
+
+def test_terminal_permissions_popup_reads_typed_active_profile_id() -> None:
+    # Fixed Rust baseline 1c7832f: Config permissions expose an
+    # ActivePermissionProfile; popup current-item matching uses its id.
+    runtime = SimpleNamespace(
+        active_thread_runtime=SimpleNamespace(
+            active_permission_profile=ActivePermissionProfile.new(":workspace"),
+            approval_policy="on-request",
+            approvals_reviewer="user",
+            session_config=SimpleNamespace(),
+        ),
+        chat_widget=SimpleNamespace(
+            config=SimpleNamespace(),
+            add_error_message=lambda _message: None,
+        ),
+    )
+
+    view = TerminalPermissionsPopupController(runtime).open_view()
+
+    assert view is not None
+    assert next(item for item in view.items if item.name == "Default").is_current

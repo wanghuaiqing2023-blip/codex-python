@@ -15,6 +15,8 @@ import textwrap
 import time
 
 from .._porting import RustTuiModule
+from ..bottom_pane.bottom_pane_view import BottomPaneViewDefaults
+from ..bottom_pane.selection_popup_common import TerminalPopupLine
 
 RUST_MODULE = RustTuiModule(crate="codex-tui", module="keymap_setup::debug", source="codex/codex-rs/tui/src/keymap_setup/debug.rs", status="complete")
 
@@ -73,7 +75,7 @@ class KeymapDebugReport:
 
 
 @dataclass
-class KeymapDebugView:
+class KeymapDebugView(BottomPaneViewDefaults):
     runtime_keymap: Any
     keymap_config: Any
     opened_at: float = field(default_factory=time.monotonic)
@@ -132,6 +134,9 @@ class KeymapDebugView:
         if buf is not None and hasattr(buf, "draw"):
             buf.draw(lines, area)
         return lines
+
+    def terminal_lines(self, *, width: int) -> list[TerminalPopupLine]:
+        return [TerminalPopupLine(line, index == 0) for index, line in enumerate(self.lines(width))]
 
     def desired_height(self, width: int) -> int:
         return len(self.lines(width))

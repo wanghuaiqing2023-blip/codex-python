@@ -80,8 +80,29 @@ class ProtocolOpenAiModelsTests(unittest.TestCase):
         # reasoning_effort_from_str_rejects_unknown_values.
         self.assertEqual(ReasoningEffort.parse("high"), ReasoningEffort.HIGH)
         self.assertEqual(ReasoningEffort.parse("minimal"), ReasoningEffort.MINIMAL)
+        self.assertEqual(ReasoningEffort.parse("max"), ReasoningEffort.MAX)
+        self.assertEqual(ReasoningEffort.parse("ultra"), ReasoningEffort.ULTRA)
         with self.assertRaisesRegex(ValueError, "invalid ReasoningEffort value `unsupported`"):
             ReasoningEffort.parse("unsupported")
+
+    def test_gpt_5_6_reasoning_efforts_parse_from_model_catalog(self):
+        # Rust owner: codex-protocol::openai_models. Newer Codex model-cache
+        # payloads advertise GPT-5.6 Sol with max and ultra reasoning levels;
+        # the shared protocol must parse the catalog before TUI model_popups
+        # can project it.
+        payload = _model_info_payload()
+        payload["slug"] = "gpt-5.6-sol"
+        payload["supported_reasoning_levels"] = [
+            {"effort": "max", "description": "Maximum reasoning depth"},
+            {"effort": "ultra", "description": "Automatic task delegation"},
+        ]
+
+        model = ModelInfo.from_mapping(payload)
+
+        self.assertEqual(
+            [preset.effort for preset in model.supported_reasoning_levels],
+            [ReasoningEffort.MAX, ReasoningEffort.ULTRA],
+        )
 
     def test_input_modality_defaults_and_explicit_values(self):
         # Rust parity: codex-protocol/src/openai_models.rs

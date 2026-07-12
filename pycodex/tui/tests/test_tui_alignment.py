@@ -3,15 +3,50 @@ from __future__ import annotations
 from pathlib import Path
 import ast
 import re
+import subprocess
 
 from pycodex.tui.tui_alignment import (
     CRITICAL_TERMINAL_TUI_MODULES,
+    RUST_CODEX_BASELINE_COMMIT,
     TUI_ALIGNMENT_ENTRIES,
     TUI_MODULE_OWNERS,
 )
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+EXPECTED_RUST_CODEX_BASELINE_COMMIT = "1c7832ffa37a3ab56f601497c00bfce120370bf9"
+
+
+def test_terminal_tui_alignment_is_pinned_to_fixed_rust_commit() -> None:
+    # Project contract: codex/ is an immutable behavior baseline. TUI parity
+    # mappings must not silently follow another upstream commit.
+    assert RUST_CODEX_BASELINE_COMMIT == EXPECTED_RUST_CODEX_BASELINE_COMMIT
+
+    parent_gitlink = subprocess.check_output(
+        ["git", "rev-parse", "HEAD:codex"],
+        cwd=REPO_ROOT,
+        text=True,
+    ).strip()
+    checked_out_commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"],
+        cwd=REPO_ROOT / "codex",
+        text=True,
+    ).strip()
+
+    assert parent_gitlink == RUST_CODEX_BASELINE_COMMIT
+    assert checked_out_commit == RUST_CODEX_BASELINE_COMMIT
+
+    assert TUI_ALIGNMENT_ENTRIES
+    assert TUI_MODULE_OWNERS
+    for entry in TUI_ALIGNMENT_ENTRIES:
+        assert entry.rust_commit == RUST_CODEX_BASELINE_COMMIT, entry.python_module
+        for responsibility in entry.responsibilities:
+            assert responsibility.rust_commit == RUST_CODEX_BASELINE_COMMIT, (
+                entry.python_module,
+                responsibility.name,
+            )
+    for owner in TUI_MODULE_OWNERS:
+        assert owner.rust_commit == RUST_CODEX_BASELINE_COMMIT, owner.python_owner
 
 
 def test_terminal_tui_alignment_manifest_paths_exist() -> None:
@@ -997,7 +1032,14 @@ def test_terminal_controller_does_not_own_popup_row_projection() -> None:
     assert controller_tests.isdisjoint(bottom_pane_owner_tests | old_controller_owner_tests)
     assert public_controller_methods == {
         "sync_draft",
-        "handle_composer_key",
+        "sync_active_tail",
+        "sync_pending_thread_approvals",
+            "show_shutdown",
+            "show_view",
+            "dismiss_app_server_request",
+            "has_active_view",
+            "handle_active_view_input",
+            "handle_composer_key",
         "history_bottom_row",
         "clear",
         "clear_without_resize_check",
@@ -1078,7 +1120,11 @@ def test_terminal_controller_does_not_own_popup_row_projection() -> None:
     assert "def view_stack(self) -> list[Any]:" not in source
     assert "def command_popup(self) -> Any:" not in source
     assert "return self._view_state.draft" not in source
-    assert "self._view_state.show_selection_view(params)" not in source
+    # Typed slash dispatch may hand a command-owned view to the terminal
+    # adapter; the private method must remain a one-line delegation and must
+    # not project rows or own command behavior.
+    assert "def _show_selection_view(self, params: object) -> None:" in source
+    assert "self._view_state.show_selection_view(params)" in source
     assert "open_command_view: TerminalCommandViewFactory | None = None" in source
     assert "open_model_view: TerminalSelectionViewFactory | None = None" not in source
     assert "on_selection_events: TerminalSelectionEventHandler | None = None" in source
@@ -1285,6 +1331,9 @@ def test_terminal_runtime_does_not_own_bottom_pane_ui_projection() -> None:
     status_source = (REPO_ROOT / "pycodex/tui/chatwidget/status_surfaces.py").read_text(encoding="utf-8-sig")
     turn_runtime_source = (REPO_ROOT / "pycodex/tui/chatwidget/turn_runtime.py").read_text(encoding="utf-8-sig")
     status_card_source = (REPO_ROOT / "pycodex/tui/status/card.py").read_text(encoding="utf-8-sig")
+    status_controls_source = (REPO_ROOT / "pycodex/tui/chatwidget/status_controls.py").read_text(
+        encoding="utf-8-sig"
+    )
     history_ui_source = (REPO_ROOT / "pycodex/tui/app/history_ui.py").read_text(encoding="utf-8-sig")
     resize_source = (REPO_ROOT / "pycodex/tui/app/resize_reflow.py").read_text(encoding="utf-8-sig")
     messages_source = (REPO_ROOT / "pycodex/tui/history_cell/messages.py").read_text(encoding="utf-8-sig")
@@ -1351,7 +1400,19 @@ def test_terminal_runtime_does_not_own_bottom_pane_ui_projection() -> None:
     assert "self._bottom_pane.run_external_repaint(" not in source
     assert "def _replay_history_scrollback" not in source
     assert "repaint_history_viewport=self._resize_history.repaint_viewport" in source
-    assert "repaint_active_stream=self._resize_history.repaint_viewport" in source
+    assert "TerminalChatWidgetStreamingRuntime" in source
+    assert "assistant_delta=self._assistant_stream.handle_delta" in source
+    assert "append_transcript_cell=self._transcript.append" in source
+    assert "transcript_cells=lambda: tuple(self._transcript.cells)" in source
+    assert "insert_stable_cell=self._agent_message_consolidation.append_transient" in source
+    assert "apply_live_tail=self._bottom_pane.sync_active_tail" in source
+    assert "consolidate_agent_message=self._agent_message_consolidation.consolidate" in source
+    assert "TerminalAssistantStreamWriter" not in source
+    assert "repaint_active_stream" not in source
+    assert "TerminalAssistantStreamState" not in messages_source
+    assert "terminal_assistant_stream_delta_plan" not in messages_source
+    assert "write_terminal_history_stream_delta_and_flush" not in insert_history_source
+    assert "finish_history_stream_projection_and_flush" not in insert_history_source
     assert "def _repaint_history_viewport_preserving_bottom_pane(" not in source
     assert "extra_projection_cell: str | None = None" not in source
     assert "*args: Any" not in source
@@ -1397,7 +1458,11 @@ def test_terminal_runtime_does_not_own_bottom_pane_ui_projection() -> None:
     assert "cursor_visible=lambda: not self._status.turn_active" not in source
     assert "class TerminalStatusCardWriter" in status_card_source
     assert "self._status_card = TerminalStatusCardWriter(" in source
-    assert "status=self._status_card.run" in source
+    assert "class TerminalStatusCommandController" in status_controls_source
+    assert "self._status_command = TerminalStatusCommandController(" in source
+    assert "status=self._status_command.run" in source
+    assert "status=self._status_card.run" not in source
+    assert "RefreshRateLimits" not in source
     assert "status=lambda: run_terminal_status_card_from_runtime(" not in source
     assert "def for_terminal_runtime(" in history_ui_source
     assert "class TerminalSessionHeaderWriter" in history_ui_source
@@ -1460,7 +1525,8 @@ def test_terminal_runtime_does_not_own_bottom_pane_ui_projection() -> None:
     assert "TerminalModelPopupController" not in imported_names
     assert "self._model_popup" not in source
     assert "TerminalSlashCommandViewDispatcher.for_model_popup" not in source
-    assert "self._slash_command_views = TerminalSlashCommandViewDispatcher.for_runtime(app_runtime)" in source
+    assert "self._slash_command_views = TerminalSlashCommandViewDispatcher.for_runtime(" in source
+    assert "submit_review=self._run_review_target" in source
     assert "open_command_view=self._slash_command_views.open_command_view" in source
     assert "on_selection_events=self._slash_command_views.handle_selection_events" in source
     assert "open_command_view=self._model_popup.open_command_view" not in source
@@ -1522,6 +1588,89 @@ def test_terminal_runtime_consumes_typed_turn_event_stream_boundary() -> None:
     assert "event_stream: Any" not in runtime_source
 
 
+def test_terminal_approval_requests_use_rust_owned_typed_boundary() -> None:
+    # Fixed Rust commit 1c7832f owners:
+    # chatwidget::protocol_requests and chatwidget::tool_requests. Terminal
+    # runtime may wire the generic request callback but must not own approval
+    # variants or the former Python-only ExecApprovalRequested notification.
+    app_runtime = (REPO_ROOT / "pycodex/tui/app/runtime.py").read_text(encoding="utf-8-sig")
+    protocol = (REPO_ROOT / "pycodex/tui/chatwidget/protocol.py").read_text(encoding="utf-8-sig")
+    protocol_requests = (REPO_ROOT / "pycodex/tui/chatwidget/protocol_requests.py").read_text(
+        encoding="utf-8-sig"
+    )
+    tool_requests = (REPO_ROOT / "pycodex/tui/chatwidget/tool_requests.py").read_text(
+        encoding="utf-8-sig"
+    )
+    request_user_input = (
+        REPO_ROOT / "pycodex/tui/bottom_pane/request_user_input/__init__.py"
+    ).read_text(encoding="utf-8-sig")
+    view_stack = (REPO_ROOT / "pycodex/tui/bottom_pane/view_stack.py").read_text(
+        encoding="utf-8-sig"
+    )
+    app_link_view = (REPO_ROOT / "pycodex/tui/bottom_pane/app_link_view.py").read_text(
+        encoding="utf-8-sig"
+    )
+    terminal_runtime = (REPO_ROOT / "pycodex/tui/tui/terminal_runtime.py").read_text(
+        encoding="utf-8-sig"
+    )
+    app_server_events = (
+        REPO_ROOT / "pycodex/tui/app/app_server_events.py"
+    ).read_text(encoding="utf-8-sig")
+    thread_routing = (REPO_ROOT / "pycodex/tui/app/thread_routing.py").read_text(
+        encoding="utf-8-sig"
+    )
+    thread_events = (REPO_ROOT / "pycodex/tui/app/thread_events.py").read_text(
+        encoding="utf-8-sig"
+    )
+    pending_thread_approvals = (
+        REPO_ROOT / "pycodex/tui/bottom_pane/pending_thread_approvals.py"
+    ).read_text(encoding="utf-8-sig")
+
+    assert "ExecApprovalRequested" not in app_runtime
+    assert 'ServerRequest(\n                    "CommandExecutionRequestApproval"' in app_runtime
+    assert "self.tool_requests = ToolRequestsModel(" in protocol
+    assert "recent_auto_review_denials=self.review.recent_auto_review_denials" in protocol
+    assert "def on_guardian_review_notification(" in protocol
+    assert "self.tool_requests.history_sink = self.add_to_history" in protocol
+    assert "SlashCommand.AUTO_REVIEW: TerminalAutoReviewDenialsPopupController" in (
+        REPO_ROOT / "pycodex/tui/chatwidget/slash_dispatch.py"
+    ).read_text(encoding="utf-8-sig")
+    assert "AppCommand.approve_guardian_denied_action(event)" in (
+        REPO_ROOT / "pycodex/tui/chatwidget/permission_popups.py"
+    ).read_text(encoding="utf-8-sig")
+    assert "handle_server_request(self, request)" in protocol
+    assert "ExecApprovalRequestEvent.from_mapping(data)" in protocol_requests
+    assert "elicitation_params_from_params(params)" in protocol_requests
+    assert "user_input_params_from_params(params)" in protocol_requests
+    assert "def on_elicitation_request(self, request_id: str, params: Any)" in protocol
+    assert "def on_request_user_input(self, event: Any)" in protocol
+    assert "self.user_input_request_sink(ev)" in tool_requests
+    assert "self.mcp_form_request_sink(request)" in tool_requests
+    assert "AppLinkViewParams.from_url_app_server_request(" in tool_requests
+    assert "class AppLinkViewProjector" in app_link_view
+    assert "target.open_url_in_browser(" in app_link_view
+    assert "self.app_event_tx.user_input_answer(" in request_user_input
+    assert "RequestUserInputResultCell.new(" in request_user_input
+    assert "view_try_consume_user_input_request(active, view.request)" in view_stack
+    assert "view_try_consume_mcp_request(active, view.request)" in view_stack
+    assert "bind_interactive_request_sinks(" in terminal_runtime
+    assert "handle_request=self.app_runtime.handle_server_request" in terminal_runtime
+    assert 'else ("enqueue_thread_request",)' in app_server_events
+    assert "def interactive_request_for_thread_request(" in thread_routing
+    assert '"thread_label": thread_label' in thread_routing
+    assert 'getattr(request, "id", None)' in thread_events
+    assert "class PendingThreadApprovals" in pending_thread_approvals
+    assert "bind_pending_thread_approvals_sink(" in terminal_runtime
+    for approval_variant in (
+        "CommandExecutionRequestApproval",
+        "FileChangeRequestApproval",
+        "PermissionsRequestApproval",
+        "McpServerElicitationRequest",
+        "ToolRequestUserInput",
+    ):
+        assert approval_variant not in terminal_runtime
+
+
 def test_terminal_runtime_uses_typed_turn_history_append_boundary() -> None:
     # Rust owners: chatwidget::turn_runtime owns turn-start sequencing, while
     # app owns history mutation. terminal_runtime should pass the app-runtime
@@ -1537,6 +1686,63 @@ def test_terminal_runtime_uses_typed_turn_history_append_boundary() -> None:
     assert "append_history: Callable[[str], Any] | None = None" in turn_runtime_source
     assert "append_history: Any = None" not in turn_runtime_source
     assert "if callable(append_history):" not in turn_runtime_source
+
+
+def test_turn_input_and_side_approval_arbitration_use_rust_owned_anchors() -> None:
+    # Fixed Rust commit 1c7832f owners: tui::event_stream multiplexes sources,
+    # bottom_pane owns active-view Ctrl+C, app::side owns side return/discard,
+    # and chatwidget::interaction owns Interrupt after bottom-pane refusal.
+    event_stream = (REPO_ROOT / "pycodex/tui/tui/event_stream.py").read_text(
+        encoding="utf-8-sig"
+    )
+    view_stack = (REPO_ROOT / "pycodex/tui/bottom_pane/view_stack.py").read_text(
+        encoding="utf-8-sig"
+    )
+    app_runtime = (REPO_ROOT / "pycodex/tui/app/runtime.py").read_text(
+        encoding="utf-8-sig"
+    )
+    terminal_runtime = (REPO_ROOT / "pycodex/tui/tui/terminal_runtime.py").read_text(
+        encoding="utf-8-sig"
+    )
+
+    assert "class PrefixedTerminalInputSource" in event_stream
+    assert "an approval request cannot be starved" in event_stream
+    assert "def handle_ctrl_c(self) -> bool:" in view_stack
+    assert "view_on_ctrl_c(view)" in view_stack
+    assert "def active_side_parent_thread_id(self)" in app_runtime
+    assert "def select_agent_thread_and_discard_side(" in app_runtime
+    assert "if self.active_side_parent_thread_id() is None:" in app_runtime
+    assert "self.app_runtime.maybe_return_from_side()" in terminal_runtime
+    assert "self.app_runtime.submit_op(AppCommand.interrupt())" in terminal_runtime
+    assert 'in {"interrupt", "escape"}' in terminal_runtime
+    for variant in (
+        "CommandExecutionRequestApproval",
+        "FileChangeRequestApproval",
+        "PermissionsRequestApproval",
+    ):
+        assert variant not in terminal_runtime
+
+
+def test_structured_session_history_has_rust_owned_dynamic_anchors() -> None:
+    # Fixed Rust commit 1c7832f owners: chatwidget protocol/command/tool/
+    # streaming, exec_cell, history_cell patches/separators, and insert_history.
+    protocol = (REPO_ROOT / "pycodex/tui/chatwidget/protocol.py").read_text(encoding="utf-8-sig")
+    command = (REPO_ROOT / "pycodex/tui/chatwidget/command_lifecycle.py").read_text(encoding="utf-8-sig")
+    patches = (REPO_ROOT / "pycodex/tui/history_cell/patches.py").read_text(encoding="utf-8-sig")
+    runtime = (REPO_ROOT / "pycodex/tui/tui/terminal_runtime.py").read_text(encoding="utf-8-sig")
+    product_tests = _test_function_names(REPO_ROOT / "pycodex/tui/tui/tests/test_terminal_runtime.py")
+
+    assert "class HistoryProjectionSink" in protocol
+    assert "self.command_lifecycle.bind_history_projection(" in protocol
+    assert "new_reasoning_summary_block(" in protocol
+    assert "new_patch_event(" in protocol
+    assert "FinalMessageSeparator.new(" in protocol
+    assert "SemanticExecCell = ExecCell" in command
+    assert "class SemanticExecCell" not in command
+    assert "render_diff_summary(changes, cwd, int(wrap_cols))" in patches
+    assert "command_started=self._history.write_cell" not in runtime
+    assert "command_completed=self._history.write_cell" not in runtime
+    assert "test_terminal_runtime_renders_structured_complex_task_history" in product_tests
 
 
 def test_model_popup_consumes_opaque_selection_events_at_owner_boundary() -> None:

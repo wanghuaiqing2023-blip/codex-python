@@ -356,6 +356,7 @@ class ExecSessionConfig:
     chatgpt_base_url: str | None = None
     request_permissions_callback: Any = None
     exec_approval_callback: Any = None
+    patch_approval_callback: Any = None
     granted_session_permissions: AdditionalPermissionProfile | None = None
     exec_policy_rules: tuple[Any, ...] = ()
     allow_login_shell: bool = True
@@ -385,6 +386,8 @@ class ExecSessionConfig:
             raise TypeError("request_permissions_callback must be callable or None")
         if self.exec_approval_callback is not None and not callable(self.exec_approval_callback):
             raise TypeError("exec_approval_callback must be callable or None")
+        if self.patch_approval_callback is not None and not callable(self.patch_approval_callback):
+            raise TypeError("patch_approval_callback must be callable or None")
         if self.granted_session_permissions is not None and not isinstance(
             self.granted_session_permissions,
             AdditionalPermissionProfile,

@@ -18,6 +18,7 @@ from pycodex.tui.chatwidget.permission_popups import (
     permission_mode_actions,
     preset_matches_current,
 )
+from pycodex.tui.app_command import AppCommand
 
 
 class Features:
@@ -288,7 +289,7 @@ def test_approve_recent_auto_review_denial_consumes_event_and_reports_missing() 
             "SubmitThreadOp",
             {
                 "thread_id": "thread-1",
-                "op": ("approve_guardian_denied_action", denial),
+                    "op": AppCommand.approve_guardian_denied_action(denial),
             },
         )
     ]

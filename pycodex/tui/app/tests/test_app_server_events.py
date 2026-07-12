@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# Rust source: codex/codex-rs/tui/src/app/app_server_events.rs
+
 from types import SimpleNamespace
 
 from pycodex.tui.app.app_server_events import (
@@ -9,6 +11,8 @@ from pycodex.tui.app.app_server_events import (
     plan_server_request_event,
     refresh_mcp_startup_expected_servers_from_config,
 )
+from pycodex.tui.app.app_server_requests import PendingAppServerRequests, ResolvedAppServerRequest
+from pycodex.tui.chatwidget.protocol_requests import ServerRequest
 
 
 def test_refresh_mcp_expected_servers_filters_enabled_config() -> None:
@@ -68,6 +72,31 @@ def test_server_request_resolved_dismisses_pending_request_when_found() -> None:
 
     assert plan.actions == ("resolve_pending_request", "dismiss_app_server_request")
     assert plan.request == "approval"
+
+
+def test_typed_server_request_uses_params_thread_and_preserves_numeric_request_id() -> None:
+    # Fixed Rust commit 1c7832f: RequestId remains typed while
+    # CommandExecutionRequestApprovalParams owns thread_id and approval_id.
+    pending = PendingAppServerRequests()
+    request = ServerRequest(
+        "CommandExecutionRequestApproval",
+        request_id=41,
+        params={"thread_id": "thread-a", "item_id": "call-1", "approval_id": "approval-1"},
+    )
+
+    request_plan = plan_server_request_event(
+        request,
+        primary_thread_id="thread-a",
+        pending_requests=pending,
+    )
+    resolved_plan = plan_server_notification_event(
+        {"kind": "ServerRequestResolved", "request_id": 41},
+        pending_requests=pending,
+    )
+
+    assert request_plan.actions == ("enqueue_primary_thread_request",)
+    assert resolved_plan.actions == ("resolve_pending_request", "dismiss_app_server_request")
+    assert resolved_plan.request == ResolvedAppServerRequest.ExecApproval("approval-1")
 
 
 def test_special_notification_branches_short_circuit_global_routing() -> None:

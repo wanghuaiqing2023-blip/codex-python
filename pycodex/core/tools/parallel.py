@@ -267,6 +267,7 @@ class ToolCallRuntime:
         *,
         source: ToolCallSource | None = None,
         elapsed_seconds: float | None = None,
+        result_observer: Any = None,
         **stores: Any,
     ) -> ResponseInputItem:
         if not isinstance(call, ToolCall):
@@ -299,6 +300,10 @@ class ToolCallRuntime:
             return failure_response(call, err)
         except ToolPostHookTypeError as err:
             raise RuntimeError(str(err)) from err
+        if callable(result_observer):
+            observed = result_observer(call, result)
+            if inspect.isawaitable(observed):
+                await observed
         return result.to_response_item()
 
     async def _dispatch_router_tool_call(

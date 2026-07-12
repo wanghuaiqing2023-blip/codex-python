@@ -35,6 +35,8 @@ from pycodex.tui.chatwidget.slash_dispatch import (
     terminal_slash_command_from_name,
 )
 from pycodex.tui.slash_command import SlashCommand
+from pycodex.tui.auto_review_denials import denied_event
+from pycodex.tui.chatwidget.protocol import ChatWidgetProtocolRuntime
 
 
 def test_constants_match_rust_user_facing_text() -> None:
@@ -128,6 +130,29 @@ def test_terminal_slash_command_view_dispatcher_builds_runtime_model_view_owner(
     assert view is not None
     assert view.header[0] == "Select Model and Effort"
     assert [item.name for item in view.items] == ["gpt-5.4"]
+
+
+def test_terminal_slash_dispatcher_routes_auto_review_denials_through_permission_owner() -> None:
+    # Fixed Rust commit 1c7832f:
+    # chatwidget::slash_dispatch::SlashCommand::AutoReview delegates to
+    # chatwidget::permission_popups::open_auto_review_denials_popup.
+    widget = ChatWidgetProtocolRuntime()
+    widget.review.recent_auto_review_denials.push(denied_event("one"))
+    app_runtime = SimpleNamespace(
+        active_thread_runtime=SimpleNamespace(session_config=SimpleNamespace()),
+        chat_widget=widget,
+        routing_state=SimpleNamespace(active_thread_id="thread-1"),
+        thread_id="thread-1",
+        handle_bottom_pane_app_event=lambda _event: None,
+    )
+    dispatcher = TerminalSlashCommandViewDispatcher.for_runtime(app_runtime)
+
+    view = dispatcher.open_command_view("approve")
+
+    assert view is not None
+    assert view.title == "Auto-review Denials"
+    assert view.items[1].name == "rm -rf /tmp/test-one"
+    assert view.items[1].actions[0].kind == "ApproveRecentAutoReviewDenial"
 
 
 def test_plan_terminal_local_command_handles_exit_aliases() -> None:

@@ -38,6 +38,7 @@ def _request(schema, meta=None, request_id="req-1"):
     )
 
 
+# Rust source: codex/codex-rs/tui/src/bottom_pane/mcp_server_elicitation.rs
 def test_parses_boolean_form_request():
     req = _request({"type": "object", "required": ["confirmed"], "properties": {"confirmed": {"type": "boolean", "title": "Confirm", "description": "Proceed?", "default": True}}})
     assert req.response_mode is McpServerElicitationResponseMode.FORM_CONTENT
@@ -120,6 +121,50 @@ def test_ctrl_c_cancels_elicitation():
     assert overlay.on_ctrl_c() == "Handled"
     assert overlay.emitted_events[-1]["decision"] == "Cancel"
     assert overlay.is_complete()
+
+
+# Rust source: codex/codex-rs/tui/src/bottom_pane/mcp_server_elicitation.rs
+# McpServerElicitationOverlay::on_ctrl_c clears a non-empty text composer first.
+def test_ctrl_c_clears_text_draft_before_cancelling():
+    req = _request({"type": "object", "properties": {"answer": {"type": "string"}}})
+    overlay = McpServerElicitationOverlay.new(req)
+    overlay.set_text_answer("draft")
+
+    assert overlay.on_ctrl_c() == "Handled"
+    assert overlay.current_answer().draft.text == ""
+    assert overlay.emitted_events == []
+    assert not overlay.is_complete()
+
+    assert overlay.on_ctrl_c() == "Handled"
+    assert overlay.emitted_events[-1]["decision"] == "Cancel"
+    assert overlay.is_complete()
+
+
+# Rust source: codex/codex-rs/tui/src/bottom_pane/mcp_server_elicitation.rs
+# Esc/ctrl-c set done after cancelling the active request; queued requests are
+# not advanced inside the overlay cancellation path.
+def test_escape_cancels_active_request_and_closes_queued_overlay():
+    first = _request(empty_object_schema(), request_id="first")
+    second = _request(empty_object_schema(), request_id="second")
+    overlay = McpServerElicitationOverlay.new(first)
+    overlay.try_consume_mcp_server_elicitation_request(second)
+
+    assert overlay.handle_key("esc") == "Handled"
+    assert overlay.is_complete()
+    assert overlay.request.request_id == "first"
+    assert [event["request_id"] for event in overlay.emitted_events] == ["first"]
+
+
+def test_ctrl_c_cancels_active_request_and_closes_queued_overlay():
+    first = _request(empty_object_schema(), request_id="first")
+    second = _request(empty_object_schema(), request_id="second")
+    overlay = McpServerElicitationOverlay.new(first)
+    overlay.try_consume_mcp_server_elicitation_request(second)
+
+    assert overlay.on_ctrl_c() == "Handled"
+    assert overlay.is_complete()
+    assert overlay.request.request_id == "first"
+    assert [event["request_id"] for event in overlay.emitted_events] == ["first"]
 
 
 def test_queues_requests_fifo():

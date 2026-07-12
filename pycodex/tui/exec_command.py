@@ -10,6 +10,8 @@ import shlex
 from pathlib import Path
 from typing import Iterable
 
+from pycodex.shell_command.parse_command import extract_shell_command
+
 
 def escape_command(command: Iterable[str]) -> str:
     parts = [str(part) for part in command]
@@ -19,22 +21,11 @@ def escape_command(command: Iterable[str]) -> str:
         return " ".join(parts)
 
 
-def _extract_shell_command(command: list[str]) -> str | None:
-    if len(command) < 3:
-        return None
-    shell = Path(command[0]).name
-    if shell not in {"bash", "zsh"}:
-        return None
-    if command[1] != "-lc":
-        return None
-    return command[2]
-
-
 def strip_bash_lc_and_escape(command: Iterable[str]) -> str:
     parts = [str(part) for part in command]
-    script = _extract_shell_command(parts)
-    if script is not None:
-        return script
+    extracted = extract_shell_command(parts)
+    if extracted is not None:
+        return extracted[1]
     return escape_command(parts)
 
 

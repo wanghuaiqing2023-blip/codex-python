@@ -474,12 +474,14 @@ class ExecCommandToolOutput:
         return self.truncated_output(self.model_output_max_tokens())
 
     def code_mode_result(self, _payload: ToolPayload) -> dict[str, JsonValue]:
+        from pycodex.protocol.exec_output import bytes_to_string_smart
+
         data: dict[str, JsonValue] = {
             "wall_time_seconds": self.wall_time_seconds,
             "output": (
                 self.truncated_output(self.max_output_tokens)
                 if self.max_output_tokens is not None
-                else self.raw_output.decode("utf-8", errors="replace")
+                else bytes_to_string_smart(self.raw_output)
             ),
         }
         if self.chunk_id:
@@ -503,7 +505,9 @@ class ExecCommandToolOutput:
         return min(self.max_output_tokens, token_budget)
 
     def truncated_output(self, max_tokens: int) -> str:
-        text = self.raw_output.decode("utf-8", errors="replace")
+        from pycodex.protocol.exec_output import bytes_to_string_smart
+
+        text = bytes_to_string_smart(self.raw_output)
         return formatted_truncate_text(text, TruncationPolicyConfig.tokens(max_tokens))
 
     def response_text(self) -> str:

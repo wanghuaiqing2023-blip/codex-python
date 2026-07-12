@@ -9,10 +9,18 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Deque, Iterable
+from typing import Any, Callable, Deque, Iterable
 import textwrap
 
 from ..._porting import RustTuiModule
+from ...app_event_sender import AppEventSender
+from ...history_cell.request_user_input import RequestUserInputResultCell
+from ....app_server_protocol.item import (
+    ToolRequestUserInputAnswer,
+    ToolRequestUserInputResponse,
+)
+from ..bottom_pane_view import BottomPaneViewDefaults
+from ..selection_popup_common import TerminalPopupLine
 
 
 RUST_MODULE = RustTuiModule(
@@ -111,7 +119,7 @@ class FooterTip:
 
 
 @dataclass
-class RequestUserInputOverlay:
+class RequestUserInputOverlay(BottomPaneViewDefaults):
     request: Any
     app_event_tx: Any = None
     answers: list[AnswerState] = field(default_factory=list)
@@ -424,20 +432,20 @@ class RequestUserInputOverlay:
         self._emit(
             {
                 "type": "request_user_input_response",
-                "id": _get(self.request, "id", _get(self.request, "request_id", None)),
+                "id": _request_answer_id(self.request),
                 "response": {"answers": answers},
             }
         )
         self.advance_queue_or_complete()
 
     def dismiss_resolved_request(self, request: Any) -> bool:
-        resolved_id = _get(request, "request_id", _get(request, "id", None))
-        current_id = _get(self.request, "id", _get(self.request, "request_id", None))
+        resolved_id = _get(request, "call_id", _get(request, "request_id", _get(request, "id", None)))
+        current_id = _request_item_id(self.request)
         if resolved_id == current_id or resolved_id is None:
             self.advance_queue_or_complete()
             return True
         for queued in list(self.queue):
-            queued_id = _get(queued, "id", _get(queued, "request_id", None))
+            queued_id = _request_item_id(queued)
             if queued_id == resolved_id:
                 self.queue.remove(queued)
                 return True
@@ -530,7 +538,7 @@ class RequestUserInputOverlay:
                 self._emit(
                     {
                         "type": "request_user_input_response",
-                        "id": _get(self.request, "id", _get(self.request, "request_id", None)),
+                        "id": _request_answer_id(self.request),
                         "response": {"answers": self._response_answers()},
                     }
                 )
@@ -565,6 +573,9 @@ class RequestUserInputOverlay:
 
     def terminal_title_requires_action(self) -> bool:
         return True
+
+    def terminal_lines(self, *, width: int) -> list[TerminalPopupLine]:
+        return [TerminalPopupLine(line) for line in render_snapshot(self, width).splitlines()]
 
     def on_ctrl_c(self) -> str:
         if self.focus_is_notes() and self.capture_composer_draft().text_with_pending():
@@ -678,7 +689,7 @@ class RequestUserInputOverlay:
                     values.append(label)
             note = answer.draft.text_with_pending().strip()
             if note:
-                values.append(note)
+                values.append(f"user_note: {note}")
             responses[qid] = values
         return responses
 
@@ -693,12 +704,50 @@ class RequestUserInputOverlay:
     def _emit(self, event: Any) -> None:
         if self.app_event_tx is None:
             return
+        if isinstance(self.app_event_tx, AppEventSender):
+            kind = str(_get(event, "type", ""))
+            if kind == "interrupt":
+                self.app_event_tx.interrupt()
+                return
+            if kind == "request_user_input_response":
+                response_data = _get(event, "response", {}) or {}
+                raw_answers = _get(response_data, "answers", {}) or {}
+                response = ToolRequestUserInputResponse(
+                    {
+                        str(question_id): ToolRequestUserInputAnswer(tuple(values))
+                        for question_id, values in raw_answers.items()
+                    }
+                )
+                self.app_event_tx.user_input_answer(str(_get(event, "id", "")), response)
+                self.app_event_tx.insert_history_cell(
+                    RequestUserInputResultCell.new(
+                        self.questions(),
+                        response.answers,
+                        interrupted=False,
+                    )
+                )
+                return
         if hasattr(self.app_event_tx, "send"):
             self.app_event_tx.send(event)
         elif hasattr(self.app_event_tx, "append"):
             self.app_event_tx.append(event)
         elif callable(self.app_event_tx):
             self.app_event_tx(event)
+
+
+@dataclass(frozen=True)
+class RequestUserInputViewProjector:
+    """Project Rust ``push_user_input_request`` into the shared terminal stack."""
+
+    app_event_sender: AppEventSender
+    show_view: Callable[[RequestUserInputOverlay], Any]
+    render: Callable[[], Any]
+
+    def __call__(self, request: Any) -> RequestUserInputOverlay:
+        candidate = RequestUserInputOverlay.new(request, self.app_event_sender)
+        view = self.show_view(candidate) or candidate
+        self.render()
+        return view
 
 
 def prefer_esc_to_handle_key_event(_overlay: RequestUserInputOverlay | None = None) -> bool:
@@ -1102,7 +1151,7 @@ def notes_submission_commits_selected_option() -> bool:
     overlay.handle_key_event("tab")
     overlay.handle_paste("note")
     overlay.handle_key_event("enter")
-    return events[0]["response"]["answers"]["q1"] == ["Option 1", "note"]
+    return events[0]["response"]["answers"]["q1"] == ["Option 1", "user_note: note"]
 
 
 def is_other_adds_none_of_the_above_and_submits_it() -> bool:
@@ -1237,6 +1286,14 @@ def _get(obj: Any, key: str, default: Any = None) -> Any:
     return getattr(obj, key, default)
 
 
+def _request_item_id(request: Any) -> Any:
+    return _get(request, "item_id", _get(request, "id", _get(request, "request_id", None)))
+
+
+def _request_answer_id(request: Any) -> Any:
+    return _get(request, "turn_id", _get(request, "id", _get(request, "request_id", None)))
+
+
 def _get_path(obj: Any, path: tuple[str, ...], default: Any = None) -> Any:
     current = obj
     for key in path:
@@ -1271,6 +1328,7 @@ __all__ = [
     "OTHER_OPTION_LABEL",
     "RUST_MODULE",
     "RequestUserInputOverlay",
+    "RequestUserInputViewProjector",
     "SELECT_OPTION_PLACEHOLDER",
     "TIP_SEPARATOR",
     "UNANSWERED_CONFIRM_GO_BACK",

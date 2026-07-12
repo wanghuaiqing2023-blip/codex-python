@@ -11,19 +11,32 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Mapping, Optional, Protocol, Union
 
 from .._porting import RustTuiModule
-from ..exec_cell.render import terminal_command_status_text
+from ..app_server_approval_conversions import file_update_changes_to_display
+from ..history_cell.messages import new_reasoning_summary_block
+from ..history_cell.notices import new_error_event
+from ..history_cell.patches import new_patch_apply_failure, new_patch_event
+from ..history_cell.separators import FinalMessageSeparator
 from ..token_usage import TokenUsage, TokenUsageInfo
 from .replay import AgentMessageItem, ThreadItemRenderSource, handle_thread_item as replay_handle_thread_item
-from .command_lifecycle import CommandLifecycleState, command_text_from_notification
+from .command_lifecycle import CommandLifecycleState
+from .protocol_requests import (
+    ServerRequest,
+    handle_server_request,
+    on_guardian_review_notification as route_guardian_review_notification,
+)
+from .tool_requests import ApprovalRequestPlan, ToolRequestsModel
+from .review import ReviewState
 from .constructor import PLACEHOLDERS, SIDE_PLACEHOLDERS
 from .goal_status import GoalStatusState
 from .mcp_startup import McpServerStatusUpdatedNotification, McpStartupModel
+from .notifications import Notification, NotificationCoalescer
 from .status_surfaces import run_state_status_text
-from .status_state import TerminalTitleStatusKind
+from .status_state import StatusIndicatorState, TerminalTitleStatusKind
 from .streaming import MessagePhase, StreamingWidgetState
 from .turn_runtime import (
     ChatWidgetTurnRuntime,
@@ -46,8 +59,10 @@ __all__ = [
     "ReplayKind",
     "RUST_MODULE",
     "ServerNotification",
+    "ServerRequest",
     "TerminalNotificationAction",
     "TerminalNotificationEffectPlan",
+    "HistoryProjectionSink",
     "TerminalProtocolEventDispatcher",
     "ChatWidgetProtocolRuntime",
     "TurnCompletedNotification",
@@ -125,6 +140,15 @@ class TerminalNotificationEffectPlan:
     finalize_active_stream: bool = False
 
 
+@dataclass(frozen=True)
+class HistoryProjectionSink:
+    """Rust ``ChatWidget -> AppEvent::InsertHistoryCell`` projection boundary."""
+
+    insert_cell: Callable[[object], Any]
+    set_active_cell: Callable[[object | None], Any]
+    request_redraw: Callable[[], Any]
+
+
 class TerminalProtocolEventDispatcher:
     """Stateful terminal adapter for protocol-owned notification effects."""
 
@@ -132,10 +156,10 @@ class TerminalProtocolEventDispatcher:
         self,
         *,
         handle_notification: Callable[[Any], Any],
+        handle_request: Callable[[Any], Any],
         assistant_stream_active: Callable[[], bool],
         assistant_delta: Callable[[str], Any],
-        command_started: Callable[[str], Any],
-        command_completed: Callable[[str], Any],
+        assistant_completed: Callable[[str], Any],
         retry_error: Callable[[str, str | None], Any],
         suppress_turn_status: Callable[[], Any],
         clear_turn_status: Callable[[], Any],
@@ -144,10 +168,10 @@ class TerminalProtocolEventDispatcher:
         finalize_active_stream: Callable[[], Any],
     ) -> None:
         self.handle_notification_callback = handle_notification
+        self.handle_request_callback = handle_request
         self.assistant_stream_active = assistant_stream_active
         self.assistant_delta = assistant_delta
-        self.command_started = command_started
-        self.command_completed = command_completed
+        self.assistant_completed = assistant_completed
         self.retry_error = retry_error
         self.suppress_turn_status = suppress_turn_status
         self.clear_turn_status = clear_turn_status
@@ -156,14 +180,16 @@ class TerminalProtocolEventDispatcher:
         self.finalize_active_stream = finalize_active_stream
 
     def handle_event(self, notification: Any) -> TerminalNotificationAction:
+        if isinstance(notification, ServerRequest):
+            self.handle_request_callback(notification)
+            return TerminalNotificationAction("request")
         return run_terminal_app_notification(
             notification,
             handle_notification=self.handle_notification_callback,
             assistant_stream_active=self.assistant_stream_active(),
             apply_effect_plan=self.apply_effect_plan,
             assistant_delta=self.assistant_delta,
-            command_started=self.command_started,
-            command_completed=self.command_completed,
+            assistant_completed=self.assistant_completed,
             retry_error=self.retry_error,
         )
 
@@ -199,6 +225,10 @@ class ChatWidgetProtocolRuntime:
         self.turn = ChatWidgetTurnRuntime()
         self.streaming = StreamingWidgetState()
         self.command_lifecycle = CommandLifecycleState()
+        self.review = ReviewState()
+        self.tool_requests = ToolRequestsModel(
+            recent_auto_review_denials=self.review.recent_auto_review_denials,
+        )
         self.mcp_startup = McpStartupModel()
         self.config = SimpleNamespace(show_raw_agent_reasoning=False)
         self.turn_lifecycle = self.turn.turn_lifecycle
@@ -210,6 +240,8 @@ class ChatWidgetProtocolRuntime:
         self.token_info: Optional[TokenUsageInfo] = None
         self.thread_name: Optional[str] = None
         self.active_agent_label: Optional[str] = None
+        self.pending_thread_approvals: list[str] = []
+        self.pending_thread_approvals_sink: Optional[Callable[[list[str]], Any]] = None
         self.current_goal_status: Optional[GoalStatusState] = None
         self.current_goal_status_indicator: Any | None = None
         self.selected_model: Optional[str] = None
@@ -222,11 +254,164 @@ class ChatWidgetProtocolRuntime:
         self.immediate_exit_requested = False
         self.active_cell: Any | None = None
         self.history: list[Any] = []
+        self.history_projection: HistoryProjectionSink | None = None
+        self._patch_output_by_item_id: dict[str, str] = {}
         self.clipboard_lease: Any = None
         self.info_messages: list[tuple[str, Optional[str]]] = []
+        self.info_message_sink: Optional[Callable[[str, Optional[str]], Any]] = None
+        self.tool_request_status_sink: Optional[Callable[[StatusIndicatorState], Any]] = None
+        self.tool_request_status_header_sink: Optional[Callable[[str], Any]] = None
+        self.notification_projection_sink: Optional[Callable[[str], Any]] = None
+        self.notification_coalescer = NotificationCoalescer()
         self.error_messages: list[str] = []
         self.rate_limit_snapshots_by_limit_id: dict[str, Any] = {}
         self.refreshing_status_outputs: list[tuple[int, Any]] = []
+        self.command_lifecycle.bind_history_projection(
+            insert_cell=self.add_to_history,
+            set_active_cell=self.set_active_history_cell,
+            request_redraw=self.request_redraw,
+        )
+        self.tool_requests.history_sink = self.add_to_history
+        self.tool_requests.status_sink = self._set_tool_request_status
+        self.tool_requests.status_header_sink = self._set_tool_request_status_header
+        self.tool_requests.redraw_sink = self.request_redraw
+        self.tool_requests.notification_sink = self._on_tool_request_notification
+
+    def bind_approval_request_sink(
+        self,
+        sink: Callable[[ApprovalRequestPlan], Any] | None,
+    ) -> None:
+        self.tool_requests.approval_request_sink = sink
+
+    def bind_pending_thread_approvals_sink(
+        self,
+        sink: Callable[[list[str]], Any] | None,
+    ) -> None:
+        self.pending_thread_approvals_sink = sink
+        if sink is not None:
+            sink(list(self.pending_thread_approvals))
+
+    def set_pending_thread_approvals(self, approvals: list[str]) -> None:
+        normalized = [str(approval) for approval in approvals]
+        if normalized == self.pending_thread_approvals:
+            return
+        self.pending_thread_approvals = normalized
+        if self.pending_thread_approvals_sink is not None:
+            self.pending_thread_approvals_sink(list(normalized))
+        self.request_redraw()
+
+    def bind_interactive_request_sinks(
+        self,
+        *,
+        user_input: Callable[[Any], Any] | None,
+        mcp_form: Callable[[Any], Any] | None,
+        app_link: Callable[[Any], Any] | None = None,
+        resolve_elicitation: Callable[[str, str, str], Any] | None = None,
+    ) -> None:
+        """Bind Rust ``BottomPane`` request entry points to the product view stack."""
+
+        self.tool_requests.user_input_request_sink = user_input
+        self.tool_requests.mcp_form_request_sink = mcp_form
+        self.tool_requests.app_link_view_sink = app_link
+        self.tool_requests.elicitation_resolution_sink = resolve_elicitation
+
+    def bind_tool_request_status_projection(
+        self,
+        *,
+        set_status: Callable[[StatusIndicatorState], Any] | None,
+        set_status_header: Callable[[str], Any] | None,
+    ) -> None:
+        """Bind Rust ``ChatWidget::set_status`` to the terminal status surface."""
+
+        self.tool_request_status_sink = set_status
+        self.tool_request_status_header_sink = set_status_header
+
+    def bind_notification_projection(
+        self,
+        sink: Callable[[str], Any] | None,
+    ) -> None:
+        self.notification_projection_sink = sink
+        self._post_pending_notification()
+
+    def _on_tool_request_notification(self, notification: Notification) -> None:
+        if self.notification_coalescer.notify(notification):
+            self.request_redraw()
+        self._post_pending_notification()
+
+    def _post_pending_notification(self) -> None:
+        if self.notification_projection_sink is None:
+            return
+        message = self.notification_coalescer.maybe_post_pending_notification()
+        if message is not None:
+            self.notification_projection_sink(message)
+
+    def handle_request(self, request: ServerRequest | Mapping[str, Any] | Any) -> None:
+        self.tool_requests.cwd = Path(getattr(self.config, "cwd", "."))
+        self.tool_requests.thread_id = str(
+            _get(_get(request, "params", {}), "thread_id", "") or ""
+        )
+        handle_server_request(self, request)
+
+    def on_exec_approval_request(self, request_id: str, event: Any) -> None:
+        self.tool_requests.on_exec_approval_request(request_id, event)
+
+    def on_apply_patch_approval_request(self, request_id: str, event: Any) -> None:
+        self.tool_requests.on_apply_patch_approval_request(request_id, event)
+
+    def on_request_permissions(self, event: Any) -> None:
+        self.tool_requests.on_request_permissions(event)
+
+    def on_elicitation_request(self, request_id: str, params: Any) -> None:
+        self.tool_requests.on_elicitation_request(request_id, params)
+
+    def on_request_user_input(self, event: Any) -> None:
+        self.tool_requests.on_request_user_input(event)
+
+    def on_guardian_review_notification(
+        self,
+        id: str,
+        turn_id: str,
+        started_at_ms: int,
+        review: Any,
+        completion: Any,
+        action: Any,
+        target_item_id: str | None = None,
+    ) -> Any:
+        return route_guardian_review_notification(
+            self,
+            id,
+            turn_id,
+            started_at_ms,
+            review,
+            completion,
+            action,
+            target_item_id,
+        )
+
+    def on_guardian_assessment(self, event: Any) -> None:
+        self.tool_requests.on_guardian_assessment(event)
+
+    def bind_history_projection(self, sink: HistoryProjectionSink) -> None:
+        self.history_projection = sink
+        sink.set_active_cell(self.active_cell)
+
+    def _set_tool_request_status(self, status: StatusIndicatorState) -> None:
+        self.streaming.ensure_status_indicator()
+        self.streaming.set_status(status)
+        if self.tool_request_status_sink is not None:
+            self.tool_request_status_sink(status)
+
+    def _set_tool_request_status_header(self, header: str) -> None:
+        self.streaming.set_status_header(header)
+        if self.tool_request_status_header_sink is not None:
+            self.tool_request_status_header_sink(header)
+
+    def set_active_history_cell(self, cell: object | None) -> None:
+        self.active_cell = cell
+        setattr(self.transcript, "active_cell", cell)
+        self.turn.bump_active_cell_revision()
+        if self.history_projection is not None:
+            self.history_projection.set_active_cell(cell)
 
     def handle(self, notification: Union[ServerNotification, Mapping[str, Any], Any]) -> None:
         handle_server_notification(self, notification, None)
@@ -247,17 +432,20 @@ class ChatWidgetProtocolRuntime:
 
     def on_agent_message_delta(self, delta: str | None) -> None:
         text = "" if delta is None else str(delta)
+        self._insert_final_message_separator_if_needed()
         self._assistant_text += text
         self._sync_streaming_task_state()
         self.streaming.on_agent_message_delta(text)
 
     def on_command_execution_started(self, item: Any) -> None:
         self.command_lifecycle.on_command_execution_started(item)
+        self.transcript.had_work_activity = True
         self.streaming.had_work_activity = True
         self.streaming.request_redraw()
 
     def on_command_execution_completed(self, item: Any) -> None:
         self.command_lifecycle.on_command_execution_completed(item)
+        self.transcript.had_work_activity = True
         self.streaming.had_work_activity = True
         self.streaming.request_redraw()
 
@@ -275,7 +463,15 @@ class ChatWidgetProtocolRuntime:
         self.streaming.on_reasoning_section_break()
 
     def on_agent_reasoning_final(self) -> None:
+        source = self.streaming.full_reasoning_buffer + self.streaming.reasoning_buffer
         self.streaming.on_agent_reasoning_final()
+        if source:
+            self.add_to_history(
+                new_reasoning_summary_block(
+                    source,
+                    getattr(self.config, "cwd", "."),
+                )
+            )
         self._sync_streaming_task_state()
 
     def on_committed_user_message(self, content: Any, from_replay: bool = False) -> None:
@@ -286,17 +482,43 @@ class ChatWidgetProtocolRuntime:
                 self.streaming.history.append(("user_message", text))
         self.request_redraw()
 
+    def on_patch_apply_begin(self, changes: Any) -> None:
+        normalized = _display_file_changes(changes)
+        self.add_to_history(new_patch_event(normalized, getattr(self.config, "cwd", ".")))
+
+    def on_patch_apply_output_delta(self, item_id: str, delta: str) -> None:
+        key = str(item_id or "")
+        self._patch_output_by_item_id[key] = self._patch_output_by_item_id.get(key, "") + str(delta or "")
+
+    def on_file_change_completed(self, item: Any) -> None:
+        status = _status_name(_get(item, "status", None))
+        item_id = str(_get(item, "id", "") or "")
+        if status.lower() == "failed":
+            stderr = _get(item, "stderr", None) or self._patch_output_by_item_id.get(item_id, "")
+            self.add_to_history(new_patch_apply_failure(str(stderr or "")))
+        self._patch_output_by_item_id.pop(item_id, None)
+        self.transcript.had_work_activity = True
+        self.streaming.had_work_activity = True
+        self.request_redraw()
+
     def add_diff_in_progress(self, diff: Any = None) -> None:
-        self.active_cell = {"diff_in_progress": diff}
+        del diff
         self.request_redraw()
 
     def on_diff_complete(self, diff: Any = None) -> None:
-        self.history.append({"diff_complete": diff})
-        self.active_cell = None
+        del diff
         self.request_redraw()
 
     def add_to_history(self, item: Any) -> None:
-        self.history.append(item)
+        if self.command_lifecycle.active_exec_cell is not None and item is not self.command_lifecycle.active_exec_cell:
+            self.command_lifecycle.flush_active_cell()
+        visible = _cell_has_visible_lines(item)
+        if visible:
+            self.transcript.needs_final_message_separator = True
+        if self.history_projection is None:
+            self.history.append(item)
+        else:
+            self.history_projection.insert_cell(item)
 
     def set_token_info(self, info: Optional[TokenUsageInfo]) -> None:
         self.token_info = info
@@ -379,7 +601,10 @@ class ChatWidgetProtocolRuntime:
         self.immediate_exit_requested = True
 
     def add_info_message(self, message: str, hint: Optional[str] = None) -> None:
-        self.info_messages.append((str(message), hint))
+        text = str(message)
+        self.info_messages.append((text, hint))
+        if callable(self.info_message_sink):
+            self.info_message_sink(text, hint)
 
     def add_error_message(self, message: str) -> None:
         self.error_messages.append(str(message))
@@ -423,6 +648,8 @@ class ChatWidgetProtocolRuntime:
     ) -> None:
         text = _agent_message_item_text(item)
         phase = _message_phase(_get(item, "phase", None))
+        if not from_replay:
+            self._insert_final_message_separator_if_needed()
         self.streaming.on_agent_message_item_completed(text, phase, from_replay)
         if text.strip():
             self._assistant_text = text.strip()
@@ -448,6 +675,8 @@ class ChatWidgetProtocolRuntime:
     def request_redraw(self) -> None:
         self.turn.request_redraw()
         self.streaming.request_redraw()
+        if self.history_projection is not None:
+            self.history_projection.request_redraw()
 
     def maybe_send_next_queued_input(self) -> bool:
         return self.turn.maybe_send_next_queued_input()
@@ -480,7 +709,7 @@ class ChatWidgetProtocolRuntime:
         abort_reason = TurnAbortReason.BUDGET_LIMITED if str(reason) == "BudgetLimited" else TurnAbortReason.OTHER
         message = self.turn.interrupted_turn_message(abort_reason)
         self.turn.finalize_turn()
-        self.turn.add_to_history({"kind": "error", "message": message})
+        self.add_to_history(new_error_event(message))
         self.turn.request_redraw()
         self._sync_streaming_task_state()
 
@@ -507,6 +736,19 @@ class ChatWidgetProtocolRuntime:
 
     def _sync_streaming_task_state(self) -> None:
         self.streaming.task_running = self.turn.bottom_pane.task_running
+
+    def _insert_final_message_separator_if_needed(self) -> None:
+        if not self.transcript.needs_final_message_separator:
+            return
+        should_insert = self.transcript.had_work_activity
+        self.transcript.needs_final_message_separator = False
+        if not should_insert:
+            return
+        separator = FinalMessageSeparator.new(None, None)
+        if self.history_projection is None:
+            self.history.append(separator)
+        else:
+            self.history_projection.insert_cell(separator)
 
 
 class ProtocolWidget(Protocol):
@@ -560,8 +802,8 @@ def handle_server_notification(
     elif kind == "ThreadSettingsUpdated":
         _call(widget, "on_thread_settings_updated", payload)
     elif kind == "TurnStarted":
-        turn = _get(payload, "turn")
-        widget.turn_lifecycle.last_turn_id = _get(turn, "id")
+        turn = _get(payload, "turn", None) or {}
+        widget.turn_lifecycle.last_turn_id = _get(turn, "id", None)
         widget.last_non_retry_error = None
         if not is_resume_initial_replay:
             _call(widget, "on_task_started")
@@ -624,6 +866,7 @@ def handle_server_notification(
             _get(payload, "review"),
             None,
             _get(payload, "action"),
+            _get(payload, "target_item_id", None),
         )
     elif kind == "ItemGuardianApprovalReviewCompleted":
         _call(
@@ -635,6 +878,7 @@ def handle_server_notification(
             _get(payload, "review"),
             (_get(payload, "completed_at_ms"), _get(payload, "decision_source")),
             _get(payload, "action"),
+            _get(payload, "target_item_id", None),
         )
     elif kind == "ThreadClosed":
         if not from_replay:
@@ -658,7 +902,7 @@ def handle_turn_completed_notification(
     replay_kind: Optional[Union[ReplayKind, str]] = None,
 ) -> None:
     widget.last_rendered_user_message_display = None
-    turn = _get(notification, "turn")
+    turn = _get(notification, "turn", None) or {"status": TurnStatus.COMPLETED.value}
     status = _status_name(_get(turn, "status"))
     if status == TurnStatus.COMPLETED.value:
         widget.last_non_retry_error = None
@@ -735,6 +979,44 @@ def agent_message_delta_from_notification(notification: Any) -> str:
     return str(_get(payload, "delta", "") or "")
 
 
+def completed_agent_message_from_notification(notification: Any) -> str:
+    """Extract source from an ItemCompleted AgentMessage notification."""
+
+    payload = _get(notification, "payload", notification)
+    item = _get(payload, "item", {})
+    if str(_get(item, "kind", "")) != "AgentMessage":
+        return ""
+    direct = _get(item, "text", None)
+    if direct is not None:
+        return str(direct)
+    parts: list[str] = []
+    for content in _get(item, "content", ()) or ():
+        text = _get(content, "text", None)
+        if text is not None:
+            parts.append(str(text))
+    return "".join(parts)
+
+
+def _display_file_changes(changes: Any) -> dict[Any, Any]:
+    if changes is None:
+        return {}
+    if isinstance(changes, Mapping):
+        return dict(changes)
+    if isinstance(changes, (list, tuple)):
+        return file_update_changes_to_display(changes)
+    raise TypeError("file changes must be a mapping or app-server change list")
+
+
+def _cell_has_visible_lines(cell: Any) -> bool:
+    display = getattr(cell, "display_lines", None)
+    if not callable(display):
+        return True
+    try:
+        return bool(display(65535))
+    except Exception:
+        return True
+
+
 def retry_error_status_from_notification(notification: Any) -> tuple[str, str | None] | None:
     """Extract transient retry status text from an Error notification."""
 
@@ -764,29 +1046,41 @@ def terminal_notification_action(notification: Any) -> TerminalNotificationActio
             else TerminalNotificationAction("noop")
         )
     if kind == "ItemStarted":
-        command = command_text_from_notification(notification)
+        item = _get(_payload(notification), "item", {})
+        item_kind = _get(item, "kind", None) or _get(item, "type", None)
+        if item_kind is None and _get(item, "command", None) is not None:
+            item_kind = "CommandExecution"
         return (
             TerminalNotificationAction(
-                "command_started",
-                terminal_command_status_text(command, active=True),
+                "structured_history",
                 suppress_turn_status=True,
                 clear_live_status=True,
                 finalize_active_stream=True,
             )
-            if command
+            if item_kind in {"CommandExecution", "FileChange"}
             else TerminalNotificationAction("noop")
         )
     if kind == "ItemCompleted":
-        command = command_text_from_notification(notification)
+        completed_message = completed_agent_message_from_notification(notification)
+        if completed_message:
+            return TerminalNotificationAction(
+                "assistant_completed",
+                completed_message,
+                suppress_turn_status=True,
+                hide_live_status=True,
+            )
+        item = _get(_payload(notification), "item", {})
+        item_kind = _get(item, "kind", None) or _get(item, "type", None)
+        if item_kind is None and _get(item, "command", None) is not None:
+            item_kind = "CommandExecution"
         return (
             TerminalNotificationAction(
-                "command_completed",
-                terminal_command_status_text(command, active=False),
+                "structured_history",
                 suppress_turn_status=True,
                 clear_live_status=True,
                 finalize_active_stream=True,
             )
-            if command
+            if item_kind in {"CommandExecution", "FileChange"}
             else TerminalNotificationAction("noop")
         )
     if kind == "Error":
@@ -814,8 +1108,7 @@ def run_terminal_notification_action(
     action: TerminalNotificationAction,
     *,
     assistant_delta: Callable[[str], Any],
-    command_started: Callable[[str], Any],
-    command_completed: Callable[[str], Any],
+    assistant_completed: Callable[[str], Any],
     retry_error: Callable[[str, str | None], Any],
     turn_completed: Callable[[], Any] | None = None,
 ) -> None:
@@ -823,10 +1116,8 @@ def run_terminal_notification_action(
 
     if action.kind == "assistant_delta":
         assistant_delta(action.text)
-    elif action.kind == "command_started":
-        command_started(action.text)
-    elif action.kind == "command_completed":
-        command_completed(action.text)
+    elif action.kind == "assistant_completed":
+        assistant_completed(action.text)
     elif action.kind == "retry_error":
         retry_error(action.text, action.details)
     elif action.kind == "turn_completed" and turn_completed is not None:
@@ -889,8 +1180,7 @@ def run_terminal_notification(
     assistant_stream_active: bool,
     apply_effect_plan: Callable[[TerminalNotificationEffectPlan], Any],
     assistant_delta: Callable[[str], Any],
-    command_started: Callable[[str], Any],
-    command_completed: Callable[[str], Any],
+    assistant_completed: Callable[[str], Any],
     retry_error: Callable[[str, str | None], Any],
     turn_completed: Callable[[], Any] | None = None,
 ) -> TerminalNotificationAction:
@@ -906,8 +1196,7 @@ def run_terminal_notification(
     run_terminal_notification_action(
         action,
         assistant_delta=assistant_delta,
-        command_started=command_started,
-        command_completed=command_completed,
+        assistant_completed=assistant_completed,
         retry_error=retry_error,
         turn_completed=turn_completed,
     )
@@ -921,8 +1210,7 @@ def run_terminal_app_notification(
     assistant_stream_active: bool,
     apply_effect_plan: Callable[[TerminalNotificationEffectPlan], Any],
     assistant_delta: Callable[[str], Any],
-    command_started: Callable[[str], Any],
-    command_completed: Callable[[str], Any],
+    assistant_completed: Callable[[str], Any],
     retry_error: Callable[[str, str | None], Any],
     turn_completed: Callable[[], Any] | None = None,
 ) -> TerminalNotificationAction:
@@ -934,20 +1222,22 @@ def run_terminal_app_notification(
     order out of ``tui::terminal_runtime``.
     """
 
-    try:
-        handle_notification(notification)
-    except Exception:
-        pass
-    return run_terminal_notification(
-        notification,
-        assistant_stream_active=assistant_stream_active,
-        apply_effect_plan=apply_effect_plan,
+    action = terminal_notification_action(notification)
+    apply_effect_plan(
+        terminal_notification_effect_plan(
+            action,
+            assistant_stream_active=assistant_stream_active,
+        )
+    )
+    handle_notification(notification)
+    run_terminal_notification_action(
+        action,
         assistant_delta=assistant_delta,
-        command_started=command_started,
-        command_completed=command_completed,
+        assistant_completed=assistant_completed,
         retry_error=retry_error,
         turn_completed=turn_completed,
     )
+    return action
 
 
 def _handle_realtime_notification(widget: Any, kind: str, payload: Any) -> None:

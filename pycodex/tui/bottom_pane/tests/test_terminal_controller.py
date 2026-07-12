@@ -1,5 +1,6 @@
 import io
 import os
+from types import SimpleNamespace
 
 from pycodex.tui.bottom_pane.chat_composer import terminal_composer_line_text
 from pycodex.tui.bottom_pane.list_selection_view import SelectionItem, SelectionViewParams
@@ -8,6 +9,7 @@ from pycodex.tui.bottom_pane.terminal_controller import (
     TerminalBottomPaneController,
 )
 from pycodex.tui.chatwidget.status_surfaces import TerminalLiveStatusSurface
+from pycodex.tui.bottom_pane.bottom_pane_view import BottomPaneViewDefaults
 
 
 class FlushTrackingStringIO(io.StringIO):
@@ -51,6 +53,40 @@ def test_terminal_controller_external_repaint_uses_live_viewport_lifecycle() -> 
     assert result == "done"
     assert calls == ["repaint"]
     assert "\x1b[10;1H\u203a hello" in writer.getvalue()
+
+
+def test_terminal_controller_projects_active_view_action_required_title_state() -> None:
+    # Fixed Rust commit 1c7832f, bottom_pane::BottomPane owns the active-view
+    # terminal_title_requires_action signal; the terminal controller forwards
+    # it without interpreting approval semantics.
+    class ActionView(BottomPaneViewDefaults):
+        done = False
+
+        def terminal_title_requires_action(self) -> bool:
+            return not self.done
+
+        def handle_key_event(self, _key_event: object) -> None:
+            self.done = True
+
+        def is_complete(self) -> bool:
+            return self.done
+
+    required: list[bool] = []
+    controller = TerminalBottomPaneController(
+        io.StringIO(),
+        stdin_is_terminal=lambda: True,
+        layout_active=lambda: True,
+        live_status=TerminalLiveStatusSurface.inactive,
+        terminal_size=lambda: os.terminal_size((40, 12)),
+        resize=lambda: None,
+        footer_text=lambda: "gpt-test high",
+        set_terminal_title_requires_action=required.append,
+    )
+
+    controller.show_view(ActionView())
+    controller.handle_active_view_input(SimpleNamespace(kind="key", text="enter"))
+
+    assert required == [True, False]
 
 
 def test_terminal_bottom_pane_controller_syncs_draft_and_terminal_callbacks() -> None:

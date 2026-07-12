@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -5,6 +6,7 @@ import pytest
 from pycodex.models_manager import ModelsCache, ModelsCacheManager
 from pycodex.models_manager.cache import format_cache_datetime, parse_cache_datetime
 from pycodex.models_manager.model_info import model_info_from_slug
+from pycodex.protocol import ModelVisibility, ReasoningEffort, ReasoningEffortPreset
 
 
 def test_models_cache_round_trips_timestamp_and_legacy_slug_entries() -> None:
@@ -20,6 +22,38 @@ def test_models_cache_round_trips_timestamp_and_legacy_slug_entries() -> None:
     assert [model.slug for model in round_tripped.models] == ["cached"]
     assert format_cache_datetime(now) == "2026-06-14T18:00:00Z"
     assert parse_cache_datetime("2026-06-14T18:00:00Z") == now
+
+
+def test_models_cache_loads_gpt_5_6_max_and_ultra_reasoning_levels(tmp_path) -> None:
+    # Rust owner: codex-models-manager::cache. The shared models_cache.json
+    # written by current Codex contains GPT-5.6 reasoning metadata and must be
+    # readable before the TUI model catalog can expose the model.
+    now = datetime(2026, 7, 10, 8, tzinfo=timezone.utc)
+    model = replace(
+        model_info_from_slug("gpt-5.6-sol"),
+        slug="gpt-5.6-sol",
+        visibility=ModelVisibility.LIST,
+        supported_reasoning_levels=(
+            ReasoningEffortPreset(ReasoningEffort.MAX, "Maximum reasoning depth"),
+            ReasoningEffortPreset(ReasoningEffort.ULTRA, "Automatic task delegation"),
+        ),
+        used_fallback_model_metadata=False,
+    )
+    manager = ModelsCacheManager(
+        tmp_path / "models_cache.json",
+        timedelta(hours=24),
+        clock=lambda: now,
+    )
+    manager.persist_cache((model,), '"gpt-5.6"', "0.144.0")
+
+    loaded = manager.load_fresh("0.144.0")
+
+    assert loaded is not None
+    assert loaded.models[0].slug == "gpt-5.6-sol"
+    assert [item.effort for item in loaded.models[0].supported_reasoning_levels] == [
+        ReasoningEffort.MAX,
+        ReasoningEffort.ULTRA,
+    ]
 
 
 def test_load_fresh_returns_none_for_missing_cache(tmp_path) -> None:

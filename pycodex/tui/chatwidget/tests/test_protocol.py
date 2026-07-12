@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from pycodex.tui.chatwidget.constructor import PLACEHOLDERS, SIDE_PLACEHOLDERS
 from pycodex.tui.chatwidget.protocol import (
     ChatWidgetProtocolRuntime,
     ReplayKind,
     ServerNotification,
+    ServerRequest,
     TerminalNotificationAction,
     TerminalNotificationEffectPlan,
     TerminalProtocolEventDispatcher,
@@ -246,8 +249,7 @@ def test_terminal_notification_action_plans_scrollback_product_events() -> None:
         ServerNotification("ItemStarted", {"item": {"command": ["echo", "hi"]}})
     )
     assert started == TerminalNotificationAction(
-        "command_started",
-        "\u2022 Running echo hi",
+        "structured_history",
         suppress_turn_status=True,
         clear_live_status=True,
         finalize_active_stream=True,
@@ -257,8 +259,7 @@ def test_terminal_notification_action_plans_scrollback_product_events() -> None:
         ServerNotification("ItemCompleted", {"item": {"command": "rg needle"}})
     )
     assert completed == TerminalNotificationAction(
-        "command_completed",
-        "\u2022 Ran rg needle",
+        "structured_history",
         suppress_turn_status=True,
         clear_live_status=True,
         finalize_active_stream=True,
@@ -292,23 +293,21 @@ def test_run_terminal_notification_action_dispatches_protocol_actions() -> None:
 
     callbacks = {
         "assistant_delta": lambda text: record("assistant", text),
-        "command_started": lambda text: record("started", text),
-        "command_completed": lambda text: record("completed", text),
+        "assistant_completed": lambda text: record("assistant_completed", text),
         "retry_error": lambda text, details: record("retry", text, details),
         "turn_completed": lambda: record("turn_completed"),
     }
 
     run_terminal_notification_action(TerminalNotificationAction("assistant_delta", "hello"), **callbacks)
-    run_terminal_notification_action(TerminalNotificationAction("command_started", "\u2022 Running echo hi"), **callbacks)
-    run_terminal_notification_action(TerminalNotificationAction("command_completed", "\u2022 Ran rg x"), **callbacks)
+    run_terminal_notification_action(TerminalNotificationAction("assistant_completed", "done"), **callbacks)
+    run_terminal_notification_action(TerminalNotificationAction("structured_history"), **callbacks)
     run_terminal_notification_action(TerminalNotificationAction("retry_error", "retry", "slow"), **callbacks)
     run_terminal_notification_action(TerminalNotificationAction("turn_completed"), **callbacks)
     run_terminal_notification_action(TerminalNotificationAction("noop"), **callbacks)
 
     assert calls == [
         ("assistant", "hello", None),
-        ("started", "\u2022 Running echo hi", None),
-        ("completed", "\u2022 Ran rg x", None),
+        ("assistant_completed", "done", None),
         ("retry", "retry", "slow"),
         ("turn_completed", "", None),
     ]
@@ -318,7 +317,7 @@ def test_terminal_notification_effect_plan_resolves_terminal_state_rules() -> No
     # Rust path: chatwidget::protocol owns notification dispatch semantics; the
     # terminal runner only applies the prepared terminal-state effects.
     action = TerminalNotificationAction(
-        "command_started",
+        "structured_history",
         suppress_turn_status=True,
         clear_turn_status=True,
         hide_live_status=True,
@@ -387,19 +386,17 @@ def test_run_terminal_notification_dispatches_effects_before_action() -> None:
         assistant_stream_active=True,
         apply_effect_plan=lambda plan: calls.append(("effect", str(plan.finalize_active_stream))),
         assistant_delta=lambda text: calls.append(("assistant", text)),
-        command_started=lambda text: calls.append(("started", text)),
-        command_completed=lambda text: calls.append(("completed", text)),
+        assistant_completed=lambda text: calls.append(("assistant_completed", text)),
         retry_error=lambda text, details: calls.append(("retry", text)),
     )
 
     assert action == TerminalNotificationAction(
-        "command_started",
-        "\u2022 Running echo hi",
+        "structured_history",
         suppress_turn_status=True,
         clear_live_status=True,
         finalize_active_stream=True,
     )
-    assert calls == [("effect", "True"), ("started", "\u2022 Running echo hi")]
+    assert calls == [("effect", "True")]
 
 
 def test_run_terminal_app_notification_syncs_app_before_terminal_dispatch() -> None:
@@ -413,8 +410,7 @@ def test_run_terminal_app_notification_syncs_app_before_terminal_dispatch() -> N
         assistant_stream_active=False,
         apply_effect_plan=lambda plan: calls.append(("effect", str(plan.clear_live_status))),
         assistant_delta=lambda text: calls.append(("assistant", text)),
-        command_started=lambda text: calls.append(("started", text)),
-        command_completed=lambda text: calls.append(("completed", text)),
+        assistant_completed=lambda text: calls.append(("assistant_completed", text)),
         retry_error=lambda text, details: calls.append(("retry", text)),
     )
 
@@ -424,31 +420,28 @@ def test_run_terminal_app_notification_syncs_app_before_terminal_dispatch() -> N
         suppress_turn_status=True,
         hide_live_status=True,
     )
-    assert calls == [("app", "AgentMessageDelta"), ("effect", "False"), ("assistant", "hello")]
+    assert calls == [("effect", "False"), ("app", "AgentMessageDelta"), ("assistant", "hello")]
 
 
-def test_run_terminal_app_notification_continues_when_app_sync_fails() -> None:
-    # Terminal notification rendering must still progress if the app-runtime
-    # compatibility sync rejects a notification shape.
+def test_run_terminal_app_notification_surfaces_owner_dispatch_failures() -> None:
+    # Rust owner failures must not be hidden by the terminal adapter.
     calls: list[tuple[str, str]] = []
 
     def fail_sync(event) -> None:
         calls.append(("app", "fail"))
         raise RuntimeError("unsupported")
 
-    action = run_terminal_app_notification(
-        ServerNotification("ItemStarted", {"item": {"command": ["echo", "hi"]}}),
-        handle_notification=fail_sync,
-        assistant_stream_active=True,
-        apply_effect_plan=lambda plan: calls.append(("effect", str(plan.finalize_active_stream))),
-        assistant_delta=lambda text: calls.append(("assistant", text)),
-        command_started=lambda text: calls.append(("started", text)),
-        command_completed=lambda text: calls.append(("completed", text)),
-        retry_error=lambda text, details: calls.append(("retry", text)),
-    )
-
-    assert action.kind == "command_started"
-    assert calls == [("app", "fail"), ("effect", "True"), ("started", "\u2022 Running echo hi")]
+    with pytest.raises(RuntimeError, match="unsupported"):
+        run_terminal_app_notification(
+            ServerNotification("ItemStarted", {"item": {"command": ["echo", "hi"]}}),
+            handle_notification=fail_sync,
+            assistant_stream_active=True,
+            apply_effect_plan=lambda plan: calls.append(("effect", str(plan.finalize_active_stream))),
+            assistant_delta=lambda text: calls.append(("assistant", text)),
+            assistant_completed=lambda text: calls.append(("assistant_completed", text)),
+            retry_error=lambda text, details: calls.append(("retry", text)),
+        )
+    assert calls == [("effect", "True"), ("app", "fail")]
 
 
 def test_terminal_protocol_event_dispatcher_owns_effect_callbacks() -> None:
@@ -460,10 +453,10 @@ def test_terminal_protocol_event_dispatcher_owns_effect_callbacks() -> None:
 
     dispatcher = TerminalProtocolEventDispatcher(
         handle_notification=lambda event: calls.append(("app", event.kind)),
+        handle_request=lambda event: calls.append(("request", event.kind)),
         assistant_stream_active=lambda: active[0],
         assistant_delta=lambda text: calls.append(("assistant", text)),
-        command_started=lambda text: calls.append(("started", text)),
-        command_completed=lambda text: calls.append(("completed", text)),
+        assistant_completed=lambda text: calls.append(("assistant_completed", text)),
         retry_error=lambda text, details: calls.append(("retry", text)),
         suppress_turn_status=lambda: calls.append(("effect", "suppress")),
         clear_turn_status=lambda: calls.append(("effect", "clear_turn")),
@@ -481,11 +474,23 @@ def test_terminal_protocol_event_dispatcher_owns_effect_callbacks() -> None:
         hide_live_status=True,
     )
     assert calls == [
-        ("app", "AgentMessageDelta"),
         ("effect", "suppress"),
         ("effect", "hide_live"),
+        ("app", "AgentMessageDelta"),
         ("assistant", "hello"),
     ]
+
+    calls.clear()
+    request_action = dispatcher.handle_event(
+        ServerRequest(
+            "CommandExecutionRequestApproval",
+            id="approval-1",
+            params={"command": ["echo hi"]},
+        )
+    )
+
+    assert request_action == TerminalNotificationAction("request")
+    assert calls == [("request", "CommandExecutionRequestApproval")]
 
     calls.clear()
     dispatcher.close_turn()

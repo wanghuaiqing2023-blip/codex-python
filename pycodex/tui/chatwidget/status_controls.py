@@ -41,6 +41,8 @@ class ReasoningEffortConfig(str, Enum):
     Medium = "medium"
     High = "high"
     XHigh = "xhigh"
+    Max = "max"
+    Ultra = "ultra"
     None_ = "none"
 
 
@@ -213,6 +215,68 @@ class StatusControlsState:
         if self.configured_terminal_title_item_values is not None:
             return list(self.configured_terminal_title_item_values)
         return list(self.config.tui_terminal_title or [])
+
+
+@dataclass(frozen=True)
+class TerminalStatusCommandController:
+    """Run terminal ``/status`` through Rust's status refresh lifecycle."""
+
+    app_runtime: Any
+    status_writer: Any
+
+    def run(self) -> Any:
+        from ..app_event import AppEvent, RateLimitRefreshOrigin
+        from ..status.card import terminal_status_output_from_runtime
+
+        if not terminal_should_prefetch_rate_limits(self.app_runtime):
+            return self.status_writer.run()
+
+        request_id = self.app_runtime.next_status_rate_limit_request_id()
+        output, handle = terminal_status_output_from_runtime(
+            self.app_runtime,
+            refreshing_rate_limits=True,
+        )
+        self.app_runtime.register_status_rate_limit_handle(request_id, handle)
+        self.app_runtime.handle_app_event(
+            AppEvent.refresh_rate_limits(RateLimitRefreshOrigin.status_command(request_id))
+        )
+        return self.status_writer.write_output(output)
+
+
+def terminal_should_prefetch_rate_limits(app_runtime: Any) -> bool:
+    """Match Rust's provider-auth and ChatGPT-account refresh guard."""
+
+    active = getattr(app_runtime, "active_thread_runtime", None)
+    provider = getattr(active, "provider", None)
+    requires_openai_auth = getattr(provider, "requires_openai_auth", True)
+    if not bool(requires_openai_auth):
+        return False
+    if not callable(getattr(active, "fetch_account_rate_limits", None)):
+        return False
+    for auth in (getattr(active, "auth", None), getattr(active, "original_auth", None)):
+        if _is_chatgpt_auth(auth):
+            return True
+    return False
+
+
+def _is_chatgpt_auth(auth: Any) -> bool:
+    if auth is None:
+        return False
+    predicate = getattr(auth, "is_chatgpt", None)
+    if callable(predicate):
+        try:
+            if bool(predicate()):
+                return True
+        except TypeError:
+            pass
+    mode = auth.get("auth_mode") if isinstance(auth, dict) else getattr(auth, "auth_mode", None)
+    if callable(mode):
+        try:
+            mode = mode()
+        except TypeError:
+            mode = None
+    normalized = str(getattr(mode, "value", mode) or "").replace("_", "").replace("-", "").lower()
+    return normalized in {"chatgpt", "chatgptauthtokens"}
 
 
 def _capitalize_first(value: str) -> str:
@@ -465,6 +529,8 @@ def status_line_reasoning_effort_label(effort: Optional[Any]) -> str:
         "medium": "medium",
         "high": "high",
         "xhigh": "xhigh",
+        "max": "max",
+        "ultra": "ultra",
         "none": "default",
     }.get(value, "default")
 
@@ -477,6 +543,7 @@ __all__ = [
     "SetupViewRequest",
     "StatusControlsConfig",
     "StatusControlsState",
+    "TerminalStatusCommandController",
     "StatusDetailsCapitalization",
     "StatusOutputCell",
     "StatusOutputHandle",
@@ -509,4 +576,5 @@ __all__ = [
     "status_line_total_usage",
     "status_surface_preview_data",
     "terminal_title_preview_data",
+    "terminal_should_prefetch_rate_limits",
 ]

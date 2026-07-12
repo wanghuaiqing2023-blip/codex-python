@@ -1,5 +1,8 @@
 """Parity tests for codex-rs/tui/src/history_cell/patches.rs."""
 
+# Rust source: codex/codex-rs/tui/src/history_cell/patches.rs
+
+from pycodex.tui.diff_model import FileChange
 from pycodex.tui.history_cell.patches import (
     GENERATED_IMAGE_TITLE,
     PATCH_FAILURE_TITLE,
@@ -19,23 +22,20 @@ def texts(lines):
 def test_patch_history_cell_renders_deterministic_file_summary() -> None:
     cell = new_patch_event(
         {
-            "/repo/b.py": {"kind": "modified"},
-            "/repo/a.py": {"kind": "added"},
-            "/repo/old.py": {"kind": "renamed", "new_path": "/repo/new.py"},
+            "/repo/b.py": FileChange.update("@@ -1 +1 @@\n-old\n+new\n"),
+            "/repo/a.py": FileChange.add('print("hi")\n'),
+            "/repo/old.py": FileChange.update("", "/repo/new.py"),
         },
         "/repo",
     )
 
-    assert texts(cell.display_lines(80)) == [
-        "A a.py",
-        "M b.py",
-        "R old.py -> new.py",
-    ]
-    assert texts(cell.raw_lines()) == [
-        "A a.py",
-        "M b.py",
-        "R old.py -> new.py",
-    ]
+    rendered = texts(cell.display_lines(80))
+    assert rendered[0] == "• Edited 3 files (+2 -1)"
+    assert "  └ a.py (+1 -0)" in rendered
+    assert any("1 + print" in line for line in rendered)
+    assert "  └ b.py (+1 -1)" in rendered
+    assert any("old.py -> new.py" in line for line in rendered)
+    assert texts(cell.raw_lines()) == rendered
 
 
 def test_patch_apply_failure_title_and_optional_stderr() -> None:

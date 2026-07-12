@@ -17,6 +17,7 @@ import os
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -62,6 +63,19 @@ from pycodex.core.tools.spec_plan import build_environment_tool_router_from_turn
 from pycodex.core.tools.network_approval import CancellationToken as ToolCancellationToken
 from pycodex.core.tools.parallel import ToolCallRuntime
 from pycodex.core.tools.router import FunctionCallError, ToolRouter
+from pycodex.core.tools.context import ApplyPatchToolOutput, ExecCommandToolOutput
+from pycodex.core.tools.events import (
+    ToolEventCtx,
+    TurnDiffTrackerUpdate,
+    build_command_execution_begin_item,
+    build_command_execution_end_item,
+    build_patch_begin_item,
+    build_patch_end,
+)
+from pycodex.core.tools.handlers.unified_exec import ExecCommandArgs, get_command
+from pycodex.protocol.exec_output import bytes_to_string_smart
+from pycodex.shell_command.parse_command import parse_command
+from pycodex.apply_patch import convert_apply_patch_to_protocol, parse_patch, verify_apply_patch_args
 from pycodex.core.stream_events_utils import AssistantMessageStreamParsers, OutputItemResult, SamplingOutputState
 from pycodex.core.stream_events_utils import get_last_assistant_message_from_turn
 from pycodex.core.stream_events_utils import handle_non_tool_response_item
@@ -81,6 +95,11 @@ from pycodex.protocol import (
     ContentItem,
     EventMsg,
     ErrorEvent,
+    ExecCommandBeginEvent,
+    ExecCommandEndEvent,
+    ExecCommandSource,
+    ExecCommandStatus,
+    PatchApplyStatus,
     StreamErrorEvent,
     approval_policy_display_value,
 )
@@ -4891,8 +4910,11 @@ async def _handle_tool_call_items(
                 (
                     output_index,
                     asyncio.create_task(
-                        runtime.handle_tool_call(
+                        _handle_tool_call_with_history_projection(
+                            runtime,
                             call,
+                            sess,
+                            turn_context,
                             session=sess,
                             turn=turn_context,
                             cancellation_token=tool_cancellation_token,
@@ -4924,6 +4946,296 @@ async def _handle_tool_call_items(
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await cancellation_bridge_task
     return tuple(item for item in tool_outputs if item is not None)
+
+
+async def _handle_tool_call_with_history_projection(
+    runtime: ToolCallRuntime,
+    call: Any,
+    sess: Any,
+    turn_context: Any,
+    **stores: Any,
+) -> Any:
+    """Project tool work through Rust's typed started/completed lifecycle."""
+
+    command_started = await _emit_started_command_execution(sess, turn_context, call)
+    patch_changes = _apply_patch_changes(turn_context, call)
+    patch_started = await _emit_started_file_change(sess, turn_context, call, patch_changes)
+    command_completion_seen = False
+    patch_completion_seen = False
+
+    async def observe(completed_call: Any, result: Any) -> None:
+        nonlocal command_completion_seen, patch_completion_seen
+        command_completion_seen = await _emit_completed_command_execution(
+            sess,
+            turn_context,
+            completed_call,
+            result,
+        )
+        patch_completion_seen = await _emit_completed_file_change(
+            sess,
+            turn_context,
+            completed_call,
+            result,
+            patch_changes,
+        )
+
+    try:
+        response = await runtime.handle_tool_call(call, result_observer=observe, **stores)
+    except BaseException:
+        if command_started and not command_completion_seen:
+            await _emit_failed_command_execution(sess, turn_context, call, "command execution failed")
+        if patch_started and not patch_completion_seen:
+            await _emit_failed_file_change(sess, turn_context, call, "apply_patch failed", patch_changes)
+        raise
+    if command_started and not command_completion_seen:
+        await _emit_failed_command_execution(
+            sess,
+            turn_context,
+            call,
+            "command execution failed before producing output",
+        )
+    if patch_started and not patch_completion_seen:
+        await _emit_failed_file_change(
+            sess,
+            turn_context,
+            call,
+            "apply_patch failed before producing output",
+            patch_changes,
+        )
+    return response
+
+
+async def _emit_started_command_execution(sess: Any, turn_context: Any, call: Any) -> bool:
+    details = _command_execution_details(sess, turn_context, call)
+    if details is None:
+        return False
+    command, cwd, parsed = details
+    item = build_command_execution_begin_item(
+        ExecCommandBeginEvent(
+            call_id=str(getattr(call, "call_id", "")),
+            turn_id=str(getattr(turn_context, "sub_id", getattr(turn_context, "id", ""))),
+            command=command,
+            cwd=cwd,
+            parsed_cmd=parsed,
+            source=ExecCommandSource.AGENT,
+        )
+    )
+    emitter = getattr(sess, "emit_turn_item_started", None)
+    if not callable(emitter):
+        return False
+    await _maybe_await(emitter(turn_context, item))
+    return True
+
+
+async def _emit_completed_command_execution(
+    sess: Any,
+    turn_context: Any,
+    call: Any,
+    result: Any,
+) -> bool:
+    """Emit Rust-style command completion before the model follow-up."""
+
+    tool_name = getattr(getattr(call, "tool_name", None), "name", "")
+    output = getattr(result, "result", None)
+    if tool_name not in {"exec_command", "shell", "local_shell"} or not isinstance(output, ExecCommandToolOutput):
+        return False
+    details = _command_execution_details(sess, turn_context, call)
+    if details is None:
+        return False
+    command, cwd, parsed = details
+    exit_code = output.exit_code
+    normalized_exit_code = 0 if exit_code is None else int(exit_code)
+    decoded_output = bytes_to_string_smart(output.raw_output)
+    status = ExecCommandStatus.FAILED if normalized_exit_code != 0 else ExecCommandStatus.COMPLETED
+    item = build_command_execution_end_item(
+        ExecCommandEndEvent(
+            call_id=str(getattr(call, "call_id", "")),
+            turn_id=str(getattr(turn_context, "sub_id", getattr(turn_context, "id", ""))),
+            command=command,
+            cwd=cwd,
+            parsed_cmd=parsed,
+            stdout=decoded_output,
+            stderr="",
+            aggregated_output=decoded_output,
+            exit_code=normalized_exit_code,
+            duration=max(0, int(float(output.wall_time_seconds) * 1000)),
+            formatted_output=decoded_output,
+            status=status,
+            process_id=None if output.process_id is None else str(output.process_id),
+            source=ExecCommandSource.AGENT,
+        )
+    )
+    emitter = getattr(sess, "emit_turn_item_completed", None)
+    if callable(emitter):
+        await _maybe_await(emitter(turn_context, item))
+        return True
+    return False
+
+
+async def _emit_failed_command_execution(
+    sess: Any,
+    turn_context: Any,
+    call: Any,
+    message: str,
+) -> bool:
+    details = _command_execution_details(sess, turn_context, call)
+    if details is None:
+        return False
+    command, cwd, parsed = details
+    item = build_command_execution_end_item(
+        ExecCommandEndEvent(
+            call_id=str(getattr(call, "call_id", "")),
+            turn_id=str(getattr(turn_context, "sub_id", getattr(turn_context, "id", ""))),
+            command=command,
+            cwd=cwd,
+            parsed_cmd=parsed,
+            stdout="",
+            stderr=message,
+            aggregated_output=message,
+            exit_code=-1,
+            duration=0,
+            formatted_output=message,
+            status=ExecCommandStatus.FAILED,
+            source=ExecCommandSource.AGENT,
+        )
+    )
+    emitter = getattr(sess, "emit_turn_item_completed", None)
+    if not callable(emitter):
+        return False
+    await _maybe_await(emitter(turn_context, item))
+    return True
+
+
+def _command_execution_details(
+    sess: Any,
+    turn_context: Any,
+    call: Any,
+) -> tuple[tuple[str, ...], Path, tuple[Any, ...]] | None:
+    tool_name = getattr(getattr(call, "tool_name", None), "name", "")
+    if tool_name not in {"exec_command", "shell", "local_shell"}:
+        return None
+    arguments = getattr(getattr(call, "payload", None), "arguments", "") or ""
+    try:
+        decoded = json.loads(arguments) if isinstance(arguments, str) else arguments
+    except (TypeError, ValueError, json.JSONDecodeError):
+        decoded = {}
+    if not isinstance(decoded, Mapping):
+        decoded = {}
+
+    base_cwd = Path(getattr(turn_context, "cwd", "."))
+    try:
+        args = ExecCommandArgs.from_json(arguments)
+        user_shell = getattr(sess, "user_shell", None)
+        session_shell = user_shell() if callable(user_shell) else user_shell
+        permissions = getattr(getattr(turn_context, "config", None), "permissions", None)
+        resolved = get_command(
+            args,
+            session_shell=session_shell,
+            shell_mode=getattr(turn_context, "unified_exec_shell_mode", None),
+            allow_login_shell=bool(getattr(permissions, "allow_login_shell", False)),
+        )
+        command = tuple(resolved.command)
+        cwd = base_cwd / args.workdir if args.workdir else base_cwd
+    except (TypeError, ValueError, json.JSONDecodeError):
+        raw_command = str(decoded.get("cmd", decoded.get("command", tool_name)))
+        command = (raw_command,)
+        raw_cwd = decoded.get("workdir", decoded.get("cwd"))
+        cwd = base_cwd / str(raw_cwd) if raw_cwd else base_cwd
+    return command, cwd, tuple(parse_command(command))
+
+
+async def _emit_started_file_change(
+    sess: Any,
+    turn_context: Any,
+    call: Any,
+    changes: dict[Path, Any] | None = None,
+) -> bool:
+    if changes is None:
+        changes = _apply_patch_changes(turn_context, call)
+    if changes is None:
+        return False
+    emitter = getattr(sess, "emit_turn_item_started", None)
+    if not callable(emitter):
+        return False
+    item = build_patch_begin_item(
+        ToolEventCtx.new(sess, turn_context, str(getattr(call, "call_id", ""))),
+        changes,
+        auto_approved=False,
+    )
+    await _maybe_await(emitter(turn_context, item))
+    return True
+
+
+async def _emit_completed_file_change(
+    sess: Any,
+    turn_context: Any,
+    call: Any,
+    result: Any,
+    changes: dict[Path, Any] | None = None,
+) -> bool:
+    output = getattr(result, "result", None)
+    if not isinstance(output, ApplyPatchToolOutput):
+        return False
+    if changes is None:
+        changes = _apply_patch_changes(turn_context, call)
+    if changes is None:
+        return False
+    completed = build_patch_end(
+        ToolEventCtx.new(sess, turn_context, str(getattr(call, "call_id", ""))),
+        changes,
+        output.text,
+        "",
+        PatchApplyStatus.COMPLETED,
+        TurnDiffTrackerUpdate.none(),
+    ).completed_item
+    emitter = getattr(sess, "emit_turn_item_completed", None)
+    if not callable(emitter):
+        return False
+    await _maybe_await(emitter(turn_context, completed))
+    return True
+
+
+async def _emit_failed_file_change(
+    sess: Any,
+    turn_context: Any,
+    call: Any,
+    message: str,
+    changes: dict[Path, Any] | None = None,
+) -> bool:
+    if changes is None:
+        changes = _apply_patch_changes(turn_context, call)
+    if changes is None:
+        return False
+    completed = build_patch_end(
+        ToolEventCtx.new(sess, turn_context, str(getattr(call, "call_id", ""))),
+        changes,
+        "",
+        str(message),
+        PatchApplyStatus.FAILED,
+        TurnDiffTrackerUpdate.none(),
+    ).completed_item
+    emitter = getattr(sess, "emit_turn_item_completed", None)
+    if not callable(emitter):
+        return False
+    await _maybe_await(emitter(turn_context, completed))
+    return True
+
+
+def _apply_patch_changes(turn_context: Any, call: Any) -> dict[Path, Any] | None:
+    tool_name = getattr(getattr(call, "tool_name", None), "name", "")
+    if tool_name != "apply_patch":
+        return None
+    patch_input = getattr(getattr(call, "payload", None), "input", None)
+    if not isinstance(patch_input, str) or not patch_input:
+        return None
+    try:
+        args = parse_patch(patch_input)
+        verified = verify_apply_patch_args(args, Path(getattr(turn_context, "cwd", ".")))
+    except Exception:
+        return None
+    if verified.type != "body" or verified.body is None:
+        return None
+    return convert_apply_patch_to_protocol(verified.body)
 
 
 def _tool_runtime_cancellation_token(cancellation_token: Any) -> tuple[ToolCancellationToken, Any | None]:

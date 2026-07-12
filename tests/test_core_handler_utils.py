@@ -333,22 +333,24 @@ class HandlerUtilsTests(unittest.TestCase):
             def granted_turn_permissions(self):
                 return None
 
-        explicit = AdditionalPermissionProfile(
-            file_system=FileSystemPermissions.from_read_write_roots(None, (Path("/workspace/out"),))
-        )
-
-        effective = asyncio.run(
-            apply_granted_turn_permissions(
-                Session(),
-                Path("/workspace"),
-                SandboxPermissions.WITH_ADDITIONAL_PERMISSIONS,
-                explicit,
+        with tempfile.TemporaryDirectory() as tmp:
+            cwd = Path(tmp)
+            explicit = AdditionalPermissionProfile(
+                file_system=FileSystemPermissions.from_read_write_roots(None, (cwd / "out",))
             )
-        )
+            effective = asyncio.run(
+                apply_granted_turn_permissions(
+                    Session(),
+                    cwd,
+                    SandboxPermissions.WITH_ADDITIONAL_PERMISSIONS,
+                    explicit,
+                )
+            )
 
         self.assertEqual(effective.sandbox_permissions, SandboxPermissions.WITH_ADDITIONAL_PERMISSIONS)
         self.assertEqual(effective.additional_permissions.network, NetworkPermissions(enabled=True))
         self.assertEqual(effective.additional_permissions.file_system, explicit.file_system)
+        self.assertFalse(effective.permissions_preapproved)
 
     def test_session_strict_auto_review_reads_async_method_or_bool_attribute(self):
         class MethodSession:

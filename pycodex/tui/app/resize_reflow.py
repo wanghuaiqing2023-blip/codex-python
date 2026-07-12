@@ -28,7 +28,9 @@ from ..bottom_pane.terminal_footprint import (
     bottom_pane_height,
 )
 from ..chatwidget.status_surfaces import TerminalLiveStatusSurface
+from ..history_cell import HistoryRenderMode, display_hyperlink_lines_for_mode
 from ..insert_history import TerminalHistoryState, terminal_history_cell_lines
+from ..terminal_hyperlinks import line_text as terminal_line_text
 from ..transcript_reflow import TranscriptReflowState
 
 
@@ -88,6 +90,17 @@ class HistoryCell:
 
     def is_stream_continuation(self) -> bool:
         return self.stream_continuation
+
+
+def _display_cell_lines(cell: Any, width: int, mode: Any = None) -> List[HyperlinkLine]:
+    legacy = getattr(cell, "display_hyperlink_lines_for_mode", None)
+    if callable(legacy):
+        return _coerce_lines(legacy(width, mode))
+    render_mode = HistoryRenderMode.RAW if mode is HistoryRenderMode.RAW else HistoryRenderMode.RICH
+    return [
+        HyperlinkLine.new(terminal_line_text(line))
+        for line in display_hyperlink_lines_for_mode(cell, width, render_mode)
+    ]
 
 
 @dataclass
@@ -172,8 +185,8 @@ def display_lines_for_history_insert(
     width: int,
     mode: Any = None,
 ) -> List[HyperlinkLine]:
-    display = cell.display_hyperlink_lines_for_mode(width, mode)
-    if display and not cell.is_stream_continuation():
+    display = _display_cell_lines(cell, width, mode)
+    if display and not _is_stream_continuation(cell):
         if state.has_emitted_history_lines:
             display.insert(0, HyperlinkLine.new(""))
         else:
@@ -197,9 +210,9 @@ def render_transcript_lines_for_reflow(
     while start > 0:
         start -= 1
         cell = cells[start]
-        lines = cell.display_hyperlink_lines_for_mode(width, None)
+        lines = _display_cell_lines(cell, width, None)
         rendered_rows += len(lines)
-        cell_displays.appendleft(ReflowCellDisplay(lines, cell.is_stream_continuation()))
+        cell_displays.appendleft(ReflowCellDisplay(lines, _is_stream_continuation(cell)))
         if row_cap is not None and rendered_rows > row_cap:
             break
 
@@ -208,8 +221,8 @@ def render_transcript_lines_for_reflow(
         cell = cells[start]
         cell_displays.appendleft(
             ReflowCellDisplay(
-                cell.display_hyperlink_lines_for_mode(width, None),
-                cell.is_stream_continuation(),
+                _display_cell_lines(cell, width, None),
+                _is_stream_continuation(cell),
             )
         )
 
@@ -392,12 +405,16 @@ class TerminalBottomPaneFootprintRenderPass:
     check_resize: bool
     clear_popup_height: int = 0
     clear_live_status_active: bool = False
+    clear_active_tail_height: int = 0
+    clear_composer_height: int = 1
 
 
 class TerminalBottomPanePopupHeightContextProtocol(Protocol):
     """Bottom-pane context fields consumed by history viewport calculations."""
 
     popup_height: int
+    active_tail_height: int
+    composer_height: int
 
 
 class TerminalBottomPaneFootprintContextProtocol(TerminalBottomPanePopupHeightContextProtocol, Protocol):
@@ -440,11 +457,15 @@ class TerminalBottomPaneFootprintTracker:
     live_status_active: bool = False
     popup_height: int = 0
     popup_was_active_view: bool = False
+    active_tail_height: int = 0
+    composer_height: int = 1
 
     def previous(self) -> TerminalBottomPaneFootprint:
         return TerminalBottomPaneFootprint(
             live_status_active=self.live_status_active,
             popup_height=self.popup_height,
+            active_tail_height=self.active_tail_height,
+            composer_height=self.composer_height,
         )
 
     def clear_after_surface_clear(self) -> None:
@@ -452,6 +473,8 @@ class TerminalBottomPaneFootprintTracker:
 
         self.live_status_active = False
         self.popup_height = 0
+        self.active_tail_height = 0
+        self.composer_height = 1
 
     def plan_reflow(
         self,
@@ -460,20 +483,35 @@ class TerminalBottomPaneFootprintTracker:
         *,
         popup_height: int = 0,
         popup_is_active_view: bool = False,
+        active_tail_height: int = 0,
+        composer_height: int = 1,
     ) -> TerminalBottomPaneFootprintReflowDecision:
         previous = self.previous()
-        current = TerminalBottomPaneFootprint.from_surface(live_status, popup_height)
+        current = TerminalBottomPaneFootprint.from_surface(
+            live_status,
+            popup_height,
+            active_tail_height,
+            composer_height,
+        )
         old_height = previous.height_for_size(size)
         new_height = current.height_for_size(size)
         popup_footprint_changed = (
             previous.popup_height != current.popup_height
             and (self.popup_was_active_view or popup_is_active_view)
         )
+        tail_footprint_changed = previous.active_tail_height != current.active_tail_height
+        composer_footprint_changed = previous.composer_height != current.composer_height
         return TerminalBottomPaneFootprintReflowDecision(
             previous=previous,
             current=current,
-            repaint_before_render=bool(popup_footprint_changed and new_height >= old_height),
-            repaint_after_render=bool(popup_footprint_changed and new_height < old_height),
+            repaint_before_render=bool(
+                (popup_footprint_changed or tail_footprint_changed or composer_footprint_changed)
+                and new_height >= old_height
+            ),
+            repaint_after_render=bool(
+                (popup_footprint_changed or tail_footprint_changed or composer_footprint_changed)
+                and new_height < old_height
+            ),
         )
 
     def update_after_render(
@@ -482,10 +520,14 @@ class TerminalBottomPaneFootprintTracker:
         *,
         popup_height: int = 0,
         popup_is_active_view: bool = False,
+        active_tail_height: int = 0,
+        composer_height: int = 1,
     ) -> None:
         self.live_status_active = live_status.footprint_active
         self.popup_height = max(0, int(popup_height))
         self.popup_was_active_view = bool(popup_is_active_view)
+        self.active_tail_height = max(0, int(active_tail_height))
+        self.composer_height = max(1, int(composer_height))
 
     def render_with_reflow(
         self,
@@ -494,6 +536,8 @@ class TerminalBottomPaneFootprintTracker:
         *,
         popup_height: int = 0,
         popup_is_active_view: bool = False,
+        active_tail_height: int = 0,
+        composer_height: int = 1,
         render: Callable[[], bool],
         repaint: Callable[[TerminalBottomPaneFootprint, TerminalBottomPaneFootprint], None],
         render_after_repaint: Callable[[], bool] | None = None,
@@ -505,6 +549,8 @@ class TerminalBottomPaneFootprintTracker:
             live_status,
             popup_height=popup_height,
             popup_is_active_view=popup_is_active_view,
+            active_tail_height=active_tail_height,
+            composer_height=composer_height,
         )
         if decision.repaint_before_render:
             repaint(decision.previous, decision.current)
@@ -518,6 +564,8 @@ class TerminalBottomPaneFootprintTracker:
                 live_status,
                 popup_height=popup_height,
                 popup_is_active_view=popup_is_active_view,
+                active_tail_height=active_tail_height,
+                composer_height=composer_height,
             )
         return rendered
 
@@ -528,6 +576,8 @@ class TerminalBottomPaneFootprintTracker:
         *,
         popup_height: int = 0,
         popup_is_active_view: bool = False,
+        active_tail_height: int = 0,
+        composer_height: int = 1,
         check_resize: bool = True,
         render: Callable[[TerminalBottomPaneFootprintRenderPass], bool],
         repaint: Callable[[TerminalBottomPaneFootprint, TerminalBottomPaneFootprint], None],
@@ -538,17 +588,23 @@ class TerminalBottomPaneFootprintTracker:
             check_resize=check_resize,
             clear_popup_height=self.popup_height,
             clear_live_status_active=self.live_status_active,
+            clear_active_tail_height=self.active_tail_height,
+            clear_composer_height=self.composer_height,
         )
         after_repaint_pass = TerminalBottomPaneFootprintRenderPass(
             check_resize=False,
             clear_popup_height=0,
             clear_live_status_active=live_status.footprint_active,
+            clear_active_tail_height=active_tail_height,
+            clear_composer_height=composer_height,
         )
         return self.render_with_reflow(
             size,
             live_status,
             popup_height=popup_height,
             popup_is_active_view=popup_is_active_view,
+            active_tail_height=active_tail_height,
+            composer_height=composer_height,
             repaint=repaint,
             render=lambda: render(first_pass),
             render_after_repaint=lambda: render(after_repaint_pass),
@@ -597,6 +653,8 @@ def run_terminal_bottom_pane_footprint_render_cycle(
     *,
     popup_height: int = 0,
     popup_is_active_view: bool = False,
+    active_tail_height: int = 0,
+    composer_height: int = 1,
     check_resize: bool = True,
     render: Callable[[TerminalBottomPaneFootprintRenderPass], bool],
     repaint_footprint: Callable[[TerminalBottomPaneFootprint, TerminalBottomPaneFootprint], None] | None,
@@ -615,6 +673,8 @@ def run_terminal_bottom_pane_footprint_render_cycle(
         live_status,
         popup_height=popup_height,
         popup_is_active_view=popup_is_active_view,
+        active_tail_height=active_tail_height,
+        composer_height=composer_height,
         check_resize=check_resize,
         render=render,
         repaint=lambda previous, current: run_terminal_bottom_pane_footprint_external_repaint(
@@ -651,6 +711,8 @@ def run_terminal_bottom_pane_footprint_render_cycle_for_context(
         live_status,
         popup_height=int(bottom_pane_context.popup_height),
         popup_is_active_view=bool(bottom_pane_context.popup_is_active_view),
+        active_tail_height=int(getattr(bottom_pane_context, "active_tail_height", 0)),
+        composer_height=int(getattr(bottom_pane_context, "composer_height", 1)),
         check_resize=check_resize,
         render=render,
         repaint_footprint=repaint_footprint,
@@ -815,6 +877,46 @@ class TerminalBottomPaneFootprintCycleRunner:
             run_external_repaint=run_external_repaint,
         )
 
+    def synchronize_for_view_state(
+        self,
+        size: os.terminal_size,
+        live_status: TerminalLiveStatusSurface,
+        *,
+        bottom_pane_state: TerminalBottomPaneRenderContextProviderProtocol,
+        composer_cursor_visible: Callable[[], bool],
+    ) -> None:
+        """Record a footprint already repaired by an external history replay."""
+
+        context = bottom_pane_state.render_context_for_size(
+            size,
+            composer_cursor_visible,
+        )
+        self.tracker.update_after_render(
+            live_status,
+            popup_height=int(context.popup_height),
+            popup_is_active_view=bool(context.popup_is_active_view),
+            active_tail_height=int(getattr(context, "active_tail_height", 0)),
+            composer_height=int(getattr(context, "composer_height", 1)),
+        )
+
+    def synchronize_for_view_state_callback(
+        self,
+        *,
+        terminal_size: Callable[[], os.terminal_size],
+        live_status: Callable[[], TerminalLiveStatusSurface],
+        bottom_pane_state: TerminalBottomPaneRenderContextProviderProtocol,
+        composer_cursor_visible: Callable[[], bool],
+    ) -> Callable[[], None]:
+        def synchronize() -> None:
+            self.synchronize_for_view_state(
+                terminal_size(),
+                live_status(),
+                bottom_pane_state=bottom_pane_state,
+                composer_cursor_visible=composer_cursor_visible,
+            )
+
+        return synchronize
+
     def render_for_view_state_callback(
         self,
         *,
@@ -876,10 +978,15 @@ class TerminalResizeCoordinator:
     render_bottom_pane: Callable[[], None]
     repaint_history_viewport: Callable[[], None]
     replay_history_scrollback: Callable[[], None]
+    repaint_history_viewport_for_footprint: Callable[[], None] | None = None
     run_external_repaint: TerminalExternalRepaintRunner = _run_external_repaint_inline
+    render_after_external_repaint: Callable[[], None] | None = None
+    on_width_change: Callable[[int], None] | None = None
     layout_active: bool = False
     state: TerminalResizeRuntimeState = field(default_factory=TerminalResizeRuntimeState.inactive)
+    transcript_reflow: TranscriptReflowState = field(default_factory=TranscriptReflowState)
     pending: bool = False
+    _handling_footprint_repair: bool = False
 
     @property
     def terminal_layout_active(self) -> bool:
@@ -897,6 +1004,8 @@ class TerminalResizeCoordinator:
             current_size=self.current_size(),
             render_bottom_pane=self.render_bottom_pane,
         )
+        if self.layout_active:
+            self.transcript_reflow.note_width(self.state.last_terminal_size.columns)
 
     def deactivate_layout(self) -> None:
         self.layout_active, self.state = run_terminal_layout_deactivation(
@@ -904,30 +1013,77 @@ class TerminalResizeCoordinator:
             state=self.state,
             reset_terminal_scroll_region=self.reset_terminal_scroll_region,
         )
+        self.transcript_reflow.clear()
+        self.pending = False
 
     def check_size_change(self) -> None:
-        self.state, self.pending = run_terminal_size_change_reflow(
-            terminal_active=self.terminal_layout_active,
-            state=self.state,
-            current_size=self.current_size(),
-            active_stream=self.active_stream(),
-            pending=self.pending,
-            reset_terminal_scroll_region=self.reset_terminal_scroll_region,
-            run_reflow_plan=self.run_reflow_plan,
-            enter_resize_handling=self._apply_resize_state,
-            exit_resize_handling=self._apply_resize_state,
-        )
+        if not self.terminal_layout_active or self.state.handling_resize:
+            return
+        current_size = self.current_size()
+        previous_size = self.state.last_terminal_size
+        width_change = self.transcript_reflow.note_width(current_size.columns)
+        if previous_size is None:
+            self.state = self.state.activated(current_size)
+            return
+        if previous_size != current_size:
+            if width_change.changed and self.on_width_change is not None:
+                self.on_width_change(current_size.columns)
+            self.state = TerminalResizeRuntimeState(last_terminal_size=current_size)
+            self.transcript_reflow.schedule_debounced(
+                current_size.columns if width_change.changed else None
+            )
+            self.pending = True
+            if self.active_stream():
+                self.transcript_reflow.mark_resize_requested_during_stream()
+                return
+        self._run_due_resize_reflow()
 
     def run_reflow_plan(self, plan: TerminalResizeReflowPlan) -> bool:
         self.pending = plan.pending
+        repaint = (
+            self.repaint_history_viewport_for_footprint
+            if self._handling_footprint_repair
+            and self.repaint_history_viewport_for_footprint is not None
+            else self.repaint_history_viewport
+        )
         return run_terminal_resize_reflow_plan(
             plan,
-            repaint_history_viewport=self.repaint_history_viewport,
+            repaint_history_viewport=lambda: self._run_external_history_action(
+                repaint,
+                render_after=False,
+            ),
             replay_history_scrollback=self._run_replay_history_scrollback,
         )
 
     def _run_replay_history_scrollback(self) -> None:
-        self.run_external_repaint(self.replay_history_scrollback)
+        self._run_external_history_action(self.replay_history_scrollback)
+
+    def _run_external_history_action(
+        self,
+        action: Callable[[], None],
+        *,
+        render_after: bool = True,
+    ) -> None:
+        self.run_external_repaint(action)
+        if render_after:
+            render = self.render_after_external_repaint or self.render_bottom_pane
+            render()
+
+    def _run_due_resize_reflow(self) -> bool:
+        if not self.transcript_reflow.pending_is_due() or self.active_stream():
+            return False
+        handling_state = self.state.begin_handling()
+        self._apply_resize_state(handling_state)
+        try:
+            self.reset_terminal_scroll_region()
+            self.run_reflow_plan(TerminalResizeReflowPlan("replay_history_scrollback"))
+            width = self.state.last_terminal_size.columns if self.state.last_terminal_size else self.current_size().columns
+            self.transcript_reflow.mark_reflowed_width(width)
+            self.transcript_reflow.clear_pending_reflow()
+            self.pending = False
+        finally:
+            self._apply_resize_state(self.state.end_handling())
+        return True
 
     def run_bottom_pane_footprint_reflow(
         self,
@@ -937,42 +1093,68 @@ class TerminalResizeCoordinator:
         previous_popup_height: int = 0,
         current_popup_height: int = 0,
     ) -> bool:
-        return run_terminal_bottom_pane_footprint_reflow(
-            terminal_active=self.terminal_layout_active,
-            terminal_size=self.current_size(),
-            previous=previous,
-            current=current,
-            previous_popup_height=previous_popup_height,
-            current_popup_height=current_popup_height,
-            previous_footprint=None,
-            current_footprint=None,
-            active_stream=self.active_stream(),
-            pending=self.pending,
-            run_reflow_plan=self.run_reflow_plan,
-        )
+        self._handling_footprint_repair = True
+        try:
+            return run_terminal_bottom_pane_footprint_reflow(
+                terminal_active=self.terminal_layout_active,
+                terminal_size=self.current_size(),
+                previous=previous,
+                current=current,
+                previous_popup_height=previous_popup_height,
+                current_popup_height=current_popup_height,
+                previous_footprint=None,
+                current_footprint=None,
+                active_stream=self.active_stream(),
+                pending=self.pending,
+                run_reflow_plan=self.run_reflow_plan,
+            )
+        finally:
+            self._handling_footprint_repair = False
 
     def run_bottom_pane_frame_footprint_reflow(
         self,
         previous: TerminalBottomPaneFootprint,
         current: TerminalBottomPaneFootprint,
     ) -> bool:
-        return run_terminal_bottom_pane_footprint_reflow(
-            terminal_active=self.terminal_layout_active,
-            terminal_size=self.current_size(),
-            previous=TerminalLiveStatusSurface.inactive(),
-            current=TerminalLiveStatusSurface.inactive(),
-            previous_footprint=previous,
-            current_footprint=current,
-            active_stream=self.active_stream(),
-            pending=self.pending,
-            run_reflow_plan=self.run_reflow_plan,
-        )
+        self._handling_footprint_repair = True
+        try:
+            return run_terminal_bottom_pane_footprint_reflow(
+                terminal_active=self.terminal_layout_active,
+                terminal_size=self.current_size(),
+                previous=TerminalLiveStatusSurface.inactive(),
+                current=TerminalLiveStatusSurface.inactive(),
+                previous_footprint=previous,
+                current_footprint=current,
+                active_stream=self.active_stream(),
+                pending=self.pending,
+                run_reflow_plan=self.run_reflow_plan,
+            )
+        finally:
+            self._handling_footprint_repair = False
 
     def run_stream_finish_reflow(self) -> bool:
-        return self.run_reflow_plan(plan_terminal_stream_finish_reflow(pending=self.pending))
+        """Compatibility alias for Rust required stream consolidation reflow."""
+
+        return self.run_required_stream_reflow()
+
+    def run_required_stream_reflow(self) -> bool:
+        self.transcript_reflow.take_stream_finish_reflow_needed()
+        self.transcript_reflow.schedule_immediate()
+        self.pending = True
+        return self._run_due_resize_reflow()
+
+    def run_conditional_stream_reflow(self) -> bool:
+        needs_resize_reflow = self.transcript_reflow.take_stream_finish_reflow_needed()
+        if needs_resize_reflow or self.pending:
+            self.transcript_reflow.schedule_immediate()
+            self.pending = True
+            return self._run_due_resize_reflow()
+        return False
 
     def apply_pending(self, pending: bool) -> None:
         self.pending = bool(pending)
+        if not self.pending:
+            self.transcript_reflow.clear_pending_reflow()
 
     def _apply_resize_state(self, state: TerminalResizeRuntimeState) -> None:
         self.state = state
@@ -997,25 +1179,51 @@ class TerminalResizeHistoryReplayer:
     insert_replayed_history_lines: Callable[[list[str], bool], None]
     apply_history_state: Callable[[TerminalHistoryState], None]
     render_bottom_pane: Callable[[], None]
+    transcript_cells: Callable[[], Sequence[Any]] | None = None
 
-    def repaint_viewport(self, extra_projection_cell: str | None = None) -> bool:
+    def repaint_viewport(self) -> bool:
+        return self._repaint_viewport(reserve_active_bottom_pane=False)
+
+    def repaint_viewport_for_footprint(self) -> bool:
+        return self._repaint_viewport(reserve_active_bottom_pane=True)
+
+    def _repaint_viewport(self, *, reserve_active_bottom_pane: bool) -> bool:
+        def bottom_row() -> int:
+            try:
+                return self.history_bottom_row(reserve_active_bottom_pane)
+            except TypeError:
+                return self.history_bottom_row()
+        if self.transcript_cells is not None:
+            return run_terminal_typed_transcript_viewport_repaint(
+                self.writer,
+                self.transcript_cells(),
+                self.history_wrap_width(),
+                terminal_active=self.terminal_active(),
+                history_bottom_row=bottom_row,
+                terminal_columns=self.terminal_columns,
+            )
         state = self.history_state()
-        has_extra_projection = bool(extra_projection_cell)
-        if has_extra_projection:
-            state = state.with_projection_cell(extra_projection_cell)
         painted = run_terminal_history_state_viewport_repaint_for_width(
             self.writer,
             state,
             self.history_wrap_width(),
             terminal_active=self.terminal_active(),
-            history_bottom_row=self.history_bottom_row,
+            history_bottom_row=bottom_row,
             terminal_columns=self.terminal_columns,
         )
-        if painted and has_extra_projection:
-            self.render_bottom_pane()
         return painted
 
     def replay_scrollback(self) -> bool:
+        if self.transcript_cells is not None:
+            return run_terminal_typed_transcript_scrollback_replay(
+                self.writer,
+                self.transcript_cells(),
+                self.history_wrap_width(),
+                live_status_footprint_active=self.live_status_footprint_active(),
+                insert_replayed_history_lines=self.insert_replayed_history_lines,
+                apply_history_state=self.apply_history_state,
+                history_state=self.history_state(),
+            )
         return run_terminal_history_state_scrollback_replay_insert_for_resize_width(
             self.writer,
             self.history_state(),
@@ -1023,7 +1231,7 @@ class TerminalResizeHistoryReplayer:
             live_status_footprint_active=self.live_status_footprint_active(),
             insert_replayed_history_lines=self.insert_replayed_history_lines,
             apply_history_state=self.apply_history_state,
-            render_bottom_pane=self.render_bottom_pane,
+            render_bottom_pane=None,
         )
 
 
@@ -1204,10 +1412,15 @@ def plan_terminal_bottom_pane_footprint_reflow(
             previous_popup_height=previous_popup_height,
             current_popup_height=current_popup_height,
         )
+    tail_footprint_changed = bool(
+        previous_footprint is not None
+        and current_footprint is not None
+        and previous_footprint.active_tail_height != current_footprint.active_tail_height
+    )
     return plan_terminal_resize_reflow(
         trigger="bottom_pane_footprint",
         changed=transition.changed,
-        active_stream=active_stream,
+        active_stream=active_stream and not tail_footprint_changed,
         pending=pending,
     )
 
@@ -1286,15 +1499,13 @@ def plan_terminal_size_change_reflow(
 def plan_terminal_stream_finish_reflow(*, pending: bool) -> TerminalResizeReflowPlan:
     """Plan stream-finalization repair for the real-terminal history surface.
 
-    The assistant stream writes incrementally while the bottom pane owns the
-    live rows below history.  When the stream finishes, repaint the current
-    history viewport from retained projection cells so the finalized user prompt
-    and assistant answer are visible together even when no resize was deferred.
+    A deferred stream-time resize requires a source-backed scrollback rebuild.
+    Python retains the whole assistant stream as one mutable live tail. This
+    corresponds to Rust ``ConsolidationScrollbackReflow::Required``: after
+    consolidation, rebuild scrollback from the canonical source-backed cells.
     """
 
-    if pending:
-        return TerminalResizeReflowPlan("replay_history_scrollback", pending=False)
-    return TerminalResizeReflowPlan("repaint_history_viewport", pending=False)
+    return TerminalResizeReflowPlan("replay_history_scrollback", pending=False)
 
 
 def run_terminal_resize_reflow_plan(
@@ -1402,6 +1613,63 @@ def render_history_projection_lines(
             lines.append("")
         lines.extend(str(line) for line in wrap_cell(cell))
     return lines
+
+
+def render_terminal_typed_transcript_lines(
+    transcript_cells: Sequence[Any],
+    width: int,
+) -> list[str]:
+    """Render app-owned typed HistoryCell values for terminal replay."""
+
+    state = ResizeReflowState(transcript_cells=list(transcript_cells))
+    rendered = state.render_transcript_lines_for_reflow(max(1, int(width)))
+    return [str(line.text) for line in rendered.lines]
+
+
+def run_terminal_typed_transcript_viewport_repaint(
+    writer: TextIO,
+    transcript_cells: Sequence[Any],
+    width: int,
+    *,
+    terminal_active: bool,
+    history_bottom_row: Callable[[], int],
+    terminal_columns: Callable[[], int],
+) -> bool:
+    if not terminal_active:
+        return False
+    painted = repaint_terminal_history_viewport(
+        writer,
+        render_terminal_typed_transcript_lines(transcript_cells, width),
+        bottom_row=history_bottom_row(),
+        columns=terminal_columns(),
+    )
+    flush = getattr(writer, "flush", None)
+    if callable(flush):
+        flush()
+    return painted
+
+
+def run_terminal_typed_transcript_scrollback_replay(
+    writer: TextIO,
+    transcript_cells: Sequence[Any],
+    width: int,
+    *,
+    live_status_footprint_active: bool,
+    insert_replayed_history_lines: Callable[[list[str], bool], None],
+    apply_history_state: Callable[[TerminalHistoryState], None],
+    history_state: TerminalHistoryState,
+) -> bool:
+    replay_state = terminal_history_state_for_resize_replay(history_state)
+    apply_history_state(replay_state)
+    clear_terminal_for_resize_replay(writer)
+    flush = getattr(writer, "flush", None)
+    if callable(flush):
+        flush()
+    lines = render_terminal_typed_transcript_lines(transcript_cells, width)
+    if not lines:
+        return False
+    insert_replayed_history_lines(lines, live_status_footprint_active)
+    return True
 
 
 def replay_terminal_history_projection(
@@ -1707,6 +1975,8 @@ def terminal_history_bottom_row(
     live_status_active: bool,
     popup_height: int = 0,
     reserve_active_bottom_pane: bool = False,
+    active_tail_height: int = 0,
+    composer_height: int = 1,
 ) -> int:
     """Return the last row available to terminal history output.
 
@@ -1719,7 +1989,12 @@ def terminal_history_bottom_row(
     reserved = (
         STATUS_BOTTOM_PANE_ROWS
         if reserve_active_bottom_pane
-        else bottom_pane_height(live_status_active=live_status_active, popup_height=popup_height)
+        else bottom_pane_height(
+            live_status_active=live_status_active,
+            popup_height=popup_height,
+            active_tail_height=active_tail_height,
+            composer_height=composer_height,
+        )
     )
     return max(1, terminal_size.lines - reserved)
 
@@ -1743,6 +2018,8 @@ def terminal_history_bottom_row_for_context(
         terminal_size,
         live_status_active=live_status.footprint_active,
         popup_height=max(0, int(bottom_pane_context.popup_height)),
+        active_tail_height=max(0, int(getattr(bottom_pane_context, "active_tail_height", 0))),
+        composer_height=max(1, int(getattr(bottom_pane_context, "composer_height", 1))),
         reserve_active_bottom_pane=reserve_active_bottom_pane,
     )
 

@@ -24,6 +24,7 @@ from pycodex.tui.app.pending_interactive_replay import (
 )
 
 
+# Rust source: codex/codex-rs/tui/src/app/pending_interactive_replay.rs
 def test_pending_request_user_input_replays_until_answered_or_resolved():
     assert thread_event_snapshot_keeps_pending_request_user_input() is True
     assert thread_event_snapshot_drops_resolved_request_user_input_after_user_answer() is True

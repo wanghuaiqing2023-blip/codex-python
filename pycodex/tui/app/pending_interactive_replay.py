@@ -481,8 +481,12 @@ def _coerce_request(request: Union[ServerRequest, Dict[str, Any], Any]) -> Serve
     if isinstance(request, ServerRequest):
         return request
     if isinstance(request, dict):
-        return ServerRequest(str(request.get("kind") or request.get("type")), request.get("request_id"), dict(request.get("params") or {}))
-    return ServerRequest(str(getattr(request, "kind", getattr(request, "type", request.__class__.__name__))), getattr(request, "request_id"), dict(getattr(request, "params", {}) or {}))
+        request_id = request.get("request_id", request.get("requestId", request.get("id")))
+        return ServerRequest(str(request.get("kind") or request.get("type")), request_id, dict(request.get("params") or {}))
+    request_id = getattr(request, "request_id", None)
+    if request_id is None:
+        request_id = getattr(request, "id", None)
+    return ServerRequest(str(getattr(request, "kind", getattr(request, "type", request.__class__.__name__))), request_id, dict(getattr(request, "params", {}) or {}))
 
 
 def _coerce_notification(notification: Union[ServerNotification, Dict[str, Any], Any]) -> ServerNotification:
@@ -498,7 +502,16 @@ def _coerce_op(op: Union[AppCommand, Dict[str, Any], Any]) -> AppCommand:
         return op
     if isinstance(op, dict):
         return AppCommand(str(op.get("kind") or op.get("type")), id=op.get("id"), turn_id=op.get("turn_id"), server_name=op.get("server_name"), request_id=op.get("request_id"))
-    return AppCommand(str(getattr(op, "kind", getattr(op, "type", op.__class__.__name__))), id=getattr(op, "id", None), turn_id=getattr(op, "turn_id", None), server_name=getattr(op, "server_name", None), request_id=getattr(op, "request_id", None))
+    payload = getattr(op, "payload", None)
+    if not isinstance(payload, dict):
+        payload = {}
+    return AppCommand(
+        str(getattr(op, "kind", getattr(op, "type", op.__class__.__name__))),
+        id=getattr(op, "id", payload.get("id")),
+        turn_id=getattr(op, "turn_id", payload.get("turn_id")),
+        server_name=getattr(op, "server_name", payload.get("server_name")),
+        request_id=getattr(op, "request_id", payload.get("request_id")),
+    )
 
 
 __all__ = [name for name in globals() if not name.startswith("_")]

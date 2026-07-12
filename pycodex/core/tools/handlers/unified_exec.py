@@ -40,6 +40,8 @@ from pycodex.core.tools.handlers.utils import (
 )
 from pycodex.core.tools.hook_names import HookToolName
 from pycodex.core.shell import Shell, ShellType, default_user_shell, get_shell_by_model_provided_path
+from pycodex.protocol.exec_output import bytes_to_string_smart
+from pycodex.shell_command.powershell import prefix_powershell_script_with_utf8
 from pycodex.utils.string import approx_token_count
 from pycodex.core.tools.context import ExecCommandToolOutput
 from pycodex.core.tools.handlers.shell_spec import (
@@ -592,9 +594,12 @@ class ExecCommandHandler:
                 hook_command=None,
             )
         _emit_unified_exec_tty_metric(invocation.turn, resolved.args.tty)
+        spawn_command = resolved.resolved_command.command
+        if resolved.resolved_command.shell_type is ShellType.POWERSHELL:
+            spawn_command = tuple(prefix_powershell_script_with_utf8(spawn_command))
         try:
             completed = subprocess.run(
-                resolved.resolved_command.command,
+                spawn_command,
                 cwd=resolved.cwd,
                 env=_invocation_exec_env(invocation),
                 capture_output=True,
@@ -623,7 +628,7 @@ class ExecCommandHandler:
             max_output_tokens=resolved.args.max_output_tokens,
             process_id=None,
             exit_code=exit_code,
-            original_token_count=approx_token_count(raw_output.decode("utf-8", errors="replace")),
+            original_token_count=approx_token_count(bytes_to_string_smart(raw_output)),
             hook_command=resolved.args.cmd,
         )
 
@@ -729,10 +734,91 @@ class ExecCommandHandler:
             truncation_policy=_invocation_truncation_policy(invocation),
         )
         try:
-            result = exec_command(request)
-            if inspect.isawaitable(result):
-                result = await result
-            return result
+            from pycodex.core.tools.orchestrator import OrchestratorRunResult, ToolOrchestrator
+            from pycodex.core.tools.runtimes import UnifiedExecRequest, UnifiedExecRuntime
+            from pycodex.core.tools.sandboxing import ToolCtx, ToolError
+            from pycodex.execpolicy import ExecApprovalRequest, create_exec_approval_requirement_for_command
+
+            permission_profile = getattr(turn, "permission_profile", None)
+            if permission_profile is None:
+                permission_profile = getattr(invocation.session, "permission_profile", None)
+            if permission_profile is None:
+                from pycodex.protocol import PermissionProfile
+
+                permission_profile = PermissionProfile.disabled()
+            file_system_sandbox_policy = getattr(turn, "file_system_sandbox_policy", None)
+            if callable(file_system_sandbox_policy):
+                file_system_sandbox_policy = file_system_sandbox_policy()
+            if file_system_sandbox_policy is None:
+                file_system_sandbox_policy = permission_profile.file_system_sandbox_policy()
+            approval_sandbox_permissions = (
+                SandboxPermissions.USE_DEFAULT
+                if effective_additional_permissions.permissions_preapproved
+                else effective_additional_permissions.sandbox_permissions
+            )
+            exec_approval_requirement = create_exec_approval_requirement_for_command(
+                ExecApprovalRequest(
+                    command=resolved.resolved_command.command,
+                    approval_policy=approval_policy,
+                    permission_profile=permission_profile,
+                    file_system_sandbox_policy=file_system_sandbox_policy,
+                    sandbox_cwd=Path(getattr(resolved.turn_environment, "cwd")),
+                    sandbox_permissions=approval_sandbox_permissions,
+                    prefix_rule=resolved.args.prefix_rule,
+                )
+            )
+            runtime_request = UnifiedExecRequest(
+                command=resolved.resolved_command.command,
+                shell_type=resolved.resolved_command.shell_type,
+                hook_command=resolved.args.cmd,
+                process_id=process_id,
+                cwd=resolved.cwd,
+                sandbox_cwd=Path(getattr(resolved.turn_environment, "cwd")),
+                environment=getattr(resolved.turn_environment, "environment", None),
+                env=_invocation_exec_env(invocation),
+                exec_server_env_config=None,
+                explicit_env_overrides={},
+                network=getattr(turn, "network", None),
+                tty=resolved.args.tty,
+                sandbox_permissions=effective_additional_permissions.sandbox_permissions,
+                additional_permissions=normalized_additional_permissions,
+                additional_permissions_preapproved=effective_additional_permissions.permissions_preapproved,
+                justification=resolved.args.justification,
+                exec_approval_requirement=exec_approval_requirement,
+            )
+            runtime = UnifiedExecRuntime(manager, request)
+            tool_ctx = ToolCtx(
+                session=invocation.session,
+                turn=turn,
+                call_id=invocation.call_id,
+                tool_name=ToolName.plain("exec_command"),
+            )
+            orchestrator_turn = {
+                "permission_profile": permission_profile,
+                "file_system_sandbox_policy": file_system_sandbox_policy,
+                "network_sandbox_policy": permission_profile.network_sandbox_policy(),
+                "network": getattr(turn, "network", None),
+                "cwd": Path(getattr(resolved.turn_environment, "cwd")),
+                "features": getattr(turn, "features", None),
+                "config": getattr(turn, "config", None),
+                "windows_sandbox_level": getattr(turn, "windows_sandbox_level", None),
+                "codex_linux_sandbox_exe": getattr(turn, "codex_linux_sandbox_exe", None),
+                "session_telemetry": getattr(turn, "session_telemetry", None),
+                "routes_approval_to_guardian": getattr(turn, "routes_approval_to_guardian", False),
+            }
+            result = await ToolOrchestrator.new().run(
+                runtime,
+                runtime_request,
+                tool_ctx,
+                orchestrator_turn,
+                approval_policy,
+            )
+            if isinstance(result, ToolError):
+                message = result.message if result.type == "rejected" else str(result.error)
+                raise FunctionCallError.respond_to_model(message or "command execution rejected")
+            if not isinstance(result, OrchestratorRunResult):
+                raise TypeError("unified exec orchestrator returned an invalid result")
+            return result.output
         except UnifiedExecError as error:
             if error.kind == UnifiedExecError.SANDBOX_DENIED and error.output is not None:
                 return _sandbox_denied_tool_output(

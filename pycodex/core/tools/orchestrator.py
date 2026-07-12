@@ -41,6 +41,7 @@ from pycodex.protocol import (
     NetworkPolicyRuleAction,
     ReviewDecision,
     SandboxPermissions,
+    WindowsSandboxLevel,
 )
 
 ApprovalPolicy = AskForApproval | GranularApprovalConfig
@@ -172,11 +173,15 @@ class ToolOrchestrator:
         use_guardian = _routes_approval_to_guardian(turn_ctx) or strict_auto_review
         already_approved = False
 
-        file_system_sandbox_policy = _turn_ctx_call(turn_ctx, "file_system_sandbox_policy")
-        network_sandbox_policy = _turn_ctx_call(turn_ctx, "network_sandbox_policy")
         permission_profile = _field(turn_ctx, "permission_profile")
         if permission_profile is None:
             raise TypeError("turn_ctx must expose permission_profile")
+        file_system_sandbox_policy = _turn_ctx_call(turn_ctx, "file_system_sandbox_policy")
+        if file_system_sandbox_policy is None:
+            file_system_sandbox_policy = permission_profile.file_system_sandbox_policy()
+        network_sandbox_policy = _turn_ctx_call(turn_ctx, "network_sandbox_policy")
+        if network_sandbox_policy is None:
+            network_sandbox_policy = permission_profile.network_sandbox_policy()
 
         requirement_factory = getattr(tool, "exec_approval_requirement", None)
         requirement = (
@@ -268,7 +273,12 @@ class ToolOrchestrator:
             sandbox_cwd=Path(sandbox_cwd),
             codex_linux_sandbox_exe=_field(turn_ctx, "codex_linux_sandbox_exe"),
             use_legacy_landlock=bool(_call_optional(features, "use_legacy_landlock")),
-            windows_sandbox_level=_field(turn_ctx, "windows_sandbox_level"),
+            windows_sandbox_level=_field(
+                turn_ctx,
+                "windows_sandbox_level",
+                WindowsSandboxLevel.DISABLED,
+            )
+            or WindowsSandboxLevel.DISABLED,
             windows_sandbox_private_desktop=bool(_field(permissions_config, "windows_sandbox_private_desktop", False)),
         )
 

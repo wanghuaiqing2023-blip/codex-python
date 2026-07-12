@@ -9,7 +9,14 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Iterable, Protocol, Sequence
 
+from .history_cell import (
+    desired_transcript_height,
+    is_stream_continuation,
+    transcript_hyperlink_lines,
+)
+from .line_truncation import _display_width
 from .ratatui_bridge import Rect
+from .terminal_hyperlinks import visible_lines
 
 MAX_SCROLL = 2**63 - 1
 
@@ -42,6 +49,39 @@ class TextRenderable:
             for start in range(0, len(line), width):
                 out.append(line[start : start + width])
         return out or [""]
+
+
+@dataclass
+class HistoryCellRenderable:
+    """Render one canonical history cell through its transcript projection."""
+
+    cell: Any
+
+    def desired_height(self, width: int) -> int:
+        return desired_transcript_height(self.cell, max(1, int(width)))
+
+    def render_lines(self, width: int) -> list[str]:
+        width = max(1, int(width))
+        lines = visible_lines(transcript_hyperlink_lines(self.cell, width))
+        rendered: list[str] = []
+        for line in lines:
+            text = "".join(span.content for span in line.spans)
+            rendered.extend(_wrap_display_line(text, width))
+        return rendered
+
+
+@dataclass
+class InsetRenderable:
+    """Minimal Rust ``InsetRenderable`` subset used between transcript cells."""
+
+    renderable: Renderable
+    top: int = 1
+
+    def desired_height(self, width: int) -> int:
+        return max(0, int(self.top)) + self.renderable.desired_height(width)
+
+    def render_lines(self, width: int) -> list[str]:
+        return ([""] * max(0, int(self.top))) + self.renderable.render_lines(width)
 
 
 @dataclass
@@ -114,6 +154,52 @@ class PagerView:
             self.scroll_offset = min(max(self.scroll_offset, 0), max_scroll)
         return self.visible_content_lines(content_area)
 
+    def render_frame(self, area: Rect) -> list[str]:
+        """Render Rust's pager header, content area, and percentage bar."""
+
+        if area.height <= 0:
+            return []
+        content = self.render(area)
+        header = _pager_header(self.title, area.width)
+        percent = self.scroll_percent()
+        separator = _pager_separator(area.width, percent)
+        rows = [header, *content, separator]
+        return [_fit_display_width(row, area.width) for row in rows[: area.height]]
+
+    def scroll_percent(self) -> int:
+        total = int(self.last_rendered_height or 0)
+        height = int(self.last_content_height or 0)
+        max_scroll = max(total - height, 0)
+        if max_scroll == 0:
+            return 100
+        return round((min(max(self.scroll_offset, 0), max_scroll) / max_scroll) * 100)
+
+    def handle_input(self, event_kind: str, event_text: str, viewport_area: Rect) -> bool:
+        """Apply the fixed Rust pager keymap subset; return whether it changed."""
+
+        kind, text = _normalized_pager_input(event_kind, event_text)
+        if kind == "up" or (kind == "text" and text == "k"):
+            self.scroll_offset = max(0, self.scroll_offset - 1)
+        elif kind == "down" or (kind == "text" and text == "j"):
+            self.scroll_offset += 1
+        elif kind in {"page_up", "ctrl_b"}:
+            self.scroll_offset = max(0, self.scroll_offset - self.page_height(viewport_area))
+        elif kind in {"page_down", "ctrl_f"} or (kind == "text" and text == " "):
+            self.scroll_offset += self.page_height(viewport_area)
+        elif kind == "ctrl_u":
+            half_page = (self.content_area(viewport_area).height + 1) // 2
+            self.scroll_offset = max(0, self.scroll_offset - half_page)
+        elif kind == "ctrl_d":
+            half_page = (self.content_area(viewport_area).height + 1) // 2
+            self.scroll_offset += half_page
+        elif kind == "home":
+            self.scroll_offset = 0
+        elif kind == "end":
+            self.scroll_offset = MAX_SCROLL
+        else:
+            return False
+        return True
+
     def visible_content_lines(self, area: Rect) -> list[str]:
         lines: list[str] = []
         for renderable in self.renderables:
@@ -164,7 +250,7 @@ class LiveTailKey:
 
 @dataclass
 class TranscriptOverlay:
-    cells: list[Renderable]
+    cells: list[Any]
     keymap: Any | None = None
     highlight_cell: int | None = None
     live_tail_key: LiveTailKey | None = None
@@ -176,13 +262,20 @@ class TranscriptOverlay:
         self.view = PagerView.new(self.render_cells(self.cells, self.highlight_cell), "T R A N S C R I P T", MAX_SCROLL, self.keymap)
 
     @classmethod
-    def new(cls, transcript_cells: Sequence[Renderable], keymap: Any | None = None) -> "TranscriptOverlay":
+    def new(cls, transcript_cells: Sequence[Any], keymap: Any | None = None) -> "TranscriptOverlay":
         return cls(list(transcript_cells), keymap=keymap)
 
     @staticmethod
-    def render_cells(cells: Sequence[Renderable], highlight_cell: int | None = None) -> list[Renderable]:
+    def render_cells(cells: Sequence[Any], highlight_cell: int | None = None) -> list[Renderable]:
         _ = highlight_cell
-        return [CachedRenderable.new(cell) for cell in cells]
+        rendered: list[Renderable] = []
+        for index, cell in enumerate(cells):
+            renderable: Renderable = _as_renderable(cell)
+            renderable = CachedRenderable.new(renderable)
+            if index > 0 and not _is_stream_continuation(cell):
+                renderable = InsetRenderable(renderable)
+            rendered.append(renderable)
+        return rendered
 
     def committed_cell_count(self) -> int:
         return len(self.cells)
@@ -259,6 +352,32 @@ class TranscriptOverlay:
     def render(self, area: Rect) -> list[str]:
         return self.view.render(area)
 
+    def render_frame(self, area: Rect) -> list[str]:
+        """Render the complete Rust transcript overlay frame."""
+
+        top_height = max(0, area.height - 3)
+        top = Rect(area.x, area.y, area.width, top_height)
+        rows = self.view.render_frame(top)
+        hints = [
+            " Up/Down to scroll   PageUp/PageDown to page   Home/End to jump",
+            " q/Ctrl+T to quit",
+            "",
+        ]
+        rows.extend(_fit_display_width(line, area.width) for line in hints)
+        return (rows + [""] * area.height)[: area.height]
+
+    def handle_input(self, event_kind: str, event_text: str, area: Rect) -> bool:
+        """Route one terminal input event through Rust's transcript pager."""
+
+        kind, text = _normalized_pager_input(event_kind, event_text)
+        if kind in {"ctrl_t", "interrupt", "eof"} or (
+            kind == "text" and text == "q"
+        ):
+            self.is_done_flag = True
+            return True
+        top = Rect(area.x, area.y, area.width, max(0, area.height - 3))
+        return self.view.handle_input(event_kind, event_text, top)
+
 
 @dataclass
 class StaticOverlay:
@@ -315,6 +434,109 @@ def _coerce_live_tail_key(width: int, key: Any) -> LiveTailKey:
     )
 
 
+def _as_renderable(value: Any) -> Renderable:
+    if callable(getattr(value, "desired_height", None)) and callable(
+        getattr(value, "render_lines", None)
+    ):
+        return value
+    return HistoryCellRenderable(value)
+
+
+def _normalized_pager_input(event_kind: str, event_text: str) -> tuple[str, str]:
+    """Normalize crossterm, Windows virtual-key, and ANSI pager inputs."""
+
+    kind = str(event_kind).strip().lower().replace("-", "_")
+    text = str(event_text)
+    aliases = {
+        "up": "up",
+        "down": "down",
+        "home": "home",
+        "end": "end",
+        "pageup": "page_up",
+        "pagedown": "page_down",
+        "pgup": "page_up",
+        "pgdn": "page_down",
+        "escape": "escape",
+    }
+    kind = aliases.get(kind, kind)
+    if kind == "text":
+        named = aliases.get(text.strip().lower().replace("-", "_"))
+        if named is not None:
+            return named, ""
+        ansi = {
+            "\x1b[A": "up",
+            "\x1b[B": "down",
+            "\x1b[5~": "page_up",
+            "\x1b[6~": "page_down",
+            "\x1b[H": "home",
+            "\x1b[F": "end",
+            "\x1bOH": "home",
+            "\x1bOF": "end",
+        }.get(text)
+        if ansi is not None:
+            return ansi, ""
+    return kind, text
+
+
+def _is_stream_continuation(value: Any) -> bool:
+    if callable(getattr(value, "render_lines", None)):
+        # Existing Renderable values are already layout chunks; only canonical
+        # HistoryCell values receive Rust's inter-cell top inset here.
+        return True
+    return is_stream_continuation(value)
+
+
+def _wrap_display_line(text: str, width: int) -> list[str]:
+    if text == "":
+        return [""]
+    rows: list[str] = []
+    current: list[str] = []
+    used = 0
+    for char in str(text):
+        char_width = max(0, _display_width(char))
+        if current and used + char_width > width:
+            rows.append("".join(current))
+            current = []
+            used = 0
+        current.append(char)
+        used += char_width
+    if current:
+        rows.append("".join(current))
+    return rows or [""]
+
+
+def _fit_display_width(text: str, width: int) -> str:
+    width = max(0, int(width))
+    if width == 0:
+        return ""
+    out: list[str] = []
+    used = 0
+    for char in str(text):
+        char_width = max(0, _display_width(char))
+        if used + char_width > width:
+            break
+        out.append(char)
+        used += char_width
+    return "".join(out) + (" " * max(0, width - used))
+
+
+def _pager_header(title: str, width: int) -> str:
+    pattern = "/ " * ((max(0, int(width)) + 1) // 2)
+    label = f"/ {title}"
+    return label + pattern[len(label) :]
+
+
+def _pager_separator(width: int, percent: int) -> str:
+    width = max(0, int(width))
+    label = f" {max(0, min(int(percent), 100))}% "
+    if width <= len(label) + 1:
+        return label[:width]
+    row = ["─"] * width
+    start = max(0, width - len(label) - 1)
+    row[start : start + len(label)] = list(label)
+    return "".join(row)
+
+
 def first_or_empty(bindings: Sequence[Any]) -> list[Any]:
     return list(bindings[:1])
 
@@ -348,6 +570,8 @@ def static_overlay(lines: Sequence[str], title: str) -> StaticOverlay:
 
 __all__ = [
     "CachedRenderable",
+    "HistoryCellRenderable",
+    "InsetRenderable",
     "LiveTailKey",
     "MAX_SCROLL",
     "Overlay",

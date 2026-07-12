@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+# Rust source: codex/codex-rs/tui/src/exec_cell/render.rs
 from pycodex.tui.exec_cell.model import CommandOutput, ExecCall, ExecCell, UNIFIED_EXEC_INTERACTION, USER_SHELL
 from pycodex.tui.exec_cell.render import (
     OutputLinesParams,
@@ -76,6 +77,32 @@ def test_completed_command_display_uses_ran_bullet_and_output_preview_matches_ru
     rendered = [render_line_text(line) for line in command_display_lines(cell, 80)]
 
     assert rendered == ["• Ran echo done", "  ┃done"]
+
+
+def test_powershell_multiline_command_uses_bounded_continuation_layout_matches_rust() -> None:
+    # Rust owners: tui::exec_command::strip_bash_lc_and_escape and
+    # exec_cell::render::command_display_lines. PowerShell is a supported
+    # shell wrapper and multiline scripts use the shared continuation budget.
+    script = "@'\n#include <stdio.h>\nint main(void) {\n    return 0;\n}\n'@ | Set-Content hello.c"
+    call = ExecCall(
+        call_id="call-id",
+        command=["powershell.exe", "-NoProfile", "-Command", script],
+        parsed=[],
+        output=CommandOutput(exit_code=0, aggregated_output="done", formatted_output="done"),
+        source="Agent",
+        duration=1.0,
+    )
+
+    rendered = [render_line_text(line) for line in command_display_lines(ExecCell.new(call, False), 80)]
+
+    assert rendered[:4] == [
+        "• Ran @'",
+        "  ┃#include <stdio.h>",
+        "  ┃int main(void) {",
+        "  ┃...+3 lines",
+    ]
+    assert "Set-Content hello.c" not in "\n".join(rendered[:4])
+    assert rendered[-1] == "  ┃done"
 
 
 def test_terminal_command_status_text_matches_command_display_title_contract() -> None:

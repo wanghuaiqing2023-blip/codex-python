@@ -72,7 +72,9 @@ def test_effort_rank_matches_rust_order():
         ReasoningEffort.MEDIUM,
         ReasoningEffort.HIGH,
         ReasoningEffort.XHIGH,
-    ]] == [0, 1, 2, 3, 4, 5]
+        ReasoningEffort.MAX,
+        ReasoningEffort.ULTRA,
+    ]] == [0, 1, 2, 3, 4, 5, 6, 7]
 
 
 def test_bound_message_matches_direction_and_effort_label():

@@ -16,6 +16,7 @@
 )
 
 
+# Rust source: codex/codex-rs/tui/src/app/app_server_requests.rs
 def test_resolves_exec_approval_through_app_server_request_id():
     """Rust codex-tui app::app_server_requests::resolves_exec_approval_through_app_server_request_id."""
 

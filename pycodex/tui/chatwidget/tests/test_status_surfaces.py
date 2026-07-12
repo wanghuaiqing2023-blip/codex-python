@@ -345,6 +345,47 @@ def test_terminal_status_surface_writer_owns_composer_cursor_visibility() -> Non
     assert status.composer_cursor_visible() is True
 
 
+def test_guardian_status_temporarily_owns_and_releases_turn_status_surface() -> None:
+    # Fixed Rust commit 1c7832f, chatwidget::tool_requests/status_surfaces:
+    # guardian review status replaces the ordinary working tick, then the
+    # active turn status resumes after the final assessment.
+    status = TerminalStatusSurfaceWriter(io.StringIO())
+    status.turn_started_at = 1.0
+    status.turn_status = TerminalTurnStatusState.inactive().after_render(0)
+
+    status.show_guardian_status("Reviewing approval request", "echo one")
+
+    assert status.turn_status.suppressed is True
+    assert status.live_status.render_text == "\u2022 Reviewing approval request \u2514 echo one"
+
+    status.restore_turn_status("Working")
+
+    assert status.turn_status.active is True
+    assert status.turn_status.suppressed is False
+    assert status.live_status.render_text is not None
+    assert status.live_status.render_text.startswith("\u2022 Working (")
+
+
+def test_action_required_view_sets_and_clears_managed_terminal_title() -> None:
+    # Fixed Rust commit 1c7832f, chatwidget::status_surfaces and
+    # bottom_pane::BottomPaneView::terminal_title_requires_action.
+    class Tty(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    output = Tty()
+    status = TerminalStatusSurfaceWriter(output)
+
+    status.set_terminal_title_requires_action(True)
+    status.set_terminal_title_requires_action(True)
+    status.set_terminal_title_requires_action(False)
+
+    assert output.getvalue() == (
+        "\x1b]0;[ ! ] Action Required\x07"
+        "\x1b]0;\x07"
+    )
+
+
 def test_terminal_status_surface_writer_binds_bottom_pane_render_callback() -> None:
     # Rust owner: codex-tui::chatwidget::status_surfaces owns the
     # protocol-facing status writer callbacks. The terminal runtime may wire

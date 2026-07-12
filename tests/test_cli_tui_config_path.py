@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from pycodex.cli import parser
+from pycodex.protocol import AskForApproval, PermissionProfile
 from pycodex.tui import TuiAppRuntime
 from pycodex.tui.bottom_pane.status_line_setup import StatusLineItem
 from pycodex.tui.runtime_projection import _runtime_status_line_item_ids, _runtime_status_line_value
@@ -58,3 +59,40 @@ def test_tui_root_config_overrides_reach_runtime_status_line(monkeypatch, tmp_pa
     assert runtime.session_config.tui_status_line_use_colors is False
     assert _runtime_status_line_item_ids(app_runtime) == ("model-name", "context-used")
     assert _runtime_status_line_value(app_runtime, StatusLineItem.CONTEXT_USED, "Ready") == "Context 0% used"
+
+
+def test_tui_runtime_uses_explicit_config_permission_profile(monkeypatch, tmp_path: Path) -> None:
+    # Fixed Rust baseline 1c7832f: core ConfigBuilder projects config.toml
+    # sandbox_mode and approval_policy into the interactive TUI session.
+    monkeypatch.setattr(parser, "find_codex_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        parser,
+        "read_toml_mapping",
+        lambda _path: {
+            "sandbox_mode": "danger-full-access",
+            "approval_policy": "never",
+        },
+    )
+    monkeypatch.setattr(parser, "read_auth_json", lambda: {})
+    monkeypatch.setattr(parser, "maybe_migrate_personality", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(parser, "ensure_exec_trusted_directory", lambda _check: None)
+    monkeypatch.setattr(parser, "_execpolicy_rules_for_local_http_exec", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(parser, "local_http_exec_max_tool_rounds", lambda: 4)
+    monkeypatch.setattr(
+        parser,
+        "build_default_core_exec_runtime",
+        lambda *_args, **_kwargs: (
+            object(),
+            SimpleNamespace(id="openai"),
+            SimpleNamespace(id="gpt-test", name="gpt-test"),
+            None,
+        ),
+    )
+
+    runtime = parser._build_tui_core_active_thread_runtime(
+        parser.parse_args(["--no-alt-screen", "-C", str(tmp_path)]),
+        stderr=SimpleNamespace(write=lambda *_: None),
+    )
+
+    assert runtime.session_config.approval_policy is AskForApproval.NEVER
+    assert runtime.session_config.permission_profile == PermissionProfile.disabled()

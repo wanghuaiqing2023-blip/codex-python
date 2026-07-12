@@ -48,6 +48,19 @@ def test_status_handle_finish_rate_limit_refresh_updates_shared_state() -> None:
     assert [row.label for row in output.card.rate_limit_state.rate_limits.rows] == ["5h limit"]
 
 
+def test_status_output_inserts_rust_composite_gap_between_command_and_card() -> None:
+    # Fixed Rust baseline 1c7832f, codex-tui::history_cell::CompositeHistoryCell:
+    # non-empty child cells are separated by exactly one blank display line.
+    output, _handle = new_status_output_with_rate_limits_handle(model_name="gpt-5")
+
+    lines = output.display_lines(80)
+    text = ["".join(span.content for span in line.spans) for line in lines]
+
+    assert text[0] == "/status"
+    assert text[1] == ""
+    assert any("OpenAI Codex" in row for row in text[2:])
+
+
 def test_terminal_status_card_lines_keep_scrollback_product_shape() -> None:
     # Rust crate/module:
     # - codex-tui::status::card::new_status_output_with_rate_limits_handle
@@ -195,26 +208,34 @@ def test_terminal_status_card_writer_runs_runtime_bound_status_card(monkeypatch)
 
     monkeypatch.setattr(runtime_projection, "_display_version", lambda: "0.3.0")
     monkeypatch.setattr(runtime_projection, "_runtime_display_model", lambda runtime: "writer-model")
-    monkeypatch.setattr(runtime_projection, "_runtime_header_reasoning_effort", lambda runtime: "low")
+    monkeypatch.setattr(runtime_projection, "_runtime_model_details", lambda runtime: ("reasoning low", "summaries auto"))
     monkeypatch.setattr(runtime_projection, "_runtime_cwd", lambda runtime: "C:/workspace/writer")
     monkeypatch.setattr(runtime_projection, "_runtime_permissions_label", lambda runtime: "Read Only")
     monkeypatch.setattr(runtime_projection, "_runtime_agents_summary", lambda runtime: "<none>")
+    monkeypatch.setattr(
+        runtime_projection,
+        "_runtime_status_token_usage",
+        lambda runtime: StatusTokenUsageData(
+            total=42,
+            input=30,
+            output=12,
+            context_window=StatusContextWindowData(75, 50_000, 200_000),
+        ),
+    )
 
     written: list[str] = []
     writer = TerminalStatusCardWriter(Runtime(), write_history_cell=written.append)
 
-    data = writer.run()
+    output = writer.run()
 
-    assert data == TerminalStatusCardData(
-        version="0.3.0",
-        model="writer-model",
-        reasoning_effort="low",
-        directory="C:/workspace/writer",
-        permissions="Read Only",
-        agents_summary="<none>",
-        session_id="thread-writer",
-    )
-    assert written == ["\n".join(terminal_status_card_lines(data))]
+    assert output.card.model_name == "writer-model"
+    assert output.card.model_details == ("reasoning low", "summaries auto")
+    rendered = written[0]
+    assert "/status" in rendered
+    assert "writer-model (reasoning low, summaries auto)" in rendered
+    assert "42 total" in rendered
+    assert "75% left" in rendered
+    assert "thread-writer" in rendered
 
 
 def test_token_usage_and_context_window_spans_match_status_card_shape() -> None:

@@ -43,16 +43,22 @@ class TerminalBottomPaneFootprint:
 
     live_status_active: bool = False
     popup_height: int = 0
+    active_tail_height: int = 0
+    composer_height: int = 1
 
     @classmethod
     def from_surface(
         cls,
         live_status: TerminalLiveStatusFootprintProtocol,
         popup_height: int = 0,
+        active_tail_height: int = 0,
+        composer_height: int = 1,
     ) -> "TerminalBottomPaneFootprint":
         return cls(
             live_status_active=bool(live_status.footprint_active),
             popup_height=max(0, int(popup_height)),
+            active_tail_height=max(0, int(active_tail_height)),
+            composer_height=max(1, int(composer_height)),
         )
 
     def rows_for_size(self, size: os.terminal_size) -> list[int]:
@@ -60,6 +66,8 @@ class TerminalBottomPaneFootprint:
             size,
             live_status_active=self.live_status_active,
             popup_height=self.popup_height,
+            active_tail_height=self.active_tail_height,
+            composer_height=self.composer_height,
         )
 
     def height_for_size(self, size: os.terminal_size) -> int:
@@ -78,9 +86,14 @@ class TerminalBottomPaneLayoutRows:
 
     clear_rows: tuple[int, ...]
     live_status_row: int | None
-    composer_row: int
+    composer_rows: tuple[int, ...]
     popup_rows: tuple[int, ...]
     footer_row: int
+    active_tail_rows: tuple[int, ...] = ()
+
+    @property
+    def composer_row(self) -> int:
+        return self.composer_rows[-1]
 
 
 def bottom_pane_rows_for_size(
@@ -88,9 +101,16 @@ def bottom_pane_rows_for_size(
     *,
     live_status_active: bool,
     popup_height: int = 0,
+    active_tail_height: int = 0,
+    composer_height: int = 1,
 ) -> list[int]:
     rows = size.lines
-    height = bottom_pane_height(live_status_active=live_status_active, popup_height=popup_height)
+    height = bottom_pane_height(
+        live_status_active=live_status_active,
+        popup_height=popup_height,
+        active_tail_height=active_tail_height,
+        composer_height=composer_height,
+    )
     if height != IDLE_BOTTOM_PANE_ROWS:
         return [max(1, rows - offset) for offset in range(height - 1, -1, -1)]
     return [
@@ -128,6 +148,10 @@ def terminal_bottom_pane_layout_rows(
     popup_height: int = 0,
     clear_popup_height: int = 0,
     clear_live_status_active: bool = False,
+    active_tail_height: int = 0,
+    clear_active_tail_height: int = 0,
+    composer_height: int = 1,
+    clear_composer_height: int = 1,
 ) -> TerminalBottomPaneLayoutRows:
     """Return terminal row assignments for the bottom-pane frame.
 
@@ -142,45 +166,62 @@ def terminal_bottom_pane_layout_rows(
             size,
             live_status_active=live_status_active or clear_live_status_active,
             popup_height=max(int(popup_height), int(clear_popup_height)),
+            active_tail_height=max(int(active_tail_height), int(clear_active_tail_height)),
+            composer_height=max(int(composer_height), int(clear_composer_height)),
         )
     )
+    base_rows = bottom_pane_rows_for_size(
+        size,
+        live_status_active=live_status_active,
+        popup_height=popup_height,
+        composer_height=composer_height,
+    )
+    active_tail_rows = tuple(clear_rows[: max(0, int(active_tail_height))])
     if popup_height:
-        rows = bottom_pane_rows_for_size(
-            size,
-            live_status_active=live_status_active,
-            popup_height=popup_height,
-        )
+        rows = base_rows
         cursor = 0
         live_status = None
         if live_status_active:
             live_status = rows[cursor]
             cursor += 1
-        composer = rows[cursor]
-        cursor += 1
+        composer_rows = tuple(rows[cursor : cursor + max(1, int(composer_height))])
+        cursor += len(composer_rows)
         return TerminalBottomPaneLayoutRows(
             clear_rows=clear_rows,
             live_status_row=live_status,
-            composer_row=composer,
+            composer_rows=composer_rows,
             popup_rows=tuple(rows[cursor:-1])[: int(popup_height)],
             footer_row=rows[-1],
+            active_tail_rows=active_tail_rows,
         )
 
+    composer_end = len(base_rows) - 2
+    composer_start = max(0, composer_end - max(1, int(composer_height)))
     return TerminalBottomPaneLayoutRows(
         clear_rows=clear_rows,
         live_status_row=status_row(size, live_status_active=live_status_active),
-        composer_row=composer_row(size),
+        composer_rows=tuple(base_rows[composer_start:composer_end]),
         popup_rows=(),
         footer_row=footer_row(size),
+        active_tail_rows=active_tail_rows,
     )
 
 
-def bottom_pane_height(*, live_status_active: bool, popup_height: int = 0) -> int:
+def bottom_pane_height(
+    *,
+    live_status_active: bool,
+    popup_height: int = 0,
+    active_tail_height: int = 0,
+    composer_height: int = 1,
+) -> int:
     if popup_height:
-        return max(
+        base = max(
             STATUS_BOTTOM_PANE_ROWS if live_status_active else IDLE_BOTTOM_PANE_ROWS,
             (1 if live_status_active else 0) + 1 + int(popup_height) + 1,
         )
-    return STATUS_BOTTOM_PANE_ROWS if live_status_active else IDLE_BOTTOM_PANE_ROWS
+    else:
+        base = STATUS_BOTTOM_PANE_ROWS if live_status_active else IDLE_BOTTOM_PANE_ROWS
+    return base + max(0, int(active_tail_height)) + max(0, int(composer_height) - 1)
 
 
 def terminal_bottom_pane_clear_request(

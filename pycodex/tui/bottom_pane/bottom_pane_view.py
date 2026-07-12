@@ -188,7 +188,8 @@ def dismiss_app_server_request(view: BottomPaneView, request: Any) -> bool:
 
 
 def terminal_title_requires_action(view: BottomPaneView) -> bool:
-    return view.terminal_title_requires_action()
+    method = getattr(view, "terminal_title_requires_action", None)
+    return bool(method()) if callable(method) else False
 
 
 def next_frame_delay(view: BottomPaneView) -> float | None:

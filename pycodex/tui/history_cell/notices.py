@@ -215,14 +215,17 @@ def new_deprecation_notice(summary: str, details: str | None = None) -> Deprecat
 
 
 def new_info_event(message: str, hint: str | None = None) -> PlainHistoryCell:
-    spans: list[Span | str] = [Span("- ", "dim"), str(message)]
+    spans: list[Span | str] = [Span("\u2022 ", "dim"), str(message)]
     if hint is not None:
         spans.extend([" ", Span(str(hint), "dark_gray")])
     return PlainHistoryCell.new([Line.from_spans(spans)])
 
 
 def new_error_event(message: str) -> PlainHistoryCell:
-    return PlainHistoryCell.new([Line.from_spans([Span(f"! {message}", "red")])])
+    # Fixed Rust uses a black square followed by a hair space. Keeping this in
+    # the history-cell owner makes terminal, transcript, and replay projections
+    # share the same stable glyph and spacing.
+    return PlainHistoryCell.new([Line.from_spans([Span(f"\u25a0\u200a{message}", "red")])])
 
 
 def display_lines(cell: Any, width: int) -> list[Line]:

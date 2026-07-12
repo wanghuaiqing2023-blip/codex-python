@@ -167,6 +167,9 @@ def _request_thread_id(request: Any) -> Optional[str]:
     thread_id = _get(request, "thread_id", None)
     payload = _payload(request, "request", request)
     thread_id = _get(payload, "thread_id", thread_id)
+    params = _get(payload, "params", None)
+    if params is not None:
+        thread_id = _get(params, "thread_id", _get(params, "threadId", thread_id))
     return None if thread_id is None or str(thread_id) == "" else str(thread_id)
 
 
@@ -181,7 +184,7 @@ def _resolve_pending(pending_requests: Any, request_id: Any) -> Any:
     if pending_requests is None or request_id is None:
         return None
     resolve = getattr(pending_requests, "resolve_notification", None)
-    return resolve(str(request_id)) if callable(resolve) else None
+    return resolve(request_id) if callable(resolve) else None
 
 
 def _variant(value: Any) -> str:

@@ -39,7 +39,13 @@ from pycodex.core.sandbox_tags import SandboxType
 from pycodex.core.shell import Shell, ShellType
 from pycodex.core.tools.hook_names import HookToolName
 from pycodex.core.tools.network_approval import NetworkApprovalMode, NetworkApprovalSpec
-from pycodex.core.tools.sandboxing import ExecApprovalRequirement, PermissionRequestPayload, SandboxAttempt, ToolError
+from pycodex.core.tools.sandboxing import (
+    ApprovalStore,
+    ExecApprovalRequirement,
+    PermissionRequestPayload,
+    SandboxAttempt,
+    ToolError,
+)
 from pycodex.execpolicy import Decision
 from pycodex.shell_command import parse_shell_lc_plain_commands, parse_shell_lc_single_command_prefix
 from pycodex.utils.path_utils import paths_match_after_normalization
@@ -2218,6 +2224,84 @@ class ApplyPatchRuntimeOutput:
             raise TypeError("exec_output must be ExecToolCallOutput")
 
 
+class ApplyPatchRuntime:
+    """Approval and execution owner for a verified apply-patch request.
+
+    Rust owner: ``codex-core::tools::runtimes::apply_patch::ApplyPatchRuntime``.
+    """
+
+    def __init__(self) -> None:
+        self._committed_delta: Any = None
+
+    def committed_delta(self) -> Any:
+        return self._committed_delta
+
+    def approval_keys(self, req: ApplyPatchRequest) -> tuple[ApplyPatchApprovalKey, ...]:
+        return apply_patch_approval_keys(req)
+
+    def sandbox_preference(self) -> str:
+        return "auto"
+
+    def escalate_on_failure(self) -> bool:
+        return True
+
+    def exec_approval_requirement(self, req: ApplyPatchRequest) -> ExecApprovalRequirement:
+        return req.exec_approval_requirement
+
+    def permission_request_payload(self, req: ApplyPatchRequest) -> PermissionRequestPayload:
+        return apply_patch_permission_request_payload(req)
+
+    def sandbox_cwd(self, req: ApplyPatchRequest) -> Path:
+        return apply_patch_sandbox_cwd(req)
+
+    async def start_approval_async(self, req: ApplyPatchRequest, ctx: Any) -> ReviewDecision:
+        if req.permissions_preapproved and getattr(ctx, "retry_reason", None) is None:
+            return ReviewDecision.approved()
+
+        keys = self.approval_keys(req)
+        services = getattr(ctx.session, "services", None)
+        store = getattr(services, "approval_store", None)
+        if store is None:
+            store = ApprovalStore()
+            if services is not None:
+                setattr(services, "approval_store", store)
+        approved_for_session = ReviewDecision.approved_for_session()
+        if keys and all(store.get(key) == approved_for_session for key in keys):
+            return approved_for_session
+
+        prompt = getattr(ctx.session, "request_patch_approval", None)
+        if not callable(prompt):
+            return ReviewDecision.abort()
+        decision = prompt(
+            ctx.turn,
+            str(ctx.call_id),
+            req.changes,
+            getattr(ctx, "retry_reason", None),
+            None,
+        )
+        if inspect.isawaitable(decision):
+            decision = await decision
+        decision = ReviewDecision.from_mapping(decision)
+        if decision == approved_for_session:
+            for key in keys:
+                store.put(key, approved_for_session)
+        return decision
+
+    async def run(self, req: ApplyPatchRequest, _attempt: SandboxAttempt, _ctx: Any) -> ApplyPatchRuntimeOutput:
+        from pycodex.apply_patch import apply_patch_action_to_disk
+
+        started_at = time.monotonic()
+        output = apply_patch_action_to_disk(req.action)
+        self._committed_delta = req.changes
+        exec_output = ExecToolCallOutput(
+            exit_code=0,
+            stdout=StreamOutput.new(output),
+            aggregated_output=StreamOutput.new(output),
+            duration=timedelta(seconds=time.monotonic() - started_at),
+        )
+        return ApplyPatchRuntimeOutput(exec_output, self._committed_delta)
+
+
 @dataclass(frozen=True)
 class ApplyPatchFileSystemSandboxContext:
     permissions: PermissionProfile
@@ -2393,6 +2477,118 @@ class UnifiedExecOptions:
             raise TypeError("expiration must be ExecExpiration")
         if not isinstance(self.capture_policy, ExecCapturePolicy):
             object.__setattr__(self, "capture_policy", ExecCapturePolicy(self.capture_policy))
+
+
+class UnifiedExecRuntime:
+    """Approval and sandbox owner for a unified-exec launch.
+
+    Rust owner: ``codex-core::tools::runtimes::unified_exec::UnifiedExecRuntime``.
+    The Python process manager combines Rust's open-process and first snapshot
+    operations, so ``manager_request`` is retained as backend-only state while
+    all approval semantics are derived from the Rust-shaped ``UnifiedExecRequest``.
+    """
+
+    def __init__(self, manager: Any, manager_request: Any) -> None:
+        self.manager = manager
+        self.manager_request = manager_request
+
+    def approval_keys(self, req: UnifiedExecRequest) -> tuple[UnifiedExecApprovalKey, ...]:
+        return unified_exec_approval_keys(req)
+
+    def sandbox_preference(self) -> str:
+        return "auto"
+
+    def escalate_on_failure(self) -> bool:
+        return True
+
+    def exec_approval_requirement(self, req: UnifiedExecRequest) -> ExecApprovalRequirement:
+        return req.exec_approval_requirement
+
+    def permission_request_payload(self, req: UnifiedExecRequest) -> PermissionRequestPayload:
+        return unified_exec_permission_request_payload(req)
+
+    def sandbox_permissions(self, req: UnifiedExecRequest) -> SandboxPermissions:
+        return req.sandbox_permissions
+
+    def sandbox_cwd(self, req: UnifiedExecRequest) -> Path:
+        return req.sandbox_cwd
+
+    def network_approval_spec(self, req: UnifiedExecRequest, ctx: Any) -> NetworkApprovalSpec | None:
+        return unified_exec_network_approval_spec(
+            req,
+            call_id=str(getattr(ctx, "call_id")),
+            tool_name=getattr(ctx, "tool_name"),
+        )
+
+    async def start_approval_async(self, req: UnifiedExecRequest, ctx: Any) -> ReviewDecision:
+        keys = self.approval_keys(req)
+        services = getattr(ctx.session, "services", None)
+        store = getattr(services, "approval_store", None)
+        if store is None:
+            store = ApprovalStore()
+            if services is not None:
+                setattr(services, "approval_store", store)
+
+        approved_for_session = ReviewDecision.approved_for_session()
+        if keys and all(store.get(key) == approved_for_session for key in keys):
+            return approved_for_session
+
+        retry_reason = getattr(ctx, "retry_reason", None)
+        reason = retry_reason or req.justification
+        guardian_review_id = getattr(ctx, "guardian_review_id", None)
+        if guardian_review_id is not None:
+            reviewer = getattr(ctx.session, "review_approval_request", None)
+            if callable(reviewer):
+                decision = reviewer(
+                    ctx.turn,
+                    guardian_review_id,
+                    {
+                        "type": "exec_command",
+                        "id": str(ctx.call_id),
+                        "command": req.command,
+                        "cwd": req.cwd,
+                        "sandbox_permissions": req.sandbox_permissions,
+                        "additional_permissions": req.additional_permissions,
+                        "justification": req.justification,
+                        "tty": req.tty,
+                    },
+                    retry_reason,
+                )
+                if inspect.isawaitable(decision):
+                    decision = await decision
+                return ReviewDecision.from_mapping(decision)
+
+        prompt = getattr(ctx.session, "request_command_approval", None)
+        if not callable(prompt):
+            return ReviewDecision.abort()
+        decision = prompt(
+            ctx.turn,
+            str(ctx.call_id),
+            None,
+            req.command,
+            req.cwd,
+            reason,
+            getattr(ctx, "network_approval_context", None),
+            req.exec_approval_requirement.proposed_execpolicy_amendment,
+            req.additional_permissions,
+            None,
+        )
+        if inspect.isawaitable(decision):
+            decision = await decision
+        decision = ReviewDecision.from_mapping(decision)
+        if decision == approved_for_session:
+            for key in keys:
+                store.put(key, approved_for_session)
+        return decision
+
+    async def run(self, req: UnifiedExecRequest, attempt: SandboxAttempt, _ctx: Any) -> Any:
+        # The stdlib manager currently performs the concrete spawn. Approval,
+        # sandbox selection and network lifecycle have already been owned by
+        # ToolOrchestrator before this backend boundary is reached.
+        result = self.manager.exec_command(self.manager_request)
+        if inspect.isawaitable(result):
+            result = await result
+        return result
 
 
 @dataclass(frozen=True)
@@ -3923,6 +4119,7 @@ __all__ = [
     "ApplyPatchApprovalKey",
     "ApplyPatchFileSystemSandboxContext",
     "ApplyPatchRequest",
+    "ApplyPatchRuntime",
     "ApplyPatchRuntimeOutput",
     "CandidateCommands",
     "CoreShellActionProvider",
@@ -3979,6 +4176,7 @@ __all__ = [
     "UnifiedExecDirectRunPlan",
     "UnifiedExecOptions",
     "UnifiedExecRequest",
+    "UnifiedExecRuntime",
     "ZshForkSpawnLifecycle",
     "approval_sandbox_permissions",
     "apply_patch_approval_keys",

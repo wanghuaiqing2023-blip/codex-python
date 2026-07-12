@@ -89,13 +89,15 @@ class GuardianAssessmentAction:
 class RecentAutoReviewDenials:
     """Deque-backed port of Rust ``RecentAutoReviewDenials``."""
 
-    _entries: deque[GuardianAssessmentEvent] = field(default_factory=deque)
+    _entries: deque[Any] = field(default_factory=deque)
 
     def push(self, event: GuardianAssessmentEvent | dict[str, Any] | Any) -> None:
-        event = _coerce_event(event)
-        if not _is_denied(event.status):
+        if not _is_denied(_event_field(event, "status")):
             return
-        self._entries = deque(entry for entry in self._entries if entry.id != event.id)
+        event_id = str(_event_field(event, "id"))
+        self._entries = deque(
+            entry for entry in self._entries if str(_event_field(entry, "id")) != event_id
+        )
         self._entries.appendleft(event)
         while len(self._entries) > MAX_RECENT_DENIALS:
             self._entries.pop()
@@ -103,12 +105,12 @@ class RecentAutoReviewDenials:
     def is_empty(self) -> bool:
         return not self._entries
 
-    def entries(self) -> Iterator[GuardianAssessmentEvent]:
+    def entries(self) -> Iterator[Any]:
         return iter(tuple(self._entries))
 
     def take(self, id: str) -> GuardianAssessmentEvent | None:
         for index, entry in enumerate(self._entries):
-            if entry.id == id:
+            if str(_event_field(entry, "id")) == str(id):
                 del self._entries[index]
                 return entry
         return None
@@ -169,7 +171,14 @@ def keeps_only_ten_most_recent_denials() -> list[str]:
 def _is_denied(status: str | GuardianAssessmentStatus | Any) -> bool:
     if isinstance(status, GuardianAssessmentStatus):
         return status is GuardianAssessmentStatus.DENIED
-    return str(status).split(".")[-1] == "Denied"
+    value = getattr(status, "value", status)
+    return str(value).split(".")[-1].lower() == "denied"
+
+
+def _event_field(event: dict[str, Any] | Any, name: str) -> Any:
+    if isinstance(event, dict):
+        return event.get(name)
+    return getattr(event, name)
 
 
 def _coerce_event(event: GuardianAssessmentEvent | dict[str, Any] | Any) -> GuardianAssessmentEvent:
@@ -189,7 +198,19 @@ def _coerce_event(event: GuardianAssessmentEvent | dict[str, Any] | Any) -> Guar
             rationale=event.get("rationale"),
             decision_source=event.get("decision_source"),
         )
-    return GuardianAssessmentEvent(id=str(getattr(event, "id")), status=getattr(event, "status"), action=getattr(event, "action"))
+    return GuardianAssessmentEvent(
+        id=str(getattr(event, "id")),
+        status=getattr(event, "status"),
+        action=getattr(event, "action"),
+        target_item_id=getattr(event, "target_item_id", None),
+        turn_id=str(getattr(event, "turn_id", "") or ""),
+        started_at_ms=int(getattr(event, "started_at_ms", 0) or 0),
+        completed_at_ms=getattr(event, "completed_at_ms", None),
+        risk_level=getattr(event, "risk_level", None),
+        user_authorization=getattr(event, "user_authorization", None),
+        rationale=getattr(event, "rationale", None),
+        decision_source=getattr(event, "decision_source", None),
+    )
 
 
 def _coerce_action(action: GuardianAssessmentAction | dict[str, Any] | Any) -> GuardianAssessmentAction:
@@ -210,7 +231,8 @@ def _coerce_action(action: GuardianAssessmentAction | dict[str, Any] | Any) -> G
             reason=action.get("reason"),
             extra={key: value for key, value in action.items() if key not in {"kind", "type", "variant", "command", "program", "argv", "files", "target", "server", "tool_name", "connector_name", "reason"}},
         )
-    kind = str(getattr(action, "kind", getattr(action, "type", action.__class__.__name__)))
+    raw_kind = getattr(action, "kind", getattr(action, "type", action.__class__.__name__))
+    kind = str(getattr(raw_kind, "value", raw_kind)).rsplit(".", 1)[-1]
     return GuardianAssessmentAction(
         kind=kind,
         command=getattr(action, "command", None),

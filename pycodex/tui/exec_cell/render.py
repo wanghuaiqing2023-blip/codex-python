@@ -276,7 +276,27 @@ def command_display_lines(cell: ExecCell, width: int) -> list[Line]:
     title = "" if is_interaction else "Running" if cell.is_active() else "You ran" if call.is_user_shell_command() else "Ran"
     command_text = format_unified_exec_interaction(call.command, call.interaction_input) if is_interaction else _strip_bash_lc(call.command)
     prefix = "" if is_interaction else f"{title} "
-    lines = [Line.from_spans([bullet, Span(" "), Span(prefix, BOLD_STYLE), Span(command_text)])]
+    header_spans = [bullet, Span(" "), Span(prefix, BOLD_STYLE)]
+    header_width = sum(len(span.content) for span in header_spans)
+    command_lines = command_text.splitlines() or [""]
+    first_wrapped = _wrap_preserving_long_tokens(command_lines[0], max(width - header_width, 1))
+    lines = [Line.from_spans([*header_spans, Span(first_wrapped[0])])]
+
+    continuation: list[Line] = [Line.from_text(part) for part in first_wrapped[1:]]
+    continuation_width = EXEC_DISPLAY_LAYOUT.command_continuation.wrap_width(width)
+    for raw_line in command_lines[1:]:
+        continuation.extend(Line.from_text(part) for part in _wrap_preserving_long_tokens(raw_line, continuation_width))
+    continuation = ExecCellRenderMixin.limit_lines_from_start(
+        continuation,
+        EXEC_DISPLAY_LAYOUT.command_continuation_max_lines,
+    )
+    lines.extend(
+        _prefix_lines(
+            continuation,
+            EXEC_DISPLAY_LAYOUT.command_continuation.initial_prefix,
+            EXEC_DISPLAY_LAYOUT.command_continuation.subsequent_prefix,
+        )
+    )
 
     if call.output is not None:
         line_limit = USER_SHELL_TOOL_CALL_MAX_LINES if call.is_user_shell_command() else TOOL_CALL_MAX_LINES
@@ -383,10 +403,9 @@ def _screen_rows(line: Line, width: int) -> int:
 
 
 def _strip_bash_lc(command: Iterable[str]) -> str:
-    parts = [str(part) for part in command]
-    if len(parts) >= 3 and parts[0] == "bash" and parts[1] in {"-lc", "-c"}:
-        return parts[2]
-    return " ".join(parts)
+    from ..exec_command import strip_bash_lc_and_escape
+
+    return strip_bash_lc_and_escape(command)
 
 
 def _format_duration(duration: float) -> str:

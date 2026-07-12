@@ -4,6 +4,7 @@ Rust source: ``codex/codex-rs/tui/src/tui/event_stream.rs``.
 """
 
 import io
+from collections import deque
 
 import pycodex.tui.tui.event_stream as event_stream
 from pycodex.tui.tui.event_stream import (
@@ -76,6 +77,12 @@ def test_resize_event_maps_to_resize() -> None:
     handle.send(("resize", (80, 24)))
 
     assert stream.poll_next() == TuiEvent.resize()
+
+
+def test_ctrl_u_maps_to_rust_composer_kill_line_event() -> None:
+    # Fixed Rust owner/evidence: bottom_pane::textarea uses Ctrl-U for
+    # kill-to-beginning-of-line; tui::event_stream must preserve the key.
+    assert event_stream.terminal_event_from_char("\x15") == event_stream.TerminalInputEvent("ctrl_u")
 
 
 def test_paste_and_focus_gained_mapping() -> None:
@@ -222,6 +229,35 @@ def test_windows_console_source_maps_virtual_arrow_with_nul_unicode_char() -> No
     assert source.poll(0.0) is None
 
 
+def test_windows_console_source_maps_all_transcript_pager_virtual_keys() -> None:
+    """Rust tui::event_stream preserves Windows navigation keys for PagerView."""
+
+    class FakeMsvcrt:
+        def kbhit(self) -> bool:
+            return False
+
+        def getwch(self) -> str:
+            raise AssertionError("console record path should be used")
+
+    records = [
+        {"kind": "key", "key_down": True, "virtual_key": code, "char": "\x00"}
+        for code in (0x26, 0x28, 0x21, 0x22, 0x24, 0x23)
+    ]
+    source = WindowsConsoleInputSource(
+        FakeMsvcrt(),
+        console_record_reader=lambda: records.pop(0) if records else None,
+    )
+
+    assert [source.poll(0.0) for _ in range(6)] == [
+        event_stream.TerminalInputEvent("up"),
+        event_stream.TerminalInputEvent("down"),
+        event_stream.TerminalInputEvent("page_up"),
+        event_stream.TerminalInputEvent("page_down"),
+        event_stream.TerminalInputEvent("home"),
+        event_stream.TerminalInputEvent("end"),
+    ]
+
+
 def test_windows_console_source_maps_virtual_space_with_nul_unicode_char_to_text() -> None:
     # Rust source/product contract:
     # - codex-tui::tui::event_stream treats Space as an ordinary text key when
@@ -357,6 +393,63 @@ def test_windows_console_source_ignores_ascii_key_up_char_to_avoid_double_input(
     assert source.poll(0.0) is None
 
 
+def test_windows_console_source_ignores_ime_confirmation_space_key_up() -> None:
+    # Rust owner/source: codex-tui::tui::event_stream,
+    # codex/codex-rs/tui/src/tui/event_stream.rs. Crossterm supplies one
+    # logical Key event for one committed terminal key action.
+    # - Windows Terminal emits a VK_SPACE key-up record after Space confirms
+    #   an IME candidate. That release is not user text and must not append a
+    #   synthetic space to the composer draft.
+    class FakeMsvcrt:
+        def kbhit(self) -> bool:
+            return False
+
+        def getwch(self) -> str:
+            raise AssertionError("console record path should be used before msvcrt fallback")
+
+    records = [
+        {"kind": "key", "key_down": False, "virtual_key": 0x20, "char": " "},
+    ]
+
+    source = WindowsConsoleInputSource(
+        FakeMsvcrt(),
+        console_record_reader=lambda: records.pop(0) if records else None,
+    )
+
+    assert source.poll(0.0) is None
+
+
+def test_windows_console_source_projects_traced_chinese_commit_without_spaces() -> None:
+    # Rust owner/source: codex-tui::tui::event_stream,
+    # codex/codex-rs/tui/src/tui/event_stream.rs. This is the Windows Terminal
+    # record sequence captured for committing "你好": each committed character
+    # has a key-down/key-up pair, followed by an IME-confirmation Space release.
+    # It must project to exactly the two committed text events.
+    class FakeMsvcrt:
+        def kbhit(self) -> bool:
+            return False
+
+        def getwch(self) -> str:
+            raise AssertionError("console record path should be used before msvcrt fallback")
+
+    records = [
+        {"kind": "key", "key_down": True, "virtual_key": 0, "char": "你"},
+        {"kind": "key", "key_down": False, "virtual_key": 0, "char": "你"},
+        {"kind": "key", "key_down": True, "virtual_key": 0, "char": "好"},
+        {"kind": "key", "key_down": False, "virtual_key": 0, "char": "好"},
+        {"kind": "key", "key_down": False, "virtual_key": 0x20, "char": " "},
+    ]
+
+    source = WindowsConsoleInputSource(
+        FakeMsvcrt(),
+        console_record_reader=lambda: records.pop(0) if records else None,
+    )
+
+    assert source.poll(0.0) == event_stream.TerminalInputEvent("text", "你")
+    assert source.poll(0.0) == event_stream.TerminalInputEvent("text", "好")
+    assert source.poll(0.0) is None
+
+
 def test_windows_console_source_maps_ansi_arrow_sequence_to_navigation_event() -> None:
     # Rust source/product contract:
     # - terminal escape sequences are normalized at tui::event_stream before
@@ -438,6 +531,12 @@ def test_make_terminal_input_source_uses_string_source_for_stringio() -> None:
 
     assert isinstance(source, StringTerminalInputSource)
     assert source.poll(0.0) == event_stream.TerminalInputEvent("text", "a")
+
+
+def test_terminal_ctrl_t_maps_to_global_transcript_event() -> None:
+    """Rust codex-tui::app::input maps Global.open_transcript before composer input."""
+
+    assert event_stream.terminal_event_from_char("\x14") == event_stream.TerminalInputEvent("ctrl_t")
 
 
 def test_terminal_stdin_is_terminal_owns_runtime_tty_probe() -> None:
@@ -554,7 +653,7 @@ def test_terminal_input_event_from_event_result_maps_rust_like_events() -> None:
         "resize"
     )
     assert event_stream.terminal_input_event_from_event_result(("paste", "你好")) == event_stream.TerminalInputEvent(
-        "text",
+        "paste",
         "你好",
     )
 
@@ -609,6 +708,25 @@ def test_windows_console_input_source_maps_ime_multichar_key_payload_to_text() -
     assert source.poll(0.0) == event_stream.TerminalInputEvent("text", "你好")
     assert source.poll(0.0) == event_stream.TerminalInputEvent("text", "好 ")
     assert source.poll(0.0) is None
+
+
+def test_windows_console_input_source_emits_one_multiline_bracketed_paste() -> None:
+    # Fixed Rust baseline 1c7832f: tui::event_stream maps crossterm's
+    # Event::Paste payload to one TuiEvent::Paste, preserving embedded lines.
+    class FakeEventSource:
+        def __init__(self) -> None:
+            self.events = [
+                *(('key', char) for char in "\x1b[200~first\n第二行\x1b[201~"),
+                ("key", "\r"),
+            ]
+
+        def poll_next(self) -> object | None:
+            return self.events.pop(0) if self.events else None
+
+    source = WindowsConsoleInputSource(msvcrt_module=object(), event_source=FakeEventSource())
+
+    assert source.poll(0.1) == event_stream.TerminalInputEvent("paste", "first\n第二行")
+    assert source.poll(0.1) == event_stream.TerminalInputEvent("enter")
 
 
 def test_windows_console_input_source_maps_special_keys_and_tab() -> None:
@@ -815,3 +933,20 @@ def test_terminal_turn_idle_ticker_binds_runtime_idle_callbacks() -> None:
     ticker.tick()
 
     assert calls == ["resize", "status"]
+
+
+def test_prefixed_terminal_input_source_replays_turn_input_before_live_source() -> None:
+    # Rust owner: tui::event_stream preserves key order while app::input
+    # arbitrates turn-time Ctrl+C. Deferred ordinary keys must not be lost.
+    live = StringTerminalInputSource(io.StringIO("z"))
+    prefix = deque(
+        [
+            event_stream.TerminalInputEvent("text", "你"),
+            event_stream.TerminalInputEvent("enter"),
+        ]
+    )
+    source = event_stream.PrefixedTerminalInputSource(live, prefix)
+
+    assert source.poll(0.0) == event_stream.TerminalInputEvent("text", "你")
+    assert source.poll(0.0) == event_stream.TerminalInputEvent("enter")
+    assert source.poll(0.0) == event_stream.TerminalInputEvent("text", "z")

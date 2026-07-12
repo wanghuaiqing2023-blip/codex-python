@@ -9,6 +9,7 @@ from pycodex.tui.chatwidget.status_controls import (
     StatusDetailsCapitalization,
     StatusOutputCell,
     StatusSurfacePreviewData,
+    TerminalStatusCommandController,
     TokenInfo,
     TokenUsage,
     add_status_output,
@@ -37,6 +38,7 @@ from pycodex.tui.chatwidget.status_controls import (
     status_line_total_usage,
     status_surface_preview_data,
     terminal_title_preview_data,
+    terminal_should_prefetch_rate_limits,
 )
 from pycodex.tui.chatwidget.status_state import STATUS_DETAILS_DEFAULT_MAX_LINES, StatusIndicatorState
 
@@ -259,6 +261,8 @@ def test_reasoning_effort_label_matches_rust_mapping():
     assert status_line_reasoning_effort_label(ReasoningEffortConfig.Medium) == "medium"
     assert status_line_reasoning_effort_label(ReasoningEffortConfig.High) == "high"
     assert status_line_reasoning_effort_label(ReasoningEffortConfig.XHigh) == "xhigh"
+    assert status_line_reasoning_effort_label(ReasoningEffortConfig.Max) == "max"
+    assert status_line_reasoning_effort_label(ReasoningEffortConfig.Ultra) == "ultra"
     assert status_line_reasoning_effort_label(ReasoningEffortConfig.None_) == "default"
     assert status_line_reasoning_effort_label(None) == "default"
 
@@ -301,3 +305,30 @@ def test_add_status_output_without_request_id_does_not_track_refresh_handle() ->
 
     assert state.history == [cell]
     assert state.refreshing_status_outputs == []
+
+
+def test_terminal_status_refresh_guard_matches_rust_chatgpt_provider_contract() -> None:
+    # Fixed Rust baseline 1c7832f: rate_limits.rs::should_prefetch_rate_limits
+    # requires both an OpenAI-auth provider and a ChatGPT account.
+    fetch = lambda: []
+    app = lambda auth, required=True: type(
+        "App",
+        (),
+        {
+            "active_thread_runtime": type(
+                "Active",
+                (),
+                {
+                    "auth": auth,
+                    "original_auth": None,
+                    "provider": type("Provider", (), {"requires_openai_auth": required})(),
+                    "fetch_account_rate_limits": fetch,
+                },
+            )()
+        },
+    )()
+
+    assert terminal_should_prefetch_rate_limits(app({"auth_mode": "chatgpt"})) is True
+    assert terminal_should_prefetch_rate_limits(app({"auth_mode": "chatgptAuthTokens"})) is True
+    assert terminal_should_prefetch_rate_limits(app({"auth_mode": "apiKey"})) is False
+    assert terminal_should_prefetch_rate_limits(app({"auth_mode": "chatgpt"}, required=False)) is False

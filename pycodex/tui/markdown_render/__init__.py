@@ -997,9 +997,15 @@ def _render_blocks(markdown: str, width: Optional[int], cwd: Optional[Path]) -> 
     def flush_paragraph() -> None:
         if not paragraph:
             return
-        text_value = " ".join(part.strip() for part in paragraph if part.strip())
+        source_lines = [part for part in paragraph if part.strip()]
         paragraph.clear()
-        out.extend(_wrap_hyperlink_line(_inline_hyperlink_line(_strip_heading(text_value), cwd), width))
+        for source_line in source_lines:
+            out.extend(
+                _wrap_hyperlink_line(
+                    _inline_hyperlink_line(source_line.strip(), cwd),
+                    width,
+                )
+            )
 
     while index < len(raw_lines):
         line = raw_lines[index]
@@ -1030,6 +1036,13 @@ def _render_blocks(markdown: str, width: Optional[int], cwd: Optional[Path]) -> 
             header, rows, consumed = table
             out.extend(_render_table(header, rows, width))
             index += consumed
+            continue
+        if _split_table_row(line) is not None:
+            # pulldown-cmark keeps a speculative table header as a standalone
+            # paragraph until a delimiter confirms table structure.
+            flush_paragraph()
+            out.extend(_wrap_hyperlink_line(_inline_hyperlink_line(line.strip(), cwd), width))
+            index += 1
             continue
         list_match = re.match(r"^(\s*)((?:[-*+])|\d+[.)])\s+(.*)$", line)
         if list_match:
@@ -1101,10 +1114,6 @@ def _render_table(header: Sequence[str], rows: Sequence[Sequence[str]], width: O
     return out
 
 
-def _strip_heading(text_value: str) -> str:
-    return re.sub(r"^#{1,6}\s+", "", text_value)
-
-
 def _inline_hyperlink_line(text_value: str, cwd: Optional[Path]) -> HyperlinkLine:
     line = HyperlinkLine.new("")
     cursor = 0
@@ -1134,9 +1143,10 @@ def _inline_hyperlink_line(text_value: str, cwd: Optional[Path]) -> HyperlinkLin
 def _strip_inline_markup(value: str) -> str:
     text_value = re.sub(r"`([^`]*)`", r"\1", str(value))
     text_value = re.sub(r"\*\*([^*]+)\*\*", r"\1", text_value)
-    text_value = re.sub(r"__([^_]+)__", r"\1", text_value)
+    text_value = re.sub(r"(?<!\w)__([^_]+)__(?!\w)", r"\1", text_value)
     text_value = re.sub(r"\*([^*]+)\*", r"\1", text_value)
-    text_value = re.sub(r"_([^_]+)_", r"\1", text_value)
+    # pulldown-cmark/CommonMark treats intraword underscores as literal text.
+    text_value = re.sub(r"(?<!\w)_([^_]+)_(?!\w)", r"\1", text_value)
     text_value = re.sub(r"~~([^~]+)~~", r"\1", text_value)
     return text_value
 

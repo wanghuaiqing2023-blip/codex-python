@@ -4,11 +4,42 @@ from pycodex.tui.app.agent_message_consolidation import (
     AgentMessageConsolidationApp,
     TranscriptOverlay,
     Tui,
+    TerminalAgentMessageConsolidator,
+    TerminalTranscriptState,
     consolidates_trailing_agent_message_cells,
     deferred_history_cell_is_inserted_before_consolidation,
     no_trailing_agent_cells_finishes_stream_reflow_only,
     trailing_agent_message_run_start,
 )
+
+
+def test_terminal_consolidator_retains_source_before_required_reflow() -> None:
+    # Rust source: codex-rs/tui/src/app/agent_message_consolidation.rs
+    # Fixed Rust baseline 1c7832f:
+    # chatwidget::streaming -> AppEvent::ConsolidateAgentMessage ->
+    # app::agent_message_consolidation, before finish_required_stream_reflow.
+    calls: list[tuple[str, object]] = []
+    consolidator = TerminalAgentMessageConsolidator(
+        transcript=TerminalTranscriptState(),
+        write_transient_cell=lambda cell: calls.append(("write", cell)),
+        replace_projection_run=lambda count, cell: calls.append(("replace", (count, cell))),
+        run_required_reflow=lambda: calls.append(("required", None)),
+        run_conditional_reflow=lambda: calls.append(("conditional", None)),
+    )
+
+    transient = AgentMessageCell.new(["answer"], True)
+    consolidator.append_transient(transient)
+    canonical = consolidator.consolidate(
+        "answer",
+        "/tmp",
+        ConsolidationScrollbackReflow.REQUIRED,
+    )
+
+    assert canonical.markdown_source == "answer"
+    assert consolidator.transcript.cells == [canonical]
+    assert calls[0] == ("write", transient)
+    assert calls[1][0] == "replace" and calls[1][1][0] == 1
+    assert calls[2] == ("required", None)
 from pycodex.tui.app_event import ConsolidationScrollbackReflow
 
 

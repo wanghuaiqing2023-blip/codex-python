@@ -1,4 +1,5 @@
 ﻿import json
+import asyncio
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -45,12 +46,16 @@ from pycodex.protocol import (
     FunctionCallOutputPayload,
     GranularApprovalConfig,
     NetworkSandboxPolicy,
+    NetworkApprovalContext,
+    NetworkApprovalProtocol,
+    NetworkPolicyRuleAction,
     NetworkPermissions,
     PermissionGrantScope,
     PermissionProfile,
     RequestPermissionProfile,
     RequestPermissionsArgs,
     RequestPermissionsResponse,
+    ReviewDecision,
     ResponseItem,
     RateLimitSnapshot,
     RateLimitWindow,
@@ -2879,6 +2884,54 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
             len([text for text in http_texts if "<permissions instructions>" in text]),
             len([text for text in sampling_texts if "<permissions instructions>" in text]),
         )
+
+    async def test_command_approval_roundtrip_preserves_network_producer_metadata(self) -> None:
+        # Fixed Rust commit 1c7832f owner:
+        # core::session::Session::request_command_approval derives allow/deny
+        # network amendments, emits ExecApprovalRequestEvent, and waits under
+        # the effective approval id before tool execution resumes.
+        session = InMemoryCodexSession(cwd="C:/work/project")
+        turn = SimpleNamespace(sub_id="turn-network")
+        context = NetworkApprovalContext("example.com", NetworkApprovalProtocol.HTTPS)
+
+        pending = asyncio.create_task(
+            session.request_command_approval(
+                turn,
+                "call-network",
+                "approval-network",
+                ("network-access", "https://example.com:443"),
+                "C:/work/project",
+                "example.com is not in the allowed_domains",
+                context,
+                None,
+                None,
+                None,
+            )
+        )
+        await asyncio.sleep(0)
+
+        event = session.emitted_events[-1]
+        self.assertEqual(event.type, "exec_approval_request")
+        payload = event.payload
+        self.assertEqual(payload.call_id, "call-network")
+        self.assertEqual(payload.approval_id, "approval-network")
+        self.assertEqual(payload.turn_id, "turn-network")
+        self.assertEqual(payload.command, ("network-access", "https://example.com:443"))
+        self.assertEqual(payload.network_approval_context, context)
+        self.assertEqual(
+            tuple(amendment.action for amendment in payload.proposed_network_policy_amendments),
+            (NetworkPolicyRuleAction.ALLOW, NetworkPolicyRuleAction.DENY),
+        )
+        self.assertEqual(
+            tuple(decision.type for decision in payload.available_decisions),
+            ("approved", "approved_for_session", "network_policy_amendment", "abort"),
+        )
+        self.assertIn("approval-network", session.active_turn.turn_state.pending_approvals)
+
+        await session.notify_approval("approval-network", ReviewDecision.approved_for_session())
+
+        self.assertEqual(await pending, ReviewDecision.approved_for_session())
+        self.assertNotIn("approval-network", session.active_turn.turn_state.pending_approvals)
 
     async def test_in_memory_session_rate_limits_default_missing_limit_id_to_codex_after_other_bucket(self) -> None:
         session = InMemoryCodexSession(cwd="C:/work/project")

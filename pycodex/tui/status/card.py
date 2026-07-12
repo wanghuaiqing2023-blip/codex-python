@@ -72,7 +72,9 @@ class CompositeStatusOutput:
     card: "StatusHistoryCell"
 
     def display_lines(self, width: int) -> Tuple[Line, ...]:
-        return (*self.command_lines, *self.card.display_lines(width))
+        card_lines = self.card.display_lines(width)
+        separator = (Line(()),) if self.command_lines and card_lines else ()
+        return (*self.command_lines, *separator, *card_lines)
 
 
 @dataclass(frozen=True)
@@ -407,6 +409,113 @@ def terminal_status_card_text(data: TerminalStatusCardData) -> str:
     return "\n".join(terminal_status_card_lines(data))
 
 
+def terminal_status_output_text(output: CompositeStatusOutput, width: int) -> str:
+    """Project the Rust-shaped status history cell to terminal scrollback."""
+
+    return "\n".join(
+        "".join(span.content for span in line.spans)
+        for line in output.display_lines(max(1, int(width)))
+    )
+
+
+def terminal_status_output_from_runtime(
+    app_runtime: Any,
+    *,
+    refreshing_rate_limits: bool = False,
+) -> Tuple[CompositeStatusOutput, StatusHistoryHandle]:
+    """Build the canonical ``/status`` history cell from live runtime state.
+
+    Rust owner: ``chatwidget::status_controls::add_status_output`` gathers the
+    live ChatWidget state and delegates the actual card to ``status::card``.
+    This terminal projection follows the same boundary; ANSI/scrollback code
+    receives only the rendered history cell.
+    """
+
+    from ..runtime_projection import (
+        _runtime_agents_summary,
+        _runtime_cwd,
+        _runtime_display_model,
+        _runtime_model_details,
+        _runtime_permissions_label,
+        _runtime_status_token_usage,
+    )
+
+    active = getattr(app_runtime, "active_thread_runtime", None)
+    chat_widget = getattr(app_runtime, "chat_widget", None)
+    session_config = getattr(active, "session_config", None)
+    rate_limit_map = getattr(chat_widget, "rate_limit_snapshots_by_limit_id", None)
+    if not isinstance(rate_limit_map, dict):
+        rate_limit_map = getattr(active, "rate_limit_snapshots_by_limit_id", None)
+    rate_limits = tuple(rate_limit_map.values()) if isinstance(rate_limit_map, dict) else ()
+
+    account = _first_status_value(chat_widget, active, names=("status_account_display", "account_display"))
+    if account is not None and not isinstance(account, StatusAccountDisplay):
+        try:
+            account = StatusAccountDisplay.from_wire(account)
+        except (TypeError, ValueError):
+            account = None
+
+    thread_id = getattr(active, "thread_id", None) or getattr(app_runtime, "thread_id", None)
+    model_details = tuple(_canonical_status_model_detail(value) for value in _runtime_model_details(app_runtime))
+    return new_status_output_with_rate_limits_handle(
+        model_name=_runtime_display_model(app_runtime),
+        model_details=model_details,
+        directory=_runtime_cwd(app_runtime),
+        permissions=_runtime_permissions_label(app_runtime),
+        agents_summary=_runtime_agents_summary(app_runtime),
+        collaboration_mode=_string_status_value(
+            _first_status_value(chat_widget, active, session_config, names=("collaboration_mode", "mode"))
+        ),
+        model_provider=_string_status_value(
+            _first_status_value(active, session_config, names=("model_provider", "model_provider_id"))
+        ),
+        account=account,
+        thread_name=_string_status_value(
+            _first_status_value(chat_widget, active, names=("thread_name",))
+        ),
+        session_id=None if thread_id is None else str(thread_id),
+        forked_from=_string_status_value(
+            _first_status_value(chat_widget, active, names=("forked_from", "forked_from_id"))
+        ),
+        token_usage=_runtime_status_token_usage(app_runtime),
+        rate_limits=rate_limits,
+        refreshing_rate_limits=refreshing_rate_limits,
+    )
+
+
+def _first_status_value(*sources: Any, names: Tuple[str, ...]) -> Any:
+    for source in sources:
+        if source is None:
+            continue
+        for name in names:
+            if isinstance(source, dict):
+                value = source.get(name)
+            else:
+                value = getattr(source, name, None)
+            if callable(value):
+                try:
+                    value = value()
+                except TypeError:
+                    continue
+            if value is not None:
+                return value
+    return None
+
+
+def _string_status_value(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(getattr(value, "value", value)).strip()
+    return text or None
+
+
+def _canonical_status_model_detail(value: Any) -> str:
+    text = str(getattr(value, "value", value)).strip().replace("_", "-").lower()
+    if text in {"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}:
+        return f"reasoning {text}"
+    return text
+
+
 def terminal_status_card_data_from_runtime(
     app_runtime: Any,
     *,
@@ -496,12 +605,19 @@ class TerminalStatusCardWriter:
 
     app_runtime: Any
     write_history_cell: Callable[[str], Any]
+    terminal_columns: Callable[[], int] = lambda: 100
+    write_source_cell: Callable[[object], Any] | None = None
 
-    def run(self) -> TerminalStatusCardData:
-        return run_terminal_status_card_from_runtime(
-            self.app_runtime,
-            write_history_cell=self.write_history_cell,
-        )
+    def write_output(self, output: CompositeStatusOutput) -> CompositeStatusOutput:
+        if self.write_source_cell is not None:
+            self.write_source_cell(output)
+        else:
+            self.write_history_cell(terminal_status_output_text(output, self.terminal_columns()))
+        return output
+
+    def run(self) -> CompositeStatusOutput:
+        output, _handle = terminal_status_output_from_runtime(self.app_runtime)
+        return self.write_output(output)
 
 
 def status_permission_summary(summary: str, *_args: Any, **_kwargs: Any) -> str:
@@ -685,6 +801,8 @@ __all__ = [
     "terminal_status_card_lines",
     "terminal_status_card_data_from_runtime",
     "terminal_status_card_text",
+    "terminal_status_output_from_runtime",
+    "terminal_status_output_text",
     "transcript_hyperlink_lines",
     "workspace_root_suffix",
 ]

@@ -73,3 +73,4 @@ def test_spawn_world_writable_scan_plans_noop_or_blocking_scan() -> None:
         permission_profile={"valid": True},
         tx=sender,
     )
+"""Rust source: codex/codex-rs/tui/src/app/platform_actions.rs."""

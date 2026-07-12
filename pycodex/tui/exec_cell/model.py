@@ -110,6 +110,9 @@ class ExecCell:
     def iter_calls(self) -> Iterator[ExecCall]:
         return iter(self.calls)
 
+    def contains_call(self, call_id: str) -> bool:
+        return any(call.call_id == str(call_id) for call in self.calls)
+
     def append_output(self, call_id: str, chunk: str) -> bool:
         if chunk == "":
             return False
@@ -120,6 +123,21 @@ class ExecCell:
                 call.output.aggregated_output += chunk
                 return True
         return False
+
+    def display_lines(self, width: int):
+        from .render import display_lines
+
+        return list(display_lines(self, int(width)))
+
+    def transcript_lines(self, width: int):
+        from .render import transcript_lines
+
+        return list(transcript_lines(self, int(width)))
+
+    def raw_lines(self):
+        from .render import raw_lines
+
+        return list(raw_lines(self))
 
     @staticmethod
     def is_exploring_call(call: ExecCall) -> bool:
@@ -134,14 +152,24 @@ def _source_name(source: Any) -> str:
     if source is None:
         return ""
     if isinstance(source, str):
-        return source
+        return _canonical_source_name(source)
     value = getattr(source, "value", None)
     if value is not None:
-        return str(value)
+        return _canonical_source_name(str(value))
     name = getattr(source, "name", None)
     if name is not None:
-        return str(name)
-    return str(source)
+        return _canonical_source_name(str(name))
+    return _canonical_source_name(str(source))
+
+
+def _canonical_source_name(source: str) -> str:
+    normalized = str(source).replace("-", "_").lower()
+    return {
+        "user_shell": USER_SHELL,
+        "usershell": USER_SHELL,
+        "unified_exec_interaction": UNIFIED_EXEC_INTERACTION,
+        "unifiedexecinteraction": UNIFIED_EXEC_INTERACTION,
+    }.get(normalized, str(source))
 
 
 def _parsed_kind(parsed: Any) -> str:
