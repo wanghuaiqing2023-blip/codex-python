@@ -2843,7 +2843,11 @@ class HttpTransportTests(unittest.TestCase):
                     "service_tier_for_request": lambda _self, tier: tier,
                 },
             )()
-            client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+            client = ModelClient(
+                session_id="session",
+                thread_id="00000000-0000-0000-0000-000000000123",
+                installation_id="install",
+            )
             session = InMemoryCodexSession("C:/work", model_info=model_info)
             provider = {
                 "base_url": "https://api.example.test/v1",
@@ -2923,7 +2927,11 @@ class HttpTransportTests(unittest.TestCase):
                     "service_tier_for_request": lambda _self, tier: tier,
                 },
             )()
-            client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+            client = ModelClient(
+                session_id="session",
+                thread_id="00000000-0000-0000-0000-000000000124",
+                installation_id="install",
+            )
             session = InMemoryCodexSession("C:/work", model_info=model_info)
             provider = {
                 "base_url": "https://api.example.test/v1",

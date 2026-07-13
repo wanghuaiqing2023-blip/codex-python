@@ -55,10 +55,17 @@ def test_terminal_footprint_projects_clear_request_for_custom_terminal() -> None
     idle = terminal_bottom_pane_clear_request(size, live_status_active=False)
     active = terminal_bottom_pane_clear_request(size, live_status_active=True)
     popup = terminal_bottom_pane_clear_request(size, live_status_active=False, popup_height=3)
+    active_tail = terminal_bottom_pane_clear_request(
+        size,
+        live_status_active=False,
+        active_tail_height=3,
+        composer_height=2,
+    )
 
     assert idle.rows == (21, 22, 23, 24)
     assert active.rows == (19, 20, 21, 22, 23, 24)
     assert popup.rows == (20, 21, 22, 23, 24)
+    assert active_tail.rows == (17, 18, 19, 20, 21, 22, 23, 24)
 
 
 def test_terminal_footprint_owns_standard_bottom_pane_rows() -> None:

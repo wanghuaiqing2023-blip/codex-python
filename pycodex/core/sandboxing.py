@@ -5,6 +5,9 @@ Rust source: ``codex/codex-rs/core/src/sandboxing/mod.rs``.
 
 from __future__ import annotations
 
+import asyncio
+import inspect
+import os
 import sys
 import time
 from dataclasses import dataclass, field, replace
@@ -31,6 +34,7 @@ from .exec import (
     finalize_exec_result,
     resolve_windows_elevated_filesystem_overrides,
     resolve_windows_restricted_token_filesystem_overrides,
+    raw_output_from_windows_sandbox_capture,
     run_raw_exec_subprocess,
     select_process_exec_tool_sandbox_type,
     windows_sandbox_uses_elevated_backend,
@@ -287,11 +291,11 @@ def _transform_to_sandbox_exec_request(
                 permission_profile=transformed.get("permission_profile", permission_profile),
                 file_system_sandbox_policy=transformed.get(
                     "file_system_sandbox_policy",
-                    permission_profile.file_system_policy,
+                    permission_profile.file_system_sandbox_policy(),
                 ),
                 network_sandbox_policy=transformed.get(
                     "network_sandbox_policy",
-                    permission_profile.network_policy,
+                    permission_profile.network_sandbox_policy(),
                 ),
                 arg0=transformed.get("arg0"),
             )
@@ -306,8 +310,8 @@ def _transform_to_sandbox_exec_request(
         windows_sandbox_level=windows_sandbox_level,
         windows_sandbox_private_desktop=windows_private_desktop,
         permission_profile=permission_profile,
-        file_system_sandbox_policy=permission_profile.file_system_policy,
-        network_sandbox_policy=permission_profile.network_policy,
+        file_system_sandbox_policy=permission_profile.file_system_sandbox_policy(),
+        network_sandbox_policy=permission_profile.network_sandbox_policy(),
         arg0=None,
     )
 
@@ -336,8 +340,8 @@ def build_exec_request(
         raise ValueError("command args are empty")
 
     sandbox_cwd_path = Path(sandbox_cwd)
-    file_system_policy = permission_profile.file_system_policy
-    network_policy = permission_profile.network_policy
+    file_system_policy = permission_profile.file_system_sandbox_policy()
+    network_policy = permission_profile.network_sandbox_policy()
     enforce_managed_network = params.network is not None
     env = apply_network_to_env(params.env, params.network) if enforce_managed_network else dict(params.env)
     windows_sandbox_level = params.windows_sandbox_level or WindowsSandboxLevel.DISABLED
@@ -367,7 +371,7 @@ def build_exec_request(
     sandbox_policy = compatibility_sandbox_policy(exec_request)
     use_windows_elevated_backend = windows_sandbox_uses_elevated_backend(
         exec_request.windows_sandbox_level,
-        sandbox_policy.proxy_networking,
+        exec_request.network is not None,
     )
     if use_windows_elevated_backend:
         overrides = resolve_windows_elevated_filesystem_overrides(
@@ -428,11 +432,22 @@ async def execute_exec_request_with_after_spawn(
     stdout_stream: Any = None,
     after_spawn: Callable[[], None] | None = None,
 ) -> Any:
-    """Execute the non-sandbox Python subprocess path for an ``ExecRequest``."""
+    """Execute an ``ExecRequest`` through its selected backend.
+
+    Rust owner: ``codex-core::exec::get_raw_output_result``.
+    """
 
     if stdout_stream is not None and not callable(stdout_stream):
         raise TypeError("stdout_stream must be callable or None")
     started = time.monotonic()
+    if sys.platform == "win32" and exec_request.sandbox is SandboxType.WINDOWS_RESTRICTED_TOKEN:
+        raw_output = await _run_windows_sandbox_exec_request(exec_request, stdout_stream)
+        return finalize_exec_result(
+            raw_output,
+            exec_request.sandbox.value,
+            duration=_duration_since(started),
+        )
+
     params = exec_params_from_request(exec_request)
     raw_output = await run_raw_exec_subprocess(
         params,
@@ -444,6 +459,94 @@ async def execute_exec_request_with_after_spawn(
         raw_output,
         exec_request.sandbox.value,
         duration=_duration_since(started),
+    )
+
+
+async def _run_windows_sandbox_exec_request(
+    exec_request: ExecRequest,
+    stdout_stream: Any = None,
+) -> Any:
+    from pycodex.utils.home_dir import find_codex_home
+    from pycodex.windows_sandbox import run_windows_sandbox_capture_with_filesystem_overrides
+
+    proxy_enforced = exec_request.network is not None
+    use_elevated = windows_sandbox_uses_elevated_backend(
+        exec_request.windows_sandbox_level, proxy_enforced
+    )
+    permission_profile = exec_request.permission_profile
+    if not isinstance(permission_profile, PermissionProfile):
+        raise TypeError("Windows sandbox execution requires a PermissionProfile")
+
+    env = os.environ.copy()
+    env.update(exec_request.env)
+    apply_to_env = getattr(exec_request.network, "apply_to_env", None)
+    if callable(apply_to_env):
+        apply_to_env(env)
+    timeout_ms = (
+        exec_request.expiration.timeout_ms()
+        if exec_request.capture_policy.uses_expiration()
+        else None
+    )
+    overrides = exec_request.windows_sandbox_filesystem_overrides
+    deny_read = overrides.additional_deny_read_paths if overrides is not None else ()
+    deny_write = overrides.additional_deny_write_paths if overrides is not None else ()
+    try:
+        cancellation = (
+            exec_request.expiration.cancellation.is_cancelled
+            if exec_request.expiration.cancellation is not None
+            else None
+        )
+        if use_elevated:
+            from pycodex.windows_sandbox.elevated import run_elevated_capture
+
+            capture = await asyncio.to_thread(
+                run_elevated_capture,
+                permission_profile,
+                exec_request.windows_sandbox_policy_cwd,
+                find_codex_home(),
+                exec_request.command,
+                exec_request.cwd,
+                env,
+                timeout_ms,
+                use_private_desktop=exec_request.windows_sandbox_private_desktop,
+                proxy_enforced=proxy_enforced,
+                additional_deny_read_paths=deny_read,
+                additional_deny_write_paths=deny_write,
+                is_cancelled=cancellation,
+            )
+        else:
+            capture = await asyncio.to_thread(
+                run_windows_sandbox_capture_with_filesystem_overrides,
+                permission_profile,
+                exec_request.windows_sandbox_policy_cwd,
+                find_codex_home(),
+                exec_request.command,
+                exec_request.cwd,
+                env,
+                timeout_ms,
+                deny_read,
+                deny_write,
+                exec_request.windows_sandbox_private_desktop,
+                is_cancelled=cancellation,
+            )
+    except BaseException as exc:
+        if isinstance(exc, asyncio.CancelledError):
+            raise
+        raise OSError(f"windows sandbox: {exc}") from exc
+
+    if stdout_stream is not None:
+        for data, is_stderr in ((capture.stdout, False), (capture.stderr, True)):
+            if not data:
+                continue
+            result = stdout_stream(data, is_stderr)
+            if inspect.isawaitable(result):
+                await result
+    return raw_output_from_windows_sandbox_capture(
+        exit_code=capture.exit_code,
+        stdout=capture.stdout,
+        stderr=capture.stderr,
+        timed_out=capture.timed_out,
+        capture_policy=exec_request.capture_policy,
     )
 
 

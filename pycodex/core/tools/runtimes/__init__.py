@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, replace
 from enum import Enum
 from datetime import timedelta
@@ -28,6 +29,10 @@ from pycodex.core.exec import (
     DEFAULT_EXEC_COMMAND_TIMEOUT_MS,
     ExecCapturePolicy,
     ExecExpiration,
+    ExecRequest,
+    ExecSandboxDenied,
+    ExecSandboxSignal,
+    ExecSandboxTimeout,
     cancel_when_either,
     is_likely_sandbox_denied,
 )
@@ -2582,13 +2587,241 @@ class UnifiedExecRuntime:
         return decision
 
     async def run(self, req: UnifiedExecRequest, attempt: SandboxAttempt, _ctx: Any) -> Any:
-        # The stdlib manager currently performs the concrete spawn. Approval,
-        # sandbox selection and network lifecycle have already been owned by
-        # ToolOrchestrator before this backend boundary is reached.
+        # Rust owner: unified_exec opens the process with the selected sandbox
+        # attempt.  Preserve that dynamic anchor for the stdlib manager rather
+        # than letting it default to an unrestricted subprocess.
+        effective_attempt = replace(
+            attempt,
+            permissions=effective_permission_profile(attempt.permissions, req.additional_permissions),
+        )
+        object.__setattr__(self.manager_request, "_sandbox_attempt", effective_attempt)
         result = self.manager.exec_command(self.manager_request)
         if inspect.isawaitable(result):
             result = await result
         return result
+
+
+class ShellRuntime:
+    """Approval, sandbox, and process owner for ``shell_command``.
+
+    Rust owner: ``codex-core::tools::runtimes::shell::ShellRuntime`` at the
+    repository-pinned Codex commit.  Unlike the former Python facade, this is
+    a product runtime and does not require callers to inject a test runner.
+    """
+
+    def __init__(self, backend: ShellRuntimeBackend) -> None:
+        if not isinstance(backend, ShellRuntimeBackend):
+            backend = ShellRuntimeBackend(str(backend))
+        self.backend = backend
+
+    @classmethod
+    def for_shell_command(cls, backend: ShellRuntimeBackend) -> "ShellRuntime":
+        return cls(backend)
+
+    def approval_keys(self, req: ShellRequest) -> tuple[ShellApprovalKey, ...]:
+        return shell_approval_keys(req)
+
+    def sandbox_preference(self) -> str:
+        return "auto"
+
+    def escalate_on_failure(self) -> bool:
+        return True
+
+    def exec_approval_requirement(self, req: ShellRequest) -> ExecApprovalRequirement:
+        return req.exec_approval_requirement
+
+    def permission_request_payload(self, req: ShellRequest) -> PermissionRequestPayload:
+        return shell_permission_request_payload(req)
+
+    def sandbox_permissions(self, req: ShellRequest) -> SandboxPermissions:
+        return req.sandbox_permissions
+
+    def sandbox_cwd(self, req: ShellRequest) -> Path:
+        return req.cwd
+
+    def network_approval_spec(self, req: ShellRequest, ctx: Any) -> NetworkApprovalSpec | None:
+        return shell_network_approval_spec(
+            req,
+            call_id=str(getattr(ctx, "call_id")),
+            tool_name=getattr(ctx, "tool_name"),
+        )
+
+    async def start_approval_async(self, req: ShellRequest, ctx: Any) -> ReviewDecision:
+        keys = self.approval_keys(req)
+        services = getattr(ctx.session, "services", None)
+        store = getattr(services, "approval_store", None)
+        if store is None:
+            store = ApprovalStore()
+            if services is not None:
+                setattr(services, "approval_store", store)
+
+        approved_for_session = ReviewDecision.approved_for_session()
+        if keys and all(store.get(key) == approved_for_session for key in keys):
+            return approved_for_session
+
+        retry_reason = getattr(ctx, "retry_reason", None)
+        reason = retry_reason or req.justification
+        guardian_review_id = getattr(ctx, "guardian_review_id", None)
+        if guardian_review_id is not None:
+            reviewer = getattr(ctx.session, "review_approval_request", None)
+            if callable(reviewer):
+                decision = reviewer(
+                    ctx.turn,
+                    guardian_review_id,
+                    {
+                        "type": "shell",
+                        "id": str(ctx.call_id),
+                        "command": req.command,
+                        "cwd": req.cwd,
+                        "sandbox_permissions": req.sandbox_permissions,
+                        "additional_permissions": req.additional_permissions,
+                        "justification": req.justification,
+                    },
+                    retry_reason,
+                )
+                if inspect.isawaitable(decision):
+                    decision = await decision
+                return ReviewDecision.from_mapping(decision)
+
+        prompt = getattr(ctx.session, "request_command_approval", None)
+        if not callable(prompt):
+            return ReviewDecision.abort()
+        decision = prompt(
+            ctx.turn,
+            str(ctx.call_id),
+            None,
+            req.command,
+            req.cwd,
+            reason,
+            getattr(ctx, "network_approval_context", None),
+            req.exec_approval_requirement.proposed_execpolicy_amendment,
+            req.additional_permissions,
+            None,
+        )
+        if inspect.isawaitable(decision):
+            decision = await decision
+        decision = ReviewDecision.from_mapping(decision)
+        if decision == approved_for_session:
+            for key in keys:
+                store.put(key, approved_for_session)
+        return decision
+
+    async def run(self, req: ShellRequest, attempt: SandboxAttempt, ctx: Any) -> ExecToolCallOutput | ToolError:
+        from pycodex.core.sandboxing import execute_exec_request_with_after_spawn
+        from pycodex.shell_command.powershell import prefix_powershell_script_with_utf8
+
+        session_shell = _runtime_session_shell(ctx.session, req)
+        env = exec_env_for_sandbox_permissions(req.env, req.sandbox_permissions)
+        command = maybe_wrap_shell_lc_with_snapshot(
+            req.command,
+            session_shell,
+            req.cwd,
+            req.explicit_env_overrides,
+            env,
+            is_windows=sys.platform == "win32",
+        )
+        command = disable_powershell_profile_for_elevated_windows_sandbox(
+            command,
+            req.shell_type,
+            attempt.sandbox,
+            attempt.windows_sandbox_level,
+        )
+        if session_shell.shell_type is ShellType.POWERSHELL:
+            command = tuple(prefix_powershell_script_with_utf8(command))
+
+        # The zsh-fork adapter is an optimization.  The pinned Rust runtime
+        # deliberately falls back to classic execution when its prerequisites
+        # are unavailable, which is the product-safe Python behavior here.
+        effective_permissions = effective_permission_profile(
+            attempt.permissions,
+            req.additional_permissions,
+        )
+        managed_network = managed_network_for_runtime(req.network, req.sandbox_permissions)
+        if managed_network is not None:
+            apply_to_env = getattr(managed_network, "apply_to_env", None)
+            if callable(apply_to_env):
+                apply_to_env(env)
+
+        expiration = ExecExpiration.from_timeout_ms(req.timeout_ms)
+        cancellation, watchers = _bridge_shell_cancellation(
+            req.cancellation_token,
+            attempt.network_denial_cancellation_token,
+        )
+        if cancellation is not None:
+            expiration = expiration.with_cancellation(cancellation)
+
+        exec_request = ExecRequest(
+            command=tuple(command),
+            cwd=req.cwd,
+            env=env,
+            network=managed_network,
+            expiration=expiration,
+            capture_policy=req.capture_policy,
+            sandbox=attempt.sandbox,
+            windows_sandbox_policy_cwd=attempt.sandbox_cwd,
+            windows_sandbox_level=attempt.windows_sandbox_level,
+            windows_sandbox_private_desktop=attempt.windows_sandbox_private_desktop,
+            permission_profile=effective_permissions,
+            file_system_sandbox_policy=effective_permissions.file_system_sandbox_policy(),
+            network_sandbox_policy=effective_permissions.network_sandbox_policy(),
+        )
+        try:
+            return await execute_exec_request_with_after_spawn(exec_request)
+        except ExecSandboxTimeout as error:
+            return error.output
+        except ExecSandboxDenied as error:
+            return ToolError.codex(
+                {
+                    "sandbox": "denied",
+                    "output": error.output,
+                    "network_policy_decision": None,
+                }
+            )
+        except ExecSandboxSignal as error:
+            return ToolError.codex(error)
+        except Exception as error:  # noqa: BLE001 - preserve Rust ToolError boundary.
+            return ToolError.codex(error)
+        finally:
+            for watcher in watchers:
+                watcher.cancel()
+
+
+def _runtime_session_shell(session: Any, req: ShellRequest) -> Shell:
+    user_shell = getattr(session, "user_shell", None)
+    shell = user_shell() if callable(user_shell) else getattr(session, "shell", None)
+    if isinstance(shell, Shell):
+        return shell
+    shell_type = req.shell_type or ShellType.UNKNOWN
+    program = req.command[0] if req.command else ""
+    return Shell(shell_type, program)
+
+
+def _bridge_shell_cancellation(*tokens: Any) -> tuple[CancellationToken | None, tuple[asyncio.Task[Any], ...]]:
+    active_tokens = tuple(token for token in tokens if token is not None)
+    if not active_tokens:
+        return (None, ())
+    cancellation = CancellationToken()
+    watchers: list[asyncio.Task[Any]] = []
+    for token in active_tokens:
+        if isinstance(token, CancellationToken):
+            watchers.append(asyncio.create_task(_forward_shell_cancellation(token, cancellation)))
+            continue
+        waiter = getattr(token, "cancelled", None)
+        if callable(waiter):
+            watchers.append(asyncio.create_task(_forward_external_shell_cancellation(waiter, cancellation)))
+    return (cancellation if watchers else None, tuple(watchers))
+
+
+async def _forward_shell_cancellation(source: CancellationToken, target: CancellationToken) -> None:
+    await source.cancelled()
+    target.cancel()
+
+
+async def _forward_external_shell_cancellation(waiter: Any, target: CancellationToken) -> None:
+    result = waiter()
+    if inspect.isawaitable(result):
+        await result
+    target.cancel()
 
 
 @dataclass(frozen=True)
@@ -4170,6 +4403,7 @@ __all__ = [
     "ShellZshForkCancellationPlan",
     "ShellZshForkExecParams",
     "ShellRequest",
+    "ShellRuntime",
     "ShellRuntimeBackend",
     "ToolRuntimeError",
     "UnifiedExecApprovalKey",

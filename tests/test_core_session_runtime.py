@@ -81,6 +81,7 @@ from pycodex.protocol import (
     TurnContextNetworkItem,
     UserInput,
     UsageLimitReachedError,
+    WindowsSandboxLevel,
 )
 
 
@@ -147,6 +148,28 @@ def events_of_type(session: InMemoryCodexSession, event_type: str):
 
 
 class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_windows_sandbox_level_flows_from_session_to_turn_and_settings(self) -> None:
+        # Fixed Rust owner/anchor:
+        # codex-core::session::Session stores windows_sandbox_level and
+        # codex-core::session::TurnContext copies it for ToolOrchestrator.
+        session = InMemoryCodexSession(
+            cwd="C:/work/project",
+            windows_sandbox_level=WindowsSandboxLevel.ELEVATED,
+        )
+
+        turn = await session.new_default_turn()
+        self.assertIs(turn.windows_sandbox_level, WindowsSandboxLevel.ELEVATED)
+        self.assertIs(
+            (await session.thread_config_snapshot()).windows_sandbox_level,
+            WindowsSandboxLevel.ELEVATED,
+        )
+
+        await session.update_settings(
+            SessionSettingsUpdate(windows_sandbox_level=WindowsSandboxLevel.RESTRICTED_TOKEN)
+        )
+        next_turn = await session.new_default_turn()
+        self.assertIs(next_turn.windows_sandbox_level, WindowsSandboxLevel.RESTRICTED_TOKEN)
+
     @staticmethod
     def _collect_permissions_prompt_texts(prompt_input: tuple[ResponseItem, ...] | list[ResponseItem]) -> list[str]:
         assert_prompt_items = [item for item in prompt_input if item.role == "developer" and item.content]

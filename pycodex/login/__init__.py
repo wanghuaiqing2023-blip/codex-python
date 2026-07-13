@@ -1,14 +1,14 @@
 """Public login module for the Python port.
 
 The upstream project exposes login functionality under ``codex-rs/login``.
-In this port, the concrete implementation currently lives in
-``pycodex.cli.login``; this module provides the expected
-``pycodex.login`` import surface while the dedicated package is built out.
+Legacy CLI-only helpers are exposed lazily so the Rust-aligned login package
+does not acquire a reverse dependency on ``pycodex.cli`` during import.
 """
 
 from __future__ import annotations
 
-from pycodex.cli import login as _login_impl
+from importlib import import_module
+
 from pycodex.login import auth
 from pycodex.login.auth import default_client
 from pycodex.login.auth_env_telemetry import (
@@ -278,7 +278,7 @@ def __getattr__(name: str):
         return globals()[name]
     if name not in __all__:
         raise AttributeError(name)
-    return getattr(_login_impl, name)
+    return getattr(import_module("pycodex.cli.login"), name)
 
 
 def __dir__() -> list[str]:

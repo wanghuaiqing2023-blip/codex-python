@@ -46,6 +46,7 @@ class ThreadConfigSnapshot:
     permission_profile: Any = None
     active_permission_profile: Any = None
     file_system_sandbox_policy: Any = None
+    windows_sandbox_level: Any = None
     cwd: Path = field(default_factory=Path.cwd)
     workspace_roots: tuple[Path, ...] = ()
     profile_workspace_roots: tuple[Path, ...] = ()

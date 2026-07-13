@@ -208,15 +208,29 @@ async def send_prepared_http_sampling_request_live(
     response_headers = _response_headers(response)
     _record_turn_state_from_headers(config.turn_state, response_headers)
     live_stream_events_emitted = False
+    for header_event in _response_header_stream_events(
+        header_server_model=_non_empty_header(response_headers, OPENAI_MODEL_HEADER),
+        rate_limits=_parse_all_rate_limits(response_headers),
+        models_etag=_non_empty_header(response_headers, X_MODELS_ETAG_HEADER),
+        server_reasoning_included=_server_reasoning_included(response_headers),
+    ):
+        live_stream_events_emitted = (
+            await _notify_stream_event_observer(
+                getattr(prepared.sampling_request, "stream_event_observer", None),
+                header_event,
+            )
+            or live_stream_events_emitted
+        )
     with response:
         try:
             readline = getattr(response, "readline", None)
             if callable(readline):
-                payload, live_stream_events_emitted = await _read_http_response_payload_live(
+                payload, body_stream_events_emitted = await _read_http_response_payload_live(
                     prepared,
                     response,
                     readline,
                 )
+                live_stream_events_emitted = body_stream_events_emitted or live_stream_events_emitted
             else:
                 payload = response.read()
         except OSError as exc:

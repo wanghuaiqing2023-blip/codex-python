@@ -114,6 +114,7 @@ from pycodex.protocol import (
     UserInput,
     UserMessageItem,
     WarningEvent,
+    WindowsSandboxLevel,
 )
 
 _SETTING_UNSET = SETTINGS_UNSET
@@ -155,6 +156,7 @@ class InMemoryTurnContext:
     developer_instructions: str | None = None
     config: Any = None
     permission_profile: PermissionProfile = field(default_factory=PermissionProfile.disabled)
+    windows_sandbox_level: WindowsSandboxLevel = WindowsSandboxLevel.DISABLED
     approval_policy: Any = AskForApproval.ON_REQUEST
     sandbox_policy: SandboxPolicy = field(default_factory=SandboxPolicy.danger_full_access)
     file_system_sandbox_policy: FileSystemSandboxPolicy | None = None
@@ -420,6 +422,7 @@ class InMemoryCodexSession:
     sandbox_policy: SandboxPolicy = field(default_factory=SandboxPolicy.danger_full_access)
     file_system_sandbox_policy: FileSystemSandboxPolicy | None = None
     permission_profile: PermissionProfile = field(default_factory=PermissionProfile.disabled)
+    windows_sandbox_level: WindowsSandboxLevel = WindowsSandboxLevel.DISABLED
     allow_login_shell: bool = False
     features: Any = None
     include_environment_context: bool = True
@@ -512,6 +515,8 @@ class InMemoryCodexSession:
             raise TypeError("approvals_reviewer must be ApprovalsReviewer")
         if not isinstance(self.permission_profile, PermissionProfile):
             raise TypeError("permission_profile must be PermissionProfile")
+        if not isinstance(self.windows_sandbox_level, WindowsSandboxLevel):
+            self.windows_sandbox_level = WindowsSandboxLevel.parse(str(self.windows_sandbox_level))
         if not isinstance(self.allow_login_shell, bool):
             raise TypeError("allow_login_shell must be a bool")
         if not isinstance(self.sandbox_policy, SandboxPolicy):
@@ -598,6 +603,7 @@ class InMemoryCodexSession:
                 model_reasoning_summary=self.reasoning_summary,
             ),
             permission_profile=self.permission_profile,
+            windows_sandbox_level=self.windows_sandbox_level,
             approval_policy=_approval_policy_cell(self.approval_policy),
             sandbox_policy=self.sandbox_policy,
             file_system_sandbox_policy=self.file_system_sandbox_policy,
@@ -713,6 +719,11 @@ class InMemoryCodexSession:
                 self.sandbox_policy = sandbox_policy
         if getattr(updates, "active_permission_profile", None) is not None:
             self.active_permission_profile = updates.active_permission_profile
+        if getattr(updates, "windows_sandbox_level", None) is not None:
+            level = updates.windows_sandbox_level
+            self.windows_sandbox_level = (
+                level if isinstance(level, WindowsSandboxLevel) else WindowsSandboxLevel.parse(str(level))
+            )
         if getattr(updates, "collaboration_mode", None) is not None:
             self.collaboration_mode = updates.collaboration_mode
             self.reasoning_effort = _collaboration_mode_reasoning_effort(updates.collaboration_mode)
@@ -737,6 +748,7 @@ class InMemoryCodexSession:
         workspace_roots = self.workspace_roots
         profile_workspace_roots = self.profile_workspace_roots
         active_permission_profile = self.active_permission_profile
+        windows_sandbox_level = self.windows_sandbox_level
         approval_policy = self.approval_policy
         approvals_reviewer = self.approvals_reviewer
         sandbox_policy = self.sandbox_policy
@@ -775,6 +787,11 @@ class InMemoryCodexSession:
                 permission_profile = updates.permission_profile
             if getattr(updates, "active_permission_profile", None) is not None:
                 active_permission_profile = updates.active_permission_profile
+            if getattr(updates, "windows_sandbox_level", None) is not None:
+                level = updates.windows_sandbox_level
+                windows_sandbox_level = (
+                    level if isinstance(level, WindowsSandboxLevel) else WindowsSandboxLevel.parse(str(level))
+                )
         model = _collaboration_mode_model(collaboration_mode) or _model_slug(self.model_info)
         reasoning_effort = _collaboration_mode_reasoning_effort(collaboration_mode)
         file_system_sandbox_policy = _file_system_sandbox_policy_from_permission_profile(permission_profile)
@@ -787,6 +804,7 @@ class InMemoryCodexSession:
             permission_profile=permission_profile,
             active_permission_profile=active_permission_profile,
             file_system_sandbox_policy=file_system_sandbox_policy,
+            windows_sandbox_level=windows_sandbox_level,
             cwd=cwd,
             workspace_roots=workspace_roots,
             profile_workspace_roots=profile_workspace_roots,
@@ -887,7 +905,18 @@ class InMemoryCodexSession:
     async def persist_rollout_items(self, items: list[RolloutItem] | tuple[RolloutItem, ...]) -> None:
         if isinstance(items, (str, bytes)) or not isinstance(items, (list, tuple)):
             raise TypeError("items must be a list or tuple of RolloutItem")
-        self.persisted_rollout_items.extend(RolloutItem.from_mapping(item) for item in items)
+        canonical_items = [RolloutItem.from_mapping(item) for item in items]
+        self.persisted_rollout_items.extend(canonical_items)
+
+        # Rust `Session::persist_rollout_items` forwards canonical items to the
+        # live-thread recorder. Keep the in-memory runtime useful without a
+        # recorder, but honor an attached rollout path for resume/rollback flows.
+        rollout_path = getattr(self, "rollout_path", None)
+        if rollout_path is not None:
+            from pycodex.rollout import append_rollout_item_to_path
+
+            for item in canonical_items:
+                append_rollout_item_to_path(rollout_path, item)
 
     async def replace_history(
         self,

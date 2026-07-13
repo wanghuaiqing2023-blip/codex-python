@@ -18,7 +18,7 @@ def test_prepare_websocket_request_uses_full_payload_without_last_response():
 
     assert from_warmup is False
     assert prepared["type"] == "response.create"
-    assert prepared["input"] == [first]
+    assert prepared["input"] == [first.to_mapping()]
     assert "previous_response_id" not in prepared
 
 
@@ -40,7 +40,7 @@ def test_prepare_websocket_request_uses_incremental_delta_after_last_response_it
     assert from_warmup is True
     assert prepared["type"] == "response.create"
     assert prepared["previous_response_id"] == "resp-prev"
-    assert prepared["input"] == [third]
+    assert prepared["input"] == [third.to_mapping()]
 
 
 def test_prepare_websocket_request_falls_back_when_non_input_fields_differ():
@@ -58,7 +58,7 @@ def test_prepare_websocket_request_falls_back_when_non_input_fields_differ():
 
     assert from_warmup is False
     assert prepared["type"] == "response.create"
-    assert prepared["input"] == [first, second]
+    assert prepared["input"] == [first.to_mapping(), second.to_mapping()]
     assert "previous_response_id" not in prepared
 
 
@@ -77,7 +77,7 @@ def test_prepare_websocket_request_falls_back_when_previous_response_id_is_empty
 
     assert from_warmup is False
     assert prepared["type"] == "response.create"
-    assert prepared["input"] == [first, second]
+    assert prepared["input"] == [first.to_mapping(), second.to_mapping()]
     assert "previous_response_id" not in prepared
 
 

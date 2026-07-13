@@ -18,9 +18,11 @@ from pycodex.core.tools.parallel import ToolCallRuntime
 from pycodex.core.tools.registry import ToolCallSource, ToolInvocation
 from pycodex.core.tools.router import ToolRouter, build_tool_call
 from pycodex.core.tools.spec_plan import ToolPlanOptions, build_tool_router
+from pycodex.features import Feature, Features
 from pycodex.protocol import (
     ApplyPatchToolType,
     AskForApproval,
+    ConfigShellToolType,
     ContentItem,
     ExecToolCallOutput,
     PermissionProfile,
@@ -46,6 +48,7 @@ def _tool_names(body: dict) -> list[str]:
 def _model_info():
     return SimpleNamespace(
         slug="gpt-test",
+        shell_type=ConfigShellToolType.UNIFIED_EXEC.value,
         supports_reasoning_summaries=False,
         support_verbosity=False,
         service_tier_for_request=lambda tier: tier,
@@ -216,6 +219,53 @@ def test_unified_exec_spec_toggle_end_to_end() -> None:
     assert "write_stdin" not in disabled_names
     assert "exec_command" in enabled_names
     assert "write_stdin" in enabled_names
+
+
+def test_turn_context_feature_gate_selects_legacy_shell_command() -> None:
+    # Rust owners:
+    # - codex-tools::tool_config::shell_type_for_model_and_features
+    # - codex-core::tools::spec_plan::add_shell_tools
+    # Rust behavior: disabling Feature::UnifiedExec exposes shell_command and
+    # its hard timeout_ms contract instead of exec_command/write_stdin.
+    features = Features.with_defaults()
+    features.enable(Feature.SHELL_TOOL)
+    features.disable(Feature.SHELL_ZSH_FORK)
+    features.disable(Feature.UNIFIED_EXEC)
+    turn_context = SimpleNamespace(
+        environments=(TurnEnvironmentSelection("local", str(Path.cwd())),),
+        model_info=_model_info(),
+        features=features,
+        config=SimpleNamespace(permissions=SimpleNamespace(allow_login_shell=False)),
+    )
+
+    specs = build_tool_router(turn_context, SimpleNamespace()).model_visible_specs()
+    names = _tool_names({"tools": specs})
+    shell_spec = next(spec for spec in specs if spec.get("name") == "shell_command")
+
+    assert "shell_command" in names
+    assert "exec_command" not in names
+    assert "write_stdin" not in names
+    assert "timeout_ms" in shell_spec["parameters"]["properties"]
+
+
+def test_turn_context_shell_tool_feature_can_disable_shell_family() -> None:
+    # Rust: codex-tools::tool_config_tests::shell_type_is_derived_from_model_and_feature_gates.
+    features = Features.with_defaults()
+    features.disable(Feature.SHELL_TOOL)
+    turn_context = SimpleNamespace(
+        environments=(TurnEnvironmentSelection("local", str(Path.cwd())),),
+        model_info=_model_info(),
+        features=features,
+        config=SimpleNamespace(permissions=SimpleNamespace(allow_login_shell=False)),
+    )
+
+    names = _tool_names(
+        {"tools": build_tool_router(turn_context, SimpleNamespace()).model_visible_specs()}
+    )
+
+    assert "shell_command" not in names
+    assert "exec_command" not in names
+    assert "write_stdin" not in names
 
 
 def test_shell_command_timeout_includes_timeout_prefix_and_metadata() -> None:

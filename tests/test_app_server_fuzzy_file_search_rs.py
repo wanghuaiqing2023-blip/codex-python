@@ -59,7 +59,8 @@ def test_run_fuzzy_file_search_maps_and_sorts_matches() -> None:
                 Match(root, root / "zeta.py", 10, [0]),
                 Match(root, root / "alpha.py", 10, [1, 2]),
                 Match(root, root / "src", 3, [], file_search.MatchType.DIRECTORY),
-            ]
+            ],
+            total_match_count=3,
         )
 
     files = asyncio.run(run_fuzzy_file_search("cfg", [str(root)], CancellationFlag(), runner=runner))

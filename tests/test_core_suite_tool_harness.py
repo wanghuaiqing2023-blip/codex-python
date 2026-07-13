@@ -102,7 +102,9 @@ def test_update_plan_tool_emits_plan_update_event():
 def test_update_plan_tool_rejects_malformed_payload():
     # Rust: core/tests/suite/tool_harness.rs
     # test `update_plan_tool_rejects_malformed_payload`.
-    with pytest.raises(TypeError, match="plan must be a list"):
+    # Rust serde reports a missing required `plan` field; the Python DTO
+    # boundary represents required-field absence as KeyError.
+    with pytest.raises(KeyError, match="plan"):
         UpdatePlanArgs.from_mapping({"explanation": "Missing plan data"})
 
     output = FunctionToolOutput.from_text(

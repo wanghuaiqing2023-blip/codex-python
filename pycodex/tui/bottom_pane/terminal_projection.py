@@ -22,6 +22,7 @@ from .terminal_action import (
     terminal_bottom_pane_render_request_for_pass,
 )
 from .terminal_footprint import terminal_bottom_pane_clear_request as _terminal_bottom_pane_clear_request
+from .terminal_footprint import TerminalBottomPaneFootprint
 from ..chatwidget.rendering import (
     TerminalBottomPaneFrame,
     TerminalBottomPaneFrameProjection,
@@ -94,15 +95,21 @@ class TerminalBottomPaneRequestRunner:
         layout_active: bool,
         live_status: object,
         check_resize: bool = True,
+        clear_footprint: TerminalBottomPaneFootprint | None = None,
     ) -> bool:
         """Build and run a bottom-pane clear request through this adapter."""
 
+        footprint = clear_footprint or TerminalBottomPaneFootprint()
         return self.run(
             terminal_bottom_pane_clear_request(
                 stdin_is_terminal=stdin_is_terminal,
                 layout_active=layout_active,
                 check_resize=check_resize,
                 live_status=live_status,
+                clear_popup_height=footprint.popup_height,
+                clear_live_status_active=footprint.live_status_active,
+                clear_active_tail_height=footprint.active_tail_height,
+                clear_composer_height=footprint.composer_height,
             ),
         )
 
@@ -113,6 +120,7 @@ class TerminalBottomPaneRequestRunner:
         layout_active: Callable[[], bool],
         live_status: object,
         check_resize: bool = True,
+        clear_footprint: TerminalBottomPaneFootprint | None = None,
     ) -> Callable[[], bool]:
         """Return the resize-reflow clear callback bound to this runner.
 
@@ -129,6 +137,7 @@ class TerminalBottomPaneRequestRunner:
                 layout_active=layout_active(),
                 check_resize=check_resize,
                 live_status=live_status,
+                clear_footprint=clear_footprint,
             )
 
         return clear
@@ -138,7 +147,7 @@ class TerminalBottomPaneRequestRunner:
         *,
         stdin_is_terminal: Callable[[], bool],
         layout_active: Callable[[], bool],
-    ) -> Callable[[object, bool], Callable[[], bool]]:
+    ) -> Callable[[object, bool, TerminalBottomPaneFootprint], Callable[[], bool]]:
         """Return the resize-reflow clear factory bound to this runner.
 
         Rust owners: ``codex-tui::app::resize_reflow`` asks for a
@@ -147,12 +156,17 @@ class TerminalBottomPaneRequestRunner:
         custom-terminal lifecycle.
         """
 
-        def clear_factory(live_status: object, check_resize: bool) -> Callable[[], bool]:
+        def clear_factory(
+            live_status: object,
+            check_resize: bool,
+            clear_footprint: TerminalBottomPaneFootprint,
+        ) -> Callable[[], bool]:
             return self.clear_callback(
                 stdin_is_terminal=stdin_is_terminal,
                 layout_active=layout_active,
                 live_status=live_status,
                 check_resize=check_resize,
+                clear_footprint=clear_footprint,
             )
 
         return clear_factory
@@ -466,7 +480,13 @@ def terminal_bottom_pane_live_viewport_update(
     if plan.action == "clear":
         return LiveViewportProjection(
             update=LiveViewportUpdate.clear(
-                _terminal_bottom_pane_clear_request(size, live_status_active=plan.live_status_active),
+                _terminal_bottom_pane_clear_request(
+                    size,
+                    live_status_active=plan.live_status_active or clear_live_status_active,
+                    popup_height=clear_popup_height,
+                    active_tail_height=clear_active_tail_height,
+                    composer_height=clear_composer_height,
+                ),
                 flush=plan.flush,
             )
         )

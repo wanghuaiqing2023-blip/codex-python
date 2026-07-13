@@ -9,6 +9,8 @@ import json
 import os
 import re
 import subprocess
+import threading
+import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
@@ -144,7 +146,7 @@ class DebugSandboxWindowsSessionPlan:
     """Inputs passed to the Rust Windows sandbox session spawners."""
 
     mode: str
-    permission_profile: str | None
+    permission_profile: object | None
     permission_profile_cwd: Path | None
     codex_home: Path | None
     command: tuple[str, ...]
@@ -169,6 +171,8 @@ class DebugSandboxWindowsSessionRunResult:
     exit_code: int
     output_drain_timeout_seconds: int
     error_message: str | None
+    stdout: bytes = b""
+    stderr: bytes = b""
 
 
 @dataclass(frozen=True)
@@ -677,7 +681,7 @@ def build_debug_sandbox_platform_implementation_decisions() -> tuple[
 def build_debug_sandbox_network_plan(
     *,
     network_spec_present: bool,
-    permission_profile: str | None = None,
+    permission_profile: object | None = None,
     managed_network_requirements_enabled: bool = False,
     proxy_env: Mapping[str, str] | None = None,
 ) -> DebugSandboxNetworkPlan:
@@ -889,6 +893,99 @@ def build_debug_sandbox_windows_session_plan(
     )
 
 
+def build_debug_sandbox_windows_product_plan(
+    command: Sequence[str],
+    *,
+    cli_overrides: Sequence[tuple[str, object]] = (),
+    permissions_profile: str | None = None,
+    cwd: str | Path | None = None,
+    codex_home: str | Path | None = None,
+    config_profile: str | None = None,
+    include_managed_config: bool = False,
+) -> DebugSandboxWindowsSessionPlan:
+    """Load config and build the native Windows ``codex sandbox`` plan.
+
+    Fixed Rust owners are ``run_command_under_sandbox`` and
+    ``run_command_under_windows_session``. An ordinary subprocess must never
+    stand in for this native plan.
+    """
+
+    from pycodex.config.types import ShellEnvironmentPolicyToml
+    from pycodex.core.config.permissions import (
+        builtin_permission_profile,
+        compile_permission_profile_selection,
+    )
+    from pycodex.core.exec_env import create_env
+    from pycodex.core.windows_sandbox import (
+        resolve_windows_sandbox_private_desktop,
+        resolve_windows_sandbox_mode,
+        WindowsSandboxModeToml,
+    )
+    from pycodex.protocol import PermissionProfile, SandboxMode
+    from pycodex.utils.home_dir import find_codex_home
+
+    command_cwd = (Path.cwd() if cwd is None else Path(cwd)).resolve(strict=True)
+    home = Path(codex_home) if codex_home is not None else find_codex_home()
+    loader_overrides: dict[str, object] = {}
+    if config_profile is not None:
+        loader_overrides["user_config_profile"] = config_profile
+    load_plan = build_debug_sandbox_config_load_plan(
+        cli_overrides,
+        permissions_profile=permissions_profile,
+        cwd=command_cwd,
+        codex_home=home,
+        managed_requirements_mode=ManagedRequirementsMode.for_profile_invocation(
+            permissions_profile,
+            include_managed_config,
+        ),
+        loader_overrides=loader_overrides,
+        # Inspect the loaded config below before applying the legacy fallback.
+        config_uses_permission_profile=True,
+    )
+    loaded = load_debug_sandbox_config_with_default_builder(load_plan)
+    effective = dict(loaded.config.effective_config)
+
+    selected_profile = effective.get("default_permissions")
+    permission_profile: PermissionProfile
+    if isinstance(selected_profile, str):
+        built_in = builtin_permission_profile(selected_profile)
+        if built_in is not None:
+            permission_profile = built_in
+        else:
+            filesystem, network = compile_permission_profile_selection(
+                effective.get("permissions"),
+                selected_profile,
+                policy_cwd=command_cwd,
+            )
+            permission_profile = PermissionProfile.from_runtime_permissions(filesystem, network)
+    else:
+        sandbox_mode = effective.get("sandbox_mode")
+        if sandbox_mode == SandboxMode.WORKSPACE_WRITE.value:
+            permission_profile = PermissionProfile.workspace_write((command_cwd,))
+        elif sandbox_mode == SandboxMode.DANGER_FULL_ACCESS.value:
+            permission_profile = PermissionProfile.disabled()
+        else:
+            # Rust reloads a legacy config as read-only when neither an active
+            # permission profile nor an explicit sandbox mode is present.
+            permission_profile = PermissionProfile.read_only()
+
+    policy_value = effective.get("shell_environment_policy")
+    policy = ShellEnvironmentPolicyToml.from_mapping(
+        policy_value if isinstance(policy_value, Mapping) else None
+    ).to_policy()
+    windows_mode = resolve_windows_sandbox_mode(effective)
+    return build_debug_sandbox_windows_session_plan(
+        command,
+        cwd=command_cwd,
+        permission_profile_cwd=command_cwd,
+        permission_profile=permission_profile,
+        codex_home=home,
+        env=create_env(policy, None),
+        use_elevated=windows_mode is WindowsSandboxModeToml.ELEVATED,
+        private_desktop=resolve_windows_sandbox_private_desktop(effective),
+    )
+
+
 def _mapping_or_attr(value: object, name: str, default: object = None) -> object:
     if isinstance(value, Mapping):
         return value.get(name, default)
@@ -952,10 +1049,10 @@ def run_debug_sandbox_windows_session_plan(
     *,
     spawner: Callable[[DebugSandboxWindowsSessionPlan], object] | None = None,
 ) -> DebugSandboxWindowsSessionRunResult:
-    """Run the planned Windows sandbox session through an injectable spawner."""
+    """Run the planned Windows sandbox session through the native backend."""
 
     try:
-        spawned = spawner(plan) if spawner is not None else 0
+        spawned = spawner(plan) if spawner is not None else _spawn_debug_windows_session_native(plan)
     except Exception as exc:
         return DebugSandboxWindowsSessionRunResult(
             mode=plan.mode,
@@ -965,12 +1062,237 @@ def run_debug_sandbox_windows_session_plan(
         )
 
     exit_code = getattr(spawned, "exit_code", spawned)
+    stdout = getattr(spawned, "stdout", b"")
+    stderr = getattr(spawned, "stderr", b"")
     return DebugSandboxWindowsSessionRunResult(
         mode=plan.mode,
         exit_code=int(exit_code),
         output_drain_timeout_seconds=plan.output_drain_timeout_seconds,
         error_message=None,
+        stdout=stdout if isinstance(stdout, bytes) else str(stdout).encode("utf-8", errors="replace"),
+        stderr=stderr if isinstance(stderr, bytes) else str(stderr).encode("utf-8", errors="replace"),
     )
+
+
+def _spawn_debug_windows_session_native(plan: DebugSandboxWindowsSessionPlan) -> object:
+    from pycodex.protocol import PermissionProfile
+    from pycodex.windows_sandbox import run_windows_sandbox_capture_with_filesystem_overrides
+
+    if not isinstance(plan.permission_profile, PermissionProfile):
+        raise TypeError("native Windows sandbox debug execution requires a PermissionProfile")
+    if plan.permission_profile_cwd is None or plan.cwd is None or plan.codex_home is None:
+        raise ValueError("native Windows sandbox debug execution requires profile cwd, cwd, and codex_home")
+    env = os.environ.copy()
+    env.update(plan.env)
+    if plan.mode == "elevated":
+        from pycodex.windows_sandbox.elevated import run_elevated_capture
+
+        return run_elevated_capture(
+            plan.permission_profile,
+            plan.permission_profile_cwd,
+            plan.codex_home,
+            plan.command,
+            plan.cwd,
+            env,
+            None,
+            use_private_desktop=plan.private_desktop,
+            proxy_enforced=False,
+            additional_deny_read_paths=plan.deny_read_paths_override,
+            additional_deny_write_paths=plan.deny_write_paths_override,
+        )
+    return run_windows_sandbox_capture_with_filesystem_overrides(
+        plan.permission_profile,
+        plan.permission_profile_cwd,
+        plan.codex_home,
+        plan.command,
+        plan.cwd,
+        env,
+        None,
+        plan.deny_read_paths_override,
+        plan.deny_write_paths_override,
+        plan.private_desktop,
+    )
+
+
+def _spawn_debug_windows_session_popen_native(
+    plan: DebugSandboxWindowsSessionPlan,
+) -> object:
+    """Spawn the product CLI session with live stdio and Job Object ownership."""
+
+    from pycodex.protocol import PermissionProfile
+    from pycodex.windows_sandbox import spawn_windows_sandbox_popen
+
+    if not isinstance(plan.permission_profile, PermissionProfile):
+        raise TypeError("native Windows sandbox debug execution requires a PermissionProfile")
+    if plan.permission_profile_cwd is None or plan.cwd is None or plan.codex_home is None:
+        raise ValueError("native Windows sandbox debug execution requires profile cwd, cwd, and codex_home")
+    env = os.environ.copy()
+    env.update(plan.env)
+    common = dict(
+        stdin_open=plan.stdin_open,
+        tty=plan.tty,
+        merge_stderr=False,
+        use_private_desktop=plan.private_desktop,
+        additional_deny_read_paths=plan.deny_read_paths_override,
+        additional_deny_write_paths=plan.deny_write_paths_override,
+    )
+    if plan.mode == "elevated":
+        from pycodex.windows_sandbox.elevated import spawn_elevated_popen
+
+        return spawn_elevated_popen(
+            plan.permission_profile,
+            plan.permission_profile_cwd,
+            plan.codex_home,
+            plan.command,
+            plan.cwd,
+            env,
+            proxy_enforced=False,
+            **common,
+        )
+    return spawn_windows_sandbox_popen(
+        plan.permission_profile,
+        plan.permission_profile_cwd,
+        plan.codex_home,
+        plan.command,
+        plan.cwd,
+        env,
+        **common,
+    )
+
+
+def _binary_stream(stream: object) -> object:
+    return getattr(stream, "buffer", stream)
+
+
+def _write_forwarded_bytes(stream: object, data: bytes) -> None:
+    destination = _binary_stream(stream)
+    try:
+        destination.write(data)
+    except TypeError:
+        destination.write(data.decode("utf-8", errors="replace"))
+    flush = getattr(destination, "flush", None)
+    if callable(flush):
+        flush()
+
+
+def _forward_windows_output(source: object | None, destination: object) -> None:
+    if source is None:
+        return
+    try:
+        while True:
+            chunk = source.read(64 * 1024)
+            if not chunk:
+                return
+            _write_forwarded_bytes(destination, bytes(chunk))
+    except (BrokenPipeError, OSError, ValueError):
+        return
+
+
+def _forward_windows_input(source: object, process_stdin: object) -> None:
+    input_stream = _binary_stream(source)
+    try:
+        while True:
+            chunk = input_stream.read(WINDOWS_STDIN_FORWARD_CHUNK_SIZE)
+            if not chunk:
+                return
+            payload = chunk.encode("utf-8") if isinstance(chunk, str) else bytes(chunk)
+            process_stdin.write(payload)
+            process_stdin.flush()
+    except (BrokenPipeError, OSError, ValueError):
+        return
+    finally:
+        try:
+            process_stdin.close()
+        except (BrokenPipeError, OSError, ValueError):
+            pass
+
+
+def run_debug_sandbox_windows_product_session(
+    plan: DebugSandboxWindowsSessionPlan,
+    *,
+    stdin: object,
+    stdout: object,
+    stderr: object,
+    spawner: Callable[[DebugSandboxWindowsSessionPlan], object] | None = None,
+) -> DebugSandboxWindowsSessionRunResult:
+    """Run the real Windows CLI session with Rust-like inherited stdio.
+
+    Rust owner: ``codex-cli::debug_sandbox::run_command_under_windows_session``.
+    Input and output forwarders are deliberately daemon threads: terminal
+    stdin may remain blocked after the child exits, while output is drained
+    for the fixed five-second window before process resources are released.
+    """
+
+    try:
+        process = (
+            spawner(plan)
+            if spawner is not None
+            else _spawn_debug_windows_session_popen_native(plan)
+        )
+    except Exception as exc:
+        return DebugSandboxWindowsSessionRunResult(
+            mode=plan.mode,
+            exit_code=1,
+            output_drain_timeout_seconds=plan.output_drain_timeout_seconds,
+            error_message=f"windows sandbox failed: {exc}",
+        )
+
+    output_threads = [
+        threading.Thread(
+            target=_forward_windows_output,
+            args=(getattr(process, "stdout", None), stdout),
+            name="pycodex-sandbox-stdout",
+            daemon=True,
+        ),
+        threading.Thread(
+            target=_forward_windows_output,
+            args=(getattr(process, "stderr", None), stderr),
+            name="pycodex-sandbox-stderr",
+            daemon=True,
+        ),
+    ]
+    for thread in output_threads:
+        thread.start()
+
+    process_stdin = getattr(process, "stdin", None)
+    if process_stdin is not None:
+        threading.Thread(
+            target=_forward_windows_input,
+            args=(stdin, process_stdin),
+            name="pycodex-sandbox-stdin",
+            daemon=True,
+        ).start()
+
+    try:
+        try:
+            exit_code = int(process.wait())
+        except KeyboardInterrupt:
+            process.terminate()
+            exit_code = int(process.wait())
+        deadline = time.monotonic() + plan.output_drain_timeout_seconds
+        for thread in output_threads:
+            thread.join(max(0.0, deadline - time.monotonic()))
+        return DebugSandboxWindowsSessionRunResult(
+            mode=plan.mode,
+            exit_code=exit_code,
+            output_drain_timeout_seconds=plan.output_drain_timeout_seconds,
+            error_message=None,
+        )
+    except Exception as exc:
+        try:
+            process.terminate()
+        except Exception:
+            pass
+        return DebugSandboxWindowsSessionRunResult(
+            mode=plan.mode,
+            exit_code=1,
+            output_drain_timeout_seconds=plan.output_drain_timeout_seconds,
+            error_message=f"windows sandbox failed: {exc}",
+        )
+    finally:
+        close = getattr(process, "close", None)
+        if callable(close):
+            close()
 
 
 def run_debug_sandbox_windows_session_control_flow(
@@ -1095,18 +1417,6 @@ def build_debug_sandbox_deferred_native_boundaries() -> tuple[
     """Return native debug-sandbox work kept behind injectable boundaries."""
 
     return (
-        DebugSandboxDeferredNativeBoundary(
-            concern="windows_session_objects",
-            upstream_owner="codex-windows-sandbox",
-            python_boundary="run_debug_sandbox_windows_session_with_stdio_bridge",
-            rationale="requires native Windows sandbox session handles outside the stdlib port",
-        ),
-        DebugSandboxDeferredNativeBoundary(
-            concern="windows_background_forwarder_threads",
-            upstream_owner="codex-cli/windows_stdio_bridge",
-            python_boundary="run_debug_sandbox_windows_session_io_bridge",
-            rationale="Rust owns long-lived thread/channel orchestration; Python mirrors finite hook behavior",
-        ),
         DebugSandboxDeferredNativeBoundary(
             concern="platform_policy_builders",
             upstream_owner="codex-sandboxing and codex-protocol",
@@ -2016,6 +2326,7 @@ __all__ = [
     "build_debug_sandbox_config_load_plan",
     "build_debug_sandbox_network_plan",
     "build_debug_sandbox_windows_session_plan",
+    "build_debug_sandbox_windows_product_plan",
     "build_debug_sandbox_windows_session_plan_from_config",
     "build_debug_sandbox_deferred_native_boundaries",
     "build_debug_sandbox_execution_plan",
@@ -2046,6 +2357,7 @@ __all__ = [
     "run_debug_sandbox_entrypoint_plan_with_exit_status",
     "run_debug_sandbox_config_load_plan",
     "run_debug_sandbox_windows_session_plan",
+    "run_debug_sandbox_windows_product_session",
     "run_debug_sandbox_windows_session_control_flow",
     "run_debug_sandbox_windows_session_io_bridge",
     "run_debug_sandbox_windows_session_with_stdio_bridge",

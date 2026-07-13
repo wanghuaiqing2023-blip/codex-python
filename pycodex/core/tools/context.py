@@ -13,6 +13,7 @@ from typing import Any, Protocol, runtime_checkable
 from pycodex.protocol import (
     CallToolResult,
     DEFAULT_IMAGE_DETAIL,
+    ExecToolCallOutput,
     FunctionCallOutputContentItem,
     FunctionCallOutputPayload,
     ImageDetail,
@@ -232,6 +233,44 @@ class FunctionToolOutput:
 
     def post_tool_use_response(self, _call_id: str, _payload: ToolPayload) -> JsonValue | None:
         return self.post_tool_use_response_value
+
+
+@dataclass(frozen=True)
+class CommandExecutionToolOutput:
+    """Model-visible output paired with Rust-style command lifecycle data.
+
+    Rust's shell handler emits ``ExecCommandBegin``/``ExecCommandEnd`` before
+    returning a ``FunctionToolOutput``.  Python projects those events after
+    dispatch, so this adapter keeps the typed runtime result available without
+    changing what is sent back to the model.
+    """
+
+    model_visible: FunctionToolOutput
+    exec_output: ExecToolCallOutput
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.model_visible, FunctionToolOutput):
+            raise TypeError("model_visible must be FunctionToolOutput")
+        if not isinstance(self.exec_output, ExecToolCallOutput):
+            raise TypeError("exec_output must be ExecToolCallOutput")
+
+    def into_text(self) -> str:
+        return self.model_visible.into_text()
+
+    def log_preview(self) -> str:
+        return self.model_visible.log_preview()
+
+    def success_for_logging(self) -> bool:
+        return self.model_visible.success_for_logging()
+
+    def to_response_item(self, call_id: str, payload: ToolPayload) -> ResponseInputItem:
+        return self.model_visible.to_response_item(call_id, payload)
+
+    def post_tool_use_response(self, call_id: str, payload: ToolPayload) -> JsonValue | None:
+        return self.model_visible.post_tool_use_response(call_id, payload)
+
+    def code_mode_result(self, payload: ToolPayload) -> JsonValue:
+        return response_input_to_code_mode_result(self.to_response_item("", payload))
 
 
 @dataclass(frozen=True)
@@ -669,6 +708,7 @@ def _json_dumps(value: JsonValue) -> str:
 __all__ = [
     "AbortedToolOutput",
     "ApplyPatchToolOutput",
+    "CommandExecutionToolOutput",
     "ExecCommandToolOutput",
     "FunctionToolOutput",
     "JsonToolOutput",

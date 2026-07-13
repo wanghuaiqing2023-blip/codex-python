@@ -16,6 +16,8 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from pycodex.utils.sandbox_summary import summarize_permission_profile
+
 from .app.runtime import ActiveThreadRuntime, TuiAppRuntime
 from .bottom_pane.status_line_setup import StatusLineItem
 from .chatwidget.status_surfaces import DEFAULT_STATUS_LINE_ITEMS
@@ -24,6 +26,7 @@ from .status.card import (
     StatusContextWindowData,
     StatusTokenUsageData,
     status_approval_label,
+    status_permission_summary,
     status_permissions_label,
     workspace_root_suffix,
 )
@@ -320,9 +323,20 @@ def _runtime_permissions_label(app_runtime: TuiAppRuntime) -> str:
     permission_profile = _runtime_first_value(*sources, names=("permission_profile", "permissions_profile"))
     approval_policy = _runtime_first_value(*sources, names=("approval_policy", "ask_for_approval")) or "never"
     approvals_reviewer = _runtime_first_value(*sources, names=("approvals_reviewer", "approval_reviewer")) or approval_policy
-    sandbox_summary = _runtime_first_value(*sources, names=("sandbox_summary", "sandbox", "sandbox_mode"))
-    sandbox_text = str(sandbox_summary or "read-only")
-    suffix = workspace_root_suffix(_runtime_workspace_roots(app_runtime), app_runtime.cwd)
+    workspace_roots = _runtime_workspace_roots(app_runtime)
+    if permission_profile is not None:
+        # Fixed Rust baseline 1c7832f, codex-tui::status::card:
+        # status_permission_summary always derives the displayed sandbox from
+        # the current canonical PermissionProfile.  A legacy sandbox_mode may
+        # describe startup state and must not override a later /permissions
+        # selection.
+        sandbox_text = status_permission_summary(
+            summarize_permission_profile(permission_profile, app_runtime.cwd, workspace_roots)
+        )
+    else:
+        sandbox_summary = _runtime_first_value(*sources, names=("sandbox_summary", "sandbox", "sandbox_mode"))
+        sandbox_text = status_permission_summary(str(sandbox_summary or "read-only"))
+    suffix = workspace_root_suffix(workspace_roots, app_runtime.cwd)
     return status_permissions_label(
         active_profile,
         permission_profile,

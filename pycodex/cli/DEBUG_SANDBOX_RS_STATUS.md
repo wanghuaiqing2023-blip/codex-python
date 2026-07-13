@@ -1,6 +1,6 @@
 # codex-cli src/debug_sandbox.rs status
 
-Updated: 2026-06-17
+Updated: 2026-07-13
 
 This file tracks only the Rust module
 `codex/codex-rs/cli/src/debug_sandbox.rs`.
@@ -22,9 +22,10 @@ supporting configuration/environment behavior for Seatbelt, Landlock, and
 Windows sandbox backends.
 
 The module is now `complete`: Rust-owned behavior contracts are mirrored through
-Python helpers or explicit injectable/native boundaries, and the focused Python
-parity test module passes after crate functional code reached complete-candidate
-coverage.
+Python helpers and the real Windows native product session. The public Python
+`sandbox` command creates the restricted legacy/elevated session, forwards live
+stdin/stdout/stderr, handles Ctrl+C and output drain, and fails closed when
+native setup or spawn fails.
 
 The two nested Rust modules are tracked separately:
 
@@ -295,14 +296,15 @@ default Python config-loader bridge, environment preparation, platform guard
 messages, child `arg0`, backend argv adapters, shared run-flow planning,
 entrypoint/child-run bridges, and Windows stdio/session hook behavior.
 
-## Deferred Native Boundaries
+## Adapter Boundaries
 
-- Actual Windows platform session objects remain owned by
-  `codex-windows-sandbox`; Python receives an injectable spawner and mirrors the
-  post-spawn control/stdio behavior.
-- Long-lived Windows background forwarder threads remain a Rust/native runtime
-  concern; Python mirrors finite chunking, hook calls, close/terminate
-  decisions, and output-drain semantics.
+- Windows platform session objects remain owned by Python's
+  `pycodex.windows_sandbox` counterpart to `codex-windows-sandbox`.
+  `run_debug_sandbox_windows_product_session` uses that real native owner in
+  production; its injectable spawner exists only for owner-level tests.
+- The CLI module owns the long-lived stdin/stdout/stderr forwarding threads and
+  Ctrl+C/drain orchestration. Native token, process, Job Object, ConPTY, and
+  runner transport resources remain owned by `pycodex.windows_sandbox`.
 - Full Seatbelt policy generation and Landlock permission-profile
   serialization remain owned by sibling sandboxing/protocol crates; this module
   mirrors the argv shapes consumed by `debug_sandbox.rs`.
@@ -310,15 +312,18 @@ entrypoint/child-run bridges, and Windows stdio/session hook behavior.
   nested `seatbelt.rs` and `pid_tracker.rs` status files; this parent module
   now has no known module-owned behavior gap outside validation.
 - The Rust config-builder integration matrix is represented by the default
-  Python config-loader bridge and focused parity entries; broader validation is
-  deferred until crate-level test execution is allowed.
+  Python config-loader bridge and focused parity entries.
 
 ## Completion Criteria
 
-Completed on 2026-06-17:
+Completed and revalidated on 2026-07-13:
 
-1. Functional code coverage for this module reached `complete_candidate`.
-2. Focused validation passed: `python -m pytest tests/test_cli_debug_sandbox.py -q`
-   reported `61 passed`.
-3. A broader CLI test run still has failures in sibling
-   `codex-cli/src/doctor/output.rs`; those are outside this module boundary.
+1. The public Windows path uses real restricted legacy/elevated session objects,
+   not an unrestricted subprocess or a capture-only test adapter.
+2. Focused debug-sandbox validation passed with `65 passed`.
+3. The Windows sandbox and CLI owner group passed with `140 passed, 1 skipped`.
+4. Fixed Rust/Python filesystem, network, piped-stdin, and ConPTY evidence is
+   recorded in `WINDOWS_SANDBOX_PARITY_EVIDENCE.md` against commit
+   `1c7832ffa37a3ab56f601497c00bfce120370bf9`.
+5. All 942 root test files passed with `12681 passed, 37 skipped, 873 subtests
+   passed`; the complete TUI tree and remaining internal tests also passed.

@@ -229,6 +229,8 @@ def terminal_bottom_pane_clear_request(
     *,
     live_status_active: bool,
     popup_height: int = 0,
+    active_tail_height: int = 0,
+    composer_height: int = 1,
 ) -> LiveViewportClearRequest:
     """Project a bottom-pane footprint into a live-viewport clear request.
 
@@ -242,6 +244,8 @@ def terminal_bottom_pane_clear_request(
             size,
             live_status_active=live_status_active,
             popup_height=popup_height,
+            active_tail_height=active_tail_height,
+            composer_height=composer_height,
         )
     )
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from pycodex.core.tools.code_mode import (
@@ -74,13 +74,23 @@ from pycodex.tools.tool_discovery import (
     DiscoverableTool,
     collect_request_plugin_install_entries,
 )
+from pycodex.tools.tool_config import shell_type_for_model_and_features
 from pycodex.core.tools.registry import ToolExposure, ToolRegistry, override_tool_exposure
 from pycodex.core.tools.router import ToolRouter
 from pycodex.core.tools.tool_search_entry import default_namespace_description
 from pycodex.core.tools.handlers.tool_search import TOOL_SEARCH_TOOL_NAME, ToolSearchHandler
 from pycodex.core.tools.handlers.unified_exec import ExecCommandHandler, ExecCommandHandlerOptions, WriteStdinHandler
 from pycodex.core.tools.handlers.view_image import ViewImageHandler, ViewImageToolOptions
-from pycodex.protocol import ModeKind, SessionSource, SubAgentSource, ToolName, WebSearchConfig, WebSearchMode, WebSearchToolType
+from pycodex.protocol import (
+    ConfigShellToolType,
+    ModeKind,
+    SessionSource,
+    SubAgentSource,
+    ToolName,
+    WebSearchConfig,
+    WebSearchMode,
+    WebSearchToolType,
+)
 
 JsonValue = Any
 
@@ -130,6 +140,7 @@ class ToolPlanOptions:
     multi_agent_v2_non_code_mode_only: bool = False
     agent_jobs_tools_enabled: bool = False
     agent_jobs_worker_tools_enabled: bool = False
+    shell_tool_type: ConfigShellToolType | None = None
     use_unified_exec: bool = True
     allow_login_shell: bool = False
     exec_permission_approvals_enabled: bool = False
@@ -236,7 +247,8 @@ def tool_plan_options_from_turn_context(turn_context: Any) -> ToolPlanOptions:
         ),
         agent_jobs_tools_enabled=_feature_enabled(features, "SpawnCsv", "spawn_csv"),
         agent_jobs_worker_tools_enabled=_agent_jobs_worker_tools_enabled(turn_context, features),
-        use_unified_exec=bool(_field_value(getattr(config, "use_unified_exec", True), "value", True)),
+        shell_tool_type=shell_type_for_model_and_features(model_info, features),
+        use_unified_exec=_feature_enabled(features, "UnifiedExec", "unified_exec"),
         allow_login_shell=bool(getattr(getattr(config, "permissions", None), "allow_login_shell", False)),
         exec_permission_approvals_enabled=_feature_enabled(features, "ExecPermissionApprovals", "exec_permission_approvals"),
     )
@@ -477,17 +489,23 @@ def add_environment_tools_for_turn_context(
     planned_tools: PlannedTools,
     turn_context: Any,
     *,
+    options: ToolPlanOptions | None = None,
     apply_patch_tool_type: JsonValue | None = None,
     allow_login_shell: bool = False,
     exec_permission_approvals_enabled: bool = False,
     request_permissions_tool_enabled: bool = False,
     can_request_original_image_detail: bool = False,
 ) -> None:
-    add_unified_exec_tools_for_turn_context(
-        planned_tools,
-        turn_context,
+    shell_options = options or tool_plan_options_from_turn_context(turn_context)
+    shell_options = replace(
+        shell_options,
         allow_login_shell=allow_login_shell,
         exec_permission_approvals_enabled=exec_permission_approvals_enabled,
+    )
+    add_shell_tools_for_turn_context(
+        planned_tools,
+        turn_context,
+        shell_options,
     )
     add_apply_patch_tool_for_turn_context(
         planned_tools,
@@ -514,7 +532,16 @@ def add_shell_tools_for_turn_context(
     if not tool_environment_has_environment(turn_context):
         return
     include_environment_id = tool_environment_includes_environment_id(turn_context)
-    if options.use_unified_exec:
+    shell_tool_type = options.shell_tool_type
+    if shell_tool_type is None:
+        shell_tool_type = (
+            ConfigShellToolType.UNIFIED_EXEC
+            if options.use_unified_exec
+            else ConfigShellToolType.SHELL_COMMAND
+        )
+    if shell_tool_type is ConfigShellToolType.DISABLED:
+        return
+    if shell_tool_type is ConfigShellToolType.UNIFIED_EXEC:
         planned_tools.add(
             ExecCommandHandler(
                 ExecCommandHandlerOptions(
@@ -667,10 +694,12 @@ def build_environment_tool_router_from_turn_context(
     request_permissions_tool_enabled: bool = False,
     can_request_original_image_detail: bool = False,
 ) -> ToolRouter:
+    options = options or tool_plan_options_from_turn_context(turn_context)
     planned_tools = PlannedTools()
     add_environment_tools_for_turn_context(
         planned_tools,
         turn_context,
+        options=options,
         apply_patch_tool_type=apply_patch_tool_type,
         allow_login_shell=allow_login_shell,
         exec_permission_approvals_enabled=exec_permission_approvals_enabled,

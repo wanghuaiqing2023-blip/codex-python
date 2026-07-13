@@ -43,6 +43,23 @@ def test_split_command_string_preserves_non_roundtrippable_windows_commands():
     assert split_command_string(command) == [command]
 
 
+def test_split_command_string_reverses_shlex_joined_powershell_argv():
+    # Rust owner: codex-shell-command::parse_command::shlex_join and
+    # codex-tui::exec_command::strip_bash_lc_and_escape. The Python terminal
+    # adapter must preserve Windows path separators while reversing the
+    # app-server command string back into the original argv.
+    argv = [
+        r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.EXE",
+        "-NoProfile",
+        "-Command",
+        "Write-Output 'SHELL_COMMAND_OK'",
+    ]
+    command = escape_command(argv)
+
+    assert split_command_string(command) == argv
+    assert strip_bash_lc_and_escape(split_command_string(command)) == "Write-Output 'SHELL_COMMAND_OK'"
+
+
 def test_split_command_string_returns_original_on_invalid_shell_syntax():
     command = "echo 'unterminated"
 

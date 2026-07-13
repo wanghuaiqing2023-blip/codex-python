@@ -113,7 +113,7 @@ def test_live_create_file_hello_txt() -> None:
     patch_outputs = [item for item in request_bodies[1]["input"] if item.get("type") == "custom_tool_call_output"]
     assert len(patch_outputs) == 1
     assert patch_outputs[0]["call_id"] == "patch-hello"
-    assert patch_outputs[0]["success"] is True
+    assert "success" not in patch_outputs[0]
 
 
 def test_live_print_working_directory() -> None:

@@ -131,10 +131,12 @@ from pycodex.exec.local_runtime import (
 )
 from pycodex.exec.run import ExecRunPlan, InitialOperation
 from pycodex.exec.session import ExecSessionConfig
+from pycodex.features import Feature, Features
 from pycodex.model_provider_info import CHATGPT_CODEX_BASE_URL
 from pycodex.protocol import (
     AdditionalPermissionProfile,
     CodexErrorInfo,
+    ConfigShellToolType,
     ContentItem,
     ErrorEvent,
     EventMsg,
@@ -1062,6 +1064,18 @@ class LocalHttpShellToolSpecTests(unittest.TestCase):
         self.assertIn("sandbox_permissions", properties)
         self.assertNotIn("with_additional_permissions", properties["sandbox_permissions"]["description"])
 
+    def test_local_http_shell_command_spec_matches_legacy_rust_tool(self) -> None:
+        # Rust owner: codex-tools::tool_config + codex-core::tools::spec_plan.
+        # Disabling UnifiedExec selects shell_command and its timeout_ms contract.
+        spec = local_http_shell_tool_spec(shell_tool_type=ConfigShellToolType.SHELL_COMMAND)
+
+        self.assertEqual(spec["name"], "shell_command")
+        self.assertEqual(spec["parameters"]["required"], ["command"])
+        properties = spec["parameters"]["properties"]
+        self.assertIn("timeout_ms", properties)
+        self.assertNotIn("yield_time_ms", properties)
+        self.assertNotIn("max_output_tokens", properties)
+
     def test_local_http_shell_command_execution_argv_uses_default_user_shell(self) -> None:
         invocation = LocalHttpShellInvocation("Get-Content README.md")
 
@@ -1195,6 +1209,31 @@ class LocalHttpShellToolSpecTests(unittest.TestCase):
         self.assertNotIn("additional_permissions", properties)
         self.assertIn("sandbox_permissions", properties)
         self.assertNotIn("with_additional_permissions", properties["sandbox_permissions"]["description"])
+
+    def test_local_http_shell_tools_built_tools_uses_feature_selected_shell_family(self) -> None:
+        # Rust owner: codex-tools::tool_config::shell_type_for_model_and_features.
+        features = Features.with_defaults().disable(Feature.UNIFIED_EXEC)
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+            features=features,
+        )
+        model_info = SimpleNamespace(shell_type=ConfigShellToolType.UNIFIED_EXEC.value)
+
+        router = local_http_shell_tools_built_tools(
+            lambda _session, _turn: ExistingToolRouter(),
+            config=config,
+            model_info=model_info,
+        )(None, None)
+        specs = router.model_visible_specs()
+        names = [spec["name"] for spec in specs]
+
+        self.assertEqual(names, ["existing", "shell_command", "apply_patch", "view_image"])
+        self.assertNotIn("exec_command", names)
+        self.assertNotIn("write_stdin", names)
+        shell_command = next(spec for spec in specs if spec["name"] == "shell_command")
+        self.assertIn("timeout_ms", shell_command["parameters"]["properties"])
 
     def test_local_http_shell_tools_built_tools_hides_apply_patch_when_model_lacks_support(self) -> None:
         router = local_http_shell_tools_built_tools(
@@ -1445,6 +1484,9 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             model_provider_id="openai",
             cwd=cwd,
             user_instructions="project instructions",
+            approval_policy=AskForApproval.NEVER,
+            permission_profile=PermissionProfile.disabled(),
+            features=Features.with_defaults().enable(Feature.UNIFIED_EXEC),
         )
         plan = ExecRunPlan(
             InitialOperation.user_turn((UserInput.text_input("run the command"),)),
@@ -1501,6 +1543,75 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Process exited with code 0", output_text)
         self.assertEqual(result.tool_response_items[0].call_id, "call-exec")
 
+    async def test_run_exec_user_turn_core_sampling_runs_default_shell_command_tool_loop(self) -> None:
+        # Rust owner: codex-core::tools::handlers::shell and
+        # codex-core::tools::runtimes::shell at pinned commit
+        # 1c7832ffa37a3ab56f601497c00bfce120370bf9.
+        # Product regression: the terminal session must execute shell_command
+        # without an injected test runner and return its output to the sampler.
+        cwd = Path.cwd()
+        config = ExecSessionConfig(
+            model="gpt-test",
+            model_provider_id="openai",
+            cwd=cwd,
+            user_instructions="project instructions",
+            approval_policy=AskForApproval.NEVER,
+            permission_profile=PermissionProfile.disabled(),
+            features=Features.with_defaults().disable(Feature.UNIFIED_EXEC),
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("run the shell command"),)),
+            "run the shell command",
+        )
+        provider = LocalHttpProvider()
+        model_info = LocalHttpModelInfo(slug="gpt-test", base_instructions="base")
+        client = ModelClient(
+            session_id="session",
+            thread_id="thread",
+            installation_id="install",
+            provider=provider,
+        )
+        command = (
+            "Write-Output 'shell bridge output'"
+            if sys.platform == "win32"
+            else "printf 'shell bridge output\\n'"
+        )
+        seen_requests = []
+
+        async def sampler(request):
+            seen_requests.append(request)
+            if len(seen_requests) == 1:
+                tool_names = {tool["name"] for tool in request.request_plan.request["tools"]}
+                self.assertIn("shell_command", tool_names)
+                self.assertNotIn("exec_command", tool_names)
+                return [
+                    ResponseItem.function_call(
+                        "shell_command",
+                        json.dumps({"command": command, "timeout_ms": 10_000}),
+                        "call-shell",
+                    )
+                ]
+            return [ResponseItem.message("assistant", (ContentItem.output_text("done after shell"),))]
+
+        result = await run_exec_user_turn_core_sampling(
+            config,
+            plan,
+            client,
+            provider,
+            model_info,
+            sampler,
+        )
+
+        self.assertEqual(len(seen_requests), 2)
+        self.assertEqual(result.last_agent_message, "done after shell")
+        input_items = seen_requests[1].request_plan.request["input"]
+        output_items = [item for item in input_items if getattr(item, "type", None) == "function_call_output"]
+        self.assertEqual(len(output_items), 1)
+        self.assertEqual(output_items[0].call_id, "call-shell")
+        output_text = output_items[0].output.body.text
+        self.assertIn("shell bridge output", output_text)
+        self.assertIn("Exit code: 0", output_text)
+
     async def test_run_exec_user_turn_core_sampling_uses_config_allow_login_shell_for_tools(self) -> None:
         cwd = Path.cwd()
         plan = ExecRunPlan(
@@ -1523,6 +1634,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 model_provider_id="openai",
                 cwd=cwd,
                 allow_login_shell=allow_login_shell,
+                features=Features.with_defaults().enable(Feature.UNIFIED_EXEC),
             )
 
             async def sampler(request):
@@ -1545,6 +1657,52 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         tools_when_blocked = {tool["name"]: tool for tool in seen_tools_by_setting[False]}
         self.assertIn("login", tools_when_allowed["exec_command"]["parameters"]["properties"])
         self.assertNotIn("login", tools_when_blocked["exec_command"]["parameters"]["properties"])
+
+    async def test_interactive_core_request_uses_shell_command_when_unified_exec_is_disabled(self) -> None:
+        # Rust owner: codex-core::tools::spec_plan::add_shell_tools.
+        # Product path: CoreExecActiveThreadRuntime delegates interactive TUI
+        # turns to this core sampler with built_tools=None.
+        cwd = Path.cwd()
+        features = Features.with_defaults().disable(Feature.UNIFIED_EXEC)
+        config = ExecSessionConfig(
+            model="gpt-test",
+            model_provider_id="openai",
+            cwd=cwd,
+            features=features,
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("inspect interactive tools"),)),
+            "inspect interactive tools",
+        )
+        provider = LocalHttpProvider()
+        model_info = LocalHttpModelInfo(slug="gpt-test", base_instructions="base")
+        client = ModelClient(
+            session_id="session",
+            thread_id="thread",
+            installation_id="install",
+            provider=provider,
+        )
+        requests = []
+
+        async def sampler(request):
+            requests.append(request.request_plan.request)
+            return [ResponseItem.message("assistant", (ContentItem.output_text("done"),))]
+
+        await run_exec_user_turn_core_sampling(
+            config,
+            plan,
+            client,
+            provider,
+            model_info,
+            sampler,
+        )
+
+        names = [tool["name"] for tool in requests[0]["tools"]]
+        self.assertIn("shell_command", names)
+        self.assertNotIn("exec_command", names)
+        self.assertNotIn("write_stdin", names)
+        shell_command = next(tool for tool in requests[0]["tools"] if tool["name"] == "shell_command")
+        self.assertIn("timeout_ms", shell_command["parameters"]["properties"])
 
     async def test_run_exec_user_turn_core_sampling_projects_reasoning_summary_none(self) -> None:
         # Rust source contract:
@@ -1698,6 +1856,9 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             model_provider_id="openai",
             cwd=cwd,
             user_instructions="project instructions",
+            approval_policy=AskForApproval.NEVER,
+            permission_profile=PermissionProfile.disabled(),
+            features=Features.with_defaults().enable(Feature.UNIFIED_EXEC),
         )
         plan = ExecRunPlan(
             InitialOperation.user_turn((UserInput.text_input("run the command"),)),
@@ -1884,7 +2045,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(output_items), 1)
         self.assertEqual(output_items[0]["call_id"], "patch-1")
         self.assertNotIn("name", output_items[0])
-        self.assertIs(output_items[0]["success"], True)
+        self.assertNotIn("success", output_items[0])
         self.assertIn("Success. Updated the following files:", output_items[0]["output"])
         self.assertEqual(result.last_agent_message, "done after patch")
 
@@ -1958,8 +2119,8 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         output_items = [item for item in request_bodies[1]["input"] if item["type"] == "custom_tool_call_output"]
         self.assertEqual(len(output_items), 1)
         self.assertEqual(output_items[0]["call_id"], "patch-1")
-        self.assertIs(output_items[0]["success"], False)
-        self.assertIn("approval_required", output_items[0]["output"])
+        self.assertNotIn("success", output_items[0])
+        self.assertIn("rejected by user", output_items[0]["output"])
 
     async def test_run_exec_user_turn_http_sampling_core_request_permissions_unblocks_apply_patch(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2081,11 +2242,11 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertEqual(len(request_permission_outputs), 1)
         self.assertEqual(request_permission_outputs[0]["call_id"], "perm-1")
-        self.assertIs(request_permission_outputs[0]["success"], True)
+        self.assertNotIn("success", request_permission_outputs[0])
         patch_outputs = [item for item in request_bodies[2]["input"] if item["type"] == "custom_tool_call_output"]
         self.assertEqual(len(patch_outputs), 1)
         self.assertEqual(patch_outputs[0]["call_id"], "patch-1")
-        self.assertIs(patch_outputs[0]["success"], True)
+        self.assertNotIn("success", patch_outputs[0])
         self.assertIn("Success. Updated the following files:", patch_outputs[0]["output"])
 
     async def test_run_exec_user_turn_http_sampling_core_request_permissions_auto_denies_when_approval_never(self) -> None:
@@ -2165,7 +2326,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         output_items = [item for item in request_bodies[1]["input"] if item["type"] == "function_call_output"]
         self.assertEqual(len(output_items), 1)
         self.assertEqual(output_items[0]["call_id"], "perm-1")
-        self.assertIs(output_items[0]["success"], True)
+        self.assertNotIn("success", output_items[0])
         output = json.loads(output_items[0]["output"])
         self.assertEqual(output["permissions"], {})
         self.assertEqual(output["scope"], "turn")
@@ -2178,6 +2339,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             model_provider_id="openai",
             cwd=cwd,
             approval_policy=AskForApproval.NEVER,
+            features=Features.with_defaults().enable(Feature.UNIFIED_EXEC),
         )
         plan = ExecRunPlan(
             InitialOperation.user_turn((UserInput.text_input("run escalated"),)),
@@ -3631,7 +3793,12 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             codex_home = Path(tmpdir)
             thread_id = "77777777-7777-7777-7777-777777777777"
-            config = ExecSessionConfig(model=None, model_provider_id=None, cwd=Path("C:/work/resume"))
+            config = ExecSessionConfig(
+                model=None,
+                model_provider_id=None,
+                cwd=Path("C:/work/resume"),
+                features=Features.with_defaults().enable(Feature.UNIFIED_EXEC),
+            )
             rollout_path = materialize_session_rollout(
                 codex_home,
                 SessionMeta(
@@ -7123,7 +7290,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(item["type"] == "function_call" for item in input_items))
         output_items = [item for item in input_items if item["type"] == "function_call_output"]
         self.assertEqual(output_items[0]["call_id"], "call-1")
-        self.assertIs(output_items[0]["success"], True)
+        self.assertNotIn("success", output_items[0])
         self.assertIn("Process exited with code 0", output_items[0]["output"])
 
     async def test_local_http_exec_apply_patch_followup_request_omits_custom_output_name(self) -> None:
@@ -7189,7 +7356,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(output_items), 1)
             self.assertEqual(output_items[0]["call_id"], "patch-1")
             self.assertNotIn("name", output_items[0])
-            self.assertIs(output_items[0]["success"], True)
+            self.assertNotIn("success", output_items[0])
             self.assertIn("Success. Updated the following files:", output_items[0]["output"])
             self.assertIn("created.txt", output_items[0]["output"])
 
@@ -7269,7 +7436,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(item["type"] == "function_call" for item in request_bodies[1]["input"]))
         output_items = [item for item in request_bodies[1]["input"] if item["type"] == "function_call_output"]
         self.assertEqual(output_items[0]["call_id"], "call-1")
-        self.assertIs(output_items[0]["success"], True)
+        self.assertNotIn("success", output_items[0])
         self.assertIn("C:/work/project", output_items[0]["output"])
         processor = JsonEventProcessor()
         emitted_tool_calls = tool_call_items_from_local_http_exec_result(result, processor)
@@ -7277,6 +7444,45 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(emitted_tool_calls[0].payload["tool"], {"exec_command", "shell"})
         self.assertEqual(emitted_tool_outputs[0].payload["status"], "completed")
         self.assertIn("C:/work/project", emitted_tool_outputs[0].payload["result"])
+
+    async def test_local_http_session_request_uses_shell_command_when_unified_exec_is_disabled(self) -> None:
+        # Rust owner: codex-tools::tool_config::shell_type_for_model_and_features.
+        # This asserts the actual Responses request used by the interactive session path.
+        request_bodies = []
+
+        def opener(request):
+            request_bodies.append(json.loads(request.data.decode("utf-8")))
+            return FakeResponse()
+
+        features = Features.with_defaults().disable(Feature.UNIFIED_EXEC)
+        config = ExecSessionConfig(
+            model=None,
+            model_provider_id=None,
+            cwd=Path("C:/work/project"),
+            features=features,
+        )
+        plan = ExecRunPlan(
+            InitialOperation.user_turn((UserInput.text_input("hello"),)),
+            "hello",
+        )
+
+        await run_exec_user_turn_with_shell_tools_http_sampling(
+            config,
+            plan,
+            ModelClient(session_id="session", thread_id="thread", installation_id="install"),
+            {"base_url": "https://api.example.test/v1"},
+            LocalHttpModelInfo(slug="gpt-test", base_instructions="base"),
+            auth="sk-test",
+            opener=opener,
+        )
+
+        self.assertEqual(len(request_bodies), 1)
+        names = [tool["name"] for tool in request_bodies[0]["tools"]]
+        self.assertIn("shell_command", names)
+        self.assertNotIn("exec_command", names)
+        self.assertNotIn("write_stdin", names)
+        shell_command = next(tool for tool in request_bodies[0]["tools"] if tool["name"] == "shell_command")
+        self.assertIn("timeout_ms", shell_command["parameters"]["properties"])
 
     async def test_local_http_exec_shell_tool_loop_groups_same_turn_tool_outputs(self) -> None:
         request_bodies = []
@@ -7356,7 +7562,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             [call["call_id"] for _index, call in function_calls],
             [output["call_id"] for _index, output in function_call_outputs],
         )
-        self.assertEqual([output["success"] for _index, output in function_call_outputs], [True, True, True])
+        self.assertTrue(all("success" not in output for _index, output in function_call_outputs))
         self.assertTrue(all("shell output" in output["output"] for _index, output in function_call_outputs))
 
     async def test_local_http_exec_shell_tool_loop_follows_up_after_unknown_tool_error(self) -> None:
@@ -7412,7 +7618,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         output_items = [item for item in request_bodies[1]["input"] if item["type"] == "function_call_output"]
         self.assertEqual(output_items[0]["call_id"], "unknown-1")
         self.assertEqual(output_items[0]["output"], "unsupported call: existing")
-        self.assertIs(output_items[0]["success"], False)
+        self.assertNotIn("success", output_items[0])
 
     async def test_local_http_exec_shell_tool_loop_omits_custom_output_name_after_unknown_tool_error(self) -> None:
         request_bodies = []
@@ -7469,7 +7675,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(output_items[0]["call_id"], "custom-unknown-1")
         self.assertNotIn("name", output_items[0])
         self.assertEqual(output_items[0]["output"], "unsupported custom tool call: custom_existing")
-        self.assertIs(output_items[0]["success"], False)
+        self.assertNotIn("success", output_items[0])
 
     async def test_local_http_exec_view_image_tool_loop_returns_image_output(self) -> None:
         request_bodies = []
@@ -7547,7 +7753,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(view_image_tool["parameters"]["properties"]["detail"]["enum"], ["high", "original"])
         output_items = [item for item in request_bodies[1]["input"] if item["type"] == "function_call_output"]
         self.assertEqual(output_items[0]["call_id"], "image-1")
-        self.assertIs(output_items[0]["success"], True)
+        self.assertNotIn("success", output_items[0])
         self.assertEqual(output_items[0]["output"][0]["type"], "input_image")
         self.assertTrue(output_items[0]["output"][0]["image_url"].startswith("data:image/png;base64,"))
         self.assertEqual(output_items[0]["output"][0]["detail"], "original")
@@ -7612,7 +7818,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(output_items), 1)
         self.assertEqual(output_items[0]["call_id"], "patch-1")
         self.assertNotIn("name", output_items[0])
-        self.assertIs(output_items[0]["success"], True)
+        self.assertNotIn("success", output_items[0])
         self.assertIn("Success. Updated the following files:", output_items[0]["output"])
 
         self.assertEqual(len(result.raw_tool_output_items), 1)
@@ -7676,7 +7882,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         output_items = [item for item in request_bodies[1]["input"] if item["type"] == "custom_tool_call_output"]
         self.assertEqual(len(output_items), 1)
         self.assertEqual(output_items[0]["call_id"], "patch-1")
-        self.assertIs(output_items[0]["success"], False)
+        self.assertNotIn("success", output_items[0])
         self.assertIn("approval_required", output_items[0]["output"])
 
         self.assertEqual(len(result.raw_tool_output_items), 1)
@@ -7772,7 +7978,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             if item["type"] == "custom_tool_call_output" and item["call_id"] == "patch-1"
         ]
         self.assertEqual(len(patch_outputs), 1)
-        self.assertTrue(patch_outputs[0]["success"])
+        self.assertNotIn("success", patch_outputs[0])
         self.assertIn("Success. Updated the following files:", patch_outputs[0]["output"])
         self.assertNotIn("approval_required", patch_outputs[0]["output"])
 
@@ -7824,7 +8030,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(output_items), 1)
         self.assertEqual(output_items[0]["call_id"], "permissions-1")
         self.assertNotIn("name", output_items[0])
-        self.assertIs(output_items[0]["success"], False)
+        self.assertNotIn("success", output_items[0])
         self.assertEqual(
             output_items[0]["output"],
             "request_permissions was cancelled before receiving a response",
@@ -7881,7 +8087,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(output_items), 1)
         self.assertEqual(output_items[0]["call_id"], "permissions-1")
         self.assertNotIn("name", output_items[0])
-        self.assertIs(output_items[0]["success"], True)
+        self.assertNotIn("success", output_items[0])
         self.assertEqual(
             json.loads(output_items[0]["output"]),
             {
@@ -7954,12 +8160,12 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             item for item in request_bodies[1]["input"] if item["type"] == "function_call_output"
         ]
         self.assertEqual(permission_outputs[0]["call_id"], "permissions-1")
-        self.assertTrue(permission_outputs[0]["success"])
+        self.assertNotIn("success", permission_outputs[0])
         shell_outputs = [
             item for item in request_bodies[2]["input"] if item["type"] == "function_call_output"
         ]
         shell_output = next(item for item in shell_outputs if item["call_id"] == "call-1")
-        self.assertTrue(shell_output["success"])
+        self.assertNotIn("success", shell_output)
         self.assertIn("network ok", shell_output["output"])
         self.assertNotIn("permission_request_unsupported", shell_output["output"])
 
@@ -8042,7 +8248,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             item for item in request_bodies[-1]["input"] if item["type"] == "function_call_output"
         ]
         shell_output = next(item for item in shell_outputs if item["call_id"] == "call-1")
-        self.assertTrue(shell_output["success"])
+        self.assertNotIn("success", shell_output)
         self.assertIn("session grant ok", shell_output["output"])
 
     async def test_local_http_exec_shell_tool_loop_session_grant_applies_to_later_apply_patch(self) -> None:
@@ -8142,7 +8348,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             if item["type"] == "custom_tool_call_output" and item["call_id"] == "patch-1"
         ]
         self.assertEqual(len(patch_outputs), 1)
-        self.assertTrue(patch_outputs[0]["success"])
+        self.assertNotIn("success", patch_outputs[0])
         self.assertIn("Success. Updated the following files:", patch_outputs[0]["output"])
         self.assertNotIn("approval_required", patch_outputs[0]["output"])
 
@@ -8218,7 +8424,7 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             item for item in second_request_bodies[-1]["input"] if item["type"] == "function_call_output"
         ]
         shell_output = next(item for item in shell_outputs if item["call_id"] == "call-1")
-        self.assertFalse(shell_output["success"])
+        self.assertNotIn("success", shell_output)
         self.assertIn("permission_request_unsupported", shell_output["output"])
         self.assertIn("additional permissions are disabled", shell_output["output"])
 

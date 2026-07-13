@@ -646,7 +646,7 @@ def render_changes_block(rows: Iterable[Row], wrap_cols: int = 80, cwd: str | Pa
         if len(rows) != 1:
             path_text = display_path_for(row.path, cwd)
             if row.move_path:
-                path_text += f" -> {display_path_for(row.move_path, cwd)}"
+                path_text += f" → {display_path_for(row.move_path, cwd)}"
             spans = [Span("  └ ", Style().add_modifier("dim")), Span(path_text), Span(" ")]
             spans.extend(render_line_count_summary(row.added, row.removed))
             out.append(Line.from_spans(spans))

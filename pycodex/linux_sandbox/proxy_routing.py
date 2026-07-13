@@ -10,6 +10,7 @@ import ipaddress
 import json
 import os
 import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
@@ -197,6 +198,8 @@ def cleanup_stale_proxy_socket_dirs_in(temp_dir: Path | str) -> None:
 
 
 def is_pid_alive(pid: int) -> bool:
+    if sys.platform == "win32":
+        return _is_windows_pid_alive(pid)
     try:
         os.kill(pid, 0)
     except OverflowError:
@@ -208,6 +211,38 @@ def is_pid_alive(pid: int) -> bool:
     except OSError:
         return False
     return True
+
+
+def _is_windows_pid_alive(pid: int) -> bool:
+    """Use process handles instead of the incompatible Windows ``kill(pid, 0)``."""
+
+    if pid <= 0 or pid > 0xFFFFFFFF:
+        return False
+
+    import ctypes
+    from ctypes import wintypes
+
+    process_query_limited_information = 0x1000
+    still_active = 259
+    access_denied = 5
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+    if not handle:
+        return ctypes.get_last_error() == access_denied
+    try:
+        exit_code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            return True
+        return exit_code.value == still_active
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def prepare_host_proxy_route_spec() -> str:

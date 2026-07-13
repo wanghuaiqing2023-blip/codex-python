@@ -110,13 +110,14 @@ def _model_shell_type(model_info: ModelInfo | Mapping[str, Any] | Any) -> Config
         return model_info.shell_type
     if isinstance(model_info, Mapping):
         try:
-            return ConfigShellToolType(str(model_info["shell_type"]))
+            shell_type = model_info["shell_type"]
         except KeyError as exc:
             raise KeyError("model_info mapping must include shell_type") from exc
+        return shell_type if isinstance(shell_type, ConfigShellToolType) else ConfigShellToolType(str(shell_type))
     shell_type = getattr(model_info, "shell_type", None)
     if shell_type is None:
-        raise TypeError("model_info must provide shell_type")
-    return ConfigShellToolType(str(shell_type))
+        return ConfigShellToolType.DEFAULT
+    return shell_type if isinstance(shell_type, ConfigShellToolType) else ConfigShellToolType(str(shell_type))
 
 
 def _feature_enabled(features: Any, feature: Feature) -> bool:

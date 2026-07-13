@@ -4856,6 +4856,39 @@ class TopLevelCliParserTests(unittest.TestCase):
             ),
         )
 
+    def test_parse_sandbox_preserves_options_before_command_separator(self):
+        # Rust/Clap keeps the complete WindowsCommand after parsing `--`; the
+        # native sandbox must still receive the selected profile and cwd.
+        parsed = parse_args(
+            [
+                "sandbox",
+                "--permissions-profile",
+                ":read-only",
+                "-C",
+                ".",
+                "--",
+                "cmd",
+                "/c",
+                "echo",
+                "ok",
+            ]
+        )
+
+        self.assertEqual(
+            parsed.command_args,
+            (
+                "--permissions-profile",
+                ":read-only",
+                "-C",
+                ".",
+                "--",
+                "cmd",
+                "/c",
+                "echo",
+                "ok",
+            ),
+        )
+
     def test_exec_inherits_root_shared_options_like_upstream_main(self):
         parsed = parse_args(
             [
@@ -4885,8 +4918,10 @@ class TopLevelCliParserTests(unittest.TestCase):
     def test_main_review_alias_runs_exec_plan_preparation(self):
         stderr = io.StringIO()
 
-        with patch.dict(os.environ, {"PYCODEX_EXEC_LOCAL_HTTP": "0"}):
-            code = main(["review", "--commit", "123456789", "--title", "Fix"], stderr=stderr)
+        code = self._main_with_local_http_exec_disabled(
+            ["review", "--commit", "123456789", "--title", "Fix"],
+            stderr=stderr,
+        )
 
         self.assertEqual(code, 0)
         self.assertIn("prepared non-interactive review plan", stderr.getvalue())
@@ -4918,21 +4953,20 @@ class TopLevelCliParserTests(unittest.TestCase):
     def test_main_review_inherits_root_exec_shared_options(self):
         stderr = io.StringIO()
 
-        with patch.dict(os.environ, {"PYCODEX_EXEC_LOCAL_HTTP": "0"}):
-            code = main(
-                [
-                    "--model",
-                    "gpt-5.2",
-                    "--sandbox",
-                    "workspace-write",
-                    "review",
-                    "--commit",
-                    "123456789",
-                    "--title",
-                    "Fix",
-                ],
-                stderr=stderr,
-            )
+        code = self._main_with_local_http_exec_disabled(
+            [
+                "--model",
+                "gpt-5.2",
+                "--sandbox",
+                "workspace-write",
+                "review",
+                "--commit",
+                "123456789",
+                "--title",
+                "Fix",
+            ],
+            stderr=stderr,
+        )
 
         self.assertEqual(code, 0)
         self.assertIn("prepared non-interactive review plan", stderr.getvalue())
@@ -6175,6 +6209,52 @@ class TopLevelCliParserTests(unittest.TestCase):
 
         self.assertEqual(code, 2)
         self.assertIn("sandbox command not provided", stderr.getvalue())
+
+    def test_main_sandbox_windows_uses_native_backend_not_subprocess(self):
+        # Fixed Rust owner: codex-cli::debug_sandbox::
+        # run_command_under_windows_session. Windows must fail closed through
+        # the native backend and never execute the command via subprocess.run.
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        native_plan = object()
+        def run_product(plan, *, stdin, stdout, stderr):
+            self.assertIs(plan, native_plan)
+            stdout.write("native-out\n")
+            stderr.write("native-err\n")
+            return SimpleNamespace(exit_code=7, error_message=None)
+
+        with patch("pycodex.cli.parser.sys.platform", "win32"), patch(
+            "pycodex.cli.parser.build_debug_sandbox_windows_product_plan",
+            return_value=native_plan,
+        ) as build_plan, patch(
+            "pycodex.cli.parser.run_debug_sandbox_windows_product_session",
+            side_effect=run_product,
+        ) as run_native, patch(
+            "pycodex.cli.parser.subprocess.run",
+            side_effect=AssertionError("unrestricted subprocess fallback"),
+        ):
+            code = main(
+                [
+                    "sandbox",
+                    "--permissions-profile",
+                    ":read-only",
+                    "-C",
+                    ".",
+                    "--",
+                    "cmd",
+                    "/c",
+                    "echo",
+                    "ok",
+                ],
+                stdout=stdout,
+                stderr=stderr,
+            )
+
+        self.assertEqual(code, 7)
+        build_plan.assert_called_once()
+        run_native.assert_called_once()
+        self.assertEqual(stdout.getvalue(), "native-out\n")
+        self.assertEqual(stderr.getvalue(), "native-err\n")
 
     def test_main_exec_server_prints_config(self):
         stdout = io.StringIO()
@@ -7898,7 +7978,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         ]
         self.assertEqual(len(tool_outputs), 1)
         self.assertEqual(tool_outputs[0]["call_id"], "bare-shell-blocked")
-        self.assertIs(tool_outputs[0]["success"], False)
+        self.assertNotIn("success", tool_outputs[0])
         self.assertIn("exit_code: approval_required", tool_outputs[0]["output"])
         self.assertIn("approval_policy: on-request", tool_outputs[0]["output"])
         self.assertIn("blocked-bare.txt", tool_outputs[0]["output"])
@@ -7993,7 +8073,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         ]
         self.assertEqual(len(tool_outputs), 1)
         self.assertEqual(tool_outputs[0]["call_id"], "bare-shell-created")
-        self.assertIs(tool_outputs[0]["success"], True)
+        self.assertNotIn("success", tool_outputs[0])
         self.assertIn("Process exited with code 0", tool_outputs[0]["output"])
 
     def test_main_exec_local_http_sse_smoke_outputs_final_message(self) -> None:
@@ -8163,7 +8243,13 @@ class TopLevelCliParserTests(unittest.TestCase):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(
-                            ["exec", "--dangerously-bypass-approvals-and-sandbox", "prompt"],
+                            [
+                                "--enable",
+                                "unified_exec",
+                                "exec",
+                                "--dangerously-bypass-approvals-and-sandbox",
+                                "prompt",
+                            ],
                             stdout=stdout,
                             stderr=stderr,
                         )
@@ -8317,7 +8403,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertEqual(len(patch_outputs), 1)
         self.assertEqual(patch_outputs[0]["call_id"], "patch-stream-1")
         self.assertNotIn("name", patch_outputs[0])
-        self.assertIs(patch_outputs[0]["success"], True)
+        self.assertNotIn("success", patch_outputs[0])
         self.assertIn("Success. Updated the following files:", patch_outputs[0]["output"])
         self.assertIn("streamed-patch.txt", patch_outputs[0]["output"])
 
@@ -8382,7 +8468,13 @@ class TopLevelCliParserTests(unittest.TestCase):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(
-                            ["exec", "--dangerously-bypass-approvals-and-sandbox", "prompt"],
+                            [
+                                "--enable",
+                                "unified_exec",
+                                "exec",
+                                "--dangerously-bypass-approvals-and-sandbox",
+                                "prompt",
+                            ],
                             stdout=stdout,
                             stderr=stderr,
                         )
@@ -8490,7 +8582,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         tool_outputs = [item for item in followup_input if item.get("type") == "function_call_output"]
         self.assertEqual(len(tool_outputs), 1)
         self.assertEqual(tool_outputs[0]["call_id"], "image-1")
-        self.assertIs(tool_outputs[0]["success"], True)
+        self.assertNotIn("success", tool_outputs[0])
         image_content = tool_outputs[0]["output"]
         self.assertEqual(len(image_content), 1)
         self.assertEqual(image_content[0]["type"], "input_image")
@@ -8695,7 +8787,13 @@ class TopLevelCliParserTests(unittest.TestCase):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(
-                            ["exec", "--dangerously-bypass-approvals-and-sandbox", "prompt"],
+                            [
+                                "--enable",
+                                "unified_exec",
+                                "exec",
+                                "--dangerously-bypass-approvals-and-sandbox",
+                                "prompt",
+                            ],
                             stdout=stdout,
                             stderr=stderr,
                         )
@@ -8719,7 +8817,7 @@ class TopLevelCliParserTests(unittest.TestCase):
             if item.get("type") == "function_call_output" and item.get("call_id") == "stdin-call-1"
         ]
         self.assertEqual(len(stdin_outputs), 1)
-        self.assertIs(stdin_outputs[0]["success"], True)
+        self.assertNotIn("success", stdin_outputs[0])
         self.assertIn("got:hello", stdin_outputs[0]["output"])
 
     def test_main_exec_local_http_shell_tool_on_request_requires_approval(self) -> None:
@@ -8812,7 +8910,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         tool_outputs = [item for item in followup_input if item.get("type") == "function_call_output"]
         self.assertEqual(len(tool_outputs), 1)
         self.assertEqual(tool_outputs[0]["call_id"], "shell-blocked")
-        self.assertIs(tool_outputs[0]["success"], False)
+        self.assertNotIn("success", tool_outputs[0])
         self.assertIn("exit_code: approval_required", tool_outputs[0]["output"])
         self.assertIn("approval_policy: on-request", tool_outputs[0]["output"])
         self.assertIn("blocked-shell.txt", tool_outputs[0]["output"])
@@ -8898,7 +8996,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         tool_outputs = [item for item in followup_input if item.get("type") == "function_call_output"]
         self.assertEqual(len(tool_outputs), 1)
         self.assertEqual(tool_outputs[0]["call_id"], "shell-forbidden")
-        self.assertIs(tool_outputs[0]["success"], False)
+        self.assertNotIn("success", tool_outputs[0])
         self.assertIn("exit_code: forbidden", tool_outputs[0]["output"])
         self.assertIn("approval_policy", tool_outputs[0]["output"])
         self.assertIn("command:", tool_outputs[0]["output"])
@@ -9010,7 +9108,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         ]
         self.assertEqual(len(permission_outputs), 1)
         self.assertNotIn("name", permission_outputs[0])
-        self.assertIs(permission_outputs[0]["success"], False)
+        self.assertNotIn("success", permission_outputs[0])
         self.assertEqual(
             permission_outputs[0]["output"],
             "request_permissions was cancelled before receiving a response",
@@ -9100,7 +9198,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertEqual(len(patch_outputs), 1)
         self.assertEqual(patch_outputs[0]["call_id"], "patch-1")
         self.assertNotIn("name", patch_outputs[0])
-        self.assertIs(patch_outputs[0]["success"], True)
+        self.assertNotIn("success", patch_outputs[0])
         self.assertIn("Success. Updated the following files:", patch_outputs[0]["output"])
         self.assertIn("created.txt", patch_outputs[0]["output"])
 
@@ -9189,7 +9287,10 @@ class TopLevelCliParserTests(unittest.TestCase):
         self.assertEqual(len(patch_outputs), 1)
         self.assertEqual(patch_outputs[0]["call_id"], "patch-blocked")
         self.assertNotIn("name", patch_outputs[0])
-        self.assertIs(patch_outputs[0]["success"], False)
+        # Fixed Rust baseline 1c7832f, codex-protocol/src/models.rs:
+        # FunctionCallOutputPayload.success is internal metadata and its custom
+        # serializer emits only the output body on the Responses API wire.
+        self.assertNotIn("success", patch_outputs[0])
         self.assertIn("apply_patch: approval_required", patch_outputs[0]["output"])
         self.assertIn("approval_policy: on-request", patch_outputs[0]["output"])
 
@@ -9282,7 +9383,7 @@ class TopLevelCliParserTests(unittest.TestCase):
         patch_outputs = [item for item in followup_input if item.get("type") == "function_call_output"]
         self.assertEqual(len(patch_outputs), 1)
         self.assertEqual(patch_outputs[0]["call_id"], "call-patch")
-        self.assertIs(patch_outputs[0]["success"], True)
+        self.assertNotIn("success", patch_outputs[0])
         self.assertIn("Success. Updated the following files:", patch_outputs[0]["output"])
         self.assertIn("heredoc.txt", patch_outputs[0]["output"])
 
@@ -9372,7 +9473,9 @@ class TopLevelCliParserTests(unittest.TestCase):
                 return None
 
         command = (
-            subprocess.list2cmdline([sys.executable, "-c", "print('cli core exec output')"])
+            subprocess.list2cmdline(
+                [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/c", "echo cli core exec output"]
+            )
             if os.name == "nt"
             else shlex.join([sys.executable, "-c", "print('cli core exec output')"])
         )
@@ -9419,7 +9522,11 @@ class TopLevelCliParserTests(unittest.TestCase):
                     with patch("pycodex.cli.parser.read_auth_json", return_value=None):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
-                        code = main(["exec", "--json", "prompt"], stdout=stdout, stderr=stderr)
+                        code = main(
+                            ["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "prompt"],
+                            stdout=stdout,
+                            stderr=stderr,
+                        )
 
         self.assertEqual(code, 0, stderr.getvalue())
         self.assertEqual(len(request_bodies), 2)
@@ -12133,6 +12240,45 @@ class TopLevelCliParserTests(unittest.TestCase):
                                     ),
                                 ):
                                     runtime = _build_tui_core_active_thread_runtime(parsed, stderr=io.StringIO())
+
+        self.assertIs(runtime.session_config.approval_policy, AskForApproval.ON_REQUEST)
+        self.assertEqual(runtime.session_config.permission_profile, PermissionProfile.read_only())
+
+    def test_tui_explicit_read_only_overrides_full_access_config(self):
+        # Fixed Rust commit 1c7832f:
+        # codex-cli::run_interactive_tui forwards CLI overrides into
+        # ConfigBuilder before the interactive runtime is created. Explicit
+        # -s/-a values therefore win over persisted danger-full-access/never.
+        parsed = parse_args(["-s", "read-only", "-a", "on-request"])
+        codex_home = Path("C:/Users/test/.codex")
+        config_toml = {
+            "sandbox_mode": "danger-full-access",
+            "approval_policy": "never",
+            "permission_profile": ":danger-no-sandbox",
+        }
+
+        with patch("pycodex.cli.parser.find_codex_home", return_value=str(codex_home)):
+            with patch("pycodex.cli.parser.read_toml_mapping", return_value=config_toml):
+                with patch(
+                    "pycodex.cli.parser.maybe_migrate_personality",
+                    return_value=PersonalityMigrationStatus.SKIPPED_MARKER,
+                ):
+                    with patch("pycodex.cli.parser.ensure_exec_trusted_directory"):
+                        with patch("pycodex.cli.parser._execpolicy_rules_for_local_http_exec", return_value=()):
+                            with patch("pycodex.cli.parser.read_auth_json", return_value={}):
+                                with patch(
+                                    "pycodex.cli.parser.build_default_core_exec_runtime",
+                                    return_value=(
+                                        SimpleNamespace(thread_id=None, session_id=None),
+                                        SimpleNamespace(),
+                                        SimpleNamespace(slug="gpt-5.5"),
+                                        None,
+                                    ),
+                                ):
+                                    runtime = _build_tui_core_active_thread_runtime(
+                                        parsed,
+                                        stderr=io.StringIO(),
+                                    )
 
         self.assertIs(runtime.session_config.approval_policy, AskForApproval.ON_REQUEST)
         self.assertEqual(runtime.session_config.permission_profile, PermissionProfile.read_only())

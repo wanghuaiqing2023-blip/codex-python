@@ -316,6 +316,7 @@ class ExecCommandRequest:
     cwd: Path
     sandbox_cwd: Path
     environment: Any
+    environment_is_complete: bool
     network: Any
     tty: bool
     sandbox_permissions: SandboxPermissions
@@ -358,6 +359,8 @@ class ExecCommandRequest:
             raise TypeError("additional_permissions must be AdditionalPermissionProfile")
         if not isinstance(self.additional_permissions_preapproved, bool):
             raise TypeError("additional_permissions_preapproved must be a bool")
+        if not isinstance(self.environment_is_complete, bool):
+            raise TypeError("environment_is_complete must be a bool")
         if self.prefix_rule is not None and not isinstance(self.prefix_rule, tuple):
             object.__setattr__(self, "prefix_rule", tuple(self.prefix_rule))
         if not isinstance(self.truncation_policy, TruncationPolicyConfig):
@@ -576,60 +579,8 @@ class ExecCommandHandler:
         exec_command = getattr(manager, "exec_command", None) if manager is not None else None
         if callable(exec_command):
             return self._handle_with_unified_exec_manager(invocation, resolved, exec_command)
-        start = time.monotonic()
-        intercepted = intercept_exec_apply_patch(
-            resolved.resolved_command.command,
-            resolved.cwd,
-        )
-        if intercepted is not None:
-            return ExecCommandToolOutput(
-                event_call_id="",
-                chunk_id="",
-                wall_time_seconds=0.0,
-                raw_output=intercepted.encode("utf-8"),
-                truncation_policy=_invocation_truncation_policy(invocation),
-                max_output_tokens=resolved.args.max_output_tokens,
-                process_id=None,
-                exit_code=None,
-                hook_command=None,
-            )
-        _emit_unified_exec_tty_metric(invocation.turn, resolved.args.tty)
-        spawn_command = resolved.resolved_command.command
-        if resolved.resolved_command.shell_type is ShellType.POWERSHELL:
-            spawn_command = tuple(prefix_powershell_script_with_utf8(spawn_command))
-        try:
-            completed = subprocess.run(
-                spawn_command,
-                cwd=resolved.cwd,
-                env=_invocation_exec_env(invocation),
-                capture_output=True,
-                timeout=DEFAULT_EXEC_COMMAND_TIMEOUT_MS / 1000,
-                check=False,
-            )
-            raw_output = completed.stdout + completed.stderr
-            exit_code = completed.returncode
-        except subprocess.TimeoutExpired as error:
-            stdout = error.stdout or b""
-            stderr = error.stderr or b""
-            if isinstance(stdout, str):
-                stdout = stdout.encode()
-            if isinstance(stderr, str):
-                stderr = stderr.encode()
-            raw_output = stdout + stderr
-            exit_code = 124
-        except OSError as error:
-            raise FunctionCallError.respond_to_model(f"failed to execute command: {error}") from error
-        return ExecCommandToolOutput(
-            event_call_id=invocation.call_id,
-            chunk_id="",
-            wall_time_seconds=time.monotonic() - start,
-            raw_output=raw_output,
-            truncation_policy=_invocation_truncation_policy(invocation),
-            max_output_tokens=resolved.args.max_output_tokens,
-            process_id=None,
-            exit_code=exit_code,
-            original_token_count=approx_token_count(bytes_to_string_smart(raw_output)),
-            hook_command=resolved.args.cmd,
+        raise FunctionCallError.respond_to_model(
+            "unified exec is unavailable in this session; refusing unrestricted fallback"
         )
 
     async def _handle_with_unified_exec_manager(
@@ -723,7 +674,8 @@ class ExecCommandHandler:
             max_output_tokens=resolved.args.max_output_tokens,
             cwd=resolved.cwd,
             sandbox_cwd=Path(getattr(resolved.turn_environment, "cwd")),
-            environment=getattr(resolved.turn_environment, "environment", None),
+            environment=_invocation_exec_env(invocation),
+            environment_is_complete=True,
             network=getattr(turn, "network", None),
             tty=resolved.args.tty,
             sandbox_permissions=effective_additional_permissions.sandbox_permissions,

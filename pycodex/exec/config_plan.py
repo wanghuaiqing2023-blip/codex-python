@@ -166,6 +166,7 @@ class ExecConfigBootstrapPlan:
     startup_warnings: tuple[str, ...] = ()
     mcp_servers: Mapping[str, JsonValue] | None = None
     allow_login_shell: bool = True
+    windows_sandbox_level: WindowsSandboxLevel = WindowsSandboxLevel.DISABLED
     features: Features | None = None
     exec_permission_approvals_enabled: bool = False
     request_permissions_tool_enabled: bool = False
@@ -193,6 +194,12 @@ class ExecConfigBootstrapPlan:
             object.__setattr__(self, "tui_alternate_screen", AltScreenMode.parse(str(self.tui_alternate_screen)))
         servers = self.mcp_servers if isinstance(self.mcp_servers, Mapping) else {}
         object.__setattr__(self, "mcp_servers", copy.deepcopy(dict(servers)))
+        if not isinstance(self.windows_sandbox_level, WindowsSandboxLevel):
+            object.__setattr__(
+                self,
+                "windows_sandbox_level",
+                WindowsSandboxLevel.parse(str(self.windows_sandbox_level)),
+            )
         if self.features is None:
             object.__setattr__(self, "features", Features.with_defaults())
 
@@ -211,6 +218,7 @@ class ExecConfigBootstrapPlan:
             "startupWarnings": list(self.startup_warnings),
             "mcpServers": copy.deepcopy(dict(self.mcp_servers or {})),
             "allowLoginShell": self.allow_login_shell,
+            "windowsSandboxLevel": self.windows_sandbox_level.value,
             "execPermissionApprovalsEnabled": self.exec_permission_approvals_enabled,
             "requestPermissionsToolEnabled": self.request_permissions_tool_enabled,
             "tuiStatusLine": list(self.tui_status_line) if self.tui_status_line is not None else None,
@@ -1618,6 +1626,7 @@ def build_exec_config_bootstrap_plan(
         startup_warnings=tuple(warnings),
         mcp_servers=effective_config.get("mcp_servers") if isinstance(effective_config.get("mcp_servers"), Mapping) else {},
         allow_login_shell=_allow_login_shell_from_config(effective_config),
+        windows_sandbox_level=windows_sandbox_level,
         features=features,
         exec_permission_approvals_enabled=features.enabled(Feature.EXEC_PERMISSION_APPROVALS),
         request_permissions_tool_enabled=features.enabled(Feature.REQUEST_PERMISSIONS_TOOL),
@@ -1649,6 +1658,7 @@ def exec_session_config_from_bootstrap_plan(plan: ExecConfigBootstrapPlan) -> Ex
             harness.sandbox_mode,
             (cwd, *harness.additional_writable_roots),
         ),
+        windows_sandbox_level=plan.windows_sandbox_level,
         ephemeral=bool(harness.ephemeral),
         reasoning_effort=harness.model_reasoning_effort,
         model_reasoning_summary=harness.model_reasoning_summary,
@@ -2025,6 +2035,7 @@ def _exec_session_config_to_mapping(config: ExecSessionConfig) -> dict[str, Json
         "startupWarnings": list(config.startup_warnings),
         "approvalPolicy": _enum_value(config.approval_policy),
         "permissionProfile": config.permission_profile.to_mapping(),
+        "windowsSandboxLevel": config.windows_sandbox_level.value,
         "ephemeral": config.ephemeral,
         "reasoningEffort": config.reasoning_effort,
         "serviceTier": config.service_tier,

@@ -93,6 +93,7 @@ from pycodex.core.tools.handlers.shell_spec import (
     CommandToolOptions,
     create_exec_command_tool,
     create_request_permissions_tool,
+    create_shell_command_tool,
     create_write_stdin_tool,
     request_permissions_tool_description,
     unified_exec_output_schema,
@@ -134,6 +135,7 @@ from pycodex.protocol import (
     AskForApproval,
     BaseInstructions,
     CodexErr,
+    ConfigShellToolType,
     ContentItem,
     EventMsg,
     ExitedReviewModeEvent,
@@ -160,6 +162,7 @@ from pycodex.protocol import (
 from pycodex.protocol import TurnAbortReason, TurnAbortedEvent, TurnItem
 from pycodex.protocol.models import AdditionalPermissionProfile, FunctionCallOutputPayload
 from pycodex.model_provider_info import CHATGPT_CODEX_BASE_URL, ModelProviderInfo
+from pycodex.tools.tool_config import shell_type_for_model_and_features
 
 from .event_processor import HumanEventProcessor, JsonEventProcessor, exec_turn_completed_notification
 from .events import (
@@ -216,6 +219,7 @@ class LocalHttpModelInfo:
     input_modalities: tuple[str, ...] = ("text", "image")
     supports_image_detail_original: bool = False
     supports_parallel_tool_calls: bool = False
+    shell_type: ConfigShellToolType = ConfigShellToolType.UNIFIED_EXEC
     context_window: int | None = 272_000
     max_context_window: int | None = 272_000
     effective_context_window_percent: int = 95
@@ -681,6 +685,7 @@ class LocalHttpShellToolRouter:
         base_router: Any = None,
         *,
         allow_login_shell: bool = True,
+        shell_tool_type: ConfigShellToolType | str = ConfigShellToolType.UNIFIED_EXEC,
         exec_permission_approvals_enabled: bool = False,
         request_permissions_tool_enabled: bool = False,
         apply_patch_tool_enabled: bool = True,
@@ -691,6 +696,8 @@ class LocalHttpShellToolRouter:
         self._base_router = base_router
         if not isinstance(allow_login_shell, bool):
             raise TypeError("allow_login_shell must be a bool")
+        if not isinstance(shell_tool_type, ConfigShellToolType):
+            shell_tool_type = ConfigShellToolType(str(shell_tool_type))
         if not isinstance(exec_permission_approvals_enabled, bool):
             raise TypeError("exec_permission_approvals_enabled must be a bool")
         if not isinstance(request_permissions_tool_enabled, bool):
@@ -704,6 +711,7 @@ class LocalHttpShellToolRouter:
         if isinstance(disabled_tool_names, (str, bytes)):
             raise TypeError("disabled_tool_names must be an iterable of strings")
         self._allow_login_shell = allow_login_shell
+        self._shell_tool_type = shell_tool_type
         self._exec_permission_approvals_enabled = exec_permission_approvals_enabled
         self._request_permissions_tool_enabled = request_permissions_tool_enabled
         self._apply_patch_tool_enabled = apply_patch_tool_enabled
@@ -719,17 +727,31 @@ class LocalHttpShellToolRouter:
                 for spec in base_specs():
                     if isinstance(spec, Mapping):
                         spec_dict = dict(spec)
-                        if _local_http_tool_spec_name(spec_dict) in self._disabled_tool_names:
+                        spec_name = _local_http_tool_spec_name(spec_dict)
+                        if spec_name in self._disabled_tool_names:
                             continue
+                        if _local_http_shell_family_tool_spec_matches(spec_dict):
+                            if spec_name not in _local_http_desired_shell_tool_names(self._shell_tool_type):
+                                continue
                         specs.append(spec_dict)
-        if not any(_local_http_shell_tool_spec_matches(spec) for spec in specs):
+        primary_shell_name = _local_http_primary_shell_tool_name(self._shell_tool_type)
+        if (
+            self._shell_tool_type is not ConfigShellToolType.DISABLED
+            and not any(_local_http_shell_tool_spec_matches(spec) for spec in specs)
+            and primary_shell_name not in self._disabled_tool_names
+        ):
             specs.append(
                 local_http_shell_tool_spec(
                     allow_login_shell=self._allow_login_shell,
+                    shell_tool_type=self._shell_tool_type,
                     exec_permission_approvals_enabled=self._exec_permission_approvals_enabled,
                 )
             )
-        if not any(_local_http_write_stdin_tool_spec_matches(spec) for spec in specs):
+        if (
+            self._shell_tool_type is ConfigShellToolType.UNIFIED_EXEC
+            and "write_stdin" not in self._disabled_tool_names
+            and not any(_local_http_write_stdin_tool_spec_matches(spec) for spec in specs)
+        ):
             specs.append(local_http_write_stdin_tool_spec())
         if self._request_permissions_tool_enabled and not any(
             _local_http_request_permissions_tool_spec_matches(spec) for spec in specs
@@ -751,16 +773,26 @@ class LocalHttpShellToolRouter:
 def local_http_shell_tool_spec(
     *,
     allow_login_shell: bool = True,
+    shell_tool_type: ConfigShellToolType | str = ConfigShellToolType.UNIFIED_EXEC,
     exec_permission_approvals_enabled: bool = False,
 ) -> dict[str, Any]:
     """Return the Responses function tool spec used by local HTTP exec loop."""
 
-    return create_exec_command_tool(
-        CommandToolOptions(
-            allow_login_shell=allow_login_shell,
-            exec_permission_approvals_enabled=exec_permission_approvals_enabled,
-        )
+    if not isinstance(shell_tool_type, ConfigShellToolType):
+        shell_tool_type = ConfigShellToolType(str(shell_tool_type))
+    options = CommandToolOptions(
+        allow_login_shell=allow_login_shell,
+        exec_permission_approvals_enabled=exec_permission_approvals_enabled,
     )
+    if shell_tool_type is ConfigShellToolType.UNIFIED_EXEC:
+        return create_exec_command_tool(options)
+    if shell_tool_type in {
+        ConfigShellToolType.DEFAULT,
+        ConfigShellToolType.LOCAL,
+        ConfigShellToolType.SHELL_COMMAND,
+    }:
+        return create_shell_command_tool(options)
+    raise ValueError("disabled shell tool type does not have a model-visible spec")
 
 
 def local_http_windows_shell_guidance() -> str:
@@ -857,6 +889,7 @@ def local_http_shell_tools_built_tools(
     """Wrap an optional built-tools callback with the local shell tool spec."""
 
     allow_login_shell = True if config is None else config.allow_login_shell
+    shell_tool_type = local_http_shell_tool_type(config, model_info)
     exec_permission_approvals_enabled = False if config is None else config.exec_permission_approvals_enabled
     request_permissions_tool_enabled = False if config is None else config.request_permissions_tool_enabled
     apply_patch_tool_enabled = local_http_model_allows_apply_patch_tool(model_info)
@@ -871,6 +904,7 @@ def local_http_shell_tools_built_tools(
                 return LocalHttpShellToolRouter(
                     await base_router,
                     allow_login_shell=allow_login_shell,
+                    shell_tool_type=shell_tool_type,
                     exec_permission_approvals_enabled=exec_permission_approvals_enabled,
                     request_permissions_tool_enabled=request_permissions_tool_enabled,
                     apply_patch_tool_enabled=apply_patch_tool_enabled,
@@ -883,6 +917,7 @@ def local_http_shell_tools_built_tools(
         return LocalHttpShellToolRouter(
             base_router,
             allow_login_shell=allow_login_shell,
+            shell_tool_type=shell_tool_type,
             exec_permission_approvals_enabled=exec_permission_approvals_enabled,
             request_permissions_tool_enabled=request_permissions_tool_enabled,
             apply_patch_tool_enabled=apply_patch_tool_enabled,
@@ -892,6 +927,23 @@ def local_http_shell_tools_built_tools(
         )
 
     return build
+
+
+def local_http_shell_tool_type(
+    config: ExecSessionConfig | None,
+    model_info: Any,
+) -> ConfigShellToolType:
+    """Resolve the shell family through Rust's canonical feature/model policy."""
+
+    features = None if config is None else config.features
+    raw_shell_type = getattr(model_info, "shell_type", ConfigShellToolType.UNIFIED_EXEC)
+    if isinstance(raw_shell_type, ConfigShellToolType):
+        normalized_shell_type = raw_shell_type.value
+    else:
+        normalized_shell_type = str(raw_shell_type)
+    if features is None:
+        return ConfigShellToolType(normalized_shell_type)
+    return shell_type_for_model_and_features({"shell_type": normalized_shell_type}, features)
 
 
 def local_http_model_allows_apply_patch_tool(model_info: Any) -> bool:
@@ -962,6 +1014,26 @@ def _local_http_shell_tool_spec_matches(spec: Mapping[str, Any]) -> bool:
         "local_shell",
         "exec",
     }
+
+
+def _local_http_shell_family_tool_spec_matches(spec: Mapping[str, Any]) -> bool:
+    return _local_http_shell_tool_spec_matches(spec) or _local_http_write_stdin_tool_spec_matches(spec)
+
+
+def _local_http_desired_shell_tool_names(shell_tool_type: ConfigShellToolType) -> frozenset[str]:
+    if shell_tool_type is ConfigShellToolType.UNIFIED_EXEC:
+        return frozenset({"exec_command", "write_stdin"})
+    if shell_tool_type is ConfigShellToolType.DISABLED:
+        return frozenset()
+    return frozenset({"shell_command"})
+
+
+def _local_http_primary_shell_tool_name(shell_tool_type: ConfigShellToolType) -> str | None:
+    if shell_tool_type is ConfigShellToolType.UNIFIED_EXEC:
+        return "exec_command"
+    if shell_tool_type is ConfigShellToolType.DISABLED:
+        return None
+    return "shell_command"
 
 
 def _local_http_write_stdin_tool_spec_matches(spec: Mapping[str, Any]) -> bool:
@@ -1927,18 +1999,47 @@ def _response_item_rollout_payload(item: Any) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class _ExecConfigFeatures:
+    base: Any = None
     exec_permission_approvals_enabled: bool = False
     request_permissions_tool_enabled: bool = False
     goal_tools_enabled: bool = False
 
-    def enabled(self, feature: Feature) -> bool:
-        if feature is Feature.EXEC_PERMISSION_APPROVALS:
+    def enabled(self, feature: Feature | str) -> bool:
+        resolved = _feature_from_value(feature)
+        if resolved is Feature.EXEC_PERMISSION_APPROVALS:
             return self.exec_permission_approvals_enabled
-        if feature is Feature.REQUEST_PERMISSIONS_TOOL:
+        if resolved is Feature.REQUEST_PERMISSIONS_TOOL:
             return self.request_permissions_tool_enabled
-        if feature is Feature.GOALS:
+        if resolved is Feature.GOALS:
             return self.goal_tools_enabled
+        if resolved is None:
+            return False
+        if self.base is None:
+            return resolved.default_enabled()
+        enabled = getattr(self.base, "enabled", None)
+        if callable(enabled):
+            for candidate in (resolved, resolved.value, resolved.key(), resolved.name):
+                try:
+                    return bool(enabled(candidate))
+                except (KeyError, TypeError, ValueError):
+                    continue
+        if isinstance(self.base, Mapping):
+            return any(bool(self.base.get(candidate, False)) for candidate in _feature_lookup_keys(resolved))
         return False
+
+
+def _feature_from_value(feature: Feature | str) -> Feature | None:
+    if isinstance(feature, Feature):
+        return feature
+    value = str(feature)
+    for candidate in Feature:
+        if value in _feature_lookup_keys(candidate):
+            return candidate
+    return None
+
+
+def _feature_lookup_keys(feature: Feature) -> tuple[Any, ...]:
+    return (feature, feature.value, feature.key(), feature.name)
 
 
 def _in_memory_exec_session(
@@ -1956,6 +2057,7 @@ def _in_memory_exec_session(
         reasoning_summary = getattr(model_info, "default_reasoning_summary", "auto")
     return InMemoryCodexSession(
         cwd=config.cwd,
+        shell=default_user_shell(),
         thread_id=thread_id or "thread",
         model_info=model_info,
         user_instructions=config.user_instructions,
@@ -1967,9 +2069,11 @@ def _in_memory_exec_session(
         approval_policy=config.approval_policy,
         approvals_reviewer=config.approvals_reviewer,
         permission_profile=config.permission_profile,
+        windows_sandbox_level=config.windows_sandbox_level,
         allow_login_shell=config.allow_login_shell,
         file_system_sandbox_policy=config.permission_profile.file_system_sandbox_policy(),
         features=_ExecConfigFeatures(
+            base=config.features,
             exec_permission_approvals_enabled=config.exec_permission_approvals_enabled,
             request_permissions_tool_enabled=config.request_permissions_tool_enabled,
             goal_tools_enabled=goal_tools_enabled,

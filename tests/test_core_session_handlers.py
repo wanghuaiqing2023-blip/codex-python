@@ -44,6 +44,7 @@ from pycodex.protocol import (
     ReviewRequest,
     ReviewTarget,
     RequestId,
+    RolloutItem,
     ThreadMemoryMode,
     ThreadSettingsOverrides,
     ThreadRolledBackEvent,
@@ -123,6 +124,10 @@ class SessionThreadRollbackHandlerTests(unittest.IsolatedAsyncioTestCase):
             event = session.emitted_events[-1]
             self.assertEqual(event.type, "thread_rolled_back")
             self.assertEqual(event.payload, ThreadRolledBackEvent(1))
+            self.assertEqual(
+                session.persisted_rollout_items,
+                [RolloutItem.event_msg(EventMsg.with_payload("thread_rolled_back", ThreadRolledBackEvent(1)))],
+            )
             self.assertEqual(rollout_path.read_text(encoding="utf-8").count("thread_rolled_back"), 1)
 
     async def test_thread_rollback_replays_cumulatively_from_persisted_markers(self) -> None:

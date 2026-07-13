@@ -7,6 +7,8 @@ instead of constructing a full runtime TUI object graph.
 
 from __future__ import annotations
 
+__test__ = False
+
 from dataclasses import dataclass
 from typing import Any, Optional
 

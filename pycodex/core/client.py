@@ -947,7 +947,11 @@ class ModelClientSession:
             return response_create_ws_request(serialized_payload), False
         prepared = dict(serialized_payload)
         prepared["previous_response_id"] = last_response.response_id
-        prepared["input"] = incremental_items
+        # Fixed Rust baseline 1c7832f constructs ResponseCreateWsRequest with
+        # typed items and serde serializes both full and incremental requests
+        # at the same transport boundary. Python returns the wire mapping here,
+        # so the incremental slice must pass through the same serializer.
+        prepared["input"] = serialize_responses_request({"input": incremental_items})["input"]
         return response_create_ws_request(prepared), self.websocket_session.last_response_from_untraced_warmup
 
     def prepare_http_request(self, request: Mapping[str, Any]) -> dict[str, Any]:

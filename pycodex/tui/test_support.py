@@ -8,6 +8,8 @@ claiming completion for the dependency crate that owns the original path type.
 
 from __future__ import annotations
 
+__test__ = False
+
 from dataclasses import asdict, dataclass, is_dataclass
 from enum import Enum
 from pathlib import PurePosixPath

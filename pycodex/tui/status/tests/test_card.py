@@ -2,7 +2,10 @@
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
+from pycodex.protocol import ActivePermissionProfile, PermissionProfile
+from pycodex.tui.runtime_projection import _runtime_permissions_label
 from pycodex.tui.line_truncation import Span
 from pycodex.tui.status.card import (
     CHATGPT_USAGE_URL,
@@ -287,6 +290,32 @@ def test_permission_label_helpers_match_rust_branches() -> None:
     assert status_permissions_label("workspace-write", "enabled", "on-request", "workspace", "on-request", " [/tmp/extra]") == "Workspace [/tmp/extra] (on-request)"
     assert status_permissions_label("danger-full-access", "disabled", "never", "none", "never") == "Full Access"
     assert status_permissions_label("custom", "enabled", "on-request", "workspace", "on-request", " [/tmp/extra]") == "Profile custom (workspace [/tmp/extra], on-request)"
+    assert status_permissions_label(":read-only", PermissionProfile.read_only(), "on-request", "read-only", "on-request") == "Read Only (on-request)"
+    assert status_permissions_label(":workspace", PermissionProfile.workspace_write(), "on-request", "workspace", "on-request") == "Workspace (on-request)"
+    assert status_permissions_label(":danger-full-access", PermissionProfile.disabled(), "never", "danger-full-access", "never") == "Full Access"
+
+
+def test_runtime_permissions_label_prefers_current_profile_over_stale_legacy_sandbox() -> None:
+    # Fixed Rust baseline 1c7832f:
+    # codex-tui::status::card::status_permission_summary derives the status
+    # sandbox from the current PermissionProfile, not a legacy startup policy.
+    # This protects the Read Only -> Default /permissions transition.
+    cwd = Path("C:/repo")
+    session_config = SimpleNamespace(
+        cwd=cwd,
+        active_permission_profile=ActivePermissionProfile.new(":workspace"),
+        permission_profile=PermissionProfile.workspace_write(),
+        approval_policy=AskForApproval.ON_REQUEST,
+        approvals_reviewer="user",
+        sandbox_mode="read-only",
+    )
+    app_runtime = SimpleNamespace(
+        cwd=cwd,
+        active_thread_runtime=SimpleNamespace(session_config=session_config),
+        chat_widget=None,
+    )
+
+    assert _runtime_permissions_label(app_runtime) == "Workspace (on-request)"
 
 
 def test_permission_label_helpers_use_rust_enum_display_values() -> None:
