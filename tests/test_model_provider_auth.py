@@ -118,7 +118,10 @@ def test_agent_identity_auth_provider_adds_signed_authorization_header() -> None
         chatgpt_account_is_fedramp=False,
     )
     identity = AgentIdentityAuth(record, "task")
-    provider = AgentIdentityAuthProvider(identity, signer=lambda key, target: f"signed:{key.agent_runtime_id}:{target['task_id']}")
+    provider = AgentIdentityAuthProvider(
+        identity,
+        signer=lambda key, target: f"signed:{key.agent_runtime_id}:{target.task_id}",
+    )
 
     assert provider.to_auth_headers() == {
         "Authorization": "signed:runtime:task",

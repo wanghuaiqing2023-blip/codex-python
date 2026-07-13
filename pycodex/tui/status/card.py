@@ -12,6 +12,12 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple, Union
 from urllib.parse import urlsplit, urlunsplit
 
+from pycodex.protocol import (
+    BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS,
+    BUILT_IN_PERMISSION_PROFILE_READ_ONLY,
+    BUILT_IN_PERMISSION_PROFILE_WORKSPACE,
+)
+
 from .._porting import RustTuiModule
 from ..line_truncation import Line, Span
 from ..version import CODEX_CLI_VERSION
@@ -648,15 +654,15 @@ def status_permissions_label(
     active_id = _active_profile_id(active_permission_profile)
     approval_policy = _display_scalar(approval_policy)
     approval = _display_scalar(approval)
-    if active_id == "read-only":
+    if active_id in {BUILT_IN_PERMISSION_PROFILE_READ_ONLY, "read-only"}:
         label = "Read Only with network access" if sandbox == "read-only with network access" else "Read Only"
         return f"{label} ({approval})"
-    if active_id == "workspace-write":
+    if active_id in {BUILT_IN_PERMISSION_PROFILE_WORKSPACE, "workspace-write"}:
         if sandbox == "workspace":
             return f"Workspace{workspace_root_suffix or ''} ({approval})"
         if sandbox == "workspace with network access":
             return f"Workspace with network access{workspace_root_suffix or ''} ({approval})"
-    if active_id == "danger-full-access" and _permission_profile_disabled(permission_profile):
+    if active_id in {BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS, "danger-full-access"} and _permission_profile_disabled(permission_profile):
         return "Full Access" if approval_policy == "never" else f"No Sandbox ({approval})"
     if active_id:
         decorated = decorate_workspace_sandbox_label(sandbox, workspace_root_suffix)
@@ -766,7 +772,12 @@ def _active_profile_id(value: Any) -> Optional[str]:
 
 
 def _permission_profile_disabled(value: Any) -> bool:
-    return value is None or str(value).lower() in {"disabled", "none", "false"} or getattr(value, "kind", None) == "disabled"
+    return (
+        value is None
+        or str(value).lower() in {"disabled", "none", "false"}
+        or getattr(value, "kind", None) == "disabled"
+        or getattr(value, "type", None) == "disabled"
+    )
 
 
 def _is_chatgpt_account(account: Any) -> bool:

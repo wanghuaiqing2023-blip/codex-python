@@ -15,7 +15,7 @@ from pycodex.app_server.request_processors_windows_sandbox_processor import (
     determine_windows_sandbox_readiness_from_state,
 )
 from pycodex.app_server_protocol import WindowsSandboxReadiness, WindowsSandboxSetupMode, WindowsSandboxSetupStartParams
-from pycodex.protocol import RequestId, WindowsSandboxLevel
+from pycodex.protocol import PermissionProfile, RequestId, WindowsSandboxLevel
 
 
 @dataclass(frozen=True)
@@ -179,3 +179,34 @@ async def test_windows_sandbox_setup_start_completion_notification_reports_error
     assert completed.message.payload.payload.mode is WindowsSandboxSetupMode.UNELEVATED
     assert completed.message.payload.payload.success is False
     assert completed.message.payload.payload.error == "setup failed"
+
+
+@pytest.mark.asyncio
+async def test_default_runner_executes_unelevated_preflight_and_persists_mode(tmp_path: Path) -> None:
+    # Rust product anchor: app-server processor -> core::run_windows_sandbox_setup.
+    queue: asyncio.Queue = asyncio.Queue()
+    outgoing = OutgoingMessageSender.new(queue)
+
+    @dataclass(frozen=True)
+    class NativePermissions:
+        def effective_permission_profile(self) -> PermissionProfile:
+            return PermissionProfile.read_only()
+
+    config = Config(cwd=tmp_path, codex_home=tmp_path / "codex-home", permissions=NativePermissions())
+    config.codex_home.mkdir()
+    processor = WindowsSandboxRequestProcessor(
+        outgoing,
+        config,
+        ConfigManager(config),
+        env_map={},
+    )
+
+    await processor._run_setup_task(
+        9,
+        WindowsSandboxSetupStartParams(mode="unelevated", cwd=tmp_path),
+    )
+
+    completed = await receive(queue)
+    assert completed.message.payload.payload.success is True
+    config_text = (config.codex_home / "config.toml").read_text(encoding="utf-8")
+    assert 'sandbox = "unelevated"' in config_text

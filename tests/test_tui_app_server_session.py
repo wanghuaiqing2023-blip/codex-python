@@ -213,10 +213,21 @@ def test_thread_response_and_rate_limit_helpers_are_semantic_mappings():
 
     assert display_permission_profile_from_thread_response("danger_full_access", "/repo", Config(permission_profile="read_only"), ThreadParamsMode.Embedded) == "read_only"
     assert rate_limit_snapshot(limit=1) == {"limit": 1}
-    assert app_server_rate_limit_snapshots({"primary": {"used": 1}, "secondary_snapshot": {"used": 2}}) == {
-        "primary": {"used": 1},
-        "secondary": {"used": 2},
-    }
+    # Rust owner/test:
+    # codex-tui::app_server_session::tests::
+    # app_server_rate_limit_snapshots_deduplicates_top_level_limit_from_map.
+    assert app_server_rate_limit_snapshots(
+        {
+            "rate_limits": {"limit_id": "codex", "used": 1},
+            "rate_limits_by_limit_id": {
+                "codex": {"limit_id": "codex", "used": 1},
+                "other": {"limit_id": "other", "used": 2},
+            },
+        }
+    ) == [
+        {"limit_id": "codex", "used": 1},
+        {"limit_id": "other", "used": 2},
+    ]
 
 
 def test_thread_response_populates_history_metadata_from_config(tmp_path):

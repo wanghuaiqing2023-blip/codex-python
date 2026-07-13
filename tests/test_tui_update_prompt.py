@@ -22,12 +22,13 @@ from pycodex.tui.update_prompt import (
     update_prompt_navigation_wraps_between_entries,
     update_prompt_snapshot,
 )
+from pycodex.tui.version import CODEX_CLI_VERSION
 
 
 def test_update_prompt_snapshot_visible_contract() -> None:
     lines = update_prompt_snapshot()
 
-    assert "Update available! 0.0.0 -> 9.9.9" in lines[1]
+    assert f"Update available! {CODEX_CLI_VERSION} -> 9.9.9" in lines[1]
     assert f"Release notes: {RELEASE_NOTES_URL}" in lines[3]
     assert "> 1. Update now (runs `npm install -g @openai/codex`)" in lines[5]
     assert "  2. Skip" in lines[6]
@@ -170,7 +171,7 @@ def test_update_prompt_renders_to_bridge_buffer_and_clears_area() -> None:
 
     text = buffer.to_plain_text(trim_end=True)
     assert "Update available!" in text
-    assert "0.0.0 -> 9.9.9" in text
+    assert f"{CODEX_CLI_VERSION} -> 9.9.9" in text
     assert RELEASE_NOTES_URL in text
     assert "> 1. Update now (runs `npm install -g @openai/codex`)" in text
     assert "Press Enter to continue" in text

@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from pycodex.cli import parser
+from pycodex.features import Feature
 from pycodex.protocol import AskForApproval, PermissionProfile
 from pycodex.tui import TuiAppRuntime
 from pycodex.tui.bottom_pane.status_line_setup import StatusLineItem
@@ -96,3 +97,33 @@ def test_tui_runtime_uses_explicit_config_permission_profile(monkeypatch, tmp_pa
 
     assert runtime.session_config.approval_policy is AskForApproval.NEVER
     assert runtime.session_config.permission_profile == PermissionProfile.disabled()
+
+
+def test_tui_disable_unified_exec_reaches_core_session_features(monkeypatch, tmp_path: Path) -> None:
+    # Rust owner: codex-cli feature toggles -> codex-core Config.features ->
+    # codex-core::tools::spec_plan::add_shell_tools.
+    monkeypatch.setattr(parser, "find_codex_home", lambda: tmp_path)
+    monkeypatch.setattr(parser, "read_toml_mapping", lambda _path: {})
+    monkeypatch.setattr(parser, "read_auth_json", lambda: {})
+    monkeypatch.setattr(parser, "maybe_migrate_personality", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(parser, "ensure_exec_trusted_directory", lambda _check: None)
+    monkeypatch.setattr(parser, "_execpolicy_rules_for_local_http_exec", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(parser, "local_http_exec_max_tool_rounds", lambda: 4)
+    monkeypatch.setattr(
+        parser,
+        "build_default_core_exec_runtime",
+        lambda *_args, **_kwargs: (
+            object(),
+            SimpleNamespace(id="openai"),
+            SimpleNamespace(id="gpt-test", name="gpt-test"),
+            None,
+        ),
+    )
+
+    runtime = parser._build_tui_core_active_thread_runtime(
+        parser.parse_args(["--no-alt-screen", "-C", str(tmp_path), "--disable", "unified_exec"]),
+        stderr=SimpleNamespace(write=lambda *_: None),
+    )
+
+    assert runtime.session_config.features.enabled(Feature.SHELL_TOOL)
+    assert not runtime.session_config.features.enabled(Feature.UNIFIED_EXEC)

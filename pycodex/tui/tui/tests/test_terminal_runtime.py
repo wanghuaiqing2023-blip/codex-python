@@ -2302,6 +2302,70 @@ def test_terminal_runtime_ctrl_t_opens_typed_transcript_overlay_and_restores_com
     assert len(runtime.submitted) == 1
 
 
+def test_terminal_runtime_command_completion_replaces_active_cell_once(monkeypatch) -> None:
+    # Fixed Rust commit 1c7832f:
+    # chatwidget/tests/exec_flow.rs::exec_history_cell_shows_working_then_completed
+    # requires zero stable cells at start and one stable cell at completion.
+    # chatwidget::flush_active_cell takes the mutable cell before emitting
+    # AppEvent::InsertHistoryCell, so custom_terminal must clear its previous
+    # live footprint before the finalized cell enters scrollback.
+    size = os.terminal_size((96, 24))
+    monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: size)
+    monkeypatch.setattr(custom_terminal, "terminal_size", lambda: size)
+    monkeypatch.setattr(terminal_runtime, "terminal_size", lambda: size)
+
+    stdout = _TtyStringIO()
+    app_runtime = terminal_runtime.TuiAppRuntime(_FakeActiveThreadRuntime([]))
+    runner = terminal_runtime.TerminalTuiRunner(
+        app_runtime,
+        stdout=stdout,
+        stdin=_TtyStringIO(),
+    )
+    runner._resize.activate_layout()
+    runner._session_header.write()
+    runner._startup_notices.write()
+
+    notifications = (
+        ServerNotification("TurnStarted", {"turn": {"id": "turn-1"}}),
+        ServerNotification(
+            "ItemStarted",
+            {
+                "item": {
+                    "kind": "CommandExecution",
+                    "id": "cmd-1",
+                    "command": "echo ok",
+                    "source": "Agent",
+                    "status": "InProgress",
+                }
+            },
+        ),
+        ServerNotification("CommandExecutionOutputDelta", {"item_id": "cmd-1", "delta": "ok\n"}),
+        ServerNotification(
+            "ItemCompleted",
+            {
+                "turn_id": "turn-1",
+                "item": {
+                    "kind": "CommandExecution",
+                    "id": "cmd-1",
+                    "command": "echo ok",
+                    "source": "Agent",
+                    "status": "Completed",
+                    "aggregated_output": "ok\n",
+                    "exit_code": 0,
+                },
+            },
+        ),
+    )
+    for notification in notifications:
+        app_runtime.handle_notification(notification)
+        runner._bottom_pane.render_without_resize_check()
+
+    screen = vt_screen_text(stdout.getvalue(), rows=size.lines, cols=size.columns)
+    assert screen.count("Ran echo ok") == 1
+    assert "Running echo ok" not in screen
+    assert sum("Ran echo ok" in cell for cell in runner._history.state.projection_cells) == 1
+
+
 def test_terminal_runtime_renders_structured_complex_task_history(monkeypatch) -> None:
     # Fixed Rust commit 1c7832f: chatwidget owners emit typed cells through
     # AppEvent::InsertHistoryCell before custom_terminal projects the viewport.

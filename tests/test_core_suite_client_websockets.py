@@ -246,7 +246,7 @@ def test_responses_websocket_v2_incremental_requests_are_reused_across_turns():
     session.websocket_session.last_response = LastResponse("resp-1", (assistant,))
     prepared, _ = session.prepare_websocket_request({"model": "m", "input": [first, assistant, second]}, {"model": "m", "input": [first, assistant, second]})
     assert prepared["previous_response_id"] == "resp-1"
-    assert prepared["input"] == [second]
+    assert prepared["input"] == [second.to_mapping()]
 
 
 def test_responses_websocket_v2_wins_when_both_features_enabled():

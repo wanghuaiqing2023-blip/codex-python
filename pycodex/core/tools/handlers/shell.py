@@ -21,11 +21,12 @@ from pycodex.core.function_tool import FunctionCallError
 from pycodex.core.tools.hook_names import HookToolName
 from pycodex.core.shell import Shell, ShellType
 from pycodex.core.tools.handlers.shell_spec import CommandToolOptions, create_shell_command_tool
-from pycodex.core.tools.context import FunctionToolOutput, ToolPayload
+from pycodex.core.tools.context import CommandExecutionToolOutput, FunctionToolOutput, ToolPayload
 from pycodex.core.tools.registry import PostToolUsePayload, PreToolUsePayload, ToolInvocation
 from pycodex.protocol import (
     AdditionalPermissionProfile,
     AskForApproval,
+    ExecToolCallOutput,
     FileSystemSandboxPolicy,
     GranularApprovalConfig,
     PermissionProfile,
@@ -33,10 +34,14 @@ from pycodex.protocol import (
     ShellEnvironmentPolicy,
     ThreadId,
     ToolName,
+    TruncationPolicyConfig,
 )
 
 JsonValue = Any
-ShellCommandRunner = Callable[["ShellCommandInvocationRequest"], FunctionToolOutput | str | dict[str, JsonValue] | Any]
+ShellCommandRunner = Callable[
+    ["ShellCommandInvocationRequest"],
+    CommandExecutionToolOutput | FunctionToolOutput | str | dict[str, JsonValue] | Any,
+]
 
 
 class ShellCommandBackend(str, Enum):
@@ -218,7 +223,7 @@ class RunExecLikeArgs:
     invocation: ToolInvocation
     params: ShellCommandToolCallParams
     workdir: Path
-    runner: ShellCommandRunner
+    runner: ShellCommandRunner | None
 
     def __post_init__(self) -> None:
         if not isinstance(self.tool_name, ToolName):
@@ -243,8 +248,8 @@ class RunExecLikeArgs:
             raise TypeError("params must be ShellCommandToolCallParams")
         if not isinstance(self.workdir, Path):
             object.__setattr__(self, "workdir", Path(self.workdir))
-        if not callable(self.runner):
-            raise TypeError("runner must be callable")
+        if self.runner is not None and not callable(self.runner):
+            raise TypeError("runner must be callable or None")
 
 
 class ShellCommandHandler:
@@ -332,17 +337,13 @@ class ShellCommandHandler:
             _allow_login_shell(turn, self.options.allow_login_shell),
         )
         runner = self._runner or getattr(session, "shell_command_runner", None)
-        if not callable(runner):
-            raise FunctionCallError.respond_to_model(
-                "shell_command runtime is unavailable in this session"
-            )
         response = run_exec_like(
             RunExecLikeArgs(
                 tool_name=self.tool_name(),
                 exec_params=exec_params,
                 cancellation_token=getattr(invocation, "cancellation_token", None),
                 hook_command=params.command,
-                shell_type=_session_user_shell(session).shell_type,
+                shell_type=self.session_shell(session).shell_type,
                 additional_permissions=params.additional_permissions,
                 prefix_rule=params.prefix_rule,
                 session=session,
@@ -373,6 +374,12 @@ class ShellCommandHandler:
         return allow_login_shell if login is None else login
 
     @staticmethod
+    def session_shell(session: Any) -> Shell:
+        """Resolve the canonical shell shared by execution and event projection."""
+
+        return _session_user_shell(session)
+
+    @staticmethod
     def base_command(shell: Shell, command: str, use_login_shell: bool) -> tuple[str, ...]:
         if not isinstance(shell, Shell):
             raise TypeError("shell must be Shell")
@@ -392,7 +399,7 @@ class ShellCommandHandler:
             raise TypeError("params must be ShellCommandToolCallParams")
         if not isinstance(thread_id, ThreadId):
             raise TypeError("thread_id must be ThreadId")
-        shell = _session_user_shell(session)
+        shell = ShellCommandHandler.session_shell(session)
         use_login_shell = ShellCommandHandler.resolve_use_login_shell(params.login, allow_login_shell)
         command = ShellCommandHandler.base_command(shell, params.command, use_login_shell)
         cwd = _turn_resolve_path(turn_context, params.workdir)
@@ -603,10 +610,87 @@ async def run_exec_like(args: RunExecLikeArgs) -> FunctionToolOutput | str | dic
         workdir=args.workdir,
         shell_request=shell_request,
     )
-    result = args.runner(request)
-    if inspect.isawaitable(result):
-        result = await result
+    if args.runner is None:
+        result = await _run_product_shell_runtime(request)
+    else:
+        result = args.runner(request)
+        if inspect.isawaitable(result):
+            result = await result
     return _shell_command_output(result)
+
+
+async def _run_product_shell_runtime(request: ShellCommandInvocationRequest) -> CommandExecutionToolOutput:
+    """Run the Rust-owned shell runtime when no test adapter is injected."""
+
+    from pycodex.core.tools.orchestrator import OrchestratorRunResult, ToolOrchestrator
+    from pycodex.core.tools.runtimes import ShellRuntime, ShellRuntimeBackend
+    from pycodex.core.tools.sandboxing import ToolCtx, ToolError
+    from pycodex.core.user_shell_command import format_exec_output_for_model
+
+    shell_request = request.shell_request
+    if shell_request is None:
+        raise FunctionCallError.respond_to_model("shell_command request was not prepared")
+    backend = (
+        ShellRuntimeBackend.SHELL_COMMAND_ZSH_FORK
+        if request.backend is ShellCommandBackend.ZSH_FORK
+        else ShellRuntimeBackend.SHELL_COMMAND_CLASSIC
+    )
+    runtime = ShellRuntime.for_shell_command(backend)
+    invocation = request.invocation
+    turn = invocation.turn
+    permission_profile = _turn_permission_profile(turn)
+    file_system_sandbox_policy = _turn_file_system_sandbox_policy(turn)
+    tool_ctx = ToolCtx(
+        session=invocation.session,
+        turn=turn,
+        call_id=invocation.call_id,
+        tool_name=ToolName.plain("shell_command"),
+    )
+    orchestrator_turn = {
+        "permission_profile": permission_profile,
+        "file_system_sandbox_policy": file_system_sandbox_policy,
+        "network_sandbox_policy": permission_profile.network_sandbox_policy(),
+        "network": getattr(turn, "network", None),
+        "cwd": _turn_cwd(turn, request.workdir),
+        "features": getattr(turn, "features", None),
+        "config": getattr(turn, "config", None),
+        "windows_sandbox_level": getattr(turn, "windows_sandbox_level", None),
+        "codex_linux_sandbox_exe": getattr(turn, "codex_linux_sandbox_exe", None),
+        "session_telemetry": getattr(turn, "session_telemetry", None),
+        "routes_approval_to_guardian": getattr(turn, "routes_approval_to_guardian", False),
+    }
+    result = await ToolOrchestrator.new().run(
+        runtime,
+        shell_request,
+        tool_ctx,
+        orchestrator_turn,
+        _turn_approval_policy(turn),
+    )
+    if isinstance(result, ToolError):
+        if result.type == "rejected":
+            message = result.message or "shell command rejected"
+        elif isinstance(result.error, Mapping) and isinstance(result.error.get("output"), ExecToolCallOutput):
+            result = result.error["output"]
+            message = ""
+        else:
+            message = str(result.error)
+        if isinstance(result, ToolError):
+            raise FunctionCallError.respond_to_model(message)
+    elif isinstance(result, OrchestratorRunResult):
+        result = result.output
+    else:
+        raise TypeError("shell command orchestrator returned an invalid result")
+
+    if not isinstance(result, ExecToolCallOutput):
+        raise TypeError("shell command runtime returned an invalid output")
+    truncation_policy = getattr(turn, "truncation_policy", None)
+    if not isinstance(truncation_policy, TruncationPolicyConfig):
+        truncation_policy = TruncationPolicyConfig.tokens(10_000)
+    model_visible = FunctionToolOutput.from_text(
+        format_exec_output_for_model(result, truncation_policy),
+        success=result.exit_code == 0 and not result.timed_out,
+    )
+    return CommandExecutionToolOutput(model_visible=model_visible, exec_output=result)
 
 
 def shell_command_payload_command(payload: ToolPayload) -> str | None:
@@ -667,12 +751,14 @@ async def _await_shell_command_handle(
     return response
 
 
-async def _await_shell_command_response(response: Any) -> FunctionToolOutput:
+async def _await_shell_command_response(response: Any) -> CommandExecutionToolOutput | FunctionToolOutput:
     return _shell_command_output(await response)
 
 
-def _shell_command_output(response: FunctionToolOutput | str | dict[str, JsonValue]) -> FunctionToolOutput:
-    if isinstance(response, FunctionToolOutput):
+def _shell_command_output(
+    response: CommandExecutionToolOutput | FunctionToolOutput | str | dict[str, JsonValue],
+) -> CommandExecutionToolOutput | FunctionToolOutput:
+    if isinstance(response, CommandExecutionToolOutput | FunctionToolOutput):
         return response
     if isinstance(response, str):
         return FunctionToolOutput.from_text(response, True)
@@ -755,6 +841,10 @@ def _turn_approval_policy(turn_context: Any) -> AskForApproval | GranularApprova
     value = getattr(turn_context, "approval_policy", AskForApproval.ON_REQUEST)
     if callable(value):
         value = value()
+    else:
+        cell_value = getattr(value, "value", None)
+        if callable(cell_value):
+            value = cell_value()
     if isinstance(value, (AskForApproval, GranularApprovalConfig)):
         return value
     return AskForApproval.parse(str(value))

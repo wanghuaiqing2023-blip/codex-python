@@ -4,9 +4,8 @@ Ported from ``codex/codex-rs/core/src/windows_sandbox_read_grants.rs``.
 
 The Rust implementation validates a requested read root, canonicalizes it, and
 then delegates to ``windows_sandbox::run_setup_refresh_with_extra_read_roots``.
-This stdlib-only port keeps the same validation boundary and exposes the setup
-refresh call as an injectable callback rather than pretending to implement the
-Windows sandbox setup refresh in pure Python.
+Python uses the native setup refresh by default and keeps the callback injectable
+only for owner-level failure and contract tests.
 """
 
 from __future__ import annotations

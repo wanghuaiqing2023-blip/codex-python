@@ -435,7 +435,7 @@ class TerminalBottomPaneRenderContextProviderProtocol(Protocol):
 
 
 TerminalBottomPaneClearFactory = Callable[
-    [TerminalLiveStatusSurface, bool],
+    [TerminalLiveStatusSurface, bool, TerminalBottomPaneFootprint],
     Callable[[], bool],
 ]
 TerminalBottomPaneRenderPassFactory = Callable[
@@ -849,7 +849,13 @@ class TerminalBottomPaneFootprintCycleRunner:
         """
 
         def clear(check_resize: bool = True) -> bool:
-            return self.clear(clear_factory(live_status(), check_resize))
+            return self.clear(
+                clear_factory(
+                    live_status(),
+                    check_resize,
+                    self.tracker.previous(),
+                )
+            )
 
         return clear
 

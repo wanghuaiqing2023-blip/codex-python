@@ -2085,7 +2085,7 @@ def test_prepare_and_execute_sampling_request_runtime_state_driven_session_plan_
     assert isinstance(result, SamplingRequestRuntimeSessionLifecycleResult)
     assert result.websocket_request["type"] == "response.create"
     assert result.websocket_request["previous_response_id"] == "resp-prev"
-    assert result.websocket_request["input"] == [third]
+    assert result.websocket_request["input"] == [third.to_mapping()]
     assert _stable_ws_client_metadata(result.websocket_request["client_metadata"]) == {
         X_CODEX_INSTALLATION_ID_HEADER: "install",
         X_CODEX_WINDOW_ID_HEADER: "thread:0",
@@ -2205,7 +2205,7 @@ def test_prepare_and_execute_sampling_request_runtime_state_driven_session_plan_
     )
 
     assert result.websocket_request["previous_response_id"] == "resp-prev"
-    assert result.websocket_request["input"] == [third]
+    assert result.websocket_request["input"] == [third.to_mapping()]
     assert result.websocket_request["client_metadata"][
         WS_REQUEST_HEADER_TRACEPARENT_CLIENT_METADATA_KEY
     ] == "00-inc"
@@ -2357,7 +2357,7 @@ def test_prepare_and_execute_sampling_request_runtime_state_driven_session_plan_
     assert result.inference_trace_started_request == request
     assert result.websocket_last_request_recorded is True
     assert result.websocket_request["previous_response_id"] == "warm-1"
-    assert result.websocket_request["input"] == [third]
+    assert result.websocket_request["input"] == [third.to_mapping()]
     assert session.websocket_session.last_response == LastResponse("resp-warm-2")
     assert session.websocket_session.last_response_from_untraced_warmup is True
 
@@ -2947,7 +2947,7 @@ def test_prepare_and_execute_sampling_request_runtime_state_driven_session_plan_
         "receiver_pending": True,
     }
     assert result.websocket_request["previous_response_id"] == "resp-prev"
-    assert result.websocket_request["input"] == [third]
+    assert result.websocket_request["input"] == [third.to_mapping()]
 
 
 def test_prepare_and_execute_sampling_request_runtime_state_driven_session_plan_models_stream_request_error():
@@ -3228,7 +3228,7 @@ def test_prepare_websocket_request_clears_pending_last_response_marker():
 
     assert from_warmup is False
     assert prepared["previous_response_id"] == "resp-1"
-    assert prepared["input"] == [third]
+    assert prepared["input"] == [third.to_mapping()]
     assert session.websocket_session.last_response_pending is False
 
 
@@ -4362,7 +4362,7 @@ def test_prepare_websocket_request_wraps_incremental_delta_as_response_create():
     assert from_warmup is False
     assert prepared["type"] == "response.create"
     assert prepared["previous_response_id"] == "resp-1"
-    assert prepared["input"] == [second]
+    assert prepared["input"] == [second.to_mapping()]
 
 
 def test_prepare_http_request_uses_serialized_request_shape():

@@ -37,7 +37,8 @@ from pycodex.core.tools.tool_search_entry import (
     ToolSearchInfo,
 )
 from pycodex.core.tools.spec_plan import add_request_permissions_tool
-from pycodex.protocol import ApplyPatchToolType
+from pycodex.features import Feature, Features
+from pycodex.protocol import ApplyPatchToolType, ConfigShellToolType
 from pycodex.protocol import TurnEnvironmentSelection
 from pycodex.protocol import ToolName, WebSearchMode, WebSearchToolType
 
@@ -563,7 +564,11 @@ class SpecPlanTests(unittest.TestCase):
         self.assertIn("environment_id", multiple_by_name["view_image"]["parameters"]["properties"])
 
     def test_build_environment_tool_router_from_turn_context_uses_environment_mode(self) -> None:
+        features = Features.with_defaults().enable(Feature.UNIFIED_EXEC)
         turn_context = SimpleNamespace(
+            features=features,
+            model_info=SimpleNamespace(shell_type=ConfigShellToolType.UNIFIED_EXEC),
+            config=SimpleNamespace(permissions=SimpleNamespace(allow_login_shell=False)),
             environments=(
                 TurnEnvironmentSelection("local", Path("C:/repo")),
                 TurnEnvironmentSelection("remote", Path("C:/remote")),
@@ -579,6 +584,28 @@ class SpecPlanTests(unittest.TestCase):
         self.assertIn("environment_id", specs_by_name["exec_command"]["parameters"]["properties"])
         self.assertIn("Environment ID", specs_by_name["apply_patch"]["format"]["definition"])
         self.assertIn("environment_id", specs_by_name["view_image"]["parameters"]["properties"])
+
+    def test_build_environment_tool_router_uses_shell_command_when_unified_exec_is_disabled(self) -> None:
+        # Rust owner: codex-core::tools::spec_plan::add_shell_tools.
+        # Rust source: spec_plan.rs selects the shell family through
+        # shell_type_for_model_and_features instead of forcing unified exec.
+        features = Features.with_defaults().disable(Feature.UNIFIED_EXEC)
+        turn_context = SimpleNamespace(
+            features=features,
+            model_info=SimpleNamespace(shell_type=ConfigShellToolType.UNIFIED_EXEC),
+            config=SimpleNamespace(permissions=SimpleNamespace(allow_login_shell=False)),
+            environments=(TurnEnvironmentSelection("local", Path("C:/repo")),),
+        )
+
+        router = build_environment_tool_router_from_turn_context(turn_context)
+        specs = router.model_visible_specs()
+        names = [spec["name"] for spec in specs]
+
+        self.assertIn("shell_command", names)
+        self.assertNotIn("exec_command", names)
+        self.assertNotIn("write_stdin", names)
+        shell_command = next(spec for spec in specs if spec["name"] == "shell_command")
+        self.assertIn("timeout_ms", shell_command["parameters"]["properties"])
 
     def test_add_request_permissions_tool_follows_feature_gate_like_rust(self) -> None:
         disabled = PlannedTools()

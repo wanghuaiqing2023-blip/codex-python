@@ -8,6 +8,7 @@ slice.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from enum import Enum
 import json
@@ -174,11 +175,19 @@ def sandbox_setup_is_complete(_codex_home: str) -> bool:
 
 
 def elevated_setup_failure_details(_err: BaseException) -> tuple[str, str] | None:
+    from pycodex.windows_sandbox.setup_error import SetupFailure
+
+    if isinstance(_err, SetupFailure):
+        return _err.code.value, _err.message
     return None
 
 
 def elevated_setup_failure_metric_name(_err: BaseException) -> str:
-    raise RuntimeError("elevated_setup_failure_metric_name is only supported on Windows")
+    from pycodex.windows_sandbox.setup_error import SetupErrorCode, SetupFailure
+
+    if isinstance(_err, SetupFailure) and _err.code is SetupErrorCode.ORCHESTRATOR_HELPER_LAUNCH_CANCELED:
+        return "codex.windows_sandbox.elevated_setup_canceled"
+    return "codex.windows_sandbox.elevated_setup_failure"
 
 
 def run_elevated_setup(
@@ -188,7 +197,23 @@ def run_elevated_setup(
     env_map: Mapping[str, str],
     codex_home: Path | str,
 ) -> object:
-    raise NotImplementedError("elevated Windows sandbox setup is only supported on Windows")
+    from pycodex.windows_sandbox.resolved_permissions import ResolvedWindowsSandboxPermissions
+    from pycodex.windows_sandbox.setup import build_elevation_payload
+    from pycodex.windows_sandbox.setup_orchestrator import is_elevated, run_setup_helper
+
+    permissions = ResolvedWindowsSandboxPermissions.try_from_permission_profile_for_cwd(
+        permission_profile, permission_profile_cwd
+    )
+    payload = build_elevation_payload(
+        permissions,
+        command_cwd,
+        env_map,
+        codex_home,
+        proxy_enforced=False,
+        refresh_only=False,
+    )
+    run_setup_helper(payload, elevate=not is_elevated())
+    return None
 
 
 def run_legacy_setup_preflight(
@@ -198,7 +223,18 @@ def run_legacy_setup_preflight(
     env_map: Mapping[str, str],
     codex_home: Path | str,
 ) -> object:
-    raise NotImplementedError("legacy Windows sandbox setup is only supported on Windows")
+    if not isinstance(env_map, Mapping):
+        raise TypeError("env_map must be a mapping")
+    from pycodex.windows_sandbox import run_windows_sandbox_legacy_preflight
+
+    run_windows_sandbox_legacy_preflight(
+        permission_profile,
+        permission_profile_cwd,
+        codex_home,
+        command_cwd,
+        dict(env_map),
+    )
+    return None
 
 
 def run_setup_refresh_with_extra_read_roots(
@@ -209,25 +245,30 @@ def run_setup_refresh_with_extra_read_roots(
     codex_home: Path | str,
     extra_read_roots: Sequence[Path | str],
 ) -> object:
-    """Rust ``windows_sandbox::run_setup_refresh_with_extra_read_roots`` interface.
-
-    The Rust implementation refreshes Windows sandbox setup with the supplied
-    extra read roots. The Python stdlib port cannot perform the native setup,
-    but this semantic boundary still validates and records the requested roots
-    instead of forcing callers to treat the helper as unavailable.
-    """
+    """Rust ``windows_sandbox::run_setup_refresh_with_extra_read_roots`` interface."""
 
     if not isinstance(env_map, Mapping):
         raise TypeError("env_map must be a mapping")
-    roots = tuple(Path(root) for root in extra_read_roots)
-    return {
-        "permission_profile": permission_profile,
-        "permission_profile_cwd": Path(permission_profile_cwd),
-        "command_cwd": Path(command_cwd),
-        "env_map": dict(env_map),
-        "codex_home": Path(codex_home),
-        "extra_read_roots": roots,
-    }
+    from pycodex.windows_sandbox.resolved_permissions import ResolvedWindowsSandboxPermissions
+    from pycodex.windows_sandbox.setup import build_elevation_payload, gather_read_roots
+    from pycodex.windows_sandbox.setup_orchestrator import run_setup_helper
+
+    permissions = ResolvedWindowsSandboxPermissions.try_from_permission_profile_for_cwd(
+        permission_profile, permission_profile_cwd
+    )
+    roots = list(gather_read_roots(command_cwd, permissions, env_map, codex_home))
+    roots.extend(Path(root) for root in extra_read_roots)
+    payload = build_elevation_payload(
+        permissions,
+        command_cwd,
+        env_map,
+        codex_home,
+        read_roots_override=roots,
+        write_roots_override=(),
+        refresh_only=True,
+    )
+    run_setup_helper(payload, elevate=False)
+    return None
 
 
 async def run_windows_sandbox_setup(request: WindowsSandboxSetupRequest) -> None:
@@ -235,7 +276,8 @@ async def run_windows_sandbox_setup(request: WindowsSandboxSetupRequest) -> None
         raise TypeError("request must be WindowsSandboxSetupRequest")
     if request.mode is WindowsSandboxSetupMode.ELEVATED:
         if not sandbox_setup_is_complete(request.codex_home):
-            run_elevated_setup(
+            await asyncio.to_thread(
+                run_elevated_setup,
                 request.permission_profile,
                 request.permission_profile_cwd,
                 request.command_cwd,
@@ -243,7 +285,8 @@ async def run_windows_sandbox_setup(request: WindowsSandboxSetupRequest) -> None
                 request.codex_home,
             )
     else:
-        run_legacy_setup_preflight(
+        await asyncio.to_thread(
+            run_legacy_setup_preflight,
             request.permission_profile,
             request.permission_profile_cwd,
             request.command_cwd,

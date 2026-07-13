@@ -58,4 +58,7 @@ def test_refresh_models_on_models_etag_mismatch_and_avoid_duplicate_models_fetch
 
     assert remote.calls == 1
     offline = asyncio.run(manager.list_models("offline"))
-    assert [preset.model for preset in offline] == ["remote-after-etag-refresh"]
+    # Rust `apply_remote_models` merges non-authoritative remote entries with
+    # bundled models; this test's contract is cache reuse without another fetch.
+    assert "remote-after-etag-refresh" in [preset.model for preset in offline]
+    assert remote.calls == 1

@@ -12,6 +12,8 @@ from pycodex.tui.chatwidget.command_lifecycle import (
     command_display_from_raw,
     command_text_from_notification,
 )
+from pycodex.tui.exec_cell.render import command_display_lines, render_line_text
+from pycodex.tui.exec_command import escape_command
 
 
 def test_command_display_from_raw_strips_bash_lc_wrapper():
@@ -38,6 +40,32 @@ def test_command_text_from_notification_supports_object_payload_and_missing_comm
 
     assert command_text_from_notification(event) == "rg needle"
     assert command_text_from_notification(missing) == ""
+
+
+def test_windows_powershell_command_round_trips_from_protocol_into_exec_cell_title():
+    # Rust owners: app-server-protocol::item_builders serializes argv with
+    # codex-shell-command::parse_command::shlex_join; codex-tui::exec_command
+    # restores the shell argv before exec_cell renders its command title.
+    argv = [
+        r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.EXE",
+        "-NoProfile",
+        "-Command",
+        "Write-Output 'SHELL_COMMAND_OK'",
+    ]
+    state = CommandLifecycleState()
+
+    state.handle_command_execution_started_now(
+        CommandExecutionItem("call-powershell", escape_command(argv), "agent")
+    )
+
+    assert state.active_exec_cell is not None
+    assert state.active_exec_cell.calls[0].command == argv
+    rendered = [
+        render_line_text(line)
+        for line in command_display_lines(state.active_exec_cell, width=120)
+    ]
+    assert rendered[0] == "• Running Write-Output 'SHELL_COMMAND_OK'"
+    assert "'\"'\"'" not in rendered[0]
 
 
 def test_track_unified_exec_process_begin_adds_and_updates_existing_process():

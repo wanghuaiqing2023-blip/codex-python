@@ -86,6 +86,10 @@ class TerminalBottomPaneClearRequest:
     layout_active: bool
     live_status: TerminalLiveStatusSurface
     check_resize: bool = True
+    clear_popup_height: int = 0
+    clear_live_status_active: bool = False
+    clear_active_tail_height: int = 0
+    clear_composer_height: int = 1
 
     def action_plan(self) -> TerminalBottomPaneActionPlan:
         return terminal_bottom_pane_clear_plan(
@@ -96,7 +100,12 @@ class TerminalBottomPaneClearRequest:
         )
 
     def projection_cleanup(self) -> TerminalBottomPaneProjectionCleanup:
-        return TerminalBottomPaneProjectionCleanup()
+        return TerminalBottomPaneProjectionCleanup(
+            clear_popup_height=self.clear_popup_height,
+            clear_live_status_active=self.clear_live_status_active,
+            clear_active_tail_height=self.clear_active_tail_height,
+            clear_composer_height=self.clear_composer_height,
+        )
 
     def projection_cursor_visible(self) -> bool | None:
         return None
@@ -155,6 +164,10 @@ def terminal_bottom_pane_clear_request(
     layout_active: bool,
     live_status: TerminalLiveStatusSurface,
     check_resize: bool = True,
+    clear_popup_height: int = 0,
+    clear_live_status_active: bool = False,
+    clear_active_tail_height: int = 0,
+    clear_composer_height: int = 1,
 ) -> TerminalBottomPaneClearRequest:
     """Build the bottom-pane-owned clear request consumed by terminal adapters."""
 
@@ -163,6 +176,10 @@ def terminal_bottom_pane_clear_request(
         layout_active=layout_active,
         check_resize=check_resize,
         live_status=live_status,
+        clear_popup_height=max(0, int(clear_popup_height)),
+        clear_live_status_active=bool(clear_live_status_active),
+        clear_active_tail_height=max(0, int(clear_active_tail_height)),
+        clear_composer_height=max(1, int(clear_composer_height)),
     )
 
 

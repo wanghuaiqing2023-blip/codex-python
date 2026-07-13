@@ -118,20 +118,21 @@ class WindowsSandboxReadGrantsTests(unittest.TestCase):
                     setup_refresher=refresher,
                 )
 
-    def test_default_success_path_requires_real_setup_refresh(self) -> None:
+    def test_default_path_runs_native_refresh_and_returns_canonical_root(self) -> None:
+        # Rust owner: codex-core::windows_sandbox_read_grants delegates to the
+        # non-elevated setup refresh and returns the canonical root on success.
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            self.assertEqual(
-                grant_read_root_non_elevated(
-                    permission_profile(),
-                    tmp_path,
-                    tmp_path,
-                    {},
-                    tmp_path,
-                    tmp_path,
-                ),
-                tmp_path.resolve(),
+            result = grant_read_root_non_elevated(
+                permission_profile(),
+                tmp_path,
+                tmp_path,
+                {},
+                tmp_path,
+                tmp_path,
             )
+
+            self.assertEqual(result, tmp_path.resolve())
 
     def test_rejects_non_permission_profile(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -165,9 +165,9 @@ def test_create_diff_summary_orders_rows_and_renders_semantic_blocks() -> None:
 
     lines = create_diff_summary(changes, ".", wrap_cols=80)
     text = [line.text() for line in lines]
-    assert text[0] == "- Edited 3 files (+3 -2)"
+    assert text[0] == "• Edited 3 files (+3 -2)"
     assert any("a_add.txt (+2 -0)" in line for line in text)
-    assert any("m_update.txt -> renamed.rs (+1 -1)" in line for line in text)
+    assert any("m_update.txt → renamed.rs (+1 -1)" in line for line in text)
     assert any("+ one" in line for line in text)
     assert any("- old" in line for line in text)
 

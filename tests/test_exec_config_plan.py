@@ -36,7 +36,14 @@ from pycodex.exec import (
 )
 from pycodex.arg0 import Arg0DispatchPaths
 from pycodex.features import Feature
-from pycodex.protocol import AltScreenMode, AskForApproval, GranularApprovalConfig, PermissionProfile, SandboxMode
+from pycodex.protocol import (
+    AltScreenMode,
+    AskForApproval,
+    GranularApprovalConfig,
+    PermissionProfile,
+    SandboxMode,
+    WindowsSandboxLevel,
+)
 
 
 class ExecConfigPlanTests(unittest.TestCase):
@@ -442,6 +449,7 @@ class ExecConfigPlanTests(unittest.TestCase):
         config = exec_session_config_from_bootstrap_plan(plan)
         self.assertIs(config.approval_policy, AskForApproval.ON_REQUEST)
         self.assertEqual(config.permission_profile, PermissionProfile.workspace_write((root,)))
+        self.assertIs(config.windows_sandbox_level, WindowsSandboxLevel.ELEVATED)
 
     def test_interactive_explicit_permissions_override_trust_defaults(self):
         with tempfile.TemporaryDirectory() as tmpdir:

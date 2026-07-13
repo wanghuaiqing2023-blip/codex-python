@@ -1,10 +1,4 @@
-import base64
-import contextlib
-import hashlib
 import json
-import socket
-import struct
-import threading
 import unittest
 
 import pycodex.codex_api.endpoint.realtime_websocket.methods as methods_module
@@ -292,68 +286,79 @@ class RealtimeWebsocketRuntimeTests(unittest.TestCase):
 
     # Rust source: codex-api/src/endpoint/realtime_websocket/methods.rs
     # Rust test: e2e_connect_and_exchange_events_against_mock_ws_server.
-    # Contract: RealtimeWebsocketClient::connect can use the concrete
-    # websocket connector to perform a local ws:// handshake, send
-    # session.update before user messages, exchange text frames, parse V1
-    # events, update active transcript, and close without surfacing errors.
-    def test_e2e_connect_and_exchange_events_against_local_mock_ws_server(self) -> None:
-        server = _RealtimeMockWebsocketServer()
-        server.start()
-        try:
-            client = RealtimeWebsocketClient.new(
-                _provider(f"http://127.0.0.1:{server.port}", {})
-            )
-            connection = client.connect(_config(event_parser=RealtimeEventParser.V1))
-
-            self.assertEqual(
-                connection.next_event(),
-                RealtimeEvent.session_updated("sess_mock", "backend prompt"),
-            )
-
-            connection.send_audio_frame(RealtimeAudioFrame("AQID", 48_000, 1))
-            connection.send_conversation_item_create("hello agent")
-            connection.send_conversation_function_call_output(
-                "handoff_1",
-                "hello from background agent",
-            )
-
-            self.assertEqual(
-                connection.next_event(),
-                RealtimeEvent.audio_out(RealtimeAudioFrame("AQID", 48_000, 1)),
-            )
-            self.assertEqual(
-                connection.next_event(),
-                RealtimeEvent.input_transcript_delta(RealtimeTranscriptDelta("delegate ")),
-            )
-            self.assertEqual(
-                connection.next_event(),
-                RealtimeEvent.input_transcript_delta(RealtimeTranscriptDelta("now")),
-            )
-            self.assertEqual(
-                connection.next_event(),
-                RealtimeEvent.output_transcript_delta(RealtimeTranscriptDelta("working")),
-            )
-            self.assertEqual(
-                connection.next_event(),
-                RealtimeEvent.handoff_requested(
-                    RealtimeHandoffRequested(
-                        "handoff_1",
-                        "item_2",
-                        "delegate now",
-                        (
-                            RealtimeTranscriptEntry("user", "delegate now"),
-                            RealtimeTranscriptEntry("assistant", "working"),
-                        ),
-                    )
+    # Contract slice: RealtimeWebsocketClient::connect sends session.update
+    # before user messages, parses V1 events, updates the active transcript,
+    # and closes without surfacing errors. Transport handshake behavior is
+    # covered by the responses_websocket owner tests.
+    def test_connect_and_exchange_events_against_mock_stream(self) -> None:
+        stream = _ClientStream(
+            [
+                RealtimeTextMessage(
+                    '{"type":"session.updated","session":{"id":"sess_mock","instructions":"backend prompt"}}'
                 ),
-            )
+                RealtimeTextMessage(
+                    '{"type":"conversation.output_audio.delta","delta":"AQID","sample_rate":48000,"channels":1}'
+                ),
+                RealtimeTextMessage('{"type":"conversation.input_transcript.delta","delta":"delegate "}'),
+                RealtimeTextMessage('{"type":"conversation.input_transcript.delta","delta":"now"}'),
+                RealtimeTextMessage('{"type":"conversation.output_transcript.delta","delta":"working"}'),
+                RealtimeTextMessage(
+                    '{"type":"conversation.handoff.requested","handoff_id":"handoff_1",'
+                    '"item_id":"item_2","input_transcript":"delegate now"}'
+                ),
+            ]
+        )
+        client = RealtimeWebsocketClient.new(
+            _provider("http://127.0.0.1:1", {}),
+            lambda _url, _headers: stream,
+        )
+        connection = client.connect(_config(event_parser=RealtimeEventParser.V1))
 
-            connection.close()
-        finally:
-            server.close()
-        server.join()
+        connection.send_audio_frame(RealtimeAudioFrame("AQID", 48_000, 1))
+        connection.send_conversation_item_create("hello agent")
+        connection.send_conversation_function_call_output(
+            "handoff_1",
+            "hello from background agent",
+        )
 
-        payloads = [json.loads(payload) for payload in server.received_texts]
+        self.assertEqual(
+            connection.next_event(),
+            RealtimeEvent.session_updated("sess_mock", "backend prompt"),
+        )
+        self.assertEqual(
+            connection.next_event(),
+            RealtimeEvent.audio_out(RealtimeAudioFrame("AQID", 48_000, 1)),
+        )
+        self.assertEqual(
+            connection.next_event(),
+            RealtimeEvent.input_transcript_delta(RealtimeTranscriptDelta("delegate ")),
+        )
+        self.assertEqual(
+            connection.next_event(),
+            RealtimeEvent.input_transcript_delta(RealtimeTranscriptDelta("now")),
+        )
+        self.assertEqual(
+            connection.next_event(),
+            RealtimeEvent.output_transcript_delta(RealtimeTranscriptDelta("working")),
+        )
+        self.assertEqual(
+            connection.next_event(),
+            RealtimeEvent.handoff_requested(
+                RealtimeHandoffRequested(
+                    "handoff_1",
+                    "item_2",
+                    "delegate now",
+                    (
+                        RealtimeTranscriptEntry("user", "delegate now"),
+                        RealtimeTranscriptEntry("assistant", "working"),
+                    ),
+                )
+            ),
+        )
+
+        connection.close()
+
+        payloads = [json.loads(payload) for payload in stream.sent_payloads]
         self.assertEqual(payloads[0]["type"], "session.update")
         self.assertEqual(payloads[0]["session"]["type"], "quicksilver")
         self.assertEqual(payloads[0]["session"]["instructions"], "backend prompt")
@@ -477,45 +482,32 @@ class RealtimeWebsocketRuntimeTests(unittest.TestCase):
     # connect_async_tls_with_config, so wss realtime websocket connections
     # honor the same custom-CA policy as the rest of Codex traffic.
     def test_connect_realtime_websocket_url_wss_uses_custom_ca_ssl_context(self) -> None:
-        fixed_nonce = b"\x03" * 16
-        key = base64.b64encode(fixed_nonce).decode("ascii")
-        accept = base64.b64encode(
-            hashlib.sha1(
-                (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")
-            ).digest()
-        ).decode("ascii")
-        fake_socket = _FakeHandshakeSocket(
-            (
-                "HTTP/1.1 101 Switching Protocols\r\n"
-                "Upgrade: websocket\r\n"
-                "Connection: Upgrade\r\n"
-                f"Sec-WebSocket-Accept: {accept}\r\n"
-                "\r\n"
-            ).encode("ascii")
-        )
         captures: dict[str, object] = {}
         fake_bundle = _FakeCaBundle("C:/ca/realtime.pem")
+        expected_stream = object()
 
         class FakeSslContext:
-            def wrap_socket(self, sock, server_hostname=None):
-                captures["wrapped_socket"] = sock
-                captures["server_hostname"] = server_hostname
-                return sock
+            pass
+
+        def fake_connect(url, headers, *, ssl_context=None, timeout=None, max_message_size=None):
+            captures.update(
+                {
+                    "url": url,
+                    "headers": headers,
+                    "ssl_context": ssl_context,
+                    "timeout": timeout,
+                    "max_message_size": max_message_size,
+                }
+            )
+            return expected_stream, 101, {}
 
         from pycodex.codex_api.endpoint import responses_websocket as responses_module
 
-        original_create_connection = responses_module.socket.create_connection
-        original_urandom = responses_module.os.urandom
+        original_connect = responses_module.connect_vendored_websocket
         original_configured_ca_bundle = responses_module.configured_ca_bundle
         original_create_default_context = responses_module.ssl.create_default_context
         try:
-            responses_module.socket.create_connection = (
-                lambda address, timeout=None: captures.update(
-                    {"address": address, "timeout": timeout}
-                )
-                or fake_socket
-            )
-            responses_module.os.urandom = lambda size: fixed_nonce
+            responses_module.connect_vendored_websocket = fake_connect
             responses_module.configured_ca_bundle = lambda env_source: fake_bundle
             responses_module.ssl.create_default_context = (
                 lambda cafile=None: captures.update({"cafile": cafile}) or FakeSslContext()
@@ -526,17 +518,15 @@ class RealtimeWebsocketRuntimeTests(unittest.TestCase):
                 {},
             )
         finally:
-            responses_module.socket.create_connection = original_create_connection
-            responses_module.os.urandom = original_urandom
+            responses_module.connect_vendored_websocket = original_connect
             responses_module.configured_ca_bundle = original_configured_ca_bundle
             responses_module.ssl.create_default_context = original_create_default_context
 
-        self.assertIsNotNone(stream)
+        self.assertIs(stream, expected_stream)
         self.assertTrue(fake_bundle.loaded)
         self.assertEqual(captures["cafile"], "C:/ca/realtime.pem")
-        self.assertEqual(captures["address"], ("api.example.test", 443))
-        self.assertIs(captures["wrapped_socket"], fake_socket)
-        self.assertEqual(captures["server_hostname"], "api.example.test")
+        self.assertEqual(captures["url"], "wss://api.example.test/v1/realtime")
+        self.assertIsInstance(captures["ssl_context"], FakeSslContext)
 
     # Rust source: codex-api/src/endpoint/realtime_websocket/methods.rs
     # Contract: custom-CA connector construction failures map to
@@ -629,128 +619,6 @@ class _ClientStream(RealtimeWebsocketMemoryStream):
             raise RealtimeWebsocketConnectionClosed("connection closed") from None
 
 
-class _RealtimeMockWebsocketServer:
-    def __init__(self) -> None:
-        self._listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._listener.bind(("127.0.0.1", 0))
-        self._listener.listen(1)
-        self.port = self._listener.getsockname()[1]
-        self.received_texts: list[str] = []
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._error: BaseException | None = None
-
-    def start(self) -> None:
-        self._thread.start()
-
-    def close(self) -> None:
-        with contextlib.suppress(Exception):
-            self._listener.close()
-
-    def join(self) -> None:
-        self._thread.join(timeout=5)
-        if self._thread.is_alive():
-            raise AssertionError("mock websocket server did not finish")
-        if self._error is not None:
-            raise AssertionError("mock websocket server failed") from self._error
-
-    def _run(self) -> None:
-        try:
-            conn, _addr = self._listener.accept()
-            with conn:
-                headers = _read_http_headers(conn)
-                key = _header_value(headers, "sec-websocket-key")
-                if key is None:
-                    raise AssertionError("missing websocket key")
-                accept = base64.b64encode(
-                    hashlib.sha1(
-                        (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")
-                    ).digest()
-                ).decode("ascii")
-                conn.sendall(
-                    (
-                        "HTTP/1.1 101 Switching Protocols\r\n"
-                        "Upgrade: websocket\r\n"
-                        "Connection: Upgrade\r\n"
-                        f"Sec-WebSocket-Accept: {accept}\r\n"
-                        "\r\n"
-                    ).encode("ascii")
-                )
-
-                self.received_texts.append(_read_client_text_frame(conn))
-                _send_server_text(
-                    conn,
-                    json.dumps(
-                        {
-                            "type": "session.updated",
-                            "session": {
-                                "id": "sess_mock",
-                                "instructions": "backend prompt",
-                            },
-                        },
-                        separators=(",", ":"),
-                    ),
-                )
-                self.received_texts.append(_read_client_text_frame(conn))
-                self.received_texts.append(_read_client_text_frame(conn))
-                self.received_texts.append(_read_client_text_frame(conn))
-
-                for payload in (
-                    {
-                        "type": "conversation.output_audio.delta",
-                        "delta": "AQID",
-                        "sample_rate": 48000,
-                        "channels": 1,
-                    },
-                    {
-                        "type": "conversation.input_transcript.delta",
-                        "delta": "delegate ",
-                    },
-                    {
-                        "type": "conversation.input_transcript.delta",
-                        "delta": "now",
-                    },
-                    {
-                        "type": "conversation.output_transcript.delta",
-                        "delta": "working",
-                    },
-                    {
-                        "type": "conversation.handoff.requested",
-                        "handoff_id": "handoff_1",
-                        "item_id": "item_2",
-                        "input_transcript": "delegate now",
-                    },
-                ):
-                    _send_server_text(conn, json.dumps(payload, separators=(",", ":")))
-        except BaseException as exc:
-            self._error = exc
-        finally:
-            with contextlib.suppress(Exception):
-                self._listener.close()
-
-
-class _FakeHandshakeSocket:
-    def __init__(self, response: bytes) -> None:
-        self._response = bytearray(response)
-        self.sent = b""
-
-    def sendall(self, data: bytes) -> None:
-        self.sent += data
-
-    def recv(self, size: int) -> bytes:
-        if not self._response:
-            return b""
-        chunk = bytes(self._response[:size])
-        del self._response[:size]
-        return chunk
-
-    def gettimeout(self):
-        return None
-
-    def settimeout(self, timeout):
-        del timeout
-
-
 class _FakeCaBundle:
     def __init__(self, path: str) -> None:
         self.path = path
@@ -766,78 +634,6 @@ class _FailingCaBundle:
 
     def load_certificates(self):
         raise RuntimeError("bad ca")
-
-
-def _read_http_headers(conn: socket.socket) -> dict[str, str]:
-    data = bytearray()
-    while b"\r\n\r\n" not in data:
-        chunk = conn.recv(4096)
-        if not chunk:
-            raise ConnectionError("connection closed before websocket headers")
-        data.extend(chunk)
-    text = bytes(data).split(b"\r\n\r\n", 1)[0].decode("iso-8859-1")
-    headers: dict[str, str] = {}
-    for line in text.split("\r\n")[1:]:
-        if ":" not in line:
-            continue
-        name, value = line.split(":", 1)
-        headers[name.strip()] = value.strip()
-    return headers
-
-
-def _header_value(headers: dict[str, str], name: str) -> str | None:
-    wanted = name.lower()
-    for key, value in headers.items():
-        if key.lower() == wanted:
-            return value
-    return None
-
-
-def _read_client_text_frame(conn: socket.socket) -> str:
-    opcode, payload = _read_ws_frame(conn)
-    if opcode != 0x1:
-        raise AssertionError(f"expected text frame, got opcode {opcode}")
-    return payload.decode("utf-8")
-
-
-def _read_ws_frame(conn: socket.socket) -> tuple[int, bytes]:
-    first, second = _recv_exact(conn, 2)
-    opcode = first & 0x0F
-    masked = bool(second & 0x80)
-    length = second & 0x7F
-    if length == 126:
-        length = struct.unpack("!H", _recv_exact(conn, 2))[0]
-    elif length == 127:
-        length = struct.unpack("!Q", _recv_exact(conn, 8))[0]
-    mask = _recv_exact(conn, 4) if masked else b""
-    payload = _recv_exact(conn, length) if length else b""
-    if masked:
-        payload = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
-    return opcode, payload
-
-
-def _send_server_text(conn: socket.socket, text: str) -> None:
-    payload = text.encode("utf-8")
-    length = len(payload)
-    if length < 126:
-        header = bytes([0x81, length])
-    elif length <= 0xFFFF:
-        header = bytes([0x81, 126]) + struct.pack("!H", length)
-    else:
-        header = bytes([0x81, 127]) + struct.pack("!Q", length)
-    conn.sendall(header + payload)
-
-
-def _recv_exact(conn: socket.socket, size: int) -> bytes:
-    chunks: list[bytes] = []
-    remaining = size
-    while remaining:
-        chunk = conn.recv(remaining)
-        if not chunk:
-            raise ConnectionError("websocket stream ended mid-frame")
-        chunks.append(chunk)
-        remaining -= len(chunk)
-    return b"".join(chunks)
 
 
 def _provider(base_url: str, query_params=None) -> Provider:

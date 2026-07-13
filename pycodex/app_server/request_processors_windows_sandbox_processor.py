@@ -69,7 +69,7 @@ class WindowsSandboxRequestProcessor:
         self.outgoing = outgoing
         self.config = config
         self.config_manager = config_manager
-        self._setup_runner = setup_runner or _missing_setup_runner
+        self._setup_runner = setup_runner or _native_setup_runner
         self._task_spawner = task_spawner or _spawn_task
         self._env_map = dict(os.environ if env_map is None else env_map)
 
@@ -217,8 +217,28 @@ async def _maybe_await(value: Awaitable[Any] | Any) -> Any:
     return value
 
 
-async def _missing_setup_runner(_request: WindowsSandboxSetupRequest) -> None:
-    raise NotImplementedError("windows sandbox setup runner is not wired")
+async def _native_setup_runner(request: WindowsSandboxSetupRequest) -> None:
+    from pycodex.core.windows_sandbox import (
+        WindowsSandboxSetupMode as CoreWindowsSandboxSetupMode,
+        WindowsSandboxSetupRequest as CoreWindowsSandboxSetupRequest,
+        run_windows_sandbox_setup,
+    )
+
+    mode = (
+        CoreWindowsSandboxSetupMode.ELEVATED
+        if request.mode is WindowsSandboxSetupMode.ELEVATED
+        else CoreWindowsSandboxSetupMode.UNELEVATED
+    )
+    await run_windows_sandbox_setup(
+        CoreWindowsSandboxSetupRequest(
+            mode=mode,
+            permission_profile=request.permission_profile,
+            permission_profile_cwd=request.permission_profile_cwd,
+            command_cwd=request.command_cwd,
+            env_map=request.env_map,
+            codex_home=request.codex_home,
+        )
+    )
 
 
 def _spawn_task(awaitable: Awaitable[None]) -> asyncio.Task[None]:

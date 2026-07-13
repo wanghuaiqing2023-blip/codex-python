@@ -34,7 +34,7 @@ def test_patch_history_cell_renders_deterministic_file_summary() -> None:
     assert "  └ a.py (+1 -0)" in rendered
     assert any("1 + print" in line for line in rendered)
     assert "  └ b.py (+1 -1)" in rendered
-    assert any("old.py -> new.py" in line for line in rendered)
+    assert any("old.py → new.py" in line for line in rendered)
     assert texts(cell.raw_lines()) == rendered
 
 

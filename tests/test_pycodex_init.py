@@ -59,7 +59,7 @@ class TopLevelPackageImportTests(unittest.TestCase):
         self.assertTrue(hasattr(login, "read_auth_json"))
         self.assertTrue(hasattr(login, "write_auth_json"))
         self.assertTrue(hasattr(login, "run_chatgpt_login"))
-        self.assertEqual(login.__all__, [
+        compatibility_exports = {
             "AUTH_FILE",
             "AUTH_MODE_API_KEY",
             "AUTH_MODE_CHATGPT",
@@ -73,7 +73,10 @@ class TopLevelPackageImportTests(unittest.TestCase):
             "run_chatgpt_login",
             "safe_format_key",
             "write_auth_json",
-        ])
+        }
+        self.assertTrue(compatibility_exports.issubset(login.__all__))
+        # Rust `codex-login::lib` also re-exports its auth/device/server owners.
+        self.assertTrue({"AuthManager", "DeviceCode", "LoginServer"}.issubset(login.__all__))
 
     def test_python_m_entrypoint_rejects_non_tty_tui_startup(self) -> None:
         """Rust codex-cli refuses interactive TUI startup without a terminal.

@@ -35,7 +35,7 @@ def test_diff_summary_handles_update_rename_delete_and_narrow_width() -> None:
     rendered = [_text(line) for line in lines]
 
     assert rendered[0] == "• Edited 2 files (+1 -3)"
-    assert any("old.py -> new.py" in line for line in rendered)
+    assert any("old.py → new.py" in line for line in rendered)
     assert any("gone.txt" in line for line in rendered)
     diff_rows = [line for line in rendered if " + " in line or " - " in line]
     assert all(display_width(line) <= 20 for line in diff_rows)

@@ -3660,3 +3660,27 @@ This ledger records Rust module-scoped behavior contracts for `codex-cli` that a
   passed on 2026-06-21 with `445 passed, 32 subtests passed`.
 - Validation: `python -m py_compile pycodex/cli/doctor_updates.py tests/test_cli_doctor_updates.py`
   passed on 2026-06-21.
+
+### src/debug_sandbox.rs real Windows product-session closeout
+
+- Rust crate/module: `codex-cli` / `src/debug_sandbox.rs`, fixed commit
+  `1c7832ffa37a3ab56f601497c00bfce120370bf9`.
+- Rust anchors closed: `run_command_under_windows_session`, elevated/legacy
+  spawn selection, live input/output forwarders, Ctrl+C termination, five
+  second output drain, and fail-closed spawn errors.
+- Python parity: `run_debug_sandbox_windows_product_session` now creates the
+  real `pycodex.windows_sandbox` legacy/elevated Popen-compatible session and
+  owns live stdin/stdout/stderr forwarding. The public parser path calls this
+  product function directly. The earlier entries describing Windows session
+  objects and background forwarders as deferred are historical and are
+  superseded by this closeout.
+- Python tests: `tests/test_cli_debug_sandbox.py` covers the live product bridge;
+  `tests/test_cli_debug_windows_sandbox_native.py` covers real native stdio;
+  `tests/test_windows_sandbox_process.py` covers restricted ConPTY, timeout,
+  cancellation, and descendant cleanup.
+- Validation: debug-sandbox tests `65 passed`; Windows sandbox plus CLI owner
+  group `140 passed, 1 skipped`; complete root regression `12681 passed, 37
+  skipped, 873 subtests passed` on 2026-07-13.
+- External evidence: `WINDOWS_SANDBOX_PARITY_EVIDENCE.md` records fixed
+  Rust/Python public CLI filesystem, network, stdin, and TTY comparisons.
+- Remaining gaps: none in this Rust module's Windows product-session contract.

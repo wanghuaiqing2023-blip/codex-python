@@ -361,7 +361,7 @@ class CoreShellHandlerTests(unittest.TestCase):
         self.assertEqual(request.shell_request.exec_approval_requirement.type, "needs_approval")
         self.assertEqual(request.prefix_rule, ("echo",))
 
-    def test_handler_entrypoint_rejects_unsupported_payload_and_missing_runtime(self) -> None:
+    def test_handler_entrypoint_rejects_unsupported_payload(self) -> None:
         # Rust source: codex-rs/core/src/tools/handlers/shell/shell_command.rs::ShellCommandHandler::handle
         # Rust contract: non-function payloads are model-visible errors before runtime dispatch.
         handler = ShellCommandHandler()
@@ -381,21 +381,6 @@ class CoreShellHandlerTests(unittest.TestCase):
 
         with self.assertRaisesRegex(FunctionCallError, "unsupported payload for shell_command handler"):
             handler.handle(invocation)
-
-        missing_runtime = ToolInvocation(
-            call_id="call-shell",
-            tool_name=ToolName.plain("shell_command"),
-            session=SimpleNamespace(
-                conversation_id=ThreadId.new(),
-                user_shell=lambda: Shell(ShellType.BASH, "/bin/bash"),
-            ),
-            turn=invocation.turn,
-            cancellation_token=object(),
-            tracker=object(),
-            payload=ToolPayload.function('{"command":"echo hello"}'),
-        )
-        with self.assertRaisesRegex(FunctionCallError, "shell_command runtime is unavailable"):
-            asyncio.run(handler.handle(missing_runtime))
 
     def test_pre_tool_use_payload_uses_bash_hook(self) -> None:
         # Rust source: codex-rs/core/src/tools/handlers/shell/shell_command.rs

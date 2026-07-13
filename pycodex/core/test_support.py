@@ -8,6 +8,8 @@ Production code should not depend on this module.
 
 from __future__ import annotations
 
+__test__ = False
+
 import inspect
 from dataclasses import dataclass
 from pathlib import Path

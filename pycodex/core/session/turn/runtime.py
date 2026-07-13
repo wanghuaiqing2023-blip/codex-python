@@ -63,7 +63,12 @@ from pycodex.core.tools.spec_plan import build_environment_tool_router_from_turn
 from pycodex.core.tools.network_approval import CancellationToken as ToolCancellationToken
 from pycodex.core.tools.parallel import ToolCallRuntime
 from pycodex.core.tools.router import FunctionCallError, ToolRouter
-from pycodex.core.tools.context import ApplyPatchToolOutput, ExecCommandToolOutput
+from pycodex.core.tools.context import (
+    ApplyPatchToolOutput,
+    CommandExecutionToolOutput,
+    ExecCommandToolOutput,
+    FunctionToolOutput,
+)
 from pycodex.core.tools.events import (
     ToolEventCtx,
     TurnDiffTrackerUpdate,
@@ -72,6 +77,7 @@ from pycodex.core.tools.events import (
     build_patch_begin_item,
     build_patch_end,
 )
+from pycodex.core.tools.handlers.shell import ShellCommandHandler, ShellCommandToolCallParams
 from pycodex.core.tools.handlers.unified_exec import ExecCommandArgs, get_command
 from pycodex.protocol.exec_output import bytes_to_string_smart
 from pycodex.shell_command.parse_command import parse_command
@@ -115,6 +121,7 @@ from pycodex.protocol import build_hook_prompt_message
 MAX_ADDITIONAL_CONTEXT_TOKENS = 1000
 DEFAULT_STREAM_MAX_RETRIES = 5
 MAX_STREAM_MAX_RETRIES = 100
+_COMMAND_EXECUTION_TOOL_NAMES = frozenset({"exec_command", "shell", "local_shell", "shell_command"})
 _LAST_AGENT_MESSAGE_UNSET = object()
 _FIELD_VALUE_MISSING = object()
 
@@ -435,24 +442,24 @@ async def run_user_turn_sampling_from_session(
                 SamplingRuntimeEventApplicationState(),
                 last_agent_message_override=None,
             )
-    await _record_sampling_token_usage(sess, prepared.turn_context, raw_result)
     if not user_input_emitted and user_input_to_emit and emit_user_prompt_turn_item:
         await _emit_user_prompt_turn_item(sess, prepared.turn_context, user_input_to_emit)
         user_input_emitted = True
+    initial_stream_events = _stream_events_from_sampling_result(raw_result)
     response_items = _response_items_from_sampling_result(raw_result)
     if response_items:
         await _record_response_items(
             sess,
             prepared.turn_context,
             response_items,
-            emit_turn_item=emit_response_item_turn_item,
+            emit_turn_item=emit_response_item_turn_item and not initial_stream_events,
         )
     await _record_response_items_turn_ttfm(sess, prepared.turn_context, response_items)
     _update_stream_runtime_last_agent_message_from_response_items(stream_runtime_state, response_items)
     all_response_items = list(response_items)
     all_tool_response_items: list[ResponseItem] = []
     raw_results = [raw_result]
-    all_stream_events = list(_stream_events_from_sampling_result(raw_result))
+    all_stream_events = list(initial_stream_events)
     await _record_stream_events_turn_ttft(sess, prepared.turn_context, all_stream_events)
     if getattr(raw_result, "live_stream_events_emitted", False):
         all_stream_event_dispatch_plans = list(live_stream_event_observer.dispatch_plans_since(live_plan_cursor))
@@ -468,27 +475,29 @@ async def run_user_turn_sampling_from_session(
                 turn_id=_turn_context_turn_id(prepared.turn_context),
             )
         )
-        stream_event_apply_plans = list(
-            _sampling_stream_event_apply_plans_from_result(
-                raw_result,
-                all_stream_event_dispatch_plans,
-                stream_runtime_state,
-                turn_context=prepared.turn_context,
-                has_pending_mailbox_items=await _has_pending_mailbox_items(sess) if all_stream_events else False,
-            )
-        )
-        emitted_stream_event_cursor = await _emit_stream_runtime_events(
-            sess,
-            prepared.turn_context,
+        initial_apply_plans, emitted_stream_event_cursor = await _sampling_stream_event_apply_plans_from_result(
+            raw_result,
+            all_stream_event_dispatch_plans,
             stream_runtime_state,
-            0,
+            sess=sess,
+            turn_context=prepared.turn_context,
+            emitted_stream_event_cursor=0,
+            has_pending_mailbox_items=await _has_pending_mailbox_items(sess) if all_stream_events else False,
         )
+        stream_event_apply_plans = list(initial_apply_plans)
     await _apply_stream_runtime_session_side_effects(
         sess,
         prepared.turn_context,
         stream_runtime_state,
         raw_result,
     )
+    if not getattr(raw_result, "live_stream_events_emitted", False):
+        emitted_stream_event_cursor = await _emit_stream_runtime_events(
+            sess,
+            prepared.turn_context,
+            stream_runtime_state,
+            emitted_stream_event_cursor,
+        )
     try:
         await _apply_stream_runtime_loop_tail(
             sess,
@@ -511,6 +520,7 @@ async def run_user_turn_sampling_from_session(
                 stream_runtime_state,
             )
         raise
+    await _record_sampling_token_usage(sess, prepared.turn_context, raw_result)
     stream_response_items = _stream_non_tool_response_items(
         all_stream_events,
         skip_items=response_items,
@@ -781,7 +791,6 @@ async def run_user_turn_sampling_from_session(
                     stream_runtime_state,
                     last_agent_message_override=None,
                 )
-        await _record_sampling_token_usage(sess, prepared.turn_context, raw_result)
         raw_results.append(raw_result)
         followup_stream_events = _stream_events_from_sampling_result(raw_result)
         await _record_stream_events_turn_ttft(sess, prepared.turn_context, followup_stream_events)
@@ -797,30 +806,33 @@ async def run_user_turn_sampling_from_session(
                 thread_id=str(getattr(model_client.state, "thread_id", "")),
                 turn_id=_turn_context_turn_id(prepared.turn_context),
             )
-            followup_apply_plans = _sampling_stream_event_apply_plans_from_result(
+            followup_apply_plans, emitted_stream_event_cursor = await _sampling_stream_event_apply_plans_from_result(
                 raw_result,
                 followup_dispatch_plans,
                 stream_runtime_state,
+                sess=sess,
                 turn_context=prepared.turn_context,
+                emitted_stream_event_cursor=emitted_stream_event_cursor,
                 has_pending_mailbox_items=await _has_pending_mailbox_items(sess) if followup_stream_events else False,
             )
         all_stream_event_dispatch_plans.extend(followup_dispatch_plans)
         stream_event_apply_plans.extend(followup_apply_plans)
-        if getattr(raw_result, "live_stream_events_emitted", False):
+        live_followup_events_emitted = bool(getattr(raw_result, "live_stream_events_emitted", False))
+        if live_followup_events_emitted:
             emitted_stream_event_cursor = len(getattr(stream_runtime_state, "emitted_stream_events", ()) or ())
-        else:
-            emitted_stream_event_cursor = await _emit_stream_runtime_events(
-                sess,
-                prepared.turn_context,
-                stream_runtime_state,
-                emitted_stream_event_cursor,
-            )
         await _apply_stream_runtime_session_side_effects(
             sess,
             prepared.turn_context,
             stream_runtime_state,
             raw_result,
         )
+        if not live_followup_events_emitted:
+            emitted_stream_event_cursor = await _emit_stream_runtime_events(
+                sess,
+                prepared.turn_context,
+                stream_runtime_state,
+                emitted_stream_event_cursor,
+            )
         try:
             await _apply_stream_runtime_loop_tail(
                 sess,
@@ -843,13 +855,14 @@ async def run_user_turn_sampling_from_session(
                     stream_runtime_state,
                 )
             raise
+        await _record_sampling_token_usage(sess, prepared.turn_context, raw_result)
         response_items = _response_items_from_sampling_result(raw_result)
         if response_items:
             await _record_response_items(
                 sess,
                 prepared.turn_context,
                 response_items,
-                emit_turn_item=emit_response_item_turn_item,
+                emit_turn_item=emit_response_item_turn_item and not followup_stream_events,
             )
             await _record_response_items_turn_ttfm(sess, prepared.turn_context, response_items)
             _update_stream_runtime_last_agent_message_from_response_items(stream_runtime_state, response_items)
@@ -3019,6 +3032,15 @@ class _LiveStreamEventObserver:
         state_after = getattr(getattr(apply_plan, "output_item_done_apply_plan", None), "state_after_output_result", None)
         if isinstance(state_after, SamplingOutputState):
             self.output_state = state_after
+        # Rust applies metadata ResponseEvents as they arrive. Keeping these
+        # side effects live preserves event ordering (for example, model
+        # reroute before a later rate-limit token-count update) and avoids
+        # losing header-derived metadata when the body is streamed live.
+        await _apply_stream_metadata_event_side_effects(
+            self.sess,
+            self.turn_context,
+            self.runtime_state,
+        )
         self.cursor = await _emit_stream_runtime_events(
             self.sess,
             self.turn_context,
@@ -3448,17 +3470,19 @@ def _call_with_optional_turn_context(callback: Any, turn_context: Any) -> Any:
     return callback()
 
 
-def _sampling_stream_event_apply_plans_from_result(
+async def _sampling_stream_event_apply_plans_from_result(
     raw_result: Any,
     dispatch_plans: Sequence[Any],
     runtime_state: SamplingRuntimeEventApplicationState,
     *,
+    sess: Any,
     turn_context: Any = None,
+    emitted_stream_event_cursor: int = 0,
     has_pending_mailbox_items: bool = False,
-) -> tuple[Any, ...]:
+) -> tuple[tuple[Any, ...], int]:
     stream_events = _stream_events_from_sampling_result(raw_result)
     if not stream_events:
-        return ()
+        return (), emitted_stream_event_cursor
     if len(stream_events) != len(dispatch_plans):
         raise ValueError("stream event and dispatch plan counts differ")
     adapter = SamplingRequestRuntimeHookAdapter(event_application_state=runtime_state)
@@ -3499,10 +3523,19 @@ def _sampling_stream_event_apply_plans_from_result(
         )
         apply_plans.append(apply_plan)
         adapter.apply_event_plan({"type": "apply_event_plan", "plan": apply_plan})
+        # Rust handles ResponseEvents in arrival order. The buffered sampler
+        # path must preserve the same metadata/UI ordering as the live observer.
+        await _apply_stream_metadata_event_side_effects(sess, turn_context, runtime_state)
+        emitted_stream_event_cursor = await _emit_stream_runtime_events(
+            sess,
+            turn_context,
+            runtime_state,
+            emitted_stream_event_cursor,
+        )
         state_after = getattr(getattr(apply_plan, "output_item_done_apply_plan", None), "state_after_output_result", None)
         if isinstance(state_after, SamplingOutputState):
             output_state = state_after
-    return tuple(apply_plans)
+    return tuple(apply_plans), emitted_stream_event_cursor
 
 
 def _stream_event_output_result_for_item(item: ResponseItem, *, plan_mode: bool) -> OutputItemResult:
@@ -5036,17 +5069,23 @@ async def _emit_completed_command_execution(
     """Emit Rust-style command completion before the model follow-up."""
 
     tool_name = getattr(getattr(call, "tool_name", None), "name", "")
-    output = getattr(result, "result", None)
-    if tool_name not in {"exec_command", "shell", "local_shell"} or not isinstance(output, ExecCommandToolOutput):
+    output = _command_execution_output(tool_name, getattr(result, "result", None))
+    if output is None:
         return False
     details = _command_execution_details(sess, turn_context, call)
     if details is None:
         return False
     command, cwd, parsed = details
-    exit_code = output.exit_code
-    normalized_exit_code = 0 if exit_code is None else int(exit_code)
-    decoded_output = bytes_to_string_smart(output.raw_output)
-    status = ExecCommandStatus.FAILED if normalized_exit_code != 0 else ExecCommandStatus.COMPLETED
+    (
+        stdout,
+        stderr,
+        aggregated_output,
+        normalized_exit_code,
+        duration_ms,
+        formatted_output,
+        status,
+        process_id,
+    ) = output
     item = build_command_execution_end_item(
         ExecCommandEndEvent(
             call_id=str(getattr(call, "call_id", "")),
@@ -5054,14 +5093,14 @@ async def _emit_completed_command_execution(
             command=command,
             cwd=cwd,
             parsed_cmd=parsed,
-            stdout=decoded_output,
-            stderr="",
-            aggregated_output=decoded_output,
+            stdout=stdout,
+            stderr=stderr,
+            aggregated_output=aggregated_output,
             exit_code=normalized_exit_code,
-            duration=max(0, int(float(output.wall_time_seconds) * 1000)),
-            formatted_output=decoded_output,
+            duration=duration_ms,
+            formatted_output=formatted_output,
             status=status,
-            process_id=None if output.process_id is None else str(output.process_id),
+            process_id=process_id,
             source=ExecCommandSource.AGENT,
         )
     )
@@ -5070,6 +5109,56 @@ async def _emit_completed_command_execution(
         await _maybe_await(emitter(turn_context, item))
         return True
     return False
+
+
+def _command_execution_output(
+    tool_name: str,
+    output: Any,
+) -> tuple[str, str, str, int, int, str, ExecCommandStatus, str | None] | None:
+    """Normalize shell-family outputs for Rust's ``ToolEmitter::shell`` lifecycle."""
+
+    if tool_name not in _COMMAND_EXECUTION_TOOL_NAMES:
+        return None
+    if isinstance(output, ExecCommandToolOutput):
+        exit_code = 0 if output.exit_code is None else int(output.exit_code)
+        text = bytes_to_string_smart(output.raw_output)
+        return (
+            text,
+            "",
+            text,
+            exit_code,
+            max(0, int(float(output.wall_time_seconds) * 1000)),
+            text,
+            ExecCommandStatus.FAILED if exit_code != 0 else ExecCommandStatus.COMPLETED,
+            None if output.process_id is None else str(output.process_id),
+        )
+    if isinstance(output, CommandExecutionToolOutput):
+        exec_output = output.exec_output
+        exit_code = int(exec_output.exit_code)
+        return (
+            exec_output.stdout.text,
+            exec_output.stderr.text,
+            exec_output.aggregated_output.text,
+            exit_code,
+            max(0, int(exec_output.duration.total_seconds() * 1000)),
+            output.into_text(),
+            ExecCommandStatus.FAILED if exit_code != 0 else ExecCommandStatus.COMPLETED,
+            None,
+        )
+    if tool_name == "shell_command" and isinstance(output, FunctionToolOutput):
+        text = output.into_text()
+        failed = output.success is False
+        return (
+            text if not failed else "",
+            text if failed else "",
+            text,
+            1 if failed else 0,
+            0,
+            text,
+            ExecCommandStatus.FAILED if failed else ExecCommandStatus.COMPLETED,
+            None,
+        )
+    return None
 
 
 async def _emit_failed_command_execution(
@@ -5112,7 +5201,7 @@ def _command_execution_details(
     call: Any,
 ) -> tuple[tuple[str, ...], Path, tuple[Any, ...]] | None:
     tool_name = getattr(getattr(call, "tool_name", None), "name", "")
-    if tool_name not in {"exec_command", "shell", "local_shell"}:
+    if tool_name not in _COMMAND_EXECUTION_TOOL_NAMES:
         return None
     arguments = getattr(getattr(call, "payload", None), "arguments", "") or ""
     try:
@@ -5124,9 +5213,17 @@ def _command_execution_details(
 
     base_cwd = Path(getattr(turn_context, "cwd", "."))
     try:
+        if tool_name == "shell_command":
+            params = ShellCommandToolCallParams.from_json(arguments)
+            session_shell = ShellCommandHandler.session_shell(sess)
+            permissions = getattr(getattr(turn_context, "config", None), "permissions", None)
+            allow_login_shell = bool(getattr(permissions, "allow_login_shell", False))
+            use_login_shell = ShellCommandHandler.resolve_use_login_shell(params.login, allow_login_shell)
+            command = ShellCommandHandler.base_command(session_shell, params.command, use_login_shell)
+            cwd = base_cwd / params.workdir if params.workdir else base_cwd
+            return command, cwd, tuple(parse_command(command))
         args = ExecCommandArgs.from_json(arguments)
-        user_shell = getattr(sess, "user_shell", None)
-        session_shell = user_shell() if callable(user_shell) else user_shell
+        session_shell = ShellCommandHandler.session_shell(sess)
         permissions = getattr(getattr(turn_context, "config", None), "permissions", None)
         resolved = get_command(
             args,

@@ -30,6 +30,10 @@ def strip_bash_lc_and_escape(command: Iterable[str]) -> str:
 
 
 def split_command_string(command: str) -> list[str]:
+    if ":\\" in command:
+        windows_parts = _split_shlex_joined_windows_command(command)
+        if windows_parts is not None:
+            return windows_parts
     try:
         parts = shlex.split(command)
     except ValueError:
@@ -47,6 +51,25 @@ def split_command_string(command: str) -> list[str]:
         except ValueError:
             pass
     return [command]
+
+
+def _split_shlex_joined_windows_command(command: str) -> list[str] | None:
+    """Reverse Rust/Python shlex joining without consuming path backslashes."""
+
+    lexer = shlex.shlex(command, posix=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    lexer.escape = ""
+    try:
+        parts = list(lexer)
+    except ValueError:
+        return None
+    if not parts:
+        return None
+    try:
+        return parts if shlex.join(parts) == command else None
+    except Exception:
+        return None
 
 
 def relativize_to_home(path: str | os.PathLike[str]) -> Path | None:

@@ -551,9 +551,16 @@ def test_bottom_pane_footprint_cycle_runner_builds_clear_callback() -> None:
     runner = create_terminal_bottom_pane_footprint_cycle_runner()
     runner.tracker.live_status_active = True
     runner.tracker.popup_height = 4
+    runner.tracker.active_tail_height = 3
+    runner.tracker.composer_height = 2
 
-    def clear_factory(status: TerminalLiveStatusSurface, check_resize: bool):
+    def clear_factory(
+        status: TerminalLiveStatusSurface,
+        check_resize: bool,
+        footprint: TerminalBottomPaneFootprint,
+    ):
         calls.append(f"factory:{status.active}:{check_resize}")
+        calls.append(f"footprint:{footprint}")
 
         def clear() -> bool:
             calls.append("clear")
@@ -568,7 +575,12 @@ def test_bottom_pane_footprint_cycle_runner_builds_clear_callback() -> None:
 
     assert clear(False) is True
 
-    assert calls == ["factory:True:False", "clear"]
+    assert calls == [
+        "factory:True:False",
+        "footprint:TerminalBottomPaneFootprint(live_status_active=True, popup_height=4, "
+        "active_tail_height=3, composer_height=2)",
+        "clear",
+    ]
     assert runner.tracker.previous() == TerminalBottomPaneFootprint()
 
 

@@ -13,6 +13,7 @@ from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass
 from dataclasses import field
+from pathlib import Path
 from typing import Any, TypeVar
 
 from pycodex.protocol import ExecToolCallOutput
@@ -83,6 +84,7 @@ class ExecCommandRequest:
     cwd: Any = None
     sandbox_cwd: Any = None
     environment: Any = None
+    environment_is_complete: bool = False
     network: Any = None
     tty: bool = True
     sandbox_permissions: Any = None
@@ -106,6 +108,8 @@ class ExecCommandRequest:
             raise TypeError("max_output_tokens must be an integer or None")
         if not isinstance(self.tty, bool):
             raise TypeError("tty must be a bool")
+        if not isinstance(self.environment_is_complete, bool):
+            raise TypeError("environment_is_complete must be a bool")
         if not isinstance(self.additional_permissions_preapproved, bool):
             raise TypeError("additional_permissions_preapproved must be a bool")
         if self.justification is not None and not isinstance(self.justification, str):
@@ -864,6 +868,98 @@ def _command_for_spawn(command: tuple[str, ...], shell_type: Any) -> tuple[str, 
     return command
 
 
+def _spawn_unified_exec_process(
+    command: tuple[str, ...],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    tty: bool,
+    attempt: Any,
+) -> Any:
+    """Spawn through the selected product sandbox, never by display label."""
+
+    if os.name == "nt" and attempt is not None:
+        from pycodex.core.exec import windows_sandbox_uses_elevated_backend
+        from pycodex.core.sandbox_tags import SandboxType
+        from pycodex.protocol import WindowsSandboxLevel
+
+        sandbox = getattr(attempt, "sandbox", SandboxType.NONE)
+        if not isinstance(sandbox, SandboxType):
+            sandbox = SandboxType(str(sandbox))
+        if sandbox is SandboxType.WINDOWS_RESTRICTED_TOKEN:
+            level = getattr(attempt, "windows_sandbox_level", WindowsSandboxLevel.DISABLED)
+            if not isinstance(level, WindowsSandboxLevel):
+                level = WindowsSandboxLevel.parse(str(level))
+            if level is WindowsSandboxLevel.DISABLED:
+                raise OSError("Windows sandbox selected with disabled WindowsSandboxLevel; refusing unrestricted fallback")
+            profile = getattr(attempt, "permissions", None)
+            sandbox_cwd = Path(getattr(attempt, "sandbox_cwd", cwd))
+            deny_read, deny_write = _windows_profile_deny_overrides(profile, sandbox_cwd)
+            private_desktop = bool(getattr(attempt, "windows_sandbox_private_desktop", False))
+            managed_network = bool(getattr(attempt, "enforce_managed_network", False))
+            from pycodex.utils.home_dir import find_codex_home
+
+            if windows_sandbox_uses_elevated_backend(level, managed_network):
+                from pycodex.windows_sandbox.elevated import spawn_elevated_popen
+
+                return spawn_elevated_popen(
+                    profile,
+                    sandbox_cwd,
+                    find_codex_home(),
+                    command,
+                    cwd,
+                    env,
+                    stdin_open=tty,
+                    tty=tty,
+                    use_private_desktop=private_desktop,
+                    proxy_enforced=managed_network,
+                    additional_deny_read_paths=deny_read,
+                    additional_deny_write_paths=deny_write,
+                )
+            from pycodex.windows_sandbox import spawn_windows_sandbox_popen
+
+            return spawn_windows_sandbox_popen(
+                profile,
+                sandbox_cwd,
+                find_codex_home(),
+                command,
+                cwd,
+                env,
+                stdin_open=tty,
+                tty=tty,
+                use_private_desktop=private_desktop,
+                additional_deny_read_paths=deny_read,
+                additional_deny_write_paths=deny_write,
+            )
+
+    return subprocess.Popen(
+        command,
+        cwd=str(cwd),
+        env=env,
+        stdin=subprocess.PIPE if tty else subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        shell=False,
+    )
+
+
+def _windows_profile_deny_overrides(profile: Any, cwd: Path) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+    """Project split filesystem restrictions into native Windows ACL inputs."""
+
+    policy_factory = getattr(profile, "file_system_sandbox_policy", None)
+    if not callable(policy_factory):
+        return (), ()
+    policy = policy_factory()
+    unreadable = getattr(policy, "get_unreadable_roots_with_cwd", None)
+    deny_read = tuple(Path(path) for path in unreadable(cwd)) if callable(unreadable) else ()
+    writable = getattr(policy, "get_writable_roots_with_cwd", None)
+    deny_write: list[Path] = []
+    if callable(writable):
+        for root in writable(cwd):
+            deny_write.extend(Path(path) for path in getattr(root, "read_only_subpaths", ()) or ())
+    return tuple(dict.fromkeys(deny_read)), tuple(dict.fromkeys(deny_write))
+
+
 class UnifiedExecProcessManager:
     """Small stdlib manager for unified exec process ids, sessions, and pruning."""
 
@@ -896,8 +992,11 @@ class UnifiedExecProcessManager:
         if isinstance(process_id, bool) or not isinstance(process_id, int):
             raise TypeError("request.process_id must be an integer")
 
-        env = apply_unified_exec_env(os.environ)
         request_env = getattr(request, "environment", None)
+        if bool(getattr(request, "environment_is_complete", False)):
+            env = apply_unified_exec_env({})
+        else:
+            env = apply_unified_exec_env(os.environ)
         if isinstance(request_env, dict):
             env.update({str(key): str(value) for key, value in request_env.items()})
 
@@ -916,14 +1015,13 @@ class UnifiedExecProcessManager:
         spawn_command = _command_for_spawn(command, shell_type)
 
         try:
-            process = subprocess.Popen(
+            attempt = getattr(request, "_sandbox_attempt", None)
+            process = _spawn_unified_exec_process(
                 spawn_command,
-                cwd=str(cwd) if cwd is not None else None,
+                cwd=Path(cwd) if cwd is not None else Path.cwd(),
                 env=env,
-                stdin=subprocess.PIPE if tty else subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                shell=False,
+                tty=tty,
+                attempt=attempt,
             )
         except OSError as err:
             self.release_process_id(process_id)

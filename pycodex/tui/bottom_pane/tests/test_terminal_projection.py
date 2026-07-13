@@ -9,6 +9,7 @@ from pycodex.tui.bottom_pane.terminal_action import (
     TerminalBottomPaneRenderRequest,
     TerminalBottomPaneState,
 )
+from pycodex.tui.bottom_pane.terminal_footprint import TerminalBottomPaneFootprint
 from pycodex.tui.bottom_pane.terminal_projection import (
     TerminalBottomPaneRequestRunner,
     terminal_bottom_pane_cursor_move,
@@ -725,10 +726,15 @@ def test_terminal_bottom_pane_request_runner_builds_resize_reflow_clear_factory(
         layout_active=lambda: calls.append("layout") or True,
     )
 
-    clear = clear_factory(TerminalLiveStatusSurface.inactive(), False)
+    clear = clear_factory(
+        TerminalLiveStatusSurface.inactive(),
+        False,
+        TerminalBottomPaneFootprint(active_tail_height=3, composer_height=2),
+    )
 
     assert clear() is True
     assert calls == ["tty", "layout"]
+    assert "\x1b[5;1H\x1b[2K" in writer.getvalue()
     assert "\x1b[9;1H\x1b[2K" in writer.getvalue()
     assert writer.flush_count == 1
 

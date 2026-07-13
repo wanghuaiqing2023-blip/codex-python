@@ -31,6 +31,7 @@ from pycodex.protocol import (
     ReviewDecision,
     ReviewRequest,
     RequestId,
+    RolloutItem,
     ThreadMemoryMode,
     ThreadSettingsOverrides,
     ThreadRolledBackEvent,
@@ -580,7 +581,7 @@ async def thread_rollback(sess: Any, sub_id: str, num_turns: int) -> None:
     try:
         persist_rollout_items = getattr(sess, "persist_rollout_items", None)
         if callable(persist_rollout_items):
-            await _maybe_await(persist_rollout_items([rollback_msg]))
+            await _maybe_await(persist_rollout_items([RolloutItem.event_msg(rollback_msg)]))
         else:
             append_event_msg_to_rollout(rollout_path, rollback_msg)
         flush_rollout = getattr(sess, "flush_rollout", None)

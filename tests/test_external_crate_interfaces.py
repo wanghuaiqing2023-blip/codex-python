@@ -559,25 +559,30 @@ def test_install_context_layout_standalone_and_managed_detection(tmp_path: Path)
 def test_utils_cache_lru_and_sha1_digest() -> None:
     """Rust: ``utils/cache/src/lib.rs``."""
 
+    import asyncio
     import hashlib
 
     from pycodex.utils.cache import BlockingLruCache, sha1_digest
 
     assert BlockingLruCache.try_with_capacity(0) is None
-    cache = BlockingLruCache[str, int].new(2)
-    assert cache.get("first") is None
-    assert cache.insert("first", 1) is None
-    assert cache.get("first") == 1
-    assert cache.insert("second", 2) is None
-    assert cache.get("first") == 1
-    assert cache.insert("third", 3) is None
-    assert cache.get("second") is None
-    assert cache.get("first") == 1
-    assert cache.get_or_insert_with("first", lambda: 99) == 1
-    assert cache.get_or_try_insert_with("fourth", lambda: 4) == 4
-    assert cache.remove("first") == 1
-    cache.clear()
-    assert cache.get("third") is None
+
+    async def exercise_cache() -> None:
+        cache = BlockingLruCache[str, int].new(2)
+        assert cache.get("first") is None
+        assert cache.insert("first", 1) is None
+        assert cache.get("first") == 1
+        assert cache.insert("second", 2) is None
+        assert cache.get("first") == 1
+        assert cache.insert("third", 3) is None
+        assert cache.get("second") is None
+        assert cache.get("first") == 1
+        assert cache.get_or_insert_with("first", lambda: 99) == 1
+        assert cache.get_or_try_insert_with("fourth", lambda: 4) == 4
+        assert cache.remove("first") == 1
+        cache.clear()
+        assert cache.get("third") is None
+
+    asyncio.run(exercise_cache())
     assert sha1_digest(b"hello") == hashlib.sha1(b"hello").digest()
 
 

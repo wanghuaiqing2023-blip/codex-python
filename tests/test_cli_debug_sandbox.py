@@ -1,3 +1,5 @@
+import io
+import threading
 import unittest
 
 from pathlib import Path
@@ -56,6 +58,7 @@ from pycodex.cli import (
     run_debug_sandbox_execution_plan_with_exit_status,
     run_debug_sandbox_entrypoint_plan_with_exit_status,
     run_debug_sandbox_windows_session_plan,
+    run_debug_sandbox_windows_product_session,
     run_debug_sandbox_windows_session_control_flow,
     run_debug_sandbox_windows_session_io_bridge,
     run_debug_sandbox_windows_session_with_stdio_bridge,
@@ -1205,6 +1208,64 @@ class CliDebugSandboxTests(unittest.TestCase):
         self.assertEqual(failure.run.error_message, "windows sandbox failed: denied")
         self.assertIsNone(failure.io)
 
+    def test_windows_product_session_forwards_live_stdio_and_closes_stdin(self) -> None:
+        # Fixed Rust owner: codex-cli::debug_sandbox::
+        # run_command_under_windows_session. The public product path forwards
+        # stdin and drains distinct stdout/stderr streams before returning.
+        closed = threading.Event()
+        received = bytearray()
+
+        class ProcessStdin(io.BytesIO):
+            def write(self, data: bytes) -> int:
+                received.extend(data)
+                return super().write(data)
+
+            def close(self) -> None:
+                closed.set()
+                super().close()
+
+        class Process:
+            def __init__(self) -> None:
+                self.stdin = ProcessStdin()
+                self.stdout = io.BytesIO(b"live-out\n")
+                self.stderr = io.BytesIO(b"live-err\n")
+                self.terminated = False
+
+            def wait(self):
+                self.assert_closed = closed.wait(2)
+                return 17
+
+            def terminate(self):
+                self.terminated = True
+
+            def close(self):
+                return None
+
+        process = Process()
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        plan = build_debug_sandbox_windows_session_plan(
+            ["cmd", "/c", "more"],
+            cwd="C:/work",
+            codex_home="C:/codex",
+        )
+
+        result = run_debug_sandbox_windows_product_session(
+            plan,
+            stdin=io.BytesIO(b"hello\n"),
+            stdout=stdout,
+            stderr=stderr,
+            spawner=lambda _plan: process,
+        )
+
+        self.assertEqual(result.exit_code, 17)
+        self.assertIsNone(result.error_message)
+        self.assertTrue(process.assert_closed)
+        self.assertEqual(bytes(received), b"hello\n")
+        self.assertEqual(stdout.getvalue(), "live-out\n")
+        self.assertEqual(stderr.getvalue(), "live-err\n")
+        self.assertFalse(process.terminated)
+
     def test_deferred_native_boundaries_record_remaining_platform_work(self) -> None:
         # Rust parity: codex-cli/src/debug_sandbox.rs delegates native platform-heavy work.
         boundaries = {
@@ -1212,14 +1273,8 @@ class CliDebugSandboxTests(unittest.TestCase):
             for boundary in build_debug_sandbox_deferred_native_boundaries()
         }
 
-        self.assertEqual(
-            boundaries["windows_session_objects"].upstream_owner,
-            "codex-windows-sandbox",
-        )
-        self.assertEqual(
-            boundaries["windows_background_forwarder_threads"].python_boundary,
-            "run_debug_sandbox_windows_session_io_bridge",
-        )
+        self.assertNotIn("windows_session_objects", boundaries)
+        self.assertNotIn("windows_background_forwarder_threads", boundaries)
         self.assertIn(
             "sibling crates",
             boundaries["platform_policy_builders"].rationale,

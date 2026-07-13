@@ -40,6 +40,7 @@ from pycodex.core import (
     extension_tool_executors,
 )
 from pycodex.core.tools.handlers.view_image import ViewImageHandler
+from pycodex.core.unified_exec import UnifiedExecProcessManager
 from pycodex.protocol import NetworkSandboxPolicy, PermissionProfile, ResponseItem, SearchToolCallParams, ToolName, TruncationPolicyConfig
 
 
@@ -1188,7 +1189,10 @@ class ToolRouterTests(unittest.TestCase):
             result = asyncio.run(
                 router.dispatch_tool_call_with_terminal_outcome(
                     call,
-                    session=SimpleNamespace(user_shell=lambda: shell),
+                    session=SimpleNamespace(
+                        user_shell=lambda: shell,
+                        services=SimpleNamespace(unified_exec_manager=UnifiedExecProcessManager()),
+                    ),
                     turn=turn,
                 )
             )

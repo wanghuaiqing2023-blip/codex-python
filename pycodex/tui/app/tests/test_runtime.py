@@ -14,6 +14,7 @@ from pycodex.core.session.turn.runtime import UserTurnSamplingResult
 from pycodex.core.tools.sandboxing import ExecApprovalRequirement
 from pycodex.exec.local_runtime import LocalHttpShellInvocation, _in_memory_exec_session
 from pycodex.exec.session import ExecSessionConfig
+from pycodex.model_provider.auth import auth_service_from_snapshot
 from pycodex.protocol import (
     ActivePermissionProfile,
     AdditionalPermissionProfile,
@@ -55,7 +56,6 @@ from pycodex.tui.app.runtime import (
     _rate_limits_auth_is_fedramp,
     _rate_limits_backend_auth_provider,
     _rate_limits_backend_base_url,
-    _models_auth_manager_from_snapshot,
     _server_notifications_from_session_event,
     app_command_for_prompt,
     exec_run_plan_for_app_command,
@@ -1365,12 +1365,12 @@ def _response_item_text(item: ResponseItem) -> str:
     return "".join(parts)
 
 
-def test_models_auth_manager_normalizes_dict_token_snapshot(tmp_path) -> None:
+def test_models_auth_service_normalizes_dict_token_snapshot(tmp_path) -> None:
     # Rust-derived contract:
     # - codex-login::auth::storage::AuthDotJson deserializes auth.json tokens
     #   into TokenData before codex-login::auth::manager::CodexAuth exposes a
     #   bearer token.
-    # - codex-core model catalog refresh uses that auth manager for the remote
+    # - codex-core model catalog refresh uses that auth service for the remote
     #   models endpoint; it must not silently fall back to bundled picker data.
     auth = AuthDotJson(
         auth_mode="chatgpt",
@@ -1391,7 +1391,9 @@ def test_models_auth_manager_normalizes_dict_token_snapshot(tmp_path) -> None:
         last_refresh=datetime.now(timezone.utc),
     )
 
-    manager = _models_auth_manager_from_snapshot(tmp_path, auth, "https://chatgpt.com/backend-api")
+    manager = asyncio.run(
+        auth_service_from_snapshot(tmp_path, auth, "https://chatgpt.com/backend-api")
+    )
 
     assert manager is not None
     codex_auth = asyncio.run(manager.auth())
@@ -2140,7 +2142,7 @@ def test_tui_app_runtime_rate_limit_fetch_uses_chatgpt_backend_base_and_auth_met
 
 def test_tui_app_runtime_rate_limit_fetch_can_use_original_auth_snapshot() -> None:
     # Rust source contract:
-    # - codex-app-server::account_processor obtains CodexAuth from AuthManager,
+    # - codex-app-server::account_processor obtains CodexAuth from its authentication service,
     #   then BackendClient::from_auth builds bearer/account headers.
     # The local terminal runtime may carry resolved runtime auth separately from
     # the stored AuthDotJson snapshot, so the rate-limit boundary must be able

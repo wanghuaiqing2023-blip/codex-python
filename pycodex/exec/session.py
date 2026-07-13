@@ -39,6 +39,7 @@ from pycodex.protocol import (
     TurnContextItem,
     TurnItem,
     UserInput,
+    WindowsSandboxLevel,
 )
 
 from .run import ExecRunPlan
@@ -341,6 +342,7 @@ class ExecSessionConfig:
     approval_policy: AskForApproval | GranularApprovalConfig = AskForApproval.NEVER
     approvals_reviewer: ApprovalsReviewer = ApprovalsReviewer.USER
     permission_profile: PermissionProfile = PermissionProfile.read_only()
+    windows_sandbox_level: WindowsSandboxLevel = WindowsSandboxLevel.DISABLED
     active_permission_profile: ActivePermissionProfile | None = None
     ephemeral: bool = False
     reasoning_effort: JsonValue | None = None
@@ -372,6 +374,12 @@ class ExecSessionConfig:
         object.__setattr__(self, "startup_warnings", tuple(str(warning) for warning in self.startup_warnings))
         servers = self.mcp_servers if isinstance(self.mcp_servers, Mapping) else {}
         object.__setattr__(self, "mcp_servers", dict(servers))
+        if not isinstance(self.windows_sandbox_level, WindowsSandboxLevel):
+            object.__setattr__(
+                self,
+                "windows_sandbox_level",
+                WindowsSandboxLevel.parse(str(self.windows_sandbox_level)),
+            )
         if self.tui_status_line is not None:
             object.__setattr__(self, "tui_status_line", tuple(str(item) for item in self.tui_status_line))
         if self.tui_terminal_title is not None:

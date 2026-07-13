@@ -77,7 +77,13 @@ def test_websocket_test_codex_shell_chain():
     assert first_ws["type"] == "response.create"
     assert second_ws["type"] == "response.create"
     assert second_ws["previous_response_id"] == "resp-1"
-    assert second_ws["input"] == [tool_output]
+    assert second_ws["input"] == [
+        {
+            "type": "function_call_output",
+            "call_id": "shell-command-call",
+            "output": "websocket\n",
+        }
+    ]
 
 
 def test_websocket_first_turn_uses_startup_prewarm_and_create():
@@ -142,7 +148,13 @@ def test_websocket_v2_test_codex_shell_chain():
 
     assert second_ws["type"] == "response.create"
     assert second_ws["previous_response_id"] == "resp-1"
-    assert second_ws["input"] == [output]
+    assert second_ws["input"] == [
+        {
+            "type": "function_call_output",
+            "call_id": "shell-command-call",
+            "output": "websocket\n",
+        }
+    ]
     assert headers[OPENAI_BETA_HEADER] == RESPONSES_WEBSOCKETS_V2_BETA_HEADER_VALUE
 
 

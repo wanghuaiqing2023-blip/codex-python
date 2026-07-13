@@ -6,7 +6,9 @@ Rust source:
 
 from __future__ import annotations
 
-from typing import Any
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Mapping
 
 from pycodex.agent_identity import (
     AgentIdentityKey,
@@ -120,6 +122,62 @@ def auth_provider_from_auth(auth: Any) -> Any:
     )
 
 
+async def auth_service_from_snapshot(
+    codex_home: str | Path,
+    auth: Any,
+    chatgpt_base_url: str | None = None,
+) -> Any | None:
+    """Resolve a core authentication service from a persisted auth snapshot.
+
+    Runtime consumers such as the TUI must depend on the provider/auth facade,
+    not construct the concrete login manager themselves. This preserves the
+    fixed Rust manager-dependency boundary while still allowing the in-process
+    Python product path to refresh the model catalog.
+    """
+
+    if auth is None:
+        return None
+    if callable(getattr(auth, "auth", None)) and callable(getattr(auth, "auth_cached", None)):
+        return auth
+
+    from pycodex.login.auth.manager import AuthManager, CodexAuth
+    from pycodex.login.auth.storage import AuthDotJson
+
+    if callable(getattr(auth, "auth_mode", None)) and callable(getattr(auth, "get_token", None)):
+        return AuthManager.from_auth_for_testing_with_home(auth, codex_home)
+
+    if isinstance(auth, Mapping):
+        snapshot = AuthDotJson.from_mapping(auth)
+    elif hasattr(auth, "auth_mode"):
+        tokens = getattr(auth, "tokens", None)
+        if tokens is not None and not isinstance(tokens, Mapping):
+            return None
+        data: dict[str, Any] = {}
+        for attr, key in (
+            ("auth_mode", "auth_mode"),
+            ("openai_api_key", "OPENAI_API_KEY"),
+            ("tokens", "tokens"),
+            ("last_refresh", "last_refresh"),
+            ("agent_identity", "agent_identity"),
+        ):
+            value = getattr(auth, attr, None)
+            if value is not None:
+                if key == "last_refresh" and isinstance(value, datetime):
+                    value = value.isoformat()
+                data[key] = value
+        snapshot = AuthDotJson.from_mapping(data)
+    else:
+        return None
+
+    codex_auth = await CodexAuth.from_auth_dot_json(
+        codex_home,
+        snapshot,
+        "file",
+        chatgpt_base_url,
+    )
+    return AuthManager.from_auth_for_testing_with_home(codex_auth, codex_home)
+
+
 def _get(value: Any, name: str, default: Any = None) -> Any:
     if isinstance(value, dict):
         return value.get(name, default)
@@ -132,6 +190,7 @@ __all__ = [
     "UnauthenticatedAuthProvider",
     "auth_manager_for_provider",
     "auth_provider_from_auth",
+    "auth_service_from_snapshot",
     "bearer_auth_for_provider",
     "resolve_provider_auth",
     "unauthenticated_auth_provider",

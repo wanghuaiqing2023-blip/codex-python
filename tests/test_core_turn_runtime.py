@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import json
 from pathlib import Path
 import shlex
@@ -14,6 +14,7 @@ from pycodex.core.compact_remote import IMAGE_CONTENT_OMITTED_PLACEHOLDER
 from pycodex.features import Feature
 from pycodex.core.hook_runtime import HookRuntimeOutcome
 from pycodex.core.session.runtime import InMemoryCodexSession
+from pycodex.core.shell import default_user_shell
 import pycodex.core.session.turn.runtime as turn_runtime
 from pycodex.core.session.turn.sampler import sample_with_model_client_session
 from pycodex.core.session.turn.runtime import (
@@ -24,6 +25,7 @@ from pycodex.core.session.turn.runtime import (
 )
 from pycodex.core.turn_timing import TurnTimingState
 from pycodex.core.tools.context import FunctionToolOutput
+from pycodex.core.tools.handlers.shell import ShellCommandHandler
 from pycodex.apply_patch import ApplyPatchHandler
 from pycodex.core.tools.router import FunctionCallError
 from pycodex.core.tools.registry import ToolRegistry
@@ -429,7 +431,7 @@ def events_of_type(session: Session, event_type: str) -> tuple[EventMsg, ...]:
 class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_build_user_turn_responses_request_records_turn_and_builds_request(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -468,7 +470,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
             }
         )
         session.history.extend((function_call, orphan_output))
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -507,7 +509,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
         session.history.append(image_message)
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -543,7 +545,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
             model_reasoning_summary="concise",
             service_tier="priority",
         )
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -567,7 +569,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_build_user_turn_request_applies_thread_settings_before_turn_creation(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-stale",
@@ -599,7 +601,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_build_user_input_op_request_applies_op_thread_settings(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-stale",
@@ -637,7 +639,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_build_user_input_op_request_clears_previous_final_output_json_schema(self) -> None:
         session = Session()
         session.final_output_json_schema = {"type": "object"}
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -661,7 +663,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_build_user_input_op_request_records_responsesapi_client_metadata(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -689,7 +691,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_build_user_input_op_request_records_additional_context_before_user_input(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -722,7 +724,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_build_user_input_op_request_truncates_large_additional_context_values(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -790,7 +792,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_build_user_input_op_request_rejects_unknown_additional_context_kind(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -814,7 +816,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_build_user_input_op_request_rejects_non_string_additional_context_value(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -838,7 +840,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_build_user_input_op_request_applies_turn_environments_before_turn_creation(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -866,7 +868,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
             TurnEnvironmentSelection("local", "C:/work/project"),
             TurnEnvironmentSelection("remote", "C:/work/remote"),
         )
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -877,7 +879,11 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
             supports_image_detail_original=True,
         )
         session.turn_context.model_info = model_info
-        session.turn_context.features = FeatureSet(Feature.EXEC_PERMISSION_APPROVALS)
+        session.turn_context.features = FeatureSet(
+            Feature.SHELL_TOOL,
+            Feature.UNIFIED_EXEC,
+            Feature.EXEC_PERMISSION_APPROVALS,
+        )
 
         plan = await build_user_turn_responses_request_from_session(
             session,
@@ -896,7 +902,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_build_user_input_op_request_does_not_make_turn_environments_sticky(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -926,7 +932,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_build_user_input_op_request_records_only_changed_additional_context(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -978,7 +984,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_additional_context_removes_one_value_while_adding_another(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -1070,7 +1076,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_additional_context_empty_map_clears_store_then_readds_values(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -1132,7 +1138,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_build_user_input_op_request_clears_additional_context_when_absent(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -1209,7 +1215,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
             support_verbosity=False,
             service_tier_for_request=lambda tier: tier,
         )
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         stale_model_info = SimpleNamespace(
             slug="gpt-stale",
@@ -1231,7 +1237,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_user_turn_sampling_records_sampler_response_items(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -1273,7 +1279,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         session.turn_context.turn_id = "turn-cancel"
         token = AsyncCancellationToken()
         started = asyncio.Event()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -1317,7 +1323,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_user_turn_sampling_user_prompt_submit_hook_blocks_input(self) -> None:
         session = Session()
         session.turn_context.turn_id = "turn-1"
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -1356,7 +1362,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_user_turn_sampling_user_prompt_submit_hook_records_context_after_input(self) -> None:
         session = Session()
         session.turn_context.turn_id = "turn-1"
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -1392,7 +1398,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_user_turn_sampling_user_prompt_submit_hook_keyword_only_prompt_blocks_input(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -1429,7 +1435,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_user_turn_sampling_user_prompt_submit_hook_keyword_only_full_signature(self) -> None:
         session = Session()
         session.turn_context.turn_id = "turn-1"
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -1475,7 +1481,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         session.turn_context.completed_at = 12
         session.turn_context.duration_ms = 2000
         session.turn_context.time_to_first_token_ms = 250
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -1518,7 +1524,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         session = Session()
         session.turn_context.turn_id = "turn-1"
         session.turn_context.turn_timing_state = TurnTimingState()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -1565,7 +1571,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         session.turn_context.turn_id = "turn-1"
         session.turn_context.turn_timing_state = TurnTimingState()
         session.turn_context.session_telemetry = Telemetry()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -1605,7 +1611,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_user_turn_sampling_after_agent_abort_emits_error_and_clears_last_message(self) -> None:
         session = Session()
         session.turn_context.turn_id = "turn-1"
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -1652,7 +1658,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_user_turn_sampling_after_agent_abort_emits_error_and_clears_last_message_keyword_only(self) -> None:
         session = Session()
         session.turn_context.turn_id = "turn-1"
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -1699,7 +1705,11 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_user_turn_sampling_returns_streamed_last_agent_message(self) -> None:
         session = Session()
         session.turn_context.turn_id = "turn-1"
-        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        client = ModelClient(
+            session_id="session",
+            thread_id="00000000-0000-0000-0000-000000000001",
+            installation_id="install",
+        )
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -1738,7 +1748,11 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         session = Session()
         session.turn_context.turn_id = "turn-1"
         session.input_queue = PendingMailboxQueue(True)
-        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        client = ModelClient(
+            session_id="session",
+            thread_id="00000000-0000-0000-0000-000000000002",
+            installation_id="install",
+        )
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -1787,7 +1801,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_user_turn_sampling_stop_hook_continuation_prompts_followup(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -1838,7 +1852,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_user_turn_sampling_stop_hook_block_without_prompt_warns_and_finishes(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -1878,7 +1892,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_user_turn_sampling_stop_hook_continuation_prompts_followup_with_keyword_only_signature(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -1933,7 +1947,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_user_turn_sampling_forwards_skill_injection_warnings_as_events(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -1968,7 +1982,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_user_turn_sampling_forwards_multiple_skill_injection_warnings_in_order(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -2031,7 +2045,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         session.services = SimpleNamespace(analytics_events_client=FakeAnalytics())
 
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -2098,7 +2112,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         session.services = SimpleNamespace(analytics_events_client=FakeAnalytics())
 
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -2187,7 +2201,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         session.thread_config_snapshot = snapshot
         session.take_next_turn_is_first = get_next_turn_is_first
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -2295,7 +2309,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         session.services = SimpleNamespace(analytics_events_client=FakeAnalytics())
 
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -2361,7 +2375,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
             thread_config_snapshot=lambda: thread_snapshot,
         )
 
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -2437,7 +2451,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         session.turn_context.permission_profile = TurnPermissionProfile()
 
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -2504,7 +2518,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         session.turn_context.network_sandbox_policy = TurnNetworkPolicy()
 
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -2553,7 +2567,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         plugin_without_metadata = SimpleNamespace(display_name="NoMetaPlugin")
         session.services = SimpleNamespace(analytics_events_client=FakeAnalytics())
 
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -2590,7 +2604,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_user_turn_sampling_projects_sampler_stream_events(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -2705,7 +2719,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_user_turn_sampling_projects_reasoning_stream_events_with_protocol_ids(self) -> None:
         session = Session()
         session.turn_context.turn_id = "turn-1"
-        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -2744,7 +2758,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
             (
                 {
                     "type": "reasoning_summary_delta",
-                    "thread_id": "thread-1",
+                    "thread_id": "00000000-0000-0000-0000-000000000011",
                     "turn_id": "turn-1",
                     "item_id": "reason-1",
                     "delta": "summary",
@@ -2752,7 +2766,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 },
                 {
                     "type": "reasoning_raw_content_delta",
-                    "thread_id": "thread-1",
+                    "thread_id": "00000000-0000-0000-0000-000000000011",
                     "turn_id": "turn-1",
                     "item_id": "reason-1",
                     "delta": "raw",
@@ -2765,7 +2779,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 },
             ),
         )
-        self.assertEqual(EventMsg.from_mapping(emitted[0]).payload.thread_id, "thread-1")
+        self.assertEqual(EventMsg.from_mapping(emitted[0]).payload.thread_id, "00000000-0000-0000-0000-000000000011")
         self.assertEqual(EventMsg.from_mapping(emitted[1]).payload.turn_id, "turn-1")
         self.assertEqual(EventMsg.from_mapping(emitted[2]).payload.summary_index, 2)
         self.assertEqual(
@@ -2777,7 +2791,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
         reasoning_events = non_lifecycle_events(session)
-        self.assertEqual(reasoning_events[0].payload.thread_id, "thread-1")
+        self.assertEqual(reasoning_events[0].payload.thread_id, "00000000-0000-0000-0000-000000000011")
         self.assertEqual(reasoning_events[1].payload.turn_id, "turn-1")
         self.assertEqual(reasoning_events[2].payload.summary_index, 2)
         self.assertEqual(result.session_events, tuple(session.emitted_events))
@@ -2787,7 +2801,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         session.turn_context.turn_id = "turn-1"
         session.features = FeatureSet(Feature.RESPONSES_WEBSOCKET_RESPONSE_PROCESSED)
         session.unified_diff = "diff --git a/file b/file"
-        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -2844,7 +2858,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         session = Session()
         session.turn_context.turn_id = "turn-1"
         session.features = FeatureSet(Feature.RESPONSES_WEBSOCKET_RESPONSE_PROCESSED)
-        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -2904,7 +2918,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_user_turn_sampling_applies_stream_metadata_to_session(self) -> None:
         session = Session()
         session.turn_context.turn_id = "turn-1"
-        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -2949,7 +2963,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_user_turn_sampling_applies_stream_server_model_and_verification_metadata(self) -> None:
         session = Session()
         session.turn_context.turn_id = "turn-1"
-        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -3003,7 +3017,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_user_turn_sampling_prefers_stream_metadata_order_over_raw_metadata(self) -> None:
         session = Session()
         session.turn_context.turn_id = "turn-1"
-        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -3050,7 +3064,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         session.features = FeatureSet(Feature.RESPONSES_WEBSOCKET_RESPONSE_PROCESSED)
         session.unified_diff = "diff --git a/file b/file"
         session.turn_context.cancellation_token = CancellationToken(cancelled=True)
-        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -3099,7 +3113,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_user_turn_sampling_turn_aborted_before_sampling_result_returns_interrupted(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -3130,7 +3144,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_user_turn_sampling_turn_aborted_during_followup_returns_accumulated_interrupted(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -3173,7 +3187,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_user_turn_sampling_emits_assistant_text_stream_deltas(self) -> None:
         session = Session()
         session.turn_context.turn_id = "turn-1"
-        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -3219,7 +3233,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     "ignored_citations": False,
                     "event_to_emit": {
                         "type": "agent_message_content_delta",
-                        "thread_id": "thread-1",
+                        "thread_id": "00000000-0000-0000-0000-000000000011",
                         "turn_id": "turn-1",
                         "item_id": "msg-1",
                         "delta": "hello",
@@ -3229,7 +3243,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         delta_events = events_of_type(session, "agent_message_content_delta")
         self.assertEqual(tuple(event.type for event in delta_events), ("agent_message_content_delta",))
-        self.assertEqual(delta_events[0].payload.thread_id, "thread-1")
+        self.assertEqual(delta_events[0].payload.thread_id, "00000000-0000-0000-0000-000000000011")
         self.assertEqual(delta_events[0].payload.turn_id, "turn-1")
         self.assertEqual(delta_events[0].payload.delta, "hello")
 
@@ -3240,7 +3254,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         # sess.send_event while the stream is still being consumed.
         session = Session()
         session.turn_context.turn_id = "turn-1"
-        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -3350,7 +3364,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         # out of "waiting for model" before text deltas arrive.
         session = Session()
         session.turn_context.turn_id = "turn-1"
-        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -3396,7 +3410,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         # look idle while waiting for the first assistant text delta.
         session = Session()
         session.turn_context.turn_id = "turn-1"
-        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -3443,7 +3457,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_user_turn_sampling_parses_streamed_citations_across_boundaries(self) -> None:
         session = Session()
         session.turn_context.turn_id = "turn-1"
-        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -3647,7 +3661,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_user_turn_sampling_emits_non_agent_output_text_deltas(self) -> None:
         session = Session()
         session.turn_context.turn_id = "turn-1"
-        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -3686,7 +3700,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     "raw_content_delta": "thinking",
                     "event_to_emit": {
                         "type": "agent_message_content_delta",
-                        "thread_id": "thread-1",
+                        "thread_id": "00000000-0000-0000-0000-000000000011",
                         "turn_id": "turn-1",
                         "item_id": "reason-1",
                         "delta": "thinking",
@@ -3703,7 +3717,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         """Rust source contract: ``session::turn::run_sampling_request`` records full context window."""
 
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -3736,7 +3750,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         """Rust source contract: ``session::turn::run_sampling_request`` records usage-limit rate limits."""
 
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -3774,7 +3788,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         """Rust source contract: usage-limit goal runtime updates are best-effort side effects."""
 
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -3810,7 +3824,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         """Rust source contract: retryable stream errors notify, sleep, and retry below max retries."""
 
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(
             is_azure_responses_endpoint=lambda: False,
             info=lambda: SimpleNamespace(stream_max_retries=lambda: 2),
@@ -3872,7 +3886,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         fallback_client = FallbackModelClient()
         session.services = SimpleNamespace(model_client=fallback_client)
         session.turn_context.session_telemetry = SimpleNamespace(counter=lambda *_args: None)
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(
             is_azure_responses_endpoint=lambda: False,
             info=lambda: SimpleNamespace(stream_max_retries=lambda: 1),
@@ -3931,7 +3945,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         fallback_client = FailedFallbackModelClient()
         session.services = SimpleNamespace(model_client=fallback_client)
         session.turn_context.session_telemetry = SimpleNamespace(counter=lambda *_args: None)
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(
             is_azure_responses_endpoint=lambda: False,
             info=lambda: SimpleNamespace(stream_max_retries=lambda: 0),
@@ -3969,7 +3983,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_user_turn_sampling_dispatches_and_records_tool_outputs(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -4025,7 +4039,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         #   is the Windows-runnable native equivalent.
         session = Session()
         session.turn_context.turn_id = "turn-tool-cancel"
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -4078,8 +4092,9 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         session = InMemoryCodexSession(
             cwd=cwd,
             environments=(TurnEnvironmentSelection("local", str(cwd)),),
+            features=FeatureSet(Feature.SHELL_TOOL, Feature.UNIFIED_EXEC),
         )
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -4151,6 +4166,84 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(command_item.status, "completed")
         self.assertIn("tool managed output", command_item.aggregated_output)
 
+    async def test_run_user_turn_sampling_shell_command_emits_command_execution_lifecycle(self) -> None:
+        # Rust owner: codex-core::tools::handlers::shell::run_exec_like and
+        # codex-core::tools::events::ToolEmitter::shell at pinned commit
+        # 1c7832ffa37a3ab56f601497c00bfce120370bf9.
+        # The legacy shell_command returns FunctionToolOutput to the model, but
+        # still emits the same typed CommandExecution lifecycle consumed by TUI.
+        cwd = Path.cwd()
+        session = InMemoryCodexSession(
+            cwd=cwd,
+            environments=(TurnEnvironmentSelection("local", str(cwd)),),
+            features=FeatureSet(Feature.SHELL_TOOL),
+            shell=default_user_shell(),
+        )
+        client = ModelClient(
+            session_id="session",
+            thread_id="00000000-0000-0000-0000-000000000010",
+            installation_id="install",
+        )
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        command = (
+            "Write-Output 'shell lifecycle output'"
+            if sys.platform == "win32"
+            else "printf 'shell lifecycle output\\n'"
+        )
+        seen_requests = []
+
+        async def sampler(request):
+            seen_requests.append(request)
+            if len(seen_requests) == 1:
+                return [
+                    ResponseItem.function_call(
+                        "shell_command",
+                        json.dumps({"command": command, "timeout_ms": 10_000}),
+                        "call-shell-lifecycle",
+                    )
+                ]
+            return [ResponseItem.message("assistant", (ContentItem.output_text("done after shell"),))]
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("run the shell command"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+        )
+
+        self.assertEqual(result.last_agent_message, "done after shell")
+        started_commands = [
+            event
+            for event in session.emitted_events
+            if event.type == "item_started" and event.payload.item.type == "CommandExecution"
+        ]
+        completed_commands = [
+            event
+            for event in session.emitted_events
+            if event.type == "item_completed" and event.payload.item.type == "CommandExecution"
+        ]
+        self.assertEqual(len(started_commands), 1)
+        self.assertEqual(len(completed_commands), 1)
+        started_item = started_commands[0].payload.item.item
+        completed_item = completed_commands[0].payload.item.item
+        self.assertEqual(started_item.id, "call-shell-lifecycle")
+        self.assertEqual(started_item.command, completed_item.command)
+        expected_argv = ShellCommandHandler.base_command(default_user_shell(), command, False)
+        self.assertEqual(started_item.command, shlex.join(expected_argv))
+        self.assertIn("powershell", started_item.command.lower())
+        self.assertIn("-NoProfile -Command", started_item.command)
+        self.assertEqual(completed_item.status, "completed")
+        self.assertEqual(completed_item.exit_code, 0)
+        self.assertIn("shell lifecycle output", completed_item.aggregated_output)
+
     async def test_run_user_turn_sampling_apply_patch_emits_file_change_lifecycle(self) -> None:
         # Rust owners: core::tools::handlers::apply_patch and tools::events.
         # A custom apply_patch call must produce the canonical FileChange pair
@@ -4161,7 +4254,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 cwd=cwd,
                 environments=(TurnEnvironmentSelection("local", str(cwd)),),
             )
-            client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+            client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
             provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
             model_info = SimpleNamespace(
                 slug="gpt-test",
@@ -4211,8 +4304,9 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         session = InMemoryCodexSession(
             cwd=cwd,
             environments=(TurnEnvironmentSelection("local", str(cwd)),),
+            features=FeatureSet(Feature.SHELL_TOOL, Feature.UNIFIED_EXEC),
         )
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -4280,7 +4374,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_user_turn_sampling_dispatches_parallel_tool_calls_concurrently_and_groups_outputs(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -4336,7 +4430,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_user_turn_sampling_runs_pre_sampling_auto_compact_before_recording_input(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -4680,7 +4774,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_user_turn_sampling_pre_sampling_auto_compact_error_completes_before_input_recording(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -4725,7 +4819,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_user_turn_sampling_runs_mid_turn_auto_compact_before_followup(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -4777,7 +4871,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_user_turn_sampling_mid_turn_auto_compact_usage_limit_completes_without_error_event(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -4827,7 +4921,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         session = Session()
         session.input_queue = PendingInputQueue()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -4918,7 +5012,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_user_turn_sampling_maps_fatal_tool_error_to_codex_err(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -4948,7 +5042,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_user_turn_sampling_responds_to_bad_tool_search_arguments(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -4998,7 +5092,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_user_turn_sampling_records_stream_bad_tool_search_arguments(self) -> None:
         session = Session()
         session.turn_context.turn_id = "turn-1"
-        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -5052,7 +5146,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_user_turn_sampling_can_limit_tool_followups(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -5084,7 +5178,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_user_turn_sampling_default_followups_continue_until_final_answer(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -5121,7 +5215,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_user_turn_sampling_dispatches_stream_only_tool_call(self) -> None:
         session = Session()
         session.turn_context.turn_id = "turn-1"
-        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -5193,7 +5287,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 tool_output,
             )
         )
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -5236,7 +5330,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 (ContentItem.input_image("data:image/png;base64,AAA"),),
             )
         )
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -5275,7 +5369,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 (ContentItem.input_image("data:image/png;base64,AAA"),),
             )
         )
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -5314,7 +5408,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_user_turn_sampling_drains_pending_input_before_followup(self) -> None:
         session = Session()
         session.input_queue = PendingInputQueue()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -5357,7 +5451,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_user_turn_sampling_compacts_before_draining_pending_only_followup(self) -> None:
         session = Session()
         session.input_queue = PendingInputQueue()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -5418,7 +5512,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_user_turn_sampling_pending_input_bypasses_tool_followup_limit(self) -> None:
         session = Session()
         session.input_queue = PendingInputQueue()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -5460,7 +5554,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         session = Session()
         session.input_queue = PendingInputQueue()
         session.input_queue.items.append(UserInput.text_input("queued first"))
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -5498,7 +5592,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         session = Session()
         session.input_queue = PendingInputQueue()
         session.input_queue.items.append(UserInput.text_input("blocked first"))
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -5539,7 +5633,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         session = Session()
         session.input_queue = StrictActiveTurnInputQueue()
         session.input_queue.items.append(UserInput.text_input("queued first with active turn"))
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -5570,7 +5664,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         session = Session()
         session.input_queue = KeywordOnlyActiveTurnInputQueue()
         session.input_queue.items.append(UserInput.text_input("queued first with keyword-only active turn"))
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -5600,7 +5694,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_user_turn_sampling_pending_input_hook_records_context_after_input(self) -> None:
         session = Session()
         session.input_queue = PendingInputQueue()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -5649,7 +5743,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_user_turn_sampling_pending_input_hook_blocks_followup(self) -> None:
         session = Session()
         session.input_queue = PendingInputQueue()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -5699,7 +5793,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_user_turn_sampling_mixed_pending_input_continues_when_later_user_input_accepted(self) -> None:
         session = Session()
         session.input_queue = PendingInputQueue()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -5793,7 +5887,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_user_turn_sampling_follows_stream_completed_end_turn_false(self) -> None:
         session = Session()
         session.turn_context.turn_id = "turn-1"
-        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -5842,7 +5936,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         session = Session()
         session.turn_context.turn_id = "turn-1"
         session.input_queue = PendingInputQueue()
-        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -5907,7 +6001,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_run_user_turn_sampling_follows_raw_response_completed_end_turn_false(self) -> None:
         session = Session()
         session.turn_context.turn_id = "turn-1"
-        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -5959,7 +6053,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_user_turn_sampling_model_followup_bypasses_tool_followup_limit(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread-1", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000011", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -6003,7 +6097,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_user_input_op_sampling_records_sampler_response_items(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(
             slug="gpt-test",
@@ -6033,7 +6127,7 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_run_user_turn_sampling_can_use_model_client_session_sampler(self) -> None:
         session = Session()
-        client = ModelClient(session_id="session", thread_id="thread", installation_id="install")
+        client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
         model_session = client.new_session()
         provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
         model_info = SimpleNamespace(

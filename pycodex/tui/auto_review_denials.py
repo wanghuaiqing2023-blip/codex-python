@@ -92,11 +92,12 @@ class RecentAutoReviewDenials:
     _entries: deque[Any] = field(default_factory=deque)
 
     def push(self, event: GuardianAssessmentEvent | dict[str, Any] | Any) -> None:
-        if not _is_denied(_event_field(event, "status")):
+        event = _coerce_event(event)
+        if not _is_denied(event.status):
             return
-        event_id = str(_event_field(event, "id"))
+        event_id = event.id
         self._entries = deque(
-            entry for entry in self._entries if str(_event_field(entry, "id")) != event_id
+            entry for entry in self._entries if entry.id != event_id
         )
         self._entries.appendleft(event)
         while len(self._entries) > MAX_RECENT_DENIALS:
@@ -108,9 +109,9 @@ class RecentAutoReviewDenials:
     def entries(self) -> Iterator[Any]:
         return iter(tuple(self._entries))
 
-    def take(self, id: str) -> GuardianAssessmentEvent | None:
+    def take(self, id: str) -> Any | None:
         for index, entry in enumerate(self._entries):
-            if str(_event_field(entry, "id")) == str(id):
+            if entry.id == str(id):
                 del self._entries[index]
                 return entry
         return None
@@ -181,14 +182,16 @@ def _event_field(event: dict[str, Any] | Any, name: str) -> Any:
     return getattr(event, name)
 
 
-def _coerce_event(event: GuardianAssessmentEvent | dict[str, Any] | Any) -> GuardianAssessmentEvent:
+def _coerce_event(event: GuardianAssessmentEvent | dict[str, Any] | Any) -> Any:
     if isinstance(event, GuardianAssessmentEvent):
+        return event
+    if callable(getattr(event, "to_mapping", None)):
         return event
     if isinstance(event, dict):
         return GuardianAssessmentEvent(
             id=str(event.get("id", "")),
             status=event.get("status"),
-            action=event.get("action"),
+            action=_coerce_action(event.get("action")),
             target_item_id=event.get("target_item_id"),
             turn_id=str(event.get("turn_id", "")),
             started_at_ms=int(event.get("started_at_ms", 0)),

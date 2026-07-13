@@ -16,7 +16,7 @@ from pycodex.core.shell import Shell, ShellType
 from pycodex.core.tools.context import ExecCommandToolOutput, ToolPayload
 from pycodex.core.tools.router import FunctionCallError
 from pycodex.core.tools.registry import ToolInvocation
-from pycodex.core.unified_exec import UnifiedExecError
+from pycodex.core.unified_exec import UnifiedExecError, UnifiedExecProcessManager
 from pycodex.core.tools.handlers.unified_exec import (
     DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS,
     DEFAULT_EXEC_YIELD_TIME_MS,
@@ -284,7 +284,12 @@ class CoreUnifiedExecHandlerTests(unittest.TestCase):
         self.assertEqual(request.max_output_tokens, 12)
         self.assertEqual(request.cwd, root)
         self.assertEqual(request.sandbox_cwd, root)
-        self.assertIs(request.environment, environment)
+        # Rust owner: codex-core::unified_exec::process_manager.
+        # The local process environment is a shell-policy projection, not the
+        # opaque turn-environment transport object used by remote exec.
+        self.assertIsInstance(request.environment, dict)
+        self.assertTrue(request.environment_is_complete)
+        self.assertEqual(request.environment.get("CODEX_CI"), "1")
         self.assertEqual(request.network, "net")
         self.assertTrue(request.tty)
         self.assertEqual(request.sandbox_permissions, SandboxPermissions.REQUIRE_ESCALATED)
@@ -1106,7 +1111,10 @@ class CoreUnifiedExecHandlerTests(unittest.TestCase):
                         }
                     )
                 ),
-                session=SimpleNamespace(user_shell=lambda: shell),
+                session=SimpleNamespace(
+                    user_shell=lambda: shell,
+                    services=SimpleNamespace(unified_exec_manager=UnifiedExecProcessManager()),
+                ),
                 turn=SimpleNamespace(
                     environments=(
                         SimpleNamespace(environment_id="local", cwd=local_root),
@@ -1115,9 +1123,11 @@ class CoreUnifiedExecHandlerTests(unittest.TestCase):
                 ),
             )
 
-            output = ExecCommandHandler(
-                ExecCommandHandlerOptions(include_environment_id=True)
-            ).handle(invocation)
+            output = asyncio.run(
+                ExecCommandHandler(
+                    ExecCommandHandlerOptions(include_environment_id=True)
+                ).handle(invocation)
+            )
 
             self.assertEqual(output.exit_code, 0)
             self.assertIn(str(child), output.raw_output.decode("utf-8", errors="replace"))
@@ -1131,11 +1141,14 @@ class CoreUnifiedExecHandlerTests(unittest.TestCase):
                 call_id="call-fail",
                 tool_name="exec_command",
                 payload=ToolPayload.function(json.dumps({"cmd": command})),
-                session=SimpleNamespace(user_shell=lambda: shell),
+                session=SimpleNamespace(
+                    user_shell=lambda: shell,
+                    services=SimpleNamespace(unified_exec_manager=UnifiedExecProcessManager()),
+                ),
                 turn=SimpleNamespace(environments=(SimpleNamespace(environment_id="local", cwd=root),)),
             )
 
-            output = ExecCommandHandler().handle(invocation)
+            output = asyncio.run(ExecCommandHandler().handle(invocation))
 
             self.assertEqual(output.exit_code, 7)
             self.assertIn("pycodex-fail", output.raw_output.decode("utf-8", errors="replace"))
@@ -1148,11 +1161,14 @@ class CoreUnifiedExecHandlerTests(unittest.TestCase):
                 call_id="call-token-count",
                 tool_name="exec_command",
                 payload=ToolPayload.function(json.dumps({"cmd": command, "max_output_tokens": 1})),
-                session=SimpleNamespace(user_shell=lambda: shell),
+                session=SimpleNamespace(
+                    user_shell=lambda: shell,
+                    services=SimpleNamespace(unified_exec_manager=UnifiedExecProcessManager()),
+                ),
                 turn=SimpleNamespace(environments=(SimpleNamespace(environment_id="local", cwd=root),)),
             )
 
-            output = ExecCommandHandler().handle(invocation)
+            output = asyncio.run(ExecCommandHandler().handle(invocation))
 
             self.assertEqual(output.exit_code, 0)
             self.assertIsNotNone(output.original_token_count)
@@ -1177,14 +1193,18 @@ class CoreUnifiedExecHandlerTests(unittest.TestCase):
                     call_id="call-env",
                     tool_name="exec_command",
                     payload=ToolPayload.function(json.dumps({"cmd": command})),
-                    session=SimpleNamespace(user_shell=lambda: shell, conversation_id=thread_id),
+                    session=SimpleNamespace(
+                        user_shell=lambda: shell,
+                        conversation_id=thread_id,
+                        services=SimpleNamespace(unified_exec_manager=UnifiedExecProcessManager()),
+                    ),
                     turn=SimpleNamespace(
                         environments=(SimpleNamespace(environment_id="local", cwd=root),),
                         shell_environment_policy=policy,
                     ),
                 )
 
-                output = ExecCommandHandler().handle(invocation)
+                output = asyncio.run(ExecCommandHandler().handle(invocation))
 
                 self.assertEqual(output.exit_code, 0)
                 lines = output.raw_output.decode("utf-8", errors="replace").splitlines()

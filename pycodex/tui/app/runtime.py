@@ -37,6 +37,7 @@ from pycodex.exec.local_runtime import (
 )
 from pycodex.core.tools.sandboxing import ApprovalStore
 from pycodex.exec.run import ExecRunPlan, InitialOperation
+from pycodex.model_provider.auth import auth_service_from_snapshot
 from pycodex.protocol import ActivePermissionProfile, ApprovalsReviewer, AskForApproval, ExecApprovalRequestEvent, NetworkPolicyAmendment, NetworkPolicyRuleAction, PermissionProfile, ResponseInputItem, ResponseItem, ReviewDecision, ReviewRequest, ReviewTarget, ThreadGoal as ProtocolThreadGoal, ThreadGoalStatus as ProtocolThreadGoalStatus, ThreadId, TurnItem, UserInput
 from pycodex.protocol.request_permissions import (
     RequestPermissionProfile,
@@ -439,59 +440,6 @@ def _rate_limits_backend_auth_provider(auth: Any) -> Any | None:
         account_id=_rate_limits_auth_account_id(auth),
         is_fedramp_account=_rate_limits_auth_is_fedramp(auth),
     )
-
-
-def _normalized_auth_dot_json_snapshot(auth: Any) -> Any:
-    try:
-        from pycodex.login.auth.storage import AuthDotJson
-    except Exception:
-        return auth
-    if not hasattr(auth, "auth_mode") and not isinstance(auth, Mapping):
-        return auth
-    if isinstance(auth, Mapping):
-        return AuthDotJson.from_mapping(auth)
-    tokens = getattr(auth, "tokens", None)
-    if tokens is not None and not isinstance(tokens, Mapping):
-        return auth
-    data: dict[str, Any] = {}
-    for attr, key in (
-        ("auth_mode", "auth_mode"),
-        ("openai_api_key", "OPENAI_API_KEY"),
-        ("tokens", "tokens"),
-        ("last_refresh", "last_refresh"),
-        ("agent_identity", "agent_identity"),
-    ):
-        value = getattr(auth, attr, None)
-        if value is not None:
-            if key == "last_refresh" and isinstance(value, datetime):
-                value = value.isoformat()
-            data[key] = value
-    return AuthDotJson.from_mapping(data)
-
-
-def _models_auth_manager_from_snapshot(codex_home: Path | str, auth: Any, chatgpt_base_url: str | None) -> Any | None:
-    if auth is None:
-        return None
-    if callable(getattr(auth, "auth", None)) and callable(getattr(auth, "auth_cached", None)):
-        return auth
-    try:
-        from pycodex.login.auth.manager import AuthManager, CodexAuth
-
-        if callable(getattr(auth, "auth_mode", None)) and callable(getattr(auth, "get_token", None)):
-            return AuthManager.from_auth_for_testing_with_home(auth, codex_home)
-        if hasattr(auth, "auth_mode"):
-            codex_auth = _run_coro_blocking(
-                CodexAuth.from_auth_dot_json(
-                    codex_home,
-                    _normalized_auth_dot_json_snapshot(auth),
-                    "file",
-                    chatgpt_base_url,
-                )
-            )
-            return AuthManager.from_auth_for_testing_with_home(codex_auth, codex_home)
-    except Exception:
-        return None
-    return None
 
 
 def _mapping_or_attr(value: Any, *names: str) -> Any:
@@ -1133,11 +1081,18 @@ class CoreExecActiveThreadRuntime:
         codex_home = self.codex_home or getattr(self.session_config, "codex_home", None)
         if codex_home is None:
             raise RuntimeError("codex_home is required to build the models manager")
-        auth_manager = self.auth_manager or _models_auth_manager_from_snapshot(
-            codex_home,
-            self.original_auth or self.auth,
-            getattr(self.session_config, "chatgpt_base_url", None),
-        )
+        auth_manager = self.auth_manager
+        if auth_manager is None:
+            try:
+                auth_manager = _run_coro_blocking(
+                    auth_service_from_snapshot(
+                        codex_home,
+                        self.original_auth or self.auth,
+                        getattr(self.session_config, "chatgpt_base_url", None),
+                    )
+                )
+            except Exception:
+                auth_manager = None
         try:
             from pycodex.model_provider import create_model_provider
             from pycodex.model_provider_info import ModelProviderInfo

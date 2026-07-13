@@ -132,7 +132,12 @@ from pycodex.login.device_code_auth import (
 
 from pycodex.cli.features import FeatureCliError, FeatureToggles, FeaturesCli, parse_features_args, run_features_command
 from pycodex.cli.features import FeaturesSubcommand
-from pycodex.cli.debug_sandbox import build_debug_sandbox_execution_plan, debug_sandbox_subprocess_argv
+from pycodex.cli.debug_sandbox import (
+    build_debug_sandbox_execution_plan,
+    build_debug_sandbox_windows_product_plan,
+    debug_sandbox_subprocess_argv,
+    run_debug_sandbox_windows_product_session,
+)
 from .doctor_updates import (
     default_reachability_plan,
     doctor_background_server_check,
@@ -1161,7 +1166,7 @@ def _parse_sandbox_args(args: tuple[str, ...]) -> tuple[str, ...]:
             index += 1
             continue
         if arg == "--":
-            return args[index:]
+            return args
         if arg.startswith("-"):
             raise CliParseError(f"Unknown argument for sandbox: {arg}")
         index += 1
@@ -2344,9 +2349,10 @@ def main(
         )
     elif parsed.command == "sandbox":
         return _run_sandbox(
-            parsed.command_args,
+            parsed=parsed,
             stdout=out,
             stderr=err,
+            stdin=stdin,
         )
     elif parsed.command == "exec-server":
         return _run_exec_server(
@@ -7615,17 +7621,20 @@ def _doctor_updates_mapping(
 
 
 def _run_sandbox(
-    command_args: tuple[str, ...],
     *,
+    parsed: ParsedCli,
     stdout: TextIO,
     stderr: TextIO,
+    stdin: object | None,
 ) -> int:
+    command_args = parsed.command_args
     if any(arg in {"-h", "--help"} for arg in command_args):
         print(_unimplemented_command_help_text("sandbox"), file=stdout)
         return 0
 
     cwd: str | None = None
     permissions_profile: str | None = None
+    config_profile: str | None = None
     include_managed_config = False
     index = 0
     command_start = None
@@ -7639,6 +7648,7 @@ def _run_sandbox(
             index += 2
             continue
         if arg in {"--profile", "-p"}:
+            config_profile = command_args[index + 1]
             index += 2
             continue
         if arg in {"--cd", "-C"}:
@@ -7674,6 +7684,41 @@ def _run_sandbox(
         sandbox_type = "windows"
     else:
         sandbox_type = "landlock"
+
+    if sandbox_type == "windows":
+        try:
+            cli_overrides = tuple(
+                (override.path, override.value)
+                for override in parsed.parsed_config_overrides()
+            )
+            windows_plan = build_debug_sandbox_windows_product_plan(
+                command,
+                cli_overrides=cli_overrides,
+                permissions_profile=permissions_profile,
+                cwd=cwd,
+                config_profile=config_profile,
+                include_managed_config=include_managed_config,
+            )
+            if stdin is None:
+                input_stream: object = sys.stdin
+            elif isinstance(stdin, bytes):
+                input_stream = io.BytesIO(stdin)
+            elif isinstance(stdin, str):
+                input_stream = io.StringIO(stdin)
+            else:
+                input_stream = stdin
+            result = run_debug_sandbox_windows_product_session(
+                windows_plan,
+                stdin=input_stream,
+                stdout=stdout,
+                stderr=stderr,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            print(f"pycodex: sandbox execution failed: {exc}", file=stderr)
+            return 2
+        if result.error_message is not None:
+            print(result.error_message, file=stderr)
+        return result.exit_code
 
     try:
         plan = build_debug_sandbox_execution_plan(
