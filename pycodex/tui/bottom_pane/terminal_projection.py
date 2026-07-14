@@ -180,6 +180,7 @@ class TerminalBottomPaneRequestRunner:
         footer_text: str,
         live_status: object,
         render_pass: TerminalBottomPaneRenderPassProtocol,
+        footer_right_text: str = "",
         clear_external_blank_rows: bool = False,
     ) -> bool:
         """Build and run a resize-owned bottom-pane render pass request."""
@@ -190,6 +191,7 @@ class TerminalBottomPaneRequestRunner:
                 layout_active=layout_active,
                 render_context=render_context,
                 footer_text=footer_text,
+                footer_right_text=footer_right_text,
                 live_status=live_status,
                 render_pass=render_pass,
                 clear_external_blank_rows=clear_external_blank_rows,
@@ -203,6 +205,7 @@ class TerminalBottomPaneRequestRunner:
         layout_active: Callable[[], bool],
         footer_text: Callable[[], str],
         live_status: object,
+        footer_right_text: Callable[[], str] = lambda: "",
         clear_external_blank_rows: bool = False,
     ) -> Callable[[TerminalBottomPaneRenderPassProtocol, TerminalBottomPaneRenderContextProtocol], bool]:
         """Return the resize-reflow render callback bound to this runner.
@@ -223,6 +226,7 @@ class TerminalBottomPaneRequestRunner:
                 layout_active=layout_active(),
                 render_context=render_context,
                 footer_text=footer_text(),
+                footer_right_text=footer_right_text(),
                 live_status=live_status,
                 render_pass=render_pass,
                 clear_external_blank_rows=clear_external_blank_rows,
@@ -236,6 +240,7 @@ class TerminalBottomPaneRequestRunner:
         stdin_is_terminal: Callable[[], bool],
         layout_active: Callable[[], bool],
         footer_text: Callable[[], str],
+        footer_right_text: Callable[[], str] = lambda: "",
     ) -> Callable[[object, bool], Callable[[TerminalBottomPaneRenderPassProtocol, TerminalBottomPaneRenderContextProtocol], bool]]:
         """Return the resize-reflow render-pass factory bound to this runner.
 
@@ -253,6 +258,7 @@ class TerminalBottomPaneRequestRunner:
                 stdin_is_terminal=stdin_is_terminal,
                 layout_active=layout_active,
                 footer_text=footer_text,
+                footer_right_text=footer_right_text,
                 live_status=live_status,
                 clear_external_blank_rows=clear_external_blank_rows,
             )

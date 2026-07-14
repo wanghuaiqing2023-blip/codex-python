@@ -369,14 +369,13 @@ At the time of this audit:
 
 - Protocol and semantic coverage: complete for the fixed-commit approval scope.
 - Real terminal product-path coverage: complete for automated fixed-commit
-  approval fixtures; final human smoke is pending.
-- Overall status: `[~]` only because final human Windows Terminal acceptance
-  remains open. The automated implementation covers interactive core, session grants, queue/replay,
+  approval fixtures and the final human Windows Terminal smoke.
+- Overall status: `[x]`. The implementation covers interactive core, session grants, queue/replay,
   interruption, guardian retry, user-input, MCP form, title/history, and
   footprint stability, MCP form/URL flows, inactive-thread labels, pending
   thread rows, open-thread selection, and full-screen approval are connected;
-  visual/ConPTY parity are automated and passing; final human Windows Terminal
-  acceptance remains open.
+  visual/ConPTY parity are automated and passing; human Windows Terminal
+  acceptance passed on 2026-07-14.
 
 Milestones 1 through 5 are complete under automated evidence. Milestone 4 has active-overlay queue
 consumption, app-server resolution, pending replay, interruption,
@@ -397,9 +396,9 @@ separate `never` approval default.
 
 ## Final Human Windows Terminal Acceptance
 
-The project Goal remains active until these checks pass in a real interactive
-Python terminal session. Run them in one session so recovery and session-state
-behavior are exercised rather than testing isolated startup states.
+These checks passed in a real interactive Python terminal session. They remain
+as a reproducible regression runbook so recovery and session-state behavior
+can be revalidated without reducing the test to isolated startup states.
 
 Automated ConPTY evidence already covers accept, Esc cancellation, modal
 80/120-column resize, no cancelled-command side effect, action-required title
@@ -461,37 +460,37 @@ Record results here or report the same fields back in the task:
 
 | Check | Result | Screenshot/trace | Notes |
 |---|---|---|---|
-| Accept and resume | pending | - | - |
-| Reject/cancel | pending | - | - |
-| Resize while pending | pending | - | - |
-| Session decision scope | pending | - | - |
-| Permission request | pending | - | - |
-| Post-modal English/Chinese | pending | - | - |
-| Action-required title cleanup | pending | - | - |
+| Accept and resume | passed | user-confirmed Windows Terminal run | 2026-07-14 |
+| Reject/cancel | passed | user-confirmed Windows Terminal run | 2026-07-14 |
+| Resize while pending | passed | user-confirmed Windows Terminal run | 2026-07-14 |
+| Session decision scope | passed | user-confirmed Windows Terminal run | 2026-07-14 |
+| Permission request | passed | user-confirmed Windows Terminal run | 2026-07-14 |
+| Post-modal English/Chinese | passed | user-confirmed Windows Terminal run | 2026-07-14 |
+| Action-required title cleanup | passed | user-confirmed Windows Terminal run | 2026-07-14 |
 
-- [ ] **Accept and resume:** choose Read Only, request an `apply_patch` write
+- [x] **Accept and resume:** choose Read Only, request an `apply_patch` write
   to a disposable workspace file, accept once, and confirm the file is written
   exactly once and one stable history result is shown.
-- [ ] **Reject/cancel:** request a second disposable write, cancel with Esc or
+- [x] **Reject/cancel:** request a second disposable write, cancel with Esc or
   choose the deny option, and confirm the file is not created and the prompt
   becomes usable immediately.
-- [ ] **Resize while pending:** open an approval modal, shrink and enlarge the
+- [x] **Resize while pending:** open an approval modal, shrink and enlarge the
   Windows Terminal window before deciding, and confirm the same request,
   selected row, history, composer, and footer remain visible without duplicate
   rows or a stale overlay.
-- [ ] **Session decision scope:** where the modal offers a session decision,
+- [x] **Session decision scope:** where the modal offers a session decision,
   accept it and repeat the same operation; confirm the matching request is
   reused without a second prompt while a materially different request still
   asks.
-- [ ] **Permission request:** exercise a request for additional permissions,
+- [x] **Permission request:** exercise a request for additional permissions,
   verify its decision message and footer/status update, and confirm the next
   turn observes the new permission state.
-- [ ] **Post-modal input:** after acceptance and rejection, submit ordinary
+- [x] **Post-modal input:** after acceptance and rejection, submit ordinary
   English and Chinese IME text and confirm both receive normal responses.
-- [ ] **Action-required cleanup:** confirm the terminal title indicates action
+- [x] **Action-required cleanup:** confirm the terminal title indicates action
   while a request is pending and returns to its normal state after accept,
   reject, Esc, or interruption.
 
-Record the observed result and any screenshot or trace next to this checklist
-before changing the overall status from `[~]` to `[x]`. A failed item reopens
-the owning module contract; it must not be patched in terminal runtime glue.
+The observed results above close the overall status at `[x]`. A future failed
+item reopens the owning module contract; it must not be patched in terminal
+runtime glue.

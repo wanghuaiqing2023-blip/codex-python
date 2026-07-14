@@ -309,6 +309,16 @@ class ExecExpirationOutcome(str, Enum):
     CANCELLED = "cancelled"
 
 
+async def _cancel_and_drain_tasks(tasks: Sequence[asyncio.Task[Any]]) -> None:
+    """Cancel task-race losers and wait until their coroutines have exited."""
+
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 @dataclass(slots=True)
 class CancellationToken:
     """Minimal asyncio cancellation token for exec expiration wiring."""
@@ -331,12 +341,13 @@ class CancellationToken:
             return
         tasks = [asyncio.create_task(self._event.wait())]
         tasks.extend(asyncio.create_task(parent.cancelled()) for parent in self._parents)
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-        for task in pending:
-            task.cancel()
-        for task in done:
-            await task
-        self.cancel()
+        try:
+            done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                await task
+            self.cancel()
+        finally:
+            await _cancel_and_drain_tasks(tasks)
 
 
 @dataclass(frozen=True, slots=True)
@@ -423,10 +434,12 @@ class ExecExpiration:
         cancellation = _required_cancellation(self)
         sleep_task = asyncio.create_task(asyncio.sleep((self.timeout or timedelta()).total_seconds()))
         cancel_task = asyncio.create_task(cancellation.cancelled())
-        done, pending = await asyncio.wait((cancel_task, sleep_task), return_when=asyncio.FIRST_COMPLETED)
-        for task in pending:
-            task.cancel()
-        return ExecExpirationOutcome.CANCELLED if cancel_task in done else ExecExpirationOutcome.TIMED_OUT
+        tasks = (cancel_task, sleep_task)
+        try:
+            done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            return ExecExpirationOutcome.CANCELLED if cancel_task in done else ExecExpirationOutcome.TIMED_OUT
+        finally:
+            await _cancel_and_drain_tasks(tasks)
 
 
 class _ExecExpirationCancellationAccessor:
@@ -821,9 +834,7 @@ async def consume_subprocess_output(
         stdout_output = await _await_stream_output(stdout_task, capture_policy.io_drain_timeout())
         stderr_output = await _await_stream_output(stderr_task, capture_policy.io_drain_timeout())
     finally:
-        for task in (stdout_task, stderr_task):
-            if not task.done():
-                task.cancel()
+        await _cancel_and_drain_tasks((stdout_task, stderr_task))
 
     exit_code = 1 if cancelled else process.returncode
     if timed_out:
@@ -843,13 +854,15 @@ async def _wait_process_or_expiration(
 ) -> ExecExpirationOutcome | None:
     wait_task = asyncio.create_task(process.wait())
     expiration_task = asyncio.create_task(expiration.wait_with_outcome())
-    done, pending = await asyncio.wait((wait_task, expiration_task), return_when=asyncio.FIRST_COMPLETED)
-    for task in pending:
-        task.cancel()
-    if wait_task in done:
-        await wait_task
-        return None
-    return await expiration_task
+    tasks = (wait_task, expiration_task)
+    try:
+        done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        if wait_task in done:
+            await wait_task
+            return None
+        return await expiration_task
+    finally:
+        await _cancel_and_drain_tasks(tasks)
 
 
 async def _await_stream_output(

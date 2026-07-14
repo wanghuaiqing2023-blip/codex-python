@@ -13,22 +13,24 @@ from typing import Callable, Protocol, TypeAlias
 
 from .._porting import RustTuiModule
 from .chat_composer import (
+    ChatComposer,
+    InputResult,
     TerminalCommandPopupState,
-    run_terminal_command_popup_input_action,
-    terminal_composer_projection,
+    TerminalComposerInputAction,
     terminal_popup_key,
 )
-from .chat_composer_history import ChatComposerHistory, HistoryEntry
-from .command_popup import CommandPopup
+from .command_popup import CommandPopup, CommandPopupFlags
 from .bottom_pane_view import (
     BottomPaneView,
     CancellationEvent,
     ViewCompletion,
     clear_dismiss_after_child_accept as clear_view_dismiss_after_child_accept,
     completion as view_completion,
+    cursor_pos as view_cursor_pos,
     dismiss_app_server_request as view_dismiss_app_server_request,
     dismiss_after_child_accept as view_dismiss_after_child_accept,
     handle_key_event as view_handle_key_event,
+    handle_paste as view_handle_paste,
     is_complete as view_is_complete,
     on_ctrl_c as view_on_ctrl_c,
     terminal_lines as view_terminal_lines,
@@ -144,7 +146,17 @@ class BottomPaneViewStack:
         view = self.active_view()
         if view is None or not key:
             return False
-        view_handle_key_event(view, key)
+        prefer_esc = bool(getattr(view, "prefer_esc_to_handle_key_event", lambda: False)())
+        if str(key).lower() == "esc" and not prefer_esc:
+            cancellation = getattr(view, "on_ctrl_c", lambda: CancellationEvent.NOT_HANDLED)()
+            handled = (
+                cancellation is CancellationEvent.HANDLED
+                or str(getattr(cancellation, "value", cancellation)).lower() == "handled"
+            )
+            if not (handled and view_is_complete(view)):
+                view_handle_key_event(view, key)
+        else:
+            view_handle_key_event(view, key)
         transition = self.drain_selection_events(
             selection_events,
             on_selection_events=on_selection_events,
@@ -162,6 +174,24 @@ class BottomPaneViewStack:
             if transition.after_pop is not None:
                 transition.after_pop()
         return True
+
+    def handle_active_paste(self, pasted: str) -> bool:
+        """Route paste/committed text to the active view like Rust BottomPane."""
+
+        view = self.active_view()
+        if view is None:
+            return False
+        needs_redraw = view_handle_paste(view, str(pasted))
+        view_complete = view_is_complete(view)
+        if view_complete:
+            # Rust tears down the entire modal flow when paste completes the
+            # active view; it does not apply ordinary child-pop semantics.
+            self.clear()
+        return bool(needs_redraw or view_complete)
+
+    def cursor_pos(self, area: object) -> tuple[int, int] | None:
+        view = self.active_view()
+        return None if view is None else view_cursor_pos(view, area)
 
     def handle_ctrl_c(self) -> bool:
         """Give the active view first refusal on Ctrl+C like Rust BottomPane."""
@@ -210,11 +240,6 @@ class TerminalBottomPaneActiveViewInputResult:
 
 
 @dataclass(frozen=True)
-class TerminalBottomPaneComposerKeyResult:
-    draft: str | None = None
-
-
-@dataclass(frozen=True)
 class TerminalBottomPanePopupProjection:
     lines: tuple[TerminalPopupLine, ...] = ()
     is_active_view: bool = False
@@ -229,10 +254,12 @@ class TerminalBottomPaneRenderContext:
     """Bottom-pane-owned values needed by the terminal render adapter."""
 
     draft: str
+    composer_projection: object | None = None
     popup_lines: tuple[TerminalPopupLine, ...] = ()
     popup_height: int = 0
     popup_is_active_view: bool = False
     cursor_visible: bool = True
+    popup_cursor: tuple[int, int] | None = None
     active_tail_lines: tuple[str, ...] = ()
     composer_height: int = 1
 
@@ -251,20 +278,28 @@ class TerminalBottomPaneViewState:
     should not split those pieces into independent local state.
     """
 
-    draft: str = ""
+    composer: ChatComposer = field(default_factory=ChatComposer)
     view_stack: BottomPaneViewStack = field(default_factory=BottomPaneViewStack)
-    command_popup_state: TerminalCommandPopupState = field(default_factory=TerminalCommandPopupState.new)
     selection_events: list[object] = field(default_factory=list)
     active_tail_lines: tuple[str, ...] = ()
     pending_thread_approvals: PendingThreadApprovals = field(
         default_factory=PendingThreadApprovals.new
     )
-    history: ChatComposerHistory = field(default_factory=ChatComposerHistory.new)
-    history_lookup: Callable[[int, int], object | None] | None = None
-
     @classmethod
-    def new(cls) -> "TerminalBottomPaneViewState":
-        return cls()
+    def new(cls, command_popup_flags: CommandPopupFlags | None = None) -> "TerminalBottomPaneViewState":
+        return cls(composer=ChatComposer(command_popup_flags=command_popup_flags))
+
+    @property
+    def draft(self) -> str:
+        return self.composer.current_text()
+
+    @property
+    def command_popup_state(self) -> TerminalCommandPopupState:
+        return self.composer.command_popup_state
+
+    @property
+    def history(self) -> object:
+        return self.composer.history
 
     @property
     def active_view(self) -> BottomPaneView | None:
@@ -287,23 +322,16 @@ class TerminalBottomPaneViewState:
         return self.command_popup_state.visible
 
     def apply_draft(self, draft: str) -> None:
-        self.draft = str(draft)
-        if self.history.should_handle_navigation(
-            self.draft,
-            len(self.draft.encode("utf-8")),
-        ):
-            self.command_popup_state.hide()
-            return
-        terminal_bottom_pane_sync_command_popup(
-            self.view_stack,
-            self.command_popup_state,
-            self.draft,
-        )
+        source = str(draft)
+        if source != self.composer.current_text():
+            self.composer.set_text_content(source)
+        else:
+            self.composer.sync_popups(active_view_present=self.active_view is not None)
 
     def record_submission(self, text: str) -> None:
         """Record one canonical local composer submission for Up/Down recall."""
 
-        self.history.record_local_submission(HistoryEntry.new(str(text).rstrip("\r\n")))
+        self.composer.record_submission(text)
 
     def configure_history(
         self,
@@ -314,37 +342,7 @@ class TerminalBottomPaneViewState:
     ) -> None:
         """Install the fixed persistent-history snapshot for this session."""
 
-        self.history.set_metadata(thread_id, int(log_id), int(entry_count))
-        self.history_lookup = lookup
-
-    def _resolve_pending_history_entry(self, entry: HistoryEntry | None) -> HistoryEntry | None:
-        if entry is not None or self.history_lookup is None:
-            return entry
-        offset = self.history.history_cursor
-        log_id = self.history.persistent_log_id
-        if offset is None or log_id is None or offset >= self.history.persistent_entry_count:
-            return None
-        fetched = self.history_lookup(log_id, offset)
-        text = getattr(fetched, "text", fetched)
-        response = self.history.on_entry_response(
-            log_id,
-            offset,
-            None if text is None else str(text),
-        )
-        return response.entry if response.kind == "Found" else None
-
-    def _navigate_history(self, draft: str, key: str) -> str | None:
-        if key not in {"up", "down"}:
-            return None
-        if self.active_view is not None or self.command_popup_visible:
-            return None
-        if not self.history.should_handle_navigation(draft, len(draft.encode("utf-8"))):
-            return None
-        entry = self.history.navigate_up() if key == "up" else self.history.navigate_down()
-        entry = self._resolve_pending_history_entry(entry)
-        next_draft = draft if entry is None else entry.text
-        self.apply_draft(next_draft)
-        return next_draft
+        self.composer.configure_history(thread_id, log_id, entry_count, lookup)
 
     def apply_active_tail(self, lines: tuple[str, ...]) -> None:
         self.active_tail_lines = tuple(str(line) for line in lines)
@@ -352,32 +350,38 @@ class TerminalBottomPaneViewState:
     def apply_pending_thread_approvals(self, approvals: list[str]) -> None:
         self.pending_thread_approvals.set_threads(list(approvals))
 
-    def handle_composer_key(
+    def handle_composer_event(
         self,
-        draft: str,
         event_kind: str,
         event_text: str = "",
         *,
+        now: float | None = None,
+        detect_paste_bursts: bool = False,
         on_selection_events: TerminalSelectionEventHandler | None = None,
         open_command_view: TerminalCommandViewFactory | None = None,
-    ) -> str | None:
-        self.apply_draft(draft)
-        history_draft = self._navigate_history(
-            self.draft,
-            terminal_popup_key(event_kind, event_text),
-        )
-        if history_draft is not None:
-            return history_draft
-        return terminal_bottom_pane_handle_composer_key(
+    ) -> TerminalComposerInputAction | InputResult:
+        key = terminal_popup_key(event_kind, event_text)
+        active = terminal_bottom_pane_active_view_input(
             self.view_stack,
-            self.command_popup_state,
-            draft,
+            key,
             event_kind,
+            self.composer.current_text(),
             event_text,
             selection_events=self.selection_events,
             on_selection_events=on_selection_events,
+        )
+        if active.active and active.draft is not None:
+            return TerminalComposerInputAction("render", self.composer.current_text())
+
+        return self.composer.handle_terminal_event(
+            event_kind,
+            event_text,
+            now=now,
+            detect_paste_bursts=detect_paste_bursts,
+            active_view_present=self.active_view is not None,
             open_command_view=open_command_view,
-        ).draft
+            show_selection_view=self.show_selection_view,
+        )
 
     def show_selection_view(self, params: SelectionViewParams) -> None:
         terminal_bottom_pane_show_selection_view(
@@ -387,10 +391,16 @@ class TerminalBottomPaneViewState:
             self.selection_events,
         )
 
-    def show_view(self, view: BottomPaneView) -> BottomPaneView:
+    def show_view(self, view: object) -> BottomPaneView:
         """Push a view, first offering approval requests to the active view."""
 
-        self.command_popup_state.hide()
+        if isinstance(view, SelectionViewParams):
+            self.show_selection_view(view)
+            active_selection = self.view_stack.active_view()
+            if active_selection is None:
+                raise RuntimeError("selection view was not activated")
+            return active_selection
+        self.composer.command_popup_state.hide()
         request = getattr(view, "current_request", None)
         active = self.view_stack.active_view()
         if request is not None and active is not None:
@@ -451,13 +461,26 @@ class TerminalBottomPaneViewState:
         """
 
         popup_projection = self.popup_projection_for_size(size)
-        composer_height = terminal_composer_projection(self.draft, size.columns).height
+        composer_projection = self.composer.terminal_projection(size.columns)
+        composer_height = composer_projection.height
+        popup_cursor = None
+        if popup_projection.is_active_view:
+            popup_cursor = self.view_stack.cursor_pos(
+                {
+                    "x": 0,
+                    "y": 0,
+                    "width": max(1, size.columns - 1),
+                    "height": popup_projection.height,
+                }
+            )
         return TerminalBottomPaneRenderContext(
             draft=self.draft,
+            composer_projection=composer_projection,
             popup_lines=popup_projection.lines,
             popup_height=popup_projection.height,
             popup_is_active_view=popup_projection.is_active_view,
-            cursor_visible=self.cursor_visible(composer_cursor_visible),
+            cursor_visible=(popup_cursor is not None if popup_projection.is_active_view else composer_cursor_visible()),
+            popup_cursor=popup_cursor,
             active_tail_lines=self.active_tail_lines,
             composer_height=composer_height,
         )
@@ -468,6 +491,7 @@ def terminal_bottom_pane_active_view_input(
     key: str,
     event_kind: str,
     draft: str,
+    event_text: str = "",
     *,
     selection_events: list[object],
     on_selection_events: TerminalSelectionEventHandler | None = None,
@@ -482,11 +506,29 @@ def terminal_bottom_pane_active_view_input(
 
     if view_stack.active_view() is None:
         return TerminalBottomPaneActiveViewInputResult(False)
-    if str(event_kind).lower() == "interrupt":
+    kind = str(event_kind).lower()
+    if kind == "release":
+        return TerminalBottomPaneActiveViewInputResult(True, draft)
+    if kind == "interrupt":
         return TerminalBottomPaneActiveViewInputResult(
             view_stack.handle_ctrl_c(),
             draft,
         )
+    if kind == "paste":
+        view_stack.handle_active_paste(event_text)
+        return TerminalBottomPaneActiveViewInputResult(True, draft)
+    if not key and kind in {"text", "line"} and event_text:
+        if len(event_text) > 1:
+            view_stack.handle_active_paste(event_text.rstrip("\r\n") if kind == "line" else event_text)
+        else:
+            view_stack.handle_active_key(
+                event_text,
+                selection_events=selection_events,
+                on_selection_events=on_selection_events,
+            )
+        return TerminalBottomPaneActiveViewInputResult(True, draft)
+    if not key and kind not in {"text", "line", "paste", "eof", "interrupt", "resize"}:
+        key = kind
     if key:
         view_stack.handle_active_key(
             key,
@@ -497,59 +539,6 @@ def terminal_bottom_pane_active_view_input(
     if str(event_kind).lower() in {"eof", "interrupt"}:
         return TerminalBottomPaneActiveViewInputResult(True, None)
     return TerminalBottomPaneActiveViewInputResult(True, draft)
-
-
-def terminal_bottom_pane_handle_composer_key(
-    view_stack: BottomPaneViewStack,
-    command_popup_state: TerminalCommandPopupState,
-    draft: str,
-    event_kind: str,
-    event_text: str = "",
-    *,
-    selection_events: list[object],
-    on_selection_events: TerminalSelectionEventHandler | None = None,
-    open_command_view: TerminalCommandViewFactory | None = None,
-) -> TerminalBottomPaneComposerKeyResult:
-    """Route one terminal composer key through bottom-pane owned precedence.
-
-    Rust owner: ``codex-tui::bottom_pane::BottomPane`` gives active
-    ``BottomPaneView`` instances first chance at input, then
-    ``chat_composer`` owns slash-command popup key handling before normal
-    draft mutation. Terminal controllers provide callbacks but must not split
-    that precedence into local branches.
-    """
-
-    key = terminal_popup_key(event_kind, event_text)
-    if not key and view_stack.active_view() is not None and str(event_kind).lower() in {"text", "paste", "key"}:
-        key = str(event_text)
-    active_view_input = terminal_bottom_pane_active_view_input(
-        view_stack,
-        key,
-        event_kind,
-        draft,
-        selection_events=selection_events,
-        on_selection_events=on_selection_events,
-    )
-    if active_view_input.active:
-        return TerminalBottomPaneComposerKeyResult(active_view_input.draft)
-
-    def show_selection_view(params: SelectionViewParams) -> None:
-        terminal_bottom_pane_show_selection_view(
-            view_stack,
-            command_popup_state,
-            params,
-            selection_events,
-        )
-
-    return TerminalBottomPaneComposerKeyResult(
-        run_terminal_command_popup_input_action(
-            command_popup_state,
-            draft,
-            key,
-            open_command_view=open_command_view,
-            show_selection_view=show_selection_view,
-        )
-    )
 
 
 def terminal_bottom_pane_popup_lines(
@@ -664,13 +653,13 @@ def terminal_bottom_pane_cursor_visible(
 ) -> bool:
     """Return the frame-level cursor policy for active bottom-pane state.
 
-    Rust owner: active ``BottomPaneView`` instances do not expose the primary
-    composer text cursor; ``custom_terminal`` then hides the cursor when the
-    rendered frame does not request a cursor position.
+    Rust owner: active ``BottomPaneView`` instances replace the primary
+    composer cursor with their own optional ``Renderable::cursor_pos``.
+    ``custom_terminal`` hides the cursor only when neither owner supplies one.
     """
 
     if view_stack.active_view() is not None:
-        return False
+        return view_stack.cursor_pos({"x": 0, "y": 0, "width": 80, "height": 24}) is not None
     return bool(composer_cursor_visible())
 
 
@@ -686,7 +675,6 @@ __all__ = [
     "BottomPaneViewStack",
     "RUST_MODULE",
     "TerminalBottomPaneActiveViewInputResult",
-    "TerminalBottomPaneComposerKeyResult",
     "TerminalCommandPopupStateProtocol",
     "TerminalBottomPanePopupProjection",
     "TerminalBottomPaneRenderContext",
@@ -696,7 +684,6 @@ __all__ = [
     "TerminalSelectionTransition",
     "terminal_bottom_pane_active_view_input",
     "terminal_bottom_pane_cursor_visible",
-    "terminal_bottom_pane_handle_composer_key",
     "terminal_bottom_pane_popup_lines",
     "terminal_bottom_pane_popup_projection",
     "terminal_bottom_pane_popup_projection_for_size",

@@ -54,12 +54,12 @@ def test_completed_goal_usage_reports_time_without_token_budget():
 
 
 def test_goal_status_indicator_from_app_goal_maps_status_variants():
-    assert goal_status_indicator_from_app_goal(goal(ThreadGoalStatus.Active, seconds=60)) == GoalStatusIndicator.Active("1m")
-    assert goal_status_indicator_from_app_goal(goal(ThreadGoalStatus.Paused)) == GoalStatusIndicator("Paused")
-    assert goal_status_indicator_from_app_goal(goal(ThreadGoalStatus.Blocked)) == GoalStatusIndicator("Blocked")
-    assert goal_status_indicator_from_app_goal(goal(ThreadGoalStatus.UsageLimited)) == GoalStatusIndicator("UsageLimited")
-    assert goal_status_indicator_from_app_goal(goal(ThreadGoalStatus.BudgetLimited, budget=50_000, used=63_876)) == GoalStatusIndicator.BudgetLimited("63.9K / 50K tokens")
-    assert goal_status_indicator_from_app_goal(goal(ThreadGoalStatus.Complete, used=40_000, seconds=120)) == GoalStatusIndicator.Complete("2m")
+    assert goal_status_indicator_from_app_goal(goal(ThreadGoalStatus.ACTIVE, seconds=60)) == GoalStatusIndicator.Active("1m")
+    assert goal_status_indicator_from_app_goal(goal(ThreadGoalStatus.PAUSED)) == GoalStatusIndicator("Paused")
+    assert goal_status_indicator_from_app_goal(goal(ThreadGoalStatus.BLOCKED)) == GoalStatusIndicator("Blocked")
+    assert goal_status_indicator_from_app_goal(goal(ThreadGoalStatus.USAGE_LIMITED)) == GoalStatusIndicator("UsageLimited")
+    assert goal_status_indicator_from_app_goal(goal(ThreadGoalStatus.BUDGET_LIMITED, budget=50_000, used=63_876)) == GoalStatusIndicator.BudgetLimited("63.9K / 50K tokens")
+    assert goal_status_indicator_from_app_goal(goal(ThreadGoalStatus.COMPLETE, used=40_000, seconds=120)) == GoalStatusIndicator.Complete("2m")
 
 
 def test_active_goal_status_includes_current_turn_elapsed_time():
@@ -78,7 +78,7 @@ def test_active_goal_status_does_not_count_idle_time_before_turn_start():
 
 
 def test_state_is_active_and_duck_typed_protocol_goal_statuses():
-    state = GoalStatusState.new(goal(ThreadGoalStatus.Active), 0)
+    state = GoalStatusState.new(goal(ThreadGoalStatus.ACTIVE), 0)
     assert state.is_active() is True
 
     duck_goal = {

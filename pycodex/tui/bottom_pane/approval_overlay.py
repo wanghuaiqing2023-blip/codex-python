@@ -495,7 +495,7 @@ class ApprovalOverlay(BottomPaneViewDefaults):
             buf.extend(lines)
         return lines
 
-    def cursor_pos(self) -> None:
+    def cursor_pos(self, _area: Any = None) -> None:
         return None
 
     def _emit(self, event_type: str, **payload: Any) -> None:
@@ -543,8 +543,8 @@ def render(view: ApprovalOverlay, area: Any = None, buf: Any = None) -> List[str
     return view.render(area, buf)
 
 
-def cursor_pos(view: ApprovalOverlay) -> None:
-    return view.cursor_pos()
+def cursor_pos(view: ApprovalOverlay, area: Any = None) -> None:
+    return view.cursor_pos(area)
 
 
 def approval_footer_hint(request: ApprovalRequest, approval_keymap: Optional[ApprovalKeymap] = None, list_keymap: Any = None) -> str:

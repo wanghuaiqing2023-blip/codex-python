@@ -95,3 +95,11 @@ def test_table_column_metrics_classify_token_heavy_paths() -> None:
     metrics = collect_table_column_metrics(["Path"], [["/very/long/path/to/file.py"], ["./relative/path"]])
 
     assert metrics[0].kind is TableColumnKind.TOKEN_HEAVY
+
+
+def test_fenced_code_preserves_c_include_angle_brackets_and_spacing() -> None:
+    # Rust source: codex-tui/src/markdown_render.rs. Code block text events are
+    # rendered literally; HTML-like inline parsing must not alter source code.
+    rendered = render_markdown_text("```c\n#include <stdio.h>\n```")
+
+    assert lines_to_strings(rendered) == ["#include <stdio.h>"]

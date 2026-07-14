@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import unittest
+import asyncio
+import time
+from dataclasses import replace
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from pycodex.core import (
     GoalWallClockAccountingSnapshot,
@@ -18,6 +22,9 @@ from pycodex.core import (
     state_goal_status_from_protocol,
     validate_goal_budget,
 )
+from pycodex.core.goals import goal_runtime_apply
+from pycodex.core.goals import set_thread_goal
+from pycodex.core.goals import SetGoalRequest
 from pycodex.protocol import (
     ContentItem,
     ModeKind,
@@ -28,6 +35,7 @@ from pycodex.protocol import (
     TokenUsage,
 )
 from pycodex.state import ThreadGoal as StateThreadGoal
+from pycodex.state import GoalAccountingMode
 from pycodex.state import ThreadGoalStatus as StateThreadGoalStatus
 
 
@@ -154,6 +162,118 @@ class CoreGoalsTests(unittest.TestCase):
             ),
         )
         self.assertNotIn("goalId", protocol_goal.to_mapping())
+
+    def test_external_set_event_is_parsed_and_scheduled_by_core_goal_runtime(self) -> None:
+        # Rust: GoalRuntimeEvent::ExternalSet -> apply_external_thread_goal_status
+        # -> maybe_continue_goal_if_idle_runtime.
+        state_goal = StateThreadGoal(
+            thread_id=ThreadId.new(),
+            goal_id="goal-1",
+            objective="finish the stack",
+            status=StateThreadGoalStatus.ACTIVE,
+            token_budget=None,
+            tokens_used=0,
+            time_used_seconds=0,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        scheduled = []
+        session = SimpleNamespace(
+            goal_continuation_callback=lambda item, goal: scheduled.append((item, goal)),
+            collaboration_mode=None,
+            turn_id=None,
+            token_usage_info=None,
+        )
+
+        asyncio.run(
+            goal_runtime_apply(
+                session,
+                {"external_set": SimpleNamespace(goal=state_goal, previous_status=None)},
+            )
+        )
+
+        self.assertEqual(len(scheduled), 1)
+        item, protocol_goal = scheduled[0]
+        self.assertEqual(protocol_goal.objective, "finish the stack")
+        self.assertIn("<goal_context>", item.content[0].text)
+        self.assertIn("finish the stack", item.content[0].text)
+
+    def test_completed_goal_accounts_current_turn_usage_before_tool_response(self) -> None:
+        # Rust: session/tests.rs::completed_goal_accounts_current_turn_tokens_before_tool_response.
+        thread_id = ThreadId.new()
+        state_goal = StateThreadGoal(
+            thread_id=thread_id,
+            goal_id="goal-1",
+            objective="finish the stack",
+            status=StateThreadGoalStatus.ACTIVE,
+            token_budget=1_000,
+            tokens_used=0,
+            time_used_seconds=0,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+
+        class GoalStore:
+            def __init__(self) -> None:
+                self.goal = state_goal
+                self.accounting_calls = []
+
+            async def get_thread_goal(self, _thread_id):
+                return self.goal
+
+            async def account_thread_goal_usage(self, _thread_id, seconds, tokens, mode, expected_goal_id):
+                self.accounting_calls.append((seconds, tokens, mode, expected_goal_id))
+                self.goal = replace(
+                    self.goal,
+                    tokens_used=self.goal.tokens_used + tokens,
+                    time_used_seconds=self.goal.time_used_seconds + seconds,
+                )
+                return SimpleNamespace(updated=True, goal=self.goal)
+
+            async def update_thread_goal(self, _thread_id, update):
+                self.goal = replace(self.goal, status=update.status)
+                return self.goal
+
+        store = GoalStore()
+        usage = TokenUsage(
+            input_tokens=900,
+            cached_input_tokens=400,
+            output_tokens=80,
+            reasoning_output_tokens=20,
+            total_tokens=1_000,
+        )
+
+        class Session(SimpleNamespace):
+            async def total_token_usage(self):
+                return self.current_usage
+
+            async def send_event(self, _turn_context, _event):
+                return None
+
+        turn = SimpleNamespace(
+            sub_id="turn-1",
+            collaboration_mode=SimpleNamespace(mode=ModeKind.DEFAULT),
+        )
+        session = Session(
+            conversation_id=thread_id,
+            state_db=SimpleNamespace(thread_goals=lambda: store),
+            current_usage=TokenUsage(),
+        )
+
+        asyncio.run(goal_runtime_apply(session, {"type": "turn_started", "turn_context": turn}))
+        self.assertEqual(session.goal_runtime.accounting.turn.active_goal_id, "goal-1")
+        session.current_usage = usage
+        session.goal_runtime.accounting.wall_clock.last_accounted_at = time.monotonic() - 2.1
+        asyncio.run(goal_runtime_apply(session, {"type": "tool_completed_goal", "turn_context": turn}))
+        completed = asyncio.run(
+            set_thread_goal(session, turn, SetGoalRequest(status=ThreadGoalStatus.COMPLETE))
+        )
+
+        self.assertEqual(store.accounting_calls[0][1:], (580, GoalAccountingMode.ACTIVE_ONLY, "goal-1"))
+        self.assertGreaterEqual(store.accounting_calls[0][0], 2)
+        self.assertEqual(completed.status, ThreadGoalStatus.COMPLETE)
+        self.assertEqual(completed.tokens_used, 580)
+        self.assertGreaterEqual(completed.time_used_seconds, 2)
 
     def test_protocol_goal_from_state_rejects_non_state_goal(self) -> None:
         with self.assertRaisesRegex(TypeError, "goal must be a state ThreadGoal"):

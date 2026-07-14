@@ -33,6 +33,7 @@ from pycodex.core import (
 )
 from pycodex.core.client import ModelClient
 from pycodex.core.client_common import REVIEW_PROMPT
+from pycodex.core.context import GoalContext
 from pycodex.core.shell import Shell, ShellType
 from pycodex.core.session.turn.runtime import UserTurnSamplingResult
 from pycodex.exec.event_processor import HumanEventProcessor, JsonEventProcessor
@@ -68,6 +69,7 @@ from pycodex.exec.local_runtime import (
     core_exec_config_summary,
     core_exec_enabled,
     core_exec_initial_messages_from_rollout,
+    create_exec_core_session,
     core_review_rollout_input_items,
     persist_core_exec_resume_rollout,
     persist_core_exec_rollout,
@@ -1433,6 +1435,76 @@ class LocalHttpShellToolSpecTests(unittest.TestCase):
 
 
 class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    def test_core_session_uses_configured_instructions_without_host_toolchain_injection(self) -> None:
+        # Rust source: codex-core/src/session/mod.rs copies configured developer
+        # instructions and obtains project instructions from AgentsMdManager.
+        config = ExecSessionConfig(
+            model="gpt-test",
+            model_provider_id="openai",
+            cwd=Path("C:/work/project"),
+            user_instructions="project instructions",
+            developer_instructions="configured developer instructions",
+        )
+
+        session = create_exec_core_session(
+            config,
+            LocalHttpModelInfo(slug="gpt-test", base_instructions="base"),
+        )
+
+        self.assertEqual(session.user_instructions, "project instructions")
+        self.assertEqual(session.developer_instructions, "configured developer instructions")
+        self.assertNotIn("windows_toolchain", session.developer_instructions)
+
+    async def test_reusable_core_session_keeps_hidden_goal_turn_history(self) -> None:
+        # Rust source: codex-core/src/goals.rs::maybe_start_goal_continuation_turn
+        # Goal continuation is a regular task on the existing Session, so its
+        # hidden input and assistant output must be visible to the next turn.
+        config = ExecSessionConfig(
+            model="gpt-test",
+            model_provider_id="openai",
+            cwd=Path("C:/work/project"),
+        )
+        model_info = LocalHttpModelInfo(slug="gpt-test", base_instructions="base")
+        client = ModelClient(session_id="session", thread_id=str(uuid4()), installation_id="install")
+        provider = {"base_url": "https://api.example.test/v1"}
+        session = create_exec_core_session(config, model_info, thread_id=str(client.state.thread_id))
+        requests = []
+
+        async def sampler(request):
+            requests.append(request.request_plan.request)
+            text = "inspected the shell environment" if len(requests) == 1 else "continued with prior shell result"
+            return [ResponseItem.message("assistant", (ContentItem.output_text(text),))]
+
+        goal_text = GoalContext.new("Compile the C program.").render()
+        await run_exec_user_turn_core_sampling(
+            config,
+            ExecRunPlan(InitialOperation.user_turn((UserInput.text_input(goal_text),)), "goal"),
+            client,
+            provider,
+            model_info,
+            sampler,
+            core_session=session,
+        )
+        await run_exec_user_turn_core_sampling(
+            config,
+            ExecRunPlan(InitialOperation.user_turn((UserInput.text_input("What did you find?"),)), "follow-up"),
+            client,
+            provider,
+            model_info,
+            sampler,
+            core_session=session,
+        )
+
+        second_request = json.dumps(
+            requests[1],
+            ensure_ascii=False,
+            default=lambda value: value.to_mapping() if hasattr(value, "to_mapping") else str(value),
+        )
+        self.assertIn("<goal_context>", second_request)
+        self.assertIn("Compile the C program.", second_request)
+        self.assertIn("inspected the shell environment", second_request)
+        self.assertIn("What did you find?", second_request)
+
     async def test_prewarm_exec_core_websocket_session_builds_startup_request(self) -> None:
         # Rust crate/module: codex-core/src/session_startup_prewarm.rs.
         # Contract: startup prewarm builds the same model-visible prompt/tools
@@ -2541,10 +2613,11 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNotNone(goal)
             self.assertIs(goal.status, StateThreadGoalStatus.COMPLETE)
 
-    async def test_goal_update_with_existing_answer_does_not_wait_for_followup_sampling(self) -> None:
-        # Rust-derived contract: codex-core/src/goals.rs routes externally set
-        # goals through a hidden continuation turn, and update_goal is a terminal
-        # accounting tool when the answer is already present in the same turn.
+    async def test_goal_update_with_existing_answer_still_returns_tool_output_to_model(self) -> None:
+        # Rust test: codex-core/src/session/tests.rs::
+        # completed_goal_accounts_current_turn_tokens_before_tool_response.
+        # Assistant text beside a tool call does not replace the required model
+        # follow-up that receives the final update_goal accounting output.
         from pycodex.state.model.thread_goal import ThreadGoalStatus as StateThreadGoalStatus
         from pycodex.state.state_runtime import StateRuntime
 
@@ -2553,13 +2626,22 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         async def sampler(request):
             requests.append(request.request_plan.request)
-            self.assertEqual(len(requests), 1, "update_goal should not force a second model sample when answer exists")
+            if len(requests) > 1:
+                return SimpleNamespace(
+                    response_items=[
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "goal complete after accounting"}],
+                        }
+                    ]
+                )
             return SimpleNamespace(
                 response_items=[
                     {
                         "type": "message",
                         "role": "assistant",
-                        "content": [{"type": "output_text", "text": "你好！"}],
+                        "content": [{"type": "output_text", "text": "premature answer"}],
                     },
                     {
                         "type": "function_call",
@@ -2597,9 +2679,16 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 codex_home=codex_home,
             )
 
-            self.assertEqual(final_text_from_response_items(result.response_items), "你好！")
-            self.assertEqual(len(requests), 1)
+            self.assertEqual(final_text_from_response_items(result.response_items), "goal complete after accounting")
+            self.assertEqual(len(requests), 2)
             self.assertEqual(len(result.tool_response_items), 1)
+            tool_outputs = [
+                _response_input_mapping(item)
+                for item in requests[1].get("input", ())
+                if _response_input_mapping(item).get("type") == "function_call_output"
+            ]
+            self.assertEqual(tool_outputs[0]["call_id"], "goal-complete-answer-1")
+            self.assertIn('"status": "complete"', tool_outputs[0]["output"])
             state_runtime = await StateRuntime.init(codex_home, "openai")
             try:
                 goal = await state_runtime.thread_goals.get_thread_goal(thread_id)
@@ -3487,6 +3576,47 @@ class ExecLocalRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("interrupted the previous turn", items[-1].content[0].text)
         self.assertEqual(events[-1].type, "turn_aborted")
         self.assertEqual(events[-1].payload.reason, "interrupted")
+
+    def test_core_rollout_persists_real_turn_and_session_metadata(self) -> None:
+        result = UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(ResponseItem.message("assistant", (ContentItem.output_text("done"),)),),
+            turn_status="completed",
+        )
+        config = ExecSessionConfig(
+            model="gpt-real",
+            model_provider_id="openai",
+            cwd=Path("C:/work/project"),
+            approval_policy=AskForApproval.ON_REQUEST,
+            permission_profile=PermissionProfile.disabled(),
+            reasoning_effort="low",
+            model_reasoning_summary="concise",
+        )
+        client = ModelClient(session_id="session", thread_id=str(uuid4()), installation_id="install")
+        model_info = LocalHttpModelInfo(slug="gpt-real", base_instructions="real base instructions")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            rollout_path = persist_local_http_exec_rollout(
+                Path(tmp),
+                config,
+                result,
+                client,
+                model_info=model_info,
+                originator="codex-tui",
+            )
+            self.assertIsNotNone(rollout_path)
+            lines = [json.loads(line) for line in Path(rollout_path).read_text(encoding="utf-8").splitlines()]
+
+        meta = lines[0]["payload"]
+        context = next(line["payload"] for line in lines if line["type"] == "turn_context")
+        self.assertEqual(meta["originator"], "codex-tui")
+        self.assertEqual(meta["base_instructions"], "real base instructions")
+        self.assertEqual(context["model"], "gpt-real")
+        self.assertEqual(context["approval_policy"], "on-request")
+        self.assertEqual(context["sandbox_policy"]["type"], "danger-full-access")
+        self.assertEqual(context["permission_profile"]["type"], "disabled")
+        self.assertEqual(context["effort"], "low")
+        self.assertEqual(context["summary"], "concise")
 
     def test_local_http_exec_error_replays_attached_terminal_error_event(self) -> None:
         error = CodexErr.simple("context_window_exceeded")

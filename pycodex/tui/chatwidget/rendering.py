@@ -106,7 +106,7 @@ def terminal_bottom_pane_frame(
     """
 
     columns = size.columns
-    composer_projection = terminal_composer_projection(state.draft, columns)
+    composer_projection = state.composer_projection or terminal_composer_projection(state.draft, columns)
     layout = terminal_bottom_pane_layout_rows(
         size,
         live_status_active=state.live_status_active,
@@ -138,15 +138,27 @@ def terminal_bottom_pane_frame(
             TerminalBottomPaneFrameWrite(
                 layout.footer_row,
                 1,
-                terminal_footer_projection(state.footer_text, columns).line,
+                terminal_footer_projection(
+                    state.footer_text,
+                    columns,
+                    state.footer_right_text,
+                ).line,
             )
         )
+
+    cursor_row = layout.composer_rows[composer_projection.cursor_row_offset]
+    cursor_column = composer_projection.cursor_column
+    if state.popup_cursor is not None:
+        popup_x, popup_y = state.popup_cursor
+        if 0 <= popup_y < len(layout.popup_rows):
+            cursor_row = layout.popup_rows[popup_y]
+            cursor_column = max(1, popup_x + 1)
 
     return TerminalBottomPaneFrame(
         clear_rows=layout.clear_rows,
         writes=tuple(writes),
-        cursor_row=layout.composer_rows[composer_projection.cursor_row_offset],
-        cursor_column=composer_projection.cursor_column,
+        cursor_row=cursor_row,
+        cursor_column=cursor_column,
     )
 
 

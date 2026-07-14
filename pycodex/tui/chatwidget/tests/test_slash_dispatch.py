@@ -17,6 +17,7 @@ from pycodex.tui.chatwidget.slash_dispatch import (
     TerminalLocalCommandPlan,
     TerminalPromptDispatcher,
     TerminalPromptDispatchResult,
+    TerminalSlashCommandEffectDispatcher,
     TerminalSlashCommandViewDispatcher,
     TextElement,
     ensure_side_command_allowed_outside_review,
@@ -33,8 +34,11 @@ from pycodex.tui.chatwidget.slash_dispatch import (
     run_terminal_prompt_dispatch,
     slash_command_args_elements,
     terminal_slash_command_from_name,
+    terminal_slash_command_routes,
 )
+from pycodex.tui.bottom_pane.chat_composer import InputResult
 from pycodex.tui.slash_command import SlashCommand
+from pycodex.tui.app_event import AppEvent, ThreadGoalSetMode
 from pycodex.tui.auto_review_denials import denied_event
 from pycodex.tui.chatwidget.protocol import ChatWidgetProtocolRuntime
 
@@ -130,6 +134,39 @@ def test_terminal_slash_command_view_dispatcher_builds_runtime_model_view_owner(
     assert view is not None
     assert view.header[0] == "Select Model and Effort"
     assert [item.name for item in view.items] == ["gpt-5.4"]
+
+
+def test_terminal_slash_command_routes_cover_every_registered_command() -> None:
+    # Fixed Rust baseline 1c7832f: slash_command.rs defines the registry while
+    # chatwidget::slash_dispatch must choose an effect, view, guard, or shim.
+    routes = terminal_slash_command_routes()
+
+    assert set(routes) == set(SlashCommand)
+    assert {route.outcome for route in routes.values()} <= {"effect", "view", "shim"}
+    assert routes[SlashCommand.DIFF].outcome == "effect"
+    assert routes[SlashCommand.SETTINGS].outcome == "view"
+    assert routes[SlashCommand.MCP].outcome == "shim"
+    for command, route in routes.items():
+        assert route.rust_owner
+        assert route.argument_form == ("inline-or-bare" if command.supports_inline_args() else "bare")
+        assert route.guards
+        assert route.expected_effect
+        assert route.python_owner
+        assert route.product_test
+
+
+def test_terminal_settings_command_uses_registered_active_view_owner() -> None:
+    app_runtime = SimpleNamespace(
+        active_thread_runtime=SimpleNamespace(session_config=SimpleNamespace()),
+        chat_widget=ChatWidgetProtocolRuntime(),
+        handle_app_event=lambda event: None,
+    )
+    dispatcher = TerminalSlashCommandViewDispatcher.for_runtime(app_runtime)
+
+    view = dispatcher.open_command_view("settings")
+
+    assert view.title == "Settings"
+    assert [item.name for item in view.items] == ["Microphone", "Speaker"]
 
 
 def test_terminal_slash_dispatcher_routes_auto_review_denials_through_permission_owner() -> None:
@@ -313,6 +350,177 @@ def test_terminal_prompt_dispatcher_binds_local_command_runner() -> None:
     assert dispatcher.dispatch("/status\n") == TerminalPromptDispatchResult("handled", "/status")
     assert dispatcher.dispatch("   \n") == TerminalPromptDispatchResult("skip", "   ")
     assert calls == ["hello", "/status"]
+
+
+def test_structured_inline_command_reaches_effect_dispatcher_with_arguments() -> None:
+    calls: list[tuple[SlashCommand, str]] = []
+
+    def dispatch(command: SlashCommand, args: str) -> TerminalPromptDispatchResult:
+        calls.append((command, args))
+        return TerminalPromptDispatchResult("handled", command=command)
+
+    result = run_terminal_prompt_dispatch(
+        InputResult.CommandWithArgs(SlashCommand.RAW, "on", ["inline-element"]),
+        run_local_command=lambda _prompt: False,
+        dispatch_command=dispatch,
+    )
+
+    assert result.command is SlashCommand.RAW
+    assert result.prepared_args == PreparedSlashCommandArgs(
+        args="on",
+        text_elements=("inline-element",),
+    )
+    assert calls == [(SlashCommand.RAW, "on")]
+
+
+def test_deferred_extension_command_emits_explicit_terminal_compatibility_message() -> None:
+    messages: list[tuple[str, str | None]] = []
+    app_runtime = SimpleNamespace(
+        chat_widget=ChatWidgetProtocolRuntime(),
+        insert_info_history_message=lambda message, hint=None: messages.append((message, hint)),
+        insert_history_cell=lambda _cell: None,
+    )
+    dispatcher = TerminalSlashCommandEffectDispatcher(app_runtime)
+
+    result = dispatcher.dispatch(SlashCommand.MCP)
+
+    assert result == TerminalPromptDispatchResult("handled", command=SlashCommand.MCP)
+    assert messages and "not enabled" in messages[0][0]
+
+
+def test_plan_command_switches_mode_before_optional_inline_submission() -> None:
+    messages: list[str] = []
+    activated: list[bool] = []
+    app_runtime = SimpleNamespace(
+        chat_widget=ChatWidgetProtocolRuntime(),
+        activate_plan_mode=lambda: activated.append(True),
+        insert_info_history_message=lambda message, hint=None: messages.append(message),
+        insert_history_cell=lambda _cell: None,
+    )
+    dispatcher = TerminalSlashCommandEffectDispatcher(app_runtime)
+
+    bare = dispatcher.dispatch(SlashCommand.PLAN)
+    inline = dispatcher.dispatch(SlashCommand.PLAN, "inspect the parser")
+
+    assert bare == TerminalPromptDispatchResult("handled", command=SlashCommand.PLAN)
+    assert inline == TerminalPromptDispatchResult(
+        "submit",
+        prompt="inspect the parser",
+        command=SlashCommand.PLAN,
+    )
+    assert activated == [True, True]
+    assert messages == ["Plan mode enabled.", "Plan mode enabled."]
+
+
+def _goal_dispatcher(events, history, *, thread_id="thread-1"):
+    return TerminalSlashCommandEffectDispatcher(
+        SimpleNamespace(
+            routing_state=SimpleNamespace(active_thread_id=thread_id),
+            chat_widget=ChatWidgetProtocolRuntime(),
+            handle_app_event=events.append,
+            append_message_history_entry=history.append,
+            insert_history_cell=lambda _cell: None,
+        )
+    )
+
+
+def test_goal_objective_emits_set_event_without_direct_runtime_mutation() -> None:
+    # Rust: slash_commands.rs goal submission emits SetThreadGoalObjective.
+    events: list[AppEvent] = []
+    history: list[str] = []
+
+    result = _goal_dispatcher(events, history).dispatch(
+        SlashCommand.GOAL,
+        "improve benchmark coverage",
+    )
+
+    assert result == TerminalPromptDispatchResult("handled", command=SlashCommand.GOAL)
+    assert events == [
+        AppEvent.set_thread_goal_objective(
+            "thread-1",
+            "improve benchmark coverage",
+            ThreadGoalSetMode.confirm_if_exists(),
+        )
+    ]
+    assert history == ["/goal improve benchmark coverage"]
+
+
+def test_bare_goal_emits_open_menu_event() -> None:
+    events: list[AppEvent] = []
+    history: list[str] = []
+
+    result = _goal_dispatcher(events, history).dispatch(SlashCommand.GOAL)
+
+    assert result == TerminalPromptDispatchResult("handled", command=SlashCommand.GOAL)
+    assert events == [AppEvent.open_thread_goal_menu("thread-1")]
+    assert history == ["/goal"]
+
+
+def test_goal_edit_emits_editor_event_for_persisted_and_unstarted_threads() -> None:
+    # Rust: slash_commands.rs::goal_edit_slash_command_opens_goal_editor checks
+    # both Some(thread_id) and None, and emits no submit operation.
+    for thread_id in ("thread-1", None):
+        events: list[AppEvent] = []
+        history: list[str] = []
+
+        result = _goal_dispatcher(events, history, thread_id=thread_id).dispatch(
+            SlashCommand.GOAL,
+            "edit",
+        )
+
+        assert result == TerminalPromptDispatchResult("handled", command=SlashCommand.GOAL)
+        assert events == [AppEvent.open_thread_goal_editor(thread_id)]
+        assert history == []
+
+
+def test_goal_control_commands_emit_app_events() -> None:
+    events: list[AppEvent] = []
+    history: list[str] = []
+    dispatcher = _goal_dispatcher(events, history)
+
+    dispatcher.dispatch(SlashCommand.GOAL, "pause")
+    dispatcher.dispatch(SlashCommand.GOAL, "resume")
+    dispatcher.dispatch(SlashCommand.GOAL, "clear")
+
+    assert events == [
+        AppEvent.set_thread_goal_status("thread-1", "paused"),
+        AppEvent.set_thread_goal_status("thread-1", "active"),
+        AppEvent.clear_thread_goal("thread-1"),
+    ]
+    assert history == ["/goal pause", "/goal resume", "/goal clear"]
+
+
+def test_mention_command_returns_composer_mutation_instead_of_user_turn() -> None:
+    app_runtime = SimpleNamespace(
+        chat_widget=ChatWidgetProtocolRuntime(),
+        insert_info_history_message=lambda *_args: None,
+        insert_history_cell=lambda _cell: None,
+    )
+
+    result = TerminalSlashCommandEffectDispatcher(app_runtime).dispatch(SlashCommand.MENTION)
+
+    assert result == TerminalPromptDispatchResult(
+        "compose",
+        prompt="@",
+        command=SlashCommand.MENTION,
+    )
+
+
+def test_guarded_command_emits_reason_instead_of_opening_or_submitting() -> None:
+    cells: list[object] = []
+    widget = ChatWidgetProtocolRuntime()
+    widget.active_side_conversation = True
+    app_runtime = SimpleNamespace(
+        chat_widget=widget,
+        insert_info_history_message=lambda *_args: None,
+        insert_history_cell=cells.append,
+    )
+    dispatcher = TerminalSlashCommandEffectDispatcher(app_runtime)
+
+    result = dispatcher.guard(SlashCommand.MODEL)
+
+    assert result == TerminalPromptDispatchResult("handled", command=SlashCommand.MODEL)
+    assert cells
 
 
 def test_slash_command_args_elements_remaps_overlapping_byte_ranges() -> None:

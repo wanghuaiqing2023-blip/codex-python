@@ -5,9 +5,9 @@ Rust source: ``codex/codex-rs/tui/src/goal_display.rs``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from enum import Enum
 from typing import Any
+
+from pycodex.app_server_protocol import ThreadGoal, ThreadGoalStatus
 
 from ._porting import RustTuiModule
 
@@ -16,27 +16,6 @@ RUST_MODULE = RustTuiModule(
     module="goal_display",
     source="codex/codex-rs/tui/src/goal_display.rs",
 )
-
-
-class ThreadGoalStatus(Enum):
-    Active = "active"
-    Paused = "paused"
-    Blocked = "blocked"
-    UsageLimited = "usage_limited"
-    BudgetLimited = "budget_limited"
-    Complete = "complete"
-
-
-@dataclass(eq=True)
-class ThreadGoal:
-    thread_id: str
-    objective: str
-    status: ThreadGoalStatus
-    token_budget: int | None
-    tokens_used: int
-    time_used_seconds: int
-    created_at: int = 0
-    updated_at: int = 0
 
 
 def format_goal_elapsed_seconds(seconds: int) -> str:
@@ -63,12 +42,12 @@ def format_goal_elapsed_seconds(seconds: int) -> str:
 def goal_status_label(status: ThreadGoalStatus | str) -> str:
     normalized = _normalize_status(status)
     return {
-        ThreadGoalStatus.Active: "active",
-        ThreadGoalStatus.Paused: "paused",
-        ThreadGoalStatus.Blocked: "blocked",
-        ThreadGoalStatus.UsageLimited: "usage limited",
-        ThreadGoalStatus.BudgetLimited: "limited by budget",
-        ThreadGoalStatus.Complete: "complete",
+        ThreadGoalStatus.ACTIVE: "active",
+        ThreadGoalStatus.PAUSED: "paused",
+        ThreadGoalStatus.BLOCKED: "blocked",
+        ThreadGoalStatus.USAGE_LIMITED: "usage limited",
+        ThreadGoalStatus.BUDGET_LIMITED: "limited by budget",
+        ThreadGoalStatus.COMPLETE: "complete",
     }[normalized]
 
 
@@ -107,13 +86,7 @@ def _format_compact_number(value: float) -> str:
 
 
 def _normalize_status(status: ThreadGoalStatus | str) -> ThreadGoalStatus:
-    if isinstance(status, ThreadGoalStatus):
-        return status
-    text = str(status)
-    for item in ThreadGoalStatus:
-        if text == item.value or text == item.name:
-            return item
-    raise ValueError(f"unknown ThreadGoalStatus: {status!r}")
+    return ThreadGoalStatus.parse(status)
 
 
 __all__ = [

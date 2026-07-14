@@ -221,6 +221,14 @@ def test_agent_markdown_cell_tiny_width_keeps_prefix() -> None:
     assert rendered == ["\u2022 "]
 
 
+def test_agent_markdown_cell_preserves_fenced_code_verbatim() -> None:
+    source = "```c\n#include <stdio.h>\n```\n"
+
+    rendered = texts(AgentMarkdownCell.new(source, ".").display_lines(80))
+
+    assert rendered == ["\u2022 #include <stdio.h>"]
+
+
 def test_reasoning_summary_block_splits_header_only_when_summary_exists() -> None:
     visible = new_reasoning_summary_block("**Reasoning** useful detail", ".")
     transcript_only = new_reasoning_summary_block("no bold header", ".")

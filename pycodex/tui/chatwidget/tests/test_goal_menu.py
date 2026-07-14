@@ -6,7 +6,12 @@ from __future__ import annotations
 
 import pytest
 
-from pycodex.tui.chatwidget.goal_menu import edited_goal_status, goal_status_label, goal_summary_lines
+from pycodex.tui.chatwidget.goal_menu import (
+    edited_goal_status,
+    goal_edit_prompt,
+    goal_status_label,
+    goal_summary_lines,
+)
 from pycodex.tui.goal_display import ThreadGoal, ThreadGoalStatus
 
 
@@ -26,12 +31,12 @@ def goal(status: ThreadGoalStatus, *, budget=None, used=12_500, seconds=120, obj
 @pytest.mark.parametrize(
     ("status", "label"),
     [
-        (ThreadGoalStatus.Active, "active"),
-        (ThreadGoalStatus.Paused, "paused"),
-        (ThreadGoalStatus.Blocked, "blocked"),
-        (ThreadGoalStatus.UsageLimited, "usage limited"),
-        (ThreadGoalStatus.BudgetLimited, "limited by budget"),
-        (ThreadGoalStatus.Complete, "complete"),
+        (ThreadGoalStatus.ACTIVE, "active"),
+        (ThreadGoalStatus.PAUSED, "paused"),
+        (ThreadGoalStatus.BLOCKED, "blocked"),
+        (ThreadGoalStatus.USAGE_LIMITED, "usage limited"),
+        (ThreadGoalStatus.BUDGET_LIMITED, "limited by budget"),
+        (ThreadGoalStatus.COMPLETE, "complete"),
     ],
 )
 def test_goal_status_label_matches_rust_variants(status, label):
@@ -39,7 +44,7 @@ def test_goal_status_label_matches_rust_variants(status, label):
 
 
 def test_goal_summary_lines_for_active_goal_include_budget_and_pause_hint():
-    assert goal_summary_lines(goal(ThreadGoalStatus.Active, budget=50_000)) == [
+    assert goal_summary_lines(goal(ThreadGoalStatus.ACTIVE, budget=50_000)) == [
         "Goal",
         "Status: active",
         "Objective: ship it",
@@ -53,7 +58,7 @@ def test_goal_summary_lines_for_active_goal_include_budget_and_pause_hint():
 
 @pytest.mark.parametrize(
     "status",
-    [ThreadGoalStatus.Paused, ThreadGoalStatus.Blocked, ThreadGoalStatus.UsageLimited],
+    [ThreadGoalStatus.PAUSED, ThreadGoalStatus.BLOCKED, ThreadGoalStatus.USAGE_LIMITED],
 )
 def test_goal_summary_lines_for_resumeable_statuses_use_resume_hint(status):
     lines = goal_summary_lines(goal(status, budget=None, objective="resume me"))
@@ -63,7 +68,7 @@ def test_goal_summary_lines_for_resumeable_statuses_use_resume_hint(status):
     assert lines[-1] == "Commands: /goal edit, /goal resume, /goal clear"
 
 
-@pytest.mark.parametrize("status", [ThreadGoalStatus.BudgetLimited, ThreadGoalStatus.Complete])
+@pytest.mark.parametrize("status", [ThreadGoalStatus.BUDGET_LIMITED, ThreadGoalStatus.COMPLETE])
 def test_goal_summary_lines_for_terminal_statuses_hide_resume_and_pause(status):
     assert goal_summary_lines(goal(status))[-1] == "Commands: /goal edit, /goal clear"
 
@@ -71,16 +76,33 @@ def test_goal_summary_lines_for_terminal_statuses_hide_resume_and_pause(status):
 @pytest.mark.parametrize(
     ("status", "expected"),
     [
-        (ThreadGoalStatus.Active, ThreadGoalStatus.Active),
-        (ThreadGoalStatus.Paused, ThreadGoalStatus.Paused),
-        (ThreadGoalStatus.Blocked, ThreadGoalStatus.Blocked),
-        (ThreadGoalStatus.UsageLimited, ThreadGoalStatus.UsageLimited),
-        (ThreadGoalStatus.BudgetLimited, ThreadGoalStatus.Active),
-        (ThreadGoalStatus.Complete, ThreadGoalStatus.Active),
+        (ThreadGoalStatus.ACTIVE, ThreadGoalStatus.ACTIVE),
+        (ThreadGoalStatus.PAUSED, ThreadGoalStatus.PAUSED),
+        (ThreadGoalStatus.BLOCKED, ThreadGoalStatus.BLOCKED),
+        (ThreadGoalStatus.USAGE_LIMITED, ThreadGoalStatus.USAGE_LIMITED),
+        (ThreadGoalStatus.BUDGET_LIMITED, ThreadGoalStatus.ACTIVE),
+        (ThreadGoalStatus.COMPLETE, ThreadGoalStatus.ACTIVE),
     ],
 )
 def test_edited_goal_status_matches_rust_transition(status, expected):
     assert edited_goal_status(status) is expected
+
+
+def test_goal_edit_prompt_prefills_objective_and_submits_edited_text():
+    # Rust: chatwidget/tests/goal_menu.rs::goal_edit_prompt_submits_preserved_status_and_budget.
+    submitted = []
+    view = goal_edit_prompt(
+        goal(ThreadGoalStatus.PAUSED, budget=80_000, objective="Keep improving"),
+        submitted.append,
+    )
+
+    assert view.title == "Edit goal"
+    assert view.textarea.text() == "Keep improving"
+    view.handle_paste(" with clearer wording")
+    view.handle_key_event("enter")
+
+    assert submitted == ["Keep improving with clearer wording"]
+    assert view.is_complete()
 
 
 def test_goal_summary_accepts_protocol_like_dict_status_names():

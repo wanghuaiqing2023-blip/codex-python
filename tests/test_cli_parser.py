@@ -9523,7 +9523,14 @@ class TopLevelCliParserTests(unittest.TestCase):
                         stdout = io.StringIO()
                         stderr = io.StringIO()
                         code = main(
-                            ["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "prompt"],
+                            [
+                                "--enable",
+                                "unified_exec",
+                                "exec",
+                                "--json",
+                                "--dangerously-bypass-approvals-and-sandbox",
+                                "prompt",
+                            ],
                             stdout=stdout,
                             stderr=stderr,
                         )

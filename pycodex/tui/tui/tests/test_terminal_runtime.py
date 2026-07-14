@@ -5,7 +5,8 @@ from __future__ import annotations
 import io
 import os
 from datetime import datetime
-import re
+from pathlib import Path
+import re
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
@@ -14,6 +15,7 @@ import pycodex.tui.tui.terminal_runtime as terminal_runtime
 import pycodex.tui.chatwidget.turn_runtime as turn_runtime
 import pycodex.tui.custom_terminal as custom_terminal
 import pycodex.tui.transcript_reflow as transcript_reflow
+from pycodex.app_server_protocol import ThreadGoal, ThreadGoalStatus
 from pycodex.protocol import PermissionProfile, ReasoningEffort
 from pycodex.tui.app_command import AppCommand
 from pycodex.tui.chatwidget.protocol import ServerNotification, ServerRequest
@@ -78,7 +80,11 @@ class _FakeActiveThreadRuntime:
     def __init__(self, events: list[ServerNotification], *, model_details: tuple[str, ...] = ("high",)) -> None:
         self.events = events
         self.submitted: list[tuple[str, AppCommand]] = []
-        self.shutdowns: list[str] = []
+        self.shutdowns: list[str] = []
+
+        self.resume_rows: list[Any] = []
+
+        self.resumed_targets: list[Any] = []
         self.model_details = model_details
         self.status_model_details = model_details
         self.session_config = SimpleNamespace(
@@ -96,6 +102,17 @@ class _FakeActiveThreadRuntime:
     def shutdown_thread(self, thread_id: str) -> _ListEventStream:
         self.shutdowns.append(thread_id)
         return _ListEventStream([])
+
+    def list_resume_threads(self) -> tuple[Any, ...]:
+        return tuple(self.resume_rows)
+
+    def resume_thread_target(self, target: Any) -> Any:
+        self.resumed_targets.append(target)
+        return SimpleNamespace(
+            thread_id=target.thread_id,
+            session=SimpleNamespace(thread_id=target.thread_id, cwd="."),
+            turns=(),
+        )
 
 
 class _ApprovalEventStream:
@@ -713,6 +730,148 @@ def test_terminal_runtime_status_command_writes_rust_status_cell_without_user_tu
     assert "Session" in transcript and "primary" in transcript
 
 
+def test_terminal_runtime_filtered_popup_enter_dispatches_selected_command(monkeypatch) -> None:
+    # bottom_pane::chat_composer must turn the highlighted /st candidate into
+    # InputResult::Command(Status), not submit the incomplete text as UserTurn.
+    monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((80, 24)))
+    runtime = _FakeActiveThreadRuntime([])
+    stdout = io.StringIO()
+    source = _FakeTerminalInputSource(
+        [
+            TerminalInputEvent("text", "/"),
+            TerminalInputEvent("text", "s"),
+            TerminalInputEvent("text", "t"),
+            TerminalInputEvent("enter"),
+            TerminalInputEvent("text", "/quit"),
+            TerminalInputEvent("enter"),
+        ]
+    )
+    _patch_terminal_input_source(monkeypatch, source)
+
+    assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=_TtyStringIO("")) == 0
+
+    assert runtime.submitted == []
+    assert "/status" in _strip_ansi_controls(stdout.getvalue())
+
+
+def test_terminal_runtime_raw_command_applies_mode_without_user_turn(monkeypatch) -> None:
+    monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((80, 24)))
+    runtime = _FakeActiveThreadRuntime([])
+    app_runtime = terminal_runtime.TuiAppRuntime(runtime)
+    stdout = io.StringIO()
+    _patch_terminal_input_source(monkeypatch, LineTerminalInputSource(io.StringIO("/raw on\n/quit\n")))
+
+    assert run_terminal_tui(active_thread_runtime=app_runtime, stdout=stdout, stdin=_TtyStringIO("")) == 0
+
+    assert app_runtime.chat_widget.raw_mode is True
+    assert runtime.submitted == []
+    assert "Raw output mode on" in _strip_ansi_controls(stdout.getvalue())
+
+
+def test_terminal_runtime_copy_command_uses_last_assistant_markdown(monkeypatch) -> None:
+    monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((80, 24)))
+    copied: list[str] = []
+    monkeypatch.setattr("pycodex.tui.clipboard_copy.copy_to_clipboard", lambda text: copied.append(text) or object())
+    runtime = _FakeActiveThreadRuntime([])
+    app_runtime = terminal_runtime.TuiAppRuntime(runtime)
+    app_runtime.chat_widget.transcript.last_agent_markdown = "assistant markdown"
+    stdout = io.StringIO()
+    _patch_terminal_input_source(monkeypatch, LineTerminalInputSource(io.StringIO("/copy\n/quit\n")))
+
+    assert run_terminal_tui(active_thread_runtime=app_runtime, stdout=stdout, stdin=_TtyStringIO("")) == 0
+
+    assert copied == ["assistant markdown"]
+    assert runtime.submitted == []
+    assert "Copied last message" in _strip_ansi_controls(stdout.getvalue())
+
+
+def test_terminal_runtime_mention_seeds_composer_without_submitting_command(monkeypatch) -> None:
+    monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((80, 24)))
+    runtime = _FakeActiveThreadRuntime(
+        [ServerNotification("TurnStarted", {}), ServerNotification("TurnCompleted", {})]
+    )
+    stdout = io.StringIO()
+    _patch_terminal_input_source(
+        monkeypatch,
+        LineTerminalInputSource(io.StringIO("/mention\nREADME.md\n/quit\n")),
+    )
+
+    assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=_TtyStringIO("")) == 0
+
+    assert len(runtime.submitted) == 1
+    submitted_items = runtime.submitted[0][1].payload.get("items") or []
+    assert submitted_items[0].payload.get("text") == "@README.md"
+
+
+def test_terminal_runtime_inline_plan_submits_in_plan_collaboration_mode(monkeypatch) -> None:
+    monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((80, 24)))
+    runtime = _FakeActiveThreadRuntime(
+        [ServerNotification("TurnStarted", {}), ServerNotification("TurnCompleted", {})]
+    )
+    stdout = io.StringIO()
+    _patch_terminal_input_source(
+        monkeypatch,
+        LineTerminalInputSource(io.StringIO("/plan inspect the parser\n/quit\n")),
+    )
+
+    assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=_TtyStringIO("")) == 0
+
+    assert len(runtime.submitted) == 1
+    operation = runtime.submitted[0][1]
+    assert operation.payload["collaboration_mode"].mode.value == "plan"
+    assert operation.payload["items"][0].payload["text"] == "inspect the parser"
+
+
+def test_terminal_runtime_diff_command_runs_workspace_diff_without_user_turn(monkeypatch) -> None:
+    from pycodex.tui.workspace_command import LocalWorkspaceCommandRunner
+
+    monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((100, 28)))
+    runtime = _FakeActiveThreadRuntime([])
+    runtime.session_config.cwd = str(Path(__file__).parents[4])
+    runtime.workspace_command_runner = lambda: LocalWorkspaceCommandRunner(default_cwd=Path(runtime.session_config.cwd))
+    stdout = io.StringIO()
+    _patch_terminal_input_source(monkeypatch, LineTerminalInputSource(io.StringIO("/diff\n/quit\n")))
+
+    assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=_TtyStringIO("")) == 0
+
+    assert runtime.submitted == []
+    output = _strip_ansi_controls(stdout.getvalue())
+    assert "diff --git" in output or "No git changes found" in output
+
+
+def test_terminal_runtime_settings_opens_bottom_pane_active_view(monkeypatch) -> None:
+    monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((80, 24)))
+    runtime = _FakeActiveThreadRuntime([])
+    stdout = _TtyStringIO("")
+    _patch_terminal_input_source(
+        monkeypatch,
+        _FakeTerminalInputSource([TerminalInputEvent("text", "/settings"), TerminalInputEvent("enter"), TerminalInputEvent("eof")]),
+    )
+
+    assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=_TtyStringIO("")) == 0
+
+    output = _strip_ansi_controls(stdout.getvalue())
+    assert "device selection is not enabled in this runtime" in output
+    assert runtime.submitted == []
+
+
+def test_terminal_runtime_resume_command_switches_the_active_thread(monkeypatch) -> None:
+    monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((80, 24)))
+    runtime = _FakeActiveThreadRuntime([])
+    target = SimpleNamespace(thread_id="saved-thread", thread_name="saved", rollout_path=Path("saved.jsonl"))
+    runtime.resume_rows = [target]
+    app_runtime = terminal_runtime.TuiAppRuntime(runtime)
+    stdout = io.StringIO()
+    _patch_terminal_input_source(monkeypatch, LineTerminalInputSource(io.StringIO("/resume saved-thread\n/quit\n")))
+
+    assert run_terminal_tui(active_thread_runtime=app_runtime, stdout=stdout, stdin=_TtyStringIO("")) == 0
+
+    assert runtime.submitted == []
+    assert runtime.resumed_targets == [target]
+    assert app_runtime.routing_state.active_thread_id == "saved-thread"
+    assert "Resumed session saved-thread" in _strip_ansi_controls(stdout.getvalue())
+
+
 def test_terminal_runtime_status_command_refreshes_chatgpt_limits_before_render(monkeypatch) -> None:
     # Fixed Rust baseline 1c7832f:
     # slash_dispatch -> status_controls::add_status_output ->
@@ -784,6 +943,40 @@ def test_terminal_runtime_key_stream_submits_ascii_prompt(monkeypatch) -> None:
     assert _user_history_insert_at(18, "\u203a hello") in stdout.getvalue()
 
 
+def test_terminal_runtime_left_moves_real_composer_cursor_before_insertion(monkeypatch) -> None:
+    # Rust product path: tui::event_stream -> BottomPane -> ChatComposer ->
+    # DraftState::textarea. Left must mutate TextArea's cursor before X arrives.
+    monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((80, 24)))
+    runtime = _FakeActiveThreadRuntime(
+        [
+            ServerNotification("TurnStarted", {}),
+            ServerNotification("TurnCompleted", {}),
+        ]
+    )
+    source = _FakeTerminalInputSource(
+        [
+            TerminalInputEvent("text", "a"),
+            TerminalInputEvent("text", "b"),
+            TerminalInputEvent("text", "c"),
+            TerminalInputEvent("left"),
+            TerminalInputEvent("text", "X"),
+            TerminalInputEvent("enter"),
+            TerminalInputEvent("text", "/quit"),
+            TerminalInputEvent("enter"),
+        ]
+    )
+    _patch_terminal_input_source(monkeypatch, source)
+
+    assert run_terminal_tui(
+        active_thread_runtime=runtime,
+        stdout=io.StringIO(),
+        stdin=_TtyStringIO(""),
+    ) == 0
+
+    submitted_items = runtime.submitted[0][1].payload.get("items") or []
+    assert submitted_items[0].payload.get("text") == "abXc"
+
+
 def test_terminal_runtime_up_recalls_previous_local_submission(monkeypatch) -> None:
     # Fixed Rust product path:
     # event_stream::Key(Up) -> chat_composer -> chat_composer_history, with the
@@ -847,6 +1040,183 @@ def test_terminal_runtime_slash_popup_renders_and_moves_selection(monkeypatch) -
     assert "/memories" in output
     assert "\x1b[94m/memories" in output
     assert "\x1b[7m/memories" not in output
+    assert runtime.submitted == []
+
+
+def test_terminal_runtime_goal_feature_is_visible_in_filtered_slash_popup(monkeypatch) -> None:
+    # Rust owners: chatwidget::settings projects Feature::Goals into
+    # bottom_pane::command_popup before composer filtering.
+    from pycodex.features import Features
+
+    monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((100, 28)))
+    runtime = _FakeActiveThreadRuntime([])
+    runtime.session_config.features = Features.with_defaults()
+    stdout = io.StringIO()
+    _patch_terminal_input_source(
+        monkeypatch,
+        _FakeTerminalInputSource(
+            [
+                TerminalInputEvent("text", "/"),
+                TerminalInputEvent("text", "g"),
+                TerminalInputEvent("eof"),
+            ]
+        ),
+    )
+
+    assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=_TtyStringIO("")) == 0
+
+    output = _strip_ansi_controls(stdout.getvalue())
+    assert "/goal" in output
+    assert "no matches" not in output
+    assert runtime.submitted == []
+
+
+def test_terminal_runtime_goal_without_args_emits_one_usage_message(monkeypatch) -> None:
+    # Rust owners: bottom_pane::chat_composer -> chatwidget::slash_dispatch.
+    # One Enter dispatches one local command effect and must not duplicate the
+    # history cell while the command popup is active.
+    from pycodex.features import Features
+
+    monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((100, 28)))
+    runtime = _FakeActiveThreadRuntime([])
+    runtime.session_config.features = Features.with_defaults()
+    runtime.thread_goal_get = lambda _thread_id: None
+    stdout = io.StringIO()
+    _patch_terminal_input_source(
+        monkeypatch,
+        _FakeTerminalInputSource(
+            [
+                TerminalInputEvent("text", "/goal"),
+                TerminalInputEvent("enter"),
+                TerminalInputEvent("text", "/status"),
+                TerminalInputEvent("enter"),
+                TerminalInputEvent("text", "/quit"),
+                TerminalInputEvent("enter"),
+            ]
+        ),
+    )
+
+    assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=_TtyStringIO("")) == 0
+
+    output = _strip_ansi_controls(stdout.getvalue())
+    assert output.count("Usage: /goal <objective>") == 1
+    assert output.count("No goal is currently set.") == 1
+
+
+def test_terminal_runtime_goal_set_accepts_real_app_server_status_once(monkeypatch) -> None:
+    # Rust boundary: app::thread_goal_actions receives
+    # codex_app_server_protocol::ThreadGoalStatus, not a TUI-local enum.
+    monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((100, 28)))
+    runtime = _FakeActiveThreadRuntime([])
+    calls: list[tuple[object, ...]] = []
+    updated = ThreadGoal(
+        thread_id="primary",
+        objective="compile the sample",
+        status=ThreadGoalStatus.ACTIVE,
+        token_budget=None,
+        tokens_used=0,
+        time_used_seconds=0,
+        created_at=0,
+        updated_at=0,
+    )
+    runtime.thread_goal_get = lambda thread_id: calls.append(("get", thread_id)) or None
+    runtime.thread_goal_set = lambda thread_id, **kwargs: calls.append(
+        ("set", thread_id, kwargs)
+    ) or updated
+    runtime.goal_continuation_op = lambda goal: calls.append(("continue", goal)) or None
+    stdout = io.StringIO()
+    _patch_terminal_input_source(
+        monkeypatch,
+        _FakeTerminalInputSource(
+            [
+                TerminalInputEvent("text", "/goal compile the sample"),
+                TerminalInputEvent("enter"),
+                TerminalInputEvent("text", "/quit"),
+                TerminalInputEvent("enter"),
+            ]
+        ),
+    )
+
+    assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=_TtyStringIO("")) == 0
+
+    output = _strip_ansi_controls(stdout.getvalue())
+    assert "/goal failed" not in output
+    assert output.count("Goal active") == 1
+    assert calls == [
+        ("get", "primary"),
+        (
+            "set",
+            "primary",
+            {"objective": "compile the sample", "status": "active"},
+        ),
+        ("continue", updated),
+    ]
+
+
+def test_terminal_runtime_goal_edit_uses_custom_prompt_and_updates_existing_goal(monkeypatch) -> None:
+    # Rust sources:
+    # - chatwidget::slash_dispatch emits OpenThreadGoalEditor for /goal edit.
+    # - chatwidget::goal_menu opens CustomPromptView and preserves status/budget.
+    monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((100, 28)))
+    runtime = _FakeActiveThreadRuntime([])
+    calls: list[tuple[object, ...]] = []
+    current = SimpleNamespace(
+        objective="旧目标",
+        status=ThreadGoalStatus.PAUSED,
+        token_budget=80_000,
+        tokens_used=12_500,
+        time_used_seconds=90,
+    )
+    updated = SimpleNamespace(
+        objective="新计划补充目标",
+        status=ThreadGoalStatus.PAUSED,
+        token_budget=80_000,
+        tokens_used=12_500,
+        time_used_seconds=90,
+    )
+    runtime.thread_goal_get = lambda thread_id: calls.append(("get", thread_id)) or current
+    runtime.thread_goal_set = lambda thread_id, **kwargs: calls.append(
+        ("set", thread_id, kwargs)
+    ) or updated
+    runtime.goal_continuation_op = lambda goal: calls.append(("continue", goal)) or None
+    stdout = _TtyStringIO("")
+    _patch_terminal_input_source(
+        monkeypatch,
+        _FakeTerminalInputSource(
+            [
+                TerminalInputEvent("text", "/goal edit"),
+                TerminalInputEvent("enter"),
+                TerminalInputEvent("home"),
+                TerminalInputEvent("delete"),
+                TerminalInputEvent("text", "新计划"),
+                TerminalInputEvent("paste", "补充"),
+                TerminalInputEvent("enter"),
+                TerminalInputEvent("eof"),
+            ]
+        ),
+    )
+
+    assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=_TtyStringIO("")) == 0
+
+    assert calls == [
+        ("get", "primary"),
+        (
+            "set",
+            "primary",
+            {
+                "objective": "新计划补充目标",
+                "status": "paused",
+                "token_budget": 80_000,
+            },
+        ),
+        ("continue", updated),
+    ]
+    assert runtime.submitted == []
+    output = _strip_ansi_controls(stdout.getvalue())
+    assert "Edit goal" in output
+    assert "旧目标" in output
+    assert "Goal paused" in output
+    assert "OpenAI Codex" in output
     assert runtime.submitted == []
 
 
@@ -1886,8 +2256,9 @@ def test_terminal_runtime_key_stream_submits_chinese_text_followed_by_space(monk
     # - codex-tui::tui::event_stream treats Space as ordinary text when it is
     #   not consumed by a popup/view key binding.
     # - Windows IME can surface candidate confirmation/continuation as a
-    #   virtual Space key, so bottom_pane::chat_composer must still see a text
-    #   space and preserve it in the submitted user turn.
+    #   virtual Space key, so bottom_pane::chat_composer must preserve it when
+    #   followed by more text. Rust submission trimming still removes trailing
+    #   whitespace.
     monkeypatch.setattr(custom_terminal.shutil, "get_terminal_size", lambda fallback: os.terminal_size((80, 24)))
     runtime = _FakeActiveThreadRuntime(
         [
@@ -1901,6 +2272,7 @@ def test_terminal_runtime_key_stream_submits_chinese_text_followed_by_space(monk
         [
             TerminalInputEvent("text", "\u4f60\u597d"),
             TerminalInputEvent("text", " "),
+            TerminalInputEvent("text", "x"),
             TerminalInputEvent("enter"),
             TerminalInputEvent("text", "/quit"),
             TerminalInputEvent("enter"),
@@ -1911,8 +2283,8 @@ def test_terminal_runtime_key_stream_submits_chinese_text_followed_by_space(monk
     assert run_terminal_tui(active_thread_runtime=runtime, stdout=stdout, stdin=_TtyStringIO("")) == 0
 
     submitted_items = runtime.submitted[0][1].payload.get("items") or []
-    assert submitted_items[0].payload.get("text") == "\u4f60\u597d "
-    assert _user_history_insert_at(18, "\u203a \u4f60\u597d ") in stdout.getvalue()
+    assert submitted_items[0].payload.get("text") == "\u4f60\u597d x"
+    assert _user_history_insert_at(18, "\u203a \u4f60\u597d x") in stdout.getvalue()
 
 
 def test_terminal_runtime_wraps_prefixed_history_cells_with_continuation_indent(monkeypatch) -> None:

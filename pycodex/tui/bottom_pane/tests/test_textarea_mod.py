@@ -1,3 +1,5 @@
+"""Rust source: codex/codex-rs/tui/src/bottom_pane/textarea.rs."""
+
 from pycodex.tui.bottom_pane.textarea import (
     KillBufferKind,
     TextArea,

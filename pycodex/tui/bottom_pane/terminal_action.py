@@ -18,9 +18,12 @@ from ..chatwidget.status_surfaces import TerminalLiveStatusSurface
 @dataclass(frozen=True)
 class TerminalBottomPaneState:
     draft: str = ""
+    composer_projection: object | None = None
     footer_text: str = ""
+    footer_right_text: str = ""
     live_status_text: str | None = None
     popup_lines: tuple[TerminalBottomPanePopupLine, ...] = ()
+    popup_cursor: tuple[int, int] | None = None
     active_tail_lines: tuple[str, ...] = ()
 
     @property
@@ -62,7 +65,9 @@ class TerminalBottomPaneRenderContextProtocol(Protocol):
     """Bottom-pane render context consumed by terminal request builders."""
 
     draft: str
+    composer_projection: object | None
     popup_lines: tuple[TerminalBottomPanePopupLine, ...]
+    popup_cursor: tuple[int, int] | None
     cursor_visible: bool
     active_tail_lines: tuple[str, ...]
     composer_height: int
@@ -120,8 +125,11 @@ class TerminalBottomPaneRenderRequest:
     draft: str
     footer_text: str
     live_status: TerminalLiveStatusSurface
+    composer_projection: object | None = None
+    footer_right_text: str = ""
     check_resize: bool = True
     popup_lines: tuple[TerminalBottomPanePopupLine, ...] = ()
+    popup_cursor: tuple[int, int] | None = None
     cursor_visible: bool = True
     clear_popup_height: int = 0
     clear_live_status_active: bool = False
@@ -136,8 +144,11 @@ class TerminalBottomPaneRenderRequest:
             layout_active=self.layout_active,
             check_resize=self.check_resize,
             draft=self.draft,
+            composer_projection=self.composer_projection,
             footer_text=self.footer_text,
+            footer_right_text=self.footer_right_text,
             popup_lines=self.popup_lines,
+            popup_cursor=self.popup_cursor,
             live_status=self.live_status,
             active_tail_lines=self.active_tail_lines,
         )
@@ -190,6 +201,7 @@ def terminal_bottom_pane_render_request(
     render_context: TerminalBottomPaneRenderContextProtocol,
     footer_text: str,
     live_status: TerminalLiveStatusSurface,
+    footer_right_text: str = "",
     check_resize: bool = True,
     clear_popup_height: int = 0,
     clear_live_status_active: bool = False,
@@ -209,8 +221,11 @@ def terminal_bottom_pane_render_request(
         layout_active=layout_active,
         check_resize=check_resize,
         draft=str(render_context.draft),
+        composer_projection=getattr(render_context, "composer_projection", None),
         footer_text=footer_text,
+        footer_right_text=footer_right_text,
         popup_lines=tuple(render_context.popup_lines),
+        popup_cursor=getattr(render_context, "popup_cursor", None),
         active_tail_lines=tuple(getattr(render_context, "active_tail_lines", ())),
         live_status=live_status,
         cursor_visible=bool(render_context.cursor_visible),
@@ -230,6 +245,7 @@ def terminal_bottom_pane_render_request_for_pass(
     footer_text: str,
     live_status: TerminalLiveStatusSurface,
     render_pass: TerminalBottomPaneRenderPassProtocol,
+    footer_right_text: str = "",
     clear_external_blank_rows: bool = False,
 ) -> TerminalBottomPaneRenderRequest:
     """Build a render request from a resize-owned render pass.
@@ -246,6 +262,7 @@ def terminal_bottom_pane_render_request_for_pass(
         check_resize=bool(render_pass.check_resize),
         render_context=render_context,
         footer_text=footer_text,
+        footer_right_text=footer_right_text,
         live_status=live_status,
         clear_popup_height=int(render_pass.clear_popup_height),
         clear_live_status_active=bool(render_pass.clear_live_status_active),
@@ -280,10 +297,13 @@ def terminal_bottom_pane_render_plan(
     layout_active: bool,
     check_resize: bool,
     draft: str,
+    composer_projection: object | None = None,
     footer_text: str,
     popup_lines: tuple[TerminalBottomPanePopupLine, ...] = (),
+    popup_cursor: tuple[int, int] | None = None,
     live_status: TerminalLiveStatusSurface,
     active_tail_lines: tuple[str, ...] = (),
+    footer_right_text: str = "",
 ) -> TerminalBottomPaneActionPlan:
     """Plan rendering the real-terminal bottom pane."""
 
@@ -295,9 +315,12 @@ def terminal_bottom_pane_render_plan(
         flush=True,
         state=TerminalBottomPaneState(
             draft=draft,
+            composer_projection=composer_projection,
             footer_text=footer_text,
+            footer_right_text=footer_right_text,
             live_status_text=live_status.render_text,
             popup_lines=tuple(popup_lines),
+            popup_cursor=popup_cursor,
             active_tail_lines=tuple(active_tail_lines),
         ),
     )

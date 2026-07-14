@@ -85,26 +85,76 @@ class ExecCoreRuntimeTests(unittest.TestCase):
             core_runtime.build_default_core_exec_runtime(config, env={})
 
     def test_build_default_core_exec_runtime_delegates_success(self) -> None:
-        expected = (object(), object(), object(), "auth")
+        client = object()
+        provider = object()
+        fallback_model_info = object()
+        resolved_model_info = object()
+        manager_config = object()
+
+        class ModelsManager:
+            def __init__(self):
+                self.calls = []
+
+            async def list_models(self, strategy):
+                self.calls.append(("list", strategy))
+                return []
+
+            async def get_default_model(self, model, strategy):
+                self.calls.append(("default", model, strategy))
+                return model
+
+            async def get_model_info(self, model, config):
+                self.calls.append(("info", model, config))
+                return resolved_model_info
+
+        manager = ModelsManager()
+        config = SimpleNamespace(
+            model="gpt-test",
+            to_models_manager_config=lambda: manager_config,
+        )
 
         with patch(
             "pycodex.exec.core_runtime._build_default_local_http_exec_runtime",
-            return_value=expected,
+            return_value=(client, provider, fallback_model_info, "auth"),
         ) as build_runtime:
             returned = core_runtime.build_default_core_exec_runtime(
-                "config",
+                config,
                 auth="auth",
                 env={"OPENAI_API_KEY": "sk-env"},
                 config_toml={"model": "gpt-test"},
+                models_manager=manager,
             )
 
-        self.assertEqual(returned, expected)
+        self.assertEqual(returned, (client, provider, resolved_model_info, "auth"))
         build_runtime.assert_called_once_with(
-            "config",
+            config,
             auth="auth",
             env={"OPENAI_API_KEY": "sk-env"},
             config_toml={"model": "gpt-test"},
         )
+        self.assertEqual([call[0] for call in manager.calls], ["list", "default", "info"])
+        self.assertEqual(manager.calls[1][1], "gpt-test")
+        self.assertIs(manager.calls[2][2], manager_config)
+
+    def test_build_default_core_exec_runtime_uses_bundled_model_contract(self) -> None:
+        # Rust source: codex-core/src/session/mod.rs resolves ModelInfo through
+        # codex-models-manager before constructing SessionConfiguration.
+        config = SimpleNamespace(model="gpt-5.4", to_models_manager_config=lambda: None)
+        client = object()
+        provider = SimpleNamespace(base_url="https://api.example.test/v1")
+
+        with patch(
+            "pycodex.exec.core_runtime._build_default_local_http_exec_runtime",
+            return_value=(client, provider, object(), "auth"),
+        ):
+            returned = core_runtime.build_default_core_exec_runtime(config)
+
+        model_info = returned[2]
+        self.assertEqual(model_info.slug, "gpt-5.4")
+        self.assertGreater(len(model_info.get_model_instructions(None)), 1_000)
+        self.assertTrue(model_info.supports_parallel_tool_calls)
+        self.assertTrue(model_info.support_verbosity)
+        self.assertEqual(model_info.shell_type.value, "shell_command")
 
     def test_resolve_core_exec_resume_target_aligns_named_session(self) -> None:
         seen = {}
@@ -195,6 +245,7 @@ class ExecCoreRuntimeTests(unittest.TestCase):
                 model_client,
                 plan,
                 cli_version="1.2.3",
+                model_info="model-info",
             )
 
         self.assertTrue(persisted)
@@ -205,6 +256,7 @@ class ExecCoreRuntimeTests(unittest.TestCase):
             model_client,
             input_items=("user",),
             cli_version="1.2.3",
+            model_info="model-info",
         )
 
     def test_persist_core_exec_result_skips_resume(self) -> None:
@@ -380,6 +432,7 @@ class ExecCoreRuntimeTests(unittest.TestCase):
             model_client,
             plan,
             cli_version="1.2.3",
+            model_info=model_info,
         )
 
     def test_run_core_exec_command_runs_review_and_persists(self) -> None:
@@ -434,6 +487,7 @@ class ExecCoreRuntimeTests(unittest.TestCase):
             model_client,
             plan,
             cli_version="1.2.3",
+            model_info=model_info,
         )
 
     def test_run_core_exec_command_runs_resume_without_persisting(self) -> None:
@@ -529,6 +583,7 @@ class ExecCoreRuntimeTests(unittest.TestCase):
             "model-client",
             "plan",
             cli_version="1.2.3",
+            model_info="model-info",
         )
 
     def test_run_core_exec_command_resume_pre_resolved_miss_does_not_lookup_again(self) -> None:

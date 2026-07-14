@@ -13,6 +13,7 @@ from typing import Any, Callable
 
 from ._porting import RustTuiModule
 from .app_command import AppCommand
+from .app_event import AppEvent
 from ..app_server_protocol.mcp import McpServerElicitationAction
 
 RUST_MODULE = RustTuiModule(
@@ -21,23 +22,6 @@ RUST_MODULE = RustTuiModule(
     source="codex/codex-rs/tui/src/app_event_sender.rs",
     status="complete",
 )
-
-
-@dataclass(frozen=True)
-class AppEvent:
-    """Small semantic event shape for this sender boundary."""
-
-    kind: str
-    payload: dict[str, Any]
-
-    @classmethod
-    def codex_op(cls, op: AppCommand) -> "AppEvent":
-        return cls("CodexOp", {"op": op})
-
-    @classmethod
-    def submit_thread_op(cls, thread_id: Any, op: AppCommand) -> "AppEvent":
-        return cls("SubmitThreadOp", {"thread_id": thread_id, "op": op})
-
 
 @dataclass
 class AppEventSender:

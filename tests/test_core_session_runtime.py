@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from pycodex.core.client import ModelClient
+from pycodex.core.context import GoalContext
 from pycodex.core.tools.handlers.utils import apply_granted_turn_permissions, record_granted_request_permissions
 from pycodex.core.http_transport import run_user_turn_http_sampling_from_session
 from pycodex.core.session.runtime import InMemoryCodexSession
@@ -633,6 +634,19 @@ class SessionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(legacy.type, "user_message")
         self.assertEqual(legacy.payload.message, "hello")
         self.assertEqual(legacy.payload.text_elements, (text_element,))
+
+    async def test_goal_context_is_recorded_without_visible_turn_item_events(self) -> None:
+        # Rust sources:
+        # - codex-core/src/context/goal_context.rs
+        # - codex-core/src/event_mapping.rs
+        session = InMemoryCodexSession(cwd="C:/work/project", thread_id="thread-1", turn_id="turn-1")
+        turn = await session.new_default_turn()
+        rendered = GoalContext.new("Continue the active goal.").render()
+
+        await session.record_user_prompt_and_emit_turn_item(turn, (UserInput.text_input(rendered),))
+
+        self.assertEqual(session.history[-1].content[0].text, rendered)
+        self.assertEqual(session.emitted_events, [])
 
     async def test_in_memory_session_record_response_item_emits_turn_item_events(self) -> None:
         session = InMemoryCodexSession(cwd="C:/work/project", thread_id="thread-1", turn_id="turn-1")

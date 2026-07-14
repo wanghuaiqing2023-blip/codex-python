@@ -1025,6 +1025,27 @@ def test_cancel_when_either_is_lazy_and_observes_either_parent():
     asyncio.run(combined.cancelled())
 
 
+def test_cancelling_combined_token_waiter_reaps_parent_waiters():
+    # Rust source: codex-rs/core/src/exec.rs::cancel_when_either. Dropping the
+    # selected future must also drop both unselected cancellation futures.
+    async def scenario() -> None:
+        combined = cancel_when_either(CancellationToken(), CancellationToken())
+        waiter = asyncio.create_task(combined.cancelled())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        await asyncio.sleep(0)
+
+        current = asyncio.current_task()
+        pending = [task for task in asyncio.all_tasks() if task is not current and not task.done()]
+        assert pending == []
+
+    asyncio.run(scenario())
+
+
 def test_exec_expiration_with_cancellation_can_combine_without_running_loop():
     first = CancellationToken()
     second = CancellationToken()
@@ -1036,6 +1057,32 @@ def test_exec_expiration_with_cancellation_can_combine_without_running_loop():
     assert expiration.cancellation.is_cancelled() is False
     first.cancel()
     assert expiration.cancellation.is_cancelled() is True
+
+
+def test_natural_process_exit_reaps_combined_expiration_waiters(tmp_path):
+    # Rust source: codex-rs/core/src/exec.rs::consume_output. Tokio select drops
+    # the expiration future when the process exits first; asyncio must reap the
+    # equivalent timeout and cancellation tasks explicitly.
+    async def scenario() -> None:
+        expiration = ExecExpiration.default_timeout().with_cancellation(
+            cancel_when_either(CancellationToken(), CancellationToken())
+        )
+        params = ExecParams(
+            command=(sys.executable, "-c", "print('ok')"),
+            cwd=tmp_path,
+            expiration=expiration,
+            capture_policy=ExecCapturePolicy.SHELL_TOOL,
+        )
+
+        raw = await run_raw_exec_subprocess(params)
+        assert raw.exit_code == 0
+        await asyncio.sleep(0)
+
+        current = asyncio.current_task()
+        pending = [task for task in asyncio.all_tasks() if task is not current and not task.done()]
+        assert pending == []
+
+    asyncio.run(scenario())
 
 
 def test_timeout_or_cancellation_prefers_pre_cancelled_token():

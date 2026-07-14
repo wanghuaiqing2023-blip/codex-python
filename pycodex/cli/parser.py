@@ -2608,6 +2608,8 @@ def _build_tui_core_active_thread_runtime(parsed: ParsedCli, *, stderr: TextIO) 
         session_config,
         auth=auth_json,
         config_toml=config_toml,
+        codex_home=codex_home,
+        client_version=__version__,
     )
     return CoreExecActiveThreadRuntime(
         session_config,
@@ -8301,6 +8303,8 @@ def _run_noninteractive_exec(
                 session_config,
                 auth=auth_json,
                 config_toml=config_toml,
+                codex_home=codex_home,
+                client_version=__version__,
             )
             resolved_resume_rollout_path = None
             if exec_cli.command == "resume":

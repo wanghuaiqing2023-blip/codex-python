@@ -1,3 +1,5 @@
+"""Rust source: codex/codex-rs/tui/src/bottom_pane/textarea/vim.rs."""
+
 from pycodex.tui.bottom_pane.textarea.vim import (
     TextAreaVim,
     TextElement,

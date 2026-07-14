@@ -269,6 +269,12 @@ class ListSelectionView:
     on_cancel: OnCancelCallback
     keymap: Any = None
 
+    def prefer_esc_to_handle_key_event(self) -> bool:
+        return True
+
+    def handle_paste(self, _pasted: str) -> bool:
+        return False
+
     @classmethod
     def new(cls, params: SelectionViewParams, app_event_tx: Any = None, keymap: Any = None) -> "ListSelectionView":
         active_tab_idx = None

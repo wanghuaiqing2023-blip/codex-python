@@ -180,6 +180,8 @@ class LocalWorkspaceCommandRunner:
                 env=env,
                 input="",
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 capture_output=True,
                 timeout=max(float(command.timeout_seconds), 0.0),
                 check=False,

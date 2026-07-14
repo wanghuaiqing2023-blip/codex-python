@@ -79,6 +79,14 @@ class EchoHandler:
         return FunctionToolOutput.from_text("tool ok", True)
 
 
+class UpdateGoalTestHandler:
+    def tool_name(self) -> ToolName:
+        return ToolName.plain("update_goal")
+
+    def handle(self, _invocation):
+        return FunctionToolOutput.from_text('{"goal":{"status":"complete","tokensUsed":580}}', True)
+
+
 class ParallelEchoHandler:
     def __init__(self) -> None:
         self.started = []
@@ -314,6 +322,7 @@ class Session:
         self.unified_diff = None
         self.input_queue = None
         self.active_turn = object()
+        self.total_token_usage_value = TokenUsage()
 
     async def new_default_turn(self) -> object:
         environments = self.environments
@@ -366,6 +375,9 @@ class Session:
 
     async def goal_runtime_apply(self, event: object) -> None:
         self.goal_runtime_events.append(event)
+
+    async def total_token_usage(self) -> TokenUsage:
+        return self.total_token_usage_value
 
     async def emit_turn_error_lifecycle(self, turn_context: object, codex_error_info: object) -> None:
         self.turn_error_lifecycle.append((turn_context, codex_error_info))
@@ -429,6 +441,42 @@ def events_of_type(session: Session, event_type: str) -> tuple[EventMsg, ...]:
 
 
 class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_turn_start_applies_goal_runtime_with_token_baseline(self) -> None:
+        # Rust: core/src/tasks/mod.rs::Session::spawn_task records the current
+        # token usage in GoalRuntimeEvent::TurnStarted before task execution.
+        session = Session()
+        session.total_token_usage_value = TokenUsage(input_tokens=100, output_tokens=20, total_tokens=120)
+        client = ModelClient(
+            session_id="session",
+            thread_id="00000000-0000-0000-0000-000000000010",
+            installation_id="install",
+        )
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+
+        async def sampler(_request):
+            return [ResponseItem.message("assistant", (ContentItem.output_text("done"),))]
+
+        await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        started = session.goal_runtime_events[0]
+        self.assertEqual(started["type"], "turn_started")
+        self.assertIs(started["turn_context"], session.turn_context)
+        self.assertEqual(started["token_usage"].total_tokens, 120)
+
     async def test_build_user_turn_responses_request_records_turn_and_builds_request(self) -> None:
         session = Session()
         client = ModelClient(session_id="session", thread_id="00000000-0000-0000-0000-000000000010", installation_id="install")
@@ -2854,6 +2902,64 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNone(result.stream_runtime_state_summary["token_usage_to_record"])
 
+    async def test_live_stream_result_falls_back_to_completed_event_usage(self) -> None:
+        # The terminal transport can report live events as emitted while its
+        # completed event is only retained on the returned stream. Usage must
+        # still be recorded before any tool dispatch.
+        session = Session()
+        session.turn_context.turn_id = "turn-live-usage"
+        client = ModelClient(
+            session_id="session",
+            thread_id="00000000-0000-0000-0000-000000000011",
+            installation_id="install",
+        )
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        usage = {
+            "input_tokens": 900,
+            "cached_input_tokens": 400,
+            "output_tokens": 80,
+            "reasoning_output_tokens": 20,
+            "total_tokens": 1_000,
+        }
+
+        async def sampler(_request):
+            return SimpleNamespace(
+                response_items=(
+                    ResponseItem.message("assistant", (ContentItem.output_text("done"),)),
+                ),
+                stream_events=(
+                    {
+                        "type": "completed",
+                        "response_id": "resp-live-usage",
+                        "token_usage": usage,
+                        "end_turn": True,
+                    },
+                ),
+                live_stream_events_emitted=True,
+            )
+
+        await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("hello"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: Router(),
+        )
+
+        self.assertEqual(len(session.recorded_token_usage), 1)
+        self.assertEqual(session.recorded_token_usage[0][1].total_tokens, 1_000)
+        self.assertEqual(session.recorded_token_usage[0][1].cached_input_tokens, 400)
+        self.assertEqual(session.recorded_token_usage[0][1].reasoning_output_tokens, 20)
+        self.assertEqual(session.token_count_turn_contexts, [session.turn_context])
+
     async def test_run_user_turn_sampling_applies_raw_response_completed_usage_to_session(self) -> None:
         session = Session()
         session.turn_context.turn_id = "turn-1"
@@ -4028,6 +4134,92 @@ class TurnRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.recorded[-2], result.tool_response_items)
         self.assertEqual(session.history[-1].content[0].text, "done after tool")
         self.assertEqual(len(result.request_plans), 2)
+
+    async def test_update_goal_output_is_followed_up_before_final_answer(self) -> None:
+        # Rust: core/src/session/tests.rs::
+        # completed_goal_accounts_current_turn_tokens_before_tool_response.
+        # The update_goal output must be sent to a subsequent model request,
+        # even if the tool-call response also contained assistant text.
+        session = Session()
+        session.turn_context.turn_id = "turn-goal"
+        client = ModelClient(
+            session_id="session",
+            thread_id="00000000-0000-0000-0000-000000000010",
+            installation_id="install",
+        )
+        provider = SimpleNamespace(is_azure_responses_endpoint=lambda: False)
+        model_info = SimpleNamespace(
+            slug="gpt-test",
+            supports_reasoning_summaries=False,
+            support_verbosity=False,
+            service_tier_for_request=lambda tier: tier,
+        )
+        router = ToolRouter.from_parts(ToolRegistry.from_tools([UpdateGoalTestHandler()]), ())
+        seen_requests = []
+        usage = {
+            "input_tokens": 900,
+            "input_tokens_details": {"cached_tokens": 400},
+            "output_tokens": 80,
+            "output_tokens_details": {"reasoning_tokens": 20},
+            "total_tokens": 1_000,
+        }
+
+        async def sampler(request):
+            seen_requests.append(request)
+            if len(seen_requests) == 1:
+                return SimpleNamespace(
+                    response_items=(
+                        ResponseItem.function_call(
+                            "update_goal",
+                            '{"status":"complete"}',
+                            "call-complete-goal",
+                        ),
+                        ResponseItem.message(
+                            "assistant",
+                            (ContentItem.output_text("premature final"),),
+                        ),
+                    ),
+                    stream_events=(
+                        {
+                            "type": "completed",
+                            "response_id": "resp-goal",
+                            "token_usage": usage,
+                            "end_turn": True,
+                        },
+                    ),
+                )
+            return SimpleNamespace(
+                response_items=(
+                    ResponseItem.message(
+                        "assistant",
+                        (ContentItem.output_text("Goal complete after tool result."),),
+                    ),
+                ),
+                stream_events=(
+                    {"type": "completed", "response_id": "resp-final", "end_turn": True},
+                ),
+            )
+
+        result = await run_user_turn_sampling_from_session(
+            session,
+            (UserInput.text_input("finish the goal"),),
+            client,
+            provider,
+            model_info,
+            sampler,
+            built_tools=lambda _sess, _turn: router,
+        )
+
+        self.assertEqual(len(seen_requests), 2)
+        followup_input = seen_requests[1].request_plan.request["input"]
+        complete_output = next(
+            item
+            for item in followup_input
+            if item.type == "function_call_output" and item.call_id == "call-complete-goal"
+        )
+        self.assertIn('"tokensUsed":580', complete_output.output.to_text())
+        self.assertEqual(session.recorded_token_usage[0][1].total_tokens, 1_000)
+        self.assertEqual(result.last_agent_message, "Goal complete after tool result.")
 
     async def test_run_user_turn_sampling_cancellation_token_aborts_inflight_tool_call(self) -> None:
         # Rust source/test contract:

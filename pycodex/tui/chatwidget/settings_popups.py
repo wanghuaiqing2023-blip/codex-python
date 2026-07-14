@@ -29,6 +29,7 @@ __all__ = [
     "RUST_MODULE",
     "SelectionItem",
     "SelectionViewParams",
+    "TerminalSettingsPopupController",
     "open_experimental_popup",
     "open_personality_popup",
     "open_realtime_audio_device_selection",
@@ -100,6 +101,45 @@ class ExperimentalFeaturesView:
 class SettingsPopupsWidget:
     config: Any
     bottom_pane: Any
+
+
+@dataclass
+class TerminalSettingsPopupController:
+    """Terminal active-view adapter for Rust ``/settings`` dispatch."""
+
+    app_runtime: Any
+
+    def open_view(self) -> Any:
+        from ..bottom_pane.list_selection_view import (
+            SelectionItem as BottomPaneSelectionItem,
+            SelectionViewParams as BottomPaneSelectionViewParams,
+        )
+
+        config = getattr(getattr(self.app_runtime, "active_thread_runtime", None), "session_config", None)
+        microphone = getattr(config, "realtime_microphone", None) or "System default"
+        speaker = getattr(config, "realtime_speaker", None) or "System default"
+        return BottomPaneSelectionViewParams(
+            title="Settings",
+            subtitle="Configure realtime microphone and speaker selection.",
+            items=[
+                BottomPaneSelectionItem(
+                    name="Microphone",
+                    description=f"Current: {microphone}",
+                    is_disabled=True,
+                    disabled_reason="Realtime device selection is not enabled in this runtime.",
+                ),
+                BottomPaneSelectionItem(
+                    name="Speaker",
+                    description=f"Current: {speaker}",
+                    is_disabled=True,
+                    disabled_reason="Realtime device selection is not enabled in this runtime.",
+                ),
+            ],
+        )
+
+    def handle_events(self, events: Tuple[object, ...]) -> None:
+        del events
+        return None
 
 
 def open_theme_picker(widget: Any) -> Any:

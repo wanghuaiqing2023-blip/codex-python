@@ -17,6 +17,7 @@ from pycodex.protocol import (
     TokenUsage,
 )
 from pycodex.state import ThreadGoal as StateThreadGoal
+from pycodex.state import GoalAccountingMode
 from pycodex.state import ThreadGoalStatus as StateThreadGoalStatus
 
 from .context import GoalContext
@@ -237,6 +238,7 @@ class GoalRuntimeEvent:
     type: str
     turn_context: Any = None
     token_usage: TokenUsage | None = None
+    external_set: Any = None
 
     @classmethod
     def from_value(cls, value: Any) -> "GoalRuntimeEvent":
@@ -245,7 +247,14 @@ class GoalRuntimeEvent:
         if isinstance(value, str):
             return cls(value)
         if isinstance(value, dict):
-            return cls(str(value.get("type")), value.get("turn_context"), value.get("token_usage"))
+            if "external_set" in value:
+                return cls("external_set", external_set=value.get("external_set"))
+            return cls(
+                str(value.get("type")),
+                value.get("turn_context"),
+                value.get("token_usage"),
+                value.get("external_set"),
+            )
         event_type = getattr(value, "type", None)
         if event_type is None:
             raise TypeError("goal runtime event must provide a type")
@@ -343,18 +352,66 @@ async def set_thread_goal(session: Any, turn_context: Any, request: SetGoalReque
 async def goal_runtime_apply(session: Any, event: GoalRuntimeEvent | str | dict[str, Any]) -> None:
     runtime_event = GoalRuntimeEvent.from_value(event)
     if runtime_event.type == "turn_started":
-        _goal_runtime(session).accounting.turn = GoalTurnAccountingSnapshot(
-            _turn_id(runtime_event.turn_context),
+        await mark_thread_goal_turn_started(
+            session,
+            runtime_event.turn_context,
             runtime_event.token_usage or TokenUsage(),
         )
     elif runtime_event.type == "tool_completed_goal":
         await account_thread_goal_progress(session)
     elif runtime_event.type in {"external_clear", "task_aborted"}:
         await clear_stopped_thread_goal_runtime_state(session)
+    elif runtime_event.type == "external_set":
+        await _apply_external_goal_set(session, runtime_event.external_set)
+    elif runtime_event.type == "maybe_continue_if_idle":
+        await _maybe_schedule_goal_continuation(session)
     elif runtime_event.type == "thread_resumed":
         goal = await get_thread_goal(session)
         if goal is not None and goal.status is ThreadGoalStatus.ACTIVE:
             _goal_runtime(session).accounting.wall_clock.mark_active_goal(_state_goal_id_from_protocol_goal(session, goal))
+
+
+async def _apply_external_goal_set(session: Any, external_set: Any) -> None:
+    state_goal = _external_set_goal(external_set)
+    if state_goal is None:
+        return
+    goal = protocol_goal_from_state(state_goal)
+    if goal.status is ThreadGoalStatus.ACTIVE:
+        await mark_active_goal_accounting(
+            session,
+            str(getattr(state_goal, "goal_id", "")),
+            getattr(session, "turn_id", None),
+            await _total_token_usage(session),
+        )
+        await _schedule_goal_continuation(session, goal)
+    else:
+        await clear_stopped_thread_goal_runtime_state(session)
+
+
+async def _maybe_schedule_goal_continuation(session: Any) -> None:
+    goal = await get_thread_goal(session)
+    if goal is not None and goal.status is ThreadGoalStatus.ACTIVE:
+        await _schedule_goal_continuation(session, goal)
+
+
+async def _schedule_goal_continuation(session: Any, goal: ThreadGoal) -> None:
+    collaboration_mode = getattr(session, "collaboration_mode", None)
+    mode = getattr(collaboration_mode, "mode", None)
+    if mode is ModeKind.PLAN:
+        return
+    callback = getattr(session, "goal_continuation_callback", None)
+    if not callable(callback):
+        return
+    item = goal_context_input_item(continuation_prompt(goal))
+    await _maybe_await(callback(item, goal))
+
+
+def _external_set_goal(external_set: Any) -> Any:
+    if external_set is None:
+        return None
+    if isinstance(external_set, dict):
+        return external_set.get("goal")
+    return getattr(external_set, "goal", None)
 
 
 async def require_state_db_for_thread_goals(session: Any) -> Any:
@@ -381,10 +438,19 @@ async def account_thread_goal_wall_clock_usage(session: Any, state_db: Any) -> N
     seconds = runtime.accounting.wall_clock.time_delta_since_last_accounting()
     if seconds <= 0:
         return
-    accounting = getattr(_thread_goals(state_db), "account_thread_goal_wall_clock_usage", None)
-    if callable(accounting):
-        await _maybe_await(accounting(_thread_id(session), goal_id, seconds))
-    runtime.accounting.wall_clock.mark_accounted(seconds)
+    outcome = await _maybe_await(
+        _call_required(
+            _thread_goals(state_db),
+            "account_thread_goal_usage",
+            _thread_id(session),
+            seconds,
+            0,
+            GoalAccountingMode.ACTIVE_ONLY,
+            goal_id,
+        )
+    )
+    if bool(getattr(outcome, "updated", False)):
+        runtime.accounting.wall_clock.mark_accounted(seconds)
 
 
 async def account_thread_goal_progress(session: Any) -> None:
@@ -394,12 +460,52 @@ async def account_thread_goal_progress(session: Any) -> None:
         return
     current = await _total_token_usage(session)
     delta = turn.token_delta_since_last_accounting(current)
-    if delta > 0:
+    time_delta = runtime.accounting.wall_clock.time_delta_since_last_accounting()
+    if delta <= 0 and time_delta <= 0:
+        return
+    state_db = await require_state_db_for_thread_goals(session)
+    outcome = await _maybe_await(
+        _call_required(
+            _thread_goals(state_db),
+            "account_thread_goal_usage",
+            _thread_id(session),
+            time_delta,
+            delta,
+            GoalAccountingMode.ACTIVE_ONLY,
+            turn.active_goal_id,
+        )
+    )
+    if bool(getattr(outcome, "updated", False)):
+        turn.mark_accounted(current)
+        runtime.accounting.wall_clock.mark_accounted(time_delta)
+
+
+async def mark_thread_goal_turn_started(session: Any, turn_context: Any, token_usage: TokenUsage) -> None:
+    """Restore the persisted active goal into per-turn accounting like Rust."""
+
+    runtime = _goal_runtime(session)
+    turn_id = _turn_id(turn_context)
+    runtime.accounting.turn = GoalTurnAccountingSnapshot(turn_id, token_usage)
+    collaboration_mode = getattr(turn_context, "collaboration_mode", None)
+    mode = getattr(collaboration_mode, "mode", collaboration_mode)
+    if mode is ModeKind.PLAN:
+        runtime.accounting.wall_clock.clear_active_goal()
+        return
+    try:
         state_db = await require_state_db_for_thread_goals(session)
-        accounting = getattr(_thread_goals(state_db), "account_thread_goal_token_usage", None)
-        if callable(accounting):
-            await _maybe_await(accounting(_thread_id(session), turn.active_goal_id, delta))
-    turn.mark_accounted(current)
+        goal = await _maybe_await(_call_required(_thread_goals(state_db), "get_thread_goal", _thread_id(session)))
+    except Exception:
+        return
+    if goal is not None and goal.status in {
+        StateThreadGoalStatus.ACTIVE,
+        StateThreadGoalStatus.BUDGET_LIMITED,
+    }:
+        turn = runtime.accounting.turn
+        if turn is not None and turn.turn_id == turn_id:
+            turn.mark_active_goal(goal.goal_id)
+        runtime.accounting.wall_clock.mark_active_goal(goal.goal_id)
+    else:
+        runtime.accounting.wall_clock.clear_active_goal()
 
 
 async def mark_active_goal_accounting(session: Any, goal_id: str, turn_id: str | None, token_usage: TokenUsage) -> None:

@@ -52,22 +52,20 @@ def test_tui_session_regression_checklist_tracks_all_p0_scenarios() -> None:
         assert remaining_gap and remaining_gap != "-", row_id
 
 
-def test_tui_closeout_plan_marks_p13_common_status_semantics_closed() -> None:
-    # Rust-derived project-process guard:
-    # P1.3 startup/status now has Rust source/test anchors plus native
-    # Rust/Python current-screen evidence for common-session behavior.
-    text = (_repo_root() / "TUI_CLOSEOUT_PRIORITY_PLAN.md").read_text(encoding="utf-8")
-    rows = {cells[0]: cells for cells in _table_rows(text) if cells[0].startswith("P1.")}
+def test_tui_authoritative_docs_keep_terminal_product_contract() -> None:
+    # Project-process guard derived from the fixed codex-tui baseline:
+    # the supported product path is terminal-only, while detailed P0/P1
+    # evidence remains in the common-session regression checklist.
+    readme = (_repo_root() / "pycodex" / "tui" / "README.md").read_text(encoding="utf-8")
+    checklist = (_repo_root() / "TUI_SESSION_REGRESSION_CHECKLIST.md").read_text(encoding="utf-8")
 
-    assert "P1.3" in rows
-    p13 = rows["P1.3"]
-    assert len(p13) == 5
-    assert "Common-session startup/status semantics are closed" in p13[3]
-    assert "post-turn ready state" in p13[4]
-    assert "native Rust/Python evidence" in p13[4]
-    assert "P1.3 is now closed for common-session semantics" in text
-    assert "Continue P1.3" not in text
-    assert "Rust's ` \u00b7 ` status-line separator" in text
+    assert "The supported product path is the real terminal TUI" in readme
+    assert "does not\nmaintain a Textual path" in readme
+    assert "event_stream" in readme
+    assert "custom_terminal diff/flush" in readme
+    assert "Further changes require an observable fixed-baseline behavior difference" in readme
+    assert "## P0 Checklist" in checklist
+    assert "## P1 Checklist" in checklist
 
 
 def test_tui_session_regression_checklist_keeps_live_smoke_commands() -> None:

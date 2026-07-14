@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from pycodex.tui.bottom_pane.footer import (
     CollaborationModeIndicator,
     FooterKeyHints,
@@ -32,6 +34,7 @@ from pycodex.tui.bottom_pane.footer import (
     terminal_idle_footer_data_from_runtime,
     terminal_footer_projection,
     terminal_idle_footer_text,
+    terminal_idle_footer_right_text_from_runtime,
     toggle_shortcut_mode,
     uses_passive_footer_status_layout,
 )
@@ -244,6 +247,18 @@ def test_terminal_footer_projection_owns_live_pane_line_clipping():
     assert projected.line == "gpt-test high"
 
 
+def test_terminal_footer_projection_right_aligns_goal_status():
+    projected = terminal_footer_projection(
+        "gpt-test high · ~\\repo",
+        columns=48,
+        right_text="Goal achieved (1m)",
+    )
+
+    assert projected.line.startswith("gpt-test high · ~\\repo")
+    assert projected.line.endswith("Goal achieved (1m)")
+    assert len(projected.line) == 47
+
+
 def test_run_terminal_idle_footer_text_from_runtime_uses_canonical_providers(monkeypatch):
     # Rust owner: bottom_pane/footer.rs owns passive footer text.  The terminal
     # runner should ask this module for provider-backed footer formatting.
@@ -287,6 +302,21 @@ def test_terminal_idle_footer_text_provider_binds_runtime_callback(monkeypatch):
     assert provider.text() == terminal_idle_footer_text(
         TerminalIdleFooterData("runtime-model medium", "C:/workspace/repo", False)
     )
+
+
+def test_terminal_idle_footer_right_text_projects_goal_and_agent_priority():
+    runtime = SimpleNamespace(
+        chat_widget=SimpleNamespace(
+            active_agent_label=None,
+            current_goal_status_indicator=GoalStatusIndicator.Complete("1m"),
+        )
+    )
+
+    assert terminal_idle_footer_right_text_from_runtime(runtime) == "Goal achieved (1m)"
+    assert TerminalIdleFooterTextProvider(runtime).right_text() == "Goal achieved (1m)"
+
+    runtime.chat_widget.active_agent_label = "Robie [explorer]"
+    assert terminal_idle_footer_right_text_from_runtime(runtime) == "Robie [explorer]"
 
 
 def test_goal_status_indicator_line_matches_rust_footer_labels():

@@ -15,6 +15,7 @@ from pathlib import Path
 from pycodex.tui.bottom_pane.bottom_pane_view import ViewCompletion
 from pycodex.tui.bottom_pane.approval_overlay import ApprovalOverlay, ApprovalRequest
 from pycodex.tui.bottom_pane.chat_composer import TerminalCommandPopupState
+from pycodex.tui.bottom_pane.custom_prompt_view import CustomPromptView
 from pycodex.tui.bottom_pane.list_selection_view import ListSelectionView, SelectionItem, SelectionViewParams
 from pycodex.tui.bottom_pane.selection_popup_common import TerminalPopupLine
 from pycodex.app_server_protocol.item import ToolRequestUserInputParams, ToolRequestUserInputQuestion
@@ -27,7 +28,6 @@ from pycodex.tui.bottom_pane.view_stack import (
     TerminalBottomPaneViewState,
     terminal_bottom_pane_active_view_input,
     terminal_bottom_pane_cursor_visible,
-    terminal_bottom_pane_handle_composer_key,
     terminal_bottom_pane_popup_lines,
     terminal_bottom_pane_popup_projection,
     terminal_bottom_pane_popup_projection_for_size,
@@ -343,6 +343,40 @@ def test_view_stack_routes_active_key_through_bottom_pane_view_trait() -> None:
     assert view.handled_keys == ["down"]
 
 
+def test_release_events_are_ignored_for_active_view() -> None:
+    # Rust: bottom_pane::tests::release_events_are_ignored_for_active_view.
+    events = []
+    view = FakeView(handled_keys=[])
+    stack = BottomPaneViewStack([view])
+
+    result = terminal_bottom_pane_active_view_input(
+        stack,
+        "down",
+        "release",
+        "draft",
+        selection_events=events,
+    )
+
+    assert result.active is True
+    assert result.draft == "draft"
+    assert view.handled_keys == []
+
+
+def test_paste_completion_clears_stacked_views() -> None:
+    # Rust: paste_completion_clears_stacked_views_and_restores_composer_input.
+    class PasteCompletesView(FakeView):
+        def handle_paste(self, _pasted: str) -> bool:
+            self.complete = True
+            return True
+
+    lower = FakeView(handled_keys=[])
+    completing = PasteCompletesView()
+    stack = BottomPaneViewStack([lower, completing])
+
+    assert stack.handle_active_paste("hello") is True
+    assert stack.views == []
+
+
 def test_bottom_pane_active_view_input_has_priority_over_composer() -> None:
     # Rust owner: codex-tui::bottom_pane::BottomPane gives active views first
     # chance at terminal input before composer/slash handling.
@@ -401,25 +435,64 @@ def test_bottom_pane_active_view_input_has_priority_over_composer() -> None:
     assert eof.draft is None
 
 
-def test_bottom_pane_handle_composer_key_routes_active_view_before_command_popup() -> None:
+def test_bottom_pane_view_state_falls_unconsumed_eof_through_to_composer() -> None:
+    # Rust owners: BottomPaneView receives interactive keys, but terminal EOF
+    # remains a ChatComposer/runtime outcome and must not be swallowed.
+    state = TerminalBottomPaneViewState.new()
+    state.show_selection_view(
+        SelectionViewParams(items=[SelectionItem(name="first")])
+    )
+
+    result = state.handle_composer_event("eof")
+
+    assert result.kind == "eof"
+
+
+def test_bottom_pane_routes_edit_keys_ime_text_and_paste_to_custom_prompt() -> None:
+    # Rust owners: BottomPane routes input to the active BottomPaneView first;
+    # CustomPromptView receives both Key events and Paste payloads.
+    events = []
+    stack = BottomPaneViewStack()
+    view = CustomPromptView.new("Edit goal", "Objective", "旧目标", None, lambda _text: None)
+    stack.replace_with(view)
+
+    terminal_bottom_pane_active_view_input(
+        stack, "", "home", "", selection_events=events
+    )
+    terminal_bottom_pane_active_view_input(
+        stack, "", "delete", "", selection_events=events
+    )
+    terminal_bottom_pane_active_view_input(
+        stack, "", "text", "", "新计划", selection_events=events
+    )
+    terminal_bottom_pane_active_view_input(
+        stack, "", "paste", "", "补充", selection_events=events
+    )
+
+    assert view.textarea.text() == "新计划补充目标"
+
+
+def test_custom_prompt_render_context_exposes_active_view_cursor() -> None:
+    state = TerminalBottomPaneViewState.new()
+    state.show_view(CustomPromptView.new("Edit goal", "Objective", "你好", None, lambda _text: None))
+
+    context = state.render_context_for_size(os.terminal_size((80, 20)), lambda: False)
+
+    assert context.popup_is_active_view is True
+    assert context.popup_cursor == (6, 2)
+    assert context.cursor_visible is True
+
+
+def test_bottom_pane_view_state_routes_active_view_before_command_popup() -> None:
     # Rust owners: codex-tui::bottom_pane::BottomPane routes active views
     # before composer input, while chat_composer owns slash-popup key handling.
     # Terminal adapters consume this single shared precedence boundary.
-    events = []
-    stack = BottomPaneViewStack()
-    popup = TerminalCommandPopupState.new()
-    popup.sync_draft("/m")
+    state = TerminalBottomPaneViewState.new()
+    state.apply_draft("/m")
+    state.handle_composer_event("down")
 
-    moved = terminal_bottom_pane_handle_composer_key(
-        stack,
-        popup,
-        "/m",
-        "down",
-        selection_events=events,
-    )
-
-    assert moved.draft == "/m"
-    assert popup.selected_item().command() == "memories"
+    assert state.draft == "/m"
+    assert state.command_popup.selected_item().command() == "memories"
 
     params = SelectionViewParams(
         title="Select Model",
@@ -428,32 +501,21 @@ def test_bottom_pane_handle_composer_key_routes_active_view_before_command_popup
             SelectionItem(name="gpt-5.4"),
         ),
     )
-    popup.sync_draft("/model")
-
-    opened = terminal_bottom_pane_handle_composer_key(
-        stack,
-        popup,
-        "/model",
+    state.apply_draft("/model")
+    state.handle_composer_event(
         "enter",
-        selection_events=events,
         open_command_view=lambda command: params if command == "model" else None,
     )
 
-    assert opened.draft == ""
-    assert popup.visible is False
-    assert stack.active_view() is not None
-    assert stack.active_view().selected_index() == 0
+    assert state.draft == ""
+    assert state.command_popup_visible is False
+    assert state.active_view is not None
+    assert state.active_view.selected_index() == 0
 
-    active_moved = terminal_bottom_pane_handle_composer_key(
-        stack,
-        popup,
-        "",
-        "down",
-        selection_events=events,
-    )
+    state.handle_composer_event("down")
 
-    assert active_moved.draft == ""
-    assert stack.active_view().selected_index() == 1
+    assert state.draft == ""
+    assert state.active_view.selected_index() == 1
 
 
 def test_terminal_bottom_pane_view_state_owns_draft_popup_and_view_stack_semantics() -> None:
@@ -468,7 +530,7 @@ def test_terminal_bottom_pane_view_state_owns_draft_popup_and_view_stack_semanti
     assert state.command_popup_visible is True
     assert state.command_popup.selected_item().command() == "model"
 
-    assert state.handle_composer_key("/m", "down") == "/m"
+    state.handle_composer_event("down")
     assert state.command_popup.selected_item().command() == "memories"
 
     params = SelectionViewParams(
@@ -495,7 +557,7 @@ def test_terminal_bottom_pane_view_state_owns_draft_popup_and_view_stack_semanti
     assert context.popup_is_active_view is True
     assert context.cursor_visible is False
 
-    assert state.handle_composer_key("", "down") == ""
+    state.handle_composer_event("down")
     assert state.active_view.selected_index() == 1
 
 
@@ -507,16 +569,25 @@ def test_terminal_bottom_pane_view_state_recalls_local_history_with_up_down() ->
     state.record_submission("second")
     state.record_submission("second")
 
-    assert state.handle_composer_key("", "up") == "second"
+    state.handle_composer_event("up")
+    assert state.draft == "second"
     assert state.command_popup_visible is False
-    assert state.handle_composer_key("second", "up") == "first"
-    assert state.handle_composer_key("first", "up") == "first"
-    assert state.handle_composer_key("first", "down") == "second"
-    assert state.handle_composer_key("second", "down") == ""
+    state.handle_composer_event("up")
+    assert state.draft == "first"
+    state.handle_composer_event("up")
+    assert state.draft == "first"
+    state.handle_composer_event("down")
+    assert state.draft == "second"
+    state.handle_composer_event("down")
+    assert state.draft == ""
 
     # A user-edited, non-recalled draft keeps Up available to normal textarea
     # movement instead of replacing the text with history.
-    assert state.handle_composer_key("editing", "up") is None
+    state.apply_draft("editing")
+    state.composer.set_cursor(3)
+    state.handle_composer_event("up")
+    assert state.draft == "editing"
+    assert state.composer.cursor() == 3
 
 
 def test_terminal_bottom_pane_history_does_not_steal_slash_popup_navigation() -> None:
@@ -528,7 +599,7 @@ def test_terminal_bottom_pane_history_does_not_steal_slash_popup_navigation() ->
 
     assert state.command_popup_visible is True
     assert state.command_popup.selected_item().command() == "model"
-    assert state.handle_composer_key("/m", "down") == "/m"
+    state.handle_composer_event("down")
     assert state.command_popup.selected_item().command() == "memories"
 
 
@@ -545,9 +616,12 @@ def test_terminal_bottom_pane_history_combines_persistent_and_local_entries() ->
     state.configure_history("thread", 7, 2, lookup)
     state.record_submission("local newest")
 
-    assert state.handle_composer_key("", "up") == "local newest"
-    assert state.handle_composer_key("local newest", "up") == "persistent newer"
-    assert state.handle_composer_key("persistent newer", "up") == "persistent older"
+    state.handle_composer_event("up")
+    assert state.draft == "local newest"
+    state.handle_composer_event("up")
+    assert state.draft == "persistent newer"
+    state.handle_composer_event("up")
+    assert state.draft == "persistent older"
     assert lookups == [(7, 1), (7, 0)]
 
 
@@ -615,9 +689,9 @@ def test_terminal_bottom_pane_interrupt_calls_active_view_ctrl_c_contract() -> N
     )
     state.show_view(overlay)
 
-    result = state.handle_composer_key("", "interrupt")
+    result = state.handle_composer_event("interrupt")
 
-    assert result == ""
+    assert result.kind == "render"
     assert overlay.is_complete()
     assert state.active_view is None
     assert overlay.emitted_events[-1]["type"] == "ExecApproval"
@@ -673,31 +747,28 @@ def test_terminal_bottom_pane_view_state_pushes_child_selection_view_from_events
             )
         return None
 
-    assert (
-        state.handle_composer_key(
-            "/model",
-            "enter",
-            open_command_view=lambda command: SelectionViewParams(
-                header="Select Model and Effort",
-                items=[
-                    SelectionItem(
-                        name="gpt-5.4",
-                        actions=["open_child"],
-                        dismiss_on_select=False,
-                        dismiss_parent_on_child_accept=True,
-                    )
-                ],
-            ),
-        )
-        == ""
+    state.apply_draft("/model")
+    state.handle_composer_event(
+        "enter",
+        open_command_view=lambda command: SelectionViewParams(
+            header="Select Model and Effort",
+            items=[
+                SelectionItem(
+                    name="gpt-5.4",
+                    actions=["open_child"],
+                    dismiss_on_select=False,
+                    dismiss_parent_on_child_accept=True,
+                )
+            ],
+        ),
     )
-    assert state.handle_composer_key("", "enter", on_selection_events=handle_events) == ""
+    state.handle_composer_event("enter", on_selection_events=handle_events)
     assert state.active_view is not None
     child_lines = state.popup_projection_for_size(os.terminal_size((96, 18))).lines
     assert any("Medium" in line.text for line in child_lines)
 
-    assert state.handle_composer_key("", "down", on_selection_events=handle_events) == ""
-    assert state.handle_composer_key("", "enter", on_selection_events=handle_events) == ""
+    state.handle_composer_event("down", on_selection_events=handle_events)
+    state.handle_composer_event("enter", on_selection_events=handle_events)
 
     assert state.active_view is None
     assert emitted == ["open_child", "high"]
@@ -710,29 +781,22 @@ def test_terminal_bottom_pane_view_state_normalizes_text_enter_for_active_select
     state = TerminalBottomPaneViewState.new()
     emitted: list[object] = []
 
-    assert (
-        state.handle_composer_key(
-            "/model",
-            "enter",
-            open_command_view=lambda command: SelectionViewParams(
-                header="Select Reasoning Level",
-                items=[
-                    SelectionItem(name="Low", actions=["low"], dismiss_on_select=True),
-                    SelectionItem(name="Medium", actions=["medium"], dismiss_on_select=True),
-                ],
-            ),
-        )
-        == ""
+    state.apply_draft("/model")
+    state.handle_composer_event(
+        "enter",
+        open_command_view=lambda command: SelectionViewParams(
+            header="Select Reasoning Level",
+            items=[
+                SelectionItem(name="Low", actions=["low"], dismiss_on_select=True),
+                SelectionItem(name="Medium", actions=["medium"], dismiss_on_select=True),
+            ],
+        ),
     )
-    assert state.handle_composer_key("", "down") == ""
-    assert (
-        state.handle_composer_key(
-            "",
-            "text",
-            "\r",
-            on_selection_events=lambda events: emitted.extend(events) or None,
-        )
-        == ""
+    state.handle_composer_event("down")
+    state.handle_composer_event(
+        "text",
+        "\r",
+        on_selection_events=lambda events: emitted.extend(events) or None,
     )
 
     assert state.active_view is None
