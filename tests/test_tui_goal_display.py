@@ -27,19 +27,19 @@ def test_format_goal_elapsed_seconds_is_compact() -> None:
 
 
 def test_goal_status_label_matches_rust_variants() -> None:
-    assert goal_status_label(ThreadGoalStatus.Active) == "active"
-    assert goal_status_label(ThreadGoalStatus.Paused) == "paused"
-    assert goal_status_label(ThreadGoalStatus.Blocked) == "blocked"
-    assert goal_status_label(ThreadGoalStatus.UsageLimited) == "usage limited"
-    assert goal_status_label(ThreadGoalStatus.BudgetLimited) == "limited by budget"
-    assert goal_status_label(ThreadGoalStatus.Complete) == "complete"
+    assert goal_status_label(ThreadGoalStatus.ACTIVE) == "active"
+    assert goal_status_label(ThreadGoalStatus.PAUSED) == "paused"
+    assert goal_status_label(ThreadGoalStatus.BLOCKED) == "blocked"
+    assert goal_status_label(ThreadGoalStatus.USAGE_LIMITED) == "usage limited"
+    assert goal_status_label(ThreadGoalStatus.BUDGET_LIMITED) == "limited by budget"
+    assert goal_status_label(ThreadGoalStatus.COMPLETE) == "complete"
 
 
 def test_goal_usage_summary_formats_time_and_budgeted_tokens() -> None:
     goal = ThreadGoal(
         thread_id="thread-1",
         objective="Complete the task described in ../gameboy-long-running-prompt5.txt",
-        status=ThreadGoalStatus.BudgetLimited,
+        status=ThreadGoalStatus.BUDGET_LIMITED,
         token_budget=50_000,
         tokens_used=63_876,
         time_used_seconds=120,
@@ -56,7 +56,7 @@ def test_goal_usage_summary_omits_absent_time_or_budget() -> None:
     goal = ThreadGoal(
         thread_id="thread-1",
         objective="Do the thing",
-        status=ThreadGoalStatus.Active,
+        status=ThreadGoalStatus.ACTIVE,
         token_budget=None,
         tokens_used=100,
         time_used_seconds=0,

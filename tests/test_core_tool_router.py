@@ -29,6 +29,7 @@ from pycodex.core import (
     ToolExposure,
     ToolInvocation,
     ToolPayload,
+    ToolPlanOptions,
     ToolRegistry,
     ToolRouter,
     ToolRouterParams,
@@ -41,7 +42,7 @@ from pycodex.core import (
 )
 from pycodex.core.tools.handlers.view_image import ViewImageHandler
 from pycodex.core.unified_exec import UnifiedExecProcessManager
-from pycodex.protocol import NetworkSandboxPolicy, PermissionProfile, ResponseItem, SearchToolCallParams, ToolName, TruncationPolicyConfig
+from pycodex.protocol import ConfigShellToolType, NetworkSandboxPolicy, PermissionProfile, ResponseItem, SearchToolCallParams, ToolName, TruncationPolicyConfig
 
 
 class EchoHandler:
@@ -1179,7 +1180,10 @@ class ToolRouterTests(unittest.TestCase):
                 environments=(SimpleNamespace(environment_id="local", cwd=root),),
                 truncation_policy=TruncationPolicyConfig.tokens(10_000),
             )
-            router = build_environment_tool_router_from_turn_context(turn)
+            router = build_environment_tool_router_from_turn_context(
+                turn,
+                ToolPlanOptions(shell_tool_type=ConfigShellToolType.UNIFIED_EXEC),
+            )
             call = ToolCall(
                 tool_name=ToolName.plain("exec_command"),
                 call_id="call-routed-exec",

@@ -197,6 +197,24 @@ def test_terminal_projection_request_delegates_cursor_position_to_custom_termina
     )
 
 
+def test_terminal_frame_uses_active_view_cursor_instead_of_composer_cursor() -> None:
+    # Rust: BottomPaneView::cursor_pos replaces the primary composer cursor in
+    # the frame while a text-editing active view is visible.
+    popup = tuple(TerminalPopupLine(f"row {index}") for index in range(4))
+    frame = terminal_bottom_pane_frame(
+        os.terminal_size((32, 12)),
+        TerminalBottomPaneState(
+            draft="",
+            footer_text="gpt-test high",
+            popup_lines=popup,
+            popup_cursor=(5, 2),
+        ),
+    )
+
+    assert frame.cursor_row == 10
+    assert frame.cursor_column == 6
+
+
 def test_terminal_projection_applies_terminal_cursor_routing_policy() -> None:
     # Rust owners: chatwidget::rendering owns frame cursor placement and
     # custom_terminal consumes it during backend draw. The terminal surface

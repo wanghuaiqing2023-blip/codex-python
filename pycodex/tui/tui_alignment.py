@@ -62,6 +62,34 @@ class TuiModuleOwner:
 
 TUI_ALIGNMENT_ENTRIES: tuple[TuiAlignmentEntry, ...] = (
     TuiAlignmentEntry(
+        python_module="pycodex/tui/app_event.py",
+        rust_modules=("codex-tui::app_event",),
+        rust_sources=("codex/codex-rs/tui/src/app_event.rs",),
+        python_tests=("tests/test_tui_app_event.py",),
+        notes="Owns the single canonical AppEvent payload and variant model.",
+    ),
+    TuiAlignmentEntry(
+        python_module="pycodex/tui/app_event_sender.py",
+        rust_modules=("codex-tui::app_event_sender",),
+        rust_sources=("codex/codex-rs/tui/src/app_event_sender.rs",),
+        python_tests=("tests/test_tui_app_event_sender.py",),
+        notes=(
+            "Wraps the app event send endpoint only; receiving and dispatch "
+            "belong to codex-tui::app."
+        ),
+    ),
+    TuiAlignmentEntry(
+        python_module="pycodex/tui/app/runtime.py",
+        rust_modules=("codex-tui::app",),
+        rust_sources=("codex/codex-rs/tui/src/app.rs",),
+        python_tests=("pycodex/tui/app/tests/test_runtime.py",),
+        notes=(
+            "Owns the app event channel receiver, FIFO dispatch, and app-loop "
+            "step ordering. Bottom-pane and terminal adapters may invoke this "
+            "boundary but must not receive or drain AppEvent themselves."
+        ),
+    ),
+    TuiAlignmentEntry(
         python_module="pycodex/tui/tui/event_stream.py",
         rust_modules=("codex-tui::tui::event_stream",),
         rust_sources=("codex/codex-rs/tui/src/tui/event_stream.rs",),
@@ -148,8 +176,10 @@ TUI_ALIGNMENT_ENTRIES: tuple[TuiAlignmentEntry, ...] = (
                 rust_source="codex/codex-rs/tui/src/app.rs",
                 python_tests=("pycodex/tui/tui/tests/test_terminal_runtime.py",),
                 description=(
-                    "Delegates app-owned commands, history, status mutations, and "
-                    "chatwidget-owned prompt slash/local classification to app/chatwidget modules."
+                    "Delegates each bottom-pane input cycle to app-owned "
+                    "run_app_event_loop_step, plus app-owned commands, history, "
+                    "and status mutations; chatwidget retains prompt slash/local "
+                    "classification."
                 ),
             ),
         ),
@@ -163,7 +193,10 @@ TUI_ALIGNMENT_ENTRIES: tuple[TuiAlignmentEntry, ...] = (
             "pycodex/tui/bottom_pane/tests/test_chat_composer_slash_input.py",
         ),
         notes=(
-            "Owns composer input lifecycle, prompt presentation, draft mutation, "
+            "Owns composer input lifecycle and coordinates DraftState, command "
+            "popup, and history. DraftState is the sole editable-state field; "
+            "all ordinary editing is delegated to its TextArea and rendering "
+            "uses its TextAreaState. Also owns prompt presentation, "
             "submit/EOF/interrupt outcomes, runtime-bound prompt/submit/EOF "
             "effect callbacks, "
             "and slash popup synchronization; terminal_runtime supplies IO "
@@ -181,6 +214,21 @@ TUI_ALIGNMENT_ENTRIES: tuple[TuiAlignmentEntry, ...] = (
         rust_modules=("codex-tui::bottom_pane::chat_composer::draft_state",),
         rust_sources=("codex/codex-rs/tui/src/bottom_pane/chat_composer/draft_state.rs",),
         python_tests=("pycodex/tui/bottom_pane/tests/test_chat_composer_draft_state.py",),
+        notes="Owns DraftState composition of TextArea and TextAreaState plus draft-local paste and mention metadata.",
+    ),
+    TuiAlignmentEntry(
+        python_module="pycodex/tui/bottom_pane/textarea/__init__.py",
+        rust_modules=("codex-tui::bottom_pane::textarea",),
+        rust_sources=("codex/codex-rs/tui/src/bottom_pane/textarea.rs",),
+        python_tests=("pycodex/tui/bottom_pane/tests/test_textarea_mod.py",),
+        notes="Sole owner of editable text, cursor, atomic element boundaries, visual-line movement, wrapping, and cursor_pos_with_state.",
+    ),
+    TuiAlignmentEntry(
+        python_module="pycodex/tui/bottom_pane/chat_composer_history.py",
+        rust_modules=("codex-tui::bottom_pane::chat_composer_history",),
+        rust_sources=("codex/codex-rs/tui/src/bottom_pane/chat_composer_history.rs",),
+        python_tests=("pycodex/tui/bottom_pane/tests/test_chat_composer_history.py",),
+        notes="Owns local and persistent composer history navigation; ChatComposer supplies real text and cursor byte offsets.",
     ),
     TuiAlignmentEntry(
         python_module="pycodex/tui/bottom_pane/chat_composer/footer_state.py",
@@ -279,10 +327,11 @@ TUI_ALIGNMENT_ENTRIES: tuple[TuiAlignmentEntry, ...] = (
         python_tests=("pycodex/tui/bottom_pane/tests/test_view_stack.py",),
         notes=(
             "Ports BottomPane view-state ownership, active-view-first composer "
-            "key precedence, command-popup suppression, and child-view "
+            "event routing, command-popup suppression, and child-view "
             "completion rules, plus terminal render context projection, so "
             "terminal adapters do not own active-view stack or popup/cursor "
-            "semantics."
+            "semantics. It holds one ChatComposer and never stores a parallel "
+            "draft, history, popup, or cursor editor."
         ),
     ),
     TuiAlignmentEntry(
@@ -765,6 +814,68 @@ TUI_ALIGNMENT_ENTRIES: tuple[TuiAlignmentEntry, ...] = (
 
 TUI_MODULE_OWNERS: tuple[TuiModuleOwner, ...] = (
     TuiModuleOwner(
+        python_owner="pycodex/tui/bottom_pane/chat_composer/__init__.py",
+        rust_module="codex-tui::bottom_pane::chat_composer",
+        rust_source="codex/codex-rs/tui/src/bottom_pane/chat_composer.rs",
+        implementation_files=("pycodex/tui/bottom_pane/chat_composer/__init__.py",),
+        python_tests=("pycodex/tui/bottom_pane/tests/test_chat_composer.py",),
+        notes="Coordinates DraftState, popup, history, submission, and terminal projection without owning a second text buffer.",
+    ),
+    TuiModuleOwner(
+        python_owner="pycodex/tui/bottom_pane/chat_composer/draft_state.py",
+        rust_module="codex-tui::bottom_pane::chat_composer::draft_state",
+        rust_source="codex/codex-rs/tui/src/bottom_pane/chat_composer/draft_state.rs",
+        implementation_files=("pycodex/tui/bottom_pane/chat_composer/draft_state.py",),
+        python_tests=("pycodex/tui/bottom_pane/tests/test_chat_composer_draft_state.py",),
+        notes="Composes TextArea and TextAreaState as the Rust draft owner.",
+    ),
+    TuiModuleOwner(
+        python_owner="pycodex/tui/bottom_pane/textarea",
+        rust_module="codex-tui::bottom_pane::textarea",
+        rust_source="codex/codex-rs/tui/src/bottom_pane/textarea.rs",
+        implementation_files=(
+            "pycodex/tui/bottom_pane/textarea/__init__.py",
+            "pycodex/tui/bottom_pane/textarea/vim.py",
+        ),
+        python_tests=(
+            "pycodex/tui/bottom_pane/tests/test_textarea_mod.py",
+            "pycodex/tui/bottom_pane/tests/test_textarea_vim.py",
+        ),
+        notes="Sole editable-text, cursor, atomic-element, wrapping, and viewport-coordinate owner.",
+    ),
+    TuiModuleOwner(
+        python_owner="pycodex/tui/bottom_pane/chat_composer_history.py",
+        rust_module="codex-tui::bottom_pane::chat_composer_history",
+        rust_source="codex/codex-rs/tui/src/bottom_pane/chat_composer_history.rs",
+        implementation_files=("pycodex/tui/bottom_pane/chat_composer_history.py",),
+        python_tests=("pycodex/tui/bottom_pane/tests/test_chat_composer_history.py",),
+    ),
+    TuiModuleOwner(
+        python_owner="pycodex/tui/app_event.py",
+        rust_module="codex-tui::app_event",
+        rust_source="codex/codex-rs/tui/src/app_event.rs",
+        implementation_files=("pycodex/tui/app_event.py",),
+        python_tests=("tests/test_tui_app_event.py",),
+    ),
+    TuiModuleOwner(
+        python_owner="pycodex/tui/app_event_sender.py",
+        rust_module="codex-tui::app_event_sender",
+        rust_source="codex/codex-rs/tui/src/app_event_sender.rs",
+        implementation_files=("pycodex/tui/app_event_sender.py",),
+        python_tests=("tests/test_tui_app_event_sender.py",),
+    ),
+    TuiModuleOwner(
+        python_owner="pycodex/tui/app/runtime.py",
+        rust_module="codex-tui::app",
+        rust_source="codex/codex-rs/tui/src/app.rs",
+        implementation_files=("pycodex/tui/app/runtime.py",),
+        python_tests=("pycodex/tui/app/tests/test_runtime.py",),
+        notes=(
+            "Owns app event receive/dispatch ordering. Product adapters call "
+            "the app-loop step instead of draining the channel themselves."
+        ),
+    ),
+    TuiModuleOwner(
         python_owner="pycodex/tui/app/app_server_events.py",
         rust_module="codex-tui::app::app_server_events",
         rust_source="codex/codex-rs/tui/src/app/app_server_events.rs",
@@ -1180,6 +1291,9 @@ TUI_MODULE_OWNERS: tuple[TuiModuleOwner, ...] = (
 
 CRITICAL_TERMINAL_TUI_MODULES: frozenset[str] = frozenset(
     {
+        "pycodex/tui/app_event.py",
+        "pycodex/tui/app_event_sender.py",
+        "pycodex/tui/app/runtime.py",
         "pycodex/tui/tui/event_stream.py",
         "pycodex/tui/ratatui_bridge/buffer.py",
         "pycodex/tui/ratatui_bridge/backend.py",
@@ -1187,6 +1301,8 @@ CRITICAL_TERMINAL_TUI_MODULES: frozenset[str] = frozenset(
         "pycodex/tui/bottom_pane/chat_composer/__init__.py",
         "pycodex/tui/bottom_pane/chat_composer/attachment_state.py",
         "pycodex/tui/bottom_pane/chat_composer/draft_state.py",
+        "pycodex/tui/bottom_pane/textarea/__init__.py",
+        "pycodex/tui/bottom_pane/chat_composer_history.py",
         "pycodex/tui/bottom_pane/chat_composer/footer_state.py",
         "pycodex/tui/bottom_pane/chat_composer/history_search.py",
         "pycodex/tui/bottom_pane/chat_composer/popup_state.py",

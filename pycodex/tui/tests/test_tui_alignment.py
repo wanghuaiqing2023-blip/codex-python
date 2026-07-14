@@ -292,6 +292,87 @@ def test_terminal_tui_no_tui_local_command_owner_shadow() -> None:
     assert not (REPO_ROOT / "pycodex/tui/tui/tests/test_local_command.py").exists()
 
 
+def test_terminal_composer_editor_ownership_matches_rust_modules() -> None:
+    # Rust sources: bottom_pane/chat_composer.rs, chat_composer/draft_state.rs,
+    # and textarea.rs define ChatComposer -> DraftState -> TextArea/State.
+    composer_source = (
+        REPO_ROOT / "pycodex/tui/bottom_pane/chat_composer/__init__.py"
+    ).read_text(encoding="utf-8-sig")
+    draft_source = (
+        REPO_ROOT / "pycodex/tui/bottom_pane/chat_composer/draft_state.py"
+    ).read_text(encoding="utf-8-sig")
+    view_source = (REPO_ROOT / "pycodex/tui/bottom_pane/view_stack.py").read_text(
+        encoding="utf-8-sig"
+    )
+    controller_source = (
+        REPO_ROOT / "pycodex/tui/bottom_pane/terminal_controller.py"
+    ).read_text(encoding="utf-8-sig")
+    runtime_source = (REPO_ROOT / "pycodex/tui/tui/terminal_runtime.py").read_text(
+        encoding="utf-8-sig"
+    )
+
+    composer_tree = ast.parse(composer_source)
+    draft_tree = ast.parse(draft_source)
+    view_tree = ast.parse(view_source)
+    composer_class = next(
+        node for node in composer_tree.body if isinstance(node, ast.ClassDef) and node.name == "ChatComposer"
+    )
+    draft_class = next(
+        node for node in draft_tree.body if isinstance(node, ast.ClassDef) and node.name == "DraftState"
+    )
+    view_class = next(
+        node
+        for node in view_tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "TerminalBottomPaneViewState"
+    )
+
+    composer_assignments = {
+        node.targets[0].attr
+        for node in ast.walk(composer_class)
+        if isinstance(node, ast.Assign)
+        and isinstance(node.targets[0], ast.Attribute)
+        and isinstance(node.targets[0].value, ast.Name)
+        and node.targets[0].value.id == "self"
+    }
+    assert "draft" in composer_assignments
+    assert "_text" not in composer_assignments
+    assert "self.draft = DraftState.new()" in composer_source
+    assert "self.draft.textarea.input(" in composer_source
+    assert "cursor_pos_with_state(" in composer_source
+
+    draft_fields = {
+        node.target.id: ast.unparse(node.annotation)
+        for node in draft_class.body
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+    }
+    assert draft_fields["textarea"] == "TextArea"
+    assert draft_fields["textarea_state"] == "TextAreaState"
+
+    view_fields = {
+        node.target.id
+        for node in view_class.body
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+    }
+    assert "composer" in view_fields
+    assert view_fields.isdisjoint({"draft", "history", "command_popup_state", "cursor"})
+    assert "def handle_composer_key(" not in view_source
+    assert "def terminal_bottom_pane_handle_composer_key(" not in view_source
+    assert "def terminal_composer_input_action(" not in composer_source
+    assert "def terminal_composer_draft_after_" not in composer_source
+
+    forbidden_editor_keys = tuple(
+        f'"{key}"'
+        for key in ("left", "right", "home", "end", "backspace", "delete", "ctrl-b", "ctrl-f")
+    )
+    for adapter_source in (controller_source, runtime_source):
+        assert not any(key in adapter_source for key in forbidden_editor_keys)
+    assert "def handle_composer_key(" not in controller_source
+    assert "handle_key=" not in runtime_source
+    assert "handle_active_input=" not in runtime_source
+    assert "composer=self._bottom_pane.composer" in runtime_source
+    assert "handle_event=self._handle_bottom_pane_composer_event" in runtime_source
+
+
 def test_terminal_tui_deleted_runtime_adapters_do_not_return() -> None:
     # Rust owner: project-level terminal TUI module-owner alignment.  These
     # Python-only runtime layers were folded into Rust-owned module boundaries;
@@ -308,6 +389,80 @@ def test_terminal_tui_deleted_runtime_adapters_do_not_return() -> None:
 
     for deleted_path in deleted_paths:
         assert not (REPO_ROOT / deleted_path).exists(), deleted_path
+
+
+def test_app_event_receive_and_drain_stay_in_app_module() -> None:
+    # Fixed Rust commit 1c7832f:
+    # - app_event_sender.rs only sends into UnboundedSender<AppEvent>;
+    # - app.rs owns app_event_rx.recv() and App::handle_event;
+    # - bottom_pane handles view input/completion without receiving AppEvents.
+    app_source = (REPO_ROOT / "pycodex/tui/app/runtime.py").read_text(encoding="utf-8-sig")
+    terminal_source = (REPO_ROOT / "pycodex/tui/tui/terminal_runtime.py").read_text(
+        encoding="utf-8-sig"
+    )
+    controller_source = (
+        REPO_ROOT / "pycodex/tui/bottom_pane/terminal_controller.py"
+    ).read_text(encoding="utf-8-sig")
+    app_tree = ast.parse(app_source)
+    controller_tree = ast.parse(controller_source)
+    controller_identifiers = {
+        node.id
+        for node in ast.walk(controller_tree)
+        if isinstance(node, ast.Name)
+    } | {
+        node.attr
+        for node in ast.walk(controller_tree)
+        if isinstance(node, ast.Attribute)
+    }
+
+    app_runtime_class = next(
+        node
+        for node in app_tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "TuiAppRuntime"
+    )
+    app_runtime_methods = {
+        node.name: node
+        for node in app_runtime_class.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    loop_step = app_runtime_methods["run_app_event_loop_step"]
+    assert "drain_app_events" in app_runtime_methods
+    assert any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "self"
+        and node.func.attr == "drain_app_events"
+        for node in ast.walk(loop_step)
+    )
+    assert "run_app_event_loop_step" in terminal_source
+    assert ".drain_app_events(" not in terminal_source
+    assert controller_identifiers.isdisjoint(
+        {
+            "app_event_sender",
+            "pending_app_events",
+            "drain_app_events",
+            "_drain_app_events",
+        }
+    )
+
+
+def test_app_event_sender_reuses_canonical_app_event_module() -> None:
+    # Rust has one AppEvent enum in app_event.rs. app_event_sender.rs imports
+    # it and must not define a shadow event type.
+    sender_path = REPO_ROOT / "pycodex/tui/app_event_sender.py"
+    sender_tree = ast.parse(sender_path.read_text(encoding="utf-8-sig"))
+
+    assert not any(
+        isinstance(node, ast.ClassDef) and node.name == "AppEvent"
+        for node in sender_tree.body
+    )
+    assert any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "app_event"
+        and any(alias.name == "AppEvent" for alias in node.names)
+        for node in sender_tree.body
+    )
 
 
 def test_terminal_tui_product_sources_do_not_reintroduce_textual_path() -> None:
@@ -390,6 +545,7 @@ def test_terminal_product_path_contract_matrix_is_guarded() -> None:
 
     required_runtime_tests = {
         "ascii_text_submit": "test_terminal_runtime_key_stream_submits_ascii_prompt",
+        "middle_cursor_insert": "test_terminal_runtime_left_moves_real_composer_cursor_before_insertion",
         "ime_text_submit": "test_terminal_runtime_terminal_event_loop_submits_chinese_text_once",
         "slash_popup_filter_and_navigation": "test_terminal_runtime_slash_popup_renders_and_moves_selection",
         "model_picker": "test_terminal_runtime_model_command_opens_bottom_pane_selection_view",
@@ -414,7 +570,7 @@ def test_terminal_product_path_contract_matrix_is_guarded() -> None:
     required_view_stack_tests = {
         "child_selection_view_stack": "test_terminal_bottom_pane_view_state_pushes_child_selection_view_from_events",
         "text_enter_active_view": "test_terminal_bottom_pane_view_state_normalizes_text_enter_for_active_selection_view",
-        "active_view_navigation": "test_bottom_pane_handle_composer_key_routes_active_view_before_command_popup",
+        "active_view_navigation": "test_bottom_pane_view_state_routes_active_view_before_command_popup",
     }
     required_projection_tests = {
         "bottom_pane_frame_diff": "test_terminal_projection_frame_update_diff_uses_custom_terminal_owner",
@@ -1039,7 +1195,8 @@ def test_terminal_controller_does_not_own_popup_row_projection() -> None:
             "dismiss_app_server_request",
             "has_active_view",
             "handle_active_view_input",
-            "handle_composer_key",
+            "composer",
+            "handle_composer_event",
         "history_bottom_row",
         "clear",
         "clear_without_resize_check",
@@ -1107,7 +1264,7 @@ def test_terminal_controller_does_not_own_popup_row_projection() -> None:
     assert "if not self.command_popup_visible" not in source
     assert "return run_terminal_command_popup_input_action(" not in source
     assert "terminal_bottom_pane_handle_composer_key(" not in source
-    assert "self._view_state.handle_composer_key(" in source
+    assert "self._view_state.handle_composer_event(" in source
     assert "def active_view(self)" not in source
     assert "def view_stack(self)" not in source
     assert "def command_popup(self)" not in source

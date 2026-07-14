@@ -28,7 +28,9 @@ from pycodex.protocol import (
     AskForApproval,
     EventMsg,
     GranularApprovalConfig,
+    ModelsResponse,
     PermissionProfile,
+    Personality,
     ReviewRequest,
     ReviewTarget,
     SandboxMode,
@@ -336,6 +338,9 @@ class ExecSessionConfig:
     cwd: Path
     workspace_roots: tuple[Path, ...] = ()
     user_instructions: str | None = None
+    developer_instructions: str | None = None
+    base_instructions: str | None = None
+    personality: Personality | None = None
     instruction_sources: tuple[Path, ...] = ()
     startup_warnings: tuple[str, ...] = ()
     mcp_servers: Mapping[str, JsonValue] | None = None
@@ -347,6 +352,11 @@ class ExecSessionConfig:
     ephemeral: bool = False
     reasoning_effort: JsonValue | None = None
     model_reasoning_summary: JsonValue | None = None
+    model_context_window: int | None = None
+    model_auto_compact_token_limit: int | None = None
+    tool_output_token_limit: int | None = None
+    model_supports_reasoning_summaries: bool | None = None
+    model_catalog: ModelsResponse | Mapping[str, Any] | None = None
     service_tier: str | None = None
     hide_agent_reasoning: bool = False
     show_raw_agent_reasoning: bool = False
@@ -372,6 +382,29 @@ class ExecSessionConfig:
         object.__setattr__(self, "workspace_roots", tuple(Path(root) for root in self.workspace_roots))
         object.__setattr__(self, "instruction_sources", tuple(Path(path) for path in self.instruction_sources))
         object.__setattr__(self, "startup_warnings", tuple(str(warning) for warning in self.startup_warnings))
+        for name in ("user_instructions", "developer_instructions", "base_instructions"):
+            value = getattr(self, name)
+            if value is not None and not isinstance(value, str):
+                raise TypeError(f"{name} must be a string or None")
+        if self.personality is not None and not isinstance(self.personality, Personality):
+            object.__setattr__(self, "personality", Personality.parse(str(self.personality)))
+        for name in (
+            "model_context_window",
+            "model_auto_compact_token_limit",
+            "tool_output_token_limit",
+        ):
+            value = getattr(self, name)
+            if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
+                raise TypeError(f"{name} must be an integer or None")
+        if self.model_supports_reasoning_summaries is not None and not isinstance(
+            self.model_supports_reasoning_summaries,
+            bool,
+        ):
+            raise TypeError("model_supports_reasoning_summaries must be a bool or None")
+        if self.model_catalog is not None and not isinstance(self.model_catalog, ModelsResponse):
+            if not isinstance(self.model_catalog, Mapping):
+                raise TypeError("model_catalog must be ModelsResponse, mapping, or None")
+            object.__setattr__(self, "model_catalog", ModelsResponse.from_mapping(self.model_catalog))
         servers = self.mcp_servers if isinstance(self.mcp_servers, Mapping) else {}
         object.__setattr__(self, "mcp_servers", dict(servers))
         if not isinstance(self.windows_sandbox_level, WindowsSandboxLevel):
@@ -408,6 +441,24 @@ class ExecSessionConfig:
             raise TypeError("exec_permission_approvals_enabled must be a bool")
         if not isinstance(self.request_permissions_tool_enabled, bool):
             raise TypeError("request_permissions_tool_enabled must be a bool")
+
+    def to_models_manager_config(self) -> Any:
+        """Project the Rust ``Config::to_models_manager_config`` contract."""
+
+        from pycodex.features import Feature
+        from pycodex.models_manager import ModelsManagerConfig
+
+        enabled = getattr(self.features, "enabled", None)
+        personality_enabled = bool(enabled(Feature.PERSONALITY)) if callable(enabled) else False
+        return ModelsManagerConfig(
+            model_context_window=self.model_context_window,
+            model_auto_compact_token_limit=self.model_auto_compact_token_limit,
+            tool_output_token_limit=self.tool_output_token_limit,
+            base_instructions=self.base_instructions,
+            personality_enabled=personality_enabled,
+            model_supports_reasoning_summaries=self.model_supports_reasoning_summaries,
+            model_catalog=self.model_catalog,
+        )
 
 
 @dataclass(frozen=True)
@@ -1070,6 +1121,9 @@ def exec_session_config_mapping(config: ExecSessionConfig) -> dict[str, JsonValu
             "cwd": str(config.cwd),
             "workspaceRoots": [str(root) for root in config.workspace_roots],
             "userInstructions": config.user_instructions,
+            "developerInstructions": config.developer_instructions,
+            "baseInstructions": config.base_instructions,
+            "personality": config.personality.value if config.personality is not None else None,
             "instructionSources": [str(path) for path in config.instruction_sources],
             "startupWarnings": list(config.startup_warnings),
             "mcpServers": _to_json(config.mcp_servers),
@@ -1080,6 +1134,11 @@ def exec_session_config_mapping(config: ExecSessionConfig) -> dict[str, JsonValu
             "ephemeral": config.ephemeral,
             "reasoningEffort": _to_json(config.reasoning_effort),
             "modelReasoningSummary": _to_json(config.model_reasoning_summary),
+            "modelContextWindow": config.model_context_window,
+            "modelAutoCompactTokenLimit": config.model_auto_compact_token_limit,
+            "toolOutputTokenLimit": config.tool_output_token_limit,
+            "modelSupportsReasoningSummaries": config.model_supports_reasoning_summaries,
+            "modelCatalog": _to_json(config.model_catalog),
             "serviceTier": config.service_tier,
             "hideAgentReasoning": config.hide_agent_reasoning,
             "showRawAgentReasoning": config.show_raw_agent_reasoning,
@@ -2795,6 +2854,12 @@ def _session_instruction_config(config: ExecSessionConfig, *, include_empty: boo
     instruction_config = {}
     if config.user_instructions is not None:
         instruction_config["userInstructions"] = config.user_instructions
+    if config.developer_instructions is not None:
+        instruction_config["developerInstructions"] = config.developer_instructions
+    if config.base_instructions is not None:
+        instruction_config["baseInstructions"] = config.base_instructions
+    if config.personality is not None:
+        instruction_config["personality"] = config.personality.value
     if config.instruction_sources:
         instruction_config["instructionSources"] = [str(path) for path in config.instruction_sources]
     if config.startup_warnings:

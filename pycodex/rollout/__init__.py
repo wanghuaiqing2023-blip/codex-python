@@ -1854,20 +1854,29 @@ def append_event_msg_to_rollout(path: Path, event: EventMsg | Mapping[str, Any],
         file.write("\n")
 
 
-def append_turn_context_to_rollout(path: Path, cwd: Path | str, *, timestamp: str | None = None) -> None:
+def append_turn_context_to_rollout(
+    path: Path,
+    cwd: Path | str,
+    *,
+    timestamp: str | None = None,
+    turn_context: TurnContextItem | Mapping[str, Any] | None = None,
+) -> None:
     """Append a turn context item that records the cwd for the next resumed turn."""
 
     rollout_path = Path(path)
     rollout_path.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(turn_context, TurnContextItem):
+        context_payload = turn_context.to_mapping()
+    elif turn_context is not None:
+        context_payload = dict(turn_context)
+    else:
+        # A bare context is preferable to fabricated model/permission state;
+        # rollout reconstruction already treats bare contexts as non-hydrating.
+        context_payload = {"cwd": os.fspath(cwd)}
     line = {
         "timestamp": timestamp or _format_rfc3339(datetime.now(timezone.utc)),
         "type": "turn_context",
-        "payload": {
-            "cwd": os.fspath(cwd),
-            "approval_policy": "never",
-            "sandbox_policy": {"type": "read-only", "network_access": False},
-            "model": "unknown",
-        },
+        "payload": context_payload,
     }
     with rollout_path.open("a", encoding="utf-8", newline="\n") as file:
         file.write(json.dumps(line, separators=(",", ":"), ensure_ascii=False))
@@ -1881,12 +1890,13 @@ def append_turn_to_rollout(
     *,
     timestamp: str | None = None,
     cwd: Path | str | None = None,
+    turn_context: TurnContextItem | Mapping[str, Any] | None = None,
 ) -> None:
     """Append one resumed turn's user input and response items to an existing rollout."""
 
     resolved_timestamp = timestamp or _format_rfc3339(datetime.now(timezone.utc))
     if cwd is not None:
-        append_turn_context_to_rollout(path, cwd, timestamp=resolved_timestamp)
+        append_turn_context_to_rollout(path, cwd, timestamp=resolved_timestamp, turn_context=turn_context)
     if user_payload is not None:
         append_response_item_to_rollout(path, user_payload, timestamp=resolved_timestamp)
     for payload in response_payloads:
@@ -1901,13 +1911,21 @@ def append_turn_to_thread_rollout(
     *,
     timestamp: str | None = None,
     cwd: Path | str | None = None,
+    turn_context: TurnContextItem | Mapping[str, Any] | None = None,
 ) -> Path | None:
     """Append one turn to an existing session rollout selected by thread id."""
 
     path = find_thread_path_by_id_str(codex_home, thread_id)
     if path is None:
         return None
-    append_turn_to_rollout(path, user_payload, response_payloads, timestamp=timestamp, cwd=cwd)
+    append_turn_to_rollout(
+        path,
+        user_payload,
+        response_payloads,
+        timestamp=timestamp,
+        cwd=cwd,
+        turn_context=turn_context,
+    )
     return path
 
 
@@ -1919,6 +1937,7 @@ def append_turn_to_latest_thread_rollout(
     current_cwd: Path | None = None,
     include_all: bool = False,
     timestamp: str | None = None,
+    turn_context: TurnContextItem | Mapping[str, Any] | None = None,
 ) -> Path | None:
     """Append one turn to the newest matching session rollout."""
 
@@ -1932,7 +1951,14 @@ def append_turn_to_latest_thread_rollout(
     if not page.items:
         return None
     path = page.items[0].path
-    append_turn_to_rollout(path, user_payload, response_payloads, timestamp=timestamp, cwd=current_cwd)
+    append_turn_to_rollout(
+        path,
+        user_payload,
+        response_payloads,
+        timestamp=timestamp,
+        cwd=current_cwd,
+        turn_context=turn_context,
+    )
     return path
 
 

@@ -1,8 +1,8 @@
 """Goal status indicator helpers for ``codex-tui::chatwidget::goal_status``.
 
 The Rust module maps app-server thread goal state into the compact footer goal
-indicator.  Python keeps that module boundary as lightweight semantic values and
-accepts either the local ``ThreadGoal`` dataclass or duck-typed protocol objects.
+indicator. Python consumes the corresponding app-server protocol type and keeps
+duck-typed support only at external adapter boundaries.
 """
 
 from __future__ import annotations
@@ -33,11 +33,11 @@ class GoalStatusState:
         return cls(goal=goal, observed_at=observed_at)
 
     def is_active(self) -> bool:
-        return _normalize_status(_get(self.goal, "status")) is ThreadGoalStatus.Active
+        return _normalize_status(_get(self.goal, "status")) is ThreadGoalStatus.ACTIVE
 
     def indicator(self, now: Any, active_turn_started_at: Any | None = None) -> GoalStatusIndicator | None:
         goal = _copy_goal(self.goal)
-        if _normalize_status(_get(goal, "status")) is ThreadGoalStatus.Active and active_turn_started_at is not None:
+        if _normalize_status(_get(goal, "status")) is ThreadGoalStatus.ACTIVE and active_turn_started_at is not None:
             baseline = _max_instant(self.observed_at, active_turn_started_at)
             active_seconds = int(max(_duration_seconds(now, baseline), 0))
             current = int(_get(goal, "time_used_seconds", 0))
@@ -51,17 +51,17 @@ def goal_status_indicator_from_app_goal(goal: Any) -> GoalStatusIndicator | None
     tokens_used = int(_get(goal, "tokens_used", 0))
     time_used_seconds = int(_get(goal, "time_used_seconds", 0))
 
-    if status is ThreadGoalStatus.Active:
+    if status is ThreadGoalStatus.ACTIVE:
         return GoalStatusIndicator.Active(active_goal_usage(token_budget, tokens_used, time_used_seconds))
-    if status is ThreadGoalStatus.Paused:
+    if status is ThreadGoalStatus.PAUSED:
         return GoalStatusIndicator("Paused")
-    if status is ThreadGoalStatus.Blocked:
+    if status is ThreadGoalStatus.BLOCKED:
         return GoalStatusIndicator("Blocked")
-    if status is ThreadGoalStatus.UsageLimited:
+    if status is ThreadGoalStatus.USAGE_LIMITED:
         return GoalStatusIndicator("UsageLimited")
-    if status is ThreadGoalStatus.BudgetLimited:
+    if status is ThreadGoalStatus.BUDGET_LIMITED:
         return GoalStatusIndicator.BudgetLimited(stopped_goal_budget_usage(token_budget, tokens_used))
-    if status is ThreadGoalStatus.Complete:
+    if status is ThreadGoalStatus.COMPLETE:
         return GoalStatusIndicator.Complete(completed_goal_usage(token_budget, tokens_used, time_used_seconds))
     return None
 
@@ -89,7 +89,7 @@ def active_goal_state(observed_at: Any, time_used_seconds: int) -> GoalStatusSta
         ThreadGoal(
             thread_id="thread",
             objective="do the thing",
-            status=ThreadGoalStatus.Active,
+            status=ThreadGoalStatus.ACTIVE,
             token_budget=None,
             tokens_used=0,
             time_used_seconds=time_used_seconds,
@@ -101,34 +101,10 @@ def active_goal_state(observed_at: Any, time_used_seconds: int) -> GoalStatusSta
 
 
 def _normalize_status(status: Any) -> ThreadGoalStatus:
-    if isinstance(status, ThreadGoalStatus):
-        return status
-    text = str(getattr(status, "value", status))
-    aliases = {
-        "active": ThreadGoalStatus.Active,
-        "Active": ThreadGoalStatus.Active,
-        "paused": ThreadGoalStatus.Paused,
-        "Paused": ThreadGoalStatus.Paused,
-        "blocked": ThreadGoalStatus.Blocked,
-        "Blocked": ThreadGoalStatus.Blocked,
-        "usage_limited": ThreadGoalStatus.UsageLimited,
-        "usageLimited": ThreadGoalStatus.UsageLimited,
-        "UsageLimited": ThreadGoalStatus.UsageLimited,
-        "budget_limited": ThreadGoalStatus.BudgetLimited,
-        "budgetLimited": ThreadGoalStatus.BudgetLimited,
-        "BudgetLimited": ThreadGoalStatus.BudgetLimited,
-        "complete": ThreadGoalStatus.Complete,
-        "Complete": ThreadGoalStatus.Complete,
-    }
-    try:
-        return aliases[text]
-    except KeyError as exc:
-        raise ValueError(f"unknown ThreadGoalStatus: {status!r}") from exc
+    return ThreadGoalStatus.parse(status)
 
 
 def _copy_goal(goal: Any) -> Any:
-    if isinstance(goal, ThreadGoal):
-        return replace(goal)
     if hasattr(goal, "__dataclass_fields__"):
         try:
             return replace(goal)

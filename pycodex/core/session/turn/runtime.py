@@ -485,7 +485,7 @@ async def run_user_turn_sampling_from_session(
             has_pending_mailbox_items=await _has_pending_mailbox_items(sess) if all_stream_events else False,
         )
         stream_event_apply_plans = list(initial_apply_plans)
-    await _apply_stream_runtime_session_side_effects(
+    stream_usage_recorded = await _apply_stream_runtime_session_side_effects(
         sess,
         prepared.turn_context,
         stream_runtime_state,
@@ -520,7 +520,12 @@ async def run_user_turn_sampling_from_session(
                 stream_runtime_state,
             )
         raise
-    await _record_sampling_token_usage(sess, prepared.turn_context, raw_result)
+    await _record_sampling_token_usage(
+        sess,
+        prepared.turn_context,
+        raw_result,
+        stream_usage_recorded=stream_usage_recorded,
+    )
     stream_response_items = _stream_non_tool_response_items(
         all_stream_events,
         skip_items=response_items,
@@ -585,19 +590,6 @@ async def run_user_turn_sampling_from_session(
         if tool_response_items:
             await _maybe_await(sess.record_conversation_items(prepared.turn_context, tool_response_items))
             all_tool_response_items.extend(tool_response_items)
-            if _can_complete_after_goal_update_outputs(
-                tool_response_items,
-                all_response_items,
-                stream_runtime_state,
-                stream_event_apply_plans,
-                all_stream_events,
-            ):
-                _goal_debug_trace(
-                    "goal_core_fast_complete_after_update_goal",
-                    tool_outputs=len(tool_response_items),
-                    response_items=len(all_response_items),
-                )
-                break
         tool_followup_limit_reached = (
             max_tool_followups is not None
             and has_tool_response_items
@@ -820,7 +812,7 @@ async def run_user_turn_sampling_from_session(
         live_followup_events_emitted = bool(getattr(raw_result, "live_stream_events_emitted", False))
         if live_followup_events_emitted:
             emitted_stream_event_cursor = len(getattr(stream_runtime_state, "emitted_stream_events", ()) or ())
-        await _apply_stream_runtime_session_side_effects(
+        stream_usage_recorded = await _apply_stream_runtime_session_side_effects(
             sess,
             prepared.turn_context,
             stream_runtime_state,
@@ -855,7 +847,12 @@ async def run_user_turn_sampling_from_session(
                     stream_runtime_state,
                 )
             raise
-        await _record_sampling_token_usage(sess, prepared.turn_context, raw_result)
+        await _record_sampling_token_usage(
+            sess,
+            prepared.turn_context,
+            raw_result,
+            stream_usage_recorded=stream_usage_recorded,
+        )
         response_items = _response_items_from_sampling_result(raw_result)
         if response_items:
             await _record_response_items(
@@ -3105,7 +3102,8 @@ async def _apply_stream_runtime_session_side_effects(
     turn_context: Any,
     runtime_state: SamplingRuntimeEventApplicationState,
     raw_result: Any,
-) -> None:
+) -> bool:
+    stream_usage_recorded = False
     await _apply_stream_metadata_event_side_effects(sess, turn_context, runtime_state)
     metadata_events = tuple(getattr(runtime_state, "metadata_events", ()) or ())
 
@@ -3144,7 +3142,9 @@ async def _apply_stream_runtime_session_side_effects(
         recorder = getattr(sess, "record_token_usage_info", None)
         if callable(recorder) and token_usage is not None:
             await _maybe_await(recorder(turn_context, token_usage))
+            stream_usage_recorded = True
         runtime_state.token_usage_to_record = None
+    return stream_usage_recorded
 
 
 async def _apply_stream_metadata_event_side_effects(
@@ -3319,33 +3319,6 @@ def _last_agent_message_from_sampling(
             if value is not None:
                 return value
     return get_last_assistant_message_from_turn(tuple(response_items)) if response_items else None
-
-
-def _can_complete_after_goal_update_outputs(
-    tool_response_items: Sequence[ResponseItem],
-    response_items: Sequence[ResponseItem],
-    runtime_state: SamplingRuntimeEventApplicationState,
-    apply_plans: Sequence[Any],
-    stream_events: Sequence[Any],
-) -> bool:
-    if not tool_response_items:
-        return False
-    goal_call_ids = _goal_update_call_ids(response_items)
-    if not goal_call_ids:
-        return False
-    for item in tool_response_items:
-        call_id = _response_item_call_id(item)
-        if call_id not in goal_call_ids:
-            return False
-    return (
-        _last_agent_message_from_sampling(
-            runtime_state,
-            response_items,
-            apply_plans,
-            stream_events,
-        )
-        is not None
-    )
 
 
 def _count_goal_update_outputs(
@@ -4139,6 +4112,25 @@ async def _send_terminal_error_event(sess: Any, turn_context: Any, error: CodexE
 
 async def _emit_turn_started_lifecycle(sess: Any, turn_context: Any) -> None:
     await _mark_turn_timing_started(sess, turn_context)
+    token_usage_reader = getattr(sess, "total_token_usage", None)
+    token_usage = await _maybe_await(token_usage_reader()) if callable(token_usage_reader) else None
+    if not isinstance(token_usage, TokenUsage):
+        token_usage = TokenUsage()
+    goal_runtime_apply = getattr(sess, "goal_runtime_apply", None)
+    if callable(goal_runtime_apply):
+        try:
+            await _maybe_await(
+                goal_runtime_apply(
+                    {
+                        "type": "turn_started",
+                        "turn_context": turn_context,
+                        "token_usage": token_usage,
+                    }
+                )
+            )
+        except Exception:
+            # Rust logs and continues when goal state cannot be opened at turn start.
+            pass
     sender = getattr(sess, "send_event", None)
     if callable(sender):
         await _maybe_await(
@@ -4620,7 +4612,13 @@ def _stop_outcome_field(outcome: Any, name: str, default: Any = None) -> Any:
     return getattr(outcome, name, default)
 
 
-async def _record_sampling_token_usage(sess: Any, turn_context: Any, raw_result: Any) -> None:
+async def _record_sampling_token_usage(
+    sess: Any,
+    turn_context: Any,
+    raw_result: Any,
+    *,
+    stream_usage_recorded: bool = False,
+) -> None:
     stream_events = _stream_events_from_sampling_result(raw_result)
     await _apply_sampling_metadata(
         sess,
@@ -4636,6 +4634,8 @@ async def _record_sampling_token_usage(sess: Any, turn_context: Any, raw_result:
         for snapshot in _rate_limits_from_sampling_result(raw_result):
             await _maybe_await(rate_limit_recorder(snapshot))
     usage = _token_usage_from_sampling_result(raw_result)
+    if usage is None and not stream_usage_recorded:
+        usage = _last_completed_stream_token_usage(stream_events)
     if usage is None:
         return
     recorder = getattr(sess, "record_token_usage_info", None)
@@ -4644,6 +4644,16 @@ async def _record_sampling_token_usage(sess: Any, turn_context: Any, raw_result:
     sender = getattr(sess, "send_token_count_event", None)
     if callable(sender):
         await _maybe_await(sender(turn_context))
+
+
+def _last_completed_stream_token_usage(stream_events: Sequence[Any]) -> TokenUsage | None:
+    for event in reversed(tuple(stream_events)):
+        if not isinstance(event, Mapping):
+            continue
+        if not _is_completed_sampling_stream_event_type(event.get("type")):
+            continue
+        return _coerce_stream_token_usage(_sampling_stream_completed_token_usage(event))
+    return None
 
 
 async def _apply_sampling_metadata(
@@ -4735,9 +4745,17 @@ def _token_usage_from_sampling_result(raw_result: Any) -> TokenUsage | None:
     output_details = _mapping_field(usage, "output_tokens_details", "outputTokensDetails")
     token_usage = TokenUsage(
         input_tokens=_int_field(usage, "input_tokens", "inputTokens"),
-        cached_input_tokens=_int_field(input_details, "cached_tokens", "cachedTokens"),
+        cached_input_tokens=(
+            _int_field(input_details, "cached_tokens", "cachedTokens")
+            if input_details
+            else _int_field(usage, "cached_input_tokens", "cachedInputTokens")
+        ),
         output_tokens=_int_field(usage, "output_tokens", "outputTokens"),
-        reasoning_output_tokens=_int_field(output_details, "reasoning_tokens", "reasoningTokens"),
+        reasoning_output_tokens=(
+            _int_field(output_details, "reasoning_tokens", "reasoningTokens")
+            if output_details
+            else _int_field(usage, "reasoning_output_tokens", "reasoningOutputTokens")
+        ),
         total_tokens=_int_field(usage, "total_tokens", "totalTokens"),
     )
     if token_usage.total_tokens == 0:

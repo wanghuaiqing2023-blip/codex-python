@@ -6,13 +6,13 @@ Python port of Rust ``codex-tui::bottom_pane::custom_prompt_view``.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any, Callable, List, Optional, Tuple
 
 from .._porting import RustTuiModule
-from .bottom_pane_view import BottomPaneViewDefaults, ViewCompletion
+from .bottom_pane_view import BottomPaneViewDefaults, CancellationEvent, ViewCompletion
 from .popup_consts import standard_popup_hint_line
 from .selection_popup_common import TerminalPopupLine
+from .textarea import TextArea, TextAreaState
 
 RUST_MODULE = RustTuiModule(
     crate="codex-tui",
@@ -22,11 +22,7 @@ RUST_MODULE = RustTuiModule(
 )
 
 PromptSubmitted = Callable[[str], None]
-GUTTER = "▎"
-
-
-class CancellationEvent(Enum):
-    HANDLED = "Handled"
+GUTTER = "▌ "
 
 
 @dataclass(frozen=True)
@@ -36,76 +32,13 @@ class DisplayLine:
 
 
 @dataclass
-class SimpleTextArea:
-    text_value: str = ""
-    cursor: int = 0
-
-    @classmethod
-    def new(cls) -> "SimpleTextArea":
-        return cls()
-
-    def set_text_clearing_elements(self, text: str) -> None:
-        self.text_value = str(text)
-        self.cursor = min(self.cursor, len(self.text_value))
-
-    def set_cursor(self, cursor: int) -> None:
-        self.cursor = max(0, min(int(cursor), len(self.text_value)))
-
-    def text(self) -> str:
-        return self.text_value
-
-    def insert_str(self, text: str) -> None:
-        text = str(text)
-        self.text_value = self.text_value[: self.cursor] + text + self.text_value[self.cursor :]
-        self.cursor += len(text)
-
-    def input(self, key_event: Any) -> None:
-        key = _key_name(key_event)
-        if key == "enter":
-            self.insert_str("\n")
-        elif key == "backspace":
-            if self.cursor > 0:
-                self.text_value = self.text_value[: self.cursor - 1] + self.text_value[self.cursor :]
-                self.cursor -= 1
-        elif len(key) == 1:
-            self.insert_str(key)
-
-    def desired_height(self, width: int) -> int:
-        width = max(1, int(width))
-        if self.text_value == "":
-            return 1
-        total = 0
-        for line in self.text_value.split("\n"):
-            total += max(1, (len(line) + width - 1) // width)
-        return total
-
-    def cursor_pos_with_rect(self, x: int, y: int, width: int, height: int) -> Optional[Tuple[int, int]]:
-        if width <= 0 or height <= 0:
-            return None
-        before = self.text_value[: self.cursor]
-        row = 0
-        col = 0
-        for ch in before:
-            if ch == "\n":
-                row += 1
-                col = 0
-            else:
-                col += 1
-                if col >= width:
-                    row += 1
-                    col = 0
-        if row >= height:
-            row = height - 1
-        return (x + col, y + row)
-
-
-@dataclass
 class CustomPromptView(BottomPaneViewDefaults):
     title: str
     placeholder: str
     context_label: Optional[str]
     on_submit: PromptSubmitted
-    textarea: SimpleTextArea = field(default_factory=SimpleTextArea.new)
+    textarea: TextArea = field(default_factory=TextArea.new)
+    textarea_state: TextAreaState = field(default_factory=TextAreaState)
     completion_value: Optional[ViewCompletion] = None
 
     @classmethod
@@ -117,7 +50,7 @@ class CustomPromptView(BottomPaneViewDefaults):
         context_label: Optional[str],
         on_submit: PromptSubmitted,
     ) -> "CustomPromptView":
-        textarea = SimpleTextArea.new()
+        textarea = TextArea.new()
         if initial_text:
             textarea.set_text_clearing_elements(initial_text)
             textarea.set_cursor(len(initial_text))
@@ -178,13 +111,22 @@ class CustomPromptView(BottomPaneViewDefaults):
         lines: List[DisplayLine] = [DisplayLine(f"{gutter()}{self.title}", "title")]
         if self.context_label is not None:
             lines.append(DisplayLine(f"{gutter()}{self.context_label}", "context"))
-        lines.append(DisplayLine(gutter(), "gutter"))
-        text = self.textarea.text()
-        if text:
-            for line in text.split("\n"):
-                lines.append(DisplayLine(line))
-        else:
-            lines.append(DisplayLine(self.placeholder, "placeholder"))
+
+        input_height = self.input_height(width)
+        text_area_height = max(0, input_height - 1)
+        lines.extend(DisplayLine(gutter(), "gutter") for _ in range(input_height))
+        if text_area_height:
+            ranges = self.textarea.wrapped_lines(max(1, width - 2))
+            scroll = self.textarea.effective_scroll(text_area_height, ranges, self.textarea_state.scroll)
+            self.textarea_state.scroll = scroll
+            visible_ranges = ranges[scroll : scroll + text_area_height]
+            input_text_start = len(lines) - input_height + 1
+            if self.textarea.text():
+                for offset, text_range in enumerate(visible_ranges):
+                    text = self.textarea.text()[text_range.start : text_range.stop]
+                    lines[input_text_start + offset] = DisplayLine(f"{gutter()}{text}")
+            else:
+                lines[input_text_start] = DisplayLine(f"{gutter()}{self.placeholder}", "placeholder")
         lines.append(DisplayLine(""))
         lines.append(DisplayLine(standard_popup_hint_line(), "hint"))
         return lines[:height]
@@ -201,11 +143,14 @@ class CustomPromptView(BottomPaneViewDefaults):
             return None
         extra_offset = 1 if self.context_label is not None else 0
         top_line_count = 1 + extra_offset
-        return self.textarea.cursor_pos_with_rect(
-            x + 2,
-            y + top_line_count + 1,
-            width - 2,
-            text_area_height,
+        return self.textarea.cursor_pos_with_state(
+            {
+                "x": x + 2,
+                "y": y + top_line_count + 1,
+                "width": width - 2,
+                "height": text_area_height,
+            },
+            self.textarea_state,
         )
 
 
@@ -247,18 +192,27 @@ def gutter() -> str:
 
 def _key_name(key_event: Any) -> str:
     if isinstance(key_event, str):
-        return key_event.lower()
+        return key_event if len(key_event) == 1 else key_event.lower()
     for attr in ("key", "code", "name"):
         value = getattr(key_event, attr, None)
         if value is not None:
-            return str(value).lower()
-    return str(key_event).lower()
+            text = str(value)
+            return text if len(text) == 1 else text.lower()
+    text = str(key_event)
+    return text if len(text) == 1 else text.lower()
 
 
 def _has_modifier(key_event: Any) -> bool:
     if isinstance(key_event, str):
         return False
     modifiers = getattr(key_event, "modifiers", None)
+    if modifiers is None or modifiers is False or modifiers == 0:
+        return False
+    if isinstance(modifiers, str):
+        return modifiers.strip().lower() not in {"", "none", "keymodifiers.none"}
+    name = getattr(modifiers, "name", None)
+    if isinstance(name, str) and name.lower() == "none":
+        return False
     return bool(modifiers)
 
 
@@ -305,7 +259,8 @@ __all__ = [
     "GUTTER",
     "PromptSubmitted",
     "RUST_MODULE",
-    "SimpleTextArea",
+    "TextArea",
+    "TextAreaState",
     "ViewCompletion",
     "completion",
     "cursor_pos",

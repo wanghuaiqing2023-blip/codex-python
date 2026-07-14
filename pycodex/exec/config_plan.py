@@ -50,6 +50,7 @@ from pycodex.protocol import (
     AskForApproval,
     GranularApprovalConfig,
     PermissionProfile,
+    Personality,
     SandboxMode,
     WindowsSandboxLevel,
 )
@@ -162,6 +163,14 @@ class ExecConfigBootstrapPlan:
     cli_overrides: tuple[ConfigOverride, ...] = ()
     harness_overrides: ExecHarnessOverrides = ExecHarnessOverrides()
     user_instructions: str | None = None
+    developer_instructions: str | None = None
+    base_instructions: str | None = None
+    personality: Personality | None = None
+    model_context_window: int | None = None
+    model_auto_compact_token_limit: int | None = None
+    tool_output_token_limit: int | None = None
+    model_supports_reasoning_summaries: bool | None = None
+    model_catalog: Mapping[str, JsonValue] | None = None
     instruction_sources: tuple[Path, ...] = ()
     startup_warnings: tuple[str, ...] = ()
     mcp_servers: Mapping[str, JsonValue] | None = None
@@ -184,6 +193,8 @@ class ExecConfigBootstrapPlan:
         object.__setattr__(self, "cli_overrides", tuple(self.cli_overrides))
         object.__setattr__(self, "instruction_sources", tuple(Path(path) for path in self.instruction_sources))
         object.__setattr__(self, "startup_warnings", tuple(str(warning) for warning in self.startup_warnings))
+        if self.personality is not None and not isinstance(self.personality, Personality):
+            object.__setattr__(self, "personality", Personality.parse(str(self.personality)))
         if self.tui_status_line is not None:
             object.__setattr__(self, "tui_status_line", tuple(str(item) for item in self.tui_status_line))
         if self.tui_terminal_title is not None:
@@ -214,6 +225,13 @@ class ExecConfigBootstrapPlan:
             ],
             "harnessOverrides": self.harness_overrides.to_mapping(),
             "userInstructions": self.user_instructions,
+            "developerInstructions": self.developer_instructions,
+            "baseInstructions": self.base_instructions,
+            "personality": self.personality.value if self.personality is not None else None,
+            "modelContextWindow": self.model_context_window,
+            "modelAutoCompactTokenLimit": self.model_auto_compact_token_limit,
+            "toolOutputTokenLimit": self.tool_output_token_limit,
+            "modelSupportsReasoningSummaries": self.model_supports_reasoning_summaries,
             "instructionSources": [str(path) for path in self.instruction_sources],
             "startupWarnings": list(self.startup_warnings),
             "mcpServers": copy.deepcopy(dict(self.mcp_servers or {})),
@@ -1622,6 +1640,22 @@ def build_exec_config_bootstrap_plan(
             windows_sandbox_level=windows_sandbox_level,
         ),
         user_instructions=user_instructions,
+        developer_instructions=_optional_config_str(effective_config, "developer_instructions"),
+        base_instructions=_optional_config_str(effective_config, "base_instructions"),
+        personality=_optional_personality(effective_config.get("personality")),
+        model_context_window=_optional_positive_int(effective_config.get("model_context_window")),
+        model_auto_compact_token_limit=_optional_positive_int(
+            effective_config.get("model_auto_compact_token_limit")
+        ),
+        tool_output_token_limit=_optional_positive_int(effective_config.get("tool_output_token_limit")),
+        model_supports_reasoning_summaries=_optional_bool(
+            effective_config.get("model_supports_reasoning_summaries")
+        ),
+        model_catalog=(
+            effective_config.get("model_catalog")
+            if isinstance(effective_config.get("model_catalog"), Mapping)
+            else None
+        ),
         instruction_sources=instruction_sources,
         startup_warnings=tuple(warnings),
         mcp_servers=effective_config.get("mcp_servers") if isinstance(effective_config.get("mcp_servers"), Mapping) else {},
@@ -1650,6 +1684,9 @@ def exec_session_config_from_bootstrap_plan(plan: ExecConfigBootstrapPlan) -> Ex
         cwd=cwd,
         workspace_roots=(cwd, *harness.additional_writable_roots),
         user_instructions=plan.user_instructions,
+        developer_instructions=plan.developer_instructions,
+        base_instructions=plan.base_instructions,
+        personality=plan.personality,
         instruction_sources=plan.instruction_sources,
         startup_warnings=plan.startup_warnings,
         mcp_servers=plan.mcp_servers,
@@ -1662,6 +1699,11 @@ def exec_session_config_from_bootstrap_plan(plan: ExecConfigBootstrapPlan) -> Ex
         ephemeral=bool(harness.ephemeral),
         reasoning_effort=harness.model_reasoning_effort,
         model_reasoning_summary=harness.model_reasoning_summary,
+        model_context_window=plan.model_context_window,
+        model_auto_compact_token_limit=plan.model_auto_compact_token_limit,
+        tool_output_token_limit=plan.tool_output_token_limit,
+        model_supports_reasoning_summaries=plan.model_supports_reasoning_summaries,
+        model_catalog=plan.model_catalog,
         service_tier=harness.service_tier,
         hide_agent_reasoning=bool(harness.hide_agent_reasoning),
         show_raw_agent_reasoning=bool(harness.show_raw_agent_reasoning),
@@ -1700,6 +1742,25 @@ def _optional_config_str(config_toml: Mapping[str, JsonValue], key: str) -> str 
     if isinstance(value, str) and value.strip():
         return value
     return None
+
+
+def _optional_positive_int(value: JsonValue) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
+
+
+def _optional_bool(value: JsonValue) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
+def _optional_personality(value: JsonValue) -> Personality | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return Personality.parse(value)
+    except ValueError:
+        return None
 
 
 def _tui_config_str_tuple(config_toml: Mapping[str, JsonValue], key: str) -> tuple[str, ...] | None:
@@ -2031,6 +2092,9 @@ def _exec_session_config_to_mapping(config: ExecSessionConfig) -> dict[str, Json
         "cwd": str(config.cwd),
         "workspaceRoots": [str(root) for root in config.workspace_roots],
         "userInstructions": config.user_instructions,
+        "developerInstructions": config.developer_instructions,
+        "baseInstructions": config.base_instructions,
+        "personality": config.personality.value if config.personality is not None else None,
         "instructionSources": [str(path) for path in config.instruction_sources],
         "startupWarnings": list(config.startup_warnings),
         "approvalPolicy": _enum_value(config.approval_policy),
@@ -2038,6 +2102,11 @@ def _exec_session_config_to_mapping(config: ExecSessionConfig) -> dict[str, Json
         "windowsSandboxLevel": config.windows_sandbox_level.value,
         "ephemeral": config.ephemeral,
         "reasoningEffort": config.reasoning_effort,
+        "modelContextWindow": config.model_context_window,
+        "modelAutoCompactTokenLimit": config.model_auto_compact_token_limit,
+        "toolOutputTokenLimit": config.tool_output_token_limit,
+        "modelSupportsReasoningSummaries": config.model_supports_reasoning_summaries,
+        "modelCatalog": config.model_catalog.to_mapping() if config.model_catalog is not None else None,
         "serviceTier": config.service_tier,
         "hideAgentReasoning": config.hide_agent_reasoning,
         "showRawAgentReasoning": config.show_raw_agent_reasoning,

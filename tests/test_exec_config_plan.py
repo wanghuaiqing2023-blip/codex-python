@@ -123,6 +123,34 @@ class ExecConfigPlanTests(unittest.TestCase):
         self.assertEqual(session_config.mcp_servers["beta"]["command"], "cmd")
         self.assertIn("mcpServers", exec_session_config_mapping(session_config))
 
+    def test_exec_session_projects_rust_model_and_instruction_config(self):
+        # Rust source: codex-core/src/config/mod.rs::to_models_manager_config
+        # and codex-core/src/session/mod.rs::CodexSession::new.
+        cli = parse_exec_args(["prompt"])
+        config_toml = {
+            "developer_instructions": "configured developer instructions",
+            "base_instructions": "configured base instructions",
+            "personality": "pragmatic",
+            "model_context_window": 131_072,
+            "model_auto_compact_token_limit": 100_000,
+            "tool_output_token_limit": 12_000,
+            "model_supports_reasoning_summaries": True,
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            plan = build_exec_config_bootstrap_plan(cli, config_toml=config_toml, current_dir=tmpdir)
+
+        session = exec_session_config_from_bootstrap_plan(plan)
+        manager_config = session.to_models_manager_config()
+        self.assertEqual(session.developer_instructions, "configured developer instructions")
+        self.assertEqual(session.base_instructions, "configured base instructions")
+        self.assertEqual(session.personality.value, "pragmatic")
+        self.assertEqual(manager_config.model_context_window, 131_072)
+        self.assertEqual(manager_config.model_auto_compact_token_limit, 100_000)
+        self.assertEqual(manager_config.tool_output_token_limit, 12_000)
+        self.assertEqual(manager_config.base_instructions, "configured base instructions")
+        self.assertTrue(manager_config.model_supports_reasoning_summaries)
+
     def test_harness_overrides_mapping_matches_upstream_config_overrides_slice(self):
         cli = parse_exec_args(
             [

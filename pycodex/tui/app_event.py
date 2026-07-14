@@ -227,6 +227,36 @@ class AppEvent:
         return cls.of("RefreshRateLimits", origin=origin)
 
     @classmethod
+    def open_thread_goal_menu(cls, thread_id: Any) -> "AppEvent":
+        return cls.of("OpenThreadGoalMenu", thread_id=thread_id)
+
+    @classmethod
+    def open_thread_goal_editor(cls, thread_id: Any = None) -> "AppEvent":
+        return cls.of("OpenThreadGoalEditor", thread_id=thread_id)
+
+    @classmethod
+    def set_thread_goal_objective(
+        cls,
+        thread_id: Any,
+        objective: str,
+        mode: ThreadGoalSetMode,
+    ) -> "AppEvent":
+        return cls.of(
+            "SetThreadGoalObjective",
+            thread_id=thread_id,
+            objective=str(objective),
+            mode=mode,
+        )
+
+    @classmethod
+    def set_thread_goal_status(cls, thread_id: Any, status: Any) -> "AppEvent":
+        return cls.of("SetThreadGoalStatus", thread_id=thread_id, status=status)
+
+    @classmethod
+    def clear_thread_goal(cls, thread_id: Any) -> "AppEvent":
+        return cls.of("ClearThreadGoal", thread_id=thread_id)
+
+    @classmethod
     def rate_limits_loaded(cls, origin: RateLimitRefreshOrigin, result: Any) -> "AppEvent":
         return cls.of("RateLimitsLoaded", origin=origin, result=result)
 

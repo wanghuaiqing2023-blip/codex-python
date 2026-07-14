@@ -155,6 +155,23 @@ def test_terminal_bottom_pane_frame_composes_owner_projections() -> None:
     assert frame.cursor_column == len(terminal_composer_line_text("/m")) + 1
 
 
+def test_terminal_bottom_pane_frame_right_aligns_goal_footer_indicator() -> None:
+    frame = terminal_bottom_pane_frame(
+        os.terminal_size((48, 12)),
+        TerminalBottomPaneState(
+            draft="",
+            footer_text="gpt-test low · ~\\repo",
+            footer_right_text="Goal achieved (1m)",
+        ),
+    )
+
+    footer = frame.writes[-1]
+    assert footer.row == 12
+    assert footer.text.startswith("gpt-test low · ~\\repo")
+    assert footer.text.endswith("Goal achieved (1m)")
+    assert len(footer.text) == 47
+
+
 def test_terminal_bottom_pane_frame_projects_popup_rows_to_buffer() -> None:
     # Rust owner: codex-tui::chatwidget::rendering owns the side-effect-free
     # bottom-pane frame and buffer content projection. Terminal adapters should

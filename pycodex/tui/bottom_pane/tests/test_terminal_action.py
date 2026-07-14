@@ -172,6 +172,7 @@ def test_terminal_action_builds_surface_requests_from_bottom_pane_context() -> N
         popup_lines=popup,
         popup_height=1,
         popup_is_active_view=False,
+        popup_cursor=(4, 0),
         cursor_visible=False,
     )
 
@@ -206,6 +207,7 @@ def test_terminal_action_builds_surface_requests_from_bottom_pane_context() -> N
         draft="/m",
         footer_text="gpt-test high",
         popup_lines=popup,
+        popup_cursor=(4, 0),
         live_status=active,
         cursor_visible=False,
         clear_popup_height=3,

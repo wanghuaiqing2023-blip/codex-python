@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from .._porting import RustTuiModule
+from ..bottom_pane.custom_prompt_view import CustomPromptView
 from ..goal_display import ThreadGoalStatus, format_goal_elapsed_seconds
 from ..status.helpers import format_tokens_compact
 
@@ -41,54 +42,44 @@ def goal_summary_lines(goal: Any) -> list[str]:
 def goal_status_label(status: ThreadGoalStatus | str | Any) -> str:
     normalized = _normalize_status(status)
     return {
-        ThreadGoalStatus.Active: "active",
-        ThreadGoalStatus.Paused: "paused",
-        ThreadGoalStatus.Blocked: "blocked",
-        ThreadGoalStatus.UsageLimited: "usage limited",
-        ThreadGoalStatus.BudgetLimited: "limited by budget",
-        ThreadGoalStatus.Complete: "complete",
+        ThreadGoalStatus.ACTIVE: "active",
+        ThreadGoalStatus.PAUSED: "paused",
+        ThreadGoalStatus.BLOCKED: "blocked",
+        ThreadGoalStatus.USAGE_LIMITED: "usage limited",
+        ThreadGoalStatus.BUDGET_LIMITED: "limited by budget",
+        ThreadGoalStatus.COMPLETE: "complete",
     }[normalized]
 
 
 def edited_goal_status(status: ThreadGoalStatus | str | Any) -> ThreadGoalStatus:
     normalized = _normalize_status(status)
-    if normalized in {ThreadGoalStatus.BudgetLimited, ThreadGoalStatus.Complete}:
-        return ThreadGoalStatus.Active
+    if normalized in {ThreadGoalStatus.BUDGET_LIMITED, ThreadGoalStatus.COMPLETE}:
+        return ThreadGoalStatus.ACTIVE
     return normalized
 
 
+def goal_edit_prompt(goal: Any, on_submit: Any) -> CustomPromptView:
+    """Build Rust ``ChatWidget::show_goal_edit_prompt``'s active view."""
+
+    return CustomPromptView.new(
+        "Edit goal",
+        "Type a goal objective and press Enter",
+        str(_get(goal, "objective", "")),
+        None,
+        on_submit,
+    )
+
+
 def _command_hint(status: ThreadGoalStatus) -> str:
-    if status is ThreadGoalStatus.Active:
+    if status is ThreadGoalStatus.ACTIVE:
         return "Commands: /goal edit, /goal pause, /goal clear"
-    if status in {ThreadGoalStatus.Paused, ThreadGoalStatus.Blocked, ThreadGoalStatus.UsageLimited}:
+    if status in {ThreadGoalStatus.PAUSED, ThreadGoalStatus.BLOCKED, ThreadGoalStatus.USAGE_LIMITED}:
         return "Commands: /goal edit, /goal resume, /goal clear"
     return "Commands: /goal edit, /goal clear"
 
 
 def _normalize_status(status: ThreadGoalStatus | str | Any) -> ThreadGoalStatus:
-    if isinstance(status, ThreadGoalStatus):
-        return status
-    text = str(getattr(status, "value", status))
-    aliases = {
-        "active": ThreadGoalStatus.Active,
-        "Active": ThreadGoalStatus.Active,
-        "paused": ThreadGoalStatus.Paused,
-        "Paused": ThreadGoalStatus.Paused,
-        "blocked": ThreadGoalStatus.Blocked,
-        "Blocked": ThreadGoalStatus.Blocked,
-        "usage_limited": ThreadGoalStatus.UsageLimited,
-        "usageLimited": ThreadGoalStatus.UsageLimited,
-        "UsageLimited": ThreadGoalStatus.UsageLimited,
-        "budget_limited": ThreadGoalStatus.BudgetLimited,
-        "budgetLimited": ThreadGoalStatus.BudgetLimited,
-        "BudgetLimited": ThreadGoalStatus.BudgetLimited,
-        "complete": ThreadGoalStatus.Complete,
-        "Complete": ThreadGoalStatus.Complete,
-    }
-    try:
-        return aliases[text]
-    except KeyError as exc:
-        raise ValueError(f"unknown ThreadGoalStatus: {status!r}") from exc
+    return ThreadGoalStatus.parse(status)
 
 
 def _get(obj: Any, name: str, default: Any = None) -> Any:
@@ -100,6 +91,7 @@ def _get(obj: Any, name: str, default: Any = None) -> Any:
 __all__ = [
     "RUST_MODULE",
     "edited_goal_status",
+    "goal_edit_prompt",
     "goal_status_label",
     "goal_summary_lines",
 ]

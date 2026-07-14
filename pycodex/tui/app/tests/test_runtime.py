@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from pycodex.app_server_protocol.account import GetAccountRateLimitsResponse, RateLimitSnapshot, RateLimitWindow
+from pycodex.app_server_protocol import ThreadGoalStatus as AppThreadGoalStatus
 from pycodex.core.session.turn.runtime import UserTurnSamplingResult
 from pycodex.core.tools.sandboxing import ExecApprovalRequirement
 from pycodex.exec.local_runtime import LocalHttpShellInvocation, _in_memory_exec_session
@@ -29,7 +30,9 @@ from pycodex.protocol import (
     NetworkPermissions,
     NetworkApprovalContext,
     NetworkApprovalProtocol,
+    ResponseInputItem,
     ResponseItem,
+    ThreadId,
     ReviewDecision,
     ReviewTarget,
     TurnItem,
@@ -56,6 +59,7 @@ from pycodex.tui.app.runtime import (
     _rate_limits_auth_is_fedramp,
     _rate_limits_backend_auth_provider,
     _rate_limits_backend_base_url,
+    _goal_continuation_app_command,
     _server_notifications_from_session_event,
     app_command_for_prompt,
     exec_run_plan_for_app_command,
@@ -67,7 +71,7 @@ from pycodex.tui.app.pending_interactive_replay import ServerRequest as ReplaySe
 from pycodex.login.auth.storage import AuthDotJson
 from pycodex.tui.app.agent_navigation import AgentNavigationDirection
 from pycodex.tui.app_command import AppCommand
-from pycodex.tui.app_event import AppEvent, PermissionProfileSelection, RateLimitRefreshOrigin
+from pycodex.tui.app_event import AppEvent, PermissionProfileSelection, RateLimitRefreshOrigin, ThreadGoalSetMode
 from pycodex.tui.bottom_pane.footer import run_terminal_idle_footer_text_from_runtime
 from pycodex.tui.bottom_pane.approval_overlay import ApprovalViewProjector
 from pycodex.tui.bottom_pane.request_user_input import RequestUserInputViewProjector
@@ -396,6 +400,195 @@ def test_core_active_thread_carries_model_history_between_user_turns(monkeypatch
     second_turn_history_text = "\n".join(_response_item_text(item) for item in captured_history[1])
     assert "你好，我是strongswan" in second_turn_history_text
     assert "你好，strongswan" in second_turn_history_text
+
+
+def test_goal_continuation_uses_hidden_goal_context_and_keeps_history(monkeypatch) -> None:
+    # Rust source: codex-core/src/goals.rs::maybe_start_goal_continuation_turn.
+    captured_history: list[tuple[ResponseItem, ...]] = []
+
+    async def fake_core_sampling(session_config, plan, model_client, provider, model_info, **kwargs):
+        captured_history.append(tuple(kwargs.get("history_items") or ()))
+        if len(captured_history) == 1:
+            return UserTurnSamplingResult(
+                request_plan=None,
+                response_items=(
+                    ResponseItem.function_call("exec_command", '{"cmd":"where cl"}', "call-compiler"),
+                    ResponseItem.message("assistant", (ContentItem.output_text("goal progress saved"),)),
+                ),
+                tool_response_items=(
+                    ResponseItem.from_response_input_item(
+                        ResponseInputItem.function_call_output(
+                            "call-compiler",
+                            FunctionCallOutputPayload.from_value("compiler discovered"),
+                        )
+                    ),
+                ),
+                turn_status="completed",
+            )
+        return UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(
+                ResponseItem.message("assistant", (ContentItem.output_text("follow-up"),)),
+            ),
+            turn_status="completed",
+        )
+
+    monkeypatch.setattr("pycodex.tui.app.runtime.run_exec_user_turn_core_sampling_websocket_preferred", fake_core_sampling)
+    runtime = CoreExecActiveThreadRuntime(
+        session_config=ExecSessionConfig(
+            model="gpt-test",
+            model_provider_id="openai",
+            cwd=Path("C:/repo"),
+            approval_policy=AskForApproval.NEVER,
+            permission_profile=PermissionProfile.read_only(),
+        ),
+        model_client=SimpleNamespace(),
+        provider=SimpleNamespace(),
+        model_info=SimpleNamespace(slug="gpt-test"),
+    )
+    goal_op = _goal_continuation_app_command("Continue compiling.", cwd=Path("C:/repo"))
+
+    goal_plan = exec_run_plan_for_app_command(goal_op)
+    goal_text = goal_plan.initial_operation.items[0].text
+    assert goal_op.payload["hidden_goal_context"] is True
+    assert goal_text == "<goal_context>\nContinue compiling.\n</goal_context>"
+
+    _drain_turn(runtime.submit_thread_op("primary", goal_op))
+    _drain_turn(runtime.submit_thread_op("primary", app_command_for_prompt("What happened?", cwd=Path("C:/repo"))))
+
+    second_turn_history_text = "\n".join(_response_item_text(item) for item in captured_history[1])
+    assert "<goal_context>" in second_turn_history_text
+    assert "Continue compiling." in second_turn_history_text
+    assert "goal progress saved" in second_turn_history_text
+    assert any(item.type == "function_call" and item.name == "exec_command" for item in captured_history[1])
+    assert any(
+        item.type == "function_call_output" and "compiler discovered" in str(item.output)
+        for item in captured_history[1]
+    )
+
+
+def test_thread_goal_set_routes_core_generated_continuation_through_same_session(monkeypatch, tmp_path) -> None:
+    thread_id = str(ThreadId.new())
+    model_client = SimpleNamespace(
+        state=SimpleNamespace(thread_id=thread_id, session_id=thread_id),
+    )
+    seen_core_sessions = []
+
+    async def fake_core_sampling(session_config, plan, model_client, provider, model_info, **kwargs):
+        seen_core_sessions.append(kwargs.get("core_session"))
+        return UserTurnSamplingResult(
+            request_plan=None,
+            response_items=(ResponseItem.message("assistant", (ContentItem.output_text("continued"),)),),
+            turn_status="completed",
+        )
+
+    monkeypatch.setattr("pycodex.tui.app.runtime.run_exec_user_turn_core_sampling_websocket_preferred", fake_core_sampling)
+    runtime = CoreExecActiveThreadRuntime(
+        session_config=ExecSessionConfig(
+            model="gpt-test",
+            model_provider_id="openai",
+            cwd=tmp_path,
+            approval_policy=AskForApproval.NEVER,
+            permission_profile=PermissionProfile.workspace_write((tmp_path,)),
+        ),
+        model_client=model_client,
+        provider=SimpleNamespace(id="openai"),
+        model_info=SimpleNamespace(slug="gpt-test"),
+        codex_home=tmp_path,
+    )
+    try:
+        goal = runtime.thread_goal_set(thread_id, objective="compile locally", status="active")
+        assert goal.status is AppThreadGoalStatus.ACTIVE
+        operation = runtime.goal_continuation_op(goal)
+        core_session = runtime._core_session
+
+        assert operation is not None
+        assert operation.payload["hidden_goal_context"] is True
+        assert "<goal_context>" in user_turn_prompt(operation)
+        assert "compile locally" in user_turn_prompt(operation)
+
+        _drain_turn(runtime.submit_thread_op(thread_id, operation))
+
+        assert seen_core_sessions == [core_session]
+    finally:
+        runtime.close()
+
+
+def test_tui_goal_set_accepts_real_state_runtime_protocol_response(tmp_path) -> None:
+    # Rust module collaboration:
+    # codex-state -> app-server protocol conversion -> codex-tui goal display.
+    thread_id = str(ThreadId.new())
+    runtime = CoreExecActiveThreadRuntime(
+        session_config=ExecSessionConfig(
+            model="gpt-test",
+            model_provider_id="openai",
+            cwd=tmp_path,
+            approval_policy=AskForApproval.NEVER,
+            permission_profile=PermissionProfile.workspace_write((tmp_path,)),
+        ),
+        model_client=SimpleNamespace(
+            state=SimpleNamespace(thread_id=thread_id, session_id=thread_id),
+        ),
+        provider=SimpleNamespace(id="openai"),
+        model_info=SimpleNamespace(slug="gpt-test"),
+        codex_home=tmp_path,
+    )
+    app = TuiAppRuntime(runtime, thread_id=thread_id)
+    continuations: list[tuple[str, AppCommand]] = []
+    app.bind_internal_operation_sink(lambda summary, op: continuations.append((summary, op)))
+    try:
+        plan = app.handle_app_event(
+            AppEvent.set_thread_goal_objective(
+                thread_id,
+                "compile the sample",
+                ThreadGoalSetMode.confirm_if_exists(),
+            )
+        )
+
+        stored = runtime.thread_goal_get(thread_id)
+        assert plan.action == "set_thread_goal_objective"
+        assert stored.status is AppThreadGoalStatus.ACTIVE
+        assert app.chat_widget.info_messages[-1][0] == "Goal active"
+        assert len(continuations) == 1
+    finally:
+        runtime.close()
+
+
+def test_thread_goal_status_update_preserves_unmentioned_token_budget(tmp_path) -> None:
+    # Rust AppServerSession::thread_goal_set uses Option<Option<u64>>: None
+    # means unchanged, while Some(None) explicitly clears the budget.
+    thread_id = str(ThreadId.new())
+    runtime = CoreExecActiveThreadRuntime(
+        session_config=ExecSessionConfig(
+            model="gpt-test",
+            model_provider_id="openai",
+            cwd=tmp_path,
+            approval_policy=AskForApproval.NEVER,
+            permission_profile=PermissionProfile.workspace_write((tmp_path,)),
+        ),
+        model_client=SimpleNamespace(
+            state=SimpleNamespace(thread_id=thread_id, session_id=thread_id),
+        ),
+        provider=SimpleNamespace(id="openai"),
+        model_info=SimpleNamespace(slug="gpt-test"),
+        codex_home=tmp_path,
+    )
+    try:
+        created = runtime.thread_goal_set(
+            thread_id,
+            objective="ship the port",
+            status="active",
+            token_budget=80_000,
+        )
+        assert created.token_budget == 80_000
+        runtime.goal_continuation_op(created)
+
+        paused = runtime.thread_goal_set(thread_id, status="paused")
+
+        assert paused.token_budget == 80_000
+        assert runtime.thread_goal_get(thread_id).token_budget == 80_000
+    finally:
+        runtime.close()
 
 
 def test_core_active_thread_exec_approval_callback_waits_for_app_command(monkeypatch) -> None:
@@ -1556,6 +1749,90 @@ def test_core_exec_active_thread_runtime_lists_resume_threads_from_local_rollout
     assert rows[0].cwd == tmp_path
 
 
+def test_core_exec_session_lifecycle_new_resume_and_fork_change_real_thread_state(tmp_path) -> None:
+    # Fixed Rust baseline 1c7832f: slash_dispatch delegates /new, /resume and
+    # /fork to app lifecycle operations that install a real active thread.
+    saved_id = "11111111-2222-4333-8444-555555555555"
+    timestamp = "2025-01-03T10:11:12Z"
+    rollout_path = tmp_path / "sessions" / "2025" / "01" / "03" / f"rollout-2025-01-03T10-11-12Z-{saved_id}.jsonl"
+    rollout_path.parent.mkdir(parents=True)
+    user_item = ResponseItem.message("user", (ContentItem.input_text("saved prompt"),))
+    rollout_path.write_text(
+        "\n".join(
+            (
+                json.dumps(
+                    {
+                        "timestamp": timestamp,
+                        "type": "session_meta",
+                        "payload": {
+                            "id": saved_id,
+                            "forked_from_id": None,
+                            "timestamp": timestamp,
+                            "cwd": str(tmp_path),
+                            "originator": "test_originator",
+                            "cli_version": "test_version",
+                            "source": "cli",
+                            "model_provider": "openai",
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "timestamp": timestamp,
+                        "type": "response_item",
+                        "payload": user_item.to_mapping(),
+                    }
+                ),
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    model_client = SimpleNamespace(state=SimpleNamespace(thread_id="old", session_id="old"))
+    active = CoreExecActiveThreadRuntime(
+        session_config=SimpleNamespace(codex_home=tmp_path, cwd=tmp_path, ephemeral=False),
+        model_client=model_client,
+        provider=SimpleNamespace(),
+        model_info=SimpleNamespace(slug="gpt-test"),
+        codex_home=tmp_path,
+    )
+    app = TuiAppRuntime(active, thread_id="old", cwd=tmp_path)
+    sink_threads: list[str] = []
+    app.bind_session_changed_sink(lambda: sink_threads.append(str(app.routing_state.active_thread_id)))
+
+    resumed = app.resume_session_target(SimpleNamespace(thread_id=saved_id, rollout_path=rollout_path))
+    assert resumed == saved_id
+    assert model_client.state.thread_id == saved_id
+    assert active._model_history_snapshot() == (user_item,)
+    assert sink_threads[-1] == saved_id
+
+    forked = app.fork_current_session()
+    assert forked not in {"old", saved_id}
+    assert app.chat_widget.forked_from == saved_id
+    assert active._model_history_snapshot() == (user_item,)
+    assert active.rollout_path is not None and active.rollout_path.is_file()
+    assert sink_threads[-1] == forked
+
+    fresh = app.start_fresh_session()
+    assert fresh not in {"old", saved_id, forked}
+    assert active._model_history_snapshot() == ()
+    assert active.rollout_path is None
+    assert sink_threads[-1] == fresh
+
+
+def test_plan_mode_is_carried_by_the_next_terminal_user_turn() -> None:
+    runtime = ExecFunctionActiveThreadRuntime(lambda _prompt: "ok")
+    app = TuiAppRuntime(runtime, cwd=Path("C:/repo"))
+
+    mode = app.activate_plan_mode()
+    app.submit_user_turn("inspect the parser")
+
+    op = app.submitted_ops[-1]
+    assert mode.mode.value == "plan"
+    assert op.payload["collaboration_mode"] == mode
+    assert user_turn_prompt(op) == "inspect the parser"
+
+
 def test_core_exec_active_thread_runtime_message_history_metadata_lookup_and_append(tmp_path) -> None:
     # Rust-derived contract:
     # - codex-message-history::history_metadata returns the log id and line
@@ -1711,6 +1988,35 @@ def test_tui_app_runtime_update_model_event_updates_widget_and_session_config() 
     assert runtime.chat_widget.config.model == "gpt-new"
     assert active_runtime.model == "gpt-new"
     assert active_runtime.session_config.model == "gpt-new"
+
+
+def test_core_tui_model_update_resolves_fresh_model_info() -> None:
+    # Rust source: codex-core/src/session/turn_context.rs resolves model
+    # changes through ModelsManager::get_model_info before the next turn.
+    resolved = SimpleNamespace(slug="gpt-new", base_instructions="new base")
+
+    class ModelsManager:
+        async def get_model_info(self, model, _config):
+            assert model == "gpt-new"
+            return resolved
+
+    active_runtime = CoreExecActiveThreadRuntime(
+        session_config=ExecSessionConfig(
+            model="gpt-old",
+            model_provider_id="openai",
+            cwd=Path("C:/repo"),
+        ),
+        model_client=SimpleNamespace(),
+        provider=SimpleNamespace(),
+        model_info=SimpleNamespace(slug="gpt-old", base_instructions="old base"),
+    )
+    active_runtime._models_manager = ModelsManager()
+    runtime = TuiAppRuntime(active_thread_runtime=active_runtime)
+
+    runtime.update_model("gpt-new")
+
+    assert active_runtime.session_config.model == "gpt-new"
+    assert active_runtime.model_info is resolved
 
 
 def test_tui_app_runtime_update_reasoning_effort_event_updates_widget_and_session_config() -> None:
@@ -4187,3 +4493,175 @@ def test_stream_error_session_event_projects_retry_error_notification() -> None:
     assert notification.payload["turn_id"] == "turn-1"
     assert notification.payload["error"]["message"] == "Reconnecting... 2/5"
     assert notification.payload["error"]["additional_details"] == "Idle timeout waiting for SSE"
+
+
+def test_goal_edit_app_event_opens_prompt_and_preserves_status_and_budget() -> None:
+    # Rust owners:
+    # - app::event_dispatch routes OpenThreadGoalEditor.
+    # - app::thread_goal_actions reads the goal and guards current thread.
+    # - chatwidget::goal_menu emits SetThreadGoalObjective(UpdateExisting).
+    calls: list[tuple[object, ...]] = []
+    previous = SimpleNamespace(
+        objective="Keep improving",
+        status="paused",
+        token_budget=80_000,
+        tokens_used=12_500,
+        time_used_seconds=90,
+    )
+    updated = SimpleNamespace(
+        objective="Keep improving with clearer wording",
+        status="paused",
+        token_budget=80_000,
+        tokens_used=12_500,
+        time_used_seconds=90,
+    )
+
+    class GoalRuntime:
+        def thread_goal_get(self, thread_id):
+            calls.append(("get", thread_id))
+            return previous
+
+        def thread_goal_set(self, thread_id, **kwargs):
+            calls.append(("set", thread_id, kwargs))
+            return updated
+
+        def goal_continuation_op(self, goal):
+            calls.append(("continue", goal))
+            return None
+
+    app = TuiAppRuntime(GoalRuntime(), thread_id="thread-1")
+    views: list[object] = []
+    app.bind_active_view_sink(views.append)
+
+    plan = app.handle_app_event(AppEvent.open_thread_goal_editor("thread-1"))
+
+    assert plan.action == "open_thread_goal_editor"
+    assert len(views) == 1
+    view = views[0]
+    assert view.textarea.text() == "Keep improving"
+    view.handle_paste(" with clearer wording")
+    view.handle_key_event("enter")
+
+    # Rust CustomPromptView only sends to app_event_tx during Enter handling;
+    # App mutates the goal after BottomPane completes the view input pass.
+    assert view.is_complete() is True
+    assert calls == [("get", "thread-1")]
+    app.drain_app_events()
+
+    assert calls == [
+        ("get", "thread-1"),
+        (
+            "set",
+            "thread-1",
+            {
+                "objective": "Keep improving with clearer wording",
+                "status": "paused",
+                "token_budget": 80_000,
+            },
+        ),
+        ("continue", updated),
+    ]
+    assert app.chat_widget.info_messages[-1][0] == "Goal paused"
+
+
+def test_goal_editor_drops_stale_result_after_thread_switch() -> None:
+    views: list[object] = []
+    app: TuiAppRuntime
+
+    class SwitchingRuntime:
+        def thread_goal_get(self, _thread_id):
+            app.routing_state.active_thread_id = "thread-2"
+            return SimpleNamespace(objective="stale", status="active", token_budget=None)
+
+    app = TuiAppRuntime(SwitchingRuntime(), thread_id="thread-1")
+    app.bind_active_view_sink(views.append)
+
+    app.handle_app_event(AppEvent.open_thread_goal_editor("thread-1"))
+
+    assert views == []
+
+
+def test_completed_goal_edit_reactivates_through_internal_operation_sink() -> None:
+    previous = SimpleNamespace(
+        objective="Finished objective",
+        status="complete",
+        token_budget=80_000,
+        tokens_used=20_000,
+        time_used_seconds=60,
+    )
+    updated = SimpleNamespace(
+        objective="Revised objective",
+        status="active",
+        token_budget=80_000,
+        tokens_used=20_000,
+        time_used_seconds=60,
+    )
+    operation = AppCommand("UserTurn", {"hidden_goal_context": True})
+
+    class GoalRuntime:
+        def thread_goal_get(self, _thread_id):
+            return previous
+
+        def thread_goal_set(self, _thread_id, **_kwargs):
+            return updated
+
+        def goal_continuation_op(self, goal):
+            assert goal is updated
+            return operation
+
+    app = TuiAppRuntime(GoalRuntime(), thread_id="thread-1")
+    views: list[object] = []
+    internal: list[tuple[str, AppCommand]] = []
+    app.bind_active_view_sink(views.append)
+    app.bind_internal_operation_sink(lambda summary, op: internal.append((summary, op)))
+
+    app.handle_app_event(AppEvent.open_thread_goal_editor("thread-1"))
+    view = views.pop()
+    view.textarea.set_text_clearing_elements("Revised objective")
+    view.textarea.set_cursor(len("Revised objective"))
+    view.handle_key_event("enter")
+
+    assert internal == []
+    app.drain_app_events()
+
+    assert internal == [("Pursuing goal: Revised objective", operation)]
+
+
+def test_goal_replace_confirmation_emits_replace_event_before_mutation() -> None:
+    active_goal = SimpleNamespace(
+        objective="Current objective",
+        status="active",
+        token_budget=None,
+        tokens_used=0,
+        time_used_seconds=0,
+    )
+
+    class GoalRuntime:
+        def thread_goal_get(self, _thread_id):
+            return active_goal
+
+        def goal_continuation_op(self, _goal):
+            return None
+
+    app = TuiAppRuntime(GoalRuntime(), thread_id="thread-1")
+    views: list[object] = []
+    app.bind_active_view_sink(views.append)
+
+    app.handle_app_event(
+        AppEvent.set_thread_goal_objective(
+            "thread-1",
+            "Replacement",
+            ThreadGoalSetMode.confirm_if_exists(),
+        )
+    )
+
+    assert len(views) == 1
+    confirmation = views[0]
+    assert confirmation.title == "Replace goal?"
+    assert confirmation.items[0].actions == [
+        AppEvent.set_thread_goal_objective(
+            "thread-1",
+            "Replacement",
+            ThreadGoalSetMode.replace_existing(),
+        )
+    ]

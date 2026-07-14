@@ -46,17 +46,19 @@ class TerminalBottomPaneController:
         terminal_size: Callable[[], os.terminal_size],
         resize: Callable[[], None],
         footer_text: Callable[[], str],
+        footer_right_text: Callable[[], str] | None = None,
         open_command_view: TerminalCommandViewFactory | None = None,
         on_selection_events: TerminalSelectionEventHandler | None = None,
         repaint_footprint: Callable[[TerminalBottomPaneFootprint, TerminalBottomPaneFootprint], None] | None = None,
         cursor_visible: Callable[[], bool] | None = None,
         set_terminal_title_requires_action: Callable[[bool], None] | None = None,
+        command_popup_flags: object | None = None,
     ) -> None:
         self._open_command_view = open_command_view
         self._on_selection_events = on_selection_events
         self._set_terminal_title_requires_action = set_terminal_title_requires_action or (lambda _required: None)
         composer_cursor_visible = cursor_visible or (lambda: True)
-        self._view_state = TerminalBottomPaneViewState.new()
+        self._view_state = TerminalBottomPaneViewState.new(command_popup_flags)
         self._footprint_runner = create_terminal_bottom_pane_footprint_cycle_runner()
         self._request_runner = TerminalBottomPaneRequestRunner(
             writer,
@@ -87,6 +89,7 @@ class TerminalBottomPaneController:
                 stdin_is_terminal=stdin_is_terminal,
                 layout_active=layout_active,
                 footer_text=footer_text,
+                footer_right_text=footer_right_text or (lambda: ""),
             ),
         )
         self._synchronize_footprint = self._footprint_runner.synchronize_for_view_state_callback(
@@ -100,6 +103,10 @@ class TerminalBottomPaneController:
         """Synchronize composer draft into the bottom-pane owner state."""
 
         self._view_state.apply_draft(draft)
+
+    @property
+    def composer(self) -> object:
+        return self._view_state.composer
 
     def _record_submission(self, text: str) -> None:
         """Record a submitted composer entry through its Rust-owned history."""
@@ -159,17 +166,20 @@ class TerminalBottomPaneController:
     def has_active_view(self) -> bool:
         return self._view_state.active_view is not None
 
-    def handle_active_view_input(self, event: object) -> bool:
+    def handle_active_view_input(self, event: object, event_text: str = "") -> bool:
         """Route one task-time terminal event to the active bottom-pane view."""
 
-        if not self.has_active_view():
+        if isinstance(event, str):
+            event_kind = event
+        else:
+            event_kind = str(getattr(event, "kind", ""))
+            event_text = str(getattr(event, "text", ""))
+
+        if not self.has_active_view() or event_kind == "eof":
             return False
-        kind = str(getattr(event, "kind", ""))
-        text = str(getattr(event, "text", ""))
-        self._view_state.handle_composer_key(
-            self._view_state.draft,
-            kind,
-            text,
+        self._view_state.handle_composer_event(
+            event_kind,
+            event_text,
             on_selection_events=self._on_selection_events,
             open_command_view=self._open_command_view,
         )
@@ -177,11 +187,18 @@ class TerminalBottomPaneController:
         self.render_without_resize_check()
         return True
 
-    def handle_composer_key(self, draft: str, event_kind: str, event_text: str = "") -> str | None:
-        result = self._view_state.handle_composer_key(
-            draft,
+    def handle_composer_event(
+        self,
+        event_kind: str,
+        event_text: str = "",
+        now: float | None = None,
+        detect_paste_bursts: bool = False,
+    ) -> object:
+        result = self._view_state.handle_composer_event(
             event_kind,
             event_text,
+            now=now,
+            detect_paste_bursts=detect_paste_bursts,
             on_selection_events=self._on_selection_events,
             open_command_view=self._open_command_view,
         )

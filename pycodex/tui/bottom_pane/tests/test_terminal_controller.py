@@ -3,6 +3,7 @@ import os
 from types import SimpleNamespace
 
 from pycodex.tui.bottom_pane.chat_composer import terminal_composer_line_text
+from pycodex.tui.bottom_pane.custom_prompt_view import CustomPromptView
 from pycodex.tui.bottom_pane.list_selection_view import SelectionItem, SelectionViewParams
 from pycodex.tui.bottom_pane.terminal_footprint import TerminalBottomPaneFootprint
 from pycodex.tui.bottom_pane.terminal_controller import (
@@ -10,6 +11,8 @@ from pycodex.tui.bottom_pane.terminal_controller import (
 )
 from pycodex.tui.chatwidget.status_surfaces import TerminalLiveStatusSurface
 from pycodex.tui.bottom_pane.bottom_pane_view import BottomPaneViewDefaults
+from pycodex.tui.app.runtime import TuiAppRuntime
+from pycodex.tui.app_event import AppEvent
 
 
 class FlushTrackingStringIO(io.StringIO):
@@ -87,6 +90,80 @@ def test_terminal_controller_projects_active_view_action_required_title_state() 
     controller.handle_active_view_input(SimpleNamespace(kind="key", text="enter"))
 
     assert required == [True, False]
+
+
+def test_terminal_controller_pops_goal_editor_before_dispatching_queued_app_event() -> None:
+    # Rust owners: custom_prompt_view sends AppEvent first, BottomPane pops the
+    # accepted view, then app::run receives and handles the queued event.
+    current = SimpleNamespace(
+        objective="old objective",
+        status="paused",
+        token_budget=10_000,
+    )
+    controller: TerminalBottomPaneController
+    active_during_set: list[bool] = []
+
+    class GoalRuntime:
+        def thread_goal_get(self, _thread_id: str) -> object:
+            return current
+
+        def thread_goal_set(self, _thread_id: str, **kwargs: object) -> object:
+            active_during_set.append(controller.has_active_view())
+            return SimpleNamespace(**kwargs)
+
+        def goal_continuation_op(self, _goal: object) -> None:
+            return None
+
+    app = TuiAppRuntime(GoalRuntime(), thread_id="thread-1")
+    controller = TerminalBottomPaneController(
+        io.StringIO(),
+        stdin_is_terminal=lambda: True,
+        layout_active=lambda: True,
+        live_status=TerminalLiveStatusSurface.inactive,
+        terminal_size=lambda: os.terminal_size((80, 16)),
+        resize=lambda: None,
+        footer_text=lambda: "gpt-test high",
+    )
+    app.bind_active_view_sink(controller.show_view)
+    app.handle_app_event(AppEvent.open_thread_goal_editor("thread-1"))
+    view = controller._view_state.active_view
+    view.textarea.set_text_clearing_elements("revised objective")
+    view.textarea.set_cursor(len("revised objective"))
+
+    assert app.run_app_event_loop_step(
+        controller.handle_active_view_input,
+        SimpleNamespace(kind="enter", text=""),
+    ) is True
+
+    assert controller.has_active_view() is False
+    assert active_during_set == [False]
+
+
+def test_terminal_controller_opens_selection_and_custom_command_views_through_shared_stack() -> None:
+    # Rust owner: bottom_pane::BottomPane::show_view. Slash dispatch may return
+    # either SelectionViewParams or another BottomPaneView such as goal edit.
+    writer = io.StringIO()
+    controller = TerminalBottomPaneController(
+        writer,
+        stdin_is_terminal=lambda: True,
+        layout_active=lambda: True,
+        live_status=TerminalLiveStatusSurface.inactive,
+        terminal_size=lambda: os.terminal_size((80, 16)),
+        resize=lambda: None,
+        footer_text=lambda: "gpt-test high",
+    )
+
+    controller.show_view(
+        SelectionViewParams(items=[SelectionItem(name="gpt-5.4")])
+    )
+    assert controller.has_active_view()
+
+    prompt = CustomPromptView.new("Edit goal", "Objective", "ship it", None, lambda _text: None)
+    assert controller.show_view(prompt) is prompt
+    assert controller.render(check_resize=False) is True
+    assert "Edit goal" in writer.getvalue()
+    assert "ship it" in writer.getvalue()
+    assert "\x1b[13;10H" in writer.getvalue()
 
 
 def test_terminal_bottom_pane_controller_syncs_draft_and_terminal_callbacks() -> None:
@@ -211,7 +288,9 @@ def test_terminal_bottom_pane_controller_hides_cursor_for_active_selection_view(
         ),
         cursor_visible=lambda: True,
     )
-    assert controller.handle_composer_key("/model", "enter") == ""
+    controller.sync_draft("/model")
+    controller.handle_composer_event("enter")
+    assert controller.composer.current_text() == ""
 
     assert controller.render(check_resize=False) is True
     output = writer.getvalue()
@@ -245,7 +324,9 @@ def test_terminal_bottom_pane_controller_reflows_history_when_popup_footprint_gr
     )
 
     controller.render(check_resize=False)
-    assert controller.handle_composer_key("/model", "enter") == ""
+    controller.sync_draft("/model")
+    controller.handle_composer_event("enter")
+    assert controller.composer.current_text() == ""
     controller.render(check_resize=False)
 
     assert transitions

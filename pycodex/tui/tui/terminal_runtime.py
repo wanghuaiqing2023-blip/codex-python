@@ -35,6 +35,7 @@ from ..app_backtrack import TerminalTranscriptOverlayController
 from ..bottom_pane.terminal_controller import (
     TerminalBottomPaneController,
 )
+from ..bottom_pane.command_popup import command_popup_flags_from_config
 from ..bottom_pane.chat_composer import (
     TerminalComposerEffectRunner,
     TerminalComposerPromptReader,
@@ -52,6 +53,7 @@ from ..chatwidget.rendering import active_history_cell_lines
 from ..chatwidget.slash_dispatch import (
     TerminalLocalCommandDispatcher,
     TerminalPromptDispatcher,
+    TerminalSlashCommandEffectDispatcher,
     TerminalSlashCommandViewDispatcher,
 )
 from ..chatwidget.status_surfaces import (
@@ -60,7 +62,6 @@ from ..chatwidget.status_surfaces import (
 from ..chatwidget.status_controls import TerminalStatusCommandController
 from ..chatwidget.turn_runtime import TerminalTurnSubmissionRunner
 from ..app_command import AppCommand
-from ..app_event_sender import AppEventSender
 from ..custom_terminal import (
     disable_bracketed_paste,
     enable_bracketed_paste,
@@ -153,6 +154,7 @@ class TerminalTuiRunner:
             terminal_size=terminal_size,
             resize=lambda: self._resize.check_size_change(),
             footer_text=self._idle_footer.text,
+            footer_right_text=self._idle_footer.right_text,
             open_command_view=self._slash_command_views.open_command_view,
             on_selection_events=self._slash_command_views.handle_selection_events,
             repaint_footprint=lambda previous, current: self._resize.run_bottom_pane_frame_footprint_reflow(
@@ -161,6 +163,7 @@ class TerminalTuiRunner:
             ),
             cursor_visible=self._status.composer_cursor_visible,
             set_terminal_title_requires_action=self._status.set_terminal_title_requires_action,
+            command_popup_flags=command_popup_flags_from_config(self.app_runtime.chat_widget.config),
         )
         history_metadata = getattr(self.app_runtime.chat_widget, "bottom_history_metadata", None)
         history_lookup = getattr(self.app_runtime.active_thread_runtime, "lookup_message_history_entry", None)
@@ -283,6 +286,7 @@ class TerminalTuiRunner:
             write_history_cell=self._history.write_cell,
             activate_layout=self._resize.activate_layout,
         )
+        self.app_runtime.bind_session_changed_sink(self._clear_ui.run)
         self._status_card = TerminalStatusCardWriter(
             self.app_runtime,
             write_history_cell=self._history.write_cell,
@@ -309,7 +313,8 @@ class TerminalTuiRunner:
             submit=self._composer_effects.submit,
             interrupt=self._composer_effects.interrupt,
             eof=self._composer_effects.eof,
-            handle_key=self._bottom_pane.handle_composer_key,
+            composer=self._bottom_pane.composer,
+            handle_event=self._handle_bottom_pane_composer_event,
             handle_global_key=self._handle_global_key,
             record_submission=self._bottom_pane._record_submission,
         )
@@ -338,15 +343,28 @@ class TerminalTuiRunner:
             write_error=self._history.write_cell,
             set_exit_code=self._set_exit_code,
         )
+        self.app_runtime.bind_active_view_sink(self._show_app_view)
+        self.app_runtime.bind_internal_operation_sink(
+            lambda summary, operation: self._turn_submission.submit_operation(
+                summary,
+                lambda: self.app_runtime.submit_op(operation),
+            )
+        )
         self._local_commands = TerminalLocalCommandDispatcher(
             clear=self._clear_ui.run,
             help_=self._history.write_cell,
             status=self._status_command.run,
         )
+        self._slash_command_effects = TerminalSlashCommandEffectDispatcher(
+            self.app_runtime,
+            submit_operation=self._turn_submission.submit_operation,
+        )
         self._prompt_dispatch = TerminalPromptDispatcher(
             run_local_command=self._local_commands.run,
             open_command_view=self._slash_command_views.open_command_view,
             open_command_with_args=self._slash_command_views.open_command_with_args,
+            dispatch_command=self._slash_command_effects.dispatch,
+            guard_command=self._slash_command_effects.guard,
         )
         self._session_header = TerminalSessionHeaderWriter(
             self.app_runtime,
@@ -373,7 +391,7 @@ class TerminalTuiRunner:
                 request_redraw=self._bottom_pane.render_without_resize_check,
             )
         )
-        bottom_pane_event_sender = AppEventSender(self.app_runtime.handle_bottom_pane_app_event)
+        bottom_pane_event_sender = self.app_runtime.app_event_sender
         runtime_keymap = getattr(self.app_runtime, "runtime_keymap", None) or RuntimeKeymap.built_in_defaults()
         self.app_runtime.chat_widget.bind_approval_request_sink(
             ApprovalViewProjector(
@@ -425,6 +443,10 @@ class TerminalTuiRunner:
             self._desktop_notifications.notify
         )
 
+    def _show_app_view(self, view: object) -> object:
+        self._slash_command_views.clear_active_handler()
+        return self._bottom_pane.show_view(view)
+
     def run(self) -> int:
         if self._stdin_is_terminal:
             enable_bracketed_paste(self.stdout)
@@ -444,9 +466,12 @@ class TerminalTuiRunner:
             if prompt_dispatch.action == "exit":
                 self._shutdown()
                 return self.exit_code
+            if prompt_dispatch.action == "compose":
+                self._composer_prompt.seed_draft(prompt_dispatch.prompt)
+                continue
             if prompt_dispatch.action != "submit":
                 if prompt_dispatch.action == "show_view" and prompt_dispatch.view is not None:
-                    self._bottom_pane._show_selection_view(prompt_dispatch.view)
+                    self._bottom_pane.show_view(prompt_dispatch.view)
                     self._bottom_pane.render()
                 continue
             prompt = prompt_dispatch.prompt
@@ -455,6 +480,34 @@ class TerminalTuiRunner:
 
     def _read_prompt(self) -> str | None:
         return self._composer_prompt.read()
+
+    def _handle_bottom_pane_composer_event(
+        self,
+        event_kind: str,
+        event_text: str = "",
+        now: float | None = None,
+        detect_paste_bursts: bool = False,
+    ) -> object:
+        return self.app_runtime.run_app_event_loop_step(
+            self._bottom_pane.handle_composer_event,
+            event_kind,
+            event_text,
+            now,
+            detect_paste_bursts,
+        )
+
+    def _handle_bottom_pane_active_input(
+        self,
+        event: object,
+        event_text: str = "",
+    ) -> bool:
+        return bool(
+            self.app_runtime.run_app_event_loop_step(
+                self._bottom_pane.handle_active_view_input,
+                event,
+                event_text,
+            )
+        )
 
     def _get_composer_input_source(self) -> object | None:
         source = self._input_source_provider.get()
@@ -511,7 +564,7 @@ class TerminalTuiRunner:
             self._resize.check_size_change()
             return True
         if self._bottom_pane.has_active_view():
-            return self._bottom_pane.handle_active_view_input(event)
+            return self._handle_bottom_pane_active_input(event)
         if str(getattr(event, "kind", "")) in {"interrupt", "ctrl_d"}:
             if self.app_runtime.maybe_return_from_side():
                 return True

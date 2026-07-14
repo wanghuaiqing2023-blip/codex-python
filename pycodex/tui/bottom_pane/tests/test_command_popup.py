@@ -4,8 +4,16 @@ Rust source: codex/codex-rs/tui/src/bottom_pane/command_popup.rs
 """
 
 import os
+from types import SimpleNamespace
 
-from pycodex.tui.bottom_pane.command_popup import CommandItem, CommandPopup, CommandPopupFlags, from_
+from pycodex.features import Feature, Features
+from pycodex.tui.bottom_pane.command_popup import (
+    CommandItem,
+    CommandPopup,
+    CommandPopupFlags,
+    command_popup_flags_from_config,
+    from_,
+)
 from pycodex.tui.bottom_pane.slash_commands import ServiceTierCommand
 from pycodex.tui.bottom_pane.terminal_action import TerminalBottomPaneState
 from pycodex.tui.chatwidget.rendering import terminal_bottom_pane_frame, terminal_bottom_pane_frame_buffer
@@ -15,6 +23,17 @@ from pycodex.tui.slash_command import SlashCommand
 
 def _names(popup: CommandPopup) -> list[str]:
     return [item.command() for item in popup.filtered_items()]
+
+
+def test_config_feature_projection_enables_goal_in_product_popup() -> None:
+    features = Features.with_defaults()
+    assert features.enabled(Feature.GOALS)
+
+    flags = command_popup_flags_from_config(SimpleNamespace(features=features))
+    popup = CommandPopup.new(flags, [])
+    popup.on_composer_text_change("/g")
+
+    assert "goal" in _names(popup)
 
 
 def test_filter_prefix_exact_and_presentation_order():

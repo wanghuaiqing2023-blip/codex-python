@@ -156,6 +156,7 @@ from pycodex.protocol import (
     RequestPermissionsResponse,
     SandboxPermissions,
     TurnEnvironmentSelection,
+    TurnContextItem,
     UserInput,
     approval_policy_display_value,
 )
@@ -1589,6 +1590,8 @@ def persist_local_http_exec_rollout(
     *,
     input_items: tuple[Any, ...] | list[Any] = (),
     cli_version: str = "pycodex",
+    model_info: Any = None,
+    originator: str = "codex_exec",
 ) -> Path | None:
     """Persist local HTTP exec session metadata and response items to rollout JSONL."""
 
@@ -1599,10 +1602,15 @@ def persist_local_http_exec_rollout(
             id=str(model_client.state.thread_id),
             timestamp=timestamp,
             cwd=str(config.cwd),
-            originator="codex_exec",
+            originator=originator,
             cli_version=cli_version,
             source="cli",
             model_provider=config.model_provider_id or "openai",
+            base_instructions=(
+                _base_instructions_from_model_info(model_info, config.personality).text
+                if model_info is not None
+                else None
+            ),
         ),
         ephemeral=config.ephemeral,
     )
@@ -1615,6 +1623,7 @@ def persist_local_http_exec_rollout(
         _local_http_response_rollout_payloads(result),
         timestamp=timestamp,
         cwd=config.cwd,
+        turn_context=_turn_context_for_exec_config(config),
     )
     _append_local_http_interrupted_event_to_rollout(rollout_path, result, timestamp=timestamp)
     return rollout_path
@@ -1629,6 +1638,7 @@ def persist_local_http_exec_resume_rollout(
     thread_id: str | None = None,
     resume_last: bool = False,
     include_all: bool = False,
+    model_info: Any = None,
 ) -> Path | None:
     """Append a completed local HTTP resumed turn to an existing rollout JSONL."""
 
@@ -1643,6 +1653,7 @@ def persist_local_http_exec_resume_rollout(
             response_payloads,
             timestamp=timestamp,
             cwd=config.cwd,
+            turn_context=_turn_context_for_exec_config(config),
         )
         if path is not None:
             _append_local_http_interrupted_event_to_rollout(path, result, timestamp=timestamp)
@@ -1655,6 +1666,7 @@ def persist_local_http_exec_resume_rollout(
             current_cwd=config.cwd,
             include_all=include_all,
             timestamp=timestamp,
+            turn_context=_turn_context_for_exec_config(config),
         )
         if path is not None:
             _append_local_http_interrupted_event_to_rollout(path, result, timestamp=timestamp)
@@ -2038,6 +2050,25 @@ def _feature_from_value(feature: Feature | str) -> Feature | None:
     return None
 
 
+def _turn_context_for_exec_config(config: ExecSessionConfig) -> TurnContextItem:
+    permission_profile = config.permission_profile
+    summary = config.model_reasoning_summary
+    if summary is None:
+        summary = "auto"
+    elif hasattr(summary, "value"):
+        summary = summary.value
+    return TurnContextItem(
+        cwd=Path(config.cwd),
+        approval_policy=config.approval_policy,
+        sandbox_policy=permission_profile.to_legacy_sandbox_policy(config.cwd),
+        permission_profile_value=permission_profile,
+        file_system_sandbox_policy=permission_profile.file_system_sandbox_policy(),
+        model=default_local_http_exec_model(config),
+        effort=config.reasoning_effort,
+        summary=str(summary),
+    )
+
+
 def _feature_lookup_keys(feature: Feature) -> tuple[Any, ...]:
     return (feature, feature.value, feature.key(), feature.name)
 
@@ -2061,7 +2092,8 @@ def _in_memory_exec_session(
         thread_id=thread_id or "thread",
         model_info=model_info,
         user_instructions=config.user_instructions,
-        base_instructions=_base_instructions_from_model_info(model_info),
+        developer_instructions=config.developer_instructions,
+        base_instructions=_base_instructions_from_model_info(model_info, config.personality),
         workspace_roots=config.workspace_roots,
         request_permissions_callback=config.request_permissions_callback,
         command_approval_callback=config.exec_approval_callback,
@@ -2087,6 +2119,68 @@ def _in_memory_exec_session(
         reasoning_summary=reasoning_summary,
         service_tier=config.service_tier,
     )
+
+
+def create_exec_core_session(
+    config: ExecSessionConfig,
+    model_info: Any,
+    *,
+    event_observer: Any = None,
+    thread_id: str | None = None,
+    state_db: Any = None,
+) -> InMemoryCodexSession:
+    """Create the reusable core session owned by an interactive thread.
+
+    Rust keeps normal user turns and goal continuation turns on the same
+    ``Session``.  Non-interactive exec callers may still use the per-call
+    session path below, while the TUI owns this object for its thread lifetime.
+    """
+
+    return _in_memory_exec_session(
+        config,
+        model_info,
+        environments=(TurnEnvironmentSelection("local", str(config.cwd)),),
+        event_observer=event_observer,
+        thread_id=thread_id,
+        state_db=state_db,
+        goal_tools_enabled=state_db is not None,
+    )
+
+
+def refresh_exec_core_session(
+    session: InMemoryCodexSession,
+    config: ExecSessionConfig,
+    model_info: Any,
+    *,
+    event_observer: Any = None,
+) -> None:
+    """Project current turn configuration onto a reusable core session."""
+
+    session.cwd = Path(config.cwd)
+    session.model_info = model_info
+    session.user_instructions = config.user_instructions
+    session.developer_instructions = config.developer_instructions
+    session.base_instructions = _base_instructions_from_model_info(model_info, config.personality)
+    session.workspace_roots = tuple(config.workspace_roots)
+    session.request_permissions_callback = config.request_permissions_callback
+    session.command_approval_callback = config.exec_approval_callback
+    session.patch_approval_callback = config.patch_approval_callback
+    session.approval_policy = config.approval_policy
+    session.approvals_reviewer = config.approvals_reviewer
+    session.permission_profile = config.permission_profile
+    session.file_system_sandbox_policy = config.permission_profile.file_system_sandbox_policy()
+    session.windows_sandbox_level = config.windows_sandbox_level
+    session.allow_login_shell = config.allow_login_shell
+    session._granted_session_permissions = config.granted_session_permissions
+    session.environments = (TurnEnvironmentSelection("local", str(config.cwd)),)
+    session.event_observer = event_observer
+    session.reasoning_effort = config.reasoning_effort
+    session.reasoning_summary = (
+        config.model_reasoning_summary
+        if config.model_reasoning_summary is not None
+        else getattr(model_info, "default_reasoning_summary", "auto")
+    )
+    session.service_tier = config.service_tier
 
 
 async def run_exec_user_turn_http_sampling(
@@ -2152,30 +2246,36 @@ async def run_exec_user_turn_core_sampling(
     session_event_observer: Any = None,
     cancellation_token: Any = None,
     codex_home: Path | str | None = None,
+    core_session: InMemoryCodexSession | None = None,
 ) -> UserTurnSamplingResult:
     """Run a prepared ``codex exec`` user turn through the in-memory core loop."""
 
     operation = plan.initial_operation
     if operation.kind != "user_turn":
         raise ValueError("local exec core runtime currently supports only user_turn operations")
-    state_runtime = await _state_runtime_for_goal_tools(codex_home, config, provider)
+    owns_session = core_session is None
+    state_runtime = await _state_runtime_for_goal_tools(codex_home, config, provider) if owns_session else None
     _goal_debug_trace(
         "goal_core_sampling_start",
         prompt_summary=getattr(plan, "prompt_summary", None),
         state_runtime=state_runtime is not None,
         max_tool_followups=max_tool_followups,
     )
-    session = _in_memory_exec_session(
+    session = core_session or create_exec_core_session(
         config,
         model_info,
-        environments=(TurnEnvironmentSelection("local", str(config.cwd)),),
         event_observer=session_event_observer,
         thread_id=_model_client_thread_id(model_client),
         state_db=state_runtime,
-        goal_tools_enabled=state_runtime is not None,
+    )
+    refresh_exec_core_session(
+        session,
+        config,
+        model_info,
+        event_observer=session_event_observer,
     )
     try:
-        if history_items:
+        if history_items and owns_session:
             turn_context = await session.new_default_turn()
             await session.record_conversation_items(turn_context, tuple(history_items))
         result = await run_user_turn_sampling_from_session(
@@ -2206,11 +2306,12 @@ async def run_exec_user_turn_core_sampling(
         _attach_local_http_session_events(exc, session)
         raise
     finally:
-        close = getattr(state_runtime, "close", None)
-        if callable(close):
-            closed = close()
-            if inspect.isawaitable(closed):
-                await closed
+        if owns_session:
+            close = getattr(state_runtime, "close", None)
+            if callable(close):
+                closed = close()
+                if inspect.isawaitable(closed):
+                    await closed
 
 
 async def _state_runtime_for_goal_tools(
@@ -2262,6 +2363,7 @@ async def run_exec_user_turn_core_http_sampling(
     codex_home: Path | str | None = None,
     session_event_observer: Any = None,
     cancellation_token: Any = None,
+    core_session: InMemoryCodexSession | None = None,
 ) -> UserTurnSamplingResult:
     """Run ``codex exec`` through the in-memory core loop with stdlib HTTP sampling."""
 
@@ -2300,6 +2402,7 @@ async def run_exec_user_turn_core_http_sampling(
         session_event_observer=session_event_observer,
         cancellation_token=cancellation_token,
         codex_home=codex_home,
+        core_session=core_session,
     )
 
 
@@ -2323,6 +2426,7 @@ async def run_exec_user_turn_core_sampling_websocket_preferred(
     stream_event_observer: Any = None,
     model_session: Any = None,
     cancellation_token: Any = None,
+    core_session: InMemoryCodexSession | None = None,
 ) -> UserTurnSamplingResult:
     """Run a core user turn through Rust's websocket-preferred transport shape."""
 
@@ -2372,6 +2476,7 @@ async def run_exec_user_turn_core_sampling_websocket_preferred(
             session_event_observer=session_event_observer,
             cancellation_token=cancellation_token,
             codex_home=codex_home,
+            core_session=core_session,
         )
         _goal_debug_trace(
             "goal_ws_preferred_finished",
@@ -2867,12 +2972,11 @@ def response_items_from_local_http_tool_outputs(
     return tuple(items)
 
 
-def _base_instructions_from_model_info(model_info: Any) -> BaseInstructions:
-    value = getattr(model_info, "base_instructions", None)
+def _base_instructions_from_model_info(model_info: Any, personality: Any = None) -> BaseInstructions:
+    get_model_instructions = getattr(model_info, "get_model_instructions", None)
+    value = get_model_instructions(personality) if callable(get_model_instructions) else None
     if value is None:
-        get_model_instructions = getattr(model_info, "get_model_instructions", None)
-        if callable(get_model_instructions):
-            value = get_model_instructions(None)
+        value = getattr(model_info, "base_instructions", None)
     if value is None:
         return BaseInstructions.default()
     if isinstance(value, BaseInstructions):
@@ -6032,6 +6136,7 @@ __all__ = [
     "final_text_from_local_http_exec_result",
     "final_text_from_response_items",
     "core_exec_config_summary",
+    "create_exec_core_session",
     "core_exec_enabled",
     "core_exec_initial_messages_from_rollout",
     "core_review_rollout_input_items",
@@ -6067,6 +6172,7 @@ __all__ = [
     "run_exec_user_turn_core_http_sampling",
     "run_exec_user_turn_core_sampling_websocket_preferred",
     "run_exec_user_turn_core_sampling",
+    "refresh_exec_core_session",
     "run_exec_user_turn_default_local_http_sampling",
     "run_exec_tool_output_http_sampling",
     "run_exec_resume_user_turn_http_sampling",

@@ -533,14 +533,32 @@ def terminal_idle_footer_text(data: TerminalIdleFooterData) -> str:
     return " · ".join(part for part in (model_part, cwd_part) if part)
 
 
-def terminal_footer_projection(text: str, columns: int) -> TerminalFooterProjection:
+def terminal_footer_projection(
+    text: str,
+    columns: int,
+    right_text: str = "",
+) -> TerminalFooterProjection:
     """Project passive footer text for the terminal live pane.
 
     Rust ownership: ``codex-tui::bottom_pane::footer`` owns passive footer
     display text before terminal adapters place it in the live viewport.
     """
 
-    return TerminalFooterProjection(str(text)[: max(0, int(columns) - 1)])
+    width = max(0, int(columns) - 1)
+    if not right_text:
+        return TerminalFooterProjection(str(text)[:width])
+    return TerminalFooterProjection(_line_with_context(width, str(text), str(right_text)))
+
+
+def terminal_idle_footer_right_text_from_runtime(app_runtime: Any) -> str:
+    """Project the Rust footer's primary right-side indicator from runtime state."""
+
+    widget = getattr(app_runtime, "chat_widget", None)
+    active_agent_label = getattr(widget, "active_agent_label", None)
+    if active_agent_label:
+        return str(active_agent_label)
+    indicator = getattr(widget, "current_goal_status_indicator", None)
+    return goal_status_indicator_line(indicator) if indicator is not None else ""
 
 
 def terminal_idle_footer_data_from_runtime(
@@ -608,6 +626,9 @@ class TerminalIdleFooterTextProvider:
 
     def text(self) -> str:
         return run_terminal_idle_footer_text_from_runtime(self.app_runtime)
+
+    def right_text(self) -> str:
+        return terminal_idle_footer_right_text_from_runtime(self.app_runtime)
 
 
 def shows_passive_footer_line(props: FooterProps, show_queue_hint: bool = False) -> bool:
@@ -884,6 +905,7 @@ __all__ = [
     "status_line_right_indicator_line",
     "terminal_idle_footer_data_from_runtime",
     "terminal_footer_projection",
+    "terminal_idle_footer_right_text_from_runtime",
     "terminal_idle_footer_text",
     "run_terminal_idle_footer_text",
     "run_terminal_idle_footer_text_from_runtime",

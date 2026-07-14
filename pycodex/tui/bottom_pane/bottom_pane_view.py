@@ -29,6 +29,7 @@ class CancellationEvent(Enum):
 @runtime_checkable
 class BottomPaneView(Protocol):
     def terminal_lines(self, *, width: int) -> list[TerminalPopupLine]: ...
+    def cursor_pos(self, area: Any) -> tuple[int, int] | None: ...
     def handle_key_event(self, key_event: Any) -> None: ...
     def is_complete(self) -> bool: ...
     def completion(self) -> ViewCompletion | None: ...
@@ -55,6 +56,9 @@ class BottomPaneViewDefaults:
 
     def terminal_lines(self, *, width: int) -> list[TerminalPopupLine]:
         return []
+
+    def cursor_pos(self, _area: Any) -> tuple[int, int] | None:
+        return None
 
     def handle_key_event(self, _key_event: Any) -> None:
         return None
@@ -119,6 +123,11 @@ def terminal_lines(view: BottomPaneView, *, width: int) -> list[TerminalPopupLin
     return list(view.terminal_lines(width=width))
 
 
+def cursor_pos(view: BottomPaneView, area: Any) -> tuple[int, int] | None:
+    method = getattr(view, "cursor_pos", None)
+    return method(area) if callable(method) else None
+
+
 def handle_key_event(view: BottomPaneView, key_event: Any) -> None:
     return view.handle_key_event(key_event)
 
@@ -152,15 +161,18 @@ def active_tab_id(view: BottomPaneView) -> str | None:
 
 
 def on_ctrl_c(view: BottomPaneView) -> CancellationEvent:
-    return view.on_ctrl_c()
+    method = getattr(view, "on_ctrl_c", None)
+    return method() if callable(method) else CancellationEvent.NOT_HANDLED
 
 
 def prefer_esc_to_handle_key_event(view: BottomPaneView) -> bool:
-    return view.prefer_esc_to_handle_key_event()
+    method = getattr(view, "prefer_esc_to_handle_key_event", None)
+    return bool(method()) if callable(method) else False
 
 
 def handle_paste(view: BottomPaneView, pasted: str) -> bool:
-    return view.handle_paste(pasted)
+    method = getattr(view, "handle_paste", None)
+    return bool(method(pasted)) if callable(method) else False
 
 
 def flush_paste_burst_if_due(view: BottomPaneView) -> bool:
@@ -205,6 +217,7 @@ __all__ = [
     "active_tab_id",
     "clear_dismiss_after_child_accept",
     "completion",
+    "cursor_pos",
     "dismiss_after_child_accept",
     "dismiss_app_server_request",
     "flush_paste_burst_if_due",

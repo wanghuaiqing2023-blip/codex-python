@@ -16,7 +16,7 @@ import os
 import time
 import webbrowser
 from dataclasses import dataclass, field, fields as dataclass_fields, is_dataclass, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from queue import Empty, Queue
@@ -28,15 +28,19 @@ from pycodex.core.config.edit import ConfigEdit, ConfigEditsBuilder
 from pycodex.core.event_mapping import parse_turn_item
 from pycodex.exec.local_runtime import (
     _local_http_prompt_visible_rollout_items,
+    create_exec_core_session,
     final_text_from_local_http_exec_result,
     local_http_apply_patch_approval_keys,
     local_http_shell_tool_approval_keys,
     persist_core_exec_rollout,
+    persist_core_exec_resume_rollout,
     prewarm_exec_core_websocket_session,
     run_exec_user_turn_core_sampling_websocket_preferred,
 )
+from pycodex.core.context import GoalContext
 from pycodex.core.tools.sandboxing import ApprovalStore
 from pycodex.exec.run import ExecRunPlan, InitialOperation
+from pycodex.exec.session import ExecSessionConfig
 from pycodex.model_provider.auth import auth_service_from_snapshot
 from pycodex.protocol import ActivePermissionProfile, ApprovalsReviewer, AskForApproval, ExecApprovalRequestEvent, NetworkPolicyAmendment, NetworkPolicyRuleAction, PermissionProfile, ResponseInputItem, ResponseItem, ReviewDecision, ReviewRequest, ReviewTarget, ThreadGoal as ProtocolThreadGoal, ThreadGoalStatus as ProtocolThreadGoalStatus, ThreadId, TurnItem, UserInput
 from pycodex.protocol.request_permissions import (
@@ -48,6 +52,7 @@ from pycodex.utils.approval_presets import builtin_approval_presets
 
 from ..app_command import AppCommand
 from ..app_event import AppEvent, RateLimitRefreshOrigin
+from ..app_event_sender import AppEventSender
 from ..app_server_session import app_server_rate_limit_snapshots
 from ..chatwidget.input_submission import UserMessage, UserMessageHistoryRecord, submit_user_message_with_history_record
 from ..chatwidget.protocol import ChatWidgetProtocolRuntime, HistoryProjectionSink, ServerNotification
@@ -55,7 +60,7 @@ from ..chatwidget.protocol_requests import ServerRequest
 from ..chatwidget.replay import ReplayKind as ChatWidgetReplayKind
 from ..chatwidget.replay import replay_thread_turns
 from ..config_update import build_model_selection_edits, write_config_batch
-from ..history_cell.notices import new_info_event
+from ..history_cell.notices import new_error_event, new_info_event
 from ..status.rate_limits import RateLimitSnapshotDisplay, RateLimitWindowDisplay, rate_limit_snapshot_display_for_limit
 from .agent_navigation import (
     AgentNavigationDirection,
@@ -88,6 +93,20 @@ from .side import (
 RUST_MODULE_CRATE = "codex-tui"
 RUST_MODULE = "app"
 RUST_SOURCE = "codex/codex-rs/tui/src/app.rs"
+_THREAD_GOAL_TOKEN_BUDGET_UNCHANGED = object()
+_BOTTOM_PANE_APP_EVENT_KINDS = frozenset(
+    {
+        "ApproveRecentAutoReviewDenial",
+        "CodexOp",
+        "FullScreenApprovalRequest",
+        "InsertHistoryCell",
+        "OpenUrlInBrowser",
+        "RefreshConnectors",
+        "SelectAgentThread",
+        "SetAppEnabled",
+        "SubmitThreadOp",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -988,6 +1007,8 @@ class CoreExecActiveThreadRuntime:
     _last_worker_error: BaseException | None = field(default=None, init=False, repr=False)
     _startup_app_server_events: Queue[Any] = field(default_factory=Queue, init=False, repr=False)
     _state_runtime: Any = field(default=None, init=False, repr=False)
+    _core_session: Any = field(default=None, init=False, repr=False)
+    _pending_goal_continuation_op: AppCommand | None = field(default=None, init=False, repr=False)
     rollout_path: Path | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
@@ -1141,6 +1162,24 @@ class CoreExecActiveThreadRuntime:
             result = _run_coro_blocking(result)
         return list(result or [])
 
+    def set_model(self, model: str) -> Any:
+        """Resolve a selected model through the same manager used by Session."""
+
+        model_text = str(model).strip()
+        if not model_text:
+            return self.model_info
+        if isinstance(self.session_config, ExecSessionConfig):
+            self.session_config = replace(self.session_config, model=model_text)
+        manager_config = (
+            self.session_config.to_models_manager_config()
+            if callable(getattr(self.session_config, "to_models_manager_config", None))
+            else None
+        )
+        self.model_info = _run_coro_blocking(
+            self.models_manager().get_model_info(model_text, manager_config)
+        )
+        return self.model_info
+
     def thread_goal_get(self, thread_id: str) -> Any:
         """Mirror Rust ``AppServerSession::thread_goal_get`` for local TUI.
 
@@ -1159,15 +1198,19 @@ class CoreExecActiveThreadRuntime:
         thread_id: str,
         objective: str | None = None,
         status: Any = None,
-        token_budget: Any = None,
+        token_budget: Any = _THREAD_GOAL_TOKEN_BUDGET_UNCHANGED,
     ) -> Any:
         """Mirror Rust ``AppServerSession::thread_goal_set`` for local TUI."""
 
+        core_session = self._ensure_core_session_sync(thread_id=thread_id)
+        if core_session is not None:
+            _run_coro_blocking(core_session.goal_runtime_apply("external_mutation_starting"))
         runtime = self._state_runtime_for_thread_goals()
         goals = runtime.thread_goals
         thread_id_text = _thread_goal_uuid(thread_id)
         state_status = _state_goal_status(status) if status is not None else None
-        budget = _thread_goal_token_budget(token_budget)
+        budget_unchanged = token_budget is _THREAD_GOAL_TOKEN_BUDGET_UNCHANGED
+        budget = None if budget_unchanged else _thread_goal_token_budget(token_budget)
 
         existing = _run_coro_blocking(goals.get_thread_goal(thread_id_text))
         if objective is not None:
@@ -1178,11 +1221,11 @@ class CoreExecActiveThreadRuntime:
                         thread_id_text,
                         objective_text,
                         state_status or _default_active_goal_status(),
-                        budget,
+                        None if budget_unchanged else budget,
                     )
                 )
             else:
-                from pycodex.state.runtime.goals import GoalUpdate
+                from pycodex.state.runtime.goals import GoalUpdate, TOKEN_BUDGET_UNCHANGED
 
                 goal = _run_coro_blocking(
                     goals.update_thread_goal(
@@ -1190,7 +1233,7 @@ class CoreExecActiveThreadRuntime:
                         GoalUpdate(
                             objective=objective_text,
                             status=state_status,
-                            token_budget=budget,
+                            token_budget=TOKEN_BUDGET_UNCHANGED if budget_unchanged else budget,
                             expected_goal_id=getattr(existing, "goal_id", None),
                         ),
                     )
@@ -1200,7 +1243,7 @@ class CoreExecActiveThreadRuntime:
         else:
             if existing is None:
                 raise RuntimeError(f"cannot update goal for thread {thread_id_text}: no goal exists")
-            from pycodex.state.runtime.goals import GoalUpdate
+            from pycodex.state.runtime.goals import GoalUpdate, TOKEN_BUDGET_UNCHANGED
 
             goal = _run_coro_blocking(
                 goals.update_thread_goal(
@@ -1208,7 +1251,7 @@ class CoreExecActiveThreadRuntime:
                     GoalUpdate(
                         objective=None,
                         status=state_status,
-                        token_budget=budget,
+                        token_budget=TOKEN_BUDGET_UNCHANGED if budget_unchanged else budget,
                         expected_goal_id=getattr(existing, "goal_id", None),
                     ),
                 )
@@ -1226,6 +1269,12 @@ class CoreExecActiveThreadRuntime:
                 ),
             }
         )
+        if core_session is not None:
+            _run_coro_blocking(
+                core_session.goal_runtime_apply(
+                    {"external_set": SimpleNamespace(goal=goal, previous_status=getattr(existing, "status", None))}
+                )
+            )
         return api_goal
 
     def goal_continuation_op(self, goal: Any) -> AppCommand | None:
@@ -1242,16 +1291,47 @@ class CoreExecActiveThreadRuntime:
         protocol_goal = _protocol_thread_goal_from_any(goal)
         if protocol_goal.status is not ProtocolThreadGoalStatus.ACTIVE:
             return None
-        from pycodex.core.goals import continuation_prompt
+        if self._pending_goal_continuation_op is None:
+            core_session = self._ensure_core_session_sync()
+            if core_session is not None:
+                _run_coro_blocking(core_session.goal_runtime_apply("maybe_continue_if_idle"))
+        operation = self._pending_goal_continuation_op
+        self._pending_goal_continuation_op = None
+        return operation
 
-        prompt = continuation_prompt(protocol_goal)
+    def _ensure_core_session_sync(self, *, thread_id: str | None = None) -> Any:
+        if self._core_session is not None:
+            return self._core_session
+        if not isinstance(self.session_config, ExecSessionConfig):
+            return None
+        state_runtime = None
+        codex_home = self.codex_home or getattr(self.session_config, "codex_home", None)
+        if codex_home is not None:
+            state_runtime = self._state_runtime_for_thread_goals()
+        self._core_session = create_exec_core_session(
+            self.session_config,
+            self.model_info,
+            thread_id=thread_id or self.thread_id,
+            state_db=state_runtime,
+        )
+        self._core_session.history = list(self._model_history_snapshot())
+        self._core_session.goal_continuation_callback = self._queue_goal_continuation_from_core
+        return self._core_session
+
+    def _queue_goal_continuation_from_core(self, item: ResponseInputItem, goal: Any) -> None:
+        text = next(
+            (str(content.text) for content in item.content if isinstance(getattr(content, "text", None), str)),
+            "",
+        )
+        if not text:
+            return
         cwd = Path(getattr(self.session_config, "cwd", None) or Path.cwd())
+        self._pending_goal_continuation_op = _goal_context_app_command(text, cwd=cwd)
         _timing_trace(
             "goal_continuation_op_created",
-            objective=protocol_goal.objective,
-            status=getattr(protocol_goal.status, "value", protocol_goal.status),
+            objective=getattr(goal, "objective", None),
+            status=getattr(getattr(goal, "status", None), "value", getattr(goal, "status", None)),
         )
-        return _goal_continuation_app_command(prompt, cwd=cwd)
 
     def thread_goal_clear(self, thread_id: str) -> Any:
         """Mirror Rust ``AppServerSession::thread_goal_clear`` for local TUI."""
@@ -1259,6 +1339,8 @@ class CoreExecActiveThreadRuntime:
         runtime = self._state_runtime_for_thread_goals()
         thread_id_text = _thread_goal_uuid(thread_id)
         cleared = bool(_run_coro_blocking(runtime.thread_goals.delete_thread_goal(thread_id_text)))
+        if cleared and self._core_session is not None:
+            _run_coro_blocking(self._core_session.goal_runtime_apply("external_clear"))
         if cleared:
             self._startup_app_server_events.put(
                 {
@@ -1338,6 +1420,148 @@ class CoreExecActiveThreadRuntime:
         except Exception:
             return ()
         return tuple(getattr(page, "items", ()) or ())
+
+    def start_new_thread(self) -> Any:
+        """Create and activate a fresh local core thread."""
+
+        import uuid
+
+        thread_id = str(uuid.uuid4())
+        self._activate_thread_state(thread_id, history=(), rollout_path=None)
+        return self._started_thread_result(thread_id)
+
+    def resume_thread_target(self, target: Any) -> Any:
+        """Load one picker target into the active core runtime."""
+
+        from pycodex.app_server.request_processors import build_api_turns_from_rollout_items
+        from pycodex.rollout import RolloutRecorder, read_model_history_from_rollout, read_session_meta_line
+
+        rollout_path = Path(_field(target, "rollout_path", _field(target, "path", "")))
+        if not rollout_path.is_file():
+            raise ValueError(f"resume rollout does not exist: {rollout_path}")
+        meta = read_session_meta_line(rollout_path).meta
+        thread_id = str(_field(target, "thread_id", None) or meta.id)
+        history = read_model_history_from_rollout(rollout_path)
+        items, _, _ = RolloutRecorder.load_rollout_items(rollout_path)
+        turns = build_api_turns_from_rollout_items(item.to_mapping() for item in items)
+        self._activate_thread_state(thread_id, history=history, rollout_path=rollout_path)
+        return self._started_thread_result(
+            thread_id,
+            rollout_path=rollout_path,
+            turns=turns,
+            cwd=meta.cwd,
+            thread_name=_field(target, "thread_name", None),
+            forked_from_id=meta.forked_from_id,
+        )
+
+    def fork_current_thread(self) -> Any:
+        """Fork the current local thread, preserving prompt-visible history."""
+
+        import uuid
+
+        from pycodex.app_server.request_processors import build_api_turns_from_rollout_items
+        from pycodex.rollout import (
+            RolloutRecorder,
+            append_rollout_item_to_path,
+            materialize_session_rollout,
+            read_session_meta_line,
+        )
+        from pycodex.protocol import SessionMeta, ThreadId
+
+        parent_id = self.thread_id
+        if not parent_id:
+            raise ValueError("cannot fork before a thread is active")
+        thread_id = str(uuid.uuid4())
+        source_path = self.rollout_path
+        fork_path = None
+        if source_path is not None and Path(source_path).is_file() and self.codex_home is not None:
+            source_meta = read_session_meta_line(Path(source_path)).meta
+            timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            fork_meta = SessionMeta(
+                id=ThreadId.from_string(thread_id),
+                timestamp=timestamp,
+                cwd=source_meta.cwd,
+                originator=source_meta.originator,
+                cli_version=source_meta.cli_version,
+                source=source_meta.source,
+                forked_from_id=ThreadId.from_string(parent_id),
+                thread_source=source_meta.thread_source,
+                model_provider=source_meta.model_provider,
+                base_instructions=source_meta.base_instructions,
+                dynamic_tools=source_meta.dynamic_tools,
+                memory_mode=source_meta.memory_mode,
+            )
+            fork_path = materialize_session_rollout(
+                Path(self.codex_home),
+                fork_meta,
+                ephemeral=bool(getattr(self.session_config, "ephemeral", False)),
+            )
+            if fork_path is not None:
+                items, _, _ = RolloutRecorder.load_rollout_items(Path(source_path))
+                for item in items:
+                    if item.type != "session_meta":
+                        append_rollout_item_to_path(fork_path, item)
+        history = self._model_history_snapshot()
+        turns = ()
+        if fork_path is not None:
+            items, _, _ = RolloutRecorder.load_rollout_items(fork_path)
+            turns = tuple(build_api_turns_from_rollout_items(item.to_mapping() for item in items))
+        self._activate_thread_state(thread_id, history=history, rollout_path=fork_path)
+        return self._started_thread_result(
+            thread_id,
+            rollout_path=fork_path,
+            forked_from_id=parent_id,
+            turns=turns,
+        )
+
+    def _activate_thread_state(
+        self,
+        thread_id: str,
+        *,
+        history: Any,
+        rollout_path: Path | None,
+    ) -> None:
+        with self._active_turn_lock:
+            if self._active_turn is not None:
+                raise RuntimeError("cannot switch sessions while a task is running")
+        _close_model_session(self._startup_prewarm_session)
+        _close_model_session(self.prewarmed_model_session)
+        self._startup_prewarm_session = None
+        self.prewarmed_model_session = None
+        self._startup_prewarm_consumed = True
+        _set_model_client_state_value(self.model_client, "thread_id", thread_id)
+        _set_model_client_state_value(self.model_client, "session_id", thread_id)
+        with self._model_history_lock:
+            self._model_history_items = list(history)
+        self._core_session = None
+        self._pending_goal_continuation_op = None
+        self._tool_approvals = ApprovalStore()
+        self.rollout_path = Path(rollout_path) if rollout_path is not None else None
+        self._rollout_path_ready.clear()
+
+    def _started_thread_result(
+        self,
+        thread_id: str,
+        *,
+        rollout_path: Path | None = None,
+        turns: Any = (),
+        cwd: Any = None,
+        thread_name: Any = None,
+        forked_from_id: Any = None,
+    ) -> Any:
+        session = SimpleNamespace(
+            thread_id=thread_id,
+            cwd=Path(cwd or getattr(self.session_config, "cwd", Path.cwd())),
+            rollout_path=rollout_path,
+            thread_name=thread_name,
+            forked_from_id=forked_from_id,
+        )
+        return SimpleNamespace(
+            thread_id=thread_id,
+            session=session,
+            rollout_path=rollout_path,
+            turns=tuple(turns or ()),
+        )
 
     def _message_history_config(self) -> Any | None:
         codex_home = self.codex_home or getattr(self.session_config, "codex_home", None)
@@ -1727,8 +1951,7 @@ class CoreExecActiveThreadRuntime:
                 # ordering contract. Model-history normalization and rollout
                 # I/O remain in the worker, but never hold command completion
                 # or TurnCompleted behind bookkeeping.
-                if not bool(op.payload.get("hidden_goal_context")):
-                    self._record_model_history_from_turn(turn_plan, result)
+                self._record_model_history_from_turn(turn_plan, result)
                 self._persist_rollout(turn_plan, result)
             except BaseException as exc:
                 self._last_worker_error = exc
@@ -1899,6 +2122,10 @@ class CoreExecActiveThreadRuntime:
             has_model_session=model_session is not None,
         )
         history_items = self._model_history_snapshot()
+        if self._core_session is None and isinstance(self.session_config, ExecSessionConfig):
+            self._ensure_core_session_sync()
+        if self._core_session is not None:
+            self._core_session.event_observer = session_event_observer
         result = await run_exec_user_turn_core_sampling_websocket_preferred(
             self.session_config,
             plan,
@@ -1917,6 +2144,7 @@ class CoreExecActiveThreadRuntime:
             model_session=model_session,
             cancellation_token=cancellation_token,
             history_items=history_items,
+            core_session=self._core_session,
         )
         _timing_trace(
             "goal_core_run_op_finished",
@@ -1961,14 +2189,26 @@ class CoreExecActiveThreadRuntime:
                 return
             operation = getattr(plan, "initial_operation", None)
             input_items = getattr(operation, "items", ()) if getattr(operation, "kind", None) == "user_turn" else ()
-            path = persist_core_exec_rollout(
-                Path(self.codex_home),
-                self.session_config,
-                result,
-                self.model_client,
-                input_items=input_items,
-                cli_version="pycodex",
-            )
+            if self.rollout_path is not None and Path(self.rollout_path).is_file():
+                path = persist_core_exec_resume_rollout(
+                    Path(self.codex_home),
+                    self.session_config,
+                    result,
+                    input_items=input_items,
+                    thread_id=self.thread_id,
+                    model_info=self.model_info,
+                )
+            else:
+                path = persist_core_exec_rollout(
+                    Path(self.codex_home),
+                    self.session_config,
+                    result,
+                    self.model_client,
+                    input_items=input_items,
+                    cli_version="pycodex",
+                    model_info=self.model_info,
+                    originator="codex-tui",
+                )
             self.rollout_path = Path(path) if path is not None else None
         finally:
             self._rollout_path_ready.set()
@@ -2006,19 +2246,31 @@ class TuiAppRuntime:
     app_server_event_plans: list[AppServerEventPlan] = field(default_factory=list)
     history_cell_sink: Callable[[object], Any] | None = None
     pending_history_cells: list[object] = field(default_factory=list)
+    active_view_sink: Callable[[object], Any] | None = None
+    pending_active_views: list[object] = field(default_factory=list)
+    internal_operation_sink: Callable[[str, AppCommand], Any] | None = None
+    pending_internal_operations: list[tuple[str, AppCommand]] = field(default_factory=list)
     pending_app_server_requests: PendingAppServerRequests = field(default_factory=PendingAppServerRequests)
     app_server_request_dismiss_sink: Callable[[object], bool] | None = None
     full_screen_approval_sink: Callable[[object], Any] | None = None
+    session_changed_sink: Callable[[], Any] | None = None
     thread_event_stores: dict[str, ThreadEventStore] = field(default_factory=dict)
     replayed_interactive_request_ids: set[Any] = field(default_factory=set)
     projected_interactive_request_ids: set[Any] = field(default_factory=set)
     app_server_request_resolutions: list[AppServerRequestResolution] = field(default_factory=list)
     opened_urls: list[str] = field(default_factory=list)
     auxiliary_app_events: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    pending_app_events: Queue[Any] = field(default_factory=Queue, repr=False)
+    app_event_sender: AppEventSender = field(init=False, repr=False)
+    active_collaboration_mode: Any = None
     open_url_sink: Callable[[str], Any] = field(default_factory=lambda: webbrowser.open)
     _status_rate_limit_request_id: int = 0
 
     def __post_init__(self) -> None:
+        # Rust ``App::run`` gives every view an AppEventSender backed by the
+        # app loop's unbounded channel. Keep callbacks enqueue-only so the
+        # bottom pane can finish its input/completion pass before dispatch.
+        self.app_event_sender = AppEventSender(self.pending_app_events)
         if self.thread_id and (
             self.routing_state.active_thread_id,
             self.routing_state.primary_thread_id,
@@ -2046,6 +2298,36 @@ class TuiAppRuntime:
         for cell in pending:
             sink(cell)
 
+    def bind_active_view_sink(self, sink: Callable[[object], Any]) -> None:
+        """Bind Rust ``ChatWidget::show_*`` active views to BottomPane."""
+
+        self.active_view_sink = sink
+        pending = tuple(self.pending_active_views)
+        self.pending_active_views.clear()
+        for view in pending:
+            sink(view)
+
+    def bind_internal_operation_sink(self, sink: Callable[[str, AppCommand], Any]) -> None:
+        """Bind core-created hidden operations to the product turn runner."""
+
+        self.internal_operation_sink = sink
+        pending = tuple(self.pending_internal_operations)
+        self.pending_internal_operations.clear()
+        for summary, operation in pending:
+            sink(summary, operation)
+
+    def show_active_view(self, view: object) -> Any:
+        if self.active_view_sink is None:
+            self.pending_active_views.append(view)
+            return view
+        return self.active_view_sink(view)
+
+    def submit_internal_operation(self, summary: str, operation: AppCommand) -> Any:
+        if self.internal_operation_sink is None:
+            self.pending_internal_operations.append((str(summary), operation))
+            return None
+        return self.internal_operation_sink(str(summary), operation)
+
     def bind_full_screen_approval_sink(self, sink: Callable[[object], Any]) -> None:
         self.full_screen_approval_sink = sink
 
@@ -2053,6 +2335,42 @@ class TuiAppRuntime:
         """Bind Rust ``BottomPane::dismiss_app_server_request`` to the app owner."""
 
         self.app_server_request_dismiss_sink = sink
+
+    def bind_session_changed_sink(self, sink: Callable[[], Any]) -> None:
+        self.session_changed_sink = sink
+
+    def dispatch_app_event(self, event: Any) -> Any:
+        """Dispatch one event received from the Rust-aligned app event bus."""
+
+        kind = str(getattr(event, "kind", ""))
+        if kind in _BOTTOM_PANE_APP_EVENT_KINDS:
+            return self.handle_bottom_pane_app_event(event)
+        return self.handle_app_event(event)
+
+    def drain_app_events(self) -> tuple[Any, ...]:
+        """Drain queued view events in FIFO order like ``app_event_rx``."""
+
+        results: list[Any] = []
+        while True:
+            try:
+                event = self.pending_app_events.get_nowait()
+            except Empty:
+                break
+            results.append(self.dispatch_app_event(event))
+        return tuple(results)
+
+    def run_app_event_loop_step(
+        self,
+        dispatch_input: Callable[..., Any],
+        /,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        """Run one input dispatch, then receive queued events like Rust App."""
+
+        result = dispatch_input(*args, **kwargs)
+        self.drain_app_events()
+        return result
 
     def _thread_event_store(self, thread_id: str | None = None) -> ThreadEventStore:
         target = str(thread_id or self.routing_state.active_thread_id or self.thread_id)
@@ -2113,6 +2431,10 @@ class TuiAppRuntime:
     def insert_info_history_message(self, message: str, hint: str | None = None) -> None:
         self.insert_history_cell(new_info_event(message, hint))
 
+    def insert_error_history_message(self, message: str) -> None:
+        self.chat_widget.error_messages.append(str(message))
+        self.insert_history_cell(new_error_event(message))
+
     def sync_chat_widget_config_from_runtime(self) -> None:
         """Project Rust ``Config`` fields needed by ``chatwidget``.
 
@@ -2141,6 +2463,10 @@ class TuiAppRuntime:
             getattr(getattr(self.active_thread_runtime, "session_config", None), "cwd", None)
             or self.cwd,
         )
+        runtime_config = getattr(self.active_thread_runtime, "session_config", None)
+        features = getattr(runtime_config, "features", None)
+        if features is not None:
+            setattr(target, "features", features)
         for name in (
             "hide_agent_reasoning",
             "show_raw_agent_reasoning",
@@ -2195,8 +2521,26 @@ class TuiAppRuntime:
             model=_runtime_model_for_user_turn(self),
             reasoning_effort=_runtime_reasoning_effort_for_user_turn(self),
             service_tier=_runtime_turn_context_value(self, "service_tier"),
+            collaboration_mode=self.active_collaboration_mode,
         )
         return self.submit_op(op)
+
+    def activate_plan_mode(self) -> Any:
+        """Select Rust collaboration Plan mode for subsequent user turns."""
+
+        from pycodex.protocol import CollaborationMode, ModeKind, Settings
+
+        mode = CollaborationMode(
+            mode=ModeKind.PLAN,
+            settings=Settings(
+                model=_runtime_model_for_user_turn(self),
+                reasoning_effort=_runtime_reasoning_effort_for_user_turn(self),
+            ),
+        )
+        self.active_collaboration_mode = mode
+        setattr(self.chat_widget, "active_collaboration_mode", mode)
+        self.chat_widget.request_redraw()
+        return mode
 
     def apply_permission_profile_selection(self, selection: Any) -> None:
         """Apply and persist Rust ``SelectPermissionProfile`` atomically."""
@@ -2362,6 +2706,74 @@ class TuiAppRuntime:
         self.submitted_ops.append(op)
         return self.active_thread_runtime.submit_thread_op(plan.thread_id, op)
 
+    def start_fresh_session(self) -> str:
+        started = self._call_lifecycle_backend("start_new_thread")
+        return self._install_lifecycle_thread(started)
+
+    def resume_session_target(self, target: Any) -> str:
+        started = self._call_lifecycle_backend("resume_thread_target", target)
+        return self._install_lifecycle_thread(started)
+
+    def resume_session_by_id_or_name(self, query: str) -> str:
+        needle = str(query).strip()
+        if not needle:
+            raise ValueError("resume query cannot be empty")
+        rows = tuple(self.active_thread_runtime.list_resume_threads())
+        exact = [
+            row
+            for row in rows
+            if needle
+            in {
+                str(_field(row, "thread_id", "")),
+                str(_field(row, "thread_name", "") or ""),
+            }
+        ]
+        if len(exact) != 1:
+            prefixes = [row for row in rows if str(_field(row, "thread_id", "")).startswith(needle)]
+            exact = prefixes if len(prefixes) == 1 else exact
+        if len(exact) != 1:
+            raise ValueError(f"no unique session found for {needle!r}")
+        return self.resume_session_target(exact[0])
+
+    def fork_current_session(self) -> str:
+        started = self._call_lifecycle_backend("fork_current_thread")
+        parent_id = str(self.routing_state.active_thread_id)
+        return self._install_lifecycle_thread(started, fallback_parent_thread_id=parent_id)
+
+    def _call_lifecycle_backend(self, name: str, *args: Any) -> Any:
+        method = getattr(self.active_thread_runtime, name, None)
+        if not callable(method):
+            raise RuntimeError(f"active thread runtime does not support {name}")
+        result = method(*args)
+        return _run_coro_blocking(result) if hasattr(result, "__await__") else result
+
+    def _install_lifecycle_thread(
+        self,
+        started: Any,
+        *,
+        fallback_parent_thread_id: str | None = None,
+    ) -> str:
+        self.chat_widget.history.clear()
+        streaming_history = getattr(getattr(self.chat_widget, "streaming", None), "history", None)
+        if isinstance(streaming_history, list):
+            streaming_history.clear()
+        self.chat_widget.thread_name = None
+        setattr(self.chat_widget, "forked_from", None)
+        turns = list(_field(started, "turns", []) or [])
+        installed = self._install_started_thread(
+            started,
+            fallback_parent_thread_id=fallback_parent_thread_id,
+            replay_turns=False,
+        )
+        if installed is None:
+            raise RuntimeError("session backend returned no thread id")
+        if self.session_changed_sink is not None:
+            self.session_changed_sink()
+        if turns:
+            self._replay_started_thread_turns(turns)
+        self.active_collaboration_mode = None
+        return installed
+
     def fork_startup_session_target(self, target: Any) -> bool:
         """Fork the selected startup session and install it as the active thread.
 
@@ -2416,7 +2828,13 @@ class TuiAppRuntime:
                     return result
         return None
 
-    def _install_started_thread(self, started: Any, *, fallback_parent_thread_id: str | None = None) -> str | None:
+    def _install_started_thread(
+        self,
+        started: Any,
+        *,
+        fallback_parent_thread_id: str | None = None,
+        replay_turns: bool = True,
+    ) -> str | None:
         session = _field(started, "session", None)
         if session is None:
             session = _field(started, "thread", started)
@@ -2463,7 +2881,7 @@ class TuiAppRuntime:
             self.rollout_path = Path(rollout_path)
         self.upsert_agent_picker_thread(thread_id_text)
         turns = list(_field(started, "turns", []) or [])
-        if turns:
+        if replay_turns and turns:
             self._replay_started_thread_turns(turns)
         return thread_id_text
 
@@ -2531,7 +2949,95 @@ class TuiAppRuntime:
         elif plan.action == "diff_result":
             text = plan.updates[0][1] if plan.updates else ""
             self.chat_widget.on_diff_complete(text)
+        elif plan.action in {
+            "open_thread_goal_menu",
+            "open_thread_goal_editor",
+            "set_thread_goal_objective",
+            "set_thread_goal_status",
+            "clear_thread_goal",
+        }:
+            payload = plan.updates[0][1] if plan.updates else {}
+            self._handle_thread_goal_app_event(plan.action, payload)
         return plan
+
+    def _handle_thread_goal_app_event(self, action: str, payload: Any) -> None:
+        """Delegate the Rust goal AppEvent family to ``thread_goal_actions``."""
+
+        from ..history_cell.base import PlainHistoryCell
+        from ..chatwidget.goal_menu import goal_summary_lines
+        from .thread_goal_actions import (
+            clear_thread_goal_runtime,
+            open_thread_goal_editor_runtime,
+            open_thread_goal_menu_runtime,
+            set_thread_goal_objective_runtime,
+            set_thread_goal_status_runtime,
+        )
+
+        thread_id = _field(payload, "thread_id", None)
+        common = {
+            "current_displayed_thread_id": self.current_displayed_thread_id,
+            "add_error_message": self.insert_error_history_message,
+            "add_info_message": self.chat_widget.add_info_message,
+        }
+        if action == "open_thread_goal_menu":
+            open_thread_goal_menu_runtime(
+                self.active_thread_runtime,
+                thread_id,
+                show_goal_summary=lambda goal: self.insert_history_cell(
+                    PlainHistoryCell.new(goal_summary_lines(goal))
+                ),
+                **common,
+            )
+            return
+        if action == "open_thread_goal_editor":
+            open_thread_goal_editor_runtime(
+                self.active_thread_runtime,
+                thread_id,
+                send_app_event=self.app_event_sender.send,
+                show_view=self.show_active_view,
+                **common,
+            )
+            return
+        if action == "set_thread_goal_objective":
+            goal = set_thread_goal_objective_runtime(
+                self.active_thread_runtime,
+                thread_id,
+                str(_field(payload, "objective", "")),
+                _field(payload, "mode", None),
+                show_view=self.show_active_view,
+                **common,
+            )
+            self._continue_goal_after_external_set(goal)
+            return
+        if action == "set_thread_goal_status":
+            goal = set_thread_goal_status_runtime(
+                self.active_thread_runtime,
+                thread_id,
+                _field(payload, "status", None),
+                **common,
+            )
+            self._continue_goal_after_external_set(goal)
+            return
+        clear_thread_goal_runtime(
+            self.active_thread_runtime,
+            thread_id,
+            **common,
+        )
+
+    def _continue_goal_after_external_set(self, goal: Any) -> None:
+        """Drain the local core adapter's hidden continuation, if one was queued."""
+
+        if goal is None:
+            return
+        continuation = getattr(self.active_thread_runtime, "goal_continuation_op", None)
+        if not callable(continuation):
+            return
+        operation = continuation(goal)
+        if operation is None:
+            return
+        objective = str(getattr(goal, "objective", "")).strip()
+        summary = f"Pursuing goal: {objective}" if objective else "Pursuing goal"
+        self.submit_internal_operation(summary, operation)
 
     def handle_app_server_event(self, event: Any) -> AppServerEventPlan:
         """Apply Rust ``app::app_server_events`` pre-chatwidget routing.
@@ -2656,7 +3162,11 @@ class TuiAppRuntime:
         setter = getattr(self.chat_widget, "set_model", None)
         if callable(setter):
             setter(model_text)
-        _set_runtime_model_value(self.active_thread_runtime, model_text)
+        runtime_setter = getattr(self.active_thread_runtime, "set_model", None)
+        if callable(runtime_setter):
+            runtime_setter(model_text)
+        else:
+            _set_runtime_model_value(self.active_thread_runtime, model_text)
         session_config = getattr(self.active_thread_runtime, "session_config", None)
         _set_runtime_model_value(session_config, model_text)
         model_client = getattr(self.active_thread_runtime, "model_client", None)
@@ -3124,6 +3634,7 @@ def app_command_for_prompt(
     model: str | None = None,
     reasoning_effort: Any = None,
     service_tier: Any = None,
+    collaboration_mode: Any = None,
 ) -> AppCommand:
     widget = _TerminalInputSubmissionWidget(
         cwd=Path(cwd),
@@ -3132,6 +3643,7 @@ def app_command_for_prompt(
         model=str(model or "terminal"),
         reasoning_effort=reasoning_effort,
         service_tier=service_tier,
+        collaboration_mode=collaboration_mode,
     )
     accepted = submit_user_message_with_history_record(
         widget,
@@ -3287,10 +3799,15 @@ def _runtime_reasoning_effort_for_user_turn(app_runtime: TuiAppRuntime) -> Any:
 
 
 def _goal_continuation_app_command(prompt: str, *, cwd: Path | str) -> AppCommand:
+    goal_context = GoalContext.new(str(prompt)).render()
+    return _goal_context_app_command(goal_context, cwd=cwd)
+
+
+def _goal_context_app_command(goal_context: str, *, cwd: Path | str) -> AppCommand:
     return AppCommand(
         "UserTurn",
         {
-            "items": [{"kind": "text", "payload": {"text": str(prompt)}}],
+            "items": [{"kind": "text", "payload": {"text": goal_context}}],
             "cwd": Path(cwd),
             "final_output_json_schema": None,
             "hidden_goal_context": True,
@@ -3318,6 +3835,12 @@ def _model_client_state_value(model_client: Any, name: str) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _set_model_client_state_value(model_client: Any, name: str, value: str) -> None:
+    state = getattr(model_client, "state", None)
+    target = state if state is not None else model_client
+    setattr(target, name, value)
 
 
 def _thread_goal_uuid(thread_id: Any) -> str:
@@ -4155,6 +4678,7 @@ class _TerminalInputSubmissionWidget:
     model: str = "terminal"
     reasoning_effort: Any = None
     service_tier: Any = None
+    collaboration_mode: Any = None
     ops: list[AppCommand] = field(default_factory=list)
     bottom_pane: _TerminalBottomPane = field(default_factory=_TerminalBottomPane)
     input_queue: _TerminalInputQueue = field(default_factory=_TerminalInputQueue)
@@ -4170,6 +4694,7 @@ class _TerminalInputSubmissionWidget:
             features=_TerminalFeatures(),
             personality=None,
         )
+        self.active_collaboration_mask = self.collaboration_mode
 
     def take_remote_image_urls(self) -> tuple[str, ...]:
         return ()
@@ -4181,10 +4706,10 @@ class _TerminalInputSubmissionWidget:
         return True
 
     def effective_collaboration_mode(self) -> _TerminalMode:
-        return _TerminalMode(self.model, self.reasoning_effort)
+        return self.collaboration_mode or _TerminalMode(self.model, self.reasoning_effort)
 
     def collaboration_modes_enabled(self) -> bool:
-        return False
+        return self.collaboration_mode is not None
 
     def current_model_supports_personality(self) -> bool:
         return False

@@ -2123,3 +2123,73 @@ async def load_app_server_page(*args: Any, **kwargs: Any) -> Any:
 
 async def load_transcript_preview(*args: Any, **kwargs: Any) -> Any:
     return not_ported(RUST_MODULE, "load_transcript_preview requires an app-server transport")
+
+
+@dataclass(frozen=True)
+class TerminalResumeSelectionAction:
+    """Selection event emitted by the bottom-pane resume compatibility view."""
+
+    target: Any
+
+
+@dataclass
+class TerminalResumePopupController:
+    """Project local resume targets through the canonical active-view stack."""
+
+    app_runtime: Any
+
+    def open_view(self) -> Any:
+        from ..bottom_pane.list_selection_view import SelectionItem, SelectionViewParams
+
+        list_threads = getattr(self.app_runtime.active_thread_runtime, "list_resume_threads", None)
+        rows = tuple(list_threads() if callable(list_threads) else ())
+        items = []
+        for row in rows:
+            thread_id = str(_get_attr(row, "thread_id", ""))
+            name = _get_attr(row, "thread_name", None) or _get_attr(row, "preview", None) or thread_id
+            cwd = _get_attr(row, "cwd", None)
+            items.append(
+                SelectionItem(
+                    name=str(name),
+                    description=f"{thread_id}  {cwd}" if cwd is not None else thread_id,
+                    search_value=" ".join(filter(None, (str(name), thread_id, str(cwd or "")))),
+                    actions=[TerminalResumeSelectionAction(row)],
+                    dismiss_on_select=True,
+                )
+            )
+        if not items:
+            items.append(
+                SelectionItem(
+                    name="No resumable sessions",
+                    description="No local rollout sessions were found.",
+                    is_disabled=True,
+                )
+            )
+        return SelectionViewParams(
+            view_id="resume-session-picker",
+            title="Resume a previous session",
+            subtitle="Select a local session to restore its history.",
+            items=items,
+            is_searchable=True,
+            search_placeholder="Search sessions",
+        )
+
+    def handle_events(self, events: Tuple[object, ...]) -> Any:
+        from ..bottom_pane.view_stack import TerminalSelectionTransition
+
+        for event in events:
+            if not isinstance(event, TerminalResumeSelectionAction):
+                continue
+
+            def apply(target: Any = event.target) -> None:
+                try:
+                    thread_id = self.app_runtime.resume_session_target(target)
+                    self.app_runtime.insert_info_history_message(f"Resumed session {thread_id}.")
+                except Exception as exc:
+                    self.app_runtime.chat_widget.add_error_message(f"Failed to resume session: {exc}")
+
+            return TerminalSelectionTransition(after_pop=apply)
+        return None
+
+
+__all__.extend(["TerminalResumePopupController", "TerminalResumeSelectionAction"])

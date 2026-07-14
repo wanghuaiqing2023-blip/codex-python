@@ -460,6 +460,7 @@ class InMemoryCodexSession:
     event_observer: Any = None
     state_db: Any = None
     goal_tools_enabled_value: bool = False
+    goal_continuation_callback: Any = None
     input_queue: InMemoryInputQueue = field(default_factory=InMemoryInputQueue)
     active_turn: InMemoryActiveTurn | None = field(default_factory=InMemoryActiveTurn)
     response_processed_ids: list[str] = field(default_factory=list)
@@ -998,6 +999,10 @@ class InMemoryCodexSession:
         user_input = tuple(item if isinstance(item, UserInput) else UserInput.from_mapping(item) for item in input)
         response_item = ResponseItem.from_response_input_item(ResponseInputItem.from_user_inputs(user_input))
         await self.record_conversation_items(turn_context, (response_item,))
+        # Contextual user fragments such as GoalContext belong in model history
+        # but are intentionally absent from the visible transcript.
+        if parse_turn_item(response_item) is None:
+            return
         turn_item = TurnItem.user_message(UserMessageItem.new(user_input))
         await self.emit_turn_item_started(turn_context, turn_item)
         await self.emit_turn_item_completed(turn_context, turn_item)

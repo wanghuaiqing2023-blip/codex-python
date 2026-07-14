@@ -32,14 +32,8 @@ from pycodex.tui.bottom_pane.chat_composer import (
     run_terminal_composer_write_nonterminal_prompt,
     run_terminal_command_popup_input_action,
     terminal_command_popup_input_action,
-    terminal_composer_draft_after_backspace,
-    terminal_composer_draft_after_ctrl_u,
-    terminal_composer_draft_after_text,
-    terminal_composer_draft_cleared,
-    terminal_composer_input_action,
     terminal_composer_line_text,
     terminal_composer_projection,
-    terminal_composer_submitted_line,
     terminal_popup_key,
     terminal_input_result_from_line,
     user_input_too_large_message,
@@ -86,6 +80,7 @@ def test_terminal_completed_line_returns_rust_input_result_variants() -> None:
         SlashCommand.REVIEW,
         "audit dependencies",
     )
+    assert terminal_input_result_from_line("/not-a-command\n") == InputResult.Submitted("/not-a-command")
     assert terminal_popup_key("key", "f12") == "f12"
 
 
@@ -200,7 +195,10 @@ def test_terminal_command_popup_runner_applies_navigation_completion_and_model_v
     assert shown == [params]
 
     assert state.sync_draft("/clear") is True
-    assert run_terminal_command_popup_input_action(state, "/clear", "enter") is None
+    clear_result = run_terminal_command_popup_input_action(state, "/clear", "enter")
+    assert clear_result.kind == "Command"
+    assert clear_result.command is SlashCommand.CLEAR
+    assert state.sync_draft("/clear") is True
     assert (
         run_terminal_command_popup_input_action(
             state,
@@ -209,7 +207,8 @@ def test_terminal_command_popup_runner_applies_navigation_completion_and_model_v
             open_command_view=lambda command: None,
             show_selection_view=shown.append,
         )
-        is None
+        .command
+        is SlashCommand.CLEAR
     )
     assert shown == [params]
 
@@ -224,24 +223,36 @@ def test_terminal_command_popup_runner_ignores_keys_when_popup_hidden() -> None:
     assert run_terminal_command_popup_input_action(state, "/m", "down") is None
 
 
-def test_terminal_composer_draft_helpers_match_text_only_product_path():
-    # Rust owner: codex-tui::bottom_pane::chat_composer owns text draft
-    # mutation before render. The real-terminal path uses this text-only slice.
-    draft = terminal_composer_draft_cleared()
+def test_chat_composer_delegates_middle_editing_to_textarea():
+    # Rust source: bottom_pane/chat_composer.rs::handle_input_basic delegates
+    # ordinary editing to textarea.rs instead of mutating an end-only string.
+    composer = ChatComposer(text="abc")
 
-    draft, changed = terminal_composer_draft_after_text(draft, "hello\r\nthere")
-    assert changed is True
-    assert draft == "hello\nthere"
+    composer.handle_terminal_event("left")
+    composer.handle_terminal_event("text", "X")
+    assert composer.current_text() == "abXc"
+    assert composer.cursor() == 3
 
-    draft, changed = terminal_composer_draft_after_text(draft, "")
-    assert changed is False
-    assert draft == "hello\nthere"
+    composer.handle_terminal_event("backspace")
+    assert composer.current_text() == "abc"
+    assert composer.cursor() == 2
+    composer.handle_terminal_event("delete")
+    assert composer.current_text() == "ab"
+    assert composer.cursor() == 2
 
-    assert terminal_composer_draft_after_backspace(draft) == "hello\nther"
-    assert terminal_composer_draft_after_backspace("") == ""
-    assert terminal_composer_draft_after_ctrl_u("hello") == ""
-    assert terminal_composer_draft_after_ctrl_u("first\nsecond") == "first\n"
-    assert terminal_composer_submitted_line("hello") == "hello\n"
+
+def test_chat_composer_routes_home_end_and_emacs_motions_to_textarea():
+    # Rust source: textarea.rs::input owns Left/Right, Home/End and Ctrl-B/F.
+    composer = ChatComposer(text="first\nsecond")
+
+    composer.handle_terminal_event("home")
+    assert composer.cursor() == len("first\n")
+    composer.handle_terminal_event("ctrl_f")
+    assert composer.cursor() == len("first\ns")
+    composer.handle_terminal_event("ctrl_b")
+    assert composer.cursor() == len("first\n")
+    composer.handle_terminal_event("end")
+    assert composer.cursor() == len("first\nsecond")
 
 
 def test_terminal_composer_projection_owns_live_prompt_text_and_cursor_width() -> None:
@@ -277,49 +288,81 @@ def test_terminal_composer_projection_wraps_words_and_wide_characters() -> None:
     assert wide.cursor_column == 7
 
 
-def test_terminal_composer_input_action_plans_text_only_terminal_events():
-    # Rust owner: codex-tui::bottom_pane::chat_composer handles key input by
-    # mutating draft state or returning a submitted input result. The Python
-    # terminal path keeps that decision here while tui::tui executes repaint.
-    assert terminal_composer_input_action("", "text", "hello\r\n") == TerminalComposerInputAction(
-        "render",
-        "hello\n",
-    )
-    assert terminal_composer_input_action("hello", "text", "") == TerminalComposerInputAction(
-        "continue",
-        "hello",
-    )
-    assert terminal_composer_input_action("好", "text", " ") == TerminalComposerInputAction(
-        "render",
-        "好 ",
-    )
-    assert terminal_composer_input_action("hello", "backspace") == TerminalComposerInputAction(
-        "render",
-        "hell",
-    )
-    assert terminal_composer_input_action("draft", "ctrl_u") == TerminalComposerInputAction(
-        "render",
-        "",
-    )
-    assert terminal_composer_input_action("hello", "enter") == TerminalComposerInputAction(
-        "submit",
-        "",
-        "hello\n",
-    )
-    assert terminal_composer_input_action("stale", "line", "/model\n") == TerminalComposerInputAction(
-        "submit",
-        "",
-        "/model\n",
-    )
-    assert terminal_composer_input_action("hello", "eof") == TerminalComposerInputAction("eof", "")
-    assert terminal_composer_input_action("hello", "interrupt") == TerminalComposerInputAction(
-        "interrupt",
-        "hello",
-    )
-    assert terminal_composer_input_action("hello", "resize") == TerminalComposerInputAction(
-        "continue",
-        "hello",
-    )
+def test_chat_composer_vertical_motion_uses_wrapped_visual_column() -> None:
+    # Rust source: textarea.rs wrapped navigation uses the most recent render
+    # width and preserves the display column across visual rows.
+    composer = ChatComposer(text="abcdef")
+    composer.set_cursor(5)
+    composer.terminal_projection(7)
+
+    composer.handle_terminal_event("up")
+    assert composer.cursor() == 1
+    assert composer.terminal_projection(7).cursor_column == 4
+
+    composer.handle_terminal_event("down")
+    assert composer.cursor() == 5
+    assert composer.terminal_projection(7).cursor_column == 4
+
+
+def test_chat_composer_projection_uses_middle_cursor_and_wide_cell_widths() -> None:
+    # Rust source: textarea.rs::cursor_pos_with_state computes terminal-cell
+    # coordinates for CJK and emoji from the real, potentially middle cursor.
+    composer = ChatComposer(text="你a🙂b")
+    composer.set_cursor(3)
+
+    projection = composer.terminal_projection(20)
+
+    assert projection.lines == ("› 你a🙂b",)
+    assert projection.cursor_row_offset == 0
+    assert projection.cursor_column == 8
+
+
+def test_chat_composer_slash_popup_tracks_cursor_inside_command_name() -> None:
+    # Rust source: chat_composer/slash_input.rs::command_under_cursor hides the
+    # popup in inline args and restores it when the caret returns to the name.
+    composer = ChatComposer(text="/model inspect")
+
+    assert composer.command_popup_state.visible is False
+    composer.set_cursor(3)
+    assert composer.command_popup_state.visible is True
+    composer.set_cursor(len(composer.current_text()))
+    assert composer.command_popup_state.visible is False
+
+
+def test_chat_composer_cursor_and_delete_respect_atomic_text_elements() -> None:
+    # Rust source: textarea.rs treats mention/attachment placeholders as atomic
+    # elements for cursor movement and deletion.
+    composer = ChatComposer()
+    composer.draft.textarea.insert_element("@README.md")
+    composer.set_cursor(3)
+    assert composer.cursor() == 0
+
+    composer.handle_terminal_event("right")
+    assert composer.cursor() == len("@README.md")
+    composer.handle_terminal_event("backspace")
+    assert composer.current_text() == ""
+    assert composer.text_elements == []
+
+
+def test_chat_composer_handles_terminal_events_without_string_editor_adapter():
+    # Rust owner: bottom_pane::chat_composer owns terminal input outcomes while
+    # DraftState/TextArea remain the only mutable editor state.
+    composer = ChatComposer()
+
+    assert composer.handle_terminal_event("text", "hello").kind == "render"
+    assert composer.current_text() == "hello"
+    assert composer.handle_terminal_event("backspace").kind == "render"
+    assert composer.current_text() == "hell"
+    assert composer.handle_terminal_event("ctrl_u").kind == "render"
+    assert composer.current_text() == ""
+
+    composer.set_text_content("hello")
+    submitted = composer.handle_terminal_event("enter")
+    assert submitted == InputResult.Submitted("hello")
+    assert composer.current_text() == ""
+    assert composer.handle_terminal_event("eof").kind == "eof"
+    composer.set_text_content("draft")
+    assert composer.handle_terminal_event("interrupt").kind == "interrupt"
 
 
 def test_run_terminal_composer_input_action_dispatches_terminal_effects():
@@ -475,6 +518,51 @@ def test_run_terminal_composer_prompt_loop_polls_and_submits_with_rendered_draft
     assert resizes == 4
 
 
+def test_prompt_loop_delegates_all_input_to_shared_bottom_pane_event_owner():
+    # Rust owners: tui polls events, then BottomPane routes active views before
+    # ChatComposer. The prompt loop must not retain a second active-view branch.
+    class Source:
+        detect_paste_bursts = True
+
+        def __init__(self) -> None:
+            self.events = [
+                type("Event", (), {"kind": "text", "text": "x"})(),
+                type("Event", (), {"kind": "paste", "text": "你好"})(),
+                type("Event", (), {"kind": "backspace", "text": ""})(),
+                type("Event", (), {"kind": "eof", "text": ""})(),
+            ]
+
+        def poll(self, _timeout: float):
+            return self.events.pop(0)
+
+    active_events: list[tuple[str, str]] = []
+    drafts: list[str] = []
+    composer = ChatComposer()
+
+    def handle_event(kind: str, text: str, _now: float, _detect_bursts: bool):
+        if kind == "eof":
+            return TerminalComposerInputAction("eof", composer.current_text())
+        active_events.append((kind, text))
+        return TerminalComposerInputAction("continue", composer.current_text())
+
+    result = run_terminal_composer_prompt_loop(
+        Source(),
+        poll_timeout=0.0,
+        apply_draft=drafts.append,
+        check_resize=lambda: None,
+        render=lambda: None,
+        submit=lambda line: line,
+        interrupt=lambda: None,
+        eof=lambda: "eof",
+        composer=composer,
+        handle_event=handle_event,
+    )
+
+    assert result == "eof"
+    assert drafts and all(draft == "" for draft in drafts)
+    assert active_events == [("text", "x"), ("paste", "你好"), ("backspace", "")]
+
+
 def test_terminal_composer_paste_burst_keeps_embedded_enters_in_one_submission(monkeypatch):
     # Fixed Rust baseline 1c7832f: bottom_pane::chat_composer::PasteBurst
     # treats rapid Enter events as pasted newlines and submits only on the
@@ -625,7 +713,7 @@ def test_run_terminal_composer_prompt_loop_routes_popup_keys_before_text_actions
             self.events = [
                 type("Event", (), {"kind": "text", "text": "/"})(),
                 type("Event", (), {"kind": "text", "text": "m"})(),
-                type("Event", (), {"kind": "down", "text": ""})(),
+                type("Event", (), {"kind": "text", "text": "o"})(),
                 type("Event", (), {"kind": "tab", "text": ""})(),
                 type("Event", (), {"kind": "enter", "text": ""})(),
             ]
@@ -635,18 +723,10 @@ def test_run_terminal_composer_prompt_loop_routes_popup_keys_before_text_actions
 
     drafts: list[str] = []
     renders: list[str] = []
-    handled: list[tuple[str, str]] = []
+    composer = ChatComposer()
 
     def apply_draft(draft: str) -> None:
         drafts.append(draft)
-
-    def handle_key(draft: str, kind: str, text: str) -> str | None:
-        handled.append((kind, draft))
-        if kind == "down":
-            return draft
-        if kind == "tab":
-            return "/memories "
-        return None
 
     result = run_terminal_composer_prompt_loop(
         Source(),
@@ -657,19 +737,12 @@ def test_run_terminal_composer_prompt_loop_routes_popup_keys_before_text_actions
         submit=lambda line: line,
         interrupt=lambda: (_ for _ in ()).throw(KeyboardInterrupt),
         eof=lambda: None,
-        handle_key=handle_key,
+        composer=composer,
     )
 
-    assert result == "/memories \n"
-    assert handled == [
-        ("text", ""),
-        ("text", "/"),
-        ("down", "/m"),
-        ("tab", "/m"),
-        ("enter", "/memories "),
-    ]
-    assert renders == ["", "/", "/m", "/m", "/memories "]
-    assert drafts == ["", "/", "/m", "/memories ", ""]
+    assert result == InputResult.Command(SlashCommand.MODEL)
+    assert renders == ["", "/", "/m", "/mo", "/model "]
+    assert drafts == ["", "/", "/m", "/mo", "/model ", ""]
 
 
 def test_run_terminal_composer_blocking_line_prompt_preserves_fallback_sequence():
@@ -864,6 +937,39 @@ def test_terminal_composer_prompt_reader_records_canonical_submission() -> None:
     assert recorded == ["hello\n"]
 
 
+def test_terminal_composer_prompt_reader_seeds_next_draft_for_mention() -> None:
+    # Rust slash_dispatch::Mention calls ChatComposer::insert_str("@"). The
+    # terminal adapter carries that mutation into the next composer read.
+    class Source:
+        def __init__(self) -> None:
+            self.events = [
+                type("Event", (), {"kind": "text", "text": "README.md"})(),
+                type("Event", (), {"kind": "enter", "text": ""})(),
+            ]
+
+        def poll(self, timeout: float):
+            return self.events.pop(0)
+
+    drafts: list[str] = []
+    reader = TerminalComposerPromptReader(
+        terminal_active=lambda: True,
+        get_input_source=Source,
+        read_line=lambda: "",
+        write_nonterminal_prompt=lambda: None,
+        apply_draft=drafts.append,
+        check_resize=lambda: None,
+        render=lambda: None,
+        clear_bottom_pane=lambda: None,
+        submit=lambda line: line,
+        interrupt=lambda: None,
+        eof=lambda: None,
+    )
+    reader.seed_draft("@")
+
+    assert reader.read() == InputResult.Submitted("@README.md")
+    assert drafts[0] == "@"
+
+
 def test_plan_mode_nudge_line_keeps_visible_actions():
     line = " ".join(plan_mode_nudge_line())
     assert "Create a plan?" in line
@@ -1029,12 +1135,14 @@ def test_large_paste_placeholder_expands_on_submit_and_clears_pending_state():
     assert composer.handle_paste(payload) is True
     assert composer.current_text() == f"[Pasted Content {len(payload)} chars]"
     assert composer.current_text_with_pending() == payload
+    submitted_elements = composer.text_elements
 
     result, handled = composer.handle_key_event(KeyEvent.key("enter"))
 
-    assert result == InputResult.Submitted(payload, composer.text_elements)
+    assert result == InputResult.Submitted(payload, submitted_elements)
     assert handled is True
     assert composer.current_text() == ""
+    assert composer.text_elements == []
     assert composer.pending_pastes_value() == []
 
 

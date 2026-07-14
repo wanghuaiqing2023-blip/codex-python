@@ -451,6 +451,11 @@ def dispatch_event_plan(state: EventDispatchState, event: Any) -> EventDispatchP
 
     delegated_actions = {
         "OpenUrlInBrowser": "open_url_in_browser",
+        "OpenThreadGoalMenu": "open_thread_goal_menu",
+        "OpenThreadGoalEditor": "open_thread_goal_editor",
+        "SetThreadGoalObjective": "set_thread_goal_objective",
+        "SetThreadGoalStatus": "set_thread_goal_status",
+        "ClearThreadGoal": "clear_thread_goal",
         "OpenResumePicker": "open_resume_picker",
         "ResumeSessionByIdOrName": "resume_session_by_id_or_name",
         "ForkCurrentSession": "fork_current_session",

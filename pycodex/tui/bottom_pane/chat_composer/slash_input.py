@@ -288,7 +288,7 @@ def command_popup_filter_text(first_line: str, cursor: int) -> Optional[str]:
     return f"/{name}"
 
 
-def terminal_command_popup_visible_for_draft(draft: str) -> bool:
+def terminal_command_popup_visible_for_draft(draft: str, cursor: int | None = None) -> bool:
     """Return whether terminal draft text is editing a first-line slash name.
 
     Rust owner: ``codex-tui::bottom_pane::chat_composer::slash_input`` defines
@@ -296,6 +296,12 @@ def terminal_command_popup_visible_for_draft(draft: str) -> bool:
     """
 
     first_line = _draft_first_line(draft)
+    if cursor is None:
+        cursor = len(first_line)
+    cursor = max(0, min(int(cursor), len(str(draft))))
+    if cursor > len(first_line):
+        return False
+    first_line = first_line[:cursor]
     if not first_line.startswith("/"):
         return False
     command_text = first_line[1:].lstrip()

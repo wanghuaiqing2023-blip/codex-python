@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Iterable
 import re
-import textwrap
+import unicodedata
 
 from ..._porting import RustTuiModule
 from .vim import VimMode, split_word_pieces
@@ -93,8 +93,10 @@ class TextArea:
         if elements:
             for elem in elements:
                 br = _get(elem, "byte_range", _get(elem, "range", None))
-                start = _get(br, "start", br.start if isinstance(br, range) else 0)
-                end = _get(br, "end", br.stop if isinstance(br, range) else start)
+                tuple_start = br[0] if isinstance(br, (tuple, list)) and len(br) >= 2 else 0
+                tuple_end = br[1] if isinstance(br, (tuple, list)) and len(br) >= 2 else tuple_start
+                start = _get(br, "start", br.start if isinstance(br, range) else tuple_start)
+                end = _get(br, "end", br.stop if isinstance(br, range) else tuple_end)
                 start = self.clamp_pos_to_char_boundary(int(start))
                 end = self.clamp_pos_to_char_boundary(int(end))
                 if start < end:
@@ -199,7 +201,7 @@ class TextArea:
             return None
         scroll = self.effective_scroll(height, lines, state.scroll)
         line = lines[idx]
-        col = max(0, self.cursor_pos_value - line.start)
+        col = _display_width(self.text_value[line.start : self.cursor_pos_value])
         row = max(0, min(idx - scroll, max(height - 1, 0)))
         return (x0 + col, y0 + row)
 
@@ -207,7 +209,7 @@ class TextArea:
         return not self.text_value
 
     def current_display_col(self) -> int:
-        return self.cursor_pos_value - self.beginning_of_current_line()
+        return _display_width(self.text_value[self.beginning_of_current_line() : self.cursor_pos_value])
 
     @staticmethod
     def wrapped_line_index_by_start(lines: list[range], pos: int) -> int | None:
@@ -215,7 +217,13 @@ class TextArea:
         return candidates[-1] if candidates else None
 
     def move_to_display_col_on_line(self, line_start: int, line_end: int, target_col: int) -> None:
-        self.set_cursor(min(line_start + target_col, line_end))
+        width_so_far = 0
+        for index in range(line_start, line_end):
+            width_so_far += _char_display_width(self.text_value[index])
+            if width_so_far > target_col:
+                self.set_cursor(index)
+                return
+        self.set_cursor(line_end)
 
     def beginning_of_line(self, pos: int) -> int:
         return self.text_value.rfind("\n", 0, max(0, pos)) + 1
@@ -438,15 +446,15 @@ class TextArea:
         lines = self.wrapped_lines(self.visual_wrap_width)
         idx = self.wrapped_line_index_by_start(lines, self.cursor_pos_value)
         if idx is not None and idx > 0:
-            col = self.cursor_pos_value - lines[idx].start
-            self.set_cursor(min(lines[idx - 1].start + col, lines[idx - 1].stop))
+            col = _display_width(self.text_value[lines[idx].start : self.cursor_pos_value])
+            self.move_to_display_col_on_line(lines[idx - 1].start, lines[idx - 1].stop, col)
 
     def move_cursor_down(self) -> None:
         lines = self.wrapped_lines(self.visual_wrap_width)
         idx = self.wrapped_line_index_by_start(lines, self.cursor_pos_value)
         if idx is not None and idx + 1 < len(lines):
-            col = self.cursor_pos_value - lines[idx].start
-            self.set_cursor(min(lines[idx + 1].start + col, lines[idx + 1].stop))
+            col = _display_width(self.text_value[lines[idx].start : self.cursor_pos_value])
+            self.move_to_display_col_on_line(lines[idx + 1].start, lines[idx + 1].stop, col)
 
     def move_cursor_to_beginning_of_line(self, move_up_at_bol: bool = True) -> None:
         bol = self.beginning_of_current_line()
@@ -650,7 +658,16 @@ class TextArea:
 
     @staticmethod
     def _wrapped_line_end(line: str, start: int, width: int) -> int:
-        hard_end = min(start + width, len(line))
+        used_width = 0
+        hard_end = start
+        for index in range(start, len(line)):
+            char_width = _char_display_width(line[index])
+            if hard_end > start and used_width + char_width > width:
+                break
+            used_width += char_width
+            hard_end = index + 1
+            if used_width >= width:
+                break
         if hard_end >= len(line):
             return len(line)
         split = -1
@@ -830,14 +847,28 @@ def _area(area: Any, key: str, default: int) -> int:
 
 def _key_name(event: Any) -> str:
     if isinstance(event, str):
-        return event.lower()
-    key = str(_get(event, "key", _get(event, "code", ""))).lower()
+        return _normalize_key_name(event)
+    key = _normalize_key_name(str(_get(event, "key", _get(event, "code", ""))))
     modifiers = str(_get(event, "modifiers", "")).lower()
     if "alt" in modifiers:
         return f"alt-{key}"
     if "control" in modifiers or modifiers == "ctrl":
         return f"ctrl-{key}"
     return key
+
+
+def _normalize_key_name(key: str) -> str:
+    return key if len(key) == 1 else key.lower().replace("_", "-")
+
+
+def _char_display_width(char: str) -> int:
+    if not char or unicodedata.combining(char) or unicodedata.category(char) in {"Cc", "Cf"}:
+        return 0
+    return 2 if unicodedata.east_asian_width(char) in {"F", "W"} else 1
+
+
+def _display_width(text: str) -> int:
+    return sum(_char_display_width(char) for char in str(text))
 
 
 __all__ = [

@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterable, List, Optional, Tuple, Union
 
+from pycodex.features import Feature
+
 from .._porting import RustTuiModule
 from ..slash_command import SlashCommand
 from .popup_consts import MAX_POPUP_ROWS
@@ -239,6 +241,40 @@ class CommandPopup:
         )
 
 
+def command_popup_flags_from_config(config: Any) -> CommandPopupFlags:
+    """Project Rust ChatWidget config gates into command-popup flags."""
+
+    features = getattr(config, "features", None)
+
+    def feature_enabled(feature: Feature) -> bool:
+        enabled = getattr(features, "enabled", None)
+        if callable(enabled):
+            for candidate in (feature, feature.value, feature.key(), feature.name):
+                try:
+                    return bool(enabled(candidate))
+                except (KeyError, TypeError, ValueError):
+                    continue
+        if isinstance(features, dict):
+            return any(bool(features.get(candidate, False)) for candidate in (feature, feature.value, feature.key(), feature.name))
+        return feature.default_enabled()
+
+    return CommandPopupFlags(
+        collaboration_modes_enabled=(
+            bool(getattr(config, "collaboration_modes_enabled", False))
+            or feature_enabled(Feature.COLLAB)
+            or feature_enabled(Feature.MULTI_AGENT_V2)
+        ),
+        connectors_enabled=bool(getattr(config, "connectors_enabled", False)),
+        plugins_command_enabled=feature_enabled(Feature.PLUGINS),
+        service_tier_commands_enabled=bool(getattr(config, "service_tier_commands_enabled", False)),
+        goal_command_enabled=feature_enabled(Feature.GOALS),
+        personality_command_enabled=feature_enabled(Feature.PERSONALITY),
+        realtime_conversation_enabled=feature_enabled(Feature.REALTIME_CONVERSATION),
+        audio_device_selection_enabled=bool(getattr(config, "audio_device_selection_enabled", False)),
+        windows_degraded_sandbox_active=bool(getattr(config, "windows_degraded_sandbox_active", False)),
+        side_conversation_active=bool(getattr(config, "side_conversation_active", False)),
+    )
+
 def from_(value: CommandPopupFlags) -> BuiltinCommandFlags:
     return value.to_builtin_flags()
 
@@ -280,6 +316,7 @@ __all__ = [
     "CommandPopup",
     "CommandPopupFlags",
     "RUST_MODULE",
+    "command_popup_flags_from_config",
     "from_",
     "render_ref",
 ]
